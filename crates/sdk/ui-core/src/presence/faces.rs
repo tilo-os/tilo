@@ -12,7 +12,7 @@ use crate::paint::PaintCtx;
 use crate::widget::AvatarFace;
 
 /// One person's face in a stack.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Face<'a> {
     pub name: &'a str,
     /// Their stable id: picks their picture and, without a colour, their hue.

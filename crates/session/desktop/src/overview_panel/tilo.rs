@@ -27,22 +27,34 @@ const ACTION_WIDTH: f64 = 148.0;
 const ACTION_HEIGHT: f64 = 28.0;
 
 /// A face at a row's leading edge, drawn by presence so it looks as that person or agent does in
-/// every stack: a person's circle or an agent's rounded square, in the colour it wears, on the
-/// panel it stands on.
-fn paint_face(ctx: &mut ui::paint::PaintCtx<'_>, slot: Rect, worn: &TiloFace) {
-    let face = ui::presence::Face {
+/// every stack: a person's circle or an agent's rounded square, in the colour it wears.
+fn worn_face(worn: &TiloFace) -> ui::presence::Face<'_> {
+    ui::presence::Face {
         is_agent: worn.is_agent,
         ..ui::presence::Face::new(
             &worn.name,
             &worn.identity,
             ui::presence::presence_colour(worn.colour),
         )
-    };
-    face.paint(
-        ctx,
-        ui::presence::Face::disc_in(slot),
-        ui::widget::SurfaceLevel::Floating.color(ctx.theme),
-    );
+    }
+}
+
+/// A row's leading mark: the glyph it names itself with, or the face presence draws for it. Both
+/// stand in the icon's slot, so a row's name keeps the column every row's does.
+pub(super) fn tilo_leading(item: &TiloItem) -> Option<RowLeading<'_>> {
+    match &item.mark {
+        Some(TiloMark::Icon(icon)) => Some(RowLeading::Icon(*icon)),
+        Some(TiloMark::Face(worn)) => Some(RowLeading::Face(worn_face(worn))),
+        None => None,
+    }
+}
+
+/// The face of a row's question: the caption the rows' facts are set in, wrapped evenly so a
+/// question of two lines does not leave one word on the last.
+fn question_style(theme: &ui::theme::Theme) -> ui::text_render::TextStyle {
+    theme
+        .text(TextRole::Caption)
+        .with_wrap_mode(ui::text_render::TextWrapMode::Balance)
 }
 
 impl OverviewPanel {
@@ -124,7 +136,7 @@ impl OverviewPanel {
     }
 
     /// Row `index`'s rect: below the "go to" list, after the rows before it.
-    fn tilo_rect(&self, index: usize) -> Rect {
+    pub(super) fn tilo_rect(&self, index: usize) -> Rect {
         let first = self.tilo_band();
         let above: f64 = (0..index).map(|before| self.tilo_height(before)).sum();
         let height = self.tilo_height(index);
@@ -136,6 +148,18 @@ impl OverviewPanel {
         )
     }
 
+    /// Where a row's own text starts: the column its name and its facts keep, past the slot its
+    /// leading mark stands in. What the row says under its name — the question its irreversible
+    /// control asks — starts here too.
+    pub(super) fn tilo_text_x(&self, index: usize) -> f64 {
+        self.tilo_rect(index).x0 + self.metrics.row_text_inset
+    }
+
+    /// Where a row's question ends: the rows' trailing edge, where their controls stand.
+    fn tilo_question_right(&self, index: usize) -> f64 {
+        self.tilo_rect(index).x1 - self.metrics.row_pad
+    }
+
     /// The row at `index`, when it is one that says something: how the pointer over it reads.
     pub(super) fn tilo_item(&self, index: usize) -> Option<&TiloItem> {
         match self.tilo_rows.get(index)? {
@@ -145,8 +169,8 @@ impl OverviewPanel {
     }
 
     /// Fit the controls to their widest label, so each says it whole and they stand in one
-    /// column; and measure the question an irreversible control is asking, which wraps to the
-    /// rows' width.
+    /// column; and measure the question an irreversible control is asking, which wraps in the
+    /// row's text column.
     pub(super) fn measure_tilo_actions(
         &mut self,
         text: &mut ui::text_render::TextRenderer,
@@ -161,23 +185,27 @@ impl OverviewPanel {
             })
             .map(|(label, _)| ButtonFace::new(Rect::ZERO, label).intrinsic_width(text, theme))
             .fold(0.0, f64::max);
-        let asking = self
-            .tilo_asking
-            .clone()
-            .and_then(|key| self.tilo_row(&key).cloned())
-            .and_then(|item| item.confirm);
-        let style = theme.text(TextRole::Caption);
-        self.tilo_question_h = asking.as_ref().map_or(0.0, |confirm| {
+        let asking = self.tilo_asking.as_deref().and_then(|key| {
+            let index = (0..self.tilo_rows.len())
+                .find(|&index| self.tilo_item(index).is_some_and(|item| item.key == key))?;
+            Some((index, self.tilo_row(key)?.confirm.clone()?))
+        });
+        let style = question_style(theme);
+        // The question wraps in the rows' text column, from where a row's name starts to the edge
+        // its control stands on.
+        let question_h = asking.as_ref().map(|(index, confirm)| {
             TextBlockFace::new(&confirm.question, &style).height(
                 text,
-                (self.tilo_band().width() - 2.0 * self.metrics.row_pad).max(0.0),
+                (self.tilo_question_right(*index) - self.tilo_text_x(*index)).max(0.0),
             )
         });
-        self.tilo_answers_w = asking.as_ref().map_or((0.0, 0.0), |confirm| {
+        self.tilo_question_h = question_h.unwrap_or(0.0);
+        let answers_w = asking.as_ref().map(|(_, confirm)| {
             let mut width =
                 |label: &str| ButtonFace::new(Rect::ZERO, label).intrinsic_width(text, theme);
             (width(&t("overview-tilo-keep")), width(&confirm.answer))
         });
+        self.tilo_answers_w = answers_w.unwrap_or((0.0, 0.0));
         // A question makes its row taller than the one it stood on: a list whose foot would cut
         // it scrolls, so the person reads what they are asked and answers there.
         if asking.is_some() {
@@ -235,18 +263,18 @@ impl OverviewPanel {
     }
 
     /// The question an asking row stands on, and its two answers: Keep, and the answer that goes
-    /// ahead, at the row's trailing edge under what is lost.
+    /// ahead, at the row's trailing edge under what is lost. The question's words stand in the
+    /// column the row's name does, so a row reads as one block rather than two edges.
     fn tilo_ask_rects(&self, index: usize) -> Option<(Rect, Rect, Rect)> {
         let item = self.tilo_item(index)?;
         if !self.tilo_asks(item) {
             return None;
         }
         let row = self.tilo_rect(index);
-        let pad = self.metrics.row_pad;
         let question = Rect::new(
-            row.x0 + pad,
+            self.tilo_text_x(index),
             row.y0 + self.metrics.tilo_row_h + self.metrics.s2,
-            row.x1 - pad,
+            self.tilo_question_right(index),
             row.y0 + self.metrics.tilo_row_h + self.metrics.s2 + self.tilo_question_h,
         );
         let buttons = Rect::new(
@@ -416,22 +444,12 @@ impl OverviewPanel {
     ) {
         let action = self.tilo_action_rect(index);
         let asking = self.tilo_asks(item);
-        let worn = match &item.mark {
-            Some(TiloMark::Face(worn)) => Some(worn),
-            _ => None,
-        };
-        let paint = |ctx: &mut ui::paint::PaintCtx<'_>, slot: Rect| {
-            if let Some(worn) = worn {
-                paint_face(ctx, slot, worn);
-            }
-        };
         let mut face = ListRowFace::new(&item.title);
         if !asking && !item.facts.is_empty() {
             face = face.facts(&item.facts);
         }
-        let mut face = match &item.mark {
-            Some(TiloMark::Icon(icon)) => face.leading(RowLeading::Icon(*icon)),
-            Some(TiloMark::Face(_)) => face.leading(RowLeading::Paint(&paint)),
+        let mut face = match tilo_leading(item) {
+            Some(leading) => face.leading(leading),
             None => face,
         }
         .interaction(Interaction {
@@ -454,7 +472,7 @@ impl OverviewPanel {
             && let Some(confirm) = &item.confirm
         {
             // What the person loses, under the name they are about to lose it from.
-            let style = ctx.theme.text(TextRole::Caption);
+            let style = question_style(ctx.theme);
             TextBlockFace::new(&confirm.question, &style).paint(
                 ctx,
                 question,

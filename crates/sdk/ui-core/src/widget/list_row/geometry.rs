@@ -8,6 +8,15 @@ use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::widget::BadgeFace;
 
+/// Where a row led by a mark — a glyph or a face — starts its text, past the left edge of its
+/// rect: the content edge, the mark's slot and the gap to the text. Both lead in one slot, so a
+/// list's titles keep one column; a row's own line under its title starts here too.
+#[must_use]
+pub fn mark_text_inset(theme: &Theme) -> f64 {
+    let m = RowMetrics::new(theme);
+    m.bleed + m.icon + m.column_gap
+}
+
 impl ListRowFace<'_> {
     /// Whether the row says anything under its title: a secondary line, or facts standing where
     /// one would.
@@ -113,6 +122,9 @@ impl ListRowFace<'_> {
             Some(RowLeading::Icon(_) | RowLeading::Swatch(_) | RowLeading::Signal(_)) => {
                 (m.icon, m.icon)
             }
+            // A face takes the glyph's slot, so a list's titles line up whichever a row leads
+            // with; its ring and ground stand in the gap to the text.
+            Some(RowLeading::Face(_)) => (m.icon, m.icon),
             // A box says whether it is done, and a glyph after it what kind of thing it is.
             Some(RowLeading::Checkbox { icon, .. }) => match icon {
                 Some(_) => (2.0 * m.icon + m.column_gap, m.icon),
@@ -692,6 +704,13 @@ impl ListRowFace<'_> {
     ) -> Option<Rect> {
         self.geometry(rect, &self.metrics(theme), text, theme)
             .trailing
+    }
+
+    /// Where the row's text starts in `rect`: the column its title, its lines and its facts keep,
+    /// whatever it leads with. A block that belongs under the row's title — a question its own
+    /// control asks — starts here too.
+    pub fn text_column(&self, rect: Rect, text: &mut TextRenderer, theme: &Theme) -> f64 {
+        self.text_x(rect, &self.metrics(theme), text, theme)
     }
 
     /// The leading column's rect in `rect`: the checkbox's hit target, or

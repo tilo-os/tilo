@@ -644,6 +644,14 @@ impl ListRowFace<'_> {
                 let side = slot.height();
                 face.paint(ctx, Rect::from_center_size(slot.center(), (side, side)));
             }
+            RowLeading::Face(face) => {
+                let side = slot.height();
+                face.paint(
+                    ctx,
+                    Rect::from_center_size(slot.center(), (side, side)),
+                    under,
+                );
+            }
             RowLeading::Badge(badge) => paint_badge(ctx, m, slot, badge),
             RowLeading::Thumbnail(image) => {
                 let side = slot.height();

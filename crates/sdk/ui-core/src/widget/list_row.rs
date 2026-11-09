@@ -5,7 +5,7 @@
 //!
 //! | Column | Holds | Set in |
 //! |---|---|---|
-//! | leading | an [`Avatar`](crate::widget::Avatar), an [`Icon`], a short badge (`GET`), a thumbnail, a checkbox, a swatch, in a fixed-width column so a list's titles line up | the leading slot's own geometry |
+//! | leading | an [`Avatar`](crate::widget::Avatar), a person's or agent's face as presence draws it beside a glyph, an [`Icon`], a short badge (`GET`), a thumbnail, a checkbox, a swatch, in a fixed-width column so a list's titles line up | the leading slot's own geometry |
 //! | text | the title (with tags after it), an optional subtitle, then an optional secondary line of one or two lines | `Body` (`.strong()` when emphasised), `Body`, `Caption` |
 //! | facts | what the item is, in the same order on every row: when (a day and the time of day it is due), who (an avatar), how far (a progress count), how important (a mark); right-aligned on one edge | `Caption.numeric()`, `Caption`, icons |
 //! | trailing | one persistent control, a status dot, a check, a disclosure chevron | — |
@@ -79,6 +79,10 @@ pub enum RowLeading<'a> {
     /// How strong a radio signal is (a Wi-Fi network): the
     /// [`SignalMeterFace`](crate::widget::SignalMeterFace) at icon size.
     Signal(crate::widget::SignalLevel),
+    /// A person's or an agent's face as presence draws it (`presence::Face`): their colour, and
+    /// for software the rounded square and the mark. It takes the icon's slot, so a row led by a
+    /// face keeps the text column a row led by a glyph does.
+    Face(crate::presence::Face<'a>),
     /// A painter for a leading mark no other kind covers (a font sample, a
     /// waveform), given the leading slot.
     Paint(&'a dyn Fn(&mut PaintCtx<'_>, Rect)),
@@ -103,6 +107,7 @@ impl std::fmt::Debug for RowLeading<'_> {
                 .finish(),
             Self::Swatch(colour) => f.debug_tuple("Swatch").field(colour).finish(),
             Self::Signal(level) => f.debug_tuple("Signal").field(level).finish(),
+            Self::Face(face) => f.debug_tuple("Face").field(face).finish(),
             Self::Paint(_) => f.write_str("Paint"),
             Self::AvatarSpace => f.write_str("AvatarSpace"),
         }
@@ -3394,6 +3399,7 @@ mod kept;
 use kept::KeptRow;
 
 mod geometry;
+pub use geometry::mark_text_inset;
 
 mod metrics;
 use metrics::RowMetrics;

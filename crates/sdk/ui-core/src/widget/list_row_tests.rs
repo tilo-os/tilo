@@ -1993,3 +1993,35 @@ fn a_row_given_its_own_height_stands_at_it() {
         "a tree's row stands under the list's row of the same theme"
     );
 }
+
+/// A face is a leading mark like a glyph: it stands in the icon's slot, so a list whose rows lead
+/// with people and agents keeps one title edge, and the row is no taller for it.
+#[test]
+fn a_face_leads_a_row_in_the_icon_slot_a_glyph_leads_in() {
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let rect = Rect::new(20.0, 0.0, 340.0, 52.0);
+    let colour = crate::presence::identity_colour("g1");
+    let face = crate::presence::Face::new("Claude Code", "g1", colour);
+    let with_face = ListRowFace::new("Claude Code").leading(RowLeading::Face(face));
+    let with_glyph = ListRowFace::new("Claude Code").leading(RowLeading::Icon(Icon::User));
+    let face_x = with_face.text_column(rect, &mut text, &theme);
+    let glyph_x = with_glyph.text_column(rect, &mut text, &theme);
+    assert!(
+        (face_x - glyph_x).abs() < 0.01,
+        "a face and a glyph lead in one slot: {face_x} and {glyph_x}"
+    );
+    assert!(
+        (face_x - (rect.x0 + mark_text_inset(&theme))).abs() < 0.01,
+        "the title starts past the content edge, the mark's slot and the gap: {face_x}"
+    );
+    assert!(
+        (with_face.height(&mut text, &theme) - with_glyph.height(&mut text, &theme)).abs() < 0.01,
+        "a face asks no more height than a glyph"
+    );
+    assert_eq!(
+        with_face.shape().leading,
+        RowLeadingShape::Mark,
+        "a face is a mark of icon size, not an avatar's column"
+    );
+}

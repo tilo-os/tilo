@@ -73,6 +73,9 @@ pub(super) struct Metrics {
     pub workspace_row_h: f64,
     pub workspace_row_gap: f64,
     pub row_pad: f64,
+    /// Where a row's text starts past its left edge: the list row's content edge, the slot its
+    /// leading mark takes and the gap to the text.
+    pub row_text_inset: f64,
     /// A row below the workspaces: its title, `s1` , its facts, and `s2` above and below.
     pub tilo_row_h: f64,
     pub chip_h: f64,
@@ -121,6 +124,7 @@ impl Metrics {
             workspace_row_h: lh(TextRole::Heading) + s1 + lh(TextRole::Caption) + 2.0 * s3,
             workspace_row_gap: s2,
             row_pad: s4,
+            row_text_inset: ui::widget::mark_text_inset(theme),
             tilo_row_h: lh(TextRole::Body) + s1 + lh(TextRole::Caption) + 2.0 * s2,
             chip_h: lh(TextRole::Caption) + s2,
             window_gap: s3,

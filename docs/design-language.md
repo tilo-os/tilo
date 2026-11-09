@@ -340,7 +340,7 @@ content, never geometry or colour (`ui::widget::primitives`).
 | `Toggle`, `Checkbox`, `Checkbox::radio` | the on-state green, keyboard-only focus ring |
 | `ToggleGroup` (segmented) | raised track, item-radius thumb |
 | `Slider` | the value fill on a lifted track |
-| `ListRow` | leading icon 16 / avatar 24 / avatar 40, a text stack, a trailing value, control or chevron; hover lifts, selection is the accent-tinted lift |
+| `ListRow` | leading icon 16 / face 16 / avatar 24 / avatar 40, a text stack, a trailing value, control or chevron; hover lifts, selection is the accent-tinted lift |
 | `DisclosureRow` | a row whose chevron turns and whose body opens in place on `motion::Disclose`; one open at a time in a `DisclosureGroup` |
 | `Section` | an optional heading and rows, separated from the next by space, never boxed |
 | `EmptyState`, `Banner`, toast | on the tokens |

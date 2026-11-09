@@ -995,6 +995,8 @@ mod tests {
     /// A display tall enough for every row of the person's Tilo to stand whole: what a reader or
     /// a script reaches without scrolling.
     const TALL: Rect = Rect::new(0.0, 0.0, 900.0, 1600.0);
+    /// A phone: the rows are narrow enough that a question wraps, and the columns still line up.
+    const PHONE: Rect = Rect::new(0.0, 0.0, 390.0, 844.0);
 
     fn opened_in(area: Rect, desk: OverviewDesk) -> OverviewPanel {
         let mut panel = OverviewPanel::new();
@@ -1174,6 +1176,75 @@ mod tests {
             panel.take_pick(),
             Some(OverviewPick::OpenAgent("Claude Code".into()))
         );
+    }
+
+    /// The faces and glyphs that lead these rows stand in one slot, so the rows below the
+    /// workspaces keep one text column: the agent's name starts where the account's does, on a
+    /// desk and on a phone, and where the list row itself puts it.
+    #[test]
+    fn a_face_leads_its_row_in_the_column_every_other_row_keeps() {
+        ui::i18n::I18nManager::init("en-US");
+        let theme = Theme::dark();
+        for area in [TALL, PHONE] {
+            let panel = drawn(area, desk_with_an_agent());
+            let index = |key: &str| {
+                (0..panel.tilo_rows.len())
+                    .find(|&index| panel.tilo_item(index).is_some_and(|item| item.key == key))
+                    .expect("the row is on the desk")
+            };
+            let agent = index("overview-agent:g1");
+            let account = index("overview-account");
+            let mut text = ui::text_render::TextRenderer::new();
+            let mut drawn_x = |index: usize| {
+                let item = panel.tilo_item(index).expect("a row of the list");
+                let mut face = ui::widget::ListRowFace::new(&item.title);
+                if let Some(leading) = super::tilo::tilo_leading(item) {
+                    face = face.leading(leading);
+                }
+                face.text_column(panel.tilo_rect(index), &mut text, &theme)
+            };
+            let agent_x = drawn_x(agent);
+            let account_x = drawn_x(account);
+            assert!(
+                (agent_x - account_x).abs() < 0.01,
+                "the agent's face leads in the glyph's slot on {area:?}: {agent_x} and {account_x}"
+            );
+            assert!(
+                (panel.tilo_text_x(agent) - agent_x).abs() < 0.01,
+                "what the row says under its name starts where the row's own text does"
+            );
+        }
+    }
+
+    /// A question about something that cannot be undone stands under the row's name, its words
+    /// in the rows' text column rather than at the row's own left edge.
+    #[test]
+    fn a_questions_words_stand_in_the_rows_text_column() {
+        ui::i18n::I18nManager::init("en-US");
+        for area in [TALL, PHONE] {
+            let mut panel = drawn(area, desk_with_an_agent());
+            assert!(panel.activate("overview-agent:g1:action"));
+            settle(&mut panel);
+            let rects: HashMap<String, Rect> = panel.test_rects().into_iter().collect();
+            let question = rects["overview-agent:g1:question"];
+            let agent = (0..panel.tilo_rows.len())
+                .find(|&index| {
+                    panel
+                        .tilo_item(index)
+                        .is_some_and(|item| item.key == "overview-agent:g1")
+                })
+                .expect("the agent's row");
+            let agent_x = panel.tilo_text_x(agent);
+            assert!(
+                (question.x0 - agent_x).abs() < 0.01,
+                "the question starts in the text column on {area:?}: {} and {agent_x}",
+                question.x0
+            );
+            assert!(
+                question.x0 > rects["overview-agent:g1"].x0 + panel.metrics.row_pad,
+                "the question's words are not at the row's own edge"
+            );
+        }
     }
 
     /// A row too narrow for both facts keeps the live one: what an agent is doing now is what the
