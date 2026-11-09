@@ -229,23 +229,6 @@ impl ReviewedInstalledRetainedLaunch {
     ) -> io::Result<Arc<Self>> {
         Self::review_current(stream, request, None, cancel)
     }
-    /// Fresh editor certificate/QPE admission derives physical source custody
-    /// only from a genuine still-live Files selection, never a mounted path.
-    pub(in crate::setup) fn review_editor(
-        stream: UnixStream,
-        request: LaunchRequest,
-        origin: &super::retained_open_selection::SelectedOriginCustody,
-        cancel: &AtomicBool,
-    ) -> io::Result<Arc<Self>> {
-        if !request
-            .resource_record()
-            .strip_prefix("selected-open-v2:edit-in-parent:")
-            .is_some_and(crate::is_operation_id)
-        {
-            return Err(refused());
-        }
-        Self::review_current(stream, request, Some(origin), cancel)
-    }
     fn review_current(
         stream: UnixStream,
         request: LaunchRequest,

@@ -20,7 +20,6 @@ pub use grants::{
 #[cfg(unix)]
 pub use native::{
     FsAppendHandle, FsDirectoryCursor, FsSession, NativeFileAccess, NativeGrantAuthority,
-    NativeHistoryReadObservation, NativeHistoryReadSubject, SelectedReplacementAuthority,
 };
 #[cfg(unix)]
 pub mod blobs;
@@ -28,8 +27,6 @@ pub mod blobs;
 pub mod directory;
 #[cfg(unix)]
 pub mod directory_backend;
-#[cfg(unix)]
-pub mod external_history;
 #[cfg(unix)]
 pub mod operations;
 #[cfg(unix)]

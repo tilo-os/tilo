@@ -506,6 +506,7 @@ files-open-with-default-unavailable = Eine Standardanwendung lässt sich auf die
 files-open-with-access-unavailable = Diese Anwendung kann die Datei so nicht öffnen.
 files-open-with-busy = Eine andere Datei wird noch geöffnet. Versuche es gleich noch einmal.
 files-open-with-timeout = Die Datei wurde nicht geöffnet. Versuche es erneut.
+files-open-with-no-workspace = Es gibt keinen Arbeitsbereich, in den diese Datei kommen kann.
 files-place-recent = Zuletzt verwendet
 files-empty-recent = Noch keine zuletzt verwendeten Dateien
 files-recent-reveal = Enthaltenden Ordner öffnen

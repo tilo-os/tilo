@@ -507,6 +507,7 @@ files-open-with-default-unavailable = Choosing a default application isn’t ava
 files-open-with-access-unavailable = This application can’t open the file that way.
 files-open-with-busy = Another file is still opening. Try again in a moment.
 files-open-with-timeout = The file didn’t open. Try again.
+files-open-with-no-workspace = There is no workspace to bring this file into.
 files-place-recent = Recent
 files-empty-recent = No recent files yet
 files-recent-reveal = Open containing folder

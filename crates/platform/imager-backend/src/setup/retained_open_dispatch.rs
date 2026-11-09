@@ -1,8 +1,6 @@
 //! Selected-open commands on the existing authenticated Shell bootstrap.
 //! Wire names route an observation; fresh Files QPE and the held consumer lease
 //! admit descriptors. An admission receipt never means another app was opened.
-pub(super) use super::retained_open_selection::SelectedOriginCustody;
-use super::retained_selected_editor_owner::{EditorStatus, SelectedEditorOwner, StageStatus};
 use super::{
     retained_consumer_lease::RetainedConsumerLease,
     retained_open_selection::{RetainedOpenSelection, SelectedObjects},
@@ -32,7 +30,6 @@ use std::{
 const REQUEST_BUDGET: Duration = Duration::from_secs(10);
 const PENDING_LIFETIME: Duration = Duration::from_secs(30);
 const PENDING_LIMIT: usize = 16;
-const EDITOR_LIMIT: usize = 8;
 fn refused() -> io::Error {
     io::ErrorKind::PermissionDenied.into()
 }
@@ -55,12 +52,10 @@ pub(super) struct RetainedOpenDispatcher {
     cancel: Arc<AtomicBool>,
     cancellation: ServiceCancellation,
     pending: VecDeque<Pending>,
-    editors: Vec<SelectedEditorOwner>,
     intake_closed: bool,
     admissions_closed: bool,
     // Routing IDs refer only to already-owned registry entries; they cannot
     // mint admission. Removed only after that actual owner proves cleanup.
-    retiring_unadopted: Vec<String>,
     original_proof: Option<Arc<super::installed_retained_actor::InstalledProofInterrupt>>,
 }
 impl RetainedOpenDispatcher {
@@ -77,10 +72,8 @@ impl RetainedOpenDispatcher {
             cancel,
             cancellation,
             pending: VecDeque::new(),
-            editors: Vec::new(),
             intake_closed: false,
             admissions_closed: false,
-            retiring_unadopted: Vec::new(),
             original_proof: Some(original_proof),
         })
     }
@@ -99,7 +92,8 @@ impl RetainedOpenDispatcher {
             RequestBoundary::Idle => return Ok(()),
             RequestBoundary::Closed => {
                 self.intake_closed = true;
-                self.close_files_admissions();
+                self.admissions_closed = true;
+                self.pending.clear();
                 return Ok(());
             }
             RequestBoundary::Data => {}
@@ -118,17 +112,8 @@ impl RetainedOpenDispatcher {
         let bytes = read_frame(&mut self.stream, 16 * 1024)?;
         match decode_mux(&bytes)? {
             MuxCommand::Support(request) => {
-                let operation =
-                    if files_active && request.access == v2::SelectedAccess::EditInParent {
-                        shared
-                            .lock()
-                            .map_err(|_| refused())?
-                            .selected_edit_support(&self.cancel)
-                            .ok()
-                    } else {
-                        None
-                    };
-                write_support(&mut self.stream, &request, operation)?;
+                // No installed editor lane exists for a retained source.
+                write_support(&mut self.stream, &request, None)?;
             }
             MuxCommand::Legacy(open_selected::RootCommand::OpenSelected(request)) => {
                 let observed = if files_active {
@@ -238,7 +223,7 @@ impl RetainedOpenDispatcher {
                 )?;
             }
             MuxCommand::Current(v2::RootCommand::PollSelected(request)) => {
-                let reply = self.poll_editor(&request, &fence)?;
+                let reply = unavailable_target(&request.request_id);
                 write_frame(
                     &mut self.stream,
                     &serde_json::to_vec(&v2::TargetResult {
@@ -250,12 +235,6 @@ impl RetainedOpenDispatcher {
                 )?;
             }
             MuxCommand::Current(v2::RootCommand::CancelSelected(request)) => {
-                if let Some(owner) = self.editors.iter().find(|owner| {
-                    owner.request().request_id == request.request_id
-                        && owner.request().access == request.access
-                }) {
-                    owner.cancel();
-                }
                 write_frame(
                     &mut self.stream,
                     &serde_json::to_vec(&v2::TargetResult {
@@ -466,144 +445,26 @@ impl RetainedOpenDispatcher {
     }
     fn stage_editor(
         &mut self,
-        shared: &Arc<Mutex<RetainedConsumerLease>>,
+        _shared: &Arc<Mutex<RetainedConsumerLease>>,
         launch: v2::LaunchSelected,
         fence: &RequestFence,
     ) -> io::Result<()> {
-        let context = read_frame(&mut self.stream, 64 * 1024)?;
-        let proof = receive_file(&mut self.stream, 84)?;
-        let endpoint = receive_file(&mut self.stream, 85)?;
-        for file in [&proof, &endpoint] {
-            require_stream(file)?;
-        }
-        let proof = UnixStream::from(std::os::fd::OwnedFd::from(proof));
-        let endpoint = UnixStream::from(std::os::fd::OwnedFd::from(endpoint));
-        fence.add(&proof)?;
-        let duplicate = self
-            .editors
-            .iter()
-            .any(|owner| owner.request().request_id == launch.request_id);
-        let pending = self.pending.iter().find(|pending| {
-            pending.claimed
-                && pending.request_id == launch.request_id
-                && pending.app_id == launch.binding.app_id
-                && pending.selection.operation_id() == launch.binding.operation_id
-                && pending.access == Some(launch.access)
-                && pending.expires > Instant::now()
-        });
-        let request = pending.and_then(|pending| pending.request.clone());
-        let result = if duplicate || self.editors.len() >= EDITOR_LIMIT {
-            Err(refused())
-        } else {
-            match request {
-                Some(request) => self
-                    .pending_edit_origin(shared, &launch.request_id, &launch.binding.app_id)
-                    .and_then(|custody| {
-                        SelectedEditorOwner::stage(
-                            custody,
-                            request,
-                            launch.clone(),
-                            context,
-                            proof,
-                            endpoint,
-                            Arc::clone(&self.cancel),
-                        )
-                    }),
-                None => Err(refused()),
-            }
-        };
-        let mut staged = false;
-        let mut staged_owner = None;
-        if let Ok(owner) = result {
-            // Insert the real owner BEFORE any bounded preparation wait. Every
-            // failure thereafter stays registered through observed retirement.
-            self.editors.push(owner);
-            let index = self.editors.len() - 1;
-            staged_owner = Some(index);
-            loop {
-                fence.check()?;
-                match self.editors[index].stage_status() {
-                    StageStatus::Prepared => {
-                        staged = true;
-                        break;
-                    }
-                    StageStatus::Refused => break,
-                    StageStatus::Preparing => std::thread::sleep(Duration::from_millis(5)),
-                }
-            }
-        }
-        let reply = if staged {
-            v2::StageResult::Staged {
-                schema: 2,
-                request_id: launch.request_id.clone(),
-                access: launch.access,
-                context_sha256: launch.binding.context_sha256.clone(),
-            }
-        } else {
-            v2::StageResult::Refused {
-                schema: 2,
-                request_id: launch.request_id.clone(),
-                access: launch.access,
-                context_sha256: launch.binding.context_sha256.clone(),
-                reason: RootRefusal::Unavailable,
-            }
-        };
+        // Consume this command's owned frames, then refuse: a retained source
+        // has no installed editor lane to stage.
+        let _context = read_frame(&mut self.stream, 64 * 1024)?;
+        let _proof = receive_file(&mut self.stream, 84)?;
+        let _endpoint = receive_file(&mut self.stream, 85)?;
         fence.check()?;
+        let reply = v2::StageResult::Refused {
+            schema: 2,
+            request_id: launch.request_id,
+            access: launch.access,
+            context_sha256: launch.binding.context_sha256,
+            reason: RootRefusal::Unavailable,
+        };
         write_frame(&mut self.stream, &v2::encode_stage(&reply)?)?;
         fence.check()?;
-        if staged {
-            if let Some(owner) = staged_owner.and_then(|index| self.editors.get_mut(index)) {
-                // Staged reports retained preparation only. A racing refusal
-                // belongs to this actual owner; next Poll reports Refused.
-                // Keep it registered through native stop without cancelling
-                // independent editors on the authenticated bootstrap.
-                if !owner.enroll_history(&mut self.stream, fence.deadline)? {
-                    owner.cancel();
-                    return Ok(());
-                }
-                if !owner.enroll_history_read(&mut self.stream, fence.deadline)? {
-                    owner.cancel();
-                    return Ok(());
-                }
-                match owner.delegate_shell(&mut self.stream, fence.deadline)? {
-                    launcher::ordinary_child::DelegationOutcome::Delegated => {
-                        if owner.release_after_staged().is_err() {
-                            owner.cancel();
-                        }
-                    }
-                    launcher::ordinary_child::DelegationOutcome::Refused => owner.cancel(),
-                }
-            }
-        }
         Ok(())
-    }
-    fn poll_editor(
-        &self,
-        request: &v2::PollSelected,
-        fence: &RequestFence,
-    ) -> io::Result<open_selected::TargetReply> {
-        let Some(owner) = self.editors.iter().find(|owner| {
-            owner.request().request_id == request.request_id
-                && owner.request().access == request.access
-        }) else {
-            return Ok(unavailable_target(&request.request_id));
-        };
-        fence.add(owner.proof_transport())?;
-        let reply = match owner.poll() {
-            Ok(EditorStatus::Pending) => open_selected::TargetReply::Pending {
-                schema: 1,
-                request_id: request.request_id.clone(),
-            },
-            Ok(EditorStatus::NamespaceReady(receipt)) => {
-                open_selected::TargetReply::NamespaceReady { receipt }
-            }
-            Ok(EditorStatus::Refused) | Err(_) => {
-                owner.cancel();
-                unavailable_target(&request.request_id)
-            }
-        };
-        fence.check()?;
-        Ok(reply)
     }
     /// Called only after main lease cleanup and unadopted worker stop. This
     /// exact original socket has no role in independently admitted editors.
@@ -615,80 +476,7 @@ impl RetainedOpenDispatcher {
     pub(super) fn intake_closed(&self) -> bool {
         self.intake_closed
     }
-    pub(super) fn close_files_admissions(&mut self) {
-        if self.admissions_closed {
-            return;
-        }
-        self.admissions_closed = true;
-        self.pending.clear();
-        for owner in &self.editors {
-            // Only independently current kernel/person/source admission allows
-            // an editor to survive the original Files lifecycle. Errors cancel
-            // that actual owner, never turn a receipt into proof.
-            if !matches!(owner.consumer_admitted(), Ok(true)) {
-                owner.cancel();
-                self.retiring_unadopted
-                    .push(owner.request().request_id.clone());
-            }
-        }
-    }
-    pub(super) fn unadopted_observed_stopped(&self) -> bool {
-        self.editors.iter().all(|owner| {
-            !self
-                .retiring_unadopted
-                .contains(&owner.request().request_id)
-                || owner.observed_stopped()
-        })
-    }
-    pub(super) fn editors_observed_stopped(&self) -> bool {
-        self.editors
-            .iter()
-            .all(SelectedEditorOwner::observed_stopped)
-    }
-    pub(super) fn cancel_editors(&self) {
-        for owner in &self.editors {
-            owner.cancel();
-        }
-    }
-    pub(super) fn supervise_editors(&mut self) {
-        if self.cancel.load(Ordering::Acquire) {
-            self.cancel_editors();
-        }
-        // Only explicit session/source/namespace stop permits removing an owner;
-        // a finished/panicked thread or a refusal message cannot release it.
-        self.editors.retain(|owner| !owner.observed_stopped());
-        self.retiring_unadopted.retain(|request_id| {
-            self.editors
-                .iter()
-                .any(|owner| &owner.request().request_id == request_id)
-        });
-    }
-    /// Sibling typed stage factory only. Stage names cannot override the actual
-    /// Files-selected object or upgrade a previous read-only admission.
-    pub(super) fn pending_edit_origin(
-        &self,
-        shared: &Arc<Mutex<RetainedConsumerLease>>,
-        request_id: &str,
-        app_id: &str,
-    ) -> io::Result<super::retained_open_selection::SelectedOriginCustody> {
-        let pending = self
-            .pending
-            .iter()
-            .find(|item| {
-                item.request_id == request_id
-                    && item.app_id == app_id
-                    && item.expires > Instant::now()
-                    && item.access == Some(v2::SelectedAccess::EditInParent)
-            })
-            .ok_or_else(refused)?;
-        pending.selection.edit_origin_custody(shared, &self.cancel)
-    }
     pub(super) fn retire(&mut self) {
-        self.cancel_editors();
-        for owner in &mut self.editors {
-            owner.retire_before_exit();
-        }
-        self.editors.clear();
         self.pending.clear();
     }
 }

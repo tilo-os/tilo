@@ -6587,8 +6587,25 @@ impl FilesState {
             self.navigate(path);
             return Ok(false);
         }
+        // The system Tilo replaced is left as it was. Opening one of its files brings a copy into
+        // the workspace and opens that copy: from its first edit on, its versions are the
+        // workspace document's, like any other file's.
+        if tilo_files::native::retained_home::contains(&path) {
+            match Self::bring_into_workspace(&path) {
+                Ok(copy) => self.ask_open(&copy, None),
+                Err(reason) => self.notify_open_failed(&path, &reason),
+            }
+            return Ok(true);
+        }
         self.ask_open(&path, None);
         Ok(true)
+    }
+
+    /// Copy a file of the system Tilo replaced into the workspace, choosing a name no other file
+    /// holds so an earlier copy the person edited is never overwritten. The original is only read.
+    fn bring_into_workspace(path: &Path) -> Result<PathBuf, String> {
+        let home = crate::model::user_home().ok_or_else(|| t("files-open-with-no-workspace"))?;
+        fileops::import_mounted_into(path, &home)
     }
 
     /// Ask the session to open `path`, in `app` or in the app that opens its

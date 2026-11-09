@@ -733,16 +733,8 @@ fn connected_directory_sync_uses_held_metadata_grant_and_refuses_revocation() {
             .unwrap();
     let source = DirectoryConnection::connected(stream).unwrap();
     source.sync_directory(ROOT_DIRECTORY).unwrap();
-    let temporary = EntryName::new("save-temporary".into()).unwrap();
-    let victim = EntryName::new("save-victim".into()).unwrap();
     std::fs::write(disk.path().join("save-temporary"), b"new").unwrap();
     std::fs::write(disk.path().join("save-victim"), b"old").unwrap();
-    assert!(
-        source
-            .rename_replace(ROOT_DIRECTORY, &temporary, &victim)
-            .is_err(),
-        "no actual signed replacing coordinator was enrolled"
-    );
     assert_eq!(
         std::fs::read(disk.path().join("save-temporary")).unwrap(),
         b"new"

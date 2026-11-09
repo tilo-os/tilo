@@ -71,18 +71,14 @@ impl SourceConnection {
         input: Arc<InstalledRetainedLaunchInput>,
         cancel: Arc<AtomicBool>,
         endpoint: Arc<TargetProjectionEndpoint>,
-        history: Option<Arc<super::retained_history_read::RootHistoryReadSession>>,
     ) -> io::Result<RetainedSourceRelay> {
         match self {
             Self::Selected(source) => {
                 RetainedSourceRelay::serve_projection(source, input, cancel, endpoint)
             }
-            Self::Home(source) => match history {
-                Some(history) => RetainedSourceRelay::serve_home_projection_with_history(
-                    source, input, cancel, endpoint, history,
-                ),
-                None => RetainedSourceRelay::serve_home_projection(source, input, cancel, endpoint),
-            },
+            Self::Home(source) => {
+                RetainedSourceRelay::serve_home_projection(source, input, cancel, endpoint)
+            }
         }
     }
 }
@@ -105,19 +101,11 @@ pub(super) struct RetainedProjectionSession {
 impl RetainedProjectionSession {
     /// Only the installed Home grant and an independently reviewed ordinary
     /// selection can bind the endpoint to a concrete ConsumerLaunchBinding.
-    /// Optional history enrollment must belong to that same retained input.
-    pub(super) fn start_home_for_consumer_with_history(
+    pub(super) fn start_home_for_consumer(
         input: Arc<InstalledRetainedLaunchInput>,
         selection: &super::retained_consumer_selection::ReviewedConsumerSelection,
         cancel: Arc<AtomicBool>,
-        reader: Option<Arc<super::retained_history_read::RootFilesHistoryReadEnrollment>>,
     ) -> io::Result<Self> {
-        if reader
-            .as_ref()
-            .is_some_and(|reader| !reader.uses_input(&input))
-        {
-            return Err(io::ErrorKind::PermissionDenied.into());
-        }
         if !selection.uses_input(&input) {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
@@ -127,7 +115,7 @@ impl RetainedProjectionSession {
         let context: [u8; 32] = digest
             .try_into()
             .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
-        let result = Self::start_selection(input, None, Arc::clone(&cancel), Some(context), reader);
+        let result = Self::start_selection(input, None, Arc::clone(&cancel), Some(context));
         selection.check(&cancel)?;
         result
     }
@@ -136,7 +124,6 @@ impl RetainedProjectionSession {
         name: Option<&OsStr>,
         cancel: Arc<AtomicBool>,
         consumer_context: Option<[u8; 32]>,
-        reader: Option<Arc<super::retained_history_read::RootFilesHistoryReadEnrollment>>,
     ) -> io::Result<Self> {
         input.revalidate(&cancel)?;
         let mode = if name.is_some() {
@@ -163,17 +150,6 @@ impl RetainedProjectionSession {
                 return Err(error);
             }
         };
-        let history = reader
-            .map(|reader| {
-                let publisher = source.history_read_publisher()?;
-                super::retained_history_read::RootHistoryReadSession::admit(
-                    super::retained_selected_editor_history_read::RootHistoryReadEnrollment::files(
-                        reader,
-                    )?,
-                    publisher,
-                )
-            })
-            .transpose()?;
         let source_view = source.source_view_sha256();
         let mut hash = Sha256::new();
         hash.update(b"tilo-retained-target-projection-v2\0");
@@ -253,8 +229,7 @@ impl RetainedProjectionSession {
         };
         if let Ok(endpoint) = receive.recv_timeout(Duration::from_secs(15)) {
             owner.endpoint = Some(Arc::clone(&endpoint));
-            let relay = match source_connection.serve(input, cancel, Arc::clone(&endpoint), history)
-            {
+            let relay = match source_connection.serve(input, cancel, Arc::clone(&endpoint)) {
                 Ok(relay) => relay,
                 Err(error) => {
                     owner.retire()?;
@@ -303,31 +278,6 @@ impl RetainedProjectionSession {
         let result = use_view(&view);
         endpoint.check()?;
         result
-    }
-    /// Original source-native pin through the SAME admitted Home relay.
-    /// Endpoint/FUSE identities do not identify native source objects.
-    pub(super) fn pin_selected_origin(
-        &self,
-        components: &[runtime_fs::EntryName],
-    ) -> io::Result<Arc<super::retained_source_relay::SourceSelectedOrigin>> {
-        let endpoint = self.endpoint.as_ref().ok_or(io::ErrorKind::NotConnected)?;
-        endpoint.check()?;
-        let pin = self
-            .relay
-            .as_ref()
-            .ok_or(io::ErrorKind::NotConnected)?
-            .pin_home_selection(components)?;
-        pin.check_named()?;
-        endpoint.check()?;
-        Ok(pin)
-    }
-    /// Private custody snapshot of THIS joint owner, not a wire-supplied endpoint.
-    pub(super) fn retained_selected_endpoint(&self) -> io::Result<Arc<TargetProjectionEndpoint>> {
-        let endpoint = self.endpoint.as_ref().ok_or(io::ErrorKind::NotConnected)?;
-        endpoint.check()?;
-        let held = Arc::clone(endpoint);
-        endpoint.check()?;
-        Ok(held)
     }
     /// Independent expected source digest comes from the retained source
     /// worker admission, never from echoing an observation's descriptive facts.
@@ -399,9 +349,6 @@ impl RetainedProjectionSession {
         }
         // Closed target service can no longer issue callbacks. Finish the actual
         // relay, release held mount exports, then retire the source namespace.
-        if let Some(relay) = self.relay.as_ref() {
-            relay.retire_history()?;
-        }
         let relay = self.relay.take().map_or(Ok(()), |relay| relay.retire());
         self.endpoint.take();
         let source = match self.source.as_mut() {

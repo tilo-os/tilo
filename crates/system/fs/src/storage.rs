@@ -35,8 +35,6 @@ pub struct StorageAuthority {
     eviction_queue: Option<Arc<tokio::sync::Mutex<EvictionQueue>>>,
     eviction: Arc<tokio::sync::Mutex<()>>,
     workspace: String,
-    #[cfg(target_os = "linux")]
-    external_history: Option<Arc<crate::external_history::ExternalHistoryFactory>>,
     /// The person's prefetch switch and cache budget; `None` answers the
     /// policy requests with an error.
     cache_policy: Option<Arc<crate::cache_policy::CachePolicies>>,
@@ -58,53 +56,6 @@ pub async fn serve(listener: tokio::net::UnixListener, authority: StorageAuthori
                 .await
             {
                 let response = match request {
-                    StorageRequest::BindExternalSource | StorageRequest::BindExternalReadSource => {
-                        #[cfg(target_os = "linux")]
-                        let read = matches!(request, StorageRequest::BindExternalReadSource);
-                        #[cfg(target_os = "linux")]
-                        if let Some(factory) = authority.external_history.as_ref().filter(|_| {
-                            // Routing admission prevents unprivileged clients from
-                            // occupying enrollment workers. Actual root/helper
-                            // authority still requires mutual kernel QPE below.
-                            stream.peer_cred().is_ok_and(|peer| peer.uid() == 0)
-                        }) {
-                            let factory = Arc::clone(factory);
-                            if STORAGE_FRAMING
-                                .write_value_async(
-                                    &mut stream,
-                                    &if read {
-                                        StorageResponse::ExternalReadSourceBinding { schema: 1 }
-                                    } else {
-                                        StorageResponse::ExternalSourceBinding
-                                    },
-                                )
-                                .await
-                                .is_err()
-                            {
-                                return;
-                            }
-                            let Ok(stream) = stream.into_std() else {
-                                return;
-                            };
-                            if stream.set_nonblocking(false).is_err() {
-                                return;
-                            }
-                            // Native proof/descriptor exchange is a bounded owned
-                            // blocking worker, never the async service reactor.
-                            let _ = tokio::task::spawn_blocking(move || {
-                                if read {
-                                    factory.serve_read_enrollment(stream)
-                                } else {
-                                    factory.serve_enrollment(stream)
-                                }
-                            })
-                            .await;
-                            return;
-                        }
-                        StorageResponse::Error(
-                            "Certified personal external-source enrollment unavailable".into(),
-                        )
-                    }
                     StorageRequest::Snapshot => {
                         StorageResponse::Snapshot(authority.snapshot().await)
                     }
@@ -130,6 +81,10 @@ pub async fn serve(listener: tokio::net::UnixListener, authority: StorageAuthori
                             Ok(()) => StorageResponse::Kept { keep },
                             Err(error) => StorageResponse::Error(error.to_string()),
                         }
+                    }
+                    StorageRequest::RetiredBindExternalSource
+                    | StorageRequest::RetiredBindExternalReadSource => {
+                        StorageResponse::Error("no external source lane is served".into())
                     }
                 };
                 if STORAGE_FRAMING
@@ -161,17 +116,6 @@ struct LogicalFile {
 }
 
 impl StorageAuthority {
-    /// Install only the concrete certified personal daemon factory. An absent
-    /// context stays an explicit unavailable response on the existing socket.
-    #[cfg(target_os = "linux")]
-    #[must_use]
-    pub fn with_external_history(
-        mut self,
-        factory: Option<Arc<crate::external_history::ExternalHistoryFactory>>,
-    ) -> Self {
-        self.external_history = factory;
-        self
-    }
     pub fn new(
         namespace: Arc<Mutex<Namespace>>,
         hydrator: Arc<Hydrator>,
@@ -189,7 +133,6 @@ impl StorageAuthority {
             eviction: Arc::new(tokio::sync::Mutex::new(())),
             workspace: workspace.into(),
             #[cfg(target_os = "linux")]
-            external_history: None,
             cache_policy: None,
         }
     }

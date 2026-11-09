@@ -257,14 +257,6 @@ fn run_reviewed(
         .ok_or_else(refused)?;
     let input = Arc::new(reviewed.launch_input(cancel)?);
     let challenge = challenge(&context, input.binding(), input.person_public_key())?;
-    // Independent ordinary Files Read enrollment precedes target release; the
-    // actual issuer and source input belong to this Files lifetime, not an editor.
-    let history_reader = super::retained_history_read::enroll_files_read(
-        bootstrap,
-        input.clone(),
-        cancel.clone(),
-        fence.initial_deadline()?,
-    )?;
     // Keep the authenticated original source/UDisks actor in this namespace.
     // Only this separately owned fixed child isolates a private consuming
     // namespace and spawns the target-credential ordinary launcher there.
@@ -292,11 +284,10 @@ fn run_reviewed(
         context,
         cancel,
     )?;
-    let projection = RetainedProjectionSession::start_home_for_consumer_with_history(
+    let projection = RetainedProjectionSession::start_home_for_consumer(
         Arc::clone(&input),
         &selection,
         Arc::clone(cancel),
-        history_reader,
     )?;
     let mut pending =
         PendingRetainedConsumer::new(Arc::clone(&input), projection, cancel, managed)?;

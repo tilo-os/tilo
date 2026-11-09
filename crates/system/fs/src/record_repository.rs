@@ -331,29 +331,6 @@ pub(crate) struct RepositoryLease<'a> {
     records: std::sync::MutexGuard<'a, Records>,
 }
 
-#[derive(Clone, Copy)]
-enum ExternalObservation<'a> {
-    None(std::marker::PhantomData<&'a ()>),
-    #[cfg(all(feature = "filesystem", target_os = "linux"))]
-    Completed(&'a crate::external_history::coordinator::ObservedExternalReplacement),
-}
-impl ExternalObservation<'_> {
-    fn check(self, entry: &RecordTransactionJournalEntry) -> Result<(), RecordRepositoryError> {
-        match self {
-            #[cfg(all(feature = "filesystem", target_os = "linux"))]
-            Self::Completed(observed) => observed.check_entry(entry).map_err(|_| {
-                RecordRepositoryError::ExternalNativeEffectPending(entry.transaction_id())
-            }),
-            _ => Err(RecordRepositoryError::ExternalNativeEffectPending(
-                entry.transaction_id(),
-            )),
-        }
-    }
-    fn supplied(self) -> bool {
-        !matches!(self, Self::None(_))
-    }
-}
-
 pub(crate) struct PreparedRecordTransaction {
     entry: RecordTransactionJournalEntry,
     journal_missing: bool,
@@ -392,28 +369,7 @@ impl RepositoryLease<'_> {
         entry: &RecordTransactionJournalEntry,
         authorizer: &A,
     ) -> Result<PreparedRecordTransaction, RecordRepositoryError> {
-        self.prepare_inner(
-            journal,
-            entry,
-            authorizer,
-            ExternalObservation::None(std::marker::PhantomData),
-        )
-    }
-
-    #[cfg(all(feature = "filesystem", target_os = "linux"))]
-    pub(crate) fn prepare_external<A: RecordAuthorizer + ?Sized>(
-        &self,
-        journal: &RecordTransactionJournal,
-        entry: &RecordTransactionJournalEntry,
-        authorizer: &A,
-        observed: &crate::external_history::coordinator::ObservedExternalReplacement,
-    ) -> Result<PreparedRecordTransaction, RecordRepositoryError> {
-        self.prepare_inner(
-            journal,
-            entry,
-            authorizer,
-            ExternalObservation::Completed(observed),
-        )
+        self.prepare_inner(journal, entry, authorizer)
     }
 
     #[expect(
@@ -425,7 +381,6 @@ impl RepositoryLease<'_> {
         journal: &RecordTransactionJournal,
         entry: &RecordTransactionJournalEntry,
         authorizer: &A,
-        observed: ExternalObservation<'_>,
     ) -> Result<PreparedRecordTransaction, RecordRepositoryError> {
         entry
             .validate()
@@ -433,17 +388,6 @@ impl RepositoryLease<'_> {
         let transaction = &entry.transaction;
         let id = transaction.manifest.transaction_id;
         let workspace_id = transaction.manifest.workspace_id;
-        // Inspect the persisted entry as well: stripping the caller's local
-        // binding must not turn external recovery into ordinary record replay.
-        if entry.external_native_effect.is_some()
-            || journal
-                .get(id)
-                .is_some_and(|saved| saved.external_native_effect.is_some())
-        {
-            observed.check(entry)?;
-        } else if observed.supplied() {
-            return Err(RecordRepositoryError::ExternalNativeEffectPending(id));
-        }
         let journal_missing = if let Some(existing) = journal.get(id) {
             if existing.transaction != entry.transaction
                 || existing.participant_batches != entry.participant_batches
@@ -925,11 +869,10 @@ impl RecordRepository {
         let mut records = self.lock_records()?;
         for entry in journal.entries().filter(|entry| {
             entry.phase == RecordTransactionPhase::Prepared
-                && (entry.external_native_effect.is_some()
-                    || matches!(
-                        entry.transaction.manifest.operation,
-                        fs_protocol::FileMutationOperation::RestoreContent { .. }
-                    ))
+                && matches!(
+                    entry.transaction.manifest.operation,
+                    fs_protocol::FileMutationOperation::RestoreContent { .. }
+                )
         }) {
             for participant in &entry.transaction.manifest.participants {
                 let key = RecordRepositoryKey {
@@ -1158,13 +1101,6 @@ impl RecordRepository {
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
-    }
-
-    pub(crate) fn reserve_external_operation(
-        &self,
-        input: &crate::record_log::ExternalReservationInput,
-    ) -> Result<crate::record_log::ExternalCanonicalIds, RecordRepositoryError> {
-        Ok(self.log.reserve_external_operation(input)?)
     }
 
     /// Operations in the durable log.

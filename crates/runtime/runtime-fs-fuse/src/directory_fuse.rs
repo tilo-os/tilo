@@ -5,7 +5,7 @@ use fuser::{
     FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags,
     IoctlFlags, KernelConfig, LockOwner, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData,
     ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyIoctl, ReplyOpen, ReplyStatfs, ReplyWrite,
-    ReplyXattr, Request, WriteFlags,
+    Request, WriteFlags,
 };
 use runtime_fs::{
     EntryKind, EntryName, Metadata, OpenMode,
@@ -13,7 +13,6 @@ use runtime_fs::{
     directory_connection::{DirectoryConnection, ROOT_DIRECTORY},
     operations::ItemState,
 };
-use std::os::unix::ffi::OsStringExt;
 use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
@@ -519,53 +518,6 @@ impl DirectoryFilesystem {
     }
 }
 impl Filesystem for DirectoryFilesystem {
-    fn getxattr(&self, _: &Request, ino: INodeNo, attribute: &OsStr, size: u32, reply: ReplyXattr) {
-        let result = (|| {
-            let query = attribute.to_str().ok_or_else(|| error(libc::ENODATA))?;
-            if query != "user.tilo.history"
-                && query != "user.tilo.record-id"
-                && fs_protocol::files::FileHistoryReadQueryV1::parse_xattr(query).is_err()
-            {
-                return Err(error(libc::ENODATA));
-            }
-            let mut table = self.lock()?;
-            let node = table
-                .nodes
-                .get(&ino.0)
-                .cloned()
-                .ok_or_else(|| error(libc::ESTALE))?;
-            if node.kind != EntryKind::File {
-                return Err(error(libc::ENODATA));
-            }
-            // The request stays bound to this actual FUSE inode. In particular,
-            // an open old FD cannot acquire the history of a replacement name.
-            if let Some(pin) = node.pin
-                && self.source.metadata_pin(pin)?.identity != node.identity
-            {
-                return Err(error(libc::ESTALE));
-            }
-            let parent = self.directory(&mut table, node.parent)?;
-            // The history query is a round trip to the source: never under the table lock.
-            drop(table);
-            let name = node.name.as_ref().ok_or_else(|| error(libc::ESTALE))?;
-            let bytes = self
-                .source
-                .history_query(parent, name, node.identity, query.as_bytes())?;
-            if bytes.len() > fs_protocol::files::MAX_HISTORY_READ_BYTES {
-                return Err(error(libc::E2BIG));
-            }
-            Ok(bytes)
-        })();
-        match result {
-            Ok(bytes) if size == 0 => match u32::try_from(bytes.len()) {
-                Ok(length) => reply.size(length),
-                Err(_) => reply.error(fuser::Errno::E2BIG),
-            },
-            Ok(bytes) if bytes.len() <= size as usize => reply.data(&bytes),
-            Ok(_) => reply.error(fuser::Errno::ERANGE),
-            Err(error) => reply.error(reply_errno(error)),
-        }
-    }
     fn statfs(&self, _: &Request, _: INodeNo, reply: ReplyStatfs) {
         // The held Home root supplies filesystem-wide capacity. File inode
         // handles are not converted into directory grants or byte permissions.
@@ -655,118 +607,30 @@ impl Filesystem for DirectoryFilesystem {
         flags: Option<fuser::BsdFileFlags>,
         reply: ReplyAttr,
     ) {
-        let result = (|| {
-            if uid.is_some()
-                || gid.is_some()
-                || size.is_some()
-                || atime.is_some()
-                || mtime.is_some()
-                || ctime.is_some()
-                || created_at.is_some()
-                || chgtime.is_some()
-                || bkuptime.is_some()
-                || flags.is_some()
-            {
-                return Err(error(libc::EOPNOTSUPP));
-            }
-            let mode = mode.ok_or_else(|| error(libc::EOPNOTSUPP))?;
-            if mode & !0o7777 != 0 {
-                return Err(error(libc::EINVAL));
-            }
-            let mut table = self.lock()?;
-            let node = table
-                .nodes
-                .get(&ino.0)
-                .cloned()
-                .ok_or_else(|| error(libc::ESTALE))?;
-            if node.kind != EntryKind::File {
-                return Err(error(libc::EPERM));
-            }
-            if let Some(handle) = handle
-                && table
-                    .files
-                    .get(&handle.0)
-                    .ok_or_else(|| error(libc::EBADF))?
-                    .node
-                    != ino.0
-            {
-                return Err(error(libc::EBADF));
-            }
-            let directory = self.directory(&mut table, node.parent)?;
-            self.source.set_created_permissions(
-                directory,
-                node.name.as_ref().ok_or_else(|| error(libc::ESTALE))?,
-                node.identity,
-                mode,
-            )?;
-            // Native setter checks real original-UID fchmod/readback. Presentation
-            // retains the target policy baseline; mode is no authority upgrade.
-            let result = self.attributes(&mut table, ino.0, handle);
-            drop(table);
-            result
-        })();
-        match result {
-            Ok(attr) => reply.attr(&TTL, &attr),
-            Err(error) => reply.error(reply_errno(error)),
-        }
+        // A mounted source owns no created inode and changes no mode, owner,
+        // size or time through a metadata write.
+        let _ = (
+            ino, uid, gid, size, atime, mtime, ctime, handle, created_at, chgtime, bkuptime, flags,
+        );
+        reply.error(if mode.is_some_and(|mode| mode & !0o7777 != 0) {
+            fuser::Errno::EINVAL
+        } else {
+            fuser::Errno::EOPNOTSUPP
+        });
     }
     fn ioctl(
         &self,
         _: &Request,
-        ino: INodeNo,
-        handle: FileHandle,
-        flags: IoctlFlags,
-        command: u32,
-        input: &[u8],
-        output: u32,
+        _: INodeNo,
+        _: FileHandle,
+        _: IoctlFlags,
+        _: u32,
+        _: &[u8],
+        _: u32,
         reply: ReplyIoctl,
     ) {
-        use tilo_files::native::atomic::save_marker;
-        let result = (|| {
-            if !flags.is_empty() {
-                return Err(error(libc::EINVAL));
-            }
-            let mut table = self.lock()?;
-            let file = table
-                .files
-                .get(&handle.0)
-                .filter(|file| file.node == ino.0)
-                .ok_or_else(|| error(libc::EBADF))?;
-            self.source.metadata_handle(file.remote)?;
-            let node = table
-                .nodes
-                .get(&ino.0)
-                .cloned()
-                .filter(|node| node.kind == EntryKind::File)
-                .ok_or_else(|| error(libc::ESTALE))?;
-            let result = match command {
-                save_marker::PROBE if input.is_empty() && output == 4 => {
-                    Ok(Some(save_marker::MAGIC))
-                }
-                save_marker::ARM if output == 0 => {
-                    let raw = save_marker::decode(input)?;
-                    let target = EntryName::new(std::ffi::OsString::from_vec(raw.to_vec()))
-                        .map_err(|_| error(libc::EINVAL))?;
-                    let parent = self.directory(&mut table, node.parent)?;
-                    self.source.atomic_save(
-                        parent,
-                        node.name.as_ref().ok_or_else(|| error(libc::ESTALE))?,
-                        node.identity,
-                        &target,
-                    )?;
-                    Ok(None)
-                }
-                save_marker::PROBE | save_marker::ARM => Err(error(libc::EINVAL)),
-                _ => Err(error(libc::ENOTTY)),
-            };
-            drop(table);
-            result
-        })();
-        match result {
-            Ok(Some(magic)) => reply.ioctl(0, &magic),
-            Ok(None) => reply.ioctl(0, &[]),
-            Err(error) => reply.error(reply_errno(error)),
-        }
+        // No save-marker promise: a mounted source does not own external history.
+        reply.error(fuser::Errno::ENOTTY);
     }
     fn readlink(&self, _: &Request, ino: INodeNo, reply: ReplyData) {
         let result = (|| {
@@ -1132,37 +996,9 @@ impl Filesystem for DirectoryFilesystem {
             Err(error) => reply.error(reply_errno(error)),
         }
     }
-    fn unlink(&self, _: &Request, parent: INodeNo, component: &OsStr, reply: ReplyEmpty) {
-        let result = (|| {
-            let mut table = self.lock()?;
-            let name = name(component)?;
-            let directory = self.directory(&mut table, parent.0)?;
-            let stat = self
-                .source
-                .stat(directory, &name)?
-                .ok_or_else(|| error(libc::ENOENT))?;
-            if stat.metadata.kind != EntryKind::File {
-                return Err(error(libc::EPERM));
-            }
-            let job = self
-                .source
-                .retire_created(directory, &name, stat.identity)?;
-            // Source policy admits only its real own-created temporary. The
-            // native completed effect retains it in recovery, never raw Purge.
-            let effect = self.job_effect(job, true)?;
-            drop(table);
-            if effect.is_some() {
-                return Err(error(libc::EIO));
-            }
-            // Completion is the durable native captured-inode receipt. The
-            // filtered scope may now release that name, so a later lookup is
-            // outside the scope and cannot be used as cleanup evidence.
-            Ok(())
-        })();
-        match result {
-            Ok(()) => reply.ok(),
-            Err(error) => reply.error(reply_errno(error)),
-        }
+    fn unlink(&self, _: &Request, _: INodeNo, _: &OsStr, reply: ReplyEmpty) {
+        // Removal needs own-created transient custody a plain mounted source has none of.
+        reply.error(fuser::Errno::EOPNOTSUPP);
     }
     fn mkdir(
         &self,
@@ -1231,9 +1067,8 @@ impl Filesystem for DirectoryFilesystem {
                 }
                 self.source.rename_no_replace(directory, &old, &new)?
             } else {
-                // No local rename/exchange fallback. The backend is closed unless
-                // it owns the canonical signed history coordinator and actual job.
-                self.source.rename_replace(directory, &old, &new)?
+                let _ = (directory, old, new);
+                return Err(error(libc::EOPNOTSUPP));
             };
             self.job(job)?;
             for node in table.nodes.values_mut() {

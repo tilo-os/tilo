@@ -408,68 +408,10 @@ impl RetainedConsumerLease {
             })
     }
 
-    pub(super) fn pin_selected_origin(
-        &self,
-        cancel: &AtomicBool,
-        input: &Arc<InstalledRetainedLaunchInput>,
-        files: &runtime_portal::process_binding::ExecutingPeer,
-        endpoint: &Arc<launcher::owned_service::TargetProjectionEndpoint>,
-        components: &[runtime_fs::EntryName],
-    ) -> io::Result<Arc<super::retained_source_relay::SourceSelectedOrigin>> {
-        self.check_selected_origin(cancel, input, files, endpoint)?;
-        let pin = self
-            .projection
-            .as_ref()
-            .ok_or(io::ErrorKind::NotConnected)?
-            .pin_selected_origin(components)?;
-        if !pin.uses_input(input) {
-            return Err(io::ErrorKind::PermissionDenied.into());
-        }
-        pin.check_named()?;
-        self.check_selected_origin(cancel, input, files, endpoint)?;
-        Ok(pin)
-    }
-
-    pub(super) fn selected_origin_endpoint(
-        &self,
-        cancel: &AtomicBool,
-    ) -> io::Result<Arc<launcher::owned_service::TargetProjectionEndpoint>> {
-        self.check(cancel)?;
-        let endpoint = self
-            .projection
-            .as_ref()
-            .ok_or(io::ErrorKind::NotConnected)?
-            .retained_selected_endpoint()?;
-        self.check(cancel)?;
-        Ok(endpoint)
-    }
-
     pub(super) fn uses_open_input(&self, input: &Arc<InstalledRetainedLaunchInput>) -> bool {
         self.input
             .as_ref()
             .is_some_and(|current| Arc::ptr_eq(current, input))
-    }
-
-    /// Backend discovery only: actual sealed source RW consent and live Files
-    /// Author namespace. Target package/person/Author admission stays fresh at stage.
-    pub(super) fn selected_edit_support(&self, cancel: &AtomicBool) -> io::Result<String> {
-        self.check(cancel)?;
-        let input = self.input.as_ref().ok_or(io::ErrorKind::NotConnected)?;
-        input.check_selected_parent_write(cancel)?;
-        let selection = self.selection.as_ref().ok_or(io::ErrorKind::NotConnected)?;
-        let endpoint = self.selected_origin_endpoint(cancel)?;
-        if selection.binding().app_id != "so.tilo.file-explorer"
-            || !selection.binding().writable
-            || endpoint.projection_mode()
-                != launcher::owned_service::TargetProjectionMode::HomeDirectory
-        {
-            return Err(io::ErrorKind::PermissionDenied.into());
-        }
-        endpoint.check()?;
-        super::retained_selected_editor_owner::check_installed_edit_backend()?;
-        self.check(cancel)?;
-        input.check_selected_parent_write(cancel)?;
-        Ok(input.binding().operation_id.clone())
     }
 
     /// Cancellation observation only. No proof IO/check is performed while
@@ -546,10 +488,6 @@ impl RetainedConsumerLease {
             if cancel.load(Ordering::Acquire) {
                 refusal.get_or_insert_with(|| io::ErrorKind::Interrupted.into());
                 stop_files = true;
-                dispatcher.cancel_editors();
-            }
-            if stop_files || files_stopped {
-                dispatcher.close_files_admissions();
             }
             if stop_files && !files_stopped {
                 let mut owner = lease
@@ -562,11 +500,9 @@ impl RetainedConsumerLease {
                     files_stopped = true;
                 }
             }
-            dispatcher.supervise_editors();
-            // Unadopted workers may still hold original-source pins. Their
-            // actual cleanup must precede main retirement; adopted editors
-            // retain independently checked derivatives and continue below.
-            if files_stopped && !files_retired && dispatcher.unadopted_observed_stopped() {
+            // Workers may still hold original-source pins: their actual cleanup
+            // must land before the original actor retires.
+            if files_stopped && !files_retired {
                 let mut owner = lease
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -584,25 +520,23 @@ impl RetainedConsumerLease {
                     let Some(actor) = original_actor.take() else {
                         original_retirement_unknown = true;
                         cancel.store(true, Ordering::Release);
-                        dispatcher.cancel_editors();
                         continue;
                     };
                     match actor.retire() {
                         Ok(()) => original_retired = true,
                         Err(error) => {
                             // A consuming retirement refusal can retain mounted
-                            // native custody. Drain editor owners, then remain
-                            // the live root process owner; never retry a DTO or
-                            // turn an empty slot into observed retirement.
+                            // native custody, so remain the live root process
+                            // owner; never retry a DTO or turn an empty slot into
+                            // observed retirement.
                             refusal.get_or_insert(error);
                             original_retirement_unknown = true;
                             cancel.store(true, Ordering::Release);
-                            dispatcher.cancel_editors();
                         }
                     }
                 }
             }
-            if files_retired && original_retired && dispatcher.editors_observed_stopped() {
+            if files_retired && original_retired {
                 break;
             }
             if !cancel.load(Ordering::Acquire) && !dispatcher.intake_closed() {
@@ -612,7 +546,6 @@ impl RetainedConsumerLease {
                     // by the mux and never reaches this error branch.
                     refusal.get_or_insert(error);
                     cancel.store(true, Ordering::Release);
-                    dispatcher.cancel_editors();
                     stop_files = true;
                 }
             }

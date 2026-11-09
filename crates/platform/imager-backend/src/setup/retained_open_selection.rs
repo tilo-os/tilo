@@ -49,45 +49,7 @@ pub(super) struct SelectedOriginCustody {
     pub(super) selected_identity: (u64, u64),
     pub(super) parent_identity: (u64, u64),
 }
-/// Frozen provenance, not an endpoint or grant. Only a checked live selection
-/// can mint this derivative; fresh editor authority must still admit all IO.
-pub(super) struct SelectedOriginProvenance {
-    pub(super) source_root: [u64; 2],
-    pub(super) original: super::home_capture::OriginalCallerFacts,
-    pub(super) person: [u8; 32],
-    pub(super) operation: String,
-    pub(super) components: Vec<Vec<u8>>,
-    pub(super) native_parent: [u64; 2],
-    pub(super) native_selected: [u64; 2],
-    original_input: std::sync::Weak<InstalledRetainedLaunchInput>,
-}
-impl SelectedOriginProvenance {
-    pub(super) fn uses_input(&self, input: &Arc<InstalledRetainedLaunchInput>) -> bool {
-        std::sync::Weak::ptr_eq(&self.original_input, &Arc::downgrade(input))
-    }
-}
 impl SelectedOriginCustody {
-    /// This derivative retains no Files peer, lease, source pin or input Arc.
-    /// Releasing their custody is permitted only after actual editor adoption.
-    pub(super) fn freeze_provenance(
-        &self,
-        cancel: &AtomicBool,
-    ) -> io::Result<SelectedOriginProvenance> {
-        self.check(cancel)?;
-        let root = self.input.directory().metadata()?;
-        let value = SelectedOriginProvenance {
-            source_root: [root.dev(), root.ino()],
-            original: self.input.original().clone(),
-            person: self.input.person_public_key(),
-            operation: self.input.binding().operation_id.clone(),
-            components: self.components.clone(),
-            native_parent: self.native_origin.parent_identity(),
-            native_selected: self.native_origin.selected_identity(),
-            original_input: Arc::downgrade(&self.input),
-        };
-        self.check(cancel)?;
-        Ok(value)
-    }
     pub(super) fn check(&self, cancel: &AtomicBool) -> io::Result<()> {
         super::migration::check_cancel(cancel)?;
         // This caller belongs to a pending editor. Cancellation of that new
@@ -154,60 +116,6 @@ impl RetainedOpenSelection {
             return Err(refused());
         }
         lease.check_open_origin(cancel, &self.files)
-    }
-    /// Derive every authority-bearing reference from this admitted selection
-    /// and the actual shared lease. Drop the mutex before factory admission:
-    /// RootFilesEditOrigin independently rechecks the same owner and objects.
-    pub(super) fn edit_origin_custody(
-        &self,
-        shared: &Arc<Mutex<RetainedConsumerLease>>,
-        cancel: &AtomicBool,
-    ) -> io::Result<SelectedOriginCustody> {
-        let lease = shared.lock().map_err(|_| refused())?;
-        self.check(&lease, cancel)?;
-        let endpoint = lease.selected_origin_endpoint(cancel)?;
-        lease.check_selected_origin(cancel, &self.input, &self.files, &endpoint)?;
-        let names = self
-            .objects
-            .components
-            .iter()
-            .cloned()
-            .map(runtime_fs::EntryName::new)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(io::Error::other)?;
-        let native_origin =
-            lease.pin_selected_origin(cancel, &self.input, &self.files, &endpoint, &names)?;
-        let custody = SelectedOriginCustody {
-            selection: RetainedOpenSelection {
-                input: Arc::clone(&self.input),
-                files: Arc::clone(&self.files),
-                view: self.view.try_clone()?,
-                objects: SelectedObjects {
-                    selected: self.objects.selected.try_clone()?,
-                    parent: self.objects.parent.try_clone()?,
-                    components: self.objects.components.clone(),
-                },
-                selected_identity: self.selected_identity,
-                parent_identity: self.parent_identity,
-            },
-            lease: Arc::clone(shared),
-            input: Arc::clone(&self.input),
-            files: Arc::clone(&self.files),
-            endpoint,
-            native_origin,
-            components: self
-                .objects
-                .components
-                .iter()
-                .map(|part| part.as_bytes().to_vec())
-                .collect(),
-            selected_identity: self.selected_identity,
-            parent_identity: self.parent_identity,
-        };
-        self.check(&lease, cancel)?;
-        custody.native_origin.check_named()?;
-        lease.check_selected_origin(cancel, &custody.input, &custody.files, &custody.endpoint)?;
-        Ok(custody)
     }
     /// Installed source operation comes only from the SAME retained input.
     pub(super) fn operation_id(&self) -> &str {

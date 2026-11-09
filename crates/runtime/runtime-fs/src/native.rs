@@ -25,17 +25,6 @@ use rustix::fs::OFlags;
 
 pub(crate) use tilo_fs_client::directory_types::mode_bits;
 
-#[path = "native/history_read_subject.rs"]
-mod history_read_subject;
-pub use history_read_subject::{NativeHistoryReadObservation, NativeHistoryReadSubject};
-
-#[path = "native/selected_replace.rs"]
-mod selected_replace;
-pub use selected_replace::SelectedReplacementAuthority;
-
-#[path = "native/xattrs.rs"]
-pub(super) mod xattrs;
-
 #[path = "native/append.rs"]
 mod append;
 pub use append::FsAppendHandle;
@@ -119,8 +108,6 @@ struct Session {
     workers: Weak<crate::operations::WorkerQueue>,
     pub(super) mutation_active: AtomicBool,
     removal: Mutex<Option<Arc<removal::RemovalCustody>>>,
-    selected_replace: Mutex<Option<Arc<selected_replace::SelectedPermit>>>,
-    created_temporaries: Mutex<Vec<Weak<crate::operations::NativeCreatedTemporary>>>,
 }
 
 // A terminal lifetime releases snapshots even when an operation exits early.
@@ -410,8 +397,6 @@ impl NativeGrantAuthority {
                 workers: Arc::downgrade(&self.workers),
                 mutation_active: AtomicBool::new(false),
                 removal: Mutex::new(None),
-                selected_replace: Mutex::new(None),
-                created_temporaries: Mutex::new(Vec::new()),
             }),
         })
     }
@@ -579,7 +564,6 @@ impl FsSession {
         }
         if let Some(right) = right
             && !lease.record.rights.contains(&right)
-            && !(right == FsRight::Replace && self.selected_replace_right(lease)?)
         {
             return Err(FsError::Denied);
         }

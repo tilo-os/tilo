@@ -1491,43 +1491,6 @@ async fn serve(
             .map(Arc::new)
         })
         .transpose()?;
-    #[cfg(target_os = "linux")]
-    let external_history = if storage_sock.is_some() {
-        match (
-            record_services
-                .as_ref()
-                .and_then(|records| records.workspace_authority.as_ref()),
-            record_publisher.as_ref(),
-        ) {
-            (Some(authority), Some(publisher)) => {
-                match fs::external_history::ExternalHistoryFactory::for_mount(
-                    credentials.clone(),
-                    Arc::clone(&revocations),
-                    Arc::clone(authority),
-                    Arc::clone(publisher),
-                    &paths,
-                    history
-                        .zip(replacement_transactions.as_ref())
-                        .map(|(_, (journal, path))| {
-                            fs::external_history::ExternalHistoryRuntime::from_mount(
-                                Arc::clone(journal),
-                                Arc::clone(&namespace),
-                                path.clone(),
-                            )
-                        }),
-                ) {
-                    Ok(factory) => factory,
-                    Err(error) => {
-                        eprintln!("external-source enrollment unavailable: {error}");
-                        None
-                    }
-                }
-            }
-            _ => None,
-        }
-    } else {
-        None
-    };
     let allow_legacy_record_migration = remote_ticket.is_none()
         && record_repository
             .as_ref()
@@ -1738,8 +1701,6 @@ async fn serve(
             history,
             record_publisher,
             replacement_transactions,
-            #[cfg(target_os = "linux")]
-            external_history,
             write_attributions: Some(write_attributions),
             rebind: managed_service.then_some(rebind_rx),
         },
@@ -1977,8 +1938,6 @@ async fn mount(
             history,
             record_publisher,
             replacement_transactions,
-            #[cfg(target_os = "linux")]
-            external_history: None,
             write_attributions: Some(write_attributions),
             rebind: None,
         },
@@ -2251,8 +2210,6 @@ struct MountServices {
     history: Option<fs_protocol::FileActor>,
     record_publisher: Option<Arc<RecordPublisher>>,
     replacement_transactions: Option<(Arc<Mutex<fs::RecordTransactionJournal>>, PathBuf)>,
-    #[cfg(target_os = "linux")]
-    external_history: Option<Arc<fs::external_history::ExternalHistoryFactory>>,
     /// What the desktop session says caused writes to some paths.
     write_attributions: Option<Arc<fs::write_attribution::WriteAttributions>>,
     rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
@@ -2285,8 +2242,6 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         history,
         record_publisher,
         replacement_transactions,
-        #[cfg(target_os = "linux")]
-        external_history,
         write_attributions,
         mut rebind,
     } = services;
@@ -2431,7 +2386,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     };
 
     let storage_authority = storage_sock.as_ref().map(|_| {
-        let authority = fs::storage::StorageAuthority::new(
+        fs::storage::StorageAuthority::new(
             Arc::clone(&fs.namespace),
             Arc::clone(&fs.hydrator),
             fs.write_buffers_handle(),
@@ -2444,10 +2399,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
                 .and_then(|name| name.to_str())
                 .map_or_else(|| checked_history_workspace.to_string(), str::to_owned),
         )
-        .with_cache_policy(Arc::clone(&cache_policies));
-        #[cfg(target_os = "linux")]
-        let authority = authority.with_external_history(external_history.clone());
-        authority
+        .with_cache_policy(Arc::clone(&cache_policies))
     });
 
     let _storage = storage_sock

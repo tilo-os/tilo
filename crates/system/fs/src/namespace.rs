@@ -9,8 +9,6 @@
 //! Inode numbers are a local `NodeId`<->`u64` index; renames keep the node id,
 //! so the inode stays stable across renames.
 
-#[cfg(all(feature = "filesystem", target_os = "linux"))]
-pub(crate) mod external_projection;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, UNIX_EPOCH};
 
