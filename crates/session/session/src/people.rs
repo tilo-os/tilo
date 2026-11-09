@@ -392,7 +392,7 @@ pub(crate) fn mount(
         layer: RefCell::new(None),
         shown,
         open: Rc::clone(&open),
-        dismissed: Rc::clone(&dismissed),
+        dismissed,
         asks,
     }));
     // A press anywhere else closes what the roster has open, as their own press does.
@@ -403,7 +403,6 @@ pub(crate) fn mount(
             if let Some(people) = elsewhere.upgrade() {
                 people.borrow().dismiss();
             }
-            dismissed.set(Some(ui::time::Instant::now()));
         }),
     };
     let placement = crate::platform::surfaces::Placement {
