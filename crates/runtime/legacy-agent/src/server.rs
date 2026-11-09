@@ -601,7 +601,14 @@ mod tests {
             }),
             display: Display::None,
         };
-        let (mut out, mut err) = (Vec::new(), Vec::new());
+        // The resize waits for the first size to be printed, however slow
+        // the machine.
+        let (printed, first_size) = mpsc::channel();
+        let mut out = Watched {
+            seen: Vec::new(),
+            printed: Some(printed),
+        };
+        let mut err = Vec::new();
         let status = client::launch(
             host,
             &request,
@@ -613,8 +620,7 @@ mod tests {
             },
             |signals| {
                 std::thread::spawn(move || {
-                    // After the first `stty size` has run.
-                    std::thread::sleep(Duration::from_millis(300));
+                    first_size.recv().unwrap();
                     signals
                         .resize(legacy_agent_protocol::TerminalSize {
                             cols: 132,
@@ -628,7 +634,7 @@ mod tests {
         .unwrap();
         server.join().unwrap().unwrap();
         assert_eq!(status.code, Some(0));
-        let out = String::from_utf8_lossy(&out);
+        let out = String::from_utf8_lossy(&out.seen);
         assert!(out.contains("20 90"), "{out}");
         assert!(out.contains("43 132"), "{out}");
         assert!(
@@ -636,5 +642,27 @@ mod tests {
             "standard error comes on the terminal: {out}"
         );
         assert!(err.is_empty());
+    }
+
+    /// Output, kept, saying once when the first line is complete.
+    struct Watched {
+        seen: Vec<u8>,
+        printed: Option<mpsc::Sender<()>>,
+    }
+
+    impl std::io::Write for Watched {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.seen.extend_from_slice(buf);
+            if self.seen.contains(&b'\n')
+                && let Some(printed) = self.printed.take()
+            {
+                let _ = printed.send(());
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 }
