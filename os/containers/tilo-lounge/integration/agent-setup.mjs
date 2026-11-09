@@ -53,6 +53,10 @@ const finish = async (code, message) => {
     const shot = await tab.screenshot().catch(() => null);
     if (shot) writeFileSync(join(out, `${name}.png`), shot);
     report[`${name}Text`] = await pageText(tab);
+    // What the page kept of the workspaces it entered and the hosts it is a
+    // member of: which way it took in on its next load.
+    report[`${name}Kept`] = await tab.evaluate(`JSON.stringify(Object.fromEntries(Object.keys(localStorage)
+      .filter(key => /workspace|membership|entered/i.test(key)).map(key => [key, localStorage.getItem(key)])))`).catch(() => '');
   }
   writeFileSync(join(out, 'report.json'), JSON.stringify(report, null, 2));
   for (const browser of browsers) await browser.close().catch(() => {});
@@ -61,6 +65,7 @@ const finish = async (code, message) => {
       const lines = (tab.log ?? []).slice(-30);
       if (lines.length) console.error(`--- ${name} said:\n${lines.join('\n')}`);
     }
+    for (const {name} of tabs) console.error(`--- ${name} kept: ${report[`${name}Kept`]}`);
     console.error(`FAIL: ${message}`);
   }
   console.log(JSON.stringify(report));
