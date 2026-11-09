@@ -287,6 +287,7 @@ fn work_updates_do_not_erase_provider_stream_or_trace() {
                     outcome: "applied".into(),
                     why: None,
                 }],
+                detail: None,
             },
             say: None,
         }),

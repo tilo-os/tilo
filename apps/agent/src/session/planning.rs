@@ -88,22 +88,23 @@ pub(super) fn finished(plan: &Planner, actions: usize) -> String {
 }
 
 /// Why a run that asked for a model has none, with the step that fixes it.
-pub(super) fn no_model(reason: &crate::model::Route) -> String {
+///
+/// A run whose model call failed says the model didn't answer, in the words a
+/// person reads; the transport's own error is the record kept beside it.
+pub(super) fn no_model(reason: &crate::model::Route) -> crate::session::Failure {
     use crate::model::{Fallback, Route};
     match reason {
-        Route::Keywords(Fallback::NoKey) => {
+        Route::Keywords(Fallback::NoKey) => crate::session::Failure::said(
             "No model is set up to plan this run. Choose one in Settings, under Agent models, \
-             then run this again."
-                .to_owned()
-        }
-        Route::Keywords(Fallback::Disabled) => {
+             then run this again.",
+        ),
+        Route::Keywords(Fallback::Disabled) => crate::session::Failure::said(
             "This agent runs with models turned off, so nothing can plan this run. Start it \
-             again with a model turned on."
-                .to_owned()
-        }
-        Route::Keywords(Fallback::Failed(error)) => format!(
-            "The model didn't answer, so this run couldn't be planned: {error}. Check the model \
-             in Settings, under Agent models, then run this again."
+             again with a model turned on.",
+        ),
+        Route::Keywords(Fallback::Failed(error)) => crate::session::Failure::spoken(
+            "The model didn't answer, so this run couldn't be planned. Try again in a moment.",
+            error,
         ),
     }
 }

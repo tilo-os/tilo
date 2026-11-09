@@ -146,9 +146,15 @@ pub struct Work {
     /// `provider_*` end.
     #[serde(default)]
     pub state: String,
-    /// What is under way, in the agent's words (`doing`), or why it ended.
+    /// What the run said of the work: what is under way (`doing`), or what
+    /// happened when it ended. What a person reads, never the run's record.
     #[serde(default)]
     pub detail: String,
+    /// The run's working record of a failure, for whoever debugs it later: the
+    /// transport's error, the partial answer, the provider's exposed reasoning.
+    /// Shown only behind a disclosure, never as the row's own words.
+    #[serde(default)]
+    pub failure_detail: String,
 }
 
 impl Work {
@@ -426,7 +432,11 @@ fn work_of(work: &crate::model::AgentWork) -> Work {
         .stream
         .as_ref()
         .map_or_else(String::new, |stream| stream.detail.clone());
-    Work { state, detail }
+    Work {
+        state,
+        detail,
+        failure_detail: work.failure_detail.clone().unwrap_or_default(),
+    }
 }
 
 /// The state a provider's finish is, spelled as [record-work](crate::messages) spells it.
@@ -929,6 +939,11 @@ fn writing_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
 /// and its Retry is the conversation's own `retry` action — the same verb the REPL calls — with
 /// the reply it retries. The row stays where it happened: the turn's place in the transcript is
 /// the evidence that the person was not ignored.
+///
+/// What the row says is the run's sentence for a person — one line of what happened, and at most
+/// what to do next. The run's working record (the transport's error, the partial answer, the
+/// provider's exposed reasoning) is for whoever debugs the failure later, so it sits behind a
+/// disclosure: a person who just wants to read the conversation never meets it.
 fn failed_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
     let mut banner =
         ui::BannerBuilder::new(&cx.key(format!("failed-{}", message.id)), work.happened())
@@ -953,7 +968,32 @@ fn failed_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
     } else {
         banner
     };
-    banner
+    let record = work.failure_detail.trim();
+    if record.is_empty() {
+        return banner;
+    }
+    // The technical record closes behind its own row: a disclosure a person opens only when they
+    // want to know what went wrong under the hood, never the row's own words.
+    let details: Node =
+        ui::DisclosureRowBuilder::new(&cx.key(format!("failed-record-{}", message.id)), "Details")
+            .into();
+    let details = node::with(
+        details,
+        vec![
+            ui::TextBuilder::new(
+                &cx.key(format!("failed-record-text-{}", message.id)),
+                record,
+            )
+            .role(ui::TextRole::Caption)
+            .secondary(true)
+            .into(),
+        ],
+    );
+    ui::stack(
+        &cx.key(format!("failed-stack-{}", message.id)),
+        Gap::Tight,
+        vec![banner, details],
+    )
 }
 
 /// What a message offers while the pointer is over it or it holds focus, over its trailing
@@ -1998,6 +2038,7 @@ mod tests {
             work: Some(Work {
                 state: state.to_owned(),
                 detail: String::new(),
+                failure_detail: String::new(),
             }),
             ..Message::default()
         });
@@ -2055,6 +2096,7 @@ mod tests {
                 reply.work = Some(Work {
                     state: state.to_owned(),
                     detail: "The provider connection closed".to_owned(),
+                    failure_detail: String::new(),
                 });
             }
             let cx = view_cx(&channel);
@@ -2107,6 +2149,69 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_row_says_what_happened_and_keeps_the_runs_record_behind_a_disclosure() {
+        // A failed turn's row says the run's own sentence for a person — one line of what
+        // happened — never the working record a person would read as the model's reasoning or
+        // a recovery instruction written for the agent. The record is there, for whoever debugs
+        // the failure, behind a disclosure the row offers.
+        let mut channel = writing_channel("provider_failed", "");
+        if let Some(reply) = channel.messages.last_mut() {
+            reply.retry = true;
+            reply.retry_summons = Some("m_asked".to_owned());
+            reply.work = Some(Work {
+                state: "provider_failed".to_owned(),
+                detail: "The model didn't answer in time.".to_owned(),
+                failure_detail: "Model request timed out Retry inference from saved history; \
+                                 do not replay completed actions. Provider-exposed summary: \
+                                 Let me read r4, r9.."
+                    .to_owned(),
+            });
+        }
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let rows = keyed(&tree, "ui.Banner", "@failed-");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].props.get("message"),
+            Some(&Value::Text("The model didn't answer in time.".to_owned())),
+            "the row says what happened in the run's sentence"
+        );
+        // The row's own visible words — the banner, not the disclosure it offers — carry nothing
+        // of the record. The disclosure's body is the one place it lives.
+        let shown = texts(rows[0]);
+        for line in &shown {
+            assert!(
+                !line.contains("Retry inference from saved history"),
+                "the record's recovery instruction is not the row's words: {line:?}"
+            );
+            assert!(
+                !line.contains("Provider-exposed summary"),
+                "the provider's reasoning is not the row's words: {line:?}"
+            );
+            assert!(
+                !line.contains("Let me read"),
+                "model reasoning is not the row's words: {line:?}"
+            );
+        }
+        // The record is behind a disclosure on the row, so it can be opened when a person wants
+        // to know what went wrong under the hood.
+        let details = keyed(&tree, "ui.DisclosureRow", "@failed-record-");
+        assert_eq!(details.len(), 1, "the record has a disclosure");
+        assert_eq!(
+            details[0].props.get("title"),
+            Some(&Value::Text("Details".to_owned())),
+            "the disclosure says what it holds"
+        );
+        assert!(
+            texts(&details[0])
+                .iter()
+                .any(|line| line.contains("Provider-exposed summary")),
+            "the record is inside the disclosure"
+        );
+    }
+
+    #[test]
     fn a_reply_of_an_earlier_attempt_offers_no_retry() {
         // A retry moves the question to its next attempt, and the answer is a reply of its own:
         // the reply that failed stands as history, and a Retry there would ask a third time.
@@ -2126,6 +2231,7 @@ mod tests {
             work: Some(Work {
                 state: "provider_complete".to_owned(),
                 detail: String::new(),
+                failure_detail: String::new(),
             }),
             ..Message::default()
         });
@@ -2198,6 +2304,7 @@ mod tests {
             Some(Work {
                 state: "provider_failed".to_owned(),
                 detail: "The model connection closed".to_owned(),
+                failure_detail: String::new(),
             }),
             "the page projects the record's failed end and its reason"
         );

@@ -16,6 +16,9 @@ use crate::surface;
 use crate::wire::Link;
 
 mod agent_loop;
+/// What a failed turn says, split into the person's sentence and the run's record.
+pub(crate) use agent_loop::Failure;
+
 mod confirmation;
 mod conversation;
 mod native_task;
@@ -217,6 +220,11 @@ pub struct Session {
     outstanding: outstanding::Outstanding,
     /// The turn the run in progress answers, as its reply is being told.
     record: Option<conversation::Record>,
+    /// The run's working record of the failure that ended its turn, kept for
+    /// whoever debugs it later: the transport's error, the partial answer, the
+    /// provider's exposed reasoning. The reply's own words are the failure's
+    /// sentence, never this.
+    failure_detail: Option<String>,
     /// What the run in progress may spend today, as its keeper counted it.
     spending: Option<agent_loop::Spending>,
 }
@@ -307,6 +315,7 @@ impl Session {
             turn: None,
             outstanding: outstanding::Outstanding::default(),
             record: None,
+            failure_detail: None,
             spending: None,
         })
     }
@@ -339,7 +348,7 @@ impl Session {
                 Some(CollabEvent::TaskRun(run)) => {
                     if let Err(error) = self.run_task(&run) {
                         tracing::warn!(run_id = run.run_id, %error, "native task stopped before completion");
-                        if let Err(report_error) = self.fail_task(&run, &error.to_string()) {
+                        if let Err(report_error) = self.fail_task_said(&run, &error.to_string()) {
                             tracing::warn!(%report_error, "native task review report was refused");
                         }
                     }
@@ -531,10 +540,12 @@ impl Session {
                     if !finish.done {
                         return self.fail_task(
                             run,
-                            finish
-                                .reply
-                                .as_deref()
-                                .unwrap_or("Needs your decision before continuing"),
+                            &agent_loop::Failure::said(
+                                finish
+                                    .reply
+                                    .as_deref()
+                                    .unwrap_or("Needs your decision before continuing"),
+                            ),
                         );
                     }
                     // The model's own reply is the run's result, whole: an
@@ -544,7 +555,7 @@ impl Session {
                     });
                     self.report_task(run, runtime_collab::TaskRunUpdate::Succeeded { message })
                 }
-                agent_loop::LoopEnd::Failed(message) => self.fail_task(run, &message),
+                agent_loop::LoopEnd::Failed(failure) => self.fail_task(run, &failure),
                 agent_loop::LoopEnd::Cancelled(message) => self.cancel_task(run, &message),
             };
         }
@@ -553,7 +564,7 @@ impl Session {
             .as_ref()
             .is_some_and(|state| state.pending.is_some())
         {
-            return self.fail_task(
+            return self.fail_task_said(
                 run,
                 "Directions require model planning or person review; none were acknowledged",
             );
@@ -566,7 +577,7 @@ impl Session {
         let (actions, reply) = match self.plan_task(run, &plan) {
             Ok((actions, reply)) if !actions.is_empty() => (actions, reply),
             Ok(_) => {
-                return self.fail_task(
+                return self.fail_task_said(
                     run,
                     &planning::unmatched(
                         &plan,
@@ -574,7 +585,7 @@ impl Session {
                     ),
                 );
             }
-            Err(message) => return self.fail_task(run, &message),
+            Err(message) => return self.fail_task_said(run, &message),
         };
         // What the next content-consuming action is built from.
         let mut previous: Option<StepOutcome> = None;
@@ -588,7 +599,7 @@ impl Session {
                 previous.as_ref(),
             ) {
                 Ok(arguments) => arguments,
-                Err(message) => return self.fail_task(run, &message),
+                Err(message) => return self.fail_task_said(run, &message),
             };
             self.report_task(
                 run,
@@ -613,7 +624,7 @@ impl Session {
                 Err(TaskActionStop::Cancelled(_)) => {
                     return self.cancel_task(run, "Cancelled while an action was running");
                 }
-                Err(TaskActionStop::Failed(message)) => return self.fail_task(run, &message),
+                Err(TaskActionStop::Failed(message)) => return self.fail_task_said(run, &message),
             }
         }
         let message = reply.unwrap_or_else(|| planning::finished(&plan, actions.len()));
@@ -658,13 +669,33 @@ impl Session {
         self.wait_for_native_report(request_id)
     }
 
-    fn fail_task(&mut self, run: &runtime_collab::TaskRunEnvelope, message: &str) -> Result<()> {
+    /// Record a failed turn on the reply to the run's message, and tell the
+    /// host it failed. The reply's words are the failure's sentence — what a
+    /// person reads — and the run's working record goes beside it in the work,
+    /// for whoever debugs it later.
+    fn fail_task(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        failure: &agent_loop::Failure,
+    ) -> Result<()> {
+        self.failure_detail = Some(failure.detail().to_owned());
         self.report_task(
             run,
             runtime_collab::TaskRunUpdate::Failed {
-                message: message.to_string(),
+                message: failure.message().to_owned(),
             },
         )
+    }
+
+    /// [`Self::fail_task`] with the run's own words as both the sentence and
+    /// the record: a stop the loop decided, which names nothing a provider
+    /// said.
+    fn fail_task_said(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        message: &str,
+    ) -> Result<()> {
+        self.fail_task(run, &agent_loop::Failure::said(message))
     }
 
     fn cancel_task(&mut self, run: &runtime_collab::TaskRunEnvelope, message: &str) -> Result<()> {
