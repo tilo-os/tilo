@@ -47,18 +47,21 @@
 //             the agent's device key, the throwaway HOMEs (default:
 //             $CARGO_TARGET_DIR/agent-shell-work, which is not fetched)
 //   --build   cargo build the relay and the CLI, and build the bundle
-// Needs Chrome (CHROME, or Playwright's cache), node, openssl, and ffmpeg or
-// gst-launch-1.0 for the recording (frames are kept when neither is there).
+// Needs Chrome (CHROME, or Playwright's cache), node, and openssl. The
+// recording is the page shot on a clock and encoded in a second tab
+// (`MediaRecorder`), so no video tool has to be installed where it runs.
 // Exits non-zero when the flow breaks, saying where; what the product does not
 // do yet is listed, and does not fail the run.
 //
-// On a build machine, one command; only the shots are fetched back:
+// On a build machine, one command; only the shots are copied back:
 //
 //   CHROME=/usr/lib64/chromium-browser/chromium-browser \
 //     node crates/browser/tilo-web-desktop/scripts/agent-shell.mjs --build
 //
-// then target/look/agent-shell/shots and .../video hold them. Locally, with a
-// bundle and the two binaries built, run the same script with --bundle.
+// then target/look/agent-shell/shots and .../video hold them. The bundle a run
+// built stays in the builder's target dir: a later run of the same script
+// passes `--bundle $CARGO_TARGET_DIR/agent-shell/bundle` and shoots again in a
+// minute, with no bundle build.
 import {spawn, spawnSync} from 'node:child_process';
 import {randomBytes} from 'node:crypto';
 import {appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync} from 'node:fs';
@@ -116,8 +119,12 @@ if (!bundle && flag('--build')) {
   bundle = join(target, 'agent-shell/bundle');
   log('build.sh', bundle);
   // `quick` (the wasm-dev profile): a debug module of the whole desktop is
-  // past wasm-bindgen's function limit, and nothing here measures speed.
-  const result = spawnSync('bash', [join(here, '../../tilo-browser-runtime/scripts/build.sh'), bundle, '--profile', 'quick', '--bundle', 'desktop'],
+  // past wasm-bindgen's function limit, and nothing here measures speed. A
+  // bundle an earlier run built is brought up to date step by step rather
+  // than made again: only what changed is compiled, bound and split.
+  const kept = existsSync(join(bundle, 'pkg/tilo_browser_runtime.js'));
+  const result = spawnSync('bash', [join(here, '../../tilo-browser-runtime/scripts/build.sh'), bundle,
+    '--profile', 'quick', '--bundle', 'desktop', ...(kept ? ['--update'] : [])],
     {cwd: repo, stdio: 'inherit'});
   if (result.status !== 0) throw new Error('the desktop bundle build failed');
 }
@@ -174,14 +181,23 @@ async function until(fn, ms, interval = 100) {
     await sleep(interval);
   }
 }
-function freePort() {
-  return new Promise((ok, fail) => {
-    const server = netServer().listen(0, '127.0.0.1', () => {
-      const {port} = server.address();
-      server.close(() => ok(port));
+/** A port nothing holds, and no other of this run's: a port is free again the
+ * moment it is closed, so asking twice can answer with the same one. */
+const ports = new Set();
+async function freePort() {
+  for (;;) {
+    const port = await new Promise((ok, fail) => {
+      const server = netServer().listen(0, '127.0.0.1', () => {
+        const {port} = server.address();
+        server.close(() => ok(port));
+      });
+      server.on('error', fail);
     });
-    server.on('error', fail);
-  });
+    if (!ports.has(port)) {
+      ports.add(port);
+      return port;
+    }
+  }
 }
 
 /** The directories an environment names, made, so a program started on it has somewhere to write. */
@@ -301,8 +317,10 @@ for (let attempt = 1; started === null; attempt += 1) {
     '--allowed-origin', siteOrigin, '--listing-description', 'A workspace for a person and their agent',
     '--default-role', 'editor', '--room-records',
     // The apps the workspace opens with: the ones the agent drives, which the
-    // person's desktop shows too.
-    '--seed-app', 'so.tilo.notes', '--seed-app', 'so.tilo.sheets', '--seed-app', 'so.tilo.chat'],
+    // person's desktop shows too. The Terminal's sessions run on the host,
+    // beside the workspace's records.
+    '--seed-app', 'so.tilo.notes', '--seed-app', 'so.tilo.sheets', '--seed-app', 'so.tilo.chat',
+    '--seed-app', 'so.tilo.terminal'],
   {env: {...homeDirs(hostHome), TILO_RELAY_LOG: process.env.AGENT_SHELL_RELAY_LOG ?? 'tilo_relay=info,warn',
     // A machine with no keychain to unlock keeps its secrets in files here.
     TILO_SECRETS_DIR: secretsDir}, stdin: 'pipe', logTo: browserDir});
@@ -343,7 +361,7 @@ const WALK = `(() => {
   const out = [];
   const rect = b => (Array.isArray(b) ? {x0: b[0], y0: b[1], x1: b[2], y1: b[3]}
     : b ? {x0: b.x0 ?? b.x ?? 0, y0: b.y0 ?? b.y ?? 0, x1: b.x1 ?? (b.x ?? 0) + (b.width ?? 0), y1: b.y1 ?? (b.y ?? 0) + (b.height ?? 0)} : null);
-  const node = n => { out.push({role: n.role ?? '', name: n.name ?? '', value: n.value ?? '', rect: rect(n.rect ?? n.bounds)}); (n.children || []).forEach(node); };
+  const node = n => { out.push({role: n.role ?? '', name: n.name ?? '', description: n.description ?? '', value: n.value ?? '', rect: rect(n.rect ?? n.bounds)}); (n.children || []).forEach(node); };
   const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
   const root = globalThis.tiloMount?.state()?.semantics?.root;
   if (root) walk(root);
@@ -355,8 +373,15 @@ async function semantics(tab) {
   await sleep(350);
   return tab.evaluate(WALK).catch(() => []);
 }
-const matching = (nodes, pattern) => nodes.find(node => pattern instanceof RegExp ? pattern.test(node.name) : node.name === pattern);
-const names = nodes => nodes.map(node => node.name).filter(Boolean).slice(0, 48).join(' | ');
+// A control is found by the name it is announced under; where a name is empty
+// (a bar chip named by its glyph) its spoken description is what a reader
+// hears, so that is looked at too. A `role` narrows it to the kind of node a
+// place offers: a search result, not the same word elsewhere on the desk.
+const speaks = (node, pattern) => pattern instanceof RegExp
+  ? pattern.test(node.name) || pattern.test(node.description)
+  : node.name === pattern || node.description === pattern;
+const matching = (nodes, pattern, role = null) => nodes.find(node => speaks(node, pattern) && (!role || role.test(node.role)));
+const names = nodes => nodes.map(node => node.name || node.description).filter(Boolean).slice(0, 48).join(' | ');
 async function press(tab, pattern, {what = null} = {}) {
   const node = matching(await semantics(tab), pattern);
   if (!node?.rect) return null;
@@ -365,7 +390,7 @@ async function press(tab, pattern, {what = null} = {}) {
   await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
   await tab.send('Input.dispatchMouseEvent', {type: 'mousePressed', x, y, button: 'left', clickCount: 1});
   await tab.send('Input.dispatchMouseEvent', {type: 'mouseReleased', x, y, button: 'left', clickCount: 1});
-  if (what) log(`pressed ${what}: ${node.name}`);
+  if (what) log(`pressed ${what}: ${node.name || node.description}`);
   return node;
 }
 async function key(tab, name, code, keyCode, modifiers = 0) {
@@ -379,11 +404,59 @@ async function typeText(tab, text) {
     await sleep(30);
   }
 }
-async function shot(tab, combo, name) {
+/** What the page's own search or a menu left covering the desk, closed: a shot
+ * is of the desk, not of the box that was open over it. */
+async function dismissOverlays(tab) {
+  const covering = /search apps, windows, documents|command palette|^results$|type to search/i;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const nodes = await semantics(tab);
+    if (!nodes.some(node => covering.test(node.name))) return;
+    await key(tab, 'Escape', 'Escape', 27);
+    await sleep(400);
+  }
+}
+
+/**
+ * `name`'s shot of the whole viewport, once what covers the desk is closed and
+ * what it is of is on screen: `expect` names the subject, by the same names a
+ * reader finds it under. A shot of something else is a failed check, not a
+ * picture nobody looked at.
+ */
+async function shot(tab, combo, name, {expect = null} = {}) {
+  await dismissOverlays(tab);
+  if (expect) {
+    const nodes = await semantics(tab);
+    const missing = expect.filter(pattern => !nodes.some(node => speaks(node, pattern)));
+    check(`${combo}: ${name} shows ${expect.map(String).join(' and ')}`, missing.length === 0,
+      missing.length ? `not on screen: ${missing.map(String).join(', ')}; the desk shows ${names(nodes)}` : '');
+  }
   const png = await tab.screenshot();
   if (!png) throw new Error(`${combo}: the page answered no screenshot for ${name}`);
   writeFileSync(join(shotsDir, `${combo}-${name}.png`), png);
   log(`${combo}: shot ${name}`);
+}
+
+/** The mean luminance (0 dark … 1 light) of what `tab` shows, read in a page
+ * of its own: whether a shot of the shell is a light one or a dark one. */
+async function luminance(scratch, tab) {
+  const shot = await tab.send('Page.captureScreenshot', {format: 'png', captureBeyondViewport: false});
+  if (!shot.result?.data) return null;
+  return scratch.evaluate(`new Promise(resolve => {
+    const image = new Image();
+    image.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 96;
+      canvas.height = Math.max(1, Math.round(96 * image.height / image.width));
+      const context = canvas.getContext('2d');
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      const {data} = context.getImageData(0, 0, canvas.width, canvas.height);
+      let sum = 0;
+      for (let i = 0; i < data.length; i += 4) sum += 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+      resolve(sum / (data.length / 4) / 255);
+    };
+    image.onerror = () => resolve(null);
+    image.src = "data:image/png;base64,${shot.result.data}";
+  })`);
 }
 
 // ---------------------------------------------------------------------------
@@ -476,7 +549,11 @@ async function postJson(url, body) {
 
 /** The lines of a `tilo_ls` answer, without its cursor line. */
 const listingLines = text => text.split('\n').map(line => line.trim())
-  .filter(line => line && !/^cursor|^next:/i.test(line));
+  .filter(line => line && !/^cursor|^next:|^…/i.test(line));
+/** A listing's rows: each names its app, then two spaces and what it is. What
+ * the answer says in sentences ("none: no app runs here", "the person decides
+ * which apps an agent may open") is not a row. */
+const listingRows = text => listingLines(text).filter(line => /\S {2,}\S/.test(line));
 /** Every `path#action` an answer names. */
 const actionPaths = text => [...new Set(text.match(/[\w.-][\w .\/-]*#[\w-]+/g) ?? [])];
 const firstAction = (text, wanted, unwanted = /delete|remove|clear|reset/i) =>
@@ -484,10 +561,9 @@ const firstAction = (text, wanted, unwanted = /delete|remove|clear|reset/i) =>
 
 /**
  * What the agent does next, discovered from the workspace as an agent would:
- * its apps, then each app's own actions. Required: making a note and writing
- * in it. Optional: a sheet cell, and a command in the Terminal, where the
- * workspace has those apps (the person's workspace is theirs: it has what it
- * has).
+ * its apps, then each app's own actions. Required: writing in the note the
+ * person has open. Optional: a command in the Terminal, where the workspace
+ * has it (a workspace is its person's: it has what it has).
  */
 async function planActions(agent, apps) {
   const ask = async (tool, args) => {
@@ -501,20 +577,15 @@ async function planActions(agent, apps) {
   // The desktop's own service answers without an app: asking the person's
   // page what it shows is an action like any other, and the first one an
   // agent does here.
-  // A workspace that lists no app still answers its search and its listing:
-  // the agent's first calls are those.
-  steps.push({label: 'searching the workspace', tool: 'tilo_find', args: {query: 'Tilo'}});
   const desktop = await ask('tilo_ls', {path: 'desktop'});
   const windows = firstAction(desktop.text, /#(list-windows|windows)/i) ?? 'desktop#list-windows';
   steps.push({label: 'listing the windows on the person\'s screen', tool: 'tilo_do', args: {path: windows}});
   const notes = app(/^notes/i);
   if (notes) {
-    const appActions = await ask('tilo_ls', {path: notes, kind: 'actions'});
-    const create = firstAction(appActions.text, /#(new|create|add|compose)/i) ?? `${notes}#new`;
-    await ask('tilo_do', {path: create, args: {title: 'Launch notes'}});
-    // Where the note it made is: the agent finds it by name.
-    const found = await ask('tilo_find', {query: 'Launch notes', app: notes});
-    let note = (listingLines(found.text)[0] ?? '').split(/\s{2,}|\s#/)[0].trim();
+    // The note the person has open: the app's own listing names it, and the
+    // agent picks the first, as a person reading the list would.
+    const listed = await ask('tilo_ls', {path: notes});
+    let note = (listingRows(listed.text)[0] ?? '').split(/\s{2,}|\s#/)[0].trim();
     if (note && !note.includes('/')) note = `${notes}/${note}`;
     if (note) {
       const noteActions = await ask('tilo_ls', {path: note, kind: 'actions'});
@@ -531,16 +602,7 @@ async function planActions(agent, apps) {
         args: {path: `${note}#${write}`, args: {text: 'A second invocation, a moment later.'}}});
       steps.push({label: 'reading the note back', tool: 'tilo_read', args: {path: note}});
     } else {
-      log('agent: no note to write in; its search named none');
-    }
-  }
-  const sheets = app(/^sheets/i);
-  if (sheets) {
-    const listed = await ask('tilo_ls', {path: sheets});
-    const cell = firstAction(listed.text, /#(set-cell|cell|put|write|set)/i);
-    if (cell) {
-      steps.push({label: 'setting a sheet cell', tool: 'tilo_do',
-        args: {path: cell, args: {cell: 'B2', text: 'Tilo set this cell'}}});
+      log('agent: the Notes app lists no note to write in');
     }
   }
   const terminal = app(/^terminal/i) ?? app(/^ush/i);
@@ -563,13 +625,19 @@ async function planActions(agent, apps) {
 // opens the panel on them, where following is one step; the panel also pins
 // out into the overlay that stays on screen.
 
-/** The roster, open: the top bar's People button, else the palette's people search. */
+/** The roster, open: the top bar's people button ("Everyone here"), else the
+ * palette's people search. A press lands on the panel the button opens; one
+ * that lands before the bar has settled is pressed again. */
 async function openPeople(tab, label) {
-  // Who is here, as this desktop offers it: the bar's People, or the Console's
-  // Agents where the workspace opens a Console.
-  if (await press(tab, /^people$/i, {what: 'the roster'}) ?? await press(tab, /^agents$/i, {what: 'the agent door'})) {
-    await sleep(900);
-    return null;
+  const roster = /people here now|who is here/i;
+  const shown = () => until(async () => (await semantics(tab)).some(node => roster.test(node.name) || roster.test(node.description)), 2500);
+  // Who is here, as this desktop offers it: the bar's button beside the faces
+  // of everyone here, or the Console's Agents where the workspace opens one.
+  for (const pattern of [/^everyone here$/i, /^people$/i, /^agents$/i]) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (!await press(tab, pattern, {what: 'the roster'})) break;
+      if (await shown()) return null;
+    }
   }
   const mac = await tab.evaluate('/Mac|iPhone|iPad/.test(navigator.platform ?? navigator.userAgent ?? "")');
   await key(tab, 'k', 'KeyK', 75, mac ? 4 : 2);
@@ -591,94 +659,192 @@ async function followAgent(tab, label) {
     return nodes.some(node => /people here now|who is here/i.test(node.name)) ? nodes : undefined;
   }, 10000);
   if (!panel) return `the roster did not open: ${names(await semantics(tab))}`;
-  const follow = matching(panel, new RegExp(`^follow ${label}`, 'i')) ?? matching(panel, /^follow$/i);
-  if (!follow) return `no Follow for ${label}: ${names(panel)}`;
-  const pressed = await press(tab, new RegExp(`^follow ${label}`, 'i'), {what: `following ${label}`})
-    ?? await press(tab, /^follow$/i, {what: `following ${label}`});
-  if (!pressed) return `the Follow control for ${label} has no bounds`;
-  await sleep(1800);
-  return null;
+  const follow = new RegExp(`^follow ${label}`, 'i');
+  if (!matching(panel, follow) && !matching(panel, /^follow$/i)) return `no Follow for ${label}: ${names(panel)}`;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    // Following is the banner's business: the control says so once it took.
+    if (await press(tab, follow, {what: `following ${label}`}) ?? await press(tab, /^follow$/i, {what: `following ${label}`})) {
+      const following = await until(async () => (await semantics(tab)).some(node => new RegExp(`stop following ${label}|following ${label}`, 'i').test(node.name)), 3000);
+      if (following) return null;
+    } else {
+      return `the Follow control for ${label} has no bounds`;
+    }
+  }
+  return `following ${label} did not take`;
 }
 
 async function pinOverlay(tab) {
-  let pinned = await press(tab, /keep who is here on screen/i, {what: 'pinning who is here'});
+  // The pin is announced as "Keep on screen"; its description is the longer
+  // "Keep who is here on screen" a reader hears beside it.
+  const pin = /^(keep on screen|keep who is here on screen)$/i;
+  let pinned = await press(tab, pin, {what: 'pinning who is here'});
   if (!pinned) {
     // The roster closed in the meantime: open it again, then pin.
     await openPeople(tab, 'Claude Code');
-    pinned = await press(tab, /keep who is here on screen/i, {what: 'pinning who is here'});
+    pinned = await press(tab, pin, {what: 'pinning who is here'});
   }
-  if (!pinned) return `no "Keep who is here on screen" control: ${names(await semantics(tab))}`;
+  if (!pinned) return `no "Keep on screen" control: ${names(await semantics(tab))}`;
   await sleep(1500);
   return null;
 }
 
 // ---------------------------------------------------------------------------
-// The recording: CDP's screencast frames, held at the output rate for the time
-// each was on screen, muxed with ffmpeg (or gst-launch, where a builder has no
-// ffmpeg: the build container has vp8enc and webmmux).
+// The note the agent writes in. A person's own workspace opens with the apps
+// they left open; a fresh one has none, so the person opens Notes the way the
+// palette does and makes the note in it.
+
+/** The desktop's own search, opened with its chord and asked for `words`. */
+async function palette(tab, words) {
+  const mac = await tab.evaluate('/Mac|iPhone|iPad/.test(navigator.platform ?? navigator.userAgent ?? "")');
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await key(tab, 'k', 'KeyK', 75, mac ? 4 : 2);
+    const open = await until(async () => (await semantics(tab)).some(node => /search apps, windows, documents/i.test(node.name)), 8000);
+    if (open) break;
+  }
+  await typeText(tab, words);
+  // The result, not the same word elsewhere on the desk the palette covers.
+  const result = /listitem|menuitem|treeitem|option|button/i;
+  const hit = await until(async () => matching(await semantics(tab), new RegExp(`^${words}$`, 'i'), result), 8000);
+  if (!hit) return `the palette found no ${words}: ${names(await semantics(tab))}`;
+  await key(tab, 'Enter', 'Enter', 13);
+  await sleep(2500);
+  return null;
+}
+
+async function openNote(tab) {
+  // A window of Notes with a note in it is what following needs: it is the
+  // window the person's view goes to, and where the agent's writing lands.
+  const withNote = async () => (await semantics(tab)).some(node => /^saved$/i.test(node.name));
+  const windowed = async () => (await semantics(tab)).some(node => /^notes$/i.test(node.name));
+  if (await withNote()) return null;
+  if (!await windowed()) {
+    // The desk's own app list first ("Open an app"), the palette after.
+    if (await press(tab, /^open an app$/i, {what: 'the app list'})) {
+      await press(tab, /^notes$/i, {what: 'Notes'});
+      await until(windowed, 6000);
+    }
+    if (!await windowed()) {
+      const opened = await palette(tab, 'Notes');
+      if (opened) return `Notes did not open: ${opened}`;
+    }
+  }
+  if (!await withNote() && !await press(tab, /^new note$/i, {what: 'a new note'})) {
+    return `Notes offers no note to make: ${names(await semantics(tab))}`;
+  }
+  const noted = await until(withNote, 8000);
+  if (!noted) return `Notes made no note: ${names(await semantics(tab))}`;
+  await sleep(800);
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// The recording: the page shot on a clock, each frame drawn into a canvas in a
+// second tab and encoded there (`MediaRecorder`), so the run needs no video
+// tool on the machine that shot it. Frames are kept as PNGs when the browser
+// refuses to encode, so a recording that failed is still in the output.
 
 const FPS = 8;
-async function record(browser, tab, name, body) {
+/** Draws the frames it is given into a canvas and records it: a page of its
+ * own, so nothing it does reaches the shots. */
+const RECORDING_TAB = `(() => {
+  const canvas = document.createElement('canvas');
+  canvas.width = 2; canvas.height = 2;
+  document.body.style.margin = '0';
+  document.body.appendChild(canvas);
+  const context = canvas.getContext('2d');
+  const stream = canvas.captureStream(0);
+  const track = stream.getVideoTracks()[0];
+  let recorder = null;
+  let frames = 0;
+  globalThis.feed = frame => new Promise(resolve => {
+    const image = new Image();
+    image.onload = () => {
+      if (canvas.width !== image.width || canvas.height !== image.height) {
+        canvas.width = image.width;
+        canvas.height = image.height;
+      }
+      context.drawImage(image, 0, 0);
+      track.requestFrame();
+      frames += 1;
+      resolve(true);
+    };
+    image.onerror = () => resolve(false);
+    image.src = frame;
+  });
+  globalThis.begin = bits => {
+    recorder = new MediaRecorder(stream, {mimeType: 'video/webm;codecs=vp8', videoBitsPerSecond: bits});
+    globalThis.chunks = [];
+    recorder.ondataavailable = event => { if (event.data.size) globalThis.chunks.push(event.data); };
+    recorder.start(1000);
+    return Boolean(recorder);
+  };
+  globalThis.finish = () => new Promise(resolve => {
+    recorder.onstop = async () => {
+      const blob = new Blob(globalThis.chunks, {type: 'video/webm'});
+      const reader = new FileReader();
+      reader.onloadend = () => resolve({webm: String(reader.result).split(',')[1] ?? '', frames});
+      reader.readAsDataURL(blob);
+    };
+    recorder.stop();
+  });
+  return true;
+})()`;
+
+async function record(browser, tab, name, {width, height}, body) {
   if (!withVideo) { await body(); return null; }
   const dir = join(videoDir, `${name}-frames`);
   rmSync(dir, {recursive: true, force: true});
-  mkdirSync(dir, {recursive: true});
+  let recorder = null;
+  try {
+    recorder = await browser.tab();
+    await recorder.navigate('about:blank');
+    await recorder.evaluate(RECORDING_TAB);
+    await recorder.evaluate(`begin(4000000)`);
+  } catch (error) {
+    log(`${name}: this browser cannot record (${error.message ?? error}); the shots are what it keeps`);
+    recorder = null;
+  }
+  // The clock the frames are shot on: the page is asked for one, drawn, and
+  // only then asked for the next, so a slow frame makes a longer step rather
+  // than a queue of stale ones.
   const frames = [];
-  const stopListening = browser.on(message => {
-    if (message.method !== 'Page.screencastFrame' || message.sessionId !== tab.sessionId) return;
-    const {data, metadata, sessionId} = message.params;
-    frames.push({at: Number(metadata?.timestamp ? metadata.timestamp * 1000 : Date.now()), data});
-    tab.send('Page.screencastFrameAck', {sessionId}).catch(() => {});
-  });
-  await tab.send('Page.startScreencast', {format: 'png', maxWidth: 1280, maxHeight: 860, everyNthFrame: 1});
-  // The screencast only sends a frame when the page changes: the person's
-  // pointer rests on the desktop and drifts, as a pointer does while they
-  // watch.
-  let drift = 0;
-  const pointer = setInterval(() => {
-    drift += 1;
-    tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x: 640 + (drift % 40) * 3, y: 470 + (drift % 20) * 2}).catch(() => {});
-  }, 250);
+  let stop = false;
+  const tick = async () => {
+    while (!stop) {
+      try {
+        // The page's own pixels, one CSS pixel per pixel: a recording is
+        // watched, not read, so a JPEG of the viewport is what is drawn.
+        const shot = await tab.send('Page.captureScreenshot', {format: 'jpeg', quality: 82,
+          captureBeyondViewport: false, clip: {x: 0, y: 0, width, height, scale: 1}});
+        const jpeg = shot.result?.data;
+        if (jpeg && recorder) {
+          frames.push(Date.now());
+          await recorder.evaluate(`feed("data:image/jpeg;base64,${jpeg}")`);
+        }
+      } catch { /* A page mid-navigation answers nothing: the next frame catches it. */ }
+      await sleep(Math.max(0, 1000 / FPS - 40));
+    }
+  };
+  const taking = tick();
   try {
     await body();
   } finally {
-    clearInterval(pointer);
-    await tab.send('Page.stopScreencast').catch(() => {});
-    stopListening();
+    stop = true;
+    await taking;
   }
-  if (frames.length < 2) return {frames: 0, file: null, framesDir: null};
-  const held = [];
-  for (let i = 0; i < frames.length; i++) {
-    const span = i + 1 < frames.length ? Math.max(0, frames[i + 1].at - frames[i].at) : 1000 / FPS;
-    const copies = Math.max(1, Math.min(FPS * 3, Math.round((span / 1000) * FPS)));
-    for (let n = 0; n < copies; n++) held.push(frames[i].data);
+  if (!recorder) return {frames: frames.length, file: null, framesDir: null};
+  try {
+    const {webm, frames: drawn} = await recorder.evaluate('finish()');
+    await recorder.close().catch(() => {});
+    if (!webm) return {frames: drawn ?? frames.length, file: null, framesDir: null};
+    const file = join(videoDir, `${name}.webm`);
+    writeFileSync(file, Buffer.from(webm, 'base64'));
+    return {frames: drawn ?? frames.length, bytes: statSync(file).size, file, framesDir: null};
+  } catch (error) {
+    log(`${name}: the recording could not be written (${error.message ?? error})`);
+    await recorder.close().catch(() => {});
+    return {frames: frames.length, file: null, framesDir: null};
   }
-  held.forEach((data, index) => writeFileSync(join(dir, `f${String(index).padStart(5, '0')}.png`), Buffer.from(data, 'base64')));
-  const file = join(videoDir, `${name}.webm`);
-  const muxed = mux(dir, file);
-  return {frames: frames.length, held: held.length, file: muxed ? file : null, framesDir: muxed ? null : dir};
-}
-
-const have = name => {
-  const found = spawnSync('sh', ['-c', `command -v ${name}`], {encoding: 'utf8'});
-  return found.status === 0 && Boolean(found.stdout.trim());
-};
-
-function mux(dir, file) {
-  if (have('ffmpeg')) {
-    const result = spawnSync('ffmpeg', ['-y', '-loglevel', 'error', '-framerate', String(FPS), '-i', join(dir, 'f%05d.png'),
-      '-c:v', 'libvpx', '-b:v', '1200k', '-pix_fmt', 'yuv420p', file]);
-    if (result.status === 0) return true;
-    log('ffmpeg could not mux the frames; trying gst-launch-1.0');
-  }
-  if (have('gst-launch-1.0')) {
-    const result = spawnSync('gst-launch-1.0', ['-q', 'multifilesrc', `location=${join(dir, 'f%05d.png')}`, 'start-index=0',
-      `caps=image/png,framerate=${FPS}/1`, '!', 'pngdec', '!', 'videoconvert', '!', 'vp8enc', 'deadline=1',
-      'target-bitrate=1200000', '!', 'webmmux', '!', `filesink location=${file}`]);
-    if (result.status === 0) return true;
-  }
-  log('no ffmpeg and no gst-launch-1.0: the recording is the frame sequence');
-  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -704,6 +870,9 @@ const browser = await launch({args: ['--ignore-certificate-errors',
   '--webtransport-developer-mode',
   // SwiftShader's WebGPU: a host GPU in headless Chrome can lose its device mid-run.
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader']});
+// A page of its own, for reading what a shot shows (the shell's tone).
+const scratch = await browser.tab();
+await scratch.navigate('about:blank');
 
 try {
   for (const width of widths) {
@@ -825,19 +994,32 @@ try {
         const initialized = await agent.initialize();
         log(`${combo}: tilo mcp initialized`, JSON.stringify(initialized?.serverInfo ?? initialized));
         const listed = await agent.call('tilo_ls');
-        const apps = listingLines(listed.text).map(line => (line.match(/^[\w.-]+/) ?? [''])[0]).filter(Boolean);
+        const rows = listingRows(listed.text);
+        const apps = rows.map(line => (line.match(/^[\w.-]+/) ?? [''])[0]).filter(Boolean);
         note(`${combo}: the agent lists the workspace's apps`, !listed.failed && apps.length > 0, listed.text.slice(0, 500));
         log(`${combo}: apps`, apps.join(' '));
         log(`${combo}: the page's people now`, await tab.evaluate(`JSON.stringify(globalThis.tiloMount?.state()?.here ?? null)`).catch(() => 'null'));
         log(`${combo}: the page's members now`, await tab.evaluate(`globalThis.tiloPeople?.() ?? 'no people hook'`).catch(() => 'null'));
 
-        // 4. Following it, its card open beside the person: `landing`.
+        // 4. The note the agent writes in, open on the person's screen: the
+        //    window following brings forward is one they already have.
+        const noteProblem = await openNote(tab);
+        note(`${combo}: the person has a note open for the agent to write in`, !noteProblem, noteProblem ?? '');
+        await shot(tab, combo, 'note-open');
+
+        // 5. Following it, its card open beside the person: `landing`.
         const followProblem = await followAgent(tab, 'Claude Code');
         note(`${combo}: the person can follow the agent`, !followProblem, followProblem ?? '');
         const roster = await semantics(tab);
         note(`${combo}: who is here shows the agent present`, roster.some(node => /claude code/i.test(node.name)), names(roster));
         await sleep(1500);
-        await shot(tab, combo, 'landing');
+        await shot(tab, combo, 'landing', {expect: [/^everyone here$/i, /claude code/i]});
+        // A light scheme the shell does not draw is said with what it drew:
+        // the page takes its theme from the person's settings, and only the
+        // reduced-motion and contrast queries from the browser.
+        const drew = await luminance(scratch, tab);
+        note(`${combo}: the shell draws this scheme`, drew !== null && (theme === 'light' ? drew > 0.5 : drew < 0.5),
+          `prefers-color-scheme is ${theme} in this tab (emulated before load); the shot's mean luminance is ${drew === null ? 'unreadable' : drew.toFixed(2)}, so the shell drew its own theme`);
 
         // 5. A few of the agent's actions, with the person following: the
         //    recording, and `following-mid-edit` from the first write.
@@ -850,7 +1032,7 @@ try {
               // person, the text landing in it.
               const editing = await until(async () => (await semantics(tab)).some(node => /claude|notes/i.test(node.name)), 6000, 200);
               await sleep(700);
-              await shot(tab, combo, 'following-mid-edit');
+              await shot(tab, combo, 'following-mid-edit', {expect: [/notes|claude/i]});
               log(`${combo}: mid-edit shot ${editing ? 'with the agent in front' : 'but no agent window showed'}`);
             }
             const answer = await sending;
@@ -859,7 +1041,7 @@ try {
             await sleep(1400);
           }
         };
-        const video = await record(browser, tab, combo, pacing);
+        const video = await record(browser, tab, combo, {width, height}, pacing);
         const ran = steps.filter(step => step.answer && !step.answer.failed);
         note(`${combo}: the agent's actions ran in the workspace`, ran.length >= 2,
           steps.map(step => `${step.label}: ${step.answer ? (step.answer.failed ? 'failed' : 'ok') : 'not run'}`).join('; '));
@@ -868,7 +1050,7 @@ try {
         // 6. Who is here, pinned on screen, with the agent in it.
         const pinProblem = await pinOverlay(tab);
         note(`${combo}: who is here pins out over the windows`, !pinProblem, pinProblem ?? '');
-        await shot(tab, combo, 'presence-with-agent');
+        await shot(tab, combo, 'presence-with-agent', {expect: [/^everyone here$/i, /claude code/i]});
 
         // A window filling the desk: the bar's own controls and the reading it shows stand apart at
         // every width, the phone's included.
