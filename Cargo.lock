@@ -17172,6 +17172,7 @@ dependencies = [
  "tilo-automerge-isolate",
  "tilo-browser-peer",
  "tilo-clock",
+ "tilo-console",
  "tilo-content",
  "tilo-crypto",
  "tilo-desktop-model",
@@ -18106,6 +18107,18 @@ dependencies = [
  "wire-frame",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-console"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tilo-app",
+ "tilo-console",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -22409,6 +22422,7 @@ dependencies = [
  "themes",
  "tilo-app",
  "tilo-browser-runtime",
+ "tilo-console",
  "tilo-desktop",
  "tilo-desktop-search",
  "tilo-desktop-surface",
@@ -28117,6 +28131,7 @@ dependencies = [
  "tilo-compositor",
  "tilo-connectivity-service",
  "tilo-connector",
+ "tilo-console",
  "tilo-contact-directory",
  "tilo-content",
  "tilo-content-blocker",

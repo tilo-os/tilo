@@ -1,0 +1,562 @@
+//! Agents: every run of every agent across the person's workspaces, and the
+//! run chosen, as the timeline of its actions.
+//!
+//! The runs are the history's ([`wire::RUNS`], read across every workspace).
+//! A run is working now when its agent is connected through the door and it
+//! is that agent's newest run; those come first. Choosing a run shows it in
+//! their place, as wide as the window lets a file's change read: what it was
+//! asked, Stop, Take over and Undo, then its actions oldest first. Choosing
+//! an action opens its view under it, and an action that can be undone on its
+//! own offers Undo on its row.
+
+use ui::icons::Icon;
+use ui::prelude::*;
+use ui::tilo_actions::remote::agent_door as door;
+use ui::tilo_actions::remote::workspace_activity as wire;
+use ui::tokens::{Rhythm, TextRole};
+use ui::widget::{
+    ButtonRole, Fact, Facts, ListRow, ObjectHeader, Section, SectionHeader, Surface, SurfaceLevel,
+    Tone,
+};
+
+use crate::{Console, Doors, Nav, Reads, ago, faced, page, tr, trf, who};
+
+/// What Agents reads: every run in every workspace.
+pub(crate) fn query() -> wire::RunsQuery {
+    wire::RunsQuery {
+        scope: wire::Scope::AllWorkspaces,
+        limit: 0,
+    }
+}
+
+/// The runs, beside the door that says which agents are connected.
+#[derive(Clone, Default)]
+struct Seen {
+    runs: wire::Runs,
+    door: door::Door,
+}
+
+impl Seen {
+    /// The grant `run`'s agent came in by.
+    fn grant(&self, run: &wire::AgentRun) -> Option<&door::Grant> {
+        self.door
+            .grants
+            .iter()
+            .find(|grant| !grant.identity.is_empty() && grant.identity == run.agent.identity)
+    }
+
+    /// Whether `run` is working now: its agent is connected and it is that
+    /// agent's newest run.
+    fn working(&self, run: &wire::AgentRun) -> bool {
+        self.grant(run).is_some_and(|grant| grant.connected > 0)
+            && self
+                .runs
+                .runs
+                .iter()
+                .filter(|other| other.agent.identity == run.agent.identity)
+                .max_by_key(|other| other.last_ms)
+                .is_some_and(|newest| newest.id == run.id)
+    }
+
+    /// The workspace `run` worked in, as the door lists it.
+    fn workspace(&self, run: &wire::AgentRun) -> Option<&door::Workspace> {
+        let name = run.workspace.as_deref()?;
+        self.door
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.name == name || workspace.id == name)
+    }
+}
+
+/// The place's content and its header's commands: every run, or the run
+/// chosen with the way back to every run.
+pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> (Element, Vec<Element>) {
+    let runs = &reads.runs;
+    let door_state = reads.door.answer().state();
+    let chosen = nav.run.get();
+    let mut actions: Vec<Element> = Vec::new();
+    if chosen.is_some() {
+        let back = nav.clone();
+        actions.push(Box::new(
+            Button::new("console-run-back", "console-run-back")
+                .with_icon(Icon::ArrowLeft)
+                .role(ButtonRole::Plain)
+                .on_view(move || back.close_run()),
+        ));
+    }
+    let nav = nav.clone();
+    let content = Box::new(cx.arriving(&runs.answer(), move |cx, runs| {
+        let (nav, runs, chosen) = (nav.clone(), runs.clone(), chosen.clone());
+        cx.switch(&door_state, move |cx, door| {
+            let seen = Seen {
+                runs: runs.clone(),
+                door: ready(door),
+            };
+            let run = chosen
+                .as_deref()
+                .and_then(|id| seen.runs.runs.iter().find(|run| run.id == id));
+            match run {
+                Some(run) => inspect(cx, &nav, &seen, run),
+                None => list(cx, &nav, &seen),
+            }
+        })
+    })) as Element;
+    (content, actions)
+}
+
+/// The door as far as it answered: nothing connected until it does, and
+/// nothing where no door is served.
+fn ready<E>(door: &Arrival<door::Door, E>) -> door::Door {
+    match door {
+        Arrival::Ready(door) => door.clone(),
+        Arrival::Pending { .. } | Arrival::Failed(_) => door::Door::default(),
+    }
+}
+
+/// Every run the record lets show: working ones first, then the rest.
+fn list(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen) -> Element {
+    let filter = cx.value(Console::clone).get();
+    let mut parts = vec![filters(cx, seen, &filter)];
+    let shown: Vec<&wire::AgentRun> = seen
+        .runs
+        .runs
+        .iter()
+        .filter(|run| filter.shows(&run.agent.name, run.workspace.as_deref()))
+        .collect();
+    if shown.is_empty() {
+        let state = if seen.runs.pending {
+            EmptyState::new(tr("console-runs-pending")).with_icon(Icon::Clock)
+        } else if filter.narrows() {
+            EmptyState::new(tr("console-runs-none-here"))
+                .with_message(tr("console-runs-none-here-message"))
+                .with_icon(Icon::Bot)
+        } else {
+            EmptyState::new(tr("console-runs-empty"))
+                .with_message(tr("console-runs-empty-message"))
+                .with_icon(Icon::Bot)
+        };
+        parts.push(Box::new(state.with_id("console-runs-empty")));
+        return page(parts);
+    }
+    let (working, earlier): (Vec<&wire::AgentRun>, Vec<&wire::AgentRun>) =
+        shown.into_iter().partition(|run| seen.working(run));
+    let chosen = nav.run.get();
+    for (heading, runs) in [
+        ("console-runs-working", working),
+        ("console-runs-earlier", earlier),
+    ] {
+        if runs.is_empty() {
+            continue;
+        }
+        let rows = runs
+            .into_iter()
+            .map(|run| run_row(nav, seen, run, chosen.as_deref() == Some(run.id.as_str())))
+            .collect();
+        parts.push(Box::new(
+            Section::new(rows).with_header(SectionHeader::group(tr(heading))),
+        ));
+    }
+    page(parts)
+}
+
+fn run_row(nav: &Nav, seen: &Seen, run: &wire::AgentRun, selected: bool) -> Element {
+    let mut row = faced(
+        ListRow::new(format!("console-run-{}", run.id), run.instruction.clone()),
+        &run.agent,
+    )
+    .subtitle(who(&run.agent))
+    .secondary(run.workspace.clone().unwrap_or_else(|| {
+        trf(
+            "console-run-actions",
+            &[("count", run.actions.len().into())],
+        )
+    }))
+    .meta(ago(run.last_ms))
+    .selected(selected);
+    if seen.working(run) {
+        row = row.active();
+    }
+    let (chosen, id) = (nav.clone(), run.id.clone());
+    Box::new(row.on_view(move || chosen.open_run(&id)))
+}
+
+/// A dropdown of `options` (value, label) bound to `field` of the record.
+fn picker(
+    cx: &ViewCx<Console>,
+    id: &'static str,
+    name: &str,
+    options: Vec<(String, String)>,
+    field: Path<Console, String>,
+) -> Element {
+    let name = tr(name);
+    Box::new(cx.control(
+        move |state| {
+            let mut picker = Dropdown::from_state(Vec::new(), state)
+                .with_id(id)
+                .with_accessible_name(name);
+            picker.set_value_options(options);
+            picker
+        },
+        field,
+    ))
+}
+
+/// The row narrowing the runs by agent and workspace, with a way back to
+/// all of them while it narrows them, and only then.
+fn filters(cx: &ViewCx<Console>, seen: &Seen, filter: &Console) -> Element {
+    let paths = Console::paths();
+    let mut agents: Vec<String> = Vec::new();
+    let mut workspaces: Vec<String> = Vec::new();
+    for run in &seen.runs.runs {
+        if !agents.contains(&run.agent.name) {
+            agents.push(run.agent.name.clone());
+        }
+        if let Some(workspace) = &run.workspace
+            && !workspaces.contains(workspace)
+        {
+            workspaces.push(workspace.clone());
+        }
+    }
+    let options = |every: &str, names: Vec<String>| {
+        std::iter::once((String::new(), tr(every)))
+            .chain(names.into_iter().map(|name| (name.clone(), name)))
+            .collect::<Vec<_>>()
+    };
+    let mut row = Row::new()
+        .with_rhythm(Rhythm::Related)
+        .push(picker(
+            cx,
+            "console-filter-agent",
+            "console-filter-agent",
+            options("console-every-agent", agents),
+            paths.agent,
+        ))
+        .push(picker(
+            cx,
+            "console-filter-workspace",
+            "console-filter-workspace",
+            options("console-every-workspace", workspaces),
+            paths.workspace,
+        ));
+    if filter.narrows() {
+        row = row.push(Box::new(cx.actions().bind(
+            Button::new("console-show-everything", "console-show-everything").with_icon(Icon::X),
+            Console::SHOW_EVERYTHING,
+        )));
+    }
+    Box::new(row)
+}
+
+/// The chosen run: what it was asked, what can be done with it, and its
+/// actions.
+fn inspect(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen, run: &wire::AgentRun) -> Element {
+    let doors = Doors::of(cx);
+    let mut facts = vec![Fact::with_icon(Icon::Bot, who(&run.agent))];
+    facts.extend(
+        run.workspace
+            .clone()
+            .map(|workspace| Fact::with_icon(Icon::LayoutGrid, workspace)),
+    );
+    facts.push(Fact::with_icon(Icon::Clock, ago(run.started_ms)));
+    let mut parts: Vec<Element> = vec![
+        Box::new(ObjectHeader::new(run.instruction.clone())),
+        Box::new(Facts::new(facts)),
+    ];
+    parts.push(commands(&doors, seen, run));
+    if let Some(blocked) = &run.undo_blocked {
+        parts.push(Box::new(
+            Text::new(blocked)
+                .with_role(TextRole::Caption)
+                .dimmed()
+                .with_id("console-run-undo-blocked"),
+        ));
+    }
+    if let Some(decision) = &run.decision {
+        parts.push(Box::new(Section::titled(
+            tr("console-run-why"),
+            vec![Box::new(Text::new(decision))],
+        )));
+    }
+    let nav = nav.clone();
+    let shown = run.clone();
+    parts.push(cx.switch(&nav.action.clone(), move |cx, open| {
+        actions(cx, &nav, &shown, *open)
+    }));
+    page(parts)
+}
+
+/// Stop, Take over and Undo, as the run allows them.
+fn commands(doors: &Doors, seen: &Seen, run: &wire::AgentRun) -> Element {
+    let mut row = Row::new().with_rhythm(Rhythm::Related);
+    let grant = seen.grant(run).map(|grant| grant.id.clone());
+    let working = seen.working(run);
+    if working && let Some(grant) = grant.clone() {
+        let doors = doors.clone();
+        row = row.push(Box::new(
+            Button::new("console-run-stop", "console-run-stop")
+                .with_icon(Icon::Square)
+                .role(ButtonRole::Destructive)
+                .on_view(move || {
+                    doors.door(
+                        door::STOP,
+                        &door::GrantRef {
+                            grant: grant.clone(),
+                        },
+                    );
+                }),
+        ));
+    }
+    // Taking over stops the agent and opens where it was working in the full
+    // desktop: the record of its last action, or else its workspace.
+    let last = run
+        .actions
+        .last()
+        .map(|action| action.view.target().clone());
+    let workspace = seen.workspace(run).map(|workspace| workspace.open.clone());
+    if last.is_some() || workspace.is_some() {
+        let doors = doors.clone();
+        let stop = grant.filter(|_| working);
+        row = row.push(Box::new(
+            Button::new("console-run-take-over", "console-run-take-over")
+                .with_icon(Icon::Hand)
+                .on_view(move || {
+                    if let Some(grant) = &stop {
+                        doors.door(
+                            door::STOP,
+                            &door::GrantRef {
+                                grant: grant.clone(),
+                            },
+                        );
+                    }
+                    match (&last, &workspace) {
+                        (Some(target), _) => doors.history(wire::OPEN, target),
+                        (None, Some(href)) => doors.open_in_tilo(href),
+                        (None, None) => {}
+                    }
+                }),
+        ));
+    }
+    let range = run.range.clone();
+    let undo = doors.clone();
+    row = row.push(Box::new(
+        Button::new("console-run-undo", "console-run-undo")
+            .with_icon(Icon::Undo2)
+            .with_enabled(run.undo_blocked.is_none())
+            .on_view(move || undo.history(wire::UNDO_RUN, &range)),
+    ));
+    Box::new(row)
+}
+
+const fn kind_icon(view: &wire::ActionView) -> Icon {
+    match view {
+        wire::ActionView::File { .. } => Icon::FileText,
+        wire::ActionView::Command { .. } => Icon::Terminal,
+        wire::ActionView::Page { .. } => Icon::Globe,
+        wire::ActionView::Record { .. } => Icon::AppWindow,
+    }
+}
+
+/// The run's actions, oldest first, the one `open` names with its view
+/// under it.
+fn actions(cx: &ViewCx<Console>, nav: &Nav, run: &wire::AgentRun, open: Option<usize>) -> Element {
+    let doors = Doors::of(cx);
+    let mut rows: Vec<Element> = Vec::new();
+    for (index, action) in run.actions.iter().enumerate() {
+        let target = action.view.target();
+        let mut row = ListRow::new(format!("console-action-{index}"), action.summary.clone())
+            .icon(kind_icon(&action.view))
+            .secondary(target.label.clone())
+            .meta(ago(action.at_ms))
+            .selected(open == Some(index));
+        if let Some(offer) = &action.undo {
+            let doors = doors.clone();
+            let query = wire::RecordQuery {
+                range: run.range.clone(),
+                task: None,
+                app_id: action.app_id.clone(),
+                id: action.record.clone(),
+            };
+            let (kind, range) = (offer.action, action.range.clone());
+            row = row.trailing(Box::new(
+                Button::new(&format!("console-action-{index}-undo"), &offer.label)
+                    .role(ButtonRole::Plain)
+                    .on_view(move || match kind {
+                        wire::DetailAction::UndoRecord => {
+                            doors.history(wire::UNDO_RECORD, &query);
+                        }
+                        _ => doors.history(wire::UNDO, &range),
+                    }),
+            ));
+        }
+        let chosen = nav.clone();
+        row = row.on_view(move || {
+            chosen
+                .action
+                .update(|open| *open = (*open != Some(index)).then_some(index));
+        });
+        rows.push(Box::new(row));
+        if open == Some(index) {
+            rows.push(action_view(cx, &doors, index, action));
+        }
+    }
+    Box::new(Section::titled(
+        trf(
+            "console-run-timeline",
+            &[("count", run.actions.len().into())],
+        ),
+        rows,
+    ))
+}
+
+/// What one action shows when opened: never just its sentence.
+fn action_view(
+    cx: &ViewCx<Console>,
+    doors: &Doors,
+    index: usize,
+    action: &wire::RunAction,
+) -> Element {
+    let id = format!("console-action-{index}-view");
+    let target = action.view.target().clone();
+    let open = {
+        let (doors, target) = (doors.clone(), target.clone());
+        Button::new(&format!("{id}-open"), "console-action-open")
+            .with_icon(Icon::ExternalLink)
+            .on_view(move || doors.history(wire::OPEN, &target))
+    };
+    let mut parts: Vec<Element> = Vec::new();
+    match &action.view {
+        wire::ActionView::File { path, lines, .. } => {
+            parts.push(code_line(path, None));
+            if lines.is_empty() {
+                parts.push(compared(cx, doors, &action.range));
+            } else {
+                parts.push(well(lines.iter().map(diff_line).collect()));
+            }
+        }
+        wire::ActionView::Command {
+            command,
+            output,
+            exit,
+            ..
+        } => {
+            let mut lines = vec![code_line(&format!("$ {command}"), None)];
+            lines.extend(output.iter().map(|line| code_line(line, None)));
+            parts.push(well(lines));
+            if let Some(code) = exit {
+                let said = Text::new(&trf("console-command-exit", &[("code", (*code).into())]))
+                    .with_role(TextRole::Caption);
+                parts.push(Box::new(if *code == 0 {
+                    said.dimmed()
+                } else {
+                    said.tone(Tone::Danger)
+                }));
+            }
+        }
+        wire::ActionView::Page { url, .. } => {
+            parts.push(Box::new(
+                Text::new(&target.label).with_role(TextRole::Label).strong(),
+            ));
+            parts.push(code_line(url, None));
+        }
+        wire::ActionView::Record { .. } => {
+            let mut place = vec![Fact::with_icon(Icon::AppWindow, target.label.clone())];
+            place.extend(target.app_label.map(Fact::text));
+            parts.push(Box::new(Facts::new(place)));
+            parts.push(compared(cx, doors, &action.range));
+        }
+    }
+    parts.push(Box::new(
+        Row::new().with_rhythm(Rhythm::Related).push(Box::new(open)),
+    ));
+    let mut column = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_rhythm(Rhythm::Related);
+    for part in parts {
+        column = column.push(part);
+    }
+    Box::new(
+        Container::new()
+            .with_inset(Rhythm::Related)
+            .with_id(&id)
+            .with_child(Box::new(column)),
+    )
+}
+
+/// What the action's changes did, as the history compares the workspace
+/// either side of them: each field before and after, or else each change in
+/// a line.
+fn compared(cx: &ViewCx<Console>, doors: &Doors, range: &wire::Range) -> Element {
+    let read = doors.follow_history::<wire::Detail>(
+        wire::DETAIL,
+        &wire::DetailQuery {
+            range: range.clone(),
+            compare: true,
+        },
+    );
+    Box::new(cx.arriving(&read.answer(), move |_, detail| {
+        if !detail.changes.is_empty() {
+            let mut lines = Vec::new();
+            for change in &detail.changes {
+                lines.push(code_line(&change.field, Some(TextRole::Label)));
+                if !change.before.is_empty() {
+                    lines.push(diff_line(&wire::DiffLine {
+                        side: wire::DiffSide::Removed,
+                        text: change.before.clone(),
+                    }));
+                }
+                if !change.after.is_empty() {
+                    lines.push(diff_line(&wire::DiffLine {
+                        side: wire::DiffSide::Added,
+                        text: change.after.clone(),
+                    }));
+                }
+            }
+            return well(lines);
+        }
+        match &detail.comparison {
+            Some(wire::Comparison::Changes { lines }) if !lines.is_empty() => {
+                well(lines.iter().map(|line| code_line(line, None)).collect())
+            }
+            _ => Box::new(Text::new(&tr("console-action-no-preview")).dimmed()),
+        }
+    }))
+}
+
+/// A line of code or output, in the code role unless `role` says otherwise.
+fn code_line(text: &str, role: Option<TextRole>) -> Element {
+    Box::new(
+        Text::new(text)
+            .with_role(role.unwrap_or(TextRole::Code))
+            .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph),
+    )
+}
+
+/// A line of a file's change: what it removed in the danger ink, what it
+/// added in the success ink, the rest as it reads.
+fn diff_line(line: &wire::DiffLine) -> Element {
+    let (mark, tone) = match line.side {
+        wire::DiffSide::Both => ("  ", None),
+        wire::DiffSide::Removed => ("− ", Some(Tone::Danger)),
+        wire::DiffSide::Added => ("+ ", Some(Tone::Success)),
+    };
+    let text = Text::new(&format!("{mark}{}", line.text))
+        .with_role(TextRole::Code)
+        .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph);
+    Box::new(match tone {
+        Some(tone) => text.tone(tone),
+        None => text.dimmed(),
+    })
+}
+
+/// `lines` in a raised well, as code and output read everywhere else.
+fn well(lines: Vec<Element>) -> Element {
+    let column = lines.into_iter().fold(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_rhythm(Rhythm::Tight),
+        Column::push,
+    );
+    Box::new(Surface::new(SurfaceLevel::Raised, Box::new(column)).padded(Rhythm::Tight))
+}

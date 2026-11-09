@@ -17,6 +17,7 @@ pub(crate) fn register() {
     chat_split::register();
     chip_design_split::register();
     clocks_split::register();
+    tilo_console_split::register();
     contacts_split::register();
     diffmerge_split::register();
     ebook_split::register();
@@ -360,6 +361,41 @@ mod clocks_split {
 
     pub(super) fn register() {
         registry::defer_arriving(APP, "Clocks", SkeletonShape::Ground, open);
+    }
+}
+
+mod tilo_console_split {
+    use std::ffi::c_void;
+
+    use ui::application::ApplicationDefinition;
+    use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
+
+    use crate::split::Callback;
+
+    const APP: &str = "so.tilo.console";
+
+    #[link(wasm_import_module = "./__wasm_split.js")]
+    #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
+    unsafe extern "C" {
+        #[link_name = "__wasm_split_load_tilo_console_a0fbc75c2ea1e406_definition"]
+        fn load(callback: Callback, data: *const c_void);
+        #[link_name = "__wasm_split_00___tilo_console___00_import_a0fbc75c2ea1e406_definition"]
+        fn definition() -> *const ApplicationDefinition;
+    }
+
+    #[unsafe(export_name = "__wasm_split_00___tilo_console___00_export_a0fbc75c2ea1e406_definition")]
+    #[allow(improper_ctypes_definitions, reason = "called only from Rust")]
+    extern "C" fn export() -> *const ApplicationDefinition {
+        tilo_console::definition()
+    }
+
+    fn open() -> Loading {
+        Box::pin(crate::split::definition(load, definition))
+    }
+
+    pub(super) fn register() {
+        registry::defer_arriving(APP, "Console", SkeletonShape::Ground, open);
     }
 }
 

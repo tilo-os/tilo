@@ -1147,6 +1147,7 @@ doc = false
 "tilo-compositor" = { path = "../../../crates/session/compositor", default-features = false, features = [] }
 "tilo-connectivity-service" = { path = "../../../crates/session/connectivity-service", default-features = false, features = [] }
 "tilo-connector" = { path = "../../../crates/agent/connector", default-features = false, features = [] }
+"tilo-console" = { path = "../../../apps/console", default-features = false, features = ["samples"] }
 "tilo-contact-directory" = { path = "../../../crates/platform/tilo-contact-directory", default-features = false, features = [] }
 "tilo-content" = { path = "../../../crates/system/content", default-features = false, features = ["default", "dir"] }
 "tilo-content-blocker" = { path = "../../../crates/browser/content-blocker", default-features = false, features = [] }
