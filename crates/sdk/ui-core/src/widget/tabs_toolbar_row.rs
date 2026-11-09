@@ -3,9 +3,7 @@
 //! tabs' motion — and how much of that row the strip's own "+" takes, which yields where the slots
 //! need the room.
 
-use super::{
-    ICON_W, NEW_TAB_CHIP_PX, PILL_PAD_X, Rect, TOOLBAR_LEAD_GAP, TOOLBAR_ROW_HEIGHT, TabBar,
-};
+use super::{ICON_W, PILL_PAD_X, Rect, TOOLBAR_LEAD_GAP, TOOLBAR_ROW_HEIGHT, TabBar};
 use crate::widget::window_controls;
 
 impl TabBar {
@@ -59,24 +57,11 @@ impl TabBar {
         self.toolbar_row.lay_out(self.toolbar_row_rect());
         // The strip's own "+" stands between the window's icon and the app's slots, which start
         // past it so neither paints over the other. A narrow window has no room for both: the "+"
-        // first gives up its words, then its place, so the app's Back, its name and its actions
-        // keep their own, and the window's search keeps the room it reaches back over.
+        // gives up its place, so the app's Back, its name and its actions keep their own, and the
+        // window's search keeps the room it reaches back over.
         if self.strip_squeezes_slots() {
-            if self.new_tab_labelled {
-                self.new_tab_labelled = false;
-                let plus = self.new_tab_rect;
-                self.new_tab_rect = Rect::new(
-                    plus.x0,
-                    plus.y0,
-                    (plus.x0 + NEW_TAB_CHIP_PX).min(plus.x1),
-                    plus.y1,
-                );
-                self.toolbar_row.lay_out(self.toolbar_row_rect());
-            }
-            if self.strip_squeezes_slots() {
-                self.new_tab_rect = Rect::ZERO;
-                self.toolbar_row.lay_out(self.toolbar_row_rect());
-            }
+            self.new_tab_rect = Rect::ZERO;
+            self.toolbar_row.lay_out(self.toolbar_row_rect());
         }
         let strip = self.toolbar_row.strip_height();
         let top = self.rect.y0 + self.rows_height();

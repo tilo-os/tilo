@@ -433,18 +433,62 @@ impl Slots {
         if !slots.actions_labelled && slots.actions.len() > floor && floor > 0 {
             slots = Self::arranged_below(toolbar, row, views, shown, (&[], &[]), floor, false);
         }
-        slots.form = form;
+        slots.settle(form, labels, action_labels, notice, forms);
+        // The room the location leaves empty beside its own label is where its actions say what
+        // they do: the bar stands their words there rather than glyphs nobody can name.
+        let extra: f64 = action_labels
+            .iter()
+            .take(slots.actions.len())
+            .map(|words| (words - CONTROL_PX).max(0.0))
+            .sum();
+        if !slots.actions_labelled
+            && extra > 0.0
+            && extra <= slots.spare
+            && !slots.views_in_location()
+        {
+            // The words take the room out of the location's end, so whatever stands between it and
+            // the actions moves along, and the actions grow from their own trailing edge.
+            let moved = |rect: Rect| Rect::new(rect.x0 - extra, rect.y0, rect.x1 - extra, rect.y1);
+            let mut x1 = slots.actions.iter().map(|rect| rect.x1).fold(0.0, f64::max);
+            for (rect, words) in slots.actions.iter_mut().zip(action_labels).rev() {
+                *rect = Rect::new(x1 - CONTROL_PX.max(*words), rect.y0, x1, rect.y1);
+                x1 = rect.x0 - CONTROL_GAP;
+            }
+            for rect in &mut slots.views {
+                *rect = moved(*rect);
+            }
+            if slots.views_menu.area() > 0.0 {
+                slots.views_menu = moved(slots.views_menu);
+            }
+            slots.location.x1 -= extra;
+            slots.actions_labelled = true;
+            let notice = forms.notice(toolbar, room);
+            slots.settle(form, labels, action_labels, notice, forms);
+        }
+        slots
+    }
+
+    /// What a layout of the row carries whatever stood in it: the form the location shows, the
+    /// words its slots ask for, the notice in the location, and the room its label leaves empty.
+    fn settle(
+        &mut self,
+        form: usize,
+        labels: &[f64],
+        action_labels: &[f64],
+        notice: Option<NoticeFit>,
+        forms: &LocationForms,
+    ) {
+        self.form = form;
         // What the actions' words need, whether or not this layout shows them: a row that had
         // room for a label and showed its icon instead is what a check reports.
-        slots.leading_words = labels.to_vec();
-        slots.action_words = action_labels.to_vec();
+        self.leading_words = labels.to_vec();
+        self.action_words = action_labels.to_vec();
         if let Some(notice) = notice {
-            slots.place_notice(notice, forms.width(form) + forms.chrome);
+            self.place_notice(notice, forms.width(form) + forms.chrome);
         }
         // The room the location leaves empty beside its label, once the notice has its own: what
         // a label of the actions could stand in.
-        slots.spare = (slots.location.width() - (forms.width(form) + forms.chrome)).max(0.0);
-        slots
+        self.spare = (self.location.width() - (forms.width(form) + forms.chrome)).max(0.0);
     }
 
     /// Put the notice's buttons in order right after its text, `text` wide

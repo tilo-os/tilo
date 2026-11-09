@@ -4,6 +4,7 @@
 
 use super::tests::{browser_slots, lay_out_at_width_with};
 use super::*;
+use crate::widget::window_toolbar_row::MIN_LOCATION_PX;
 
 /// A window of one tab names itself in the bar's location slot, and the strip's own "+" stands
 /// beside that name. Neither paints over the other: the title used to start under the control,

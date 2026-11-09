@@ -2,7 +2,7 @@
 
 use vello::kurbo::{Point, Rect};
 
-use super::TabBar;
+use super::{NEW_TAB, TabBar};
 
 impl TabBar {
     /// Every button in the bar names its outcome: the slots' buttons and
@@ -34,6 +34,10 @@ impl TabBar {
         }
         if !self.window_controls {
             return None;
+        }
+        // The strip's own door: its glyph needs no words in the row, and the tip names it.
+        if self.new_tab_rect.area() > 0.0 && self.new_tab_rect.contains(point) {
+            return Some((self.new_tab_rect, NEW_TAB.to_owned()));
         }
         if self.history_action.area() > 0.0 && self.history_action.contains(point) {
             return Some((

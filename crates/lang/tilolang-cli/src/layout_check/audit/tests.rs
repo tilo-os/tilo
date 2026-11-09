@@ -1504,6 +1504,14 @@ fn a_bar_says_what_an_action_does_where_it_has_room_for_the_words() {
         400.0,
     );
     assert!(kinds(&quiet).is_empty());
+    // The window's own furniture is no action of the app's: the strip's door wears the "+"
+    // everyone reads, at its square chip, and says its name under the pointer alone.
+    let door =
+        ui::window_toolbar::BarControl::new("new-tab", "tab-new", Rect::new(0.0, 0.0, 32.0, 28.0))
+            .named("New tab")
+            .icon(Some("plus".to_owned()))
+            .furniture();
+    assert!(kinds(&bar(vec![door], 400.0)).is_empty());
 }
 
 /// A choice a list painted wide of what its row shows fills the gutter beside it: the lift

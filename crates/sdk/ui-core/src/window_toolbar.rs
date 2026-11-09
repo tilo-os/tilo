@@ -1624,6 +1624,11 @@ pub struct BarControl {
     pub menu: bool,
     /// The bar shows it with its name beside its icon.
     pub labelled: bool,
+    /// It is the window's own furniture, not an action of the app's: the strip's door that opens
+    /// another application, whose glyph everyone reads without words. What judges whether the
+    /// app's actions say what they do leaves it alone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub furniture: bool,
     /// It is drawn as the primary button: the app's one main action, its words or its icon on
     /// the accent.
     pub primary: bool,
@@ -1645,6 +1650,7 @@ impl BarControl {
             icon: None,
             menu: false,
             labelled: false,
+            furniture: false,
             primary: false,
             words: 0.0,
             rect: [rect.x0, rect.y0, rect.width(), rect.height()],
@@ -1676,6 +1682,13 @@ impl BarControl {
     #[must_use]
     pub fn labelled(mut self) -> Self {
         self.labelled = true;
+        self
+    }
+
+    /// It is the window's own furniture, not an action of the app's.
+    #[must_use]
+    pub fn furniture(mut self) -> Self {
+        self.furniture = true;
         self
     }
 

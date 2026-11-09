@@ -583,7 +583,8 @@ impl FrameHarness {
             out.push(
                 BarControl::new("new-tab", "tab-new", furniture.new_tab)
                     .named(crate::widget::tabs::NEW_TAB.to_owned())
-                    .icon(Some(crate::icons::Icon::Plus.name().to_owned())),
+                    .icon(Some(crate::icons::Icon::Plus.name().to_owned()))
+                    .furniture(),
             );
         }
         for (slot, control, rect) in [

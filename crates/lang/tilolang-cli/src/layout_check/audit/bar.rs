@@ -9,18 +9,14 @@ use super::{EPSILON, Kind, Problem, SHELL};
 /// the app's.
 const BAR: &str = "WindowBar";
 
-/// The slot of the strip's own control that opens another application.
-const NEW_TAB: &str = "new-tab";
-
 /// What is wrong with one window's bar as it lays itself out across the window: a control it
 /// shows twice, and an action that asks for its words standing as its icon alone while the bar
-/// has room for those words.
+/// has room for those words. Both read the app's actions: the window's own furniture wears a glyph
+/// everyone reads without words, so neither judges it.
 pub fn bar(layout: &ui::window_toolbar::BarLayout) -> Vec<Problem> {
     let mut out = Vec::new();
     for (index, control) in layout.controls.iter().enumerate() {
-        // The strip's own door to another application stands before the app's slots and says
-        // what it opens: it is no copy of an action of the app's, whatever glyph both wear.
-        if control.slot == NEW_TAB {
+        if control.furniture {
             continue;
         }
         let Some(later) = layout.controls.get(index.saturating_add(1)..) else {
@@ -28,7 +24,7 @@ pub fn bar(layout: &ui::window_toolbar::BarLayout) -> Vec<Problem> {
         };
         let Some(second) = later
             .iter()
-            .filter(|second| second.slot != NEW_TAB)
+            .filter(|second| !second.furniture)
             .find(|second| same_control(control, second))
         else {
             continue;
@@ -61,7 +57,11 @@ pub fn bar(layout: &ui::window_toolbar::BarLayout) -> Vec<Problem> {
     for control in &layout.controls {
         // Drawn as its icon alone, narrower than the words it has, while the room stood empty
         // beside it: a person cannot read what it does. The row's own "…" is a glyph by design.
-        if control.slot == "overflow" || control.icon.is_none() || control.words <= 0.0 {
+        if control.furniture
+            || control.slot == "overflow"
+            || control.icon.is_none()
+            || control.words <= 0.0
+        {
             continue;
         }
         let missing = control.words - control.rect[2];
