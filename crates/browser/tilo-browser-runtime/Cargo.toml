@@ -61,6 +61,8 @@ serde_json.workspace = true
 # Warnings and errors reach the console (src/console_log.rs).
 tracing.workspace = true
 vello.workspace = true
+# The DOM presentation: the scene as HTML elements instead of a canvas.
+tilo-cpu-raster = { version = "0.1.0", path = "../../sdk/tilo-cpu-raster" }
 wgpu.workspace = true
 winit.workspace = true
 web-time = "1"
@@ -118,6 +120,10 @@ deferred-feedback = []
 # the first time someone pins who is here. Without it the overlay is linked
 # in.
 deferred-people-overlay = []
+# The bundling crate supplies the code that shows a mount as HTML
+# (`DOM_CODE`), which the browser desktop fetches as its own module the
+# first time a page asks for `dom: true`. Without it the code is linked in.
+deferred-dom-presenter = []
 
 [dependencies]
 # The host's endpoint address, as the page receives and dials it.

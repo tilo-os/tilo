@@ -28,6 +28,7 @@ tilo-font-catalog = { version = "0.1.0", path = "../font-catalog" }
 vello.workspace = true
 pollster.workspace = true
 png = "0.18.1"
+serde_json.workspace = true
 
 [lints]
 workspace = true

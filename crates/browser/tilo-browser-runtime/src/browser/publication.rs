@@ -34,8 +34,7 @@ pub fn ime(id: u64, kind: &str, text: &str) -> Result<(), JsValue> {
         let event = WindowEvent::Ime(event);
         m.frame.send_host_event(&event);
         m.publish_committed(&event);
-        m.pending = true;
-        m.window.request_redraw();
+        m.present_after_input();
         Ok(())
     })
 }

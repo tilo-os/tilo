@@ -178,6 +178,8 @@ pub(crate) fn record(
                     recorded += 1;
                 }
             }
+            // Listed only for a page's DOM, which shows it as text.
+            Op::Text { .. } => {}
             Op::Glyphs {
                 glyphs,
                 style,

@@ -16,6 +16,7 @@ import {createHere} from './here.mjs';
 import {fetchPersonProfile,followPhotos,photoPixels} from './profile-photos.mjs';
 import {createPresentedSource} from './panorama.mjs';
 import {createSemanticPresentation} from './semantic-presentation.mjs';
+import {createDomPresenter} from './dom-present.mjs';
 export {createPanorama} from './panorama.mjs';
 import {createNativeCatalogueBridge, invokeMembershipAction, runRecordAction} from './native-catalogue.mjs';
 import {isWebKit,webgpuRefusal} from './webgpu-safety.mjs';
@@ -171,6 +172,23 @@ export async function mountDesktop(target,options={}) {
   const commandStatus=document.createElement('div');commandStatus.setAttribute('role','status');commandStatus.setAttribute('aria-live','polite');
   const status=createHostStatus(commandStatus);
   surface.append(canvas,editor,accessibility,commandStatus);target.append(surface);
+  // Shown as HTML (`dom: true`): the frames are built as elements in a layer
+  // under the canvas, which stays the input surface but shows nothing. A
+  // wheel over one of the layer's scroll containers scrolls it natively
+  // (below); `selectText(true)` lets the pointer through to the layer, where
+  // the browser's own text selection works on the real text.
+  let domPresenter;
+  if(options.dom){
+    const domLayer=document.createElement('div');domLayer.className='tilo-dom';
+    domLayer.style.cssText='position:absolute;inset:0;overflow:hidden;contain:strict;user-select:text;-webkit-user-select:text;';
+    canvas.style.cssText+='position:absolute;inset:0;opacity:0;';
+    surface.prepend(domLayer);
+    domPresenter=createDomPresenter(domLayer,{onFrame:options.onDomFrame,onScroll:(key,offset)=>{
+      if(id===undefined||closed)return;
+      try{runtime.dom_scrolled(id,key,offset);}catch(error){report({domScroll:String(error)});}
+    }});
+    globalThis.__tiloDom={stats:domPresenter.stats,layer:domLayer,selectText:on=>{canvas.style.pointerEvents=on?'none':'';}};
+  }
   const fillScreen=createScreenFill(surface,{canvas,observe:globalThis.ResizeObserver});
   let id,storage,closed=false,crashed=false,composing=false,pasteShift=false,lastState,readyResolve,readyReject,persistenceFailed=false;
   const presented=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
@@ -197,7 +215,7 @@ export async function mountDesktop(target,options={}) {
   if(options.models)config.models={endpoint:options.models.endpoint,sessionToken:options.models.sessionToken,profileId:options.models.profileId,modelId:options.models.modelId};
   // Administration is opt-in and never borrows the inference session token.
   if(options.providerManagement)config.providerManagement={endpoint:options.providerManagement.endpoint,sessionToken:options.providerManagement.sessionToken};
-  delete config.peer;if(options.peer?.runtimeId!==undefined)config.peer=options.peer.runtimeId;delete config.settings;delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;delete config.restartOnCrash;delete config.presenceUrl;
+  delete config.peer;if(options.peer?.runtimeId!==undefined)config.peer=options.peer.runtimeId;delete config.settings;delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;delete config.restartOnCrash;delete config.presenceUrl;delete config.dom;delete config.onDomFrame;
   // The desktop shows its invite sheet when the page configures one: what it
   // makes links through, as `mountDesktop({invite})` hands it over.
   delete config.onInvite;
@@ -240,8 +258,20 @@ export async function mountDesktop(target,options={}) {
     keydown:(...args)=>{inputScope.capture();return active()&&semanticKeys?.keydown(...args);},
     keyup:(...args)=>{inputScope.capture();return active()&&semanticKeys?.keyup(...args);},
     blur:owner=>{inputScope.capture();if(active())semanticKeys?.blur(owner);},
-  },inputScope);
+  },inputScope,domPresenter?.host);
   const listeners=new AbortController();const on=(node,type,fn,opts={})=>node.addEventListener(type,fn,{...opts,signal:listeners.signal});
+  // A wheel over a scroll container of the HTML layer moves that container,
+  // as on any page: the browser shows the move at once, and the widget hears
+  // of it through the container's scroll (`dom_scrolled`). Anything else is
+  // the canvas's, which hands it to the runtime.
+  if(domPresenter)on(surface,'wheel',event=>{
+    if(event.ctrlKey||!active())return;
+    const dy=event.deltaMode===1?event.deltaY*40:event.deltaMode===2?event.deltaY*surface.clientHeight:event.deltaY;
+    const scroller=dy&&domPresenter.scrollerAt(event.clientX,event.clientY,dy);
+    if(!scroller)return;
+    event.preventDefault();event.stopPropagation();
+    scroller.scrollTop+=dy;
+  },{capture:true,passive:false});
   if(globalThis.ResizeObserver){const resized=new ResizeObserver(([entry])=>{canvasCssSize=[entry.contentRect.width,entry.contentRect.height];placeSemantics();});resized.observe(canvas);listeners.signal.addEventListener('abort',()=>resized.disconnect());}
   const editorListeners=[];
   function onEditor(type,fn,opts={}){
@@ -475,8 +505,10 @@ export async function mountDesktop(target,options={}) {
     else on(options.signal,'abort',()=>registry.remove(token),{once:true});
   }
   try{
-    const refusal=webgpuRefusal();if(refusal)throw Error(refusal);
-    if(!navigator.gpu)throw Error('WebGPU is required for the Tilo Vello compute renderer');
+    if(!options.dom){
+      const refusal=webgpuRefusal();if(refusal)throw Error(refusal);
+      if(!navigator.gpu)throw Error('WebGPU is required for the Tilo Vello compute renderer');
+    }
     const startupFonts=fonts();void startupFonts.catch(()=>{});
     await ready();if(!registry.current(token))throw Error('mount disposed');
     mark('wasm-ready');
@@ -506,6 +538,7 @@ export async function mountDesktop(target,options={}) {
     // Each startup font goes in with the digest the loader computed natively,
     // which the runtime checks against its build instead of hashing again.
     for(const [name,bytes] of Object.entries(assets))runtime.provide_startup_font(name,bytes,fontLoader.digestOf(bytes)??'');
+    if(domPresenter)runtime.present_as_dom(domPresenter.present);
     id=runtime.mount(canvas,JSON.stringify(config),entries,raw=>{
       // Pin pixels and geometry while this presentation is still current,
       // before another presentation or a queued page callback can replace it.

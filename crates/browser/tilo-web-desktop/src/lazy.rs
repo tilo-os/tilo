@@ -10,7 +10,8 @@
 //! reaction name or `:name:` completion asks for, History, which the
 //! first window that registers it asks for, desktop search, which the
 //! desktop asks for as it first lays out, the notification centre,
-//! which opening it asks for.
+//! which opening it asks for, the HTML presenter, which a page mounted
+//! with `dom: true` asks for.
 //!
 //! Like an app's `definition()` (`crate::split`), each export below is the
 //! only way to the code it hands over, so the splitter moves that code into
@@ -281,6 +282,13 @@ split_code! {
 }
 
 split_code! {
+    /// The code that shows a mount as HTML: a page that mounts with
+    /// `dom: true` asks for it.
+    mod dom_presenter: tilo_browser_runtime::DomCode = tilo_browser_runtime::builtin_dom()
+        => tilo_browser_runtime::DOM_CODE, module = "dom_presenter", hash = "6c2f8a1d93e5b047";
+}
+
+split_code! {
     /// The profile card: the first card that opens asks for it.
     mod profile_card: tilo_desktop::profile_card::MakeProfileCard = tilo_desktop::profile_card::builtin_profile_card()
         => tilo_desktop::profile_card::PROFILE_CARD, module = "profile_card", hash = "5f81c2e94a3d07b6";
@@ -383,6 +391,7 @@ pub(crate) fn register() {
     history::register();
     action_palette::register();
     feedback_code::register();
+    dom_presenter::register();
     profile_card::register();
     desktop_search::register();
     notification_centre::register();

@@ -123,6 +123,10 @@ mod desktop;
 #[cfg(target_arch = "wasm32")]
 mod directory;
 #[cfg(target_arch = "wasm32")]
+mod dom_code;
+#[cfg(target_arch = "wasm32")]
+pub use dom_code::{DOM_CODE, DomCode, builtin_dom};
+#[cfg(target_arch = "wasm32")]
 mod feedback_code;
 #[cfg(target_arch = "wasm32")]
 mod feedback_composer;

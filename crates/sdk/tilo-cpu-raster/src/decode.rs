@@ -86,6 +86,20 @@ pub(crate) enum Op {
         brush: Brush,
         bbox: Rect,
     },
+    /// A glyph run that carries its characters, listed as text when the
+    /// display list is decoded for a page's DOM ([`DisplayList::dom`]).
+    Text {
+        text: Arc<str>,
+        /// Where the first glyph's origin (on the baseline) lands.
+        origin: Point,
+        /// The pen position of every glyph after the first, relative to `origin`.
+        advances_to_last: f64,
+        font_size: f32,
+        font: vello_cpu::peniko::FontData,
+        coords: SmallVec<[i16; 8]>,
+        brush: Brush,
+        bbox: Rect,
+    },
     Blur {
         path: usize,
         transform: Affine,
@@ -118,6 +132,13 @@ pub(crate) struct DisplayList {
     paths_used: usize,
     pub glyphs: Vec<GlyphInstance>,
     open: Vec<usize>,
+    /// Decode for a page's DOM: glyph runs that carry their characters are
+    /// listed as [`Op::Text`] rather than as outlines, and the encoding's
+    /// keyed marks are kept in [`Self::marks`].
+    pub dom: bool,
+    /// Each keyed boundary ([`vello_encoding::Mark`]) and the index of the
+    /// op it stands before, in order. Only kept for a page's DOM.
+    pub marks: Vec<(usize, vello_encoding::MarkKind)>,
 }
 
 impl DisplayList {
@@ -150,6 +171,7 @@ impl DisplayList {
         self.ops.clear();
         self.glyphs.clear();
         self.open.clear();
+        self.marks.clear();
         self.paths_used = 0;
         let mut walker = Walker {
             encoding,
@@ -166,6 +188,7 @@ impl DisplayList {
             path: PathState::default(),
             bounds: None,
             complete: true,
+            next_mark: 0,
         };
         walker.run();
     }
@@ -187,6 +210,7 @@ impl DisplayList {
         self.ops.clear();
         self.glyphs.clear();
         self.open.clear();
+        self.marks.clear();
         self.paths_used = 0;
         let mut walker = Walker {
             encoding,
@@ -203,6 +227,7 @@ impl DisplayList {
             path: PathState::default(),
             bounds: Some(Vec::new()),
             complete: true,
+            next_mark: 0,
         };
         walker.run();
         let complete = walker.complete;
@@ -245,6 +270,8 @@ struct Walker<'a> {
     bounds: Option<Vec<Rect>>,
     /// Every draw so far was walked in full.
     complete: bool,
+    /// The first of the encoding's marks not yet listed.
+    next_mark: usize,
 }
 
 const IDENTITY: Transform = Transform::IDENTITY;
@@ -484,6 +511,7 @@ impl Walker<'_> {
             while let Some(&run) = runs.get(next_run) {
                 match resources.glyph_runs.get(run) {
                     Some(r) if r.stream_offsets.path_tags == tag_ix => {
+                        self.marks_before(r.stream_offsets.draw_tags, Some(run));
                         self.glyph_run(r);
                         next_run += 1;
                     }
@@ -506,13 +534,35 @@ impl Walker<'_> {
         }
         while let Some(&run) = runs.get(next_run) {
             if let Some(r) = resources.glyph_runs.get(run) {
+                self.marks_before(r.stream_offsets.draw_tags, Some(run));
                 self.glyph_run(r);
             }
             next_run += 1;
         }
+        self.marks_before(usize::MAX, None);
         // Layers left open are closed at the end of the scene.
         while !self.list.open.is_empty() {
             self.end_clip();
+        }
+    }
+
+    /// List the marks that stand before the draw at `draw` (a draw tag
+    /// index), or before glyph run `run` drawing there: a mark at the same
+    /// draw tag offset as a run stands before it only when the run was
+    /// recorded after it.
+    fn marks_before(&mut self, draw: usize, run: Option<usize>) {
+        if !self.list.dom || self.bounds.is_some() {
+            return;
+        }
+        let marks = &self.encoding.resources.marks;
+        while let Some(mark) = marks.get(self.next_mark) {
+            let before = mark.draw_tags < draw
+                || (mark.draw_tags == draw && run.is_none_or(|run| mark.glyph_runs <= run));
+            if !before {
+                break;
+            }
+            self.list.marks.push((self.list.ops.len(), mark.kind));
+            self.next_mark += 1;
         }
     }
 
@@ -622,6 +672,7 @@ impl Walker<'_> {
 
     fn end_path(&mut self) {
         let path = std::mem::take(&mut self.path);
+        self.marks_before(self.draw_ix, None);
         let Some((tag, offset)) = self.next_draw() else {
             return;
         };
@@ -917,6 +968,41 @@ impl Walker<'_> {
             return;
         };
         let paint_transform = run.transform * run.brush_transform.unwrap_or(IDENTITY);
+        if self.list.dom
+            && self.bounds.is_none()
+            && let Some(text) = run.text.clone()
+            && let (Some(first), Some(last)) = (run_glyphs.first(), run_glyphs.last())
+        {
+            let Some((tag, offset)) = self.next_draw() else {
+                return;
+            };
+            let Some(brush) = self.brush(tag, offset, to_affine(&paint_transform)) else {
+                return;
+            };
+            let affine = to_affine(&run.transform);
+            let origin = affine * Point::new(f64::from(first.x), f64::from(first.y));
+            let end = affine * Point::new(f64::from(last.x), f64::from(last.y));
+            let scale = affine.determinant().abs().sqrt();
+            let font_size = run.font_size * scale as f32;
+            let size = f64::from(font_size);
+            let bbox = Rect::new(
+                origin.x,
+                origin.y - size,
+                end.x + size,
+                origin.y + size * 0.3,
+            );
+            self.list.ops.push(Op::Text {
+                text,
+                origin,
+                advances_to_last: end.x - origin.x,
+                font_size,
+                font: run.font.clone(),
+                coords: coords.iter().copied().collect(),
+                brush,
+                bbox,
+            });
+            return;
+        }
         let mut hint = run.hint;
         let mut font_size = run.font_size;
         let mut transform = run.transform;

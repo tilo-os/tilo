@@ -628,6 +628,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/panorama.test.mjs",
   "crates/browser/tilo-browser-runtime/web/semantic-presentation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/semantics.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/dom-present.test.mjs",
   "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
   "crates/browser/tilo-browser-runtime/web/resource-reference.test.mjs",
   "crates/browser/tilo-browser-runtime/web/scrub.test.mjs",

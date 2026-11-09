@@ -436,7 +436,7 @@ struct GpuSetup {
     clippy::struct_excessive_bools,
     reason = "independent per-mount flags, each read on its own"
 )]
-struct Mount {
+pub(crate) struct Mount {
     metrics: RefCell<crate::frame_metrics::FrameMetrics>,
     /// Which statuses carry the semantics tree: unchanged trees are omitted,
     /// content-only changes are throttled, focus and structure changes go out
@@ -759,7 +759,7 @@ impl Mount {
         let p = crate::background_work::Presentation {
             hidden: self.hidden,
             suspended: self.viewport.suspended(),
-            gpu_ready: self.gpu.is_some(),
+            gpu_ready: self.presents(),
         };
         let mut attempted = false;
         let result = crate::background_work::run(p, || {
@@ -1063,6 +1063,7 @@ pub fn close(id: u64) -> Result<JsValue, JsValue> {
         &serde_json::json!({"phase":"closed","id":id,"closeReports":reports.len(),"pendingWrites":js_sys::Array::from(&writes).length()}),
     );
     unconfigure(&mount.canvas);
+    dom::forget(id);
     if let Some(gpu) = mount.gpu.take() {
         release_gpu(id, gpu);
     }
@@ -1641,8 +1642,21 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         cursor: winit::window::CursorIcon::Default,
     };
     MOUNTS.with_borrow_mut(|m| m.insert(id, mount));
-    emit(&status, &serde_json::json!({"phase":"gpu-pending","id":id}));
-    initialize_gpu(id, 1, window, caps);
+    if dom::presenting() {
+        // Shown as HTML: no surface to wait for.
+        dom::claim(id);
+        emit(&status, &serde_json::json!({"phase":"dom","id":id}));
+        let _ = with_mount(id, |m| {
+            m.viewport.surface_installed();
+            m.queue_resize();
+            m.pending = true;
+            m.window.request_redraw();
+            Ok(())
+        });
+    } else {
+        emit(&status, &serde_json::json!({"phase":"gpu-pending","id":id}));
+        initialize_gpu(id, 1, window, caps);
+    }
     wasm_bindgen_futures::spawn_local(watch_first_frame(id));
     Ok(())
 }
@@ -2111,6 +2125,9 @@ impl Mount {
         }
         // A window the last frame opened shows what its open named.
         self.reveal_opened();
+        if dom::shows(self.id) {
+            return self.draw_dom();
+        }
         let Some(gpu) = self.gpu.as_mut() else {
             self.held = "no surface";
             return Ok(());
@@ -2939,6 +2956,8 @@ impl Mount {
 /// Rejects an unknown kind or a closed mount.
 mod agent_notices;
 mod desktop_exports;
+mod dom;
+pub(crate) use dom::draw_dom_frame;
 mod fonts;
 mod frame_loop;
 mod here_exports;

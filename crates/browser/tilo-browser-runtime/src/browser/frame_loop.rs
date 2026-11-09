@@ -222,8 +222,18 @@ impl ApplicationHandler<u64> for Runner {
                             m.entries = m.entries.wrapping_add(1);
                         }
                     }
-                    m.pending = true;
-                    m.window.request_redraw();
+                    // What a key or a click changes shows before the next
+                    // paint on a mount shown as HTML; pointer motion waits
+                    // for the animation frame.
+                    if matches!(
+                        event,
+                        WindowEvent::KeyboardInput { .. } | WindowEvent::MouseInput { .. }
+                    ) {
+                        m.present_after_input();
+                    } else {
+                        m.pending = true;
+                        m.window.request_redraw();
+                    }
                 }
             }
             Ok(())
@@ -288,7 +298,7 @@ impl ApplicationHandler<u64> for Runner {
                     m.semantics.borrow().due()
                 };
                 if let Some(due) = semantics_due {
-                    let drawable = !m.viewport.suspended() && m.gpu.is_some();
+                    let drawable = !m.viewport.suspended() && m.presents();
                     if due <= now && m.frame.replayed_draws() && drawable {
                         // The last frame replayed windows instead of drawing
                         // them; the next one draws every window and delivers
@@ -301,7 +311,7 @@ impl ApplicationHandler<u64> for Runner {
                         wake(due);
                     }
                 }
-                if m.hidden || m.error.is_some() || m.gpu.is_none() || m.viewport.suspended() {
+                if m.hidden || m.error.is_some() || !m.presents() || m.viewport.suspended() {
                     return Ok(());
                 }
                 m.pending |= m.gpu.as_ref().is_some_and(Gpu::shows_lost_frame);

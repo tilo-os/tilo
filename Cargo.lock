@@ -17832,6 +17832,7 @@ dependencies = [
  "tilo-browser-peer",
  "tilo-clock",
  "tilo-content",
+ "tilo-cpu-raster",
  "tilo-desktop",
  "tilo-desktop-model",
  "tilo-desktop-search",
@@ -18244,6 +18245,7 @@ version = "0.1.0"
 dependencies = [
  "png",
  "pollster",
+ "serde_json",
  "skrifa 0.44.0",
  "smallvec",
  "tilo-font-catalog",
