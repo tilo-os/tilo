@@ -1226,11 +1226,13 @@ pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person]) {
             known.call = person.call.as_ref().map(ui::CallPresence::encode);
             continue;
         }
-        let (r, g, b) = person.rgb;
+        let (r, g, b) = ui::presence::user_color(&person.id);
         workspace.collaborators.push(Collaborator {
             id: person.id.clone(),
             name: person.label.clone(),
             active_tab: person.tab,
+            // The colour their pointer is drawn in on this desk, so a face, a pill and a caret for
+            // one person all wear the one colour.
             cursor_color: Some(format!("#{r:02x}{g:02x}{b:02x}")),
             role_id: person.agent.then(|| "agent".to_owned()),
             availability: Some(person.availability.id().to_owned()),
@@ -2409,7 +2411,12 @@ mod tests {
             .find(|c| c.id == "bot")
             .expect("overlaid");
         assert_eq!(bot.role_id.as_deref(), Some("agent"));
-        assert_eq!(bot.cursor_color.as_deref(), Some("#010203"));
+        let (r, g, b) = ui::presence::user_color("bot");
+        assert_eq!(
+            bot.cursor_color.as_deref(),
+            Some(format!("#{r:02x}{g:02x}{b:02x}").as_str()),
+            "the colour their pointer is drawn in"
+        );
         overlay_collaborators(&mut tree, &people);
         assert_eq!(
             tree.active_workspace().map(|w| w

@@ -1142,6 +1142,7 @@ impl Panel {
         transform: Affine,
         text: &mut TextRenderer,
         theme: &Theme,
+        presence: &ui::presence::PresenceCtx,
         shown: &Shown,
     ) {
         let following = self.sync.as_ref().and_then(|sync| sync.own().following);
@@ -1155,13 +1156,18 @@ impl Panel {
             HashMap::new()
         };
         let row = following.as_deref().and_then(|id| {
-            names.get(id).map(|(label, (r, g, b))| {
-                RosterRow::own(
+            names.get(id).map(|(label, _)| {
+                // Their colour is the one their pointer is drawn in on this desk, so the frame and
+                // the bar read as following them and nothing else here.
+                let user = ui::permissions::UserId(id.to_owned());
+                let mut row = RosterRow::own(
                     id.to_owned(),
                     label.clone(),
-                    Color::from_rgb8(*r, *g, *b),
+                    ui::presence::presence_colour(presence.color_for(&user)),
                     None,
-                )
+                );
+                row.is_agent = presence.is_agent(&user);
+                row
             })
         });
         let was = self.followed.replace(following.clone());
@@ -1189,6 +1195,15 @@ impl Panel {
         let area = shown.area;
         let bar = f64::from(tilo_desktop::topbar::topbar_height(theme));
         let below_bar = Rect::new(area.x0, area.y0 + bar, area.x1, area.y1);
+        // A window's bar, which carries the buttons its end: the banner keeps off every one of
+        // them, as it never stands on a control of the person's own.
+        let title = f64::from(theme.tokens.metrics.bar_height);
+        let window_bars: Vec<Rect> = self
+            .handle
+            .shown_tiles()
+            .into_iter()
+            .map(|(_, window)| Rect::new(window.x0, window.y0, window.x1, window.y0 + title))
+            .collect();
         let kept = self.banner.draw(
             scene,
             transform,
@@ -1197,7 +1212,7 @@ impl Panel {
             tilo_desktop::follow_banner::BannerFrame {
                 work_area: below_bar,
                 viewport: below_bar,
-                window_bars: &[],
+                window_bars: &window_bars,
                 cursor: shown.cursor,
                 motion: theme.motion(),
             },
@@ -1335,7 +1350,7 @@ impl Widget for Panel {
             self.profile.close();
         }
         self.draw_pointers(scene, transform, text, theme, presence, &mut shown);
-        self.draw_follow(scene, transform, text, theme, &shown);
+        self.draw_follow(scene, transform, text, theme, presence, &shown);
         self.drawn.set(revision);
     }
 
