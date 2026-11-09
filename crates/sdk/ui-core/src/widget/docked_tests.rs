@@ -99,3 +99,55 @@ fn a_docked_column_reports_what_it_holds_changing_in_place() {
         "reading clears it"
     );
 }
+
+/// The bar stands in the column its content is read at: a column that holds a page reads its
+/// words at the readable measure, and the bar at its foot stands in that same column rather
+/// than across the window, whether or not the app says its column is one.
+#[test]
+fn a_bar_under_a_page_column_stands_where_its_content_is_read() {
+    fn widths(node: &crate::headless::InspectionNode, out: &mut Vec<f64>) {
+        if node.widget == "Page"
+            && let Some(row) = node.children.first()
+        {
+            out.push(row.rect[2]);
+        }
+        for child in &node.children {
+            widths(child, out);
+        }
+    }
+    let measure = f64::from(crate::widget::arrange::MEASURE_REM)
+        * f64::from(crate::widget::arrange::rem_of(&crate::theme::Theme::dark()));
+    for page_column in [false, true] {
+        let content = crate::widget::arrange::Page::new().push(Box::new(crate::widget::Text::new(
+            "Words read at the measure",
+        )));
+        let docked = Docked::from_props(
+            "docked",
+            DockedProps {
+                content: Some(Box::new(content)),
+                foot: Some(Box::new(crate::widget::Text::new("Add a note"))),
+                page_column,
+            },
+        );
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            docked,
+            (1600, 900),
+            crate::theme::Theme::dark(),
+        );
+        harness.relayout();
+        let mut found = Vec::new();
+        widths(&harness.inspection().root, &mut found);
+        assert_eq!(
+            found.len(),
+            2,
+            "the content's page and the bar's, the app stating a page column or not: {found:?}"
+        );
+        for width in found {
+            assert!(
+                (width - measure).abs() <= 1.0,
+                "the bar keeps the page's measure (page_column: {page_column}): {width} against {measure}"
+            );
+        }
+    }
+}

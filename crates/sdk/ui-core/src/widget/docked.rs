@@ -36,6 +36,17 @@ fn slot(element: Element, fit: Fit) -> Slot {
     slot
 }
 
+/// The width the page column inside `node` is read at, if it holds one: a page bounds what it
+/// holds to a readable measure, and a bar at the foot of that column follows the same column.
+fn page_measure(node: &dyn Widget) -> Option<Length> {
+    if let Some(page) = node.as_any().and_then(|any| any.downcast_ref::<Page>())
+        && let Some(measure) = page.readable_measure()
+    {
+        return Some(measure);
+    }
+    node.children().into_iter().find_map(page_measure)
+}
+
 impl Described for Docked {
     type Props = DockedProps;
 
@@ -47,16 +58,22 @@ impl Described for Docked {
         } = props;
         let empty =
             || Box::new(crate::widget::Spacer::token(crate::tokens::SpacingStep::S0)) as Element;
+        let content = content.unwrap_or_else(empty);
+        // The bar stands in the column the content is read at: a page bounds what it holds to
+        // the readable measure, and the bar under it says what follows those words in their own
+        // column rather than across the window. The app may state it (`page_column`) where its
+        // column is a page column its content does not say of itself.
+        let measure =
+            page_measure(content.as_ref()).or(page_column.then_some(Length::Rem(MEASURE_REM)));
         let page = Page::full().foot();
-        let page = if page_column {
-            page.measure(Length::Rem(MEASURE_REM))
-        } else {
-            page
+        let page = match measure {
+            Some(measure) => page.measure(measure),
+            None => page,
         };
         let stack = Stack::stack()
             .fill_width()
             .fill_height()
-            .push_slot(slot(content.unwrap_or_else(empty), Fit::fill(1.0)))
+            .push_slot(slot(content, Fit::fill(1.0)))
             .push_slot(slot(
                 Box::new(page.push_slot(Slot::new(foot.unwrap_or_else(empty)))),
                 Fit::hug(),
