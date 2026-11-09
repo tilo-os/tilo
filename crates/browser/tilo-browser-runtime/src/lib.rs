@@ -137,7 +137,11 @@ mod guide;
 #[cfg(target_arch = "wasm32")]
 mod invite;
 #[cfg(target_arch = "wasm32")]
+mod layers;
+#[cfg(target_arch = "wasm32")]
 mod over_page;
+#[cfg(target_arch = "wasm32")]
+mod page_apps;
 #[cfg(target_arch = "wasm32")]
 pub use feedback_code::{
     FEEDBACK, FeedbackCode, builtin_feedback, code_arrived as feedback_arrived,
@@ -155,12 +159,6 @@ mod feedback_route;
 pub use feedback_composer::install_feedback_composer;
 #[cfg(target_arch = "wasm32")]
 pub use feedback_composer::{FEEDBACK_COMPOSER, FeedbackComposerCode, builtin_feedback_composer};
-#[cfg(target_arch = "wasm32")]
-mod pinned_roster;
-#[cfg(target_arch = "wasm32")]
-pub use pinned_roster::{MakePinnedRoster, PinnedRoster, builtin_pinned_roster};
-#[cfg(all(target_arch = "wasm32", feature = "deferred-people-overlay"))]
-pub use pinned_roster::{defer_people_overlay, install_people_overlay, people_overlay_load_failed};
 #[cfg(target_arch = "wasm32")]
 mod files;
 // What the page says about a fixed chord it cannot serve: its tests run on

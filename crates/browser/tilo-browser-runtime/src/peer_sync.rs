@@ -336,6 +336,17 @@ pub(crate) fn actions_of(id: u32, workspace: u64) -> Option<SessionActions> {
     })
 }
 
+/// `id`'s session's sync, which says this page's word and reads who is here: the session's own
+/// roster reads it too.
+pub(crate) fn client(id: u32) -> Option<Rc<Client>> {
+    PAGES.with_borrow(|pages| pages.get(&id).map(|page| Rc::clone(&page.client)))
+}
+
+/// `id`'s session, and the device of the host it is with: where the person's agent door is asked.
+pub(crate) fn host_of(id: u32) -> Option<(PeerHandle, [u8; 32])> {
+    PAGES.with_borrow(|pages| pages.get(&id).map(|page| (page.handle.clone(), page.host)))
+}
+
 /// Forget `id`'s peer and what it said.
 pub(crate) fn release(id: u32) {
     PAGES.with_borrow_mut(|pages| {

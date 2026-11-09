@@ -702,8 +702,6 @@ export async function mountDesktop(target,options={}) {
       // that a call's audio went both ways, or null for a page with no call
       // lane.
       call:()=>options.peer?.voice?.call.stats()??null,
-      // The workspace's members' pointers the frame draws: `[{label, agent, x, y, color}]`.
-      pointers:()=>active()?JSON.parse(runtime.remote_pointers_shown(id)):[],
       // Name the workspace's people by the id their actions record (`[{id, name}]`), for a page that knows who it admitted.
       setPeople:people=>{if(active())runtime.set_people(id,JSON.stringify(people));},
 
@@ -722,8 +720,8 @@ async function settleBeforeGpu(){
   await new Promise(resolve=>(globalThis.requestIdleCallback??(f=>setTimeout(f,0)))(resolve,{timeout:1500}));
 }
 // This person's pointer, said over the tab it is on: a point in that tab's
-// logical pixels, which every member's view of the tab places. The mount
-// draws the members' pointers from the board; this only says where this
+// logical pixels, which every member's view of the tab places. The session's
+// roster draws the members' pointers from the board; this only says where this
 // page's is.
 function followOwnPointer(layer,mountId,surface,active){
   const move=event=>{

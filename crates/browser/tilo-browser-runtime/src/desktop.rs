@@ -645,6 +645,19 @@ impl Shared {
     pub fn live_record_of(&self, tree: &DesktopTree, tab: TabId) -> Option<(String, String)> {
         tilo_desktop_surface::host::records::of_window(tree, &self.records.borrow(), tab)
     }
+
+    /// The record each window shows, by its tab: what the session's roster places a person's
+    /// record by, as a native session's windows note theirs.
+    pub fn shown_records(&self) -> std::collections::BTreeMap<u64, String> {
+        self.records
+            .borrow()
+            .iter()
+            .filter_map(|(tab, checkout)| {
+                let route = checkout.id.route();
+                (!route.is_empty()).then(|| (*tab, route.to_owned()))
+            })
+            .collect()
+    }
 }
 
 /// The workspace's record actions, run by the workspace's host: the page

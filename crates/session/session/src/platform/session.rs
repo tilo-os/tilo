@@ -754,7 +754,10 @@ impl Session {
             crate::people::Given {
                 scale: options.scale,
                 seated: options.person.clone(),
-                notes: std::sync::Arc::clone(&notes),
+                notes: {
+                    let notes = std::sync::Arc::clone(&notes);
+                    Rc::new(move || notes.records())
+                },
                 apps: Some(std::sync::Arc::new(options.lists.clone())
                     as std::sync::Arc<dyn crate::platform::apps::Apps>),
                 handle: handle.clone(),

@@ -41,7 +41,7 @@ const DISMISS_GRACE: Duration = Duration::from_millis(250);
 const WAVE_SHOWN: Duration = Duration::from_millis(2400);
 
 /// What the roster's card asks the session to do: what only it can.
-pub(crate) enum PeopleAsk {
+pub enum PeopleAsk {
     /// Open the conversation this person has with `key`'s person in Chat,
     /// its composer ready: the app is started when it is not up, and the
     /// pair's record is shown either way.
@@ -133,7 +133,7 @@ struct Shown {
 
 /// The People panel and the other people's pointers: one surface above the chrome, so the desk
 /// keeps its own drawing and the panel floats over it.
-pub(crate) struct People {
+pub struct People {
     /// The layer the roster and everyone else's pointers are drawn on, once the host placed it.
     layer: RefCell<Option<Rc<dyn crate::platform::surfaces::Layer>>>,
     shown: Rc<RefCell<Shown>>,
@@ -146,7 +146,7 @@ pub(crate) struct People {
 
 impl People {
     /// Open the roster, or close it again: what the bar's faces do.
-    pub(crate) fn toggle(&self) {
+    pub fn toggle(&self) {
         // Their press closed it a moment ago: this is that press, not another.
         let dismissed = self
             .dismissed
@@ -173,7 +173,7 @@ impl People {
 
     /// Open this person's own card, or close it again: the bar's own avatar opens who they are
     /// here, in the same card as anyone else's.
-    pub(crate) fn show_self(&self) {
+    pub fn show_self(&self) {
         if self.open.get() && self.shown.borrow().card_open.as_deref() == Some(SELF_CARD) {
             self.dismiss();
             return;
@@ -190,7 +190,7 @@ impl People {
 
     /// Open the roster at the person `person` , their card in the roster's place: a press on them
     /// elsewhere (a face in the bar, a wave, the launcher) lands here.
-    pub(crate) fn show_person(&self, person: &str) {
+    pub fn show_person(&self, person: &str) {
         // A row this roster has not read yet still opens: the next frame reads it and the card
         // comes up under it.
         {
@@ -204,17 +204,17 @@ impl People {
     }
 
     /// What the card asked since the last pass.
-    pub(crate) fn take_asks(&self) -> Vec<PeopleAsk> {
+    pub fn take_asks(&self) -> Vec<PeopleAsk> {
         std::mem::take(&mut *self.asks.borrow_mut())
     }
 
     /// Whether the roster stands over the desk now.
-    pub(crate) fn is_open(&self) -> bool {
+    pub fn is_open(&self) -> bool {
         self.open.get()
     }
 
     /// Close the roster: the person pressed elsewhere.
-    pub(crate) fn dismiss(&self) {
+    pub fn dismiss(&self) {
         let was_open = self.open.replace(false);
         if was_open {
             // What the roster shows is cleared before it draws again: the draw holds what it shows
@@ -239,7 +239,7 @@ impl People {
     }
 
     /// Draw in the person's theme, as their settings now have it.
-    pub(crate) fn set_theme(&self, theme: ui::Theme) {
+    pub fn set_theme(&self, theme: ui::Theme) {
         if let Some(layer) = self.layer.borrow().as_ref() {
             layer.set_theme(theme);
         }
@@ -252,7 +252,7 @@ impl People {
 
     /// The other people's pointers as the last frame drew them: their name and the point, in the
     /// surface's coordinates.
-    pub(crate) fn drawn_pointers(&self) -> Vec<(String, (f64, f64))> {
+    pub fn drawn_pointers(&self) -> Vec<(String, (f64, f64))> {
         self.shown.borrow().cursors.clone()
     }
 }
@@ -341,13 +341,14 @@ impl Published for People {
 }
 
 /// What the roster reads and asks of the session, beside the surfaces it is placed on.
-pub(crate) struct Given {
+pub struct Given {
     /// Where the panel stands and how finely it draws.
     pub scale: f64,
     /// This device's person, as the panel names them before presence says otherwise.
     pub seated: String,
-    /// What each window of the desk shows.
-    pub notes: std::sync::Arc<crate::continuations::Continuations>,
+    /// What each window of the desk shows, by its tab: the record it holds, as
+    /// the host that runs the windows reads them.
+    pub notes: Rc<dyn Fn() -> std::collections::BTreeMap<u64, String>>,
     /// The apps this host has, as a card offers to write to the person.
     pub apps: Option<std::sync::Arc<dyn crate::platform::apps::Apps>>,
     /// The desk the roster is drawn over.
@@ -361,7 +362,7 @@ pub(crate) struct Given {
 }
 
 /// The roster on a layer of its own over the windows, and the session's handle of it.
-pub(crate) fn mount(
+pub fn mount(
     surfaces: &mut dyn crate::platform::surfaces::Surfaces,
     given: Given,
 ) -> Rc<RefCell<People>> {
@@ -434,9 +435,9 @@ struct Panel {
     /// names the root key they are here by.
     seated: String,
     sync: Option<Rc<crate::sync::Client>>,
-    /// What each window of the desk shows, as its app reports it: where a person's record stands,
-    /// so the roster places them in the window they work in.
-    notes: std::sync::Arc<crate::continuations::Continuations>,
+    /// What each window of the desk shows, by its tab: where a person's record stands, so the
+    /// roster places them in the window they work in.
+    notes: Rc<dyn Fn() -> std::collections::BTreeMap<u64, String>>,
     /// The apps this host has: whether Chat stands here decides whether a card offers to write to
     /// the person.
     apps: Option<std::sync::Arc<dyn crate::platform::apps::Apps>>,
@@ -746,7 +747,7 @@ impl Panel {
         let app_name = |_: &str| None;
         let mut tree = self.handle.read(Clone::clone);
         if let Some(sync) = &self.sync {
-            sync.show(&mut tree, &self.notes.records(), &app_name);
+            sync.show(&mut tree, &(self.notes)(), &app_name);
         }
         let (rows, _) = collaborator_roster_rows_named(&tree, &own, None);
         let workspace = tree

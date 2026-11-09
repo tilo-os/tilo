@@ -1,18 +1,13 @@
-//! Who is here, drawn where they are: the workspace's presence board, read by
-//! the mount that draws the members' pointers, their names and carets, and
-//! the desktop's roster. The board merges every member's word
-//! ([`crate::peer`]); the mount only places what it holds in the tiles it
-//! shows, and animates what arrived: a cursor-chat bubble, a reaction.
-//!
-//! Placement runs at the start of every frame and after each drawn one, so a
-//! pointer follows a window the person moved here. Frames are asked for only
-//! while a pointer may still be moving, a bubble or reaction is animating, or
-//! a silent member's pointer is about to leave the screen.
+//! Who is here, as the page's own frames read them: the workspace's presence
+//! board, merged from every member's word ([`crate::peer`]), written into the
+//! desk's members and into the frame's presence, so editors draw each
+//! member's caret under their name and the desktop's roster lists them. The
+//! pointers themselves are the session's to draw ([`tilo_session::people`]),
+//! as on every host.
 
 use tilo_desktop::here::LiveMember;
 use ui::permissions::UserId;
 use ui::presence::PresenceKey;
-use ui::tokens::EffectiveMotion;
 use wasm_bindgen::prelude::*;
 
 use crate::peer_sync::BoardView;
@@ -29,21 +24,6 @@ pub(crate) struct Presence {
     pub(crate) seen: Vec<String>,
     /// Who a caret is drawn for, by publisher: a member who stops selecting has theirs taken away.
     pub(crate) carets: Vec<String>,
-    /// Keep drawing until then: the newest pointer heard plus the settle window, so it eases to
-    /// rest.
-    pub(crate) motion_until: f64,
-    /// When a silent member's pointer has to leave the screen, as of the wake already asked for.
-    pub(crate) wake_at: Option<f64>,
-    /// What people say beside their pointer, as the toolkit times it for every host.
-    chats: ui::presence::CursorChats,
-}
-
-impl Presence {
-    /// Whether a shown pointer is still easing towards where it landed: it was heard within the
-    /// settle window, so the next frame draws it further on.
-    fn settling(&self, now: f64) -> bool {
-        now < self.motion_until
-    }
 }
 
 impl Mount {
@@ -96,23 +76,18 @@ impl Mount {
         })
     }
 
-    /// Who is here, placed: the members' pointers over the tiles this mount
-    /// shows and everything drawn beside them, the desktop's roster, and the
-    /// names, kinds and carets their presence carries. Runs at the start of
-    /// every frame and after each drawn one, so a pointer follows a window
-    /// that moved here, and asks for the frames its animation needs.
+    /// Who is here, placed: what each member is, what they are called, and where their caret is,
+    /// for the desks and editors that draw them. Runs at the start of every frame and after each
+    /// drawn one.
     pub(super) fn place_presence(&mut self) {
         let Some(peer) = self.peer else {
             return;
         };
         let workspace = self.workspace.clone();
-        let tiles = self.tiles();
-        let now = Self::now_ms();
         let Some(view) = crate::peer_sync::view(peer, &workspace) else {
             return;
         };
-        let changed = view.revision != self.presence.revision;
-        if changed {
+        if view.revision != self.presence.revision {
             self.presence.revision = view.revision;
             self.here_from(&view);
             self.names_from(&view);
@@ -131,65 +106,6 @@ impl Mount {
             self.pending = true;
             self.window.request_redraw();
         }
-        // The toolkit's clock times what arrived here, so a sender's skewed clock cannot keep a
-        // bubble up. The members' pointers are placed by the rule the session core holds for both
-        // hosts: each over the tile it is on, with what they say beside it.
-        let at = ui::time::now();
-        let motion: EffectiveMotion = crate::page_theme::current().motion();
-        let pointers = tilo_session_core::presence::pointers(
-            &view.members,
-            &tiles,
-            &mut self.presence.chats,
-            self.frame.presence(),
-            at,
-            now,
-            motion,
-        );
-        if let Some(until) = pointers.motion_until {
-            self.presence.motion_until = self.presence.motion_until.max(until);
-        }
-        if self.frame.set_placed_pointers(pointers.drawn) {
-            self.pending = true;
-            self.window.request_redraw();
-        }
-        // A pointer still easing or an animation running: the next frame
-        // draws a change, so ask for it.
-        if pointers.animating || self.presence.settling(now) {
-            self.pending = true;
-            self.window.request_redraw();
-        }
-        // A pointer whose member went silent leaves the screen at the end of
-        // its keepalive window, and no arrival will come to notice it.
-        if let Some(leaving) = pointers.leaving {
-            self.wake_at(self.id, leaving, now);
-        }
-    }
-
-    /// Ask for a frame at `at_ms`, when a silent member's pointer has to
-    /// leave the screen.
-    fn wake_at(&mut self, id: u64, at_ms: f64, now: f64) {
-        if self
-            .presence
-            .wake_at
-            .is_some_and(|asked| (asked - at_ms).abs() < 1.0)
-        {
-            return;
-        }
-        let Ok(proxy) = super::proxy() else {
-            return;
-        };
-        self.presence.wake_at = Some(at_ms);
-        let delay = (at_ms - now).max(0.0).ceil();
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "a timer of a few seconds"
-        )]
-        let ms = delay as u32;
-        wasm_bindgen_futures::spawn_local(async move {
-            super::sleep_ms(ms).await;
-            let _ = proxy.send_event(id);
-        });
     }
 
     /// While this page follows an agent, the view inside the window it
@@ -314,16 +230,6 @@ impl Mount {
         crate::peer::workspace_number(&self.workspace).ok()
     }
 
-    /// Unix milliseconds, on the clock presence is heard on.
-    fn now_ms() -> f64 {
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "a millisecond clock far below 2^53"
-        )]
-        let now = ui::time::unix_now_ms() as f64;
-        now
-    }
-
     /// Show the pointer shape the surface asks for where the pointer is, as
     /// a native window does: the canvas's CSS cursor, set only on a change.
     pub(super) fn show_cursor(&mut self) {
@@ -357,34 +263,6 @@ pub fn pointer_tile(id: u64, x: f32, y: f32) -> Result<Option<String>, JsValue> 
         }))
         .map(Some)
         .map_err(error)
-    })
-}
-
-/// The members' pointers the frame draws: `[{label, agent, x, y, color}]`,
-/// `color` as `#rrggbb`.
-///
-/// # Errors
-///
-/// Rejects a closed mount.
-#[wasm_bindgen]
-pub fn remote_pointers_shown(id: u64) -> Result<String, JsValue> {
-    with_mount_quietly(id, |m| {
-        let shown: Vec<serde_json::Value> = m
-            .frame
-            .placed_pointers()
-            .iter()
-            .map(|p| {
-                let [r, g, b, _] = p.color.to_rgba8().to_u8_array();
-                serde_json::json!({
-                    "label": p.label,
-                    "agent": p.is_agent,
-                    "x": p.pos.0,
-                    "y": p.pos.1,
-                    "color": format!("#{r:02x}{g:02x}{b:02x}"),
-                })
-            })
-            .collect();
-        serde_json::to_string(&shown).map_err(error)
     })
 }
 

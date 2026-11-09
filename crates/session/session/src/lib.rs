@@ -246,15 +246,7 @@ mod pairing;
 mod panels;
 #[cfg(target_os = "linux")]
 mod pass;
-// The page mounts the roster on its own surfaces next.
-#[cfg_attr(
-    target_arch = "wasm32",
-    allow(
-        dead_code,
-        reason = "the page mounts the roster on its own surfaces next"
-    )
-)]
-mod people;
+pub mod people;
 #[cfg(target_os = "linux")]
 mod personal;
 #[cfg(target_os = "linux")]

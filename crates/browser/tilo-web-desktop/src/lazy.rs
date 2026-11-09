@@ -71,10 +71,6 @@ unsafe extern "C" {
     fn load_model_clients(callback: Callback, data: *const c_void);
     #[link_name = "__wasm_split_00___model_clients___00_import_5d2c8e71a94f03b6_clients"]
     fn model_clients() -> tilo_browser_runtime::MakeModelClients;
-    #[link_name = "__wasm_split_load_people_overlay_c0c7a1e1c6874f57_roster"]
-    fn load_people_overlay(callback: Callback, data: *const c_void);
-    #[link_name = "__wasm_split_00___people_overlay___00_import_c0c7a1e1c6874f57_roster"]
-    fn people_overlay() -> tilo_browser_runtime::MakePinnedRoster;
 }
 
 #[unsafe(export_name = "__wasm_split_00___search___00_export_8c1f5e0d2b7a4936_engine")]
@@ -120,15 +116,6 @@ extern "C" fn export_image_decoders() -> tilo_ui::image_decoders::MakeImageDecod
 )]
 extern "C" fn export_model_clients() -> tilo_browser_runtime::MakeModelClients {
     tilo_browser_runtime::builtin_model_clients
-}
-
-#[unsafe(export_name = "__wasm_split_00___people_overlay___00_export_c0c7a1e1c6874f57_roster")]
-#[allow(
-    improper_ctypes_definitions,
-    reason = "the function pointer only passes between Rust"
-)]
-extern "C" fn export_people_overlay() -> tilo_browser_runtime::MakePinnedRoster {
-    tilo_browser_runtime::builtin_pinned_roster
 }
 
 /// Fetch the search engine's module, then install the engine.
@@ -193,19 +180,6 @@ fn fetch_model_clients() {
             tilo_browser_runtime::install_model_clients(unsafe { model_clients() });
         } else {
             tilo_browser_runtime::model_clients_load_failed();
-        }
-    });
-}
-
-/// Fetch the pinned people overlay's module, then show it.
-fn fetch_people_overlay() {
-    wasm_bindgen_futures::spawn_local(async {
-        if crate::split::load(load_people_overlay).await {
-            // SAFETY: the module that defines `people_overlay` is loaded.
-            tilo_browser_runtime::install_people_overlay(unsafe { people_overlay() });
-            tilo_browser_runtime::refresh_mounts();
-        } else {
-            tilo_browser_runtime::people_overlay_load_failed();
         }
     });
 }
@@ -386,7 +360,6 @@ pub(crate) fn register() {
     tilo_ui::defer_hyphenation(fetch_hyphenation);
     tilo_ui::image_decoders::defer_image_decoders(fetch_page_images);
     tilo_browser_runtime::defer_model_clients(fetch_model_clients);
-    tilo_browser_runtime::defer_people_overlay(fetch_people_overlay);
     emoji::register();
     history::register();
     action_palette::register();

@@ -81,8 +81,6 @@ glyph-join 1 crates/session/desktop/src/here.rs
 glyph-join 1 crates/session/messaging-service/src/service/sms.rs
 glyph-join 1 crates/session/speaker-service/src/settings.rs
 glyph-join 1 crates/session/tray-host/src/item.rs
-hand-metric 1 crates/session/desktop/src/people_overlay.rs
-hand-metric 1 crates/session/desktop/src/people_overlay/peek.rs
 hand-metric 2 crates/session/onboarding/src/compose.rs
 hand-panel 2 crates/session/desktop-surface/src/drill_in.rs
 hand-panel 2 crates/session/desktop-surface/src/surface/arrivals.rs
@@ -92,8 +90,6 @@ hand-panel 1 crates/session/desktop/src/feedback_picker.rs
 hand-panel 1 crates/session/desktop/src/launchpad.rs
 hand-panel 3 crates/session/desktop/src/osd.rs
 hand-panel 10 crates/session/desktop/src/overview_panel/paint.rs
-hand-panel 1 crates/session/desktop/src/people_overlay.rs
-hand-panel 3 crates/session/desktop/src/people_overlay/peek.rs
 hand-panel 1 crates/session/desktop/src/strip_switcher.rs
 hand-panel 7 crates/session/desktop/src/window_switcher.rs
 hand-rolled 1 apps/feeds/src/reader_pane.rs
@@ -113,8 +109,6 @@ hand-text 5 crates/session/desktop/src/launchpad.rs
 hand-text 3 crates/session/desktop/src/osd.rs
 hand-text 10 crates/session/desktop/src/overview_panel/paint.rs
 hand-text 3 crates/session/desktop/src/overview_picture.rs
-hand-text 3 crates/session/desktop/src/people_overlay.rs
-hand-text 2 crates/session/desktop/src/people_overlay/peek.rs
 hand-text 1 crates/session/desktop/src/strip_switcher.rs
 hand-text 2 crates/session/desktop/src/window_switcher.rs
 own-scroll 1 crates/session/desktop-surface/src/surface.rs
