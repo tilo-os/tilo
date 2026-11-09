@@ -36,3 +36,14 @@ pub const ISSUE_INVITATION: &str = "issue-invitation";
 /// sharing what it shows by asking this, so a folder's share and the bar's invite button are one
 /// sheet.
 pub const SHOW_INVITE: &str = "show-invite";
+
+/// The target the desk's action `action` is invoked at: the session's own provider, on the
+/// resource it publishes the desk as. An app invokes one of these as the person using it, through
+/// the action broker.
+#[must_use]
+pub fn target(action: &str) -> super::RemoteActionTarget {
+    super::RemoteActionTarget {
+        provider: PROVIDER.to_owned(),
+        address: super::ActionAddress::new(DESK_RESOURCE, action),
+    }
+}

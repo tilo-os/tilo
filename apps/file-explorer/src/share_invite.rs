@@ -12,7 +12,6 @@ use tilo_actions::InvocationId;
 use tilo_actions::remote::session_actions;
 use tilo_actions::remote::{
     InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage,
-    RemoteActionTarget,
 };
 use ui::collaboration::{CollabEvent, CollabRequest};
 
@@ -37,13 +36,7 @@ impl ShareInvite {
             message: RemoteActionMessage::Invoke(InvokeRequest {
                 on_behalf_of: None,
                 invocation,
-                target: RemoteActionTarget {
-                    provider: session_actions::PROVIDER.into(),
-                    address: tilo_actions::ActionAddress::new(
-                        session_actions::DESK_RESOURCE,
-                        session_actions::SHOW_INVITE,
-                    ),
-                },
+                target: session_actions::target(session_actions::SHOW_INVITE),
                 argument: InvokeArgument::Json(serde_json::Map::new()),
                 context: None,
                 confirmation: None,
@@ -149,13 +142,7 @@ mod tests {
         };
         assert_eq!(
             request.target,
-            RemoteActionTarget {
-                provider: session_actions::PROVIDER.into(),
-                address: tilo_actions::ActionAddress::new(
-                    session_actions::DESK_RESOURCE,
-                    session_actions::SHOW_INVITE,
-                ),
-            }
+            session_actions::target(session_actions::SHOW_INVITE)
         );
         let InvokeArgument::Json(arguments) = &request.argument else {
             panic!("the sheet is asked for on the workspace in front");
