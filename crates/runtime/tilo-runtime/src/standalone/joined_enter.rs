@@ -174,11 +174,29 @@ impl Refusals {
 }
 
 impl Workspaces for Entering {
+    /// What the member holds. Reading never enters a workspace: only a
+    /// request the relay itself signed does ([`Self::read_for`]).
     fn read<'a>(
         &'a self,
         workspace: &'a str,
         read: &'a mut (dyn FnMut(&StatePeer) + Send),
     ) -> ReadFuture<'a> {
+        Box::pin(held(&self.joined, workspace, read))
+    }
+
+    /// What the member holds, and on a miss for a request the relay this
+    /// member serves signed, the workspace the relay enters it into. A
+    /// request any other device signs only reads, so no device but the
+    /// relay makes this member hold a workspace.
+    fn read_for<'a>(
+        &'a self,
+        asker: [u8; 32],
+        workspace: &'a str,
+        read: &'a mut (dyn FnMut(&StatePeer) + Send),
+    ) -> ReadFuture<'a> {
+        if asker != self.relay.device() {
+            return self.read(workspace, read);
+        }
         Box::pin(async move {
             let read: &mut (dyn FnMut(&StatePeer) + Send) = read;
             if held(&self.joined, workspace, &mut *read).await {

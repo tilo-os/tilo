@@ -322,6 +322,75 @@ async fn a_command_runs_on_the_vm_host_holding_the_workspace() {
     stop(placed).await;
 }
 
+/// The workspace's governance generation: it moves when a device is admitted.
+async fn generation(placed: &Placed, workspace: &str) -> u64 {
+    placed
+        .hosted
+        .host
+        .workspaces()
+        .membership(workspace)
+        .await
+        .unwrap()
+        .0
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_the_relay_makes_the_member_enter_a_workspace() {
+    let placed = placed().await;
+    let later = placed
+        .hosted
+        .host
+        .workspaces()
+        .create("Second")
+        .await
+        .unwrap()
+        .workspace;
+    let before = generation(&placed, &later).await;
+
+    // Another device naming a workspace the member does not hold is refused,
+    // and the relay admits nothing for it.
+    let stranger = TestUser::fresh("stranger").enrol("laptop", DeviceCapabilities::member());
+    let stranger_endpoint = device_endpoint(&stranger).await;
+    let asking = ActionPlane::new(stranger.sk.clone(), Arc::new(NoActions));
+    let answered = asking
+        .remote(
+            &stranger_endpoint,
+            &member_at(placed.member_device, &placed.member_address),
+            &later,
+        )
+        .invoke(
+            &Caller::local_app("tilo.relay"),
+            run_request("run:1", "echo stranger > stranger.txt"),
+        )
+        .wait_timeout(Duration::from_secs(30));
+    assert!(
+        matches!(answered, Ok(Some(Err(_)))),
+        "a device that is not the relay is refused a workspace the member does not hold"
+    );
+    assert_eq!(
+        generation(&placed, &later).await,
+        before,
+        "a stranger's request made the member enter a workspace"
+    );
+
+    // The relay's own run is what enters it.
+    let (shells, asked) = (Arc::clone(&placed.shells), later.clone());
+    let ran = tokio::task::spawn_blocking(move || {
+        shells.run(&asked, "run:1", "pwd", true, Watching::default())
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(ran.exit, 0);
+    assert_ne!(
+        generation(&placed, &later).await,
+        before,
+        "the relay's run admitted the member"
+    );
+
+    stop(placed).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runs_output_reaches_the_caller_before_it_ends() {
     let placed = placed().await;

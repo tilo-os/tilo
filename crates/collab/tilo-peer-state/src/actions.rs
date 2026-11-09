@@ -130,6 +130,20 @@ pub trait Workspaces: Send + Sync {
         workspace: &'a str,
         read: &'a mut (dyn FnMut(&crate::StatePeer) + Send),
     ) -> ReadFuture<'a>;
+
+    /// [`Self::read`] for a request the device `asker` signed, which the
+    /// plane is deciding: a view that comes to hold a workspace on a
+    /// device's request may do so here, and only here, for the devices it
+    /// trusts to ask. Every other read only reads.
+    fn read_for<'a>(
+        &'a self,
+        asker: [u8; 32],
+        workspace: &'a str,
+        read: &'a mut (dyn FnMut(&crate::StatePeer) + Send),
+    ) -> ReadFuture<'a> {
+        let _ = asker;
+        self.read(workspace, read)
+    }
 }
 
 /// What a [`Workspaces`] view answers a read with: a future of its own,
@@ -364,6 +378,17 @@ impl ActionPlane {
     async fn read_workspace<R: Send>(
         &self,
         workspace: &str,
+        read: impl FnMut(&crate::StatePeer) -> R + Send,
+    ) -> Option<R> {
+        self.read_workspace_for(None, workspace, read).await
+    }
+
+    /// [`Self::read_workspace`] while deciding a request `asker` signed
+    /// ([`Workspaces::read_for`]).
+    async fn read_workspace_for<R: Send>(
+        &self,
+        asker: Option<[u8; 32]>,
+        workspace: &str,
         mut read: impl FnMut(&crate::StatePeer) -> R + Send,
     ) -> Option<R> {
         let held = self.0.replicas.lock_recover().get(workspace).cloned();
@@ -372,9 +397,11 @@ impl ActionPlane {
         }
         let workspaces = self.0.workspaces.as_ref()?;
         let mut answer = None;
-        let held = workspaces
-            .read(workspace, &mut |peer| answer = Some(read(peer)))
-            .await;
+        let mut reading = |peer: &crate::StatePeer| answer = Some(read(peer));
+        let held = match asker {
+            Some(asker) => workspaces.read_for(asker, workspace, &mut reading).await,
+            None => workspaces.read(workspace, &mut reading).await,
+        };
         held.then_some(()).and(answer)
     }
 
@@ -582,7 +609,7 @@ impl ActionPlane {
             })?;
         let now = SystemTime::now();
         let (authority, certificate) = self
-            .read_workspace(&action.workspace, |peer| {
+            .read_workspace_for(Some(source), &action.workspace, |peer| {
                 let authority = peer.permissions(source, now);
                 let certificate = peer
                     .certificates()
