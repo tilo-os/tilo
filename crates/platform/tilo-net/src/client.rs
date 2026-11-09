@@ -41,6 +41,9 @@ pub(crate) struct Config {
     pub(crate) default_headers: HeaderMap,
     pub(crate) redirects: Redirects,
     pub(crate) proxy: ProxyUse,
+    /// The TLS settings to verify servers with, in place of the system's.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) tls: Option<rustls::ClientConfig>,
 }
 
 /// An HTTP client: a connection pool on the desktop, the page's `fetch` on
@@ -229,6 +232,18 @@ impl ClientBuilder {
     /// Off unless the app opts in; a request can override it.
     pub fn fetch_proxy(mut self, proxy: ProxyUse) -> Self {
         self.config.proxy = proxy;
+        self
+    }
+
+    /// Verify servers with `tls` (such as
+    /// [`client_config_also_trusting`](crate::client_config_also_trusting))
+    /// instead of the system's trust. A page always has the browser's.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn tls(mut self, mut tls: rustls::ClientConfig) -> Self {
+        if tls.alpn_protocols.is_empty() {
+            tls.alpn_protocols = vec![b"http/1.1".to_vec()];
+        }
+        self.config.tls = Some(tls);
         self
     }
 

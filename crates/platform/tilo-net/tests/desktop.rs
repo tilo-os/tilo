@@ -287,6 +287,98 @@ async fn an_unpinned_self_signed_webtransport_server_is_refused() {
     );
 }
 
+/// An HTTPS server on loopback presenting `chain`, answering `ok` to every
+/// request, one connection at a time.
+fn https_server(
+    chain: Vec<rustls::pki_types::CertificateDer<'static>>,
+    key: &rcgen::KeyPair,
+) -> u16 {
+    use std::io::{Read as _, Write as _};
+    let config = rustls::ServerConfig::builder_with_provider(tilo_net::crypto_provider())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            chain,
+            rustls::pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into()),
+        )
+        .unwrap();
+    let config = std::sync::Arc::new(config);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for tcp in listener.incoming() {
+            let Ok(tcp) = tcp else { continue };
+            let connection = rustls::ServerConnection::new(config.clone()).unwrap();
+            let mut tls = rustls::StreamOwned::new(connection, tcp);
+            let mut head = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                if tls.read(&mut byte).unwrap_or(0) == 0 {
+                    break;
+                }
+                head.push(byte[0]);
+            }
+            let _ = tls
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+            let _ = tls.flush();
+            tls.conn.send_close_notify();
+            let _ = tls.flush();
+        }
+    });
+    port
+}
+
+async fn fetched(client: &Client, port: u16) -> Result<StatusCode, NetError> {
+    Ok(client
+        .get(format!("https://127.0.0.1:{port}/"))
+        .send()
+        .await?
+        .status())
+}
+
+#[tokio::test]
+async fn extra_trust_takes_a_ca_or_an_exact_self_signed_certificate_and_nothing_else() {
+    let loopback = || rcgen::CertificateParams::new(vec!["127.0.0.1".to_owned()]).unwrap();
+    // A self-signed server certificate, as a host's development listener has.
+    let leaf_key = rcgen::KeyPair::generate().unwrap();
+    let leaf = loopback().self_signed(&leaf_key).unwrap();
+    let self_signed = https_server(vec![leaf.der().clone()], &leaf_key);
+    // A server certificate a test CA issued.
+    let mut ca_params = rcgen::CertificateParams::new(Vec::new()).unwrap();
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let ca_key = rcgen::KeyPair::generate().unwrap();
+    let ca = ca_params.self_signed(&ca_key).unwrap();
+    let ca_issuer = rcgen::Issuer::new(ca_params, &ca_key);
+    let issued_key = rcgen::KeyPair::generate().unwrap();
+    let issued = loopback().signed_by(&issued_key, &ca_issuer).unwrap();
+    let chained = https_server(vec![issued.der().clone()], &issued_key);
+    // Another self-signed server, trusted by nobody.
+    let other_key = rcgen::KeyPair::generate().unwrap();
+    let other = loopback().self_signed(&other_key).unwrap();
+    let stranger = https_server(vec![other.der().clone()], &other_key);
+
+    let trusting = Client::builder()
+        .tls(
+            tilo_net::client_config_also_trusting(vec![leaf.der().clone(), ca.der().clone()])
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
+    assert_eq!(
+        fetched(&trusting, self_signed).await.unwrap(),
+        StatusCode::OK
+    );
+    assert_eq!(fetched(&trusting, chained).await.unwrap(), StatusCode::OK);
+    assert!(
+        fetched(&trusting, stranger).await.is_err(),
+        "verification stays on for everything else"
+    );
+    let plain = Client::new();
+    assert!(fetched(&plain, self_signed).await.is_err());
+    assert!(fetched(&plain, chained).await.is_err());
+}
+
 fn free_udp_port() -> u16 {
     std::net::UdpSocket::bind("127.0.0.1:0")
         .unwrap()
