@@ -73,8 +73,51 @@ with open(archive, "wb") as out, gzip.GzipFile(filename="", mode="wb", fileobj=o
 PY
 }
 
+# The otool that reads a Mach-O here: a Mac's own, or llvm's on the Linux node that builds one.
+macho_otool() {
+  if command -v otool >/dev/null; then
+    printf 'otool'
+    return
+  fi
+  command -v llvm-otool >/dev/null \
+    || die 'no otool or llvm-otool to read a Mach-O with (the cli-macos-cross-ARCH check installs llvm)'
+  printf 'llvm-otool'
+}
+
+# The libraries a Mach-O names, one path per line, as dyld looks them up.
+macho_dylibs() {
+  "$(macho_otool)" -L "$1" | tail -n +2 | awk '{print $1}'
+}
+
+# What is checked of a program that cannot run here, read out of the Mach-O it is: the
+# architecture it was built for, the oldest macOS it runs on, that every library it names is one
+# every Mac carries -- a framework's stub names it the way the framework is installed -- and that
+# an arm64 program still carries the ad-hoc signature its build signs it with, without which an
+# arm64 Mac refuses to run it.
+verify_macho() {
+  local program=$1 arch=$2 otool load_commands cpu minos foreign
+  otool=$(macho_otool)
+  cpu=$("$otool" -hv "$program" | awk '$1 == "MH_MAGIC_64" { print $2 }')
+  case $arch in
+    aarch64) [[ $cpu == ARM64 ]] || die "$program is a Mach-O of $cpu, not of the ARM64 $arch needs" ;;
+    x86_64) [[ $cpu == X86_64 ]] || die "$program is a Mach-O of $cpu, not of the X86_64 $arch needs" ;;
+  esac
+  # Read once, and out of a file: a reader that stops at its first match closes the pipe under
+  # otool, and this script's `set -e` fails on that SIGPIPE.
+  load_commands=$("$otool" -l "$program")
+  minos=$(awk '$1 == "minos" && !found++ { print $2 }' <<< "$load_commands")
+  [[ $minos == 11.0 ]] \
+    || die "$program was built for macOS ${minos:-no version at all}, not for the 11.0 the build asks for"
+  foreign=$(macho_dylibs "$program" | grep -Ev '^(/usr/lib/|/System/Library/)' || true)
+  [[ -z $foreign ]] || die "$program names libraries a Mac does not carry: $foreign"
+  if [[ $arch == aarch64 ]]; then
+    grep 'cmd LC_CODE_SIGNATURE' <<< "$load_commands" >/dev/null \
+      || die "$program carries no code signature, which an arm64 Mac needs to run it"
+  fi
+}
+
 cmd_build() {
-  local target=${1:?$usage} out=${2:?$usage} os arch flags cross
+  local target=${1:?$usage} out=${2:?$usage} os arch flags cross stubs
   case $target in
     x86_64-unknown-linux-musl) os=linux arch=x86_64 ;;
     aarch64-unknown-linux-musl) os=linux arch=aarch64 ;;
@@ -113,10 +156,30 @@ cmd_build() {
     fi
     flags="$flags -C target-feature=+crt-static -C relro-level=full -C link-arg=-Wl,-z,noexecstack"
   else
-    [[ $(uname -s) == Darwin ]] || die "$target is built on a Mac, not on $(uname -s)"
-    rustup target add "$target" >/dev/null
     # The oldest macOS the program runs on, for Rust and the C cc-rs compiles alike.
     export MACOSX_DEPLOYMENT_TARGET=11.0
+    case $(uname -s) in
+      Darwin) rustup target add "$target" >/dev/null ;;
+      Linux)
+        # No Mac is a build node: Zig builds the program here, for either Mac architecture. It
+        # carries Darwin's C library headers, which is what the C the program links (ring, SQLite,
+        # zstd) is compiled against, and the framework stubs the check's setup writes stand in for
+        # the frameworks' headers and libraries (tools/ci/macos-frameworks.py). No Apple SDK is
+        # involved: it is Apple's to license on Apple hardware, and nothing here is a copy of it.
+        command -v zig >/dev/null \
+          || die "no zig, which cross-builds $target: install it (the cli-macos-cross-$arch check sets it up)"
+        stubs=$scratch/macos-frameworks
+        rm -rf "$stubs"
+        python3 -I "$repo_root/tools/ci/macos-frameworks.py" "$stubs" "$target"
+        cross=$repo_root/tools/ci/zig-cc.sh
+        export TILO_ZIG_TARGET=$arch-macos.11.0
+        export "CC_${target//-/_}=$cross"
+        # Zig's caches belong to this build, not to the node: a later one starts from none of it.
+        export ZIG_GLOBAL_CACHE_DIR=$scratch/zig-cache ZIG_LOCAL_CACHE_DIR=$scratch/zig-cache
+        flags="$flags -C linker=$cross -C link-arg=-F$stubs -C link-arg=-L$stubs"
+        ;;
+      *) die "$target is built on Linux or a Mac, not on $(uname -s)" ;;
+    esac
   fi
   RUSTFLAGS=$flags CARGO_PROFILE_RELEASE_STRIP=symbols CARGO_INCREMENTAL=0 \
     cargo build --locked --release --target "$target" -p tilo-cli --bin tilo
@@ -130,21 +193,22 @@ cmd_build() {
     if LC_ALL=C readelf -dW "$program" | grep -q '(NEEDED)'; then
       die "$program needs shared libraries: $(readelf -dW "$program" | grep '(NEEDED)')"
     fi
+    # The program runs here when it is this machine's architecture, and under qemu's user-mode
+    # emulator when it is the other one, which the cli-aarch64 check's setup installs. Without the
+    # emulator a cross-built archive is checked only by its ELF, above.
+    if [[ $arch == $(uname -m) ]]; then
+      "$program" --help >/dev/null || die "$program --help failed"
+    elif command -v "qemu-$arch-static" >/dev/null; then
+      "qemu-$arch-static" "$program" --help >/dev/null \
+        || die "$program --help failed under qemu-$arch-static"
+    fi
   else
-    # Only what every Mac has: the system library and Apple's frameworks.
-    local foreign
-    foreign=$(otool -L "$program" | tail -n +2 | awk '{print $1}' | grep -Ev '^(/usr/lib/|/System/Library/)' || true)
-    [[ -z $foreign ]] || die "$program links libraries a Mac does not carry: $foreign"
-  fi
-  # The architecture it runs on is this one (a Mac runs x86_64 under Rosetta, when installed), or
-  # an emulated one: qemu's user-mode emulator, which the cli-aarch64 check's setup installs, runs
-  # a cross-built program here too. Without it a cross-built archive is checked only by its ELF,
-  # above.
-  if [[ $arch == $(uname -m) || ( $os == macos && $arch == aarch64 && $(uname -m) == arm64 ) ]]; then
-    "$program" --help >/dev/null || die "$program --help failed"
-  elif command -v "qemu-$arch-static" >/dev/null; then
-    "qemu-$arch-static" "$program" --help >/dev/null \
-      || die "$program --help failed under qemu-$arch-static"
+    # A Mac's program does not run on a node of this fleet: what is checked of it is the file it
+    # is. A Mac checks it by running it too, when the program is the architecture the Mac is.
+    verify_macho "$program" "$arch"
+    if [[ $(uname -s) == Darwin && $arch == $(uname -m) ]]; then
+      "$program" --help >/dev/null || die "$program --help failed"
+    fi
   fi
   rm -rf "$out"
   mkdir -p "$out"
