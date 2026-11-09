@@ -6,7 +6,6 @@ use std::collections::BTreeMap;
 
 use serde_json::Value as Json;
 use tilolang_tilo::runtime::Value;
-use ui::tilo_actions::Action as _;
 
 use super::{SHELL_RECORD, ShellPart};
 
@@ -89,7 +88,7 @@ impl ShellPart {
         for committed in host.take_committed_from(first) {
             let result = match host.store().take_ticket(committed.ticket) {
                 Some(action) => action
-                    .apply(&mut self.record.borrow_mut())
+                    .apply_as_step(&mut self.record.borrow_mut())
                     .map_err(|error| error.to_string()),
                 None => Err(format!("no committed action {}", committed.ticket)),
             };
