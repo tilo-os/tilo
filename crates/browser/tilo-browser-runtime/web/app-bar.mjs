@@ -151,7 +151,8 @@ export function shareSheet({anchor, workspaceName, link, anyoneLink, document = 
     }
     const lead = line('Anyone with the link ', 'bar-sheet-text');
     lead.append(role);
-    const make = button('Copy link');
+    // Another link than the one above: one that lets people in.
+    const make = button('Create link');
     const said = line('', 'bar-sheet-note');
     said.setAttribute('role', 'status');
     make.addEventListener('click', async () => {
