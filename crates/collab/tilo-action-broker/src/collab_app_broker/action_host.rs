@@ -87,45 +87,6 @@ pub(super) struct LaunchDestination {
     pub(super) resource: Option<String>,
 }
 
-impl BrokerActor {
-    #[must_use]
-    pub(super) fn for_caller(caller: &Caller) -> Self {
-        Self::principal_of(caller)
-            .on_turn(caller.turn().cloned())
-            .within(caller.ceiling())
-    }
-
-    /// The actor `caller`'s principal is, before any ceiling.
-    fn principal_of(caller: &Caller) -> Self {
-        match caller.principal() {
-            CallerPrincipal::Person(id) => Self::person(id.clone()),
-            CallerPrincipal::Agent(id) => {
-                let agent = Self::agent(format!("agent:{id}"));
-                // A person's own device handed this connection to the agent
-                // (`Caller::delegated_to`); an agent member the host admitted
-                // acts for the person who admitted it, with no more than the
-                // workspace grants it (`Caller::acting_for`); a delegated agent
-                // device acts for the person its certificate chains to.
-                match (caller.acting_for_person(), caller.user_public_key()) {
-                    (Some(person), _) if caller.is_session_delegated() => {
-                        agent.for_person(person).session_delegated()
-                    }
-                    (Some(person), _) => agent.for_person(person),
-                    (None, Some(root)) => agent.for_person(super::principal_id_for_root(*root)),
-                    (None, None) => agent,
-                }
-            }
-            CallerPrincipal::App(id) => Self::app(id),
-            CallerPrincipal::Bot(id) => match caller.user_public_key() {
-                Some(root) => Self::bot(id, super::principal_id_for_root(*root)),
-                // A bot nobody installed has no authority to borrow: acting
-                // for nobody, it gets nothing.
-                None => Self::bot(id, String::new()),
-            },
-        }
-    }
-}
-
 /// The broker as the [`ActionHost`](tilo_actions::remote::ActionHost) an
 /// admitted application or agent connection reaches over its channel's
 /// `remoteAction` door. [`OWN_PROVIDER`] names that connection itself.

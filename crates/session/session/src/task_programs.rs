@@ -258,7 +258,6 @@ mod tests {
     use super::*;
     use tilo_action_broker::collab_app_broker::BrokerActor;
     use tilo_actions::ActionAddress;
-    use tilo_broker_core::steps::StepActor;
 
     /// The step as the session serves it, on a door nothing asks beyond.
     fn programs() -> TaskPrograms {
@@ -271,7 +270,7 @@ mod tests {
     const ISSUE: &str = "tasks.tracker/issues/tidy-the-inbox";
 
     fn request<'a>(
-        actor: &'a StepActor,
+        actor: &'a BrokerActor,
         address: &'a ActionAddress,
         argument: &'a str,
         task_run: Option<&'a dyn TaskRun>,
@@ -320,22 +319,22 @@ mod tests {
             tilo_actions::ARGUMENTS_JSON_PREFIX,
             serde_json::json!({ "program": "ls", "run": format!("{ISSUE}@0") })
         );
-        let took = |actor: &StepActor| {
+        let took = |actor: &BrokerActor| {
             programs
                 .start(&request(actor, &address, &argument, None))
                 .err()
         };
         assert_eq!(
-            took(&BrokerActor::person("Pat").step_actor()),
+            took(&BrokerActor::person("Pat")),
             Some("a task's programs are its agent's".to_owned())
         );
         assert_eq!(
-            took(&BrokerActor::agent("claude").step_actor()),
+            took(&BrokerActor::agent("claude")),
             Some("an agent runs programs as a step of a task it works on".to_owned())
         );
         // An agent working the issue, but outside a run: the step names the run it is of.
         assert_eq!(
-            took(&BrokerActor::agent("claude").working_on(ISSUE).step_actor()),
+            took(&BrokerActor::agent("claude").working_on(ISSUE)),
             Some("a task's programs run only as steps of its run".to_owned())
         );
         // A run of another issue is not the task's.
@@ -347,7 +346,7 @@ mod tests {
         assert_eq!(
             programs
                 .start(&request(
-                    &BrokerActor::agent("claude").working_on(ISSUE).step_actor(),
+                    &BrokerActor::agent("claude").working_on(ISSUE),
                     &address,
                     &other,
                     None

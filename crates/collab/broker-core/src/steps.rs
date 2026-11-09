@@ -14,110 +14,11 @@ use tilo_actions::remote::{ActionHost, Pending};
 use tilo_actions::{ActionAddress, ActionDescriptor};
 use tilo_actions::{ActionFailure, ActionOutput};
 
-/// Who a host step is taken by, as the broker admitted it.
-///
-/// The broker decides what an actor may do from its grants, its delegation and the turn it acts
-/// for ([`crate::actor`]'s native half); a step is handed only the facts it answers to the person
-/// who asked and the agent that acted.
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct StepActor {
-    id: String,
-    agent: bool,
-    /// The person an agent acts for, when one delegated it.
-    for_person: Option<String>,
-    /// The issue whose run the agent works in, by its address.
-    issue: Option<String>,
-    /// The turn the agent acts for: the person's message it answers.
-    turn: Option<tilo_action_policy::turn::Turn>,
-    /// Whether it is the person at their own device: whose own gesture answers a grant that asks
-    /// first, and the only actor a host lets govern a workspace.
-    direct: bool,
-}
-
-impl StepActor {
-    /// The actor `id` taking steps as `agent` or as a person.
-    #[must_use]
-    pub fn new(id: impl Into<String>, agent: bool) -> Self {
-        Self {
-            id: id.into(),
-            agent,
-            for_person: None,
-            issue: None,
-            turn: None,
-            direct: !agent,
-        }
-    }
-
-    /// The same actor, acting for `person`.
-    #[must_use]
-    pub fn for_person(mut self, person: Option<String>) -> Self {
-        self.for_person = person;
-        self
-    }
-
-    /// The same actor, working the issue at `issue`.
-    #[must_use]
-    pub fn on_issue(mut self, issue: Option<String>) -> Self {
-        self.issue = issue;
-        self
-    }
-
-    /// The same actor, acting inside `turn`.
-    #[must_use]
-    pub fn on_turn(mut self, turn: Option<tilo_action_policy::turn::Turn>) -> Self {
-        self.turn = turn;
-        self
-    }
-
-    /// The same actor, held to its own device (`direct`) or not.
-    #[must_use]
-    pub fn direct(mut self, direct: bool) -> Self {
-        self.direct = direct;
-        self
-    }
-
-    /// The policy principal id (`agent:`-prefixed for an agent).
-    #[must_use]
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    #[must_use]
-    pub fn is_agent(&self) -> bool {
-        self.agent
-    }
-
-    /// The person this agent acts for, when one delegated it.
-    #[must_use]
-    pub fn acting_for(&self) -> Option<&str> {
-        self.for_person.as_deref()
-    }
-
-    /// The issue whose run this actor works in, by its address.
-    #[must_use]
-    pub fn issue(&self) -> Option<&str> {
-        self.issue.as_deref()
-    }
-
-    /// The turn this actor acts for, when it is an agent's.
-    #[must_use]
-    pub fn turn(&self) -> Option<&tilo_action_policy::turn::Turn> {
-        self.turn.as_ref()
-    }
-
-    /// The person this actor is, when they act from their own device; `None` for an agent, a
-    /// capped device, or an invocation that continues another one.
-    #[must_use]
-    pub fn direct_person(&self) -> Option<&str> {
-        (self.direct && !self.agent).then_some(self.id.as_str())
-    }
-}
-
 /// One step the broker admitted for the host to run: action `address` for `actor` in `workspace`,
 /// with `argument` in its slot form.
 pub struct HostStepRequest<'a> {
     pub workspace: &'a str,
-    pub actor: &'a StepActor,
+    pub actor: &'a crate::actor::BrokerActor,
     pub address: &'a ActionAddress,
     pub argument: Option<&'a str>,
     /// The task run the step is taken in, when it is one of a run's steps (a task's program):
