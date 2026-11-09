@@ -57,6 +57,11 @@ pub struct Channel {
     /// Its messages, oldest first, each with its body, reactions and what it answers.
     #[serde(default)]
     pub messages: Vec<Message>,
+    /// What the person has put on the draft they are writing, that they did not type: the
+    /// resource a drop on the composer attached. It is the composer's, not a message's, so it
+    /// stands before the messages and is never part of them until Send posts it.
+    #[serde(default)]
+    pub draft: Option<Attachment>,
 }
 
 /// Someone who speaks in a channel, as their name shows them.
@@ -361,6 +366,7 @@ impl Channel {
                 .is_some_and(|c| c.kind == crate::model::ChannelKind::Voice),
             people,
             messages,
+            draft: None,
         }
     }
 
@@ -1008,7 +1014,16 @@ fn attachment_row(attachment: &Attachment, key: &str, cx: &ViewCx) -> Node {
             .dense(true)
             .into();
         let opened = cx.open(&row, "activate", target.clone(), None);
-        return node::on(row, "activate", opened);
+        let row = node::on(row, "activate", opened);
+        // The chip is also a source: dragging it to the canvas places the resource there (a
+        // `ui.DropTarget` that takes it runs the system's placement), and dragging it to a
+        // composer attaches it to another draft.
+        return drag_source(
+            &cx.key(format!("source-{key}")),
+            row,
+            target,
+            &attachment.label,
+        );
     }
     match attachment.kind.as_str() {
         "image" if !attachment.src.is_empty() => {
@@ -1089,11 +1104,64 @@ fn composer(c: &Channel, cx: &ViewCx) -> Node {
         .icon_only(true)
         .into();
     let send = post(cx, send, "press", &c.id, Arg::state(DRAFT));
-    ui::row(&cx.key("composer"), Gap::Tight, vec![attach, input, send])
+    let row = ui::row(&cx.key("composer"), Gap::Tight, vec![attach, input, send]);
+    // What a drop on the composer takes: a resource dragged from the canvas, a search hit, a
+    // row of another view or a message's attachment. The drop runs Chat's `attach` on the
+    // channel with the resource the drag carried, which appends it to the draft: the chip
+    // `draft_attachment` draws stands over the row, and Send posts it with the words.
+    let body: Node = ui::column(&cx.key("composer-column"), Gap::Tight, {
+        let mut parts = Vec::new();
+        if let Some(held) = draft_attachment(c, cx) {
+            parts.push(held);
+        }
+        parts.push(row);
+        parts
+    });
+    let target: Node = ui::DropTargetBuilder::new(&cx.key("composer-drop")).into();
+    let attached = cx.action_with(
+        &target,
+        "drop",
+        "attach",
+        vec![Arg::text(&c.id), Arg::Event],
+    );
+    let target = node::on(target, "drop", attached);
+    node::slot(target, "content", vec![body])
+}
+
+/// What a drop on the composer attached to the draft, as the chip that shows it: the resource's
+/// name, and a button that takes it off the draft again.
+///
+/// The draft is the reading's, not the view's: a drop runs the channel's own `attach`, the
+/// reading carries what it attached, and the next read draws the chip. Send posts it with the
+/// words, and the reading that follows has none of it — the chip goes as the message arrives.
+fn draft_attachment(c: &Channel, cx: &ViewCx) -> Option<Node> {
+    let attached = c.draft.as_ref()?;
+    let chip: Node = ui::ChipBuilder::new(&cx.key("draft-attachment"), &attached.label)
+        .icon("paperclip")
+        .into();
+    let removed = cx.action(&chip, "remove", "detach");
+    Some(node::on(chip, "remove", removed))
 }
 
 /// The name the composer's draft is held under in the view's own state.
 const DRAFT: &str = "Composer";
+
+/// `node` wrapped so the person can drag it out: what it carries is `target`, and its ghost
+/// reads `title`. A press that does not travel is still `node`'s own, so the row opens and the
+/// chip presses exactly as they did before.
+fn drag_source(key: &str, node: Node, target: &ResourceRef, title: &str) -> Node {
+    let source: Node = ui::DragSourceBuilder::new(key, target.id.clone()).into();
+    let source = ui::put(
+        source,
+        "title",
+        Value::Text(if title.trim().is_empty() {
+            target.id.clone()
+        } else {
+            title.to_owned()
+        }),
+    );
+    node::slot(source, "content", vec![node])
+}
 
 /// The name the message being answered is held under in the view's own state: a message's Reply
 /// button sets it, and the composer reads it as the next message's parent.
@@ -1584,6 +1652,112 @@ mod tests {
     }
 
     #[test]
+    fn a_dropped_resource_becomes_a_draft_attachment() {
+        // The composer is a drop target, and what a drop on it runs is the channel's `attach`
+        // with the resource the drag carried. The chip that shows the draft's attachment stands
+        // over the row, drawing the resource's label, with a button that takes it away.
+        let mut channel = demo_channel();
+        // The draft the composer draws is the reading's: a drop on the composer runs the
+        // channel's `attach`, and the next read carries what it attached here.
+        channel.draft = Some(Attachment {
+            kind: "resource".to_owned(),
+            label: "Q3 plan".to_owned(),
+            resource: Some(ResourceRef {
+                id: "notes.pages/page_1".to_owned(),
+                ty: "notes.page".to_owned(),
+            }),
+            ..Attachment::default()
+        });
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        // The composer's drop target is there, and what it runs on a drop is `attach` with the
+        // channel the composer posts to.
+        let target = keyed(&tree, "ui.DropTarget", "@composer-drop")
+            .into_iter()
+            .next()
+            .expect("the composer is a drop target");
+        assert_eq!(
+            cx.effect(&target.key, "drop"),
+            Some(tilo_view::Effect::Action {
+                action: "attach".to_owned(),
+                args: vec![tilo_view::Arg::text(&channel.id), tilo_view::Arg::Event,],
+            }),
+            "a drop on the composer attaches the resource it carried to the draft"
+        );
+        // The draft's attachment draws as its chip, by the label the drag gave it.
+        let chip = keyed(&tree, "ui.Chip", "@draft-attachment")
+            .into_iter()
+            .next()
+            .expect("the draft's attachment stands as a chip");
+        assert_eq!(
+            chip.props.get("label"),
+            Some(&Value::Text("Q3 plan".to_owned())),
+            "the chip draws the attachment's label"
+        );
+        assert_eq!(
+            cx.effect(&chip.key, "remove"),
+            Some(tilo_view::Effect::Action {
+                action: "detach".to_owned(),
+                args: Vec::new(),
+            }),
+            "the chip's remove takes the attachment off the draft"
+        );
+        // The composer is still the one row: attach, the field and send, under the chip.
+        assert!(
+            walk(&tree).into_iter().any(|node| node.kind == "ui.Button"
+                && node.props.get("label") == Some(&Value::Text("Send".to_owned()))),
+            "the composer still sends"
+        );
+    }
+
+    #[test]
+    fn a_messages_attachment_chip_can_be_dragged_out() {
+        // A record an attachment holds is a drag source as well as a row: dragging it carries
+        // the resource's address, so a drop target elsewhere — the canvas, a composer — takes
+        // it.
+        let mut channel = demo_channel();
+        let shared = ResourceRef {
+            id: "tube.video:vid_rust_async".to_owned(),
+            ty: "tube.video".to_owned(),
+        };
+        channel.messages.push(Message {
+            id: "m_shared".to_owned(),
+            author: channel.people[0].id.clone(),
+            ts: 1_782_470_400,
+            attachments: vec![Attachment {
+                kind: "resource".to_owned(),
+                label: "Async Rust".to_owned(),
+                resource: Some(shared.clone()),
+                ..Attachment::default()
+            }],
+            ..Message::default()
+        });
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let source = keyed(&tree, "ui.DragSource", "source-page@attachment-m_shared-0")
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| {
+                panic!(
+                    "the attachment is a drag source: {:?}",
+                    keyed(&tree, "ui.DragSource", "")
+                )
+            });
+        assert_eq!(
+            source.props.get("resource"),
+            Some(&Value::Text(shared.id.clone())),
+            "the drag carries the resource the attachment holds"
+        );
+        assert_eq!(
+            source.props.get("title"),
+            Some(&Value::Text("Async Rust".to_owned())),
+            "the ghost under the pointer says the resource's name"
+        );
+    }
+
+    #[test]
     fn the_composer_is_full_width_with_attach_and_send() {
         let channel = demo_channel();
         let cx = view_cx(&channel);
@@ -1594,9 +1768,8 @@ mod tests {
             .find(|node| node.key.contains("@composer"))
             .expect("the composer's row");
         // The composer's row holds an attach button, the field and its send button, in order.
-        let buttons: Vec<&Node> = composer
-            .children
-            .iter()
+        let buttons: Vec<&Node> = walk(composer)
+            .into_iter()
             .filter(|node| node.kind == "ui.Button")
             .collect();
         let labels: Vec<String> = buttons
@@ -1615,9 +1788,8 @@ mod tests {
             "the composer offers send: {labels:?}"
         );
         // The field is full width: a `fill` argument asks for the room the buttons leave.
-        let field = composer
-            .children
-            .iter()
+        let field = walk(composer)
+            .into_iter()
             .find(|node| node.kind == "ui.TextInput")
             .expect("the composer's field");
         assert_eq!(

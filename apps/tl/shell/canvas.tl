@@ -14,10 +14,17 @@
 /// while the person looks around, and the places keep their canvas points.
 /// The map fills the desk under the entry: it cuts off what it holds at its edge, so a map only
 /// as tall as its content would show none of it.
+///
+/// A resource dragged out of a view — a message's attachment chip, a search hit, a row of
+/// another view — and let go over the canvas is placed at the point it was dropped: the map
+/// reports the drop with the canvas point under the pointer, and the shell runs the system's
+/// `place`, which is what an agent's `place_at` runs too. The shell never handles the drop
+/// itself, exactly as it never handles an attachment's press.
 view canvas(a: Arrangement, name: Text, framed: Bool) {
     stack(gap: .related, fill) {
         canvas_entry(here_x(a), here_y(a))
         ui.Map(name: name, fill) {
+            on drop(target: host.Resource, at: List<Int>): place_dropped(target, at)
             for s in a.strips {
                 if s.placed {
                     for p in places_of(a, s.key) {
@@ -39,6 +46,13 @@ view canvas(a: Arrangement, name: Text, framed: Bool) {
             }
         }
     }
+}
+
+/// Puts a resource dropped on the canvas where it was let go: the drag carries the resource and
+/// the canvas point it landed at, and the placement is the system's own (`session.place`, the
+/// action an agent's `place_at` runs), attributed and undone as one step of the person's.
+action place_dropped(target: host.Resource, at: List<Int>) (label: "Place it here") {
+    session.place(resource: target, x: at.at(0) ?? 0, y: at.at(1) ?? 0)
 }
 
 /// How wide a strip's places stand on the canvas: the width the record keeps for it, so a window

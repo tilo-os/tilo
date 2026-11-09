@@ -367,9 +367,17 @@ no run and no transcript; it places the channel like any resource.
   person who asked, and undone like any change.
 - **What the agent shows.** What the agent wants to show is a resource it attaches to its
   reply (a message carries attachments). Pressing an attachment places it beside the
-  conversation (§3). What opens unasked follows §5's "What opens" setting: by default what
-  the turn created, and a view it answered with (`plan.view`), placed beside the
-  conversation with `place_near`.
+  conversation (§3); dragging it onto the canvas places it where it was let go, and dragging
+  it onto a composer attaches it to that draft. What opens unasked follows §5's "What opens"
+  setting: by default what the turn created, and a view it answered with (`plan.view`),
+  placed beside the conversation with `place_near`.
+- **Dropping on the composer.** A resource dragged from anywhere the person sees one — a
+  place's frame or handle on the canvas, a search hit, a row of another view, a message's
+  attachment — and let go over the composer attaches it to the draft, which shows it as a
+  chip; Send posts it with the words. The agent's turn then carries the attachment as a
+  resource reference beside the person's message (`ui.DragSource`, `ui.DropTarget`), so what
+  the person handed the agent is one thing whichever app raised it, never a second copy in
+  the chat's record.
 - **The REPL.** `tilolang repl` reaches the person's door and calls the same actions by the
   same names the agent's `invoke` does, so the person types what the agent would. Its
   results are references that place the same way.
