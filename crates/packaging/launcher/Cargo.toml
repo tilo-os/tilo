@@ -95,8 +95,6 @@ package-store = { path = "../package-store", features = ["lease"] }
 # the compositor and the filesystem use — a launcher-local permission
 # type would be a second vocabulary to drift out of sync.
 collab-types = { path = "../../collab/collab-types" }
-# The received-file admission protocol spoken to the filesystem service.
-fs-protocol = { path = "../../system/fs-protocol" }
 wire-frame = { path = "../../system/wire-frame" }
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
 # The system information service's handoff, written before the app holds

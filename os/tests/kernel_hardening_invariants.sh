@@ -766,7 +766,7 @@ for unit in "$repo"/os/usr/lib/systemd/user/*.service; do
     bad "$(basename "$unit") runs a second process beside PrivateIPC=yes (226/NAMESPACE)"
   fi
 done
-for dir in '%h/Remote' '%h/Shared' '%h/.cache/tilo/received-files'; do
+for dir in '%h/Remote' '%h/.cache/tilo'; do
   grep -Eq "^d ${dir//./\\.}[[:space:]]" "$repo/os/usr/share/user-tmpfiles.d/tilo-fs.conf" \
     || bad "user-tmpfiles.d/tilo-fs.conf does not create $dir for the filesystem services"
 done

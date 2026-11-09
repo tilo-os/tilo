@@ -28,11 +28,10 @@ use fs::workspace_authority::{
     serve_local_authority, serve_local_content_peer,
 };
 use fs::{
-    AclHandle, CapabilityFile, ContentStore, FileHistoryStore, FsTransportIdentity, Heuristics,
-    Hydrator, IdentityKey, Namespace, QuickFS, RecordAccessRegistry, RecordMaterializer,
-    RecordPublisher, RecordRepository, RecordServices, ShareAuthority, Ticket, Workspace,
-    identity_paths, load_certified_mount_identity_once_valid, load_revocation_list,
-    load_workspace_share_issuer,
+    AclHandle, CapabilityFile, ContentStore, FsTransportIdentity, Heuristics, Hydrator,
+    IdentityKey, Namespace, QuickFS, RecordAccessRegistry, RecordMaterializer, RecordPublisher,
+    RecordRepository, RecordServices, ShareAuthority, Ticket, Workspace, identity_paths,
+    load_certified_mount_identity_once_valid, load_revocation_list, load_workspace_share_issuer,
 };
 use fuser::{Config, MountOption, SessionACL};
 use std::io::Read;
@@ -1736,7 +1735,6 @@ async fn serve(
             acl,
             availability,
             eviction_queue,
-            share_authority,
             history,
             record_publisher,
             replacement_transactions,
@@ -1976,7 +1974,6 @@ async fn mount(
             acl,
             availability,
             eviction_queue,
-            share_authority,
             history,
             record_publisher,
             replacement_transactions,
@@ -2251,7 +2248,6 @@ struct MountServices {
     acl: Option<(AclHandle, IdentityKey)>,
     availability: Option<Arc<Mutex<fs::AvailabilityRegistry>>>,
     eviction_queue: Option<Arc<tokio::sync::Mutex<fs::eviction::EvictionQueue>>>,
-    share_authority: Option<Arc<ShareAuthority>>,
     history: Option<fs_protocol::FileActor>,
     record_publisher: Option<Arc<RecordPublisher>>,
     replacement_transactions: Option<(Arc<Mutex<fs::RecordTransactionJournal>>, PathBuf)>,

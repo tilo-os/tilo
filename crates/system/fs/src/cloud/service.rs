@@ -2,8 +2,7 @@
 //!
 //! `fs cloud-service` (user unit `tilo-fs-cloud.service`) watches the
 //! account store Settings writes, and keeps exactly one mount per enabled
-//! file account at `~/Remote/<account label>`, the way `fs
-//! recipient-service` keeps received shares at `~/Shared/…`:
+//! file account at `~/Remote/<account label>`:
 //!
 //! - an account appears or is enabled → a mount process starts with the
 //!   account's one short-lived credential on its stdin;

@@ -18,8 +18,6 @@ wrapper="$repo/os/usr/libexec/tilo-session"
 target="$repo/os/usr/lib/systemd/user/tilo-graphical-session.target"
 selinux_policy="$repo/os/usr/share/tilo/selinux/tilo-base.cil"
 identity_unit="$repo/os/usr/lib/systemd/user/tilo-identity.service"
-recipient_unit="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.service"
-recipient_socket="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.socket"
 session_main="$repo/crates/session/session/src/main.rs"
 
 grep -Fqx 'readonly DBUS_UPDATE=/usr/bin/dbus-update-activation-environment' "$wrapper"
@@ -51,7 +49,7 @@ if grep -Eq '\(allow xdm_t (tilo_session_unit_file_t|home_root_t)' "$selinux_pol
 fi
 # The compositor verifies and repairs an existing identity on every start;
 # there is no separate pre-session identity unit to order anything after.
-if [ -e "$identity_unit" ] || grep -q 'tilo-identity\.service' "$recipient_unit"; then
+if [ -e "$identity_unit" ]; then
   echo 'a pre-session identity unit is back' >&2
   exit 1
 fi
@@ -67,27 +65,9 @@ if [ -z "$identity_line" ] || [ -z "$desk_start_line" ] \
   echo 'identity helper no longer returns before the session services start' >&2
   exit 1
 fi
-grep -Fqx 'PartOf=graphical-session.target' "$recipient_unit"
-grep -Fqx 'PartOf=graphical-session.target' "$recipient_socket"
-grep -Fqx 'WantedBy=graphical-session.target' "$recipient_socket"
-grep -Fqx 'ListenStream=%t/tilo/services/tilo-fs.sock' "$recipient_socket"
-grep -Fqx 'Service=tilo-fs-recipient.service' "$recipient_socket"
-for policy in \
-  'ProtectSystem=strict' \
-  'ProtectHome=read-only' \
-  'ReadWritePaths=%h/Shared %h/.cache/tilo %h/.cache/tilo/received-files %t/tilo' \
-  'PrivateIPC=yes' \
-  'ProtectKernelLogs=yes' \
-  'ProtectClock=yes' \
-  'ProtectHostname=yes' \
-  'RestrictRealtime=yes' \
-  'KeyringMode=private' \
-  'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6'; do
-  grep -Fqx "$policy" "$recipient_unit"
-done
 # The production sandbox holds everywhere, dev images included: a tilo-vm
 # slot's user manager runs these units exactly as a login does.
-for unit in tilo-fs-recipient.service tilo-fs-cloud.service tilo-models.service; do
+for unit in tilo-fs-cloud.service tilo-models.service; do
   prod="$repo/os/usr/lib/systemd/user/$unit"
   for kept in \
     'ProtectSystem=strict' \
