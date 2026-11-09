@@ -22,7 +22,7 @@ pub fn desk_person_name(chosen: Option<String>, person: &str) -> String {
 
 /// The display name `chosen` is, where it is one they gave: not blank, not the placeholder an
 /// unnamed identity carries, and one a workspace may take.
-pub(crate) fn chosen_name(chosen: Option<String>) -> Option<String> {
+fn chosen_name(chosen: Option<String>) -> Option<String> {
     chosen
         .filter(|name| given_by_person(name))
         .and_then(|name| {
@@ -34,7 +34,7 @@ pub(crate) fn chosen_name(chosen: Option<String>) -> Option<String> {
 
 /// Whether `person` is a key rather than a name to read: the root key hex a computer's identity
 /// names them by.
-pub(crate) fn is_identity_key(person: &str) -> bool {
+fn is_identity_key(person: &str) -> bool {
     person.len() == 64 && person.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 

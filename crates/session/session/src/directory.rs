@@ -167,8 +167,7 @@ fn person() -> Result<Person, String> {
 /// The name this person goes by in a workspace: the one they chose, else their login account's. A
 /// workspace, a public one above all, learns nothing of this person's devices.
 pub(crate) fn own_person_name(chosen: Option<String>) -> String {
-    crate::platform::person::chosen_name(chosen)
-        .unwrap_or_else(tilo_identity_host::provisioning::login_account_display_name)
+    crate::platform::person::desk_person_name(chosen, "")
 }
 
 pub(crate) use crate::platform::person::desk_person_name;
