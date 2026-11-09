@@ -350,6 +350,14 @@ that workspace environment's own, never in a guest sharing the host's kernel
   agent, on Firecracker: a restored VM maps its memory file and reads pages
   as the guest touches them, and a suspend writes only the pages written
   since the last one. The crate docs have the measurements behind the choice.
+- **Eviction:** a host the cloud takes back at short notice (an Azure Spot
+  VM, about 30 seconds) is told by a file appearing (`--evict-notice`, written
+  by whatever watches the cloud's notice). It then wakes no more VMs, saying
+  the VM is moving to another host, and suspends every awake one at once onto
+  its state directory, which lives on storage that outlives the host. The
+  next host to open that directory restores each VM on its next command. A VM
+  lost before its suspend has no valid snapshot and boots afresh from its
+  disk, so old memory never meets a newer disk.
 - **Files:** the environment's granted directories, at the same paths, served
   over vsock (the agent mounts them as FUSE). Each is served by its own host
   process held to that directory by Landlock, in user, mount, network and IPC
