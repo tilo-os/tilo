@@ -254,7 +254,7 @@ mod qualification {
         }
         let Some(seconds) = options.chunk_seconds else {
             return engine
-                .transcribe(samples, language)
+                .transcribe(samples, language, false)
                 .map_err(|_| "recognition failed".into());
         };
         let size = usize::try_from(seconds)?
@@ -267,7 +267,7 @@ mod qualification {
             let (chunk, next) = remaining.split_at(boundary);
             remaining = next;
             let part = engine
-                .transcribe(chunk, language)
+                .transcribe(chunk, language, false)
                 .map_err(|_| "segment recognition failed")?;
             let part = part.trim();
             if part.is_empty() {

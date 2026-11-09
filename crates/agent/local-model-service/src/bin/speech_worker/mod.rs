@@ -1,4 +1,5 @@
 use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
@@ -22,10 +23,10 @@ struct Cli {
 
 pub fn main() -> std::process::ExitCode {
     let args = Cli::parse();
-    let stdin = std::io::stdin();
+    let mut input = local_model_service::speech::worker::request_pipe();
     let stdout = std::io::stdout();
     let mut output = stdout.lock();
-    let result = run(&args, &mut stdin.lock(), &mut output);
+    let result = run(&args, &mut input, &mut output);
     if let Err(error) = result {
         let _ = reply(&mut output, &SpeechReply::Error { sequence: 0, error });
         return std::process::ExitCode::FAILURE;
@@ -33,7 +34,11 @@ pub fn main() -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
-fn run(args: &Cli, input: &mut impl Read, output: &mut impl Write) -> Result<(), SpeechError> {
+fn run(
+    args: &Cli,
+    input: &mut (impl Read + AsRawFd),
+    output: &mut impl Write,
+) -> Result<(), SpeechError> {
     // SAFETY: this standalone child owns only its standard pipes, is not
     // multithreaded and has no Rust descriptor owner for an ambient handle.
     unsafe {

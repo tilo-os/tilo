@@ -1,12 +1,14 @@
 //! The owned CPU decoder, over the published whisper.cpp bindings.
 //!
-//! One confined worker owns one context. Every call replaces the decoder state,
-//! so a draft's fallback random source, detected language and tokens never
-//! reach the final that replaces it.
+//! One confined worker owns one model context. Every call replaces the decoder
+//! state, so a draft's fallback random source, detected language and tokens
+//! never reach the final that replaces it. A provisional decode borrows the
+//! model through a second state and its own thread.
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::fs::File;
 use std::os::unix::fs::FileExt as _;
 use std::ptr::NonNull;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use whisper_rs_sys as sys;
@@ -34,6 +36,12 @@ unsafe extern "C" fn stop_requested(_: *mut c_void) -> bool {
 
 fn stop() -> bool {
     STOP.load(Ordering::Relaxed)
+}
+
+/// End a superseded provisional decode at its next poll, so the final that
+/// replaced it does not share the machine with a hypothesis nobody reads.
+pub(super) fn stop_drafts() {
+    STOP.store(true, Ordering::Relaxed);
 }
 
 /// Bytes the pinned parser may read: a sealed descriptor, or verified weights
@@ -193,22 +201,46 @@ fn full_params(
     params
 }
 
-/// An exclusively owned CPU decoder. Its raw pointers are neither `Send` nor
-/// `Sync`. Keep this in the worker; parent cancellation terminates that owned
-/// process even while inference is busy. No Rust callback is installed beyond
-/// the stop poll, which reads one atomic flag.
+/// The verified, read-only model context. A decoder only reads it while it
+/// runs, and upstream runs one state per thread over one context
+/// (`whisper_full_parallel`), so the final and a provisional decode share it.
+struct SpeechModel {
+    context: NonNull<sys::whisper_context>,
+    flash_attention: bool,
+}
+
+// SAFETY: decoding never writes the context; every mutable arena belongs to
+// one `whisper_state`, and each state has exactly one owning thread.
+unsafe impl Send for SpeechModel {}
+// SAFETY: as above, shared reads only.
+unsafe impl Sync for SpeechModel {}
+
+impl Drop for SpeechModel {
+    fn drop(&mut self) {
+        // SAFETY: the last owner releases this live context exactly once.
+        unsafe { sys::whisper_free(self.context.as_ptr()) };
+    }
+}
+
+/// An exclusively owned CPU decoder state over a shared model. Its raw pointers
+/// are neither `Send` nor `Sync`; it moves whole between the worker's pipe
+/// thread and the one thread that runs a provisional decode. Parent
+/// cancellation terminates the owned process even while inference is busy. No
+/// Rust callback is installed beyond the stop poll, which reads one atomic flag.
 pub struct SpeechEngine {
-    model: NonNull<sys::whisper_context>,
+    model: Arc<SpeechModel>,
     state: Option<NonNull<sys::whisper_state>>,
     pristine: bool,
     threads: c_int,
-    flash_attention: bool,
-    draft_mode: bool,
     vocabulary: Vec<c_int>,
     /// Language this session's drafts already detected. A final detects from
     /// its own audio, so the kept text is never decided from a short draft.
     detected: Option<c_int>,
 }
+
+// SAFETY: the state is never reachable from two threads at once; it is handed
+// over by value, and the shared model is read-only during a decode.
+unsafe impl Send for SpeechEngine {}
 
 impl SpeechEngine {
     /// Install the owned worker's lock-free provisional-inference stop signal.
@@ -243,15 +275,10 @@ impl SpeechEngine {
         }
     }
 
-    /// Mark only the synchronous draft call as eligible for interruption.
-    pub fn draft_mode(&mut self, enabled: bool) {
-        self.draft_mode = enabled;
-    }
-
     /// Observe the attention strategy actually passed to the loaded engine.
     /// Qualification must not infer this from filenames or timings.
     pub fn flash_attention_enabled(&self) -> bool {
-        self.flash_attention
+        self.model.flash_attention
     }
 
     /// Configure bounded vocabulary tokens without rewriting output. Set before
@@ -285,7 +312,7 @@ impl SpeechEngine {
         // Retain at most 64 ordinary tokens, ending at whole-word boundaries.
         // Half of the text context is the most a prompt may occupy.
         // SAFETY: this engine owns the live context.
-        let budget = unsafe { sys::whisper_n_text_ctx(self.model.as_ptr()) }
+        let budget = unsafe { sys::whisper_n_text_ctx(self.model.context.as_ptr()) }
             .saturating_div(2)
             .saturating_sub(1)
             .min(64);
@@ -311,7 +338,7 @@ impl SpeechEngine {
             // and both outlive this synchronous call.
             let count = unsafe {
                 sys::whisper_tokenize(
-                    self.model.as_ptr(),
+                    self.model.context.as_ptr(),
                     word.as_ptr().cast(),
                     tokens.as_mut_ptr(),
                     64,
@@ -324,7 +351,7 @@ impl SpeechEngine {
                 break;
             }
             // SAFETY: as above.
-            let end = unsafe { sys::whisper_token_eot(self.model.as_ptr()) };
+            let end = unsafe { sys::whisper_token_eot(self.model.context.as_ptr()) };
             for token in tokens.get(..count).ok_or(SpeechError::Protocol)? {
                 if *token < 0 || *token >= end {
                     return Err(SpeechError::Protocol);
@@ -388,13 +415,14 @@ impl SpeechEngine {
         // the parser retains neither.
         let model = unsafe { sys::whisper_init_with_params_no_state(&raw mut loader, params) };
         NonNull::new(model)
-            .map(|model| Self {
-                model,
+            .map(|context| Self {
+                model: Arc::new(SpeechModel {
+                    context,
+                    flash_attention,
+                }),
                 state: None,
                 pristine: false,
                 threads: 2,
-                flash_attention,
-                draft_mode: false,
                 vocabulary: Vec::new(),
                 detected: None,
             })
@@ -418,7 +446,8 @@ impl SpeechEngine {
         if self.state.is_none() {
             // SAFETY: this engine owns the live context and takes ownership of
             // whatever state the pinned engine allocates.
-            self.state = NonNull::new(unsafe { sys::whisper_init_state(self.model.as_ptr()) });
+            let state = unsafe { sys::whisper_init_state(self.model.context.as_ptr()) };
+            self.state = NonNull::new(state);
             self.pristine = self.state.is_some();
         }
         self.state.map(|_| ()).ok_or(SpeechError::Recognition)
@@ -450,7 +479,7 @@ impl SpeechEngine {
         // NUL-terminated.
         let id = unsafe { sys::whisper_lang_id(language.as_ptr()) };
         // SAFETY: as above; these are metadata queries on the same context.
-        if unsafe { sys::whisper_is_multilingual(self.model.as_ptr()) } == 0 {
+        if unsafe { sys::whisper_is_multilingual(self.model.context.as_ptr()) } == 0 {
             return id == 0;
         }
         // Pinned 1.8.3 vocabulary::num_languages; newer language IDs must not be
@@ -458,15 +487,18 @@ impl SpeechEngine {
         // SAFETY: as above.
         id >= 0
             && id
-                < unsafe { sys::whisper_model_n_vocab(self.model.as_ptr()) }.saturating_sub(51_766)
+                < unsafe { sys::whisper_model_n_vocab(self.model.context.as_ptr()) }
+                    .saturating_sub(51_766)
     }
 
     /// Decode 16 kHz mono samples, replacing a draft rather than appending
     /// competing hypotheses. Caller supplies complete bounded phrase audio.
+    /// `provisional` (a draft) is the only call a stop may end early.
     pub fn transcribe(
         &mut self,
         samples: &[f32],
         language: &CString,
+        provisional: bool,
     ) -> Result<String, SpeechError> {
         if samples.len() > MAX_SAMPLES || samples.iter().any(|sample| !sample.is_finite()) {
             return Err(SpeechError::AudioTooLong);
@@ -475,7 +507,7 @@ impl SpeechEngine {
             return Ok(String::new());
         }
         let count = c_int::try_from(samples.len()).map_err(|_| SpeechError::AudioTooLong)?;
-        if self.draft_mode && stop() {
+        if provisional && stop() {
             return Err(SpeechError::DraftInterrupted);
         }
         // Readiness allocated one pristine arena. Consume it once rather than
@@ -489,20 +521,20 @@ impl SpeechEngine {
         let state = self.state.ok_or(SpeechError::Recognition)?;
         // Detection costs one encoder pass of this call's audio. Drafts reuse
         // the language this session already detected; a final always detects.
-        let detect = self.draft_mode && language.to_bytes() == b"auto";
+        let detect = provisional && language.to_bytes() == b"auto";
         let language = match self.detected.filter(|_| detect) {
             // SAFETY: the pinned language table outlives every call.
             Some(id) => unsafe { sys::whisper_lang_str(id) },
             None => language.as_ptr(),
         };
-        let params = full_params(self.threads, &self.vocabulary, language, self.draft_mode);
+        let params = full_params(self.threads, &self.vocabulary, language, provisional);
         // FFT preprocessing allocates per thread. Compute mel serially inside
         // this call, then keep both threads for recognition.
         // SAFETY: the model, state and finite samples live through the call;
         // the pinned API copies the mel and retains no input pointer.
         if unsafe {
             sys::whisper_pcm_to_mel_with_state(
-                self.model.as_ptr(),
+                self.model.context.as_ptr(),
                 state.as_ptr(),
                 samples.as_ptr(),
                 count,
@@ -512,14 +544,14 @@ impl SpeechEngine {
         {
             return Err(SpeechError::Recognition);
         }
-        if self.draft_mode && stop() {
+        if provisional && stop() {
             return Err(SpeechError::DraftInterrupted);
         }
         // SAFETY: as above; the parameters reference only this engine's state
         // and vocabulary and are consumed by this call.
         let result = unsafe {
             sys::whisper_full_with_state(
-                self.model.as_ptr(),
+                self.model.context.as_ptr(),
                 state.as_ptr(),
                 params,
                 std::ptr::null(),
@@ -531,7 +563,7 @@ impl SpeechEngine {
         if result == -7 {
             self.state = None;
         }
-        if self.draft_mode && stop() {
+        if provisional && stop() {
             return Err(SpeechError::DraftInterrupted);
         }
         if result != 0 {
@@ -546,6 +578,20 @@ impl SpeechEngine {
         segments(state)
     }
 
+    /// A second decoder over the same weights. Upstream runs one state per
+    /// thread over one context (`whisper_full_parallel`), so a provisional
+    /// decode and the final that replaces it never wait on each other.
+    pub(super) fn fork(&self) -> Self {
+        Self {
+            model: Arc::clone(&self.model),
+            state: None,
+            pristine: false,
+            threads: self.threads,
+            vocabulary: self.vocabulary.clone(),
+            detected: self.detected,
+        }
+    }
+
     fn release_state(&mut self) {
         if let Some(state) = self.state.take() {
             // SAFETY: this engine owns the state and releases it once.
@@ -557,8 +603,6 @@ impl SpeechEngine {
 impl Drop for SpeechEngine {
     fn drop(&mut self) {
         self.release_state();
-        // SAFETY: exactly this owner releases this live context exactly once.
-        unsafe { sys::whisper_free(self.model.as_ptr()) };
     }
 }
 

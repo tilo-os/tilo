@@ -3,11 +3,28 @@ use super::{MAX_SAMPLES, MAX_TEXT_BYTES, SAMPLE_RATE, SpeechEngine, SpeechError}
 use std::ffi::CString;
 use zeroize::{Zeroize as _, Zeroizing};
 
+/// Independent acoustic admission, measured before a decode starts so the
+/// serving loop can keep one activity graph while a provisional decode runs
+/// elsewhere.
 #[derive(Clone, Copy)]
-enum AcousticAdmission {
+pub(super) enum Admission {
     Legacy,
     Inactive,
     Speech(usize),
+}
+
+impl Admission {
+    pub(super) fn measure(
+        activity: Option<&mut super::activity::SpeechActivity>,
+        samples: &[f32],
+    ) -> Result<Self, SpeechError> {
+        let Some(graph) = activity else {
+            return Ok(Self::Legacy);
+        };
+        Ok(graph
+            .first_sample(samples)?
+            .map_or(Self::Inactive, Self::Speech))
+    }
 }
 
 const TARGET: usize = 20 * SAMPLE_RATE;
@@ -19,7 +36,7 @@ const LOOKAHEAD: usize = TARGET + PADDING + QUIET_WINDOW;
 /// One worker session. Audio must be the append-only buffer of its `SpeechInput`.
 /// Confirmed prefixes are decoded once; only the unfinished tail is revised.
 /// Cancellation still terminates the owned worker, including native inference.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct SpeechRecognition {
     consumed: usize,
     observed: usize,
@@ -39,36 +56,26 @@ impl SpeechRecognition {
         language: &CString,
         complete: bool,
     ) -> Result<String, SpeechError> {
-        self.transcribe_with_activity(engine, None, samples, language, complete)
+        self.transcribe_admitted(engine, Admission::Legacy, samples, language, complete)
     }
 
     /// Decode original PCM after independent acoustic admission. Final speech
     /// never waits for the preview context requirement and never loses samples.
-    pub fn transcribe_with_activity(
+    pub(super) fn transcribe_admitted(
         &mut self,
         engine: &mut SpeechEngine,
-        activity: Option<&mut super::activity::SpeechActivity>,
+        admission: Admission,
         samples: &[f32],
         language: &CString,
         complete: bool,
     ) -> Result<String, SpeechError> {
-        let admission = if let Some(graph) = activity {
-            graph
-                .first_sample(samples)?
-                .map_or(AcousticAdmission::Inactive, AcousticAdmission::Speech)
-        } else {
-            AcousticAdmission::Legacy
-        };
-        engine.draft_mode(!complete);
-        let result = self.recognize_with_admission(
+        self.recognize_with_admission(
             samples,
             complete,
             language.to_bytes() == b"auto",
             admission,
-            |chunk| engine.transcribe(chunk, language),
-        );
-        engine.draft_mode(false);
-        result
+            |chunk| engine.transcribe(chunk, language, !complete),
+        )
     }
 
     /// Use the same bounded segmentation with another image-owned decoder.
@@ -88,13 +95,7 @@ impl SpeechRecognition {
         automatic: bool,
         recognize: impl FnMut(&[f32]) -> Result<String, SpeechError>,
     ) -> Result<String, SpeechError> {
-        self.recognize_with_admission(
-            samples,
-            complete,
-            automatic,
-            AcousticAdmission::Legacy,
-            recognize,
-        )
+        self.recognize_with_admission(samples, complete, automatic, Admission::Legacy, recognize)
     }
 
     fn recognize_with_admission(
@@ -102,13 +103,13 @@ impl SpeechRecognition {
         samples: &[f32],
         complete: bool,
         automatic: bool,
-        admission: AcousticAdmission,
+        admission: Admission,
         recognize: impl FnMut(&[f32]) -> Result<String, SpeechError>,
     ) -> Result<String, SpeechError> {
-        let no_activity = matches!(admission, AcousticAdmission::Inactive);
+        let no_activity = matches!(admission, Admission::Inactive);
         let context_start = match admission {
-            AcousticAdmission::Speech(first) => first,
-            AcousticAdmission::Legacy | AcousticAdmission::Inactive => 0,
+            Admission::Speech(first) => first,
+            Admission::Legacy | Admission::Inactive => 0,
         };
         let deferred = no_activity
             || (!complete && samples.len().saturating_sub(context_start) < INITIAL_DRAFT_SAMPLES);
@@ -290,13 +291,9 @@ mod tests {
         let mut recognition = SpeechRecognition::default();
         for complete in [false, true] {
             let result = recognition
-                .recognize_with_admission(
-                    &noise,
-                    complete,
-                    false,
-                    AcousticAdmission::Inactive,
-                    |_| panic!("noise reached decoder"),
-                )
+                .recognize_with_admission(&noise, complete, false, Admission::Inactive, |_| {
+                    panic!("noise reached decoder")
+                })
                 .unwrap();
             assert_eq!(result, "");
             assert!(recognition.draft_samples.is_none());
@@ -310,7 +307,7 @@ mod tests {
                     &speech,
                     false,
                     false,
-                    AcousticAdmission::Speech(noise.len()),
+                    Admission::Speech(noise.len()),
                     |_| panic!("preview lacks onset context")
                 )
                 .unwrap(),
@@ -323,7 +320,7 @@ mod tests {
                     &speech,
                     true,
                     false,
-                    AcousticAdmission::Speech(noise.len()),
+                    Admission::Speech(noise.len()),
                     |original| {
                         assert_eq!(original, speech);
                         Ok("spoken word".into())

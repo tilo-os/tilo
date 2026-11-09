@@ -106,7 +106,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     worker::serve(
         &root.path().join("store"),
         &catalog,
-        &mut std::io::stdin().lock(),
+        &mut worker::request_pipe(),
         &mut std::io::stdout().lock(),
     )
     .map_err(|_| "image speech review stopped")?;

@@ -24,6 +24,7 @@ struct Decoder<'a> {
     provisional: Zeroizing<String>,
     stable: Zeroizing<String>,
     observe_calls: bool,
+    pending: Option<Result<String, SpeechError>>,
 }
 impl Decoder<'_> {
     fn call(&mut self, operation: i32, samples: &[f32]) -> Result<String, SpeechError> {
@@ -39,22 +40,7 @@ impl Decoder<'_> {
         }
         result
     }
-}
-impl worker::SpeechDecoder for Decoder<'_> {
-    fn draft_policy(&self) -> DraftPolicy {
-        DraftPolicy::Incremental
-    }
-    fn push(&mut self, samples: &[f32]) -> Result<(), SpeechError> {
-        self.accepted = self
-            .accepted
-            .checked_add(samples.len())
-            .ok_or(SpeechError::AudioTooLong)?;
-        if self.accepted > LIMIT {
-            return Err(SpeechError::AudioTooLong);
-        }
-        Ok(())
-    }
-    fn draft(&mut self, samples: &[f32]) -> Result<String, SpeechError> {
+    fn preview(&mut self, samples: &[f32]) -> Result<String, SpeechError> {
         if samples.len() != self.accepted {
             return Err(SpeechError::Protocol);
         }
@@ -85,8 +71,35 @@ impl worker::SpeechDecoder for Decoder<'_> {
         }
         Ok(self.provisional.to_string())
     }
+}
+impl worker::SpeechDecoder for Decoder<'_> {
+    fn draft_policy(&self) -> DraftPolicy {
+        DraftPolicy::Incremental
+    }
+    fn push(&mut self, samples: &[f32]) -> Result<(), SpeechError> {
+        self.accepted = self
+            .accepted
+            .checked_add(samples.len())
+            .ok_or(SpeechError::AudioTooLong)?;
+        if self.accepted > LIMIT {
+            return Err(SpeechError::AudioTooLong);
+        }
+        Ok(())
+    }
+    fn start_draft(
+        &mut self,
+        samples: &[f32],
+        _wake: &worker::DraftWake,
+    ) -> Result<(), SpeechError> {
+        // This engine streams in-process, so the preview is ready here.
+        self.pending = Some(self.preview(samples));
+        Ok(())
+    }
+    fn poll_draft(&mut self) -> Option<Result<String, SpeechError>> {
+        self.pending.take()
+    }
     fn finish(&mut self, samples: &[f32]) -> Result<String, SpeechError> {
-        self.draft(samples)?;
+        self.preview(samples)?;
         let raw = Zeroizing::new(self.call(1, samples)?);
         let reply: NativeReply =
             serde_json::from_str(&raw).map_err(|_| SpeechError::Recognition)?;
@@ -158,7 +171,7 @@ fn run() -> Result<(), SpeechError> {
         "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb",
     )?;
     let library = bridge::Library::load(bridge_path, bridge_sha)?;
-    let mut input = std::io::stdin().lock();
+    let mut input = worker::request_pipe();
     let mut output = std::io::stdout().lock();
     let (session, config) = worker::configure(&mut input)?;
     validate(&config)?;
@@ -186,6 +199,7 @@ fn run() -> Result<(), SpeechError> {
         provisional: Zeroizing::new(String::new()),
         stable: Zeroizing::new(String::new()),
         observe_calls,
+        pending: None,
     };
     worker::serve_decoder(
         (
