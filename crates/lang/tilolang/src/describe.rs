@@ -29,7 +29,14 @@ pub fn declarations(meta: &PackageMeta) -> String {
     for t in &meta.types {
         out.push('\n');
         doc(&mut out, &t.doc, "");
-        let _ = writeln!(out, "type {} {{", t.name);
+        match &t.untitled {
+            Some(untitled) => {
+                let _ = writeln!(out, "type {} (untitled: {}) {{", t.name, quoted(untitled));
+            }
+            None => {
+                let _ = writeln!(out, "type {} {{", t.name);
+            }
+        }
         fields(&mut out, &t.fields, "    ");
         out.push_str("}\n");
     }

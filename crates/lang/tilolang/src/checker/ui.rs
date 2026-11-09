@@ -1073,6 +1073,7 @@ impl Checker<'_> {
         allowed: &[Ty],
         enum_case: bool,
         titled: bool,
+        placeholder: bool,
     ) -> Option<Ty> {
         let takes = |ty: &Ty| allowed.contains(ty) || (enum_case && matches!(ty, Ty::Enum(_)));
         let names = {
@@ -1169,20 +1170,38 @@ impl Checker<'_> {
             Ty::Unit,
         )));
         // A control the description declares `title` on draws the resource's title when it binds
-        // the field the type is named by: a document's large title, as TextInput does.
-        if titled
-            && f.ty == Ty::Text
-            && self
-                .env
-                .type_info(&key)
-                .and_then(TypeInfo::name_field)
-                .is_some_and(|named| named.id == f.id)
-        {
+        // the field the type is named by: a document's large title, as TextInput does. A
+        // control with a placeholder takes it from the type, which says once what one of its
+        // records is called while its title is empty, so an app writes those words on its type.
+        let named = self
+            .env
+            .type_info(&key)
+            .and_then(TypeInfo::name_field)
+            .is_some_and(|named| named.id == f.id);
+        if titled && named && f.ty == Ty::Text {
             self.emit(Stmt::Eval(Ex::host(
                 Imp::UiPropI,
                 vec![node.clone(), Ex::str("title"), Ex::int(1)],
                 Ty::Unit,
             )));
+        }
+        if placeholder
+            && named
+            && matches!(f.ty, Ty::Text | Ty::RichText)
+            && let Some((id, untitled)) = self.env.type_info(&key).and_then(|info| {
+                info.untitled
+                    .as_ref()
+                    .map(|untitled| (info.id.clone(), untitled.clone()))
+            })
+        {
+            let key = format!("{}.untitled", crate::messages::key_of(&id));
+            let args = self.text_pairs(Vec::new());
+            let words = Ex::host(
+                Imp::Word,
+                vec![Ex::str(&key), args, Ex::str(&untitled)],
+                Ty::Text,
+            );
+            self.prop_text(node.clone(), "placeholder", words);
         }
         Some(f.ty.clone())
     }

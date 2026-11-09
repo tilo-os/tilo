@@ -27,6 +27,8 @@ pub struct TypeInfo {
     pub search: crate::meta::SearchMeta,
     /// The kind of an outside service's resource it holds (`crate::origin`).
     pub origin: Option<String>,
+    /// `(untitled: "Untitled")`: what one of its records is called while its title is empty.
+    pub untitled: Option<String>,
 }
 
 impl TypeInfo {

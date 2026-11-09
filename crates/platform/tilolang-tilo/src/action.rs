@@ -1381,11 +1381,11 @@ impl Action for DynAction {
         let described = Described::new(Did::verb(key, args));
         // History names the resource as it reads, by its title and never by its id: the item
         // the action wrote (a note of the notebook), else the record; one without a title yet
-        // by its type ("Created Notebook", "Pin: Note").
+        // by what its type says it is called then ("Created Notebook", "Pin: Untitled").
         let Some((at, schema, title)) = self.subject(doc) else {
             return Some(described);
         };
-        Some(described.on(at, title.unwrap_or_else(|| schema.spoken_name())))
+        Some(described.on(at, title.unwrap_or_else(|| schema.untitled())))
     }
 }
 

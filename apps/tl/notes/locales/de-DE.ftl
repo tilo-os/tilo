@@ -8,6 +8,7 @@ d-mavvhka7 = Notiz
         [one] Notiz
        *[other] Notizen
     }
+    .untitled = Ohne Titel
 
 d-dpj7scfe = Titel
 
@@ -53,8 +54,6 @@ d-tmqqtkeb = Notizen
 d-akcqjax3 = Notizbuch
 
 d-xqxkoqbj = Notizzeile
-    .w-untitled = Ohne Titel
 
 d-6wqou47w = Notizeditor
-    .w-untitled = Ohne Titel
     .w-write-something = Schreib etwas

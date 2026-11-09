@@ -131,9 +131,16 @@ fn project_text(s: &str, opts: ProjectOptions) -> Json {
 }
 
 fn project_ref(core: &Core, r: &RefValue, opts: ProjectOptions) -> Json {
-    let Some((_, info)) = core.registry.borrow().type_info(&r.target.ty) else {
+    let Some((pkg, info)) = core.registry.borrow().type_info(&r.target.ty) else {
         return json!({ "type": r.target.ty, "id": r.target.id_string() });
     };
+    let name_field = info.name_field().map(|f| f.id.clone());
+    let untitled = pkg
+        .meta
+        .types
+        .iter()
+        .find(|ty| ty.id == info.id)
+        .and_then(|ty| ty.untitled.clone());
     let mut label = None;
     let mut fields = Map::new();
     let deeper = ProjectOptions {
@@ -144,13 +151,11 @@ fn project_ref(core: &Core, r: &RefValue, opts: ProjectOptions) -> Json {
         let Ok(value) = core.read_value(&r.target, f, None) else {
             continue;
         };
-        if f.kind == FieldKind::Text
+        if name_field.as_ref() == Some(&f.id)
             && let Value::Text(t) = &value
+            && !t.trim().is_empty()
         {
-            let named = matches!(f.name.as_str(), "title" | "name" | "label");
-            if named || label.is_none() {
-                label = Some(t.chars().take(opts.max_text_chars).collect::<String>());
-            }
+            label = Some(t.chars().take(opts.max_text_chars).collect::<String>());
         }
         if opts.depth > 0 {
             let shown = match (&f.kind, &value) {
@@ -162,13 +167,20 @@ fn project_ref(core: &Core, r: &RefValue, opts: ProjectOptions) -> Json {
             fields.insert(f.name.clone(), shown);
         }
     }
+    let label = match label {
+        Some(text) => text,
+        None => untitled.map_or_else(
+            || r.target.id_string(),
+            |words| {
+                let key = format!("{}.untitled", tilolang::messages::key_of(&info.id));
+                core.word(&key, &words)
+            },
+        ),
+    };
     let mut m = Map::new();
     m.insert("type".into(), json!(info.name));
     m.insert("id".into(), json!(r.target.id_string()));
-    m.insert(
-        "label".into(),
-        json!(label.unwrap_or_else(|| r.target.id_string())),
-    );
+    m.insert("label".into(), json!(label));
     if opts.depth > 0 {
         m.insert("fields".into(), Json::Object(fields));
     }

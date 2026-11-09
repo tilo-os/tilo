@@ -1012,15 +1012,19 @@ impl Printer<'_> {
                 self.line(&format!("use {}{alias}", u.app));
             }
             Item::Type(t) => {
-                match &t.origin {
-                    Some(origin) => {
-                        self.line(&format!(
-                            "type {} (origin: {}) {{",
-                            t.name.name, origin.name
-                        ));
-                    }
-                    None => self.line(&format!("type {} {{", t.name.name)),
+                let mut options = Vec::new();
+                if let Some(origin) = &t.origin {
+                    options.push(format!("origin: {}", origin.name));
                 }
+                if let Some(untitled) = &t.untitled {
+                    options.push(format!("untitled: {}", quote(&untitled.words)));
+                }
+                let options = if options.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", options.join(", "))
+                };
+                self.line(&format!("type {}{options} {{", t.name.name));
                 self.level += 1;
                 for f in &t.fields {
                     self.field(f);

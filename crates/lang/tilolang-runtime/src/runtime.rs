@@ -650,6 +650,33 @@ impl Runtime {
             .map_err(RuntimeError::Package)
     }
 
+    /// What `at` is called, the way every surface that names it shows it: its title while it
+    /// has one, else the words its type declares for it while untitled, else the package's
+    /// title for a root, else its type's name.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` for a type this runtime does not run; a store failure, or a reading that
+    /// does not fit the type the app declares.
+    pub fn title(&self, at: &ResourceRef) -> Result<String, RuntimeError> {
+        let (pkg, info) = self
+            .core
+            .type_of_ref(&at.ty)
+            .map_err(RuntimeError::NotFound)?;
+        let declared = pkg
+            .meta
+            .types
+            .iter()
+            .find(|ty| ty.id == info.id)
+            .ok_or_else(|| RuntimeError::NotFound(format!("type {}", at.ty)))?;
+        self.core
+            .title_of(at, &pkg.meta, declared)
+            .map_err(|fail| match fail {
+                crate::engine::HostFail::Trap(message) => RuntimeError::Package(message),
+                crate::engine::HostFail::Suspend => RuntimeError::Package("suspended".to_owned()),
+            })
+    }
+
     /// Invoke an action as `principal`. The action is an [`ActionRef`], or an
     /// `(action id, args)` pair for a call made straight by the principal.
     pub fn invoke_action(

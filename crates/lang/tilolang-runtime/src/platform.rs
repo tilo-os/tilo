@@ -1765,7 +1765,8 @@ impl Core {
 
     /// The title of `target`: the first line its first text field holds, when it holds more
     /// than spaces (a record is named by what it says, rich text as its reader reads it); else,
-    /// for a root of its package, the package's title; else its type's name.
+    /// for a root of its package, the package's title; else what the type says it is called
+    /// while its title is empty (`(untitled: "Untitled")`); else its type's name.
     pub(crate) fn title_of(
         &self,
         target: &ResourceRef,
@@ -1796,6 +1797,10 @@ impl Core {
                 &[],
                 &meta.title,
             ));
+        }
+        if let Some(untitled) = &ty.untitled {
+            let key = format!("{}.untitled", tilolang::messages::key_of(&ty.id));
+            return Ok(self.words.borrow().word(&key, &[], untitled));
         }
         Ok(sentence(&ty.name))
     }

@@ -532,7 +532,8 @@ mod cases {
             w.id_of(&apps.notes),
             "the nested view is the notes package's code, not the agent's"
         );
-        // A new note's title starts empty: "Untitled" is only what the field prompts with.
+        // A new note's title starts empty: what its type calls it while untitled is only what
+        // the field prompts with.
         assert_eq!(text_prop(title, "placeholder"), "Untitled");
 
         let key = title.key.clone();
@@ -1109,7 +1110,8 @@ mod cases {
             Some((&note, &field_id(&apps.notes, "Note", "title"))),
             "the note's editor edits its title"
         );
-        // A new note's title starts empty: "Untitled" is only what the field prompts with.
+        // A new note's title starts empty: what its type calls it while untitled is only what
+        // the field prompts with.
         assert_eq!(text_prop(title, "placeholder"), "Untitled");
         assert_eq!(
             w.rt.default_view(&note.ty).as_deref(),
@@ -2389,6 +2391,7 @@ mod cases {
         for tree in [&compact, &wide] {
             let rows = of_kind(tree, "ui.ListRow");
             assert_eq!(rows.len(), 1);
+            assert_eq!(text_prop(rows[0], "title"), "Untitled");
             assert!(rows[0].props.contains_key("secondary"));
             assert!(
                 of_kind(tree, "split").is_empty(),

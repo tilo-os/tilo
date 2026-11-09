@@ -1630,7 +1630,10 @@ impl Host {
             })
             .cloned();
         match (package, lookup(&at.ty)) {
-            (Some(package), Some(schema)) => crate::publish::untitled(&package.meta, schema),
+            (Some(package), Some(schema)) => {
+                let words = self.runtime().words();
+                crate::publish::untitled(&package.meta, schema, &*words)
+            }
             (None, Some(schema)) => schema.spoken_name(),
             (_, None) => at.ty.clone(),
         }

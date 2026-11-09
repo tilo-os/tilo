@@ -9,6 +9,7 @@ d-mavvhka7 = Note
         [one] note
        *[other] notes
     }
+    .untitled = Untitled
 
 d-dpj7scfe = Title
 
@@ -55,8 +56,6 @@ d-m6rqg3kf = Pin~present
 d-akcqjax3 = Notebook
 
 d-xqxkoqbj = Note row
-    .w-untitled = Untitled
 
 d-6wqou47w = Note editor
-    .w-untitled = Untitled
     .w-write-something = Write something

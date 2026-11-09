@@ -200,6 +200,11 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
     for ty in &meta.types {
         message(&mut out, &ty.id, &label(&ty.name), &ty.doc);
         attribute(&mut out, "noun", &noun(ty));
+        // What a record of it is called while its title is empty, which every surface that
+        // names one shows: a type's own words, translated with the rest.
+        if let Some(untitled) = &ty.untitled {
+            attribute(&mut out, "untitled", &pattern(untitled));
+        }
         for field in &ty.fields {
             message(&mut out, &field.id, &label(&field.name), &field.doc);
         }

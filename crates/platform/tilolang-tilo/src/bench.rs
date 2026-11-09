@@ -2795,6 +2795,7 @@ mod tests {
             }],
             columns: Vec::new(),
             origin: None,
+            untitled: None,
         }));
         DynRecord::empty(schema).unwrap_or_else(|e| panic!("{e}"))
     }

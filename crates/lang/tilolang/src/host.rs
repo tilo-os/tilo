@@ -467,7 +467,11 @@ pub const VALUE_TYPES: &[ValueType] = &[
         id: "host-sort",
         doc: "The order by one field of a type, as code names it and as a window's sort menu shows it: `Note.title` where the window's sorts are declared.",
         fields: &[
-            ("label", "Text", "What its menu entry says: the field's label."),
+            (
+                "label",
+                "Text",
+                "What its menu entry says: the field's label.",
+            ),
             (
                 "query",
                 "Text",
@@ -618,6 +622,7 @@ pub fn host_meta() -> PackageMeta {
             ],
             search: crate::meta::SearchMeta::default(),
             origin: None,
+            untitled: None,
         })
         .chain(std::iter::once(TypeMeta {
             id: format!("host-{}", RESOURCE_TYPE_NAME.to_lowercase()),
@@ -626,6 +631,7 @@ pub fn host_meta() -> PackageMeta {
             fields: Vec::new(),
             search: crate::meta::SearchMeta::default(),
             origin: None,
+            untitled: None,
         }))
         .chain(std::iter::once(TypeMeta {
             id: NOTICE_TYPE.to_string(),
@@ -640,6 +646,7 @@ pub fn host_meta() -> PackageMeta {
             ],
             search: crate::meta::SearchMeta::default(),
             origin: None,
+            untitled: None,
         }))
         .chain(VALUE_TYPES.iter().map(|value| {
             TypeMeta {
@@ -660,7 +667,8 @@ pub fn host_meta() -> PackageMeta {
                     .collect(),
                 search: crate::meta::SearchMeta::default(),
                 origin: None,
-                }
+                untitled: None,
+            }
         }))
         .collect(),
         enums: HOST_ENUMS

@@ -198,7 +198,7 @@ impl Checker<'_> {
                 placement = Some(&a.value);
                 continue;
             }
-            self.component_arg(n, d, &name, &a.value);
+            self.component_arg(n, d, &name, &a.value, &given);
         }
         if let Some(value) = placement {
             self.placement_prop(n, d, value, args);
@@ -493,6 +493,7 @@ impl Checker<'_> {
         d: &'static Description,
         name: &str,
         value: &ast::Expr,
+        given: &HashSet<String>,
     ) {
         if let Some(msg) = super::ui::removed_arg(&d.name, name) {
             self.err("E096", value.span, msg);
@@ -512,7 +513,7 @@ impl Checker<'_> {
                     ),
                 );
             } else {
-                self.binding_prop(n, d, value);
+                self.binding_prop(n, d, value, given);
             }
             return;
         }
@@ -570,15 +571,26 @@ impl Checker<'_> {
     /// `bind:` of the component, bound to what `value` names: checked against its bindings' own
     /// types, and the node carries the name of the one the bound place fits, which the host
     /// merges under.
-    pub(super) fn binding_prop(&mut self, n: LocalId, d: &'static Description, value: &ast::Expr) {
+    pub(super) fn binding_prop(
+        &mut self,
+        n: LocalId,
+        d: &'static Description,
+        value: &ast::Expr,
+        given: &HashSet<String>,
+    ) {
         let bindings = &d.bindings;
         let node = Ex::local(n, Ty::View);
         let want: Vec<Ty> = bindings.iter().flat_map(|b| binding_types(&b.ty)).collect();
         let enum_case = bindings.iter().any(|b| b.ty == Type::Enum);
         // A control that declares `title` draws the resource's title when it edits it, as a
-        // document's large title is drawn.
+        // document's large title is drawn; one that shows a placeholder takes it from the type
+        // when the call gives none.
         let titled = d.prop("title").is_some_and(|title| title.ty == Type::Bool);
-        let Some(ty) = self.bind_typed(&node, value, &want, enum_case, titled) else {
+        let placeholder = !given.contains("placeholder")
+            && d.prop("placeholder").is_some_and(|p| {
+                p.ty == Type::Text || matches!(&p.ty, Type::Option(inner) if **inner == Type::Text)
+            });
+        let Some(ty) = self.bind_typed(&node, value, &want, enum_case, titled, placeholder) else {
             return;
         };
         let Some(b) = bindings.iter().find(|b| binds(&b.ty, &ty)) else {

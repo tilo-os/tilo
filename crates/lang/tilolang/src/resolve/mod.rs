@@ -344,6 +344,7 @@ impl Env {
                 fields,
                 search: t.search.clone(),
                 origin: t.origin.clone(),
+                untitled: t.untitled.clone(),
             });
         }
         let params = |ps: &[crate::meta::ParamMeta]| -> Vec<ParamInfo> {
@@ -579,6 +580,42 @@ impl Resolver<'_> {
                 continue;
             }
             self.env.add_import(&alias, meta);
+        }
+    }
+
+    /// A type that says what it is called while its title is empty has a title to empty: one
+    /// text field a record of it is named by. The words are shown as written, so they hold some.
+    fn check_untitled(&mut self, decls: &[&ast::TypeDecl]) {
+        for t in decls {
+            let Some(untitled) = &t.untitled else {
+                continue;
+            };
+            let named = self
+                .env
+                .types
+                .iter()
+                .find(|x| x.key.app == self.env.app && x.key.name == t.name.name)
+                .is_some_and(|info| info.name_field().is_some());
+            if untitled.words.trim().is_empty() {
+                self.err(
+                    "E139",
+                    untitled.span,
+                    format!(
+                        "`{}` says what it is called while its title is empty, and these words are only space; write them: `(untitled: \"Untitled\")`",
+                        t.name.name
+                    ),
+                );
+            }
+            if !named {
+                self.err(
+                    "E139",
+                    untitled.span,
+                    format!(
+                        "`{}` has no text field, so nothing of it is its title and it is never untitled; give it one (`title: Text`) or leave `untitled:` off",
+                        t.name.name
+                    ),
+                );
+            }
         }
     }
 

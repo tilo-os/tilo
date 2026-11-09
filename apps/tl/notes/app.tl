@@ -3,7 +3,7 @@ app so.tilo.lang.notes "Notes" (icon: .file_text, category: .office)
 use so.tilo.lang.discussion as discussion
 
 /// A note: a title, a body and the tags people gave it.
-type Note {
+type Note (untitled: "Untitled") {
     title: Text
     body: RichText
     pinned: Bool = false
@@ -72,18 +72,14 @@ view notebook(nb: Notebook) {
 
 /// One note in a list: its title, the start of its body, and a pin when it is pinned.
 view note_row(n: Note) {
-    ui.ListRow(
-        title: if n.title.len() == 0 { "Untitled" } else { n.title },
-        secondary: n.body.excerpt,
-        mark: if n.pinned { .pin },
-    )
+    ui.ListRow(title: meta(n).title, secondary: n.body.excerpt, mark: if n.pinned { .pin })
 }
 
 /// A note's window: its title, its tags as chips that come off with their remove button, its
 /// body, and what happened to it.
 view note_editor(n: Note) {
     std.document(n) {
-        ui.TextInput(bind: n.title, placeholder: "Untitled", title: true)
+        ui.TextInput(bind: n.title, title: true)
         if not n.tags.is_empty() {
             row(gap: .related, wrap: true) {
                 for t in n.tags {

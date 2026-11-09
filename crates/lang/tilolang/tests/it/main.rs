@@ -28,6 +28,7 @@ mod roundtrip;
 mod search;
 mod semantics;
 mod text_math;
+mod titles;
 mod triggers;
 mod unions;
 mod wasm;

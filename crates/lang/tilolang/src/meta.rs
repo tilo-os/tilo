@@ -340,6 +340,11 @@ pub struct TypeMeta {
     /// which the system keeps in step with the service (`crate::origin`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// `(untitled: "Untitled")`: what one of its records is called while its title is empty,
+    /// as the app wrote it. Surfaces that name a record fall back to it, and the control that
+    /// edits the record's title shows it while the title holds nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub untitled: Option<String>,
 }
 
 /// What search, a list's filters and agents offer of a type (search.md, "What a type declares"):
