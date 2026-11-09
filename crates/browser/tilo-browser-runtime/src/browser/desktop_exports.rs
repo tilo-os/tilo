@@ -124,34 +124,6 @@ pub fn desktop_acknowledge(id: u64, text: &str) -> Result<(), JsValue> {
     })
 }
 
-/// The workspace's host answered the workspace action `request` the desktop asked for
-/// (a `room-action` host request): `answer` is `{"ok": value}` or
-/// `{"error": "why"}`.
-///
-/// # Errors
-///
-/// Rejects a closed or single-application mount, or an answer of neither
-/// form.
-#[wasm_bindgen]
-pub fn desktop_record_action_answer(id: u64, request: u32, answer: &str) -> Result<(), JsValue> {
-    let answer: serde_json::Value = serde_json::from_str(answer).map_err(error)?;
-    let answer = match (answer.get("ok"), answer.get("error")) {
-        (Some(value), None) => Ok(value.clone()),
-        (None, Some(why)) => Err(why.as_str().unwrap_or("refused").to_owned()),
-        _ => return Err(error("a record action answer is {ok} or {error}")),
-    };
-    with_mount(id, |m| {
-        let desktop = m
-            .desktop
-            .as_ref()
-            .ok_or_else(|| error("Desktop unavailable"))?;
-        desktop.shared.record_actions.answer(request, answer);
-        m.pending = true;
-        m.window.request_redraw();
-        Ok(())
-    })
-}
-
 /// Changes whenever the desktop tree or what the desktop presents beside it
 /// (pan, scroll, history, activity) does, so the page republishes
 /// navigation only when something moved. `0` for a single application.

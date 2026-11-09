@@ -73,10 +73,6 @@ pub(crate) enum HostRequest {
     /// page's naming action, already answered (`onHostAction('set-name',
     /// name)`).
     Named(String),
-    /// Have the workspace's host run an action of a workspace record for the person
-    /// (`peer.actions`), and answer it with `desktop_record_action_answer`. The
-    /// variant keeps its old name: it is the JSON key the page reads.
-    WorkspaceAction(crate::desktop::RecordActionRequest),
     /// Keep what the person says they are doing, and how they share it, in
     /// their profile, which each of their devices reads
     /// (`desktop_set_own_status`): set here, it shows there too.
@@ -1661,9 +1657,10 @@ impl BrowserShell {
         }
     }
 
-    /// Hand the workspace actions the chrome asked for to the page, which has the
-    /// workspace's host run them, and show the linked accounts again when an
-    /// answer changed them. Whether anything changed.
+    /// Follow the person's linked accounts, which the workspace's host
+    /// answers ([`crate::desktop::RecordActions`]), and show them on the card,
+    /// and the offer a link the page arrived with waits in. Whether anything
+    /// changed.
     fn follow_record_actions(&mut self) -> bool {
         // A waiting offer draws again until the bar is there to open it.
         let mut offered = self.take_link_offer() || self.offers.link_offer.is_some();
@@ -1680,22 +1677,14 @@ impl BrowserShell {
             ui::time::now(),
         );
         self.follow_profile_links();
-        let asked = self.chrome.shared.record_actions.take_requests();
-        let opens = self.chrome.shared.record_actions.take_opens();
-        let changed = offered || !asked.is_empty() || !opens.is_empty();
-        self.requests
-            .borrow_mut()
-            .extend(asked.into_iter().map(HostRequest::WorkspaceAction));
-        self.requests
-            .borrow_mut()
-            .extend(opens.into_iter().map(HostRequest::Open));
+        offered |= self.chrome.shared.record_actions.follow();
         let linked = &self.chrome.shared.linked;
         let revision = linked.revision();
         if self.linked_seen.replace(revision) != revision {
             self.profile.set_linked(linked.accounts());
             return true;
         }
-        changed
+        offered
     }
 
     /// A verb of the empty desk's launchpad, as its card, its host action

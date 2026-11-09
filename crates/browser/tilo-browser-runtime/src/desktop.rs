@@ -15,6 +15,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tilo_actions::InvocationId;
+use tilo_actions::remote::ActionHost as _;
+use tilo_app::linked_accounts::ActionAnswer;
+use tilo_browser_peer::session_actions::SessionActions;
 use tilo_desktop_model::{DesktopTree, IdMinter, Tab, TabId, TileContent, Workspace};
 use tilo_desktop_surface::navigation::Application;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
@@ -29,6 +33,8 @@ use ui::permissions::{SharedPermissions, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
 use ui::widget::TileHost;
 use ui::window_share::ResourceView;
+
+use crate::shell::{HostRequest, HostRequests};
 
 /// Applications the page can open, in launcher order: every application
 /// the bundle registered from its manifests (`ui::application::registry`).
@@ -374,10 +380,14 @@ pub(crate) struct Shared {
     pub members: Rc<RefCell<Option<std::collections::BTreeSet<String>>>>,
     /// The person's accounts with the services this workspace is connected to,
     /// read from the connectors' workspace records by the workspace's host
-    /// ([`HostRecordActions`]).
+    /// ([`RecordActions`]).
     pub linked: tilo_app::linked_accounts::LinkedAccounts,
-    /// The workspace actions this desktop asked the workspace's host to run.
-    pub record_actions: HostRecordActions,
+    /// The workspace's record actions, run by the host this page's session
+    /// is with.
+    pub record_actions: RecordActions,
+    /// What the desktop asks of the page: the requests its host reads each
+    /// frame (`crate::shell::HostRequests`).
+    pub requests: HostRequests,
     /// Applications whose code is being fetched.
     loading: Rc<RefCell<crate::app_load::Loads>>,
     /// Applications whose code failed to load since their tabs last asked.
@@ -637,77 +647,74 @@ impl Shared {
     }
 }
 
-/// An action of a workspace record the desktop asked the workspace's host to run, as
-/// the page reads it from the mount's status (`room-action`) and answers it
-/// ([`crate::browser::desktop_exports::desktop_record_action_answer`]).
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-pub(crate) struct RecordActionRequest {
-    pub id: u32,
-    pub app: String,
-    pub action: String,
-    pub arguments: serde_json::Map<String, serde_json::Value>,
-}
-
-/// The workspace actions the desktop asked for and not answered yet.
-#[derive(Default)]
-struct RecordActionQueue {
-    next: u32,
-    outbox: Vec<RecordActionRequest>,
-    waiting: HashMap<u32, Box<dyn FnOnce(tilo_app::linked_accounts::ActionAnswer)>>,
-    /// Addresses to go to, leaving the page (a service's consent page).
-    opens: Vec<String>,
-}
-
-/// The desktop's door to the workspace's records, run by the workspace's host: the
-/// page asks the host (`peer.actions`) to run each action as the person
-/// and hands the answer back. No app code runs in the page for it, so a
-/// connector the page never loads (Discord) answers too.
+/// The workspace's record actions, run by the workspace's host: the page
+/// asks the host over the session it already holds with it
+/// ([`SessionActions`]), as it asks any other device's actions, and the host
+/// runs each through the record's own door as the person. No app code runs in
+/// the page for it, so a connector the page never loads (Discord) answers
+/// too.
 #[derive(Clone, Default)]
-pub(crate) struct HostRecordActions {
-    queue: Rc<RefCell<RecordActionQueue>>,
+pub(crate) struct RecordActions {
+    /// The workspace's host, when this page has a session with one.
+    host: Option<SessionActions>,
     /// The peer whose workspace this desktop shows, for the records it holds.
     peer: Option<u32>,
+    /// The workspace this page is in, and the person asking.
+    workspace: String,
+    author: String,
+    /// What only the page can do with an answer: leave for an address.
+    requests: HostRequests,
+    /// What waits for the host's answer, by invocation.
+    waiting: Waiting,
+    /// The answers that came, for the next frame to hand on: the page's own
+    /// thread answers what asked, never the session's.
+    answered: Arc<std::sync::Mutex<Vec<(InvocationId, ActionAnswer)>>>,
+    /// Wakes the mount once an answer is there to hand on.
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
-impl HostRecordActions {
-    /// The requests the page has to send, once.
-    pub fn take_requests(&self) -> Vec<RecordActionRequest> {
-        std::mem::take(&mut self.queue.borrow_mut().outbox)
-    }
+/// What waits for one of the host's answers, by the invocation it answers.
+type Waiting = Rc<RefCell<HashMap<InvocationId, Box<dyn FnOnce(ActionAnswer)>>>>;
 
-    /// The addresses the page is to go to, once.
-    pub fn take_opens(&self) -> Vec<String> {
-        std::mem::take(&mut self.queue.borrow_mut().opens)
-    }
-
-    pub fn answer(&self, id: u32, answer: tilo_app::linked_accounts::ActionAnswer) {
-        let done = self.queue.borrow_mut().waiting.remove(&id);
-        if let Some(done) = done {
-            done(answer);
+impl RecordActions {
+    /// The records' actions `host` runs for this page's person in
+    /// `workspace`; `requests` takes what only the page can do, and `wake`
+    /// asks for the frame that hands an answer on.
+    pub fn new(
+        host: Option<SessionActions>,
+        peer: Option<u32>,
+        workspace: &str,
+        author: &str,
+        requests: HostRequests,
+        wake: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        Self {
+            host,
+            peer,
+            workspace: workspace.to_owned(),
+            author: author.to_owned(),
+            requests,
+            waiting: Rc::default(),
+            answered: Arc::default(),
+            wake: Some(wake),
         }
     }
+
+    /// Hand the host's answers to what asked for them; whether any came.
+    pub fn follow(&self) -> bool {
+        let answers: Vec<(InvocationId, ActionAnswer)> =
+            std::mem::take(&mut *self.answered.lock_recover());
+        let any = !answers.is_empty();
+        for (invocation, answer) in answers {
+            if let Some(done) = self.waiting.borrow_mut().remove(&invocation) {
+                done(answer);
+            }
+        }
+        any
+    }
 }
 
-/// The person's linked accounts in this desktop's workspace, asked of the
-/// workspace's host through `shared`'s workspace actions; an answer wakes the mount.
-/// `shared` is the mount's before it holds them, so they hold no cycle.
-fn linked_accounts(
-    shared: &Shared,
-    notify: &Arc<dyn Fn() + Send + Sync>,
-) -> tilo_app::linked_accounts::LinkedAccounts {
-    let (woken, notify) = (shared.clone(), Arc::clone(notify));
-    tilo_app::linked_accounts::LinkedAccounts::new(Rc::new(
-        tilo_app::linked_accounts::WorkspaceAccounts::new(
-            Rc::new(shared.record_actions.clone()),
-            Rc::new(move || {
-                woken.wake();
-                notify();
-            }),
-        ),
-    ))
-}
-
-impl tilo_app::linked_accounts::WorkspaceRecordActions for HostRecordActions {
+impl tilo_app::linked_accounts::WorkspaceRecordActions for RecordActions {
     fn apps(&self) -> Vec<String> {
         let workspace_apps = self
             .peer
@@ -732,24 +739,60 @@ impl tilo_app::linked_accounts::WorkspaceRecordActions for HostRecordActions {
         arguments: serde_json::Map<String, serde_json::Value>,
         done: Box<dyn FnOnce(tilo_app::linked_accounts::ActionAnswer)>,
     ) {
-        let mut queue = self.queue.borrow_mut();
-        queue.next = queue.next.wrapping_add(1);
-        let id = queue.next;
-        queue.waiting.insert(id, done);
-        queue.outbox.push(RecordActionRequest {
-            id,
-            app: app.to_owned(),
-            action: action.to_owned(),
+        let Some(host) = &self.host else {
+            done(Err("this page reaches no workspace host".to_owned()));
+            return;
+        };
+        let request = tilo_app::linked_accounts::record_invocation(
+            tilo_actions::InvocationId::new(),
+            app,
+            action,
             arguments,
+        );
+        let caller = tilo_actions::remote::Caller::local_person(self.author.clone())
+            .in_workspace(self.workspace.clone());
+        let invocation = request.invocation;
+        self.waiting.borrow_mut().insert(invocation, done);
+        let answered = Arc::clone(&self.answered);
+        let wake = self.wake.clone();
+        host.invoke(&caller, request).then(move |answered_| {
+            answered.lock_recover().push((
+                invocation,
+                tilo_app::linked_accounts::record_answer(answered_),
+            ));
+            if let Some(wake) = &wake {
+                wake();
+            }
         });
     }
 
     fn open(&self, url: &str) {
         // Only a web address: the page leaves for it.
         if url.starts_with("https://") || url.starts_with("http://") {
-            self.queue.borrow_mut().opens.push(url.to_owned());
+            self.requests
+                .borrow_mut()
+                .push(HostRequest::Open(url.to_owned()));
         }
     }
+}
+
+/// The person's linked accounts in this desktop's workspace, asked of the
+/// workspace's host through `shared`'s workspace actions; an answer wakes the mount.
+/// `shared` is the mount's before it holds them, so they hold no cycle.
+fn linked_accounts(
+    shared: &Shared,
+    notify: &Arc<dyn Fn() + Send + Sync>,
+) -> tilo_app::linked_accounts::LinkedAccounts {
+    let (woken, notify) = (shared.clone(), Arc::clone(notify));
+    tilo_app::linked_accounts::LinkedAccounts::new(Rc::new(
+        tilo_app::linked_accounts::WorkspaceAccounts::new(
+            Rc::new(shared.record_actions.clone()),
+            Rc::new(move || {
+                woken.wake();
+                notify();
+            }),
+        ),
+    ))
 }
 
 struct Tiles {
@@ -1665,6 +1708,37 @@ fn take_up_feedback(
     }
 }
 
+/// What a page's desktop knows before it mounts: the session it holds with
+/// the workspace's host, which runs its records' actions, and the person's
+/// linked accounts, which that host answers.
+fn shared_with_its_host(inputs: &Inputs, notify: &Arc<dyn Fn() + Send + Sync>) -> Shared {
+    let requests = crate::shell::HostRequests::default();
+    let host = inputs.peer.and_then(|peer| {
+        let (session, device) = crate::peer_sync::host_of(peer)?;
+        let workspace = crate::peer::workspace_number(&inputs.workspace).ok()?;
+        Some(SessionActions::new(&session, workspace, device))
+    });
+    let record_actions = RecordActions::new(
+        host,
+        inputs.peer,
+        &inputs.workspace,
+        &inputs.author,
+        Rc::clone(&requests),
+        Arc::clone(notify),
+    );
+    let mut shared = Shared {
+        record_actions,
+        requests,
+        ..Shared::default()
+    };
+    if inputs.peer.is_some() {
+        // In a workspace, the person holds what the workspace answers, once it has.
+        shared.standing = Standing::unknown();
+    }
+    shared.linked = linked_accounts(&shared, notify);
+    shared
+}
+
 pub(crate) fn mount(
     mut inputs: Inputs,
     store: Rc<dyn DurableStore>,
@@ -1674,13 +1748,7 @@ pub(crate) fn mount(
 ) -> Result<(DesktopSurface, DesktopHandle, Shared, Persistence), String> {
     let key = StorageKey::record(DESKTOP_PACKAGE, inputs.workspace.clone(), "desktop");
     let salt = peer_salt(&inputs.salt);
-    let mut shared = Shared::default();
-    shared.record_actions.peer = inputs.peer;
-    if inputs.peer.is_some() {
-        // In a workspace, the person holds what the workspace answers, once it has.
-        shared.standing = Standing::unknown();
-    }
-    shared.linked = linked_accounts(&shared, &notify);
+    let shared = shared_with_its_host(&inputs, &notify);
     take_up_feedback(&shared, &mut inputs, &store, &notify);
     let history_key = StorageKey::record(DESKTOP_PACKAGE, inputs.workspace.clone(), "history");
     let document = open_desk(store.as_ref(), &key, &history_key, &inputs.author);

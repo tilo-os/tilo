@@ -1263,7 +1263,7 @@ fn present_desktop(
     }
     DESKTOPS.with_borrow_mut(|desktops| desktops.insert(id));
     let generation = format!("mount-{id}");
-    let requests = crate::shell::HostRequests::default();
+    let requests = Rc::clone(&shared.requests);
     let authorship = crate::shell::Authorship {
         authors: Rc::clone(&shared.authors),
         author: config.author(),
