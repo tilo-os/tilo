@@ -122,7 +122,7 @@ ORDER = ["P01", "P02", "R06", "R01", "A14", "R02", "R03", "A15", "A17", "R04",
 # The coding agents' end-to-end scenario (checks/agents_e2e.py), in its order: each check needs
 # the ones before it. It runs only when named (`--only agents-e2e`, the e2e-agents check), in
 # no shard of vm-acceptance and in no run of every check.
-E2E_ORDER = ["E01", "E02", "E03", "E08", "E04", "E05", "E06", "E07"]
+E2E_ORDER = ["E01", "E02", "E03", "E08", "E09", "E04", "E05", "E06", "E07"]
 EXPLICIT_AREAS = {"agents-e2e"}
 
 

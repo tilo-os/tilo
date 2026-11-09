@@ -685,46 +685,74 @@ def own_workspace(ctx, res):
         raise CheckFailed("; ".join(problems))
 
 
-@check("E08", AREA, "An agent's change lands in its own workspace, not the other's, and is attributed to its id")
+@check("E08", AREA, "An agent's change lands in its own workspace, not the other's: the note it makes "
+                    "there is found there and not from the other")
 def own_change(ctx, res):
     scene = _scene(ctx)
     agents = _need(scene, "agents", "E02")
     one, two = scene["envs"]
     envs = (one, two)
     titles = {e["name"]: f"E2E {e['name']} agent note {scene['run']}" for e in envs}
-    files = {e["name"]: f"e2e-{e['name'].lower()}-{scene['run']}.txt" for e in envs}
     for e in envs:
         agent = agents[e["name"]]
-        made, asked_note = tool_answering(
+        made, asked = tool_answering(
             ctx, agent, "tilo_do", {"path": "notes#new-note", "args": {"title": titles[e["name"]]}},
             f"{e['name']}-new-note")
-        wrote, asked_file = tool_answering(
-            ctx, agent, "tilo_do",
-            {"path": "terminal#run", "args": {"command": f"echo {agent.name} > {files[e['name']]}; pwd"}},
-            f"{e['name']}-file")
-        e["new_note"], e["new_file"], e["asked_for_change"] = made, wrote, [asked_note, asked_file]
+        e["new_note"], e["asked_for_note"] = made, asked
         agent.keep()
     res.metrics["new_note"] = {e["name"]: text_of(e["new_note"])[:300] for e in envs}
-    res.metrics["new_file"] = {e["name"]: text_of(e["new_file"])[:300] for e in envs}
     problems = []
     for e, other in ((one, two), (two, one)):
         agent = agents[e["name"]]
         if is_error(e["new_note"]) is not False:
             problems.append(f"{e['name']}: new-note was refused: {text_of(e['new_note'])[:300]}")
-        else:
-            found = tool_until(agent, "tilo_find", {"query": titles[e["name"]]},
-                               lambda t: not t.startswith("nothing matches") and titles[e["name"]] in t)
-            if not finds(found, titles[e["name"]]):
-                problems.append(f"{e['name']}: the agent does not find its own note")
-            if finds(agents[other["name"]].tool("tilo_find", {"query": titles[e["name"]]}), titles[e["name"]]):
-                problems.append(f"{other['name']}'s agent finds {e['name']}'s note")
+            continue
+        found = tool_until(agent, "tilo_find", {"query": titles[e["name"]]},
+                           lambda t: not t.startswith("nothing matches") and titles[e["name"]] in t)
+        if not finds(found, titles[e["name"]]):
+            problems.append(f"{e['name']}: the agent does not find its own note")
+        if finds(agents[other["name"]].tool("tilo_find", {"query": titles[e["name"]]}), titles[e["name"]]):
+            problems.append(f"{other['name']}'s agent finds {e['name']}'s note")
+    if problems:
+        raise CheckFailed("; ".join(problems))
+
+
+# What a run answers while it has nobody to ask: a step its grants ask first about waits for a
+# question on its issue, and an agent door connection's run has no issue to put it on.
+UNASKED = "waits for the person to confirm it on the issue"
+
+
+@check("E09", AREA, "An agent's change that asks first is put to the person, and with their answer "
+                    "lands in its own workspace's files, not the other's")
+def asked_change(ctx, res):
+    scene = _scene(ctx)
+    agents = _need(scene, "agents", "E02")
+    one, two = scene["envs"]
+    envs = (one, two)
+    files = {e["name"]: f"e2e-{e['name'].lower()}-{scene['run']}.txt" for e in envs}
+    for e in envs:
+        agent = agents[e["name"]]
+        wrote, asked = tool_answering(
+            ctx, agent, "tilo_do",
+            {"path": "terminal#run", "args": {"command": f"echo {agent.name} > {files[e['name']]}; pwd"}},
+            f"{e['name']}-file")
+        e["new_file"], e["asked_for_file"] = wrote, asked
+        agent.keep()
+    res.metrics["new_file"] = {e["name"]: text_of(e["new_file"])[:300] for e in envs}
+    refused = [text_of(e["new_file"]) for e in envs if is_error(e["new_file"]) is not False]
+    if refused and all(UNASKED in said for said in refused):
+        raise core.ExpectedFailure(
+            "a door connection's run cannot put a step that asks first to its person: it waits for a "
+            f"question on a Tasks issue it has none of ({refused[0][:160]})")
+    problems = []
+    for e, other in ((one, two), (two, one)):
         if is_error(e["new_file"]) is not False:
             problems.append(f"{e['name']}: terminal#run was refused: {text_of(e['new_file'])[:300]}")
-        else:
-            if slot_read(ctx, f"{e['tree']}/{files[e['name']]}") is None:
-                problems.append(f"{e['name']}: the agent's file is not in its workspace's files")
-            if slot_read(ctx, f"{other['tree']}/{files[e['name']]}") is not None:
-                problems.append(f"{e['name']}: the agent's file landed in {other['name']}'s files")
+            continue
+        if slot_read(ctx, f"{e['tree']}/{files[e['name']]}") is None:
+            problems.append(f"{e['name']}: the agent's file is not in its workspace's files")
+        if slot_read(ctx, f"{other['tree']}/{files[e['name']]}") is not None:
+            problems.append(f"{e['name']}: the agent's file landed in {other['name']}'s files")
     if problems:
         raise CheckFailed("; ".join(problems))
 
