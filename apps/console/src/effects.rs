@@ -16,8 +16,10 @@ pub enum ConsoleEffect {
     /// Open run
     ///
     /// Show this run's page in this window: what it was asked, what it did
-    /// and what can be done with it.
-    #[effect(view)]
+    /// and what can be done with it. It changes only the view of whoever
+    /// opens it, so an agent may open a run for itself and is shown the run
+    /// and what it offers (its link) like a person is.
+    #[effect(view, participant)]
     ViewRun {
         #[param("Id of the run")]
         run: String,
