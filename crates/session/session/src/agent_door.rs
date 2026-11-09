@@ -783,18 +783,26 @@ impl Loop {
                 if self.connections.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
                     return Err(PeerRefusal::Busy);
                 }
-                peer_decision(&peer)?;
-                Ok(pid)
+                match peer_decision(&peer) {
+                    Ok(()) => Ok(From::Login(pid)),
+                    // The login's confined shell runtime runs in a mount namespace systemd made
+                    // for it: it is let in to ask for its environments' doors, and for nothing
+                    // else (`serve_connection`).
+                    Err(PeerRefusal::Sandboxed) if is_shell_runtime(pid) => {
+                        Ok(From::ShellRuntime(pid))
+                    }
+                    Err(refusal) => Err(refusal),
+                }
             });
-            let pid = match pressed {
-                Ok(pid) => pid,
+            let from = match pressed {
+                Ok(from) => from,
                 Err(refusal) => {
                     tracing::info!(?refusal, "agent door: a connection is refused");
                     refuse(stream, &refusal);
                     continue;
                 }
             };
-            self.serve(stream, From::Login(pid));
+            self.serve(stream, from);
         }
     }
 
@@ -1327,6 +1335,56 @@ pub(crate) fn identify(stream: &UnixStream) -> Result<(u32, Peer), PeerRefusal> 
             shares_namespaces: shares_security_namespaces(pid),
         },
     ))
+}
+
+/// The image's confined shell runtime, and the unit of the login's own service manager it runs
+/// in (os/usr/lib/systemd/user/tilo-ush.service).
+const SHELL_RUNTIME: &str = "/usr/libexec/tilo-ush";
+const SHELL_RUNTIME_UNIT: &str = "tilo-ush.service";
+
+/// Whether `pid`, a process of this account outside this login's namespaces, is the login's own
+/// confined shell runtime: the image's `tilo-ush` executable, running in the `tilo-ush.service`
+/// unit of the service manager this session runs under. systemd starts it in a mount namespace
+/// of its own (`PrivateTmp=`), so the namespace check alone takes it for a sandboxed program;
+/// these are the kernel's facts that tell it apart from one, as no sandbox moves a program into
+/// another unit's cgroup.
+fn is_shell_runtime(pid: u32) -> bool {
+    shell_runtime_at(
+        Path::new(SHELL_RUNTIME),
+        &format!("/proc/{pid}/exe"),
+        &std::fs::read_to_string(format!("/proc/{pid}/cgroup")).unwrap_or_default(),
+        &std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default(),
+    )
+}
+
+/// [`is_shell_runtime`] of a process whose executable is at `exe` and whose cgroups are
+/// `theirs`, beside a session whose cgroups are `ours`, with the runtime installed at `runtime`.
+fn shell_runtime_at(runtime: &Path, exe: &str, theirs: &str, ours: &str) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    let same_file = match (std::fs::metadata(exe), std::fs::metadata(runtime)) {
+        (Ok(exe), Ok(runtime)) => exe.dev() == runtime.dev() && exe.ino() == runtime.ino(),
+        // A process that cannot be read is not one this door knows.
+        _ => false,
+    };
+    // The unified hierarchy's line (`0::/path`).
+    let unified = |cgroups: &str| {
+        cgroups
+            .lines()
+            .find_map(|line| line.strip_prefix("0::"))
+            .map(str::to_owned)
+    };
+    // The service manager a cgroup path is under: the path to its `user@<uid>.service`.
+    let manager = |path: &str| {
+        let end = path
+            .split('/')
+            .position(|part| part.starts_with("user@") && part.ends_with(".service"))?;
+        Some(path.split('/').take(end + 1).collect::<Vec<_>>().join("/"))
+    };
+    let (Some(theirs), Some(ours)) = (unified(theirs), unified(ours)) else {
+        return false;
+    };
+    let in_unit = theirs.split('/').any(|part| part == SHELL_RUNTIME_UNIT);
+    same_file && in_unit && manager(&theirs).is_some() && manager(&theirs) == manager(&ours)
 }
 
 /// Whether `pid` runs in this process's user and mount namespaces: what tells a program of this
@@ -2218,6 +2276,9 @@ enum From {
     Environment(u32, Arc<environments::Environment>),
     /// Another of the person's devices, over iroh ([`crate::remote_door`]).
     Device(Box<tilo_runtime::remote_door::Origin>),
+    /// The login's confined shell runtime, by the pid that opened it ([`is_shell_runtime`]): it
+    /// asks for its environments' doors, and is served nothing else.
+    ShellRuntime(u32),
 }
 
 /// Serve one connection of this account, on its own thread: read what it opens with, ask the
@@ -2246,6 +2307,19 @@ fn serve_connection(opened: Opened, serving: &Serving) {
         }
     };
     let (pid, entrance) = match from {
+        From::ShellRuntime(pid) => {
+            match runtime_portal::environment_door::Request::of(&first) {
+                Some(request) => environments::open(stream, request, pid, serving.clone()),
+                None => {
+                    tracing::info!(
+                        pid,
+                        "agent door: the shell runtime asked for something other than an environment's door"
+                    );
+                    refuse(stream, &PeerRefusal::Sandboxed);
+                }
+            }
+            return;
+        }
         From::Login(pid) => (pid, Origin::Host),
         From::Environment(pid, environment) => (pid, Origin::Environment(environment)),
         From::Device(origin) => {
@@ -2501,6 +2575,52 @@ mod tests {
         }
         assert!(seats.readings().is_empty(), "the seat left with it");
         assert!(!seats.stop("claude-code"), "nothing to stop twice");
+    }
+
+    /// The login's shell runtime is the image's executable in its own unit of the session's
+    /// service manager; the same executable run anywhere else, or another program in that unit,
+    /// is not it.
+    #[test]
+    fn the_shell_runtime_is_its_executable_in_its_unit_of_this_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = dir.path().join("tilo-ush");
+        std::fs::write(&runtime, b"runtime").unwrap();
+        let other = dir.path().join("other");
+        std::fs::write(&other, b"other").unwrap();
+        let exe = runtime.to_str().unwrap();
+        let ours =
+            "0::/user.slice/user-1001.slice/user@1001.service/session.slice/tilo-session.service\n";
+        let unit = "0::/user.slice/user-1001.slice/user@1001.service/app.slice/tilo-ush.service\n";
+        assert!(shell_runtime_at(&runtime, exe, unit, ours));
+        let below =
+            "0::/user.slice/user-1001.slice/user@1001.service/app.slice/tilo-ush.service/run-1\n";
+        assert!(
+            shell_runtime_at(&runtime, exe, below, ours),
+            "a group of the unit's own"
+        );
+        assert!(
+            !shell_runtime_at(&runtime, other.to_str().unwrap(), unit, ours),
+            "another program in the unit"
+        );
+        let app = "0::/user.slice/user-1001.slice/user@1001.service/app.slice/app-so.tilo.terminal.scope\n";
+        assert!(
+            !shell_runtime_at(&runtime, exe, app, ours),
+            "the executable run by an app"
+        );
+        let elsewhere =
+            "0::/user.slice/user-1002.slice/user@1002.service/app.slice/tilo-ush.service\n";
+        assert!(
+            !shell_runtime_at(&runtime, exe, elsewhere, ours),
+            "another login's runtime"
+        );
+        assert!(
+            !shell_runtime_at(&runtime, "/nonexistent", unit, ours),
+            "a process that is gone"
+        );
+        assert!(
+            !shell_runtime_at(&runtime, exe, "", ours),
+            "no cgroup to read"
+        );
     }
 
     #[test]
