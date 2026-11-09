@@ -5,7 +5,7 @@
 //! breathing ring while they are in a call, and a drawn count badge for
 //! everyone past the last face.
 
-use vello::kurbo::{Circle, Point, Rect, Stroke};
+use vello::kurbo::{Circle, Point, Rect, RoundedRect, Shape, Stroke};
 use vello::peniko::{Color, Fill};
 
 use crate::paint::PaintCtx;
@@ -197,13 +197,24 @@ impl Face<'_> {
     }
 }
 
+/// The shape a face's rings follow, `reach` past its disc: a circle for a person, and for an agent
+/// the rounded square its mark is, so software never reads as a person at any scale.
+fn outline(face: &Face<'_>, rect: Rect, corner: f64, reach: f64) -> vello::kurbo::BezPath {
+    if face.is_agent {
+        RoundedRect::from_rect(rect.inflate(reach, reach), corner + reach).to_path(0.1)
+    } else {
+        Circle::new(rect.center(), rect.width() / 2.0 + reach).to_path(0.1)
+    }
+}
+
 /// One face in `rect`: the call ring, the ground gap, the colour ring and
 /// the face. Idle or away, its colour is quietened against `ground`
 /// ([`crate::tokens::colors::PresencePalette::idle_on`]) rather than faded
 /// through, so the ring and the initial still read on any bar in any theme.
 fn paint_face(ctx: &mut PaintCtx<'_>, rect: Rect, face: &Face<'_>, ground: Color) {
-    let center = rect.center();
-    let r = rect.width() / 2.0;
+    // The agent mark's own corner (`agent_identity`), which its rings keep.
+    let corner = (rect.width() * 0.22).min(f64::from(ctx.theme.tokens.radii.detail));
+    let around = |reach: f64| outline(face, rect, corner, reach);
     let palette = &ctx.theme.tokens.colors.presence;
     let colour = if face.dimmed {
         palette.idle_on(face.colour, ground)
@@ -217,7 +228,7 @@ fn paint_face(ctx: &mut PaintCtx<'_>, rect: Rect, face: &Face<'_>, ground: Color
             transform,
             colour.multiply_alpha(0.55 * level),
             None,
-            &Circle::new(center, r + GAP + RING + CALL_REACH - 1.0),
+            &around(GAP + RING + CALL_REACH - 1.0),
         );
     }
     // Ground under the ring, so overlapping faces separate.
@@ -226,14 +237,14 @@ fn paint_face(ctx: &mut PaintCtx<'_>, rect: Rect, face: &Face<'_>, ground: Color
         transform,
         ground,
         None,
-        &Circle::new(center, r + GAP + RING + GAP),
+        &around(GAP + RING + GAP),
     );
     ctx.scene.stroke(
         &Stroke::new(RING),
         transform,
         colour,
         None,
-        &Circle::new(center, r + GAP + RING / 2.0),
+        &around(GAP + RING / 2.0),
     );
     if face.is_agent {
         crate::agent_identity::draw_agent_identity_mark(

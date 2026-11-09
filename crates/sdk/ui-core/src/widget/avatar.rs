@@ -763,6 +763,16 @@ impl Avatar {
         self
     }
 
+    /// Software, not a person: the agent mark on a rounded square, in its presence colour
+    /// ([`Self::with_presence`], its client's hue), so it is never read as anyone's face.
+    #[must_use]
+    pub fn agent(mut self) -> Self {
+        self.glyph = Some(crate::icons::Icon::Bot);
+        self.square = true;
+        self.neutral = false;
+        self
+    }
+
     /// Bind the displayed name and accessible description to process-local
     /// presentation state, retaining the avatar and adjacent input widgets.
     /// Identity, picture and geometry remain independently configured.

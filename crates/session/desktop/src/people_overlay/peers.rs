@@ -110,6 +110,7 @@ mod tests {
             rgb: (1, 2, 3),
             agent: false,
             tab: None,
+            focus_app: None,
             place: None,
             status: None,
             recent: None,

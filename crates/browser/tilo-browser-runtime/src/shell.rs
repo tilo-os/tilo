@@ -725,6 +725,24 @@ impl BrowserShell {
                     })
                     .is_ok()
         };
+        // The person's own agent arriving (the one their setup prompt
+        // connected) is followed at once, its card opened beside them:
+        // they watch it work from the moment it is here, and stop
+        // following with the banner's one control. One already followed
+        // keeps its place; a second agent does not take the view.
+        let arrived = self.chrome.here.borrow_mut().take_own_agents_arrived();
+        for (publisher, label) in arrived {
+            if self.pinned.followed().is_some() {
+                break;
+            }
+            self.pinned.toggle_follow(&publisher);
+            self.chrome.shared.ask_app_action(
+                tilo_desktop::launchpad::LaunchpadAppAction::ask_agent(
+                    ui::presence::agent_client(&label),
+                    tilo_desktop::profile_card::AgentAsk::Card,
+                ),
+            );
+        }
         if self.pinned.track(&people, handle, &open_app) {
             (self.chrome.wake)();
         }
@@ -1293,9 +1311,14 @@ impl BrowserShell {
                 place: row.activity.clone(),
                 presence: (!person.agent).then_some(row.availability),
                 following: self.pinned.followed() == Some(id),
-                can_follow: row.followable && !person.agent,
+                can_follow: row.followable,
                 can_message,
                 linked,
+                agent: person
+                    .agent
+                    .then(|| tilo_desktop::profile_card::AgentFacts {
+                        client: ui::presence::agent_client(&row.label).to_owned(),
+                    }),
             }),
             ..ProfileModel::default()
         })
@@ -1431,6 +1454,14 @@ impl BrowserShell {
             ProfileChoice::Message(key) => {
                 self.chrome.shared.ask_app_action(
                     tilo_desktop::launchpad::LaunchpadAppAction::message_person(&key),
+                );
+                return;
+            }
+            // An agent's own action in Console, which opens (or brings
+            // forward) its card beside the work and carries it out there.
+            ProfileChoice::Agent { client, ask } => {
+                self.chrome.shared.ask_app_action(
+                    tilo_desktop::launchpad::LaunchpadAppAction::ask_agent(&client, ask),
                 );
                 return;
             }
@@ -1981,6 +2012,7 @@ fn absent_person(key: &str, name: &str) -> Option<ProfileModel> {
             can_follow: false,
             can_message: crate::desktop::known_application(CHAT_APP).is_some(),
             linked: Vec::new(),
+            agent: None,
         }),
         key: Some(key),
         ..ProfileModel::default()

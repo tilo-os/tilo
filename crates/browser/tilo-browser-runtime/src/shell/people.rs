@@ -184,11 +184,14 @@ impl PagePeople {
             .map(|person| Place {
                 id: &person.id,
                 tab: person.tab,
+                // A person's screen says the app in front of them; an agent has no screen, and
+                // names the record it acts in, so following it opens that record's app here.
                 app: person
                     .screen
                     .as_ref()
                     .and_then(|screen| screen.windows.iter().find(|window| window.focused))
-                    .map(|window| window.app.as_str()),
+                    .map(|window| window.app.as_str())
+                    .or(person.focus_app.as_deref()),
             })
             .collect();
         match self.follow.step(&places) {

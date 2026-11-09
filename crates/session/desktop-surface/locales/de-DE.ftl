@@ -1155,6 +1155,8 @@ overview-strip-move-up = Nach oben
 overview-strip-move-down = Nach unten
 browser-new-workspace-name = Arbeitsbereich { $number }
 workspace-notice-joined = { $name } ist dazugekommen
+workspace-notice-agent-finished = { $agent } ist fertig
+workspace-notice-agent-card = Karte öffnen
 workspace-notice-renamed = { $name } hat den Arbeitsbereich in { $workspace } umbenannt
 # Was der Schreibtisch sagt, wenn etwas nicht geschehen ist, worum jemand
 # gebeten hat: wonach gefragt wurde, warum, und die Taste, die es erneut versucht.
@@ -1499,3 +1501,9 @@ activities-layer = Aktivitäten
 activity-collapse = Weglegen
 activity-close = Schließen
 
+profile-agent-card = Karte öffnen
+profile-agent-stop = Anhalten
+profile-agent-undo-run = Lauf rückgängig machen
+profile-agent-take-over = Übernehmen
+profile-agent-revoke = Zugriff entziehen
+profile-agent-now = Gerade

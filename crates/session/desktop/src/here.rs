@@ -184,6 +184,9 @@ pub struct Person {
     pub agent: bool,
     /// The window of the record they focus, when this desktop shows it.
     pub tab: Option<TabId>,
+    /// The app of the record they focus, as their presence names it: where following them goes
+    /// while no window here shows that record.
+    pub focus_app: Option<String>,
     /// Where they are, saying only what their status line does not:
     /// "Strip · App", the strip only where the workspace has more than one,
     /// the app only where the status does not already name it
@@ -243,6 +246,23 @@ pub struct HereState {
     /// Each person's accounts elsewhere as their profile names them, by their root key (lower-case
     /// hex).
     linked: HashMap<String, Vec<tilo_app::linked_accounts::ProfileLink>>,
+    /// This person's own agents already met on this page, by publisher
+    /// ([`HereState::take_own_agents_arrived`]).
+    met_agents: std::collections::BTreeSet<String>,
+    /// Every agent present, by publisher: its name, what it last said it was doing, and when it was
+    /// last here (Unix milliseconds), so one gone for good is said to have finished
+    /// ([`HereState::take_agents_finished`]).
+    working_agents: HashMap<String, (String, Option<String>, u64)>,
+}
+
+/// An agent that left the workspace: its work is over.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentFinished {
+    pub publisher: String,
+    /// Its name ("Claude Code").
+    pub label: String,
+    /// What it last said it was doing.
+    pub last: Option<String>,
 }
 
 pub type Here = std::rc::Rc<std::cell::RefCell<HereState>>;
@@ -367,6 +387,70 @@ impl HereState {
         self.linked
             .get(&user.to_ascii_lowercase())
             .map_or(&[], Vec::as_slice)
+    }
+
+    /// This person's own agents (devices of theirs that are agents, such as the one their setup
+    /// prompt connected) present now and not met on this page before, each once, as `(publisher,
+    /// label)`: the page follows one and opens its card, so the person watches it work from the
+    /// moment it arrives. Someone else's agent is not theirs to be shown into.
+    pub fn take_own_agents_arrived(&mut self) -> Vec<(String, String)> {
+        let Some(own) = self.own_user().map(str::to_owned) else {
+            return Vec::new();
+        };
+        let arrived: Vec<(String, String)> = self
+            .members
+            .iter()
+            .flatten()
+            .filter(|member| member.kind == "agent")
+            .filter(|member| !self.met_agents.contains(&member.publisher))
+            .filter(|member| {
+                self.user_of(&member.publisher)
+                    .is_some_and(|user| user.eq_ignore_ascii_case(&own))
+            })
+            .map(|member| (member.publisher.clone(), member.label.clone()))
+            .collect();
+        self.met_agents
+            .extend(arrived.iter().map(|(publisher, _)| publisher.clone()));
+        arrived
+    }
+
+    /// The agents that left since the last call, each once: gone from the live layer for longer than
+    /// a reconnect takes (`REJOIN_QUIET_MS`), so a page renewing its grant is no agent finishing.
+    /// An agent's finishing is news the person did not cause, which a notice says.
+    pub fn take_agents_finished(&mut self, now_ms: u64) -> Vec<AgentFinished> {
+        let Some(members) = &self.members else {
+            return Vec::new();
+        };
+        for member in members.iter().filter(|member| member.kind == "agent") {
+            let held = self
+                .working_agents
+                .entry(member.publisher.clone())
+                .or_insert_with(|| (member.label.clone(), None, now_ms));
+            held.0.clone_from(&member.label);
+            if let Some(activity) = member.activity.as_deref().filter(|a| !a.trim().is_empty()) {
+                held.1 = Some(activity.to_owned());
+            }
+            held.2 = now_ms;
+        }
+        let gone: Vec<String> = self
+            .working_agents
+            .iter()
+            .filter(|(_, (_, _, seen))| now_ms.saturating_sub(*seen) >= REJOIN_QUIET_MS)
+            .map(|(publisher, _)| publisher.clone())
+            .collect();
+        let mut finished: Vec<AgentFinished> = gone
+            .into_iter()
+            .filter_map(|publisher| {
+                let (label, last, _) = self.working_agents.remove(&publisher)?;
+                Some(AgentFinished {
+                    publisher,
+                    label,
+                    last,
+                })
+            })
+            .collect();
+        finished.sort_by(|a, b| a.publisher.cmp(&b.publisher));
+        finished
     }
 
     /// Who joined since the last call, by the name everyone here sees: a person who was not in the
@@ -731,10 +815,18 @@ impl HereState {
         };
         let keys: Vec<&str> = present.iter().map(|(_, key)| *key).collect();
         let settled = ui::presence::assign_peer_colors(&keys, &[]);
-        present
+        let mut colors: HashMap<String, (u8, u8, u8)> = present
             .into_iter()
             .filter_map(|(id, key)| settled.get(key).map(|rgb| (id.to_owned(), *rgb)))
-            .collect()
+            .collect();
+        // An agent wears its client's hue, so Claude Code reads as Claude Code on every face and
+        // caret of it; one this build does not know keeps the hue it settled on.
+        for member in self.members.iter().flatten().filter(|m| m.kind == "agent") {
+            if let Some(hue) = ui::tokens::PresenceHue::of_agent_client(&member.label) {
+                colors.insert(member.publisher.clone(), ui::presence::identity_rgb(hue));
+            }
+        }
+        colors
     }
 
     /// This page's own line from the host.
@@ -803,6 +895,7 @@ impl HereState {
                 rgb: color_in(&colors, &member.publisher),
                 agent,
                 tab,
+                focus_app: member.focus.as_ref().map(|focus| focus.app.clone()),
                 place,
                 status,
                 recent: line_of.and_then(|l| host_line(&l.recent, l.generated)),
@@ -836,6 +929,7 @@ impl HereState {
                 rgb: color_in(&colors, &l.device),
                 agent: false,
                 tab,
+                focus_app: None,
                 place: tab.and_then(|tab| worded_place(tree, tab, app_name, status.as_ref())),
                 status,
                 recent: host_line(&l.recent, l.generated),
@@ -1133,6 +1227,116 @@ mod tests {
             availability: None,
             call: None,
         }
+    }
+
+    /// An MCP agent connected for this page's person is in the workspace's presence as an agent:
+    /// listed after the people, in its client's hue, saying what it does now, and naming the app
+    /// of the record it acts in, which following it opens. It is met once: the page follows it and
+    /// opens its card the first time only, and someone else's agent is never theirs to be shown
+    /// into.
+    #[test]
+    fn an_mcp_agent_session_is_present_as_an_agent_and_met_once() {
+        let mut here = HereState::default();
+        let own = LiveMember {
+            user: Some("aa".into()),
+            ..member("me", "person", "Pat")
+        };
+        let claude = LiveMember {
+            focus: Some(Focus {
+                app: "so.tilo.notes".into(),
+                record: "0123456789abcdef".into(),
+            }),
+            activity: Some("Editing notes/Welcome".into()),
+            ..member("claude", "agent", "Claude Code")
+        };
+        here.set_members(
+            Some(own.clone()),
+            Some(vec![
+                own,
+                member("ada", "person", "Ada"),
+                claude,
+                member("theirs", "agent", "Codex"),
+            ]),
+        );
+        here.set_lines(
+            vec![
+                HostLine {
+                    device: "claude".into(),
+                    user: "aa".into(),
+                    label: "Claude Code".into(),
+                    ..HostLine::default()
+                },
+                HostLine {
+                    device: "theirs".into(),
+                    user: "bb".into(),
+                    ..HostLine::default()
+                },
+            ],
+            0,
+        );
+        let people = here.people(&DesktopTree::default(), &[], &|_| None, 0);
+        let ids: Vec<&str> = people.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["ada", "claude", "theirs"],
+            "people first, then agents"
+        );
+        let agent = &people[1];
+        assert!(
+            agent.agent,
+            "an MCP session is an agent, not this person's own device"
+        );
+        assert_eq!(
+            agent.rgb,
+            ui::presence::identity_rgb(ui::tokens::PresenceHue::Orange),
+            "Claude Code wears its client's hue"
+        );
+        assert_eq!(
+            agent.status.as_ref().map(|line| line.text.as_str()),
+            Some("Editing notes/Welcome")
+        );
+        assert_eq!(agent.focus_app.as_deref(), Some("so.tilo.notes"));
+        assert_eq!(
+            here.take_own_agents_arrived(),
+            [("claude".to_owned(), "Claude Code".to_owned())],
+            "only this person's own agent is met"
+        );
+        assert!(here.take_own_agents_arrived().is_empty(), "met once");
+    }
+
+    /// An agent that leaves has finished, said once and only after a reconnect's grace: one back
+    /// within it never left.
+    #[test]
+    fn an_agent_gone_for_good_has_finished() {
+        let mut here = HereState::default();
+        let claude = || LiveMember {
+            activity: Some("Editing notes/Welcome".into()),
+            ..member("claude", "agent", "Claude Code")
+        };
+        here.set_members(None, Some(vec![claude()]));
+        assert!(here.take_agents_finished(1_000).is_empty());
+        here.set_members(None, Some(Vec::new()));
+        assert!(
+            here.take_agents_finished(1_000 + REJOIN_QUIET_MS / 2)
+                .is_empty(),
+            "a reconnect is not finishing"
+        );
+        here.set_members(None, Some(vec![claude()]));
+        assert!(
+            here.take_agents_finished(2_000 + REJOIN_QUIET_MS / 2)
+                .is_empty()
+        );
+        here.set_members(None, Some(Vec::new()));
+        let later = 3_000 + REJOIN_QUIET_MS * 2;
+        assert_eq!(
+            here.take_agents_finished(later),
+            [AgentFinished {
+                publisher: "claude".into(),
+                label: "Claude Code".into(),
+                last: Some("Editing notes/Welcome".into()),
+            }]
+        );
+        assert!(here.take_agents_finished(later + 1).is_empty(), "said once");
     }
 
     /// A person's screen is their device's layout; an agent has none, even when its frame says one.
@@ -2058,6 +2262,7 @@ mod tests {
             rgb: (1, 2, 3),
             agent: true,
             tab: None,
+            focus_app: None,
             place: None,
             status: None,
             recent: None,

@@ -1136,6 +1136,8 @@ overview-strip-move-up = Move up
 overview-strip-move-down = Move down
 browser-new-workspace-name = Workspace { $number }
 workspace-notice-joined = { $name } joined
+workspace-notice-agent-finished = { $agent } finished
+workspace-notice-agent-card = Open card
 workspace-notice-renamed = { $name } renamed the workspace to { $workspace }
 # What the desk says when something a person asked for did not happen: what
 # they asked for, why, and the button that tries it again.
@@ -1486,3 +1488,9 @@ activities-layer = Activities
 activity-collapse = Put away
 activity-close = Close
 
+profile-agent-card = Open card
+profile-agent-stop = Stop
+profile-agent-undo-run = Undo run
+profile-agent-take-over = Take over
+profile-agent-revoke = Revoke access
+profile-agent-now = Now

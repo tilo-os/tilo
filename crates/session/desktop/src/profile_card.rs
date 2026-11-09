@@ -158,6 +158,44 @@ pub struct OtherPerson {
     pub can_message: bool,
     /// Their accounts elsewhere, as their profile names them.
     pub linked: Vec<tilo_app::linked_accounts::ProfileLink>,
+    /// They are an agent: the card offers what can be done with it, each through its card in
+    /// Console. `None` for a person.
+    pub agent: Option<AgentFacts>,
+}
+
+/// An agent as its face's card shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentFacts {
+    /// The client it is, by the name it goes by ("Claude Code"): what its card in Console is
+    /// addressed by.
+    pub client: String,
+}
+
+/// What a person asks of an agent from its face's card. Each is the agent's own action in Console
+/// (`console.agent:<client>`), which also brings its card forward: nothing done to an agent
+/// happens out of sight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentAsk {
+    /// Pull its card out into a window beside the work.
+    Card,
+    Stop,
+    UndoRun,
+    TakeOver,
+    Revoke,
+}
+
+impl AgentAsk {
+    /// The action of the agent's resource in Console it is.
+    #[must_use]
+    pub const fn action(self) -> &'static str {
+        match self {
+            Self::Card => "view-agent",
+            Self::Stop => "stop-agent",
+            Self::UndoRun => "undo-agent-run",
+            Self::TakeOver => "take-over-agent",
+            Self::Revoke => "revoke-agent",
+        }
+    }
 }
 
 /// The most characters a linked account's line holds beside Unlink: the card is one utility panel
@@ -245,6 +283,11 @@ pub enum ProfileChoice {
     /// Open the conversation this person has with them in Chat (root key,
     /// hex), on Chat's row for it, its composer ready.
     Message(String),
+    /// Ask this of the agent of this client (`AgentFacts::client`).
+    Agent {
+        client: String,
+        ask: AgentAsk,
+    },
 }
 
 impl ProfileChoice {
@@ -253,7 +296,11 @@ impl ProfileChoice {
     fn closes(&self) -> bool {
         matches!(
             self,
-            Self::Rename(_) | Self::Action(_) | Self::Follow(_) | Self::Message(_)
+            Self::Rename(_)
+                | Self::Action(_)
+                | Self::Follow(_)
+                | Self::Message(_)
+                | Self::Agent { .. }
         )
         // The rest are settings the card goes on showing.
     }
@@ -464,6 +511,11 @@ impl ProfileCard {
         if let Some(colour) = model.colour {
             avatar = avatar.with_presence(colour);
         }
+        // An agent's face is square with the agent mark (its colour is its client's hue, as the
+        // host gives it): never a person's.
+        if other.agent.is_some() {
+            avatar = avatar.agent();
+        }
         let mut who = Column::new()
             .with_no_padding()
             .with_rhythm(ui::tokens::Rhythm::Tight)
@@ -503,7 +555,16 @@ impl ProfileCard {
             ))))
             .push(Box::new(header));
         if let Some(status) = &other.status {
-            body = body.push(Self::status_row(status));
+            body = body.push(if other.agent.is_some() {
+                // What an agent is at is its live line, not words it chose: it reads as now.
+                Box::new(
+                    ListRow::new("profile-other-status", status.text.clone())
+                        .two_line_title()
+                        .secondary(t("profile-agent-now")),
+                ) as Box<dyn Widget>
+            } else {
+                Self::status_row(status)
+            });
         }
         for link in &other.linked {
             body = body.push(Self::linked_to(link));
@@ -553,12 +614,84 @@ impl ProfileCard {
             ));
             any = true;
         }
+        if let Some(agent) = &other.agent {
+            let chosen = Rc::clone(&self.chosen);
+            let client = agent.client.clone();
+            actions = actions.push(Box::new(
+                Button::new("profile-agent-card", &t("profile-agent-card"))
+                    .with_icon(Icon::PanelRight)
+                    .role(ButtonRole::Primary)
+                    .on_effect(move || {
+                        *chosen.borrow_mut() = Some(ProfileChoice::Agent {
+                            client: client.clone(),
+                            ask: AgentAsk::Card,
+                        });
+                    }),
+            ));
+            any = true;
+        }
         if any {
             body = body
                 .push(Box::new(Divider::horizontal()))
                 .push(Box::new(actions));
         }
+        if let Some(agent) = &other.agent {
+            body = body.push(Box::new(self.agent_commands(agent)));
+        }
         body
+    }
+
+    /// What can be done with an agent from its face: Stop, Undo run, Take over and Revoke, each
+    /// carried out by its card in Console, which comes forward to show what came of it.
+    fn agent_commands(&self, agent: &AgentFacts) -> Row {
+        // Labelled, never bare icons: Stop and Revoke must not be guessed at. The row wraps on the
+        // narrow card.
+        let mut row = Row::new().with_align_items(taffy::AlignItems::Center);
+        for (id, label, icon, ask, role) in [
+            (
+                "profile-agent-stop",
+                "profile-agent-stop",
+                Icon::Square,
+                AgentAsk::Stop,
+                ButtonRole::Plain,
+            ),
+            (
+                "profile-agent-undo-run",
+                "profile-agent-undo-run",
+                Icon::Undo2,
+                AgentAsk::UndoRun,
+                ButtonRole::Plain,
+            ),
+            (
+                "profile-agent-take-over",
+                "profile-agent-take-over",
+                Icon::Hand,
+                AgentAsk::TakeOver,
+                ButtonRole::Plain,
+            ),
+            (
+                "profile-agent-revoke",
+                "profile-agent-revoke",
+                Icon::Ban,
+                AgentAsk::Revoke,
+                ButtonRole::Destructive,
+            ),
+        ] {
+            let chosen = Rc::clone(&self.chosen);
+            let client = agent.client.clone();
+            row = row.push(Box::new(
+                Button::new(id, &t(label))
+                    .with_icon(icon)
+                    .role(role)
+                    .on_effect(move || {
+                        *chosen.borrow_mut() = Some(ProfileChoice::Agent {
+                            client: client.clone(),
+                            ask,
+                        });
+                    }),
+            ));
+        }
+        row
     }
 
     /// The devices someone is here on, each named as it calls itself and as it said it was: the
@@ -2387,6 +2520,7 @@ mod tests {
                 can_follow: true,
                 can_message,
                 linked: Vec::new(),
+                agent: None,
             }),
             ..ProfileModel::default()
         }

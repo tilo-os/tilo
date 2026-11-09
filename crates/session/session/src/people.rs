@@ -58,6 +58,11 @@ pub(crate) enum PeopleAsk {
     Colour(String),
     /// Open the Settings page a card action names, such as their identities or an identity backup.
     Settings(String),
+    /// Ask this of the agent of `client`, through its card in Console.
+    Agent {
+        client: String,
+        ask: tilo_desktop::profile_card::AgentAsk,
+    },
 }
 
 /// The colour this person wears here: the one they chose in their own settings, else the one their
@@ -688,9 +693,14 @@ impl Panel {
                 place: row.activity.clone(),
                 presence: (!row.is_agent).then_some(row.availability),
                 following: sync.own().following.as_deref() == Some(row.id.as_str()),
-                can_follow: row.followable && !row.is_agent,
+                can_follow: row.followable,
                 can_message,
                 linked,
+                agent: row
+                    .is_agent
+                    .then(|| tilo_desktop::profile_card::AgentFacts {
+                        client: ui::presence::agent_client(&row.label).to_owned(),
+                    }),
             }),
             ..ProfileModel::default()
         })
@@ -786,6 +796,11 @@ impl Panel {
                 }
                 ProfileChoice::Message(key) => {
                     self.asks.borrow_mut().push(PeopleAsk::Message { key });
+                }
+                ProfileChoice::Agent { client, ask } => {
+                    self.asks
+                        .borrow_mut()
+                        .push(PeopleAsk::Agent { client, ask });
                 }
                 // The rows of this person's own card: the session keeps their name, what they say
                 // of themselves and how available they are, and opens the pages their actions name.
