@@ -3401,12 +3401,15 @@ impl Widget for WindowGroup {
             h.apply_layout(taffy, tile_child, new_origin);
         }
         // The app's row may have taken the bar in this layout (or given it back): the window lays
-        // out again without its own bar then, or with it back.
+        // out again without its own bar then, or with it back. The row moving with the window is
+        // no change of structure — this layout has already placed it — so only the bar coming and
+        // going rebuilds, and a frame that merely moves the window (a pan of the strip) stays a
+        // frame that re-applies positions.
         let held = self.read_held_bar();
-        if held != self.held_bar {
-            self.held_bar = held;
+        if held.is_some() != self.held_bar.is_some() {
             self.style_dirty = true;
         }
+        self.held_bar = held;
         self.held = held.map_or_else(
             crate::widget::window_header::RowFurniture::default,
             crate::widget::window_header::RowFurniture::of,
