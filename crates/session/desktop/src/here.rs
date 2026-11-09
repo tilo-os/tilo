@@ -1237,6 +1237,13 @@ pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person]) {
             known.active_tab = person.tab;
             known.availability = Some(person.availability.id().to_owned());
             known.call = person.call.as_ref().map(ui::CallPresence::encode);
+            // Software is said on every frame too. A row this page already held (a roster it synced,
+            // or one an older build wrote) carries no marker, and every surface reads the marker to
+            // know an agent is an agent: it would draw as a person — a circle where software wears a
+            // rounded square — for as long as the row exists.
+            if person.agent {
+                known.role_id = Some(crate::collaborators::AGENT_ROLE_MARKER.to_owned());
+            }
             continue;
         }
         let (r, g, b) = ui::presence::user_color(&person.id);
@@ -2439,5 +2446,53 @@ mod tests {
                 .count()),
             Some(1)
         );
+    }
+
+    /// A roster row this page already held is marked as software on every frame: presence says an
+    /// agent is an agent, and a row written before that (or by a host that lists the agent among its
+    /// members) would otherwise wear a person's face — a circle where software wears a square.
+    #[test]
+    fn an_agent_already_on_the_roster_still_wears_the_agent_marker() {
+        let mut tree = DesktopTree::default();
+        let slot = tilo_desktop_model::WorkspaceSlot::default();
+        let mut workspace = tilo_desktop_model::Workspace::new(slot, "Design");
+        workspace
+            .collaborators
+            .push(tilo_desktop_model::Collaborator::new("bot", "Scribe"));
+        tree.workspaces.push(workspace);
+        tree.active = slot;
+        let people = vec![Person {
+            id: "bot".into(),
+            user: None,
+            label: "Scribe".into(),
+            devices: Vec::new(),
+            rgb: (1, 2, 3),
+            agent: true,
+            tab: None,
+            focus_app: None,
+            place: None,
+            status: None,
+            recent: None,
+            screen: None,
+            availability: ui::Availability::Available,
+            call: None,
+        }];
+        overlay_collaborators(&mut tree, &people);
+        let workspace = tree.active_workspace().expect("a workspace");
+        let bot = workspace
+            .collaborators
+            .iter()
+            .find(|c| c.id == "bot")
+            .expect("the row it held");
+        assert_eq!(
+            bot.role_id.as_deref(),
+            Some(crate::collaborators::AGENT_ROLE_MARKER),
+            "an agent's face is software's, whichever frame wrote its row"
+        );
+        assert!(crate::collaborators::collaborator_is_agent(
+            Some(workspace),
+            bot,
+            u64::MAX
+        ));
     }
 }

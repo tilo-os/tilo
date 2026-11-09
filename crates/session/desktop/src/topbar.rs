@@ -903,15 +903,24 @@ impl TopBarChrome {
             };
             self.collaborator_initials.push(ch.to_ascii_uppercase());
             self.collaborator_names.push(c.name.clone());
-            let (r, g, b) = colors
-                .get(&c.id)
-                .copied()
-                .unwrap_or_else(|| user_color(&c.id));
+            let agent = crate::collaborators::collaborator_is_agent(active_ws, c, now);
+            // An agent wears its client's hue here as it does in the people panel and on every other
+            // face of it (`rows_of`): one rule decides a face's colour wherever it is drawn, so
+            // Claude Code reads as Claude Code on the bar too.
+            let (r, g, b) = agent
+                .then(|| ui::tokens::PresenceHue::of_agent_client(&c.name))
+                .flatten()
+                .map_or_else(
+                    || {
+                        colors
+                            .get(&c.id)
+                            .copied()
+                            .unwrap_or_else(|| user_color(&c.id))
+                    },
+                    ui::presence::identity_rgb,
+                );
             self.collaborator_colors.push(Color::from_rgb8(r, g, b));
-            self.collaborator_agents
-                .push(crate::collaborators::collaborator_is_agent(
-                    active_ws, c, now,
-                ));
+            self.collaborator_agents.push(agent);
             self.collaborator_ids.push(c.id.clone());
             self.collaborator_presence.push(
                 c.availability

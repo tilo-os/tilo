@@ -2243,6 +2243,44 @@ fn watching_pages_and_marked_agents_read_in_the_avatar_stack() {
     assert!(people.children.iter().all(|face| face.bounds.is_some()));
 }
 
+/// An agent's face on the bar wears its client's hue, as every other face of it does: Claude Code is
+/// the orange its client is known by, not the colour a person with the same name settles on.
+#[test]
+fn an_agents_face_wears_its_clients_hue() {
+    let faces = |agent: bool| {
+        let mut workspace = Workspace::new(WorkspaceSlot(1), "Tilo");
+        let mut row = tilo_desktop_model::Collaborator::new("scribe", "Claude Code");
+        if agent {
+            row.role_id = Some(crate::collaborators::AGENT_ROLE_MARKER.into());
+        }
+        workspace.collaborators = vec![row];
+        let tree = DesktopTree {
+            active: workspace.slot,
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        };
+        let mut bar = TopBarChrome::from_tree(&tree);
+        bar.sync_from_tree(&tree);
+        (
+            bar.collaborator_agents.clone(),
+            bar.collaborator_colors.clone(),
+        )
+    };
+    let (agents, agent_colours) = faces(true);
+    assert_eq!(agents, vec![true]);
+    let (_, person_colours) = faces(false);
+    let (r, g, b) = ui::presence::identity_rgb(ui::tokens::PresenceHue::Orange);
+    assert_eq!(
+        agent_colours,
+        vec![Color::from_rgb8(r, g, b)],
+        "the agent's face wears its client's hue"
+    );
+    assert_ne!(
+        agent_colours, person_colours,
+        "a person of the same name keeps the colour their id settles on"
+    );
+}
+
 #[test]
 fn compact_topbar_aligns_floating_controls_and_keeps_the_corner_target() {
     let mut tree = DesktopTree {

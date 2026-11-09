@@ -664,7 +664,7 @@ pub fn initial_ink(fill: Color, theme: &Theme) -> Color {
 
 /// Initials are sized by the disc they sit in, not by the reader's text
 /// scale: the theme's emphasised label face at 40 % of the side.
-fn initials_style(theme: &Theme, side: f64) -> TextStyle {
+pub(crate) fn initials_style(theme: &Theme, side: f64) -> TextStyle {
     theme
         .text(TextRole::Label)
         .strong()

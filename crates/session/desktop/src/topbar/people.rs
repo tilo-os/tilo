@@ -165,7 +165,9 @@ impl TopBarChrome {
     }
 
     /// The others' faces in reading order, then the "+N" badge last, the whole stack ending at
-    /// `stack_right_x` . Returns how many circles were drawn (faces and the badge, if any).
+    /// `stack_right_x` . Returns how many faces were drawn (the people's and the badge, if any).
+    /// Every face is the shared [`ui::presence::FaceStack`]: an agent wears its client's hue as a
+    /// rounded square and a person a circle, at every scale the desktop shows people.
     pub(super) fn draw_avatar_chips(
         &mut self,
         scene: &mut Scene,
