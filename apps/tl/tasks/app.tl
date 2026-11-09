@@ -592,9 +592,10 @@ view home(t: Tasks) {
                 }
             }
         }
-        // The place's tasks at the readable measure, on the page's own scroller: a task opens
-        // where it stands under its row, and in front of the list in a window too narrow to
-        // hold one beside the other.
+        // The place's tasks: the list is the column's own scroller, so the window lays out the
+        // rows it shows whatever the workspace holds, and a task opens where it stands under its
+        // row, in front of the list in a window too narrow to hold one beside the other. The
+        // entry that adds to them is docked at the window's foot.
         content: {
             ui.Docked {
                 foot: {
@@ -613,11 +614,7 @@ view home(t: Tasks) {
                 } else if shown.is_empty() {
                     ui.EmptyState("No tasks here", icon: .list_checks)
                 } else {
-                    ui.Scroll {
-                        page {
-                            task_list(shown, kids, by_day, done_place, folds, opened, .day)
-                        }
-                    }
+                    task_list(shown, kids, by_day, done_place, folds, opened, .day)
                 }
             }
         }
@@ -640,7 +637,6 @@ view task_list(
         tree: true,
         ungrouped: if by_day { phrase("tilolang-no-date") },
         tail_title: if folds { phrase("tilolang-done") },
-        in_column: false,
     ) { (x, at) ->
         let heading = task_day(x, by_day, done_place)
         let tail = folds and folded(items, x)
@@ -706,9 +702,9 @@ view project_list(p: Project) {
     let listed = holding(shown, opened)
     ui.NavShell(content_kind: .list, title: p.name) {
         content: {
-            // The project's tasks on the page's own scroller, the entry that adds to it docked
-            // at the window's foot: a task opens where it stands under its row, in front of
-            // the list where the window has not the room.
+            // The project's tasks as the column's own scroller, the entry that adds to them
+            // docked at the window's foot: a task opens where it stands under its row, in front
+            // of the list where the window has not the room.
             ui.Docked {
                 foot: {
                     stack {
@@ -718,11 +714,7 @@ view project_list(p: Project) {
                 if listed.is_empty() {
                     ui.EmptyState("No tasks yet", icon: .folder)
                 } else {
-                    ui.Scroll {
-                        page {
-                            task_list(listed, kids, false, false, false, opened, .project)
-                        }
-                    }
+                    task_list(listed, kids, false, false, false, opened, .project)
                 }
             }
         }
