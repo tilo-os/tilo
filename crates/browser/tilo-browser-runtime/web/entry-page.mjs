@@ -1060,7 +1060,10 @@ export async function startEntryPage({mode}) {
         throw new CustodyError('custody-busy', 'A new device of this person needs an invitation to this workspace');
       }
       const peer = await withCustody(custody, () => connectPeer({origin, workspace: room, identity, runtime, displayName, custody}));
-      keepJoinedHost({origin, room, userPublicKey: identity.userPublicKey});
+      // What is kept names the workspace the host's door let this browser
+      // into (`listedAt`): reconnecting to another of the host's workspaces,
+      // such as the person's own, leaves it as it is.
+      if (!kept.room) keepJoinedHost({origin, room, userPublicKey: identity.userPublicKey});
       return peer;
     },
     // An embed lists no host actions, so it has nothing to invite with:
