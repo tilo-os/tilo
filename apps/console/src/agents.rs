@@ -8,6 +8,10 @@
 //! asked, Stop, Take over and Undo, then its actions oldest first. Choosing
 //! an action opens its view under it, and an action that can be undone on its
 //! own offers Undo on its row.
+//!
+//! Each run is a resource of its own too (`console.run:<run id>`), published
+//! with its page as an open view: that address is what a link to a run names,
+//! and opening it shows the page the run's row does.
 
 use ui::icons::Icon;
 use ui::prelude::*;
@@ -19,6 +23,7 @@ use ui::widget::{
     Tone,
 };
 
+use crate::effects::ConsoleEffect;
 use crate::{Console, Doors, Nav, Reads, ago, faced, page, tr, trf, who};
 
 /// What Agents reads: every run in every workspace.
@@ -27,6 +32,64 @@ pub(crate) fn query() -> wire::RunsQuery {
         scope: wire::Scope::AllWorkspaces,
         limit: 0,
     }
+}
+
+/// The kind a run is a resource of. A run's id spells it
+/// (`console.run:<run id>`), so a link to a run names it in one segment.
+pub(crate) const RUN_KIND: &str = "console.run";
+
+/// How many of the runs read are published as resources of their own: a
+/// published tree stays bounded, and any other run's address is answered by
+/// [`live_run`] alone.
+pub(crate) const RUN_RESOURCE_LIMIT: usize = 16;
+
+/// The address of the run `id`: what a link to it names.
+pub(crate) fn run_resource_id(id: &str) -> String {
+    format!("{RUN_KIND}:{id}")
+}
+
+/// The run whose address `resource` is, when it is a run's.
+pub(crate) fn run_id(resource: &str) -> Option<&str> {
+    resource
+        .strip_prefix(RUN_KIND)?
+        .strip_prefix(':')
+        .filter(|id| !id.is_empty())
+}
+
+/// The view a run opens in: its page in this window, opened by
+/// [`ConsoleEffect::ViewRun`]. Declaring it is what gives each run its link
+/// (`share-link`).
+fn run_view() -> ui::tilo_actions::ResourceViewSpec {
+    ui::tilo_actions::ResourceViewSpec::new("run", "Run", ConsoleEffect::VIEW_RUN.id)
+        .with_primary(true)
+}
+
+/// The run `id` as the resource its address names, labelled by the run when
+/// `runs` lists it: its page in this window, and its link.
+pub(crate) fn live_run(runs: &[wire::AgentRun], id: &str) -> LiveRow {
+    let label = runs
+        .iter()
+        .find(|run| run.id == id)
+        .map_or_else(|| tr("console-run"), |run| run.instruction.clone());
+    LiveRow::new(run_resource_id(id), RUN_KIND, label)
+        .effect(&ConsoleEffect::ViewRun { run: id.to_owned() })
+        .view(run_view())
+}
+
+/// The runs `runs` lists as resources of their own, up to the limit, first
+/// run first.
+pub(crate) fn live_runs(runs: &[wire::AgentRun]) -> Vec<LiveRow> {
+    runs.iter()
+        .take(RUN_RESOURCE_LIMIT)
+        .map(|run| live_run(runs, &run.id))
+        .collect()
+}
+
+/// The row the address `resource` names, when it names a run: a link opens
+/// it before the history has answered, so the run's page shows at once and
+/// the run arrives on it.
+pub(crate) fn live_run_at(runs: &[wire::AgentRun], resource: &str) -> Option<LiveRow> {
+    Some(live_run(runs, run_id(resource)?))
 }
 
 /// The runs, beside the door that says which agents are connected.
@@ -98,9 +161,10 @@ pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> (Element, 
             let run = chosen
                 .as_deref()
                 .and_then(|id| seen.runs.runs.iter().find(|run| run.id == id));
-            match run {
-                Some(run) => inspect(cx, &nav, &seen, run),
-                None => list(cx, &nav, &seen),
+            match (run, chosen.as_deref()) {
+                (Some(run), _) => inspect(cx, &nav, &seen, run),
+                (None, Some(_)) => unknown(&seen),
+                (None, None) => list(cx, &nav, &seen),
             }
         })
     })) as Element;
@@ -114,6 +178,20 @@ fn ready<E>(door: &Arrival<door::Door, E>) -> door::Door {
         Arrival::Ready(door) => door.clone(),
         Arrival::Pending { .. } | Arrival::Failed(_) => door::Door::default(),
     }
+}
+
+/// A run's page whose run the history has not listed: still being read, or
+/// not here at all (a workspace this person is not in, a run long gone).
+/// The header keeps the way back to every run.
+fn unknown(seen: &Seen) -> Element {
+    let state = if seen.runs.pending {
+        EmptyState::new(tr("console-run-pending")).with_icon(Icon::Clock)
+    } else {
+        EmptyState::new(tr("console-run-missing"))
+            .with_message(tr("console-run-missing-message"))
+            .with_icon(Icon::Bot)
+    };
+    page(vec![Box::new(state.with_id("console-run-missing"))])
 }
 
 /// Every run the record lets show: working ones first, then the rest.
@@ -332,6 +410,15 @@ fn commands(doors: &Doors, seen: &Seen, run: &wire::AgentRun) -> Element {
             .with_icon(Icon::Undo2)
             .with_enabled(run.undo_blocked.is_none())
             .on_view(move || undo.history(wire::UNDO_RUN, &range)),
+    ));
+    // The run's link is the framework's: it names the run's own resource and
+    // opens this page.
+    let link = doors.clone();
+    let resource = run_resource_id(&run.id);
+    row = row.push(Box::new(
+        Button::new("console-run-copy-link", "console-run-copy-link")
+            .with_icon(Icon::Link)
+            .on_view(move || link.share_link(&resource)),
     ));
     Box::new(row)
 }

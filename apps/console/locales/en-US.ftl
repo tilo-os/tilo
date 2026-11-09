@@ -26,6 +26,12 @@ console-run-actions = { $count ->
    *[other] { $count } actions
 }
 
+console-run = Agent run
+console-run-copy-link = Copy link
+console-run-pending = Reading this run
+console-run-missing = This run is not here
+console-run-missing-message = The history lists no such run, or it worked in a workspace you are not in.
+
 console-run-stop = Stop
 console-run-take-over = Take over
 console-run-undo = Undo run

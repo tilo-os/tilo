@@ -33,6 +33,7 @@ pub const APP_TITLE: &str = "Console";
 
 mod agents;
 mod connect;
+mod effects;
 pub mod locales;
 mod record;
 #[cfg(feature = "samples")]
@@ -42,7 +43,7 @@ mod workspaces;
 
 use ui::time::{Duration, SystemTime};
 
-use ui::framework::RecordEnv;
+use ui::framework::{Publishes, RecordEnv};
 use ui::i18n::I18nManager;
 use ui::prelude::*;
 use ui::tilo_actions::remote::InvokeArgument;
@@ -51,6 +52,7 @@ use ui::tilo_actions::remote::agent_door as door;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::widget::{ListRow, NavItem, NavSection};
 
+pub use effects::ConsoleEffect;
 pub use record::Console;
 
 /// What the window shows.
@@ -135,6 +137,14 @@ impl Nav {
         self.run.set(Some(id.to_owned()));
     }
 
+    /// Show the run `id` from wherever the window is: a run's page is the
+    /// Agents place, so opening the run a link names shows it there.
+    pub(crate) fn show_run(&self, id: &str) {
+        self.place.set(Some(Place::Agents.key().to_owned()));
+        self.pane.set(ui::widget::NavPane::Content);
+        self.open_run(id);
+    }
+
     /// Show every run again.
     pub(crate) fn close_run(&self) {
         self.action.set(None);
@@ -151,6 +161,17 @@ pub(crate) struct Reads {
     pub(crate) runs: Query<wire::Runs>,
     /// The agent door: its grants and the workspaces it reaches.
     pub(crate) door: Query<door::Door>,
+}
+
+impl Reads {
+    /// Every run the history listed, once it answered: none before, so a
+    /// run's address resolves meanwhile without its run.
+    pub(crate) fn runs(&self) -> Vec<wire::AgentRun> {
+        self.runs.answer().with(|read| match read {
+            Arrival::Ready(runs) => runs.runs.clone(),
+            Arrival::Pending { .. } | Arrival::Failed(_) => Vec::new(),
+        })
+    }
 }
 
 /// A door the app reads and asks through: the workspaces' history or the
@@ -188,6 +209,13 @@ impl Doors {
     /// Follow the agent door.
     pub(crate) fn follow_door(&self) -> Query<door::Door> {
         self.0.query(door::target(door::DOOR), InvokeArgument::None)
+    }
+
+    /// Ask for the link to `resource`, as the framework's `share-link` hands
+    /// it out: copying it is the framework's, so a link to a run is the same
+    /// link any resource gets.
+    pub(crate) fn share_link(&self, resource: &str) {
+        self.0.dispatcher().share_link(resource);
     }
 
     /// Open the full desktop where `href`, a `tilo://open#…` address, says.
@@ -309,11 +337,30 @@ impl ResourceApp for App {
             runs: doors.follow_history(wire::RUNS, &agents::query()),
             door: doors.follow_door(),
         };
+        // Opening the run a link names shows its page here, in this window.
+        let opened = nav.clone();
+        cx.effects(move |effect: ConsoleEffect, _cx| {
+            match effect {
+                ConsoleEffect::ViewRun { run } => opened.show_run(&run),
+            }
+            Ok(ui::framework::Effected::done())
+        });
+        let (listed, named) = (reads.clone(), reads.clone());
         let shown = nav.clone();
-        cx.switch(&nav.place, move |cx, _| {
+        let content = cx.switch(&nav.place, move |cx, _| {
             let (nav, reads) = (shown.clone(), reads.clone());
             cx.switch(&shown.run, move |cx, _| window(cx, &nav, &reads))
-        })
+        });
+        cx.publishing(
+            Publishes::new()
+                // Each run shown is published as the resource its link names,
+                // and so is any run whose address is asked for before the
+                // history's read lands: a link opens straight into a fresh
+                // window, which shows the run once its read answers.
+                .live_rows(move || agents::live_runs(&listed.runs()))
+                .live_row(move |resource| agents::live_run_at(&named.runs(), resource)),
+            content,
+        )
     }
 }
 
