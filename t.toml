@@ -4481,3 +4481,49 @@ outputs = ["/target/publish/registry-server/receipt.json"]
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
 on = ["dispatch", "stable"]
+
+# The hosted VM host (os/containers/tilo-vm-host): the service that runs tilo.sh workspaces'
+# Linux programs in jailed Firecracker VMs, its jail helper, Firecracker and pasta. Built like
+# the registry server (this tree is its context, the pinned Firecracker release a named one),
+# tested in a micro-VM, and published on dispatch as dev-<commit> for the infra repository's
+# apps/tilo-sh-vm-host to pin, signed on stable.
+[[check]]
+name = "image-vm-host"
+build = { containerfile = "os/containers/tilo-vm-host/Containerfile", context = ".", contexts = { github-assets = { check = "os-assets", path = "os/external-assets/cache" } } }
+needs = ["os-assets"]
+requires = ["arch=x86_64"]
+timeout_secs = 7200
+default = false
+
+[[check]]
+name = "test-image-vm-host"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+run = "bash os/containers/tilo-vm-host/test-image.sh /target/images/image-vm-host/image.oci.tar"
+needs = ["image-vm-host"]
+requires = ["arch=x86_64"]
+isolation = "vm"
+timeout_secs = 1800
+default = false
+
+[[check]]
+name = "sign-vm-host"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "install -d /target/publish/vm-host\ncp /target/images/image-vm-host/image.oci.tar /target/images/image-vm-host/digest /target/publish/vm-host/\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/vm-host /target/publish/vm-host"
+needs = ["image-vm-host", "test-image-vm-host", "signing-tools"]
+outputs = ["/target/publish/vm-host/payload.json", "/target/publish/vm-host/signature", "/target/publish/vm-host/dry-run.pub"]
+id_token = ["sts.amazonaws.com"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
+requires = ["arch=any"]
+on = ["stable"]
+
+[[check]]
+name = "publish-vm-host"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "install -d /target/publish/vm-host\ncp /target/images/image-vm-host/image.oci.tar /target/images/image-vm-host/digest /target/publish/vm-host/\nbash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/vm-host /target/publish/vm-host 'dev:dev-{commit}' 'release:sha-{commit}'"
+needs = ["image-vm-host", "test-image-vm-host", "signing-tools"]
+optional_needs = ["sign-vm-host"]
+outputs = ["/target/publish/vm-host/receipt.json"]
+pointers = { vm-host = "/target/publish/vm-host/receipt.json" }
+id_token = ["registry.tilo.so"]
+requires = ["arch=any"]
+on = ["dispatch", "stable"]

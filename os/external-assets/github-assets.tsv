@@ -96,3 +96,6 @@ cb3ed3dfdd47e6ade49dc933db334fd86e24cadee920da612c262b0e9b6a511b	linux-6.12.116.
 d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997	node-v26.13.0-linux-x64.tar.xz	https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-x64.tar.xz
 7807664f39d39fc518da1c35ba0181e4b3267603c4b1dedeb4b5fc6ae440a224	fnm-1.39.0-linux.zip	https://github.com/Schniz/fnm/releases/download/v1.39.0/fnm-linux.zip
 b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55	rustup-init-x86_64-unknown-linux-gnu	https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init
+# The hosted workspace VM hosts (os/containers/tilo-vm-host): Firecracker and its
+# jailer. The hash is the publisher's own (its .sha256.txt beside the release).
+06094a1108ae9e82aa4c23a775aa92758f53f1175d422270d9d6162cb9ade558	firecracker-v1.17.0-x86_64.tgz	https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-x86_64.tgz

@@ -1,0 +1,68 @@
+# syntax=docker/dockerfile:1.7
+# A host of hosted workspace VMs (crates/runtime/legacy-vm/src/hosted): the
+# service that owns every VM on its machine, the privileged helper that jails
+# each one, Firecracker and its jailer, pasta for their network, and skopeo to
+# fetch the signed guest. One runs per VM-host node, privileged (KVM, a
+# writable cgroup tree, user namespaces), as README.md describes.
+
+FROM docker.io/library/rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS builder
+
+WORKDIR /workspace
+COPY . .
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/workspace/target,sharing=locked \
+    cargo build --locked --release -p legacy-vm --bin tilo-legacy --bin tilo-hosted-jail \
+    && install -D -m 0755 target/release/tilo-legacy /out/tilo-legacy \
+    && install -D -m 0755 target/release/tilo-hosted-jail /out/tilo-hosted-jail
+
+# Firecracker and its jailer, from the release os/external-assets pins.
+FROM scratch AS external-assets
+COPY --from=github-assets / /
+
+FROM docker.io/library/debian@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS runtime
+
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.title="Tilo hosted VM host" \
+      org.opencontainers.image.description="Runs tilo.sh workspaces' Linux programs in jailed Firecracker VMs" \
+      org.opencontainers.image.source="https://code.tilo.so/tilo/tilo" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}"
+
+# passt is pasta (each VM's network), skopeo fetches the guest, xfsprogs makes
+# the state disk's filesystem, libcap2-bin gives the helper its capabilities,
+# util-linux's setpriv drops to the service's uid.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       ca-certificates libcap2-bin passt skopeo util-linux xfsprogs \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG FIRECRACKER_ASSET=firecracker-v1.17.0-x86_64.tgz
+RUN --mount=type=bind,from=external-assets,source=/,target=/assets,ro \
+    mkdir /tmp/fc \
+    && tar -xzf "/assets/${FIRECRACKER_ASSET}" -C /tmp/fc \
+    && install -m 0755 /tmp/fc/release-v1.17.0-x86_64/firecracker-v1.17.0-x86_64 /usr/local/bin/firecracker \
+    && install -m 0755 /tmp/fc/release-v1.17.0-x86_64/jailer-v1.17.0-x86_64 /usr/local/bin/jailer \
+    && rm -rf /tmp/fc \
+    && firecracker --version | head -1 | grep -qx 'Firecracker v1.17.0'
+
+# The service runs as tilo-hosted (10001). The helper is root-owned, runnable
+# only by the service's group, and may become root (cap_setuid, cap_setgid);
+# its configuration is root-owned in a root-owned directory, as it requires.
+# The capabilities are given at start (entrypoint.sh), not here: set in a
+# user-namespaced build they name that namespace's root, and no host's.
+RUN groupadd --system --gid 10001 tilo-hosted \
+    && useradd --system --uid 10001 --gid 10001 --home-dir /var/lib/tilo-hosted --shell /usr/sbin/nologin tilo-hosted
+COPY --from=builder /out/tilo-legacy /usr/local/bin/tilo-legacy
+COPY --from=builder /out/tilo-hosted-jail /usr/libexec/tilo/tilo-hosted-jail
+RUN chown root:tilo-hosted /usr/libexec/tilo/tilo-hosted-jail \
+    && chmod 0750 /usr/libexec/tilo/tilo-hosted-jail
+COPY --chmod=0644 os/containers/tilo-vm-host/hosted-jail.json /etc/tilo/hosted-jail.json
+
+# fetch-guest accepts only the guest the release key signed
+# (/etc/containers/policy.json's scope for registry.tilo.so/tilo/hosted-guest).
+COPY --chmod=0644 os/etc/containers/policy.json /etc/containers/policy.json
+COPY --chmod=0644 keys/cosign.pub /usr/share/tilo/cosign.pub
+COPY --chmod=0644 keys/release/rekor.pub /usr/share/tilo/release/rekor.pub
+
+COPY --chmod=0755 os/containers/tilo-vm-host/entrypoint.sh /usr/local/bin/tilo-vm-host
+ENTRYPOINT ["/usr/local/bin/tilo-vm-host"]
