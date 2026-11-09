@@ -16,7 +16,7 @@ use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use std::sync::{Arc, Mutex};
 use tilo_identity_host::custody::HostIdentity;
-use tilo_user_identity::DeviceCert;
+use tilo_user_identity::{DeviceCert, RevocationEntry};
 
 /// An enrolled workspace to hold a link for.
 #[derive(Clone)]
@@ -91,13 +91,10 @@ impl Connect {
             if !view.peer().certificates().contains(&cert) {
                 return Err("selected certificate differs from current admitted roster".into());
             }
-            if entries
-                .into_iter()
-                .chain(view.peer().revocations())
-                .any(|entry| {
-                    entry.revoked_device_public_key == view.workspace_host().device_public_key
-                })
-            {
+            if its_root_revoked(
+                entries.into_iter().chain(view.peer().revocations()),
+                view.workspace_host(),
+            ) {
                 return Err("native host is revoked".into());
             }
             Ok((cert, view.continuity()))
@@ -121,9 +118,7 @@ impl Connect {
                     let device = hint.host.device_public_key;
                     device != governor
                         && &device != own
-                        && !revocations
-                            .iter()
-                            .any(|entry| entry.revoked_device_public_key == device)
+                        && !its_root_revoked(revocations.iter().cloned(), &hint.host)
                 })
                 .collect())
         })
@@ -593,4 +588,14 @@ pub struct Admitted {
     pub inputs: Vec<(Input, Result<crate::AdmissionReport, String>)>,
     /// Whether the admission moved the workspace's state.
     pub changed: bool,
+}
+
+/// Whether one of `entries` is the revocation `cert`'s own root signed of the
+/// device it names. A root speaks only for the keys it made: another person's
+/// entry naming that device key refuses nothing of this certificate's.
+fn its_root_revoked(entries: impl IntoIterator<Item = RevocationEntry>, cert: &DeviceCert) -> bool {
+    entries.into_iter().any(|entry| {
+        (entry.user_public_key, entry.revoked_device_public_key)
+            == (cert.user_public_key, cert.device_public_key)
+    })
 }

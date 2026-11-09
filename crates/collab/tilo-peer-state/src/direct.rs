@@ -543,19 +543,23 @@ impl DirectSync {
     /// its roster, unrevoked and unexpired.
     fn admits(&self, device: [u8; 32]) -> Result<(), String> {
         let replica = self.0.replica.lock();
-        if replica
-            .revocations()
-            .iter()
-            .any(|entry| entry.revoked_device_public_key == device)
-        {
-            return Err("the device is revoked".into());
-        }
         let certificate = replica
             .certificates()
             .into_iter()
             .find(|certificate| certificate.device_public_key == device);
+        // A revocation reaches the keys its own root certified: another
+        // person's entry naming this key refuses nothing of its device's.
+        let revoked = certificate.as_ref().is_some_and(|certificate| {
+            replica.revocations().iter().any(|entry| {
+                (entry.user_public_key, entry.revoked_device_public_key)
+                    == (certificate.user_public_key, device)
+            })
+        });
         drop(replica);
         let certificate = certificate.ok_or("the device is not in the workspace roster")?;
+        if revoked {
+            return Err("the device is revoked".into());
+        }
         let now = now_ns();
         if certificate
             .expires_at_ns
@@ -1141,5 +1145,122 @@ pub(crate) async fn read_frame(recv: &mut RecvStream) -> Result<Option<Neighbour
             .map(Some)
             .map_err(|error| error.to_string()),
         None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_user_identity::{
+        DeviceCapabilities, DeviceCert, RevocationEntry, RevocationList, RevocationReason,
+        sign_device_cert, sign_revocation_entry,
+    };
+
+    const WORKSPACE: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
+    /// A member device `n` certified by `root`.
+    fn device(root: &SigningKey, n: u8) -> (SigningKey, DeviceCert) {
+        let key = SigningKey::from_bytes(&[n; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: format!("device-{n}"),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, root).unwrap();
+        (key, cert)
+    }
+
+    fn revocation(root: &SigningKey, device: [u8; 32]) -> RevocationEntry {
+        let mut entry = RevocationEntry {
+            user_public_key: root.verifying_key().to_bytes(),
+            revoked_device_public_key: device,
+            revoked_at_ns: 1,
+            reason: RevocationReason::Lost,
+            signature: [0; 64],
+        };
+        sign_revocation_entry(&mut entry, root).unwrap();
+        entry
+    }
+
+    /// A link over a replica of `roster`'s workspace, its first certificate
+    /// the authority's, holding `revocations`.
+    fn link(roster: &[(SigningKey, DeviceCert)], revocations: RevocationList) -> DirectSync {
+        let (key, authority) = roster.first().unwrap();
+        let now = SystemTime::now();
+        let mut peer = StatePeer::new(
+            WORKSPACE,
+            authority.clone(),
+            roster
+                .iter()
+                .map(|(_, certificate)| certificate.clone())
+                .collect(),
+            revocations,
+            now,
+        )
+        .unwrap();
+        peer.select_admission_v5().unwrap();
+        let roster = roster
+            .iter()
+            .map(|(_, certificate)| certificate.clone())
+            .collect::<Vec<_>>();
+        peer.install_seed(
+            crate::SeedState {
+                workspace_changes: crate::seed_workspace(WORKSPACE, authority, &roster).unwrap(),
+                documents: Vec::new(),
+            },
+            key,
+            now,
+        )
+        .unwrap();
+        DirectSync::new(peer, key.clone())
+    }
+
+    /// A revocation refuses the device of the root that signed it, and no
+    /// other: another root's entry naming the same key leaves the device a
+    /// device of the workspace's.
+    #[test]
+    fn a_revocation_refuses_only_the_device_its_own_root_certified() {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let roster = [device(&root, 2), device(&root, 3)];
+        let member = roster[1].1.clone();
+        let stranger = SigningKey::from_bytes(&[7; 32]);
+
+        let mut theirs = RevocationList::new();
+        theirs
+            .insert(revocation(&stranger, member.device_public_key))
+            .unwrap();
+        let sync = link(&roster, theirs);
+        assert_eq!(
+            sync.admits(member.device_public_key),
+            Ok(()),
+            "a stranger's entry refuses nothing of the member's device"
+        );
+        assert_eq!(
+            sync.admits(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
+            Err("the device is not in the workspace roster".to_owned())
+        );
+
+        // The member's own root's entry is what refuses it.
+        assert!(
+            sync.0
+                .replica
+                .write(|peer| {
+                    peer.governance_mut().publish_governed_revocations(
+                        &[revocation(&root, member.device_public_key)],
+                        &roster[0].0,
+                        SystemTime::now(),
+                    )
+                })
+                .unwrap()
+        );
+        assert_eq!(
+            sync.admits(member.device_public_key),
+            Err("the device is revoked".to_owned())
+        );
     }
 }
