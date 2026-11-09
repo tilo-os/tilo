@@ -1626,3 +1626,128 @@ fn the_main_action_of(app: &str, packages: &Rc<stage::Packages>, scenario: &str,
         }
     }
 }
+
+/// What one layout shows of `staged`'s window bar, and what is wrong with it: whether the
+/// window draws the band above its frame, whether the app's header row is the bar itself, and
+/// each problem added to `problems`, named by `what` and the layout. One bar is the window's
+/// band or the app's row, never both — two header rows to the person reading the window. A row
+/// that holds the bar keeps the window's furniture inside the window, and a title is cut only
+/// where its row has no room for it.
+fn the_window_bar_at(
+    staged: &mut stage::Staged,
+    layout: &super::Layout,
+    what: &str,
+    problems: &mut Vec<String>,
+) -> (bool, bool) {
+    let size = (layout.size.width, layout.size.height);
+    let (bar, _) = staged.harness().frame_extent(size);
+    let row = staged.harness().window_header_row_height();
+    if bar > 0.0 && row > 0.0 {
+        problems.push(format!(
+            "{what} at {layout}: a bar {bar:.0}px tall and, under it, a header row of the app's \
+             {row:.0}px tall",
+        ));
+    }
+    let held = staged.harness().row_holds_bar();
+    if held {
+        let furniture = staged.harness_mut().window_bar_layout(f64::from(size.0));
+        let window = Rect::new(0.0, 0.0, f64::from(size.0), f64::from(size.1));
+        let close = furniture
+            .controls
+            .iter()
+            .find(|control| control.slot == "close" && control.rect[2] > 0.0);
+        let inside = close.is_some_and(|close| {
+            let [x0, y0, x1, y1] = close.rect;
+            window.contains(Rect::new(x0, y0, x1, y1).center())
+        });
+        if !inside {
+            problems.push(format!(
+                "{what} at {layout}: the row holds the window's bar, and its controls stand \
+                 outside the window: {:?}",
+                furniture.controls,
+            ));
+        }
+    }
+    for problem in super::audit::inspect(
+        &staged.harness().inspection().root,
+        size,
+        None,
+        layout.display_scale,
+    ) {
+        if problem.kind == super::Kind::TitleClippedWithRoom {
+            problems.push(format!(
+                "{what} at {layout}: {}: {}",
+                problem.widget, problem.detail
+            ));
+        }
+    }
+    (bar > 0.0, held)
+}
+
+/// The Tasks app at the sizes a person holds a window in the hand shows one bar each time: the
+/// week's list at phone width with the page it opens in front of it, and a project in a
+/// tablet's window. The window draws the band above its frame or its app's row is the bar; a
+/// row that holds the bar keeps the window's own controls in it; and a project's title is cut
+/// only where the row has no room for it.
+#[test]
+fn the_tasks_window_shows_one_bar_and_keeps_its_title_at_every_hand_held_size() {
+    tilo_ui_host::i18n::ensure();
+    let packages = tasks_packages();
+    let app = packages.0.last().expect("the app").meta.app.clone();
+    let all = super::layouts();
+    let mut problems: Vec<String> = Vec::new();
+    let mut measured = 0_usize;
+    let (mut band, mut held) = (0_usize, 0_usize);
+    for (scenario, size) in [
+        ("a busy week", (320_u32, 568_u32)),
+        ("a project board", (390_u32, 844_u32)),
+    ] {
+        // The window as the person holds it: one display's pixels, at both text scales.
+        let of_size: Vec<super::Layout> = all
+            .iter()
+            .copied()
+            .filter(|layout| (layout.size.width, layout.size.height) == size)
+            .filter(|layout| (layout.display_scale - 1.0).abs() < f64::EPSILON)
+            .collect();
+        let first = of_size[0];
+        let mut staged =
+            stage::Staged::over(&app, &packages, scenario, size, first.theme(), None, &[])
+                .expect("the scenario stages");
+        let mut lay_out = |staged: &mut stage::Staged, layout: &super::Layout, what: &str| {
+            staged
+                .lay_out(
+                    (layout.size.width, layout.size.height),
+                    layout.theme(),
+                    layout.input(),
+                    layout.display_scale,
+                )
+                .expect("lays out");
+            let (drew, holds) = the_window_bar_at(staged, layout, what, &mut problems);
+            measured += 1;
+            band += usize::from(drew);
+            held += usize::from(holds);
+        };
+        for layout in &of_size {
+            lay_out(&mut staged, layout, scenario);
+        }
+        // What the window opens in front of its list, as a finger opens it.
+        if let Some(tapped) = super::tappable_row(&staged, size) {
+            staged.tap_at(tapped).expect("the row opens");
+            let opened = format!("{scenario}, then the row opened");
+            for layout in &of_size {
+                lay_out(&mut staged, layout, &opened);
+            }
+        }
+    }
+    assert!(measured >= 8, "the windows were laid out: {measured}");
+    assert!(
+        problems.is_empty(),
+        "a window shows one bar, and its title where the row has room:\n  {}",
+        problems.join("\n  ")
+    );
+    assert!(
+        band > 0 && held > 0,
+        "both ways a window shows its bar stand: {band} with the window's own bar, {held} \
+         with the app's row as the bar"
+    );
+}
