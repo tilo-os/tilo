@@ -149,10 +149,8 @@ environment's agent asking for the other workspace is refused before anyone is a
 "Always allow" admits a second session there without the sheet, as the next instance (E05);
 Stop on one leaves the other working (E06); a program of the login outside the environments is
 refused on an environment's door (E07). E08 is an agent's own change (a note through
-`notes#new-note`, a file through `terminal#run`) landing in its workspace: while the door's
-agents are refused every change in a native workspace, which admits an agent's action only in a
-task run the door does not start (`task_run_host`), it is an expected failure that names the
-refusal.
+`notes#new-note`, a file through `terminal#run`), taken in the run the door starts for its
+connection, landing in its workspace and not the other's.
 
 `TILO_ACCEPTANCE_HOLD_S=N` keeps a run's VM up N seconds after a check failed, to reach it
 (`t vm ssh`, then `tilo-vm` as the run's user) before it goes.

@@ -685,13 +685,6 @@ def own_workspace(ctx, res):
         raise CheckFailed("; ".join(problems))
 
 
-# Why an agent at a desktop's door changes nothing in a workspace of this device today: its
-# invocations reach the broker as a delegate of the person, and a native workspace admits an
-# agent's action only through a task run (task_run_host), which the door does not start.
-NO_TASK_RUN = ("native task agent requires authenticated task action admission",
-               "action_evidence_unavailable: original caller missing")
-
-
 @check("E08", AREA, "An agent's change lands in its own workspace, not the other's, and is attributed to its id")
 def own_change(ctx, res):
     scene = _scene(ctx)
@@ -713,11 +706,6 @@ def own_change(ctx, res):
         agent.keep()
     res.metrics["new_note"] = {e["name"]: text_of(e["new_note"])[:300] for e in envs}
     res.metrics["new_file"] = {e["name"]: text_of(e["new_file"])[:300] for e in envs}
-    refused = [text_of(e[k]) for e in envs for k in ("new_note", "new_file") if is_error(e[k]) is not False]
-    if refused and all(any(reason in said for reason in NO_TASK_RUN) for said in refused):
-        raise core.ExpectedFailure(
-            "the door's agents change nothing in a native workspace: their actions are refused without "
-            f"a task run ({refused[0][:160]}); the agent door starts none (task_run_host)")
     problems = []
     for e, other in ((one, two), (two, one)):
         agent = agents[e["name"]]
