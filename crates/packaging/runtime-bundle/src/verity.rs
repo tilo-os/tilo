@@ -157,9 +157,22 @@ mod sys {
     use std::os::unix::fs::OpenOptionsExt;
 
     /// `_IOW('f', 133, struct fsverity_enable_arg)`.
-    const FS_IOC_ENABLE_VERITY: libc::Ioctl = 0x4080_6685;
+    const FS_IOC_ENABLE_VERITY: u32 = 0x4080_6685;
     /// `_IOWR('f', 134, struct fsverity_digest)`.
-    const FS_IOC_MEASURE_VERITY: libc::Ioctl = 0xC004_6686;
+    const FS_IOC_MEASURE_VERITY: u32 = 0xC004_6686;
+
+    /// An ioctl request code as the C library types it: glibc's `unsigned
+    /// long`, musl's `int`, which carries the same 32 bits (the measure code
+    /// has the top bit of an `int` set). The statically linked `tilo` command
+    /// builds against musl.
+    #[cfg(not(target_env = "musl"))]
+    fn request(code: u32) -> libc::Ioctl {
+        libc::Ioctl::from(code)
+    }
+    #[cfg(target_env = "musl")]
+    fn request(code: u32) -> libc::Ioctl {
+        libc::Ioctl::from_ne_bytes(code.to_ne_bytes())
+    }
 
     /// `struct fsverity_enable_arg` (128 bytes).
     #[repr(C)]
@@ -205,7 +218,7 @@ mod sys {
         let result = unsafe {
             libc::ioctl(
                 file.as_raw_fd(),
-                FS_IOC_ENABLE_VERITY,
+                request(FS_IOC_ENABLE_VERITY),
                 std::ptr::from_ref(&arg),
             )
         };
@@ -235,7 +248,7 @@ mod sys {
         let result = unsafe {
             libc::ioctl(
                 file.as_raw_fd(),
-                FS_IOC_MEASURE_VERITY,
+                request(FS_IOC_MEASURE_VERITY),
                 std::ptr::from_mut(&mut arg),
             )
         };
