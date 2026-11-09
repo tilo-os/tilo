@@ -38,8 +38,8 @@ pub(super) struct ListMenu<M: ListModel> {
     target: Option<M::Key>,
 }
 
-/// What a row is about: the selection the app names for the row's key, so the menu opened on it
-/// carries a subject (its send-to box docks beside it, about the row).
+/// What a row is about: the selection the app names for the row's key, so the send row of the
+/// menu opened on it opens a box about the row.
 pub(super) type RowAbout<K> = Box<dyn Fn(&K) -> Option<SharedSelection>>;
 
 impl<M: ListModel> ListMenu<M> {
@@ -47,6 +47,12 @@ impl<M: ListModel> ListMenu<M> {
     #[cfg(test)]
     pub(super) fn context_menu(&self) -> &ContextMenu {
         &self.menu
+    }
+
+    /// The menu this list paints, to choose one of its rows.
+    #[cfg(test)]
+    pub(super) fn context_menu_mut(&mut self) -> &mut ContextMenu {
+        &mut self.menu
     }
 }
 
@@ -113,7 +119,7 @@ impl<M: ListModel> VirtualList<M> {
 
     /// Name what each row is about: `about` answers a row's key with the selection the app keeps
     /// for it (a task's issue, a note, a file), so a menu opened on that row carries it as its
-    /// subject — the send-to box beside the menu starts with it, and its box stands at the row.
+    /// subject — the send row's box starts with it, and stands at the row.
     /// The list only knows the row's key, so the app names the record.
     #[must_use]
     pub fn with_row_about(
@@ -147,6 +153,14 @@ impl<M: ListModel> VirtualList<M> {
         self.menus.owned().is_some_and(|menu| menu.menu.is_open())
     }
 
+    /// Whether the box that took the menu's place stands open.
+    #[must_use]
+    pub fn send_to_alone_open(&self) -> bool {
+        self.menus
+            .owned()
+            .is_some_and(|menu| menu.menu.send_to_alone_open())
+    }
+
     /// Close the rows' menu, its chosen item unheard. A list that reports its row menus to the
     /// host has none of its own to close.
     pub fn close_context_menu(&mut self) {
@@ -161,7 +175,7 @@ impl<M: ListModel> VirtualList<M> {
     /// menu opened: none is offered, or it has no items for that row.
     pub fn open_context_menu(&mut self, key: Option<&M::Key>, at: Point) -> bool {
         // What the menu is about, and where that stands on screen, read before the menu is
-        // taken: the subject's box is the row's, so the box beside the menu stands at the row.
+        // taken: the subject's box is the row's, so the send row's box stands at the row.
         let row = key
             .and_then(|key| self.model.index_of(key))
             .and_then(|index| self.row_box(index));
@@ -232,7 +246,7 @@ impl<M: ListModel> VirtualList<M> {
         let Some(menu) = self.menus.owned_mut() else {
             return false;
         };
-        if !menu.menu.is_open() {
+        if !menu.menu.is_showing() {
             return false;
         }
         let mut consumed = false;
@@ -296,7 +310,7 @@ impl<M: ListModel> VirtualList<M> {
     /// The open menu's semantics, its targets namespaced into the list's.
     pub(super) fn menu_node(&self) -> Option<AccessNode> {
         let menu = self.menus.owned()?;
-        if !menu.menu.is_open() {
+        if !menu.menu.is_open() && !menu.menu.send_to_alone_drawn() {
             return None;
         }
         let mut node = Widget::accessibility(&menu.menu)?;

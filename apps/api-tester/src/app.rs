@@ -1043,7 +1043,7 @@ impl ApiTesterApp {
             .menu
             .take_selection()
             .and_then(|index| open.commands.get(index).cloned());
-        let closed = !open.menu.is_open();
+        let closed = !open.menu.is_showing();
         if closed {
             self.menu = None;
             self.dirty = true;

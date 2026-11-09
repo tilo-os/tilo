@@ -114,7 +114,7 @@ fn the_box_stands_beside_its_menu_and_never_leaves_the_window() {
         narrow.rect()
     );
 
-    // No room anywhere: it still stays inside the window, over the menu.
+    // No room anywhere: it still stays inside the window, over what it is about.
     let tight = box_beside(
         Rect::new(150.0, 20.0, 250.0, 160.0),
         Rect::new(0.0, 0.0, 400.0, 200.0),
@@ -187,11 +187,10 @@ fn the_keyboard_visits_the_recipients_the_subjects_the_message_and_send() {
             "send-to:recipients",
             "send-to:recipient:0",
             "send-to:recipient:1",
-            "send-to:add-subject",
             "send-to:message",
             "send-to:send",
         ],
-        "in the order the keyboard visits them"
+        "in the order the keyboard visits them; adding a subject stands there only while the window holds something to add"
     );
     assert_eq!(
         node.children
@@ -342,11 +341,6 @@ fn send_makes_one_request_as_the_person_with_what_the_box_holds() {
     assert_eq!(requests[0].to.len(), 1);
     assert_eq!(requests[0].about.len(), 1);
     assert_eq!(requests[0].text, "Can you look at this?");
-    assert_eq!(
-        requests[0].bounds,
-        Some(crate::floating_surface::protocol_rect_array(send_to.rect())),
-        "the conversation opens where the box stood"
-    );
     assert!(send_to.take_sent());
     assert!(!send_to.take_sent(), "sent once");
 
@@ -527,4 +521,150 @@ fn a_box_opened_to_the_report_destination_says_report_a_problem() {
         crate::i18n::I18nManager::lookup_plain("send-to-name"),
         "and a message it sends anywhere is a message"
     );
+}
+
+/// The field that searches for whom the message goes to shows its hint whole:
+/// it is drawn as wide as the hint, so a window too narrow to hold it is a
+/// window the box does not fit, never a hint the person reads half of.
+#[test]
+fn the_field_that_searches_for_a_recipient_shows_its_hint_whole() {
+    crate::shared_selection::set_focused_selection(None);
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let send_to = box_beside(Rect::new(40.0, 120.0, 212.0, 320.0), viewport);
+    let node = send_to.accessibility().expect("an open box is read");
+    let field = node
+        .children
+        .iter()
+        .find(|child| child.action_target.as_deref() == Some("send-to:recipients"))
+        .expect("the field that searches is read");
+    let drawn = field
+        .bounds
+        .map(crate::a11y::AccessBounds::to_rect)
+        .expect("where it is drawn");
+    let hint = crate::i18n::I18nManager::lookup_plain("send-to-search-placeholder");
+    let mut text = TextRenderer::new();
+    let (hint_width, _) = text.measure_style(&hint, None, &Theme::dark().text(TextRole::Body));
+    // The hint is set in from the field's edge as a chip's mark is, so the
+    // room it needs is its own width plus that inset.
+    let inset = send_to.mark_inset();
+    assert!(
+        drawn.width() + 0.5 >= f64::from(hint_width) + inset,
+        "the field shows {} px for a {hint_width} px hint {hint:?} set {inset} px in",
+        drawn.width()
+    );
+}
+
+/// A box that says nothing about what it sends holds no line for subject chips:
+/// the message stands at the box's own spacing under the recipients, while a
+/// box with a subject gives that chip its own line.
+#[test]
+fn a_box_with_nothing_to_say_keeps_no_line_held_open_between_its_fields() {
+    crate::shared_selection::set_focused_selection(None);
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let beside = Rect::new(40.0, 120.0, 212.0, 320.0);
+    let _ = crate::shared_selection::take_send_to();
+    let _ = crate::shared_selection::take_recipient_searches();
+    crate::shared_selection::set_send_host_available(true);
+    let mut plain = SendToBox::new();
+    plain.set_viewport(Some(viewport));
+    plain.open(None, &[]);
+    plain.place(beside, Some(viewport));
+    let lines = |send_to: &SendToBox| {
+        let node = send_to.accessibility().expect("an open box is read");
+        let at = |target: &str| {
+            node.children
+                .iter()
+                .find(|child| child.action_target.as_deref() == Some(target))
+                .and_then(|child| child.bounds.map(crate::a11y::AccessBounds::to_rect))
+                .expect("where it is drawn")
+        };
+        (at("send-to:recipients"), at("send-to:message"))
+    };
+    let (field, message) = lines(&plain);
+    assert_eq!(
+        message.y0,
+        field.y1 + plain.gap() / 2.0,
+        "the message stands at the box's spacing under the field, with no empty line between"
+    );
+    let node = plain.accessibility().expect("an open box is read");
+    let at = |target: &str| {
+        node.children
+            .iter()
+            .find(|child| child.action_target.as_deref() == Some(target))
+            .and_then(|child| child.bounds.map(crate::a11y::AccessBounds::to_rect))
+            .expect("where it is drawn")
+    };
+    assert_eq!(
+        node.bounds
+            .map(crate::a11y::AccessBounds::to_rect)
+            .expect("the box's own bounds")
+            .y1,
+        at("send-to:send").y1 + plain.padding(),
+        "the box is as tall as what it holds: its Send row ends one padding above its edge"
+    );
+    let (_, about) = lines(&box_beside(beside, viewport));
+    assert!(
+        about.y0 > message.y0,
+        "a subject chip holds a line of its own: {} under {}",
+        about.y0,
+        message.y0
+    );
+}
+
+/// The button that adds what is selected now says what it adds, and is not
+/// drawn at all while the window holds nothing to add: a lone sign under the
+/// subjects reads as a control nobody can name.
+#[test]
+fn adding_a_subject_is_named_and_stands_only_while_there_is_one_to_add() {
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    crate::shared_selection::set_focused_selection(None);
+    let mut send_to = box_beside(Rect::new(40.0, 120.0, 212.0, 320.0), viewport);
+    let target = |send_to: &SendToBox| {
+        send_to
+            .accessibility()
+            .expect("an open box is read")
+            .children
+            .iter()
+            .find(|child| child.action_target.as_deref() == Some("send-to:add-subject"))
+            .map(|child| {
+                (
+                    child.name.clone(),
+                    child.bounds.map(crate::a11y::AccessBounds::to_rect),
+                )
+            })
+    };
+    assert!(
+        target(&send_to).is_none(),
+        "nothing selected: no button to add it"
+    );
+
+    let selected = SharedSelection::of_text("Ship the launch notes")
+        .at(tilo_actions::SelectionPlace::item("issue-2"));
+    crate::shared_selection::set_focused_selection(Some(selected.clone()));
+    send_to.layout = send_to.build_layout();
+    let (name, bounds) = target(&send_to).expect("something selected: the button that adds it");
+    assert_eq!(
+        name.as_deref(),
+        Some(crate::i18n::I18nManager::lookup_plain("send-to-add-subject").as_str()),
+        "it is read as what it adds"
+    );
+    let bounds = bounds.expect("where it is drawn");
+    assert!(
+        bounds.width() + 0.5 >= send_to.chip_ask(&send_to.add_label(), false) - 0.5,
+        "the button is as wide as its words: {} for {:?}",
+        bounds.width(),
+        send_to.add_label()
+    );
+
+    send_to.press(bounds.center());
+    assert_eq!(
+        send_to.subjects(),
+        &[send_to.subjects()[0].clone(), selected],
+        "the subject it added is on the message"
+    );
+    assert!(
+        target(&send_to).is_none(),
+        "what is already on the message is not offered again"
+    );
+    crate::shared_selection::set_focused_selection(None);
 }

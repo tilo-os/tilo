@@ -2624,7 +2624,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     }
 
     fn traps_focus(&self) -> bool {
-        self.context_menu_is_open()
+        self.context_menu_is_open() || self.send_to_alone_open()
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {

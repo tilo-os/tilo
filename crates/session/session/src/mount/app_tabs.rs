@@ -939,14 +939,7 @@ impl Answers<'_> {
             }
             // The message its box sent, and whom its box could send to: both reach the session's
             // records and the one search, so they are carried out after this pass has every ask.
-            FloatingSurfaceClientMessage::SendTo {
-                to,
-                attached,
-                text,
-                // Where the box stood places nothing: the window a send lands in opens beside
-                // the window that sent it, which the desk makes room for.
-                bounds: _,
-            } => {
+            FloatingSurfaceClientMessage::SendTo { to, attached, text } => {
                 self.sent.push(Sent {
                     app,
                     workspace,

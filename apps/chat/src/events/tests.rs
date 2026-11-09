@@ -469,31 +469,6 @@ fn shift_deletes_your_own_message_from_its_menu_at_once() {
     assert_eq!(own_message(&doc, "a slip of the keys"), Some(id));
 }
 
-/// The menu row says which it will do: "Delete message…" while it asks
-/// first, "Delete message" while Shift is held and it goes at once.
-#[test]
-fn the_menus_delete_row_reads_as_it_will_act() {
-    let (mut app, mut doc) = app_with_doc();
-    let id = send_own(&mut app, &mut doc, "mine");
-    app.open_message_menu(id, Point::new(120.0, 120.0));
-    let row = |app: &ChatApp| {
-        let menu = app.menu.as_ref().expect("the menu is open");
-        let index = menu
-            .items
-            .iter()
-            .position(|action| *action == MenuAction::DeleteMessage)
-            .expect("Delete is offered");
-        menu.widget.items()[index]
-            .shown_label()
-            .map(std::borrow::Cow::into_owned)
-    };
-    ui::widget::note_shift(false);
-    assert_eq!(row(&app).as_deref(), Some("Delete message\u{2026}"));
-    ui::widget::note_shift(true);
-    assert_eq!(row(&app).as_deref(), Some("Delete message"));
-    ui::widget::note_shift(false);
-}
-
 /// The pointer over a message lifts its row and shows its bar: react,
 /// reply, edit (one's own) and More. Shift grows the quick actions, and
 /// its delete goes at once; Undo brings the message back.
@@ -2724,6 +2699,7 @@ fn floating_pins_leave_the_composer_whole() {
 }
 
 mod calls_and_peers;
+mod menus;
 mod workspace_state;
 
 /// Every participant in the expanded call is their own tile, named as their

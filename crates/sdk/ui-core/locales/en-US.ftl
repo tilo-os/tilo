@@ -773,8 +773,8 @@ author-bot-details-as = { $name }, via { $bot } (bot, added by { $installer })
 author-bot-linked = Linked to { $person } on Tilo
 author-persona-suffix = { $name } · { $service }
 
-# A context menu's query field: typing narrows its entries, and a sentence
-# no entry answers goes into the send-to box docked beside it.
+# A context menu's query field: typing narrows its entries, and its send row
+# takes the typing into the send-to box that stands in its place.
 menu-query-placeholder = Type to filter
 menu-query-placeholder-ask = Type to filter or send
 menu-query-placeholder-send = Type to filter or send
@@ -784,8 +784,9 @@ menu-query-name-send = Filter or send
 menu-send = Send…
 menu-ask-typed = Send: { $text }
 
-# The box beside a context menu: whom a message goes to, what it is about,
-# and its words.
+# The send-to box: whom a message goes to, what it is about, and its words.
+# It stands where the menu whose send row opened it stood, and alone for a
+# report.
 send-to-name = Send to
 # The same box opened to the one place reports go.
 send-to-report-name = Report a problem

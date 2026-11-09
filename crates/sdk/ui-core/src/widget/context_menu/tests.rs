@@ -768,10 +768,10 @@ fn a_menu_is_as_wide_as_its_longest_label_and_longest_trailing_text_together() {
 }
 
 /// A row near the window's trailing edge opens its menu where the pointer
-/// is, and the box beside it is placed in the window the menu stands in —
+/// is, and the box its send row opens stands in the window the menu stood in —
 /// not past its edge, where a person cannot reach it.
 #[test]
-fn a_menu_near_the_trailing_edge_keeps_its_send_to_box_in_the_window() {
+fn a_menu_near_the_trailing_edge_opens_its_send_to_box_in_the_window() {
     // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     crate::shared_selection::set_send_host_available(true);
@@ -790,23 +790,32 @@ fn a_menu_near_the_trailing_edge_keeps_its_send_to_box_in_the_window() {
         .in_kind("tasks.tracker"),
     ));
     // Right-click on a row whose right end is well inside the window.
+    note_input(&crate::synthetic_input::mouse_input(
+        ElementState::Pressed,
+        MouseButton::Right,
+    ));
     menu.open_at([560.0, 178.0]);
+    menu.set_viewport(Some(window));
+    assert!(
+        !menu.send_to().is_open(),
+        "the menu is one surface: the box opens when its send row is chosen"
+    );
+    // The row that sends what the menu is about, which the menu adds itself.
+    let send_at = menu.items().len() - 1;
+    menu.click_item(send_at);
+    assert!(!menu.is_open(), "the box takes the menu's place");
     let presence = PresenceCtx::default();
     presence.viewport.set(Some(window));
     let mut scene = Scene::new();
     menu.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
-    let menu_rect = menu.get_rect();
     let box_rect = menu.send_to().rect();
-    assert!(
-        menu.send_to().is_open(),
-        "a menu about something carries the box"
-    );
+    assert!(menu.send_to().is_open(), "the send row opened the box");
     assert!(
         box_rect.x0 >= window.x0
             && box_rect.x1 <= window.x1
             && box_rect.y0 >= window.y0
             && box_rect.y1 <= window.y1,
-        "the box {box_rect:?} stands past the window {window:?} beside the menu {menu_rect:?}"
+        "the box {box_rect:?} stands past the window {window:?} where the menu stood at 560"
     );
     // What a screen reader reads is what is drawn: the box and each of its
     // parts where the person sees them, so the session's own targets reach
@@ -816,22 +825,17 @@ fn a_menu_near_the_trailing_edge_keeps_its_send_to_box_in_the_window() {
         .children
         .iter()
         .find(|child| child.role == crate::a11y::Role::Dialog)
-        .expect("the box is read beside the menu");
+        .expect("the box is read where the menu stood");
     assert_eq!(
         dialog.bounds.map(crate::a11y::AccessBounds::to_rect),
         Some(box_rect),
         "the box is read where it stands"
     );
-    // Each part of the box — who it goes to, the subjects, adding one, the
-    // words, Send — is read where it is drawn, inside the box the person
-    // sees, so the keyboard, a screen reader and the session's own targets
-    // all reach the same control in the same place.
-    for target in [
-        "send-to:recipients",
-        "send-to:add-subject",
-        "send-to:message",
-        "send-to:send",
-    ] {
+    // Each part of the box — who it goes to, the words, Send — is read where
+    // it is drawn, inside the box the person sees, so the keyboard, a screen
+    // reader and the session's own targets all reach the same control in the
+    // same place.
+    for target in ["send-to:recipients", "send-to:message", "send-to:send"] {
         let part = dialog
             .children
             .iter()
