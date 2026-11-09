@@ -448,6 +448,9 @@ const mounted = async (tab, name) => {
     arrival: document.documentElement.dataset.arrival ?? null,
     door: document.documentElement.dataset.door ?? null,
     phase: document.documentElement.dataset.phase ?? null,
+    // Why a page stopped: refused, failed or unsupported, in the words it shows.
+    entry: document.documentElement.dataset.entry ?? null,
+    status: document.getElementById('status')?.textContent?.trim().slice(0, 300) ?? null,
   })`));
   if (arrival.arrival !== 'done') await failed(`${name} did not arrive: ${JSON.stringify(arrival)}`, tab);
   await sleep(2000);
