@@ -18,3 +18,17 @@ pub const APPLICATION_RESOURCE_KIND: &str = "applications.app";
 
 /// Action id that opens an application into a workspace.
 pub const APPLICATION_OPEN_ACTION: &str = "open";
+
+/// Prefix of the provider token of one record of a workspace, served by a
+/// device that holds it whoever has it open: `record:<app id>:<record id>`
+/// (a host serving its workspaces' records answers under these). Such a
+/// provider is the app's record, live, as a window of the app is.
+pub const RECORD_PROVIDER: &str = "record";
+
+/// Whether `provider` names one record of a workspace ([`RECORD_PROVIDER`]).
+#[must_use]
+pub fn is_record_provider(provider: &str) -> bool {
+    provider
+        .strip_prefix(RECORD_PROVIDER)
+        .is_some_and(|rest| rest.starts_with(':'))
+}

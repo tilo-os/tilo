@@ -28,8 +28,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::AgentParticipant;
 
-/// Provider token prefix of an open record: `record:<app id>:<record id>`.
-pub const RECORD_PROVIDER: &str = "record";
+pub use tilo_actions::remote::RECORD_PROVIDER;
 
 /// Invocations remembered for retries.
 const REMEMBERED: usize = 256;

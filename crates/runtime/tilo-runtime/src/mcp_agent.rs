@@ -1453,7 +1453,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if let Some(instance) = instance {
             return pinned_window(&running, name, instance);
         }
-        let is_window = |provider: &str| provider.parse::<u64>().is_ok();
+        // A record a device serves whoever has it open (a host serving its
+        // workspace's records) is the app, live, as a window of it is.
+        let is_window = |provider: &str| {
+            provider.parse::<u64>().is_ok() || tilo_actions::remote::is_record_provider(provider)
+        };
         let ids_where = |window: bool| {
             running
                 .iter()
@@ -2242,7 +2246,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             // A host service (the desktop's layout) runs with the session,
             // and has no window.
             let windowed = running.iter().any(|(provider, app)| {
-                provider.parse::<u64>().is_ok() && app["app_id"].as_str() == Some(app_id)
+                (provider.parse::<u64>().is_ok()
+                    || tilo_actions::remote::is_record_provider(provider))
+                    && app["app_id"].as_str() == Some(app_id)
             });
             lines.push(format!(
                 "{}  {label}  {}",
