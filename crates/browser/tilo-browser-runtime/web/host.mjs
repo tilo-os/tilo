@@ -300,7 +300,7 @@ export async function mountDesktop(target,options={}) {
       delete state.semanticsPatch;
     }
     nativeCatalogue.pump();
-    for(const request of state.hostRequests??[]){if(typeof request?.copy==='string')void writeClipboard(request.copy).then(()=>report({clipboard:'copied'}),error=>report({clipboard:'failed',clipboardError:String(error?.message??error)}));else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.revoke==='string')/* The person takes an agent's grant back: the root this tab holds revokes its device. */options.onHostAction?.('revoke-device',request.revoke);else if(request?.joined)/* The directory's door let this person into a workspace: the page joins with the invitation it granted. */options.onJoinGranted?.(request.joined);else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}else if(request?.['room-action']){const asked=request['room-action'];void runRecordAction(options.peer?.actions,asked).then(answer=>{if(active())runtime.desktop_record_action_answer(id,asked.id,JSON.stringify(answer));});}}
+    for(const request of state.hostRequests??[]){if(typeof request?.copy==='string')void writeClipboard(request.copy).then(()=>report({clipboard:'copied'}),error=>report({clipboard:'failed',clipboardError:String(error?.message??error)}));else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.revoke==='string')/* The person takes an agent's grant back: the root this tab holds revokes its device. */options.onHostAction?.('revoke-device',request.revoke);else if(request?.joined)/* The directory's door let this person into a workspace: the page joins with the invitation it granted. */options.onJoinGranted?.(request.joined);else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}else if(request?.['room-action']){const asked=request['room-action'];void runRecordAction(options.peer?.actions,asked).then(answer=>{if(active()&&!config.app)runtime.desktop_record_action_answer(id,asked.id,JSON.stringify(answer));});}}
     if('focusPresence' in state)liveLayer()?.publishPresence({selection:state.focusPresence});
     if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null,layout:livePlace?.layout??null});}
     // This person's latest wave, which the one it is for shows once.
@@ -648,16 +648,16 @@ export async function mountDesktop(target,options={}) {
       state:()=>lastState,canvas,captureSource:capture.handle,observeSemanticTarget:target=>semanticPresentation.observe(target),get editor(){return editor;},semantics:accessibility,requestSemantics,
       get navigation(){return navigation?.controller;},
       // Host actions (`[{id, title, subtitle?}]`) in place of earlier ones, and a banner offering one (`{action, title, body}`).
-      setHostActions:actions=>{if(active()&&runtime.desktop_set_host_actions)runtime.desktop_set_host_actions(id,JSON.stringify(actions));},
-      offerHostAction:offer=>{if(active()&&runtime.desktop_offer_host_action)runtime.desktop_offer_host_action(id,JSON.stringify(offer));},
+      setHostActions:actions=>{if(active()&&!config.app&&runtime.desktop_set_host_actions)runtime.desktop_set_host_actions(id,JSON.stringify(actions));},
+      offerHostAction:offer=>{if(active()&&!config.app&&runtime.desktop_offer_host_action)runtime.desktop_offer_host_action(id,JSON.stringify(offer));},
       // The picture `user` (root key, hex) chose, as a `data:` URL, shown on their avatars now; `null` takes it away.
       setPersonPhoto:(user,url)=>{photos.chose(user,url);return showPhoto(user,url);},
       // On a desktop with no workspace (the person's own), who it shows as its person (`{user, label}`): a workspace's peer names its own.
-      setOwnPerson:({user,label})=>{if(active()&&!options.peer&&runtime.desktop_set_people)runtime.desktop_set_people(id,JSON.stringify({own:{publisher:'own',kind:'person',label:String(label??''),user}}));},
+      setOwnPerson:({user,label})=>{if(active()&&!config.app&&!options.peer&&runtime.desktop_set_people)runtime.desktop_set_people(id,JSON.stringify({own:{publisher:'own',kind:'person',label:String(label??''),user}}));},
       // What the page just did out of sight, said in passing ("Link copied").
-      acknowledge:text=>{if(active()&&runtime.desktop_acknowledge)runtime.desktop_acknowledge(id,String(text));},
+      acknowledge:text=>{if(active()&&!config.app&&runtime.desktop_acknowledge)runtime.desktop_acknowledge(id,String(text));},
       // Who the desktop shows as here (`[{id, label, agent}]`, one row per person), or null for a single app.
-      people:()=>{const shown=active()&&runtime.desktop_here_people?.(id);return shown?JSON.parse(shown):null;},
+      people:()=>{const shown=active()&&!config.app&&runtime.desktop_here_people?.(id);return shown?JSON.parse(shown):null;},
       // What the workspace's live layer says of itself: whether it is live,
       // this page's publisher in it, the members it reads, and the publisher's
       // own counters and last publish error (`{state, publisher, members,
