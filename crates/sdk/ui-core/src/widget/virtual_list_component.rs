@@ -26,8 +26,8 @@ use crate::widget::arrange::{
 use crate::widget::conversation::list::RUN_WINDOW_SECS;
 use crate::widget::conversation::{ConversationClock, DayDivider};
 use crate::widget::{
-    Attachments, Avatar, ContextMenuArea, Decorator, Element, ListRow, ListRowProps, MenuEntry,
-    MenuPart, RowBuild, Spacer, SwipeActionProps, Text, Tone, Widget,
+    Attachments, Avatar, AvatarSize, ContextMenuArea, Decorator, Element, ListRow, ListRowProps,
+    MenuEntry, MenuPart, RowBuild, Spacer, SwipeActionProps, Text, Tone, Widget,
 };
 
 use super::{ListModel, ListModelChange, TREE_INDENT, TreeMarks, VirtualList};
@@ -60,6 +60,10 @@ pub struct ListItemProps {
     /// When it was written, in a transcript: the time beside its author's name, and a divider
     /// over the first message of each day.
     pub time: Option<Moment>,
+    /// Who else has read to it (`seen_by(c, m)`), in a transcript: their faces, small, once,
+    /// on the line where their reading ends — each of them shows on no other line, and the
+    /// author never beside their own words.
+    pub read_by: Vec<Person>,
     /// What the item offers on its context menu (a right-click, the Menu key or a long press
     /// opens it, and selects the row unless the row opens where it stands): each of its
     /// allowed actions, after the menu the row's view placed (`attached`) and without those
@@ -464,6 +468,7 @@ fn reusable(item: &ListItemProps) -> Option<ListItemProps> {
         presence: item.presence.clone(),
         author: item.author.clone(),
         time: item.time,
+        read_by: item.read_by.clone(),
         menu: item.menu.iter().map(MenuPart::again).collect(),
         swipe: item.swipe.as_ref().map(SwipeActionProps::again),
         attached: Attachments {
@@ -1173,13 +1178,23 @@ fn message_of(
                 .push(said),
         )
     };
+    // Who has read to this line: their faces at its trailing end, once each, where their
+    // reading ends. The author's own face stands at the line's head already.
+    let read_by: Vec<Person> = rows
+        .with_item(key, |item| item.read_by)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|who| who.identity != author.identity)
+        .collect();
+    let message = message.push_fit(said, Fit::fill(1.0));
+    let message = if read_by.is_empty() {
+        message
+    } else {
+        message.push(read_faces(key, read_by))
+    };
     // The message swipes and shows its toolbar whole, its author with it; the day's divider
     // stays.
-    let message = attach(
-        Box::new(message.push_fit(said, Fit::fill(1.0))),
-        swipe,
-        attached,
-    );
+    let message = attach(Box::new(message), swipe, attached);
     let gap = if continues { Rhythm::Tight } else { RUN_GAP };
     let shown = match day.filter(|_| new_day) {
         Some(day) => Box::new(
@@ -1191,6 +1206,31 @@ fn message_of(
         None => message,
     };
     page_row(under_unread(shown, first_unread), gap, measure)
+}
+
+/// The faces of those who have read to the row `key`, small, at the trailing end of its line:
+/// each of them stands on the one line their reading ends at, and nowhere else.
+fn read_faces(key: &str, read: Vec<Person>) -> Element {
+    let mut faces = Row::row().gap(Rhythm::Tight).align(Align::Center);
+    for who in &read {
+        faces = faces.push(Box::new(
+            Avatar::person(who.name.clone(), who.identity.clone()).size(AvatarSize::Small),
+        ));
+    }
+    let names = read
+        .iter()
+        .map(|who| who.name.clone())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Box::new(
+        crate::widget::Container::new()
+            .with_no_padding()
+            .landmark(
+                crate::i18n::widget_format("conversation-read-by", &[("names", names.into())]),
+                format!("{key}~read"),
+            )
+            .with_child(Box::new(faces)),
+    )
 }
 
 /// `content` under the "New messages" divider, for the row of the first message the reader had
@@ -1736,8 +1776,8 @@ mod tests {
     }
 
     /// The messages of a transcript, two of one day and two of the next: each shows a line of
-    /// its own, under its author and the time it was said.
-    fn transcript_messages() -> DescribedRows {
+    /// its own, under its author and the time it was said, and says who has read to it.
+    fn transcript_messages(read_by: impl Fn(usize) -> Vec<Person>) -> DescribedRows {
         let at = [
             1_790_000_000_i64,
             1_790_000_060,
@@ -1755,6 +1795,7 @@ mod tests {
                     name: format!("Writer {index}"),
                 }),
                 time: Some(Moment(*said)),
+                read_by: read_by(index),
                 row: ItemRow::Row(Box::new(ListRowProps {
                     title: format!("message {index}"),
                     ..ListRowProps::default()
@@ -1778,6 +1819,21 @@ mod tests {
         );
         harness.relayout();
         harness.inspection().root
+    }
+
+    /// The names the faces of `widget` say, in `node` and under it.
+    fn find_widget(node: &crate::headless::InspectionNode, widget: &str, out: &mut Vec<String>) {
+        if node.widget == widget {
+            out.push(
+                node.semantics
+                    .as_ref()
+                    .and_then(|semantics| semantics.name.clone())
+                    .unwrap_or_default(),
+            );
+        }
+        for child in &node.children {
+            find_widget(child, widget, out);
+        }
     }
 
     /// Where the first widget `widget` stands, in `node`.
@@ -1820,7 +1876,7 @@ mod tests {
                 VirtualListProps {
                     page_column: true,
                     unseen_from: unseen.map(|item| ResourceId(item.to_owned())),
-                    rows: transcript_messages(),
+                    rows: transcript_messages(|_| Vec::new()),
                     ..VirtualListProps::default()
                 },
             )
@@ -1864,6 +1920,58 @@ mod tests {
             [day[0], day[2]],
             "the two dividers end at the same edges: the day's {day:?}, the new messages' {new:?}"
         );
+    }
+
+    /// Who has read to a line shows on that line alone: each reader's face stands once, on the
+    /// message their reading ends at, and the author never beside their own words.
+    #[test]
+    fn a_readers_face_stands_once_on_the_line_they_read_to() {
+        let list = DescribedList::from_props(
+            "transcript",
+            VirtualListProps {
+                page_column: true,
+                rows: transcript_messages(|index| match index {
+                    // Mia read to the second message; the second message's own author read it
+                    // too, and never shows beside their own words.
+                    1 => vec![
+                        Person {
+                            identity: "person-0".to_owned(),
+                            name: "Mia".to_owned(),
+                        },
+                        Person {
+                            identity: "person-1".to_owned(),
+                            name: "Writer 1".to_owned(),
+                        },
+                    ],
+                    _ => Vec::new(),
+                }),
+                ..VirtualListProps::default()
+            },
+        );
+        let laid = laid_out(list);
+        let faces = |node: &crate::headless::InspectionNode, at: usize| {
+            let rows = node
+                .children
+                .iter()
+                .filter(|child| child.widget == "Page")
+                .collect::<Vec<_>>();
+            let mut found = Vec::new();
+            find_widget(rows[at], "Avatar", &mut found);
+            found
+        };
+        assert_eq!(
+            faces(&laid, 1),
+            vec!["Writer 1".to_owned(), "Mia".to_owned()],
+            "the line Mia read to shows her face beside its author's, once"
+        );
+        for at in [0, 2, 3] {
+            let shown = faces(&laid, at);
+            assert_eq!(
+                shown.len(),
+                1,
+                "message {at} shows its author's face alone: {shown:?}"
+            );
+        }
     }
 
     /// A page column's rows are read, not chosen: a press on a message gives it the keyboard

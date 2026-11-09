@@ -235,6 +235,7 @@ imports! {
     (RunChanges, "run_changes", "i", "i"),
     (Unseen, "unseen", "i", "i"),
     (FirstUnseen, "first_unseen", "iii", "i"),
+    (SeenBy, "seen_by", "ii", "i"),
     (Mentions, "mentions", "iii", "l"),
     (Steps, "steps", "i", "i"),
     (CollOrdered, "coll_ordered", "ii", "i"),

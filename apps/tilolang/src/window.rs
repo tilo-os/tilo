@@ -350,10 +350,15 @@ impl Window {
                 .iter()
                 .map(|slot| (slot.key(), slot.value.clone())),
         );
+        // Everyone's marks, not this person's alone: a conversation shows who read to a line.
         self.instance.set_seen(
-            kept.seen
-                .iter()
-                .map(|seen| (seen.resource.clone(), Some(seen.mark.clone()))),
+            state.seen.iter().map(|seen| {
+                (
+                    seen.person.clone(),
+                    seen.resource.clone(),
+                    Some(seen.mark.clone()),
+                )
+            }),
             &kept
                 .runs
                 .iter()

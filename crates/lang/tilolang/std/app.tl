@@ -455,7 +455,9 @@ template view place<R, T>(of: R, name: Text, items: List<T>, row: (T) -> View) {
 ///
 /// `unread` names the first item the person has not seen (`first_unseen(of)`, or `.none`): the
 /// list draws the "New messages" divider over it, keeps the reader where they are as items
-/// arrive, and offers the way back to it, or to what is new, while they read history.
+/// arrive, and offers the way back to it, or to what is new, while they read history. Each item
+/// also says who has read to it (`seen_by(of, m)`): the list shows their faces there, once each,
+/// where their reading ends.
 view transcript<R, T>(
     of: R,
     items: List<T>,
@@ -474,7 +476,12 @@ view transcript<R, T>(
                 ui.VirtualList(follow_end: true, page_column: true, unseen_from: unread) {
                     for m in items {
                         let made = created(m)
-                        ui.ListItem(item: m, author: made?.who, time: made?.at) {
+                        ui.ListItem(
+                            item: m,
+                            author: made?.who,
+                            time: made?.at,
+                            read_by: seen_by(of, m),
+                        ) {
                             row(m)
                         }
                     }

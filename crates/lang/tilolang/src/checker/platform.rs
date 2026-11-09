@@ -337,6 +337,39 @@ impl Checker<'_> {
         )
     }
 
+    /// `seen_by(c, m)`: the members whose reading of `c` ends at `m` — who has read to that
+    /// line, the person looking aside. A conversation shows their faces there, once each, where
+    /// their read mark stands, without counting anything of its own.
+    pub(super) fn builtin_seen_by(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let [c, item] = args else {
+            self.err(
+                "E022",
+                span,
+                "`seen_by` takes a conversation and one of its items: `seen_by(c, m)`",
+            );
+            return Ex::error();
+        };
+        if item.name.is_some() {
+            self.err(
+                "E022",
+                item.value.span,
+                "`seen_by` takes its arguments by position: `seen_by(c, m)`",
+            );
+        }
+        let Some(c) = self.resource_arg("seen_by", std::slice::from_ref(c), span) else {
+            return Ex::error();
+        };
+        let Some((_, item_ty)) = self.conversation_of("seen_by", &c, span) else {
+            return Ex::error();
+        };
+        let item = self.expr_as(&item.value, &Ty::Record(item_ty));
+        Ex::host(
+            Imp::SeenBy,
+            vec![c, item],
+            Ty::List(Box::new(Ty::Principal)),
+        )
+    }
+
     /// `mentions(c)`: how many of `c`'s items name the person looking, that they have not seen:
     /// a channel's mention count beside its unread count (`unseen(c)`), from the same versions
     /// and seen mark, so a caught-up channel counts none without reading a message.

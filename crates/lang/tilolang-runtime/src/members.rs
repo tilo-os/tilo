@@ -238,7 +238,7 @@ impl Core {
     }
 }
 
-fn principals<'a>(members: impl Iterator<Item = &'a Member>) -> Value {
+pub(crate) fn principals<'a>(members: impl Iterator<Item = &'a Member>) -> Value {
     Value::List(
         members
             .map(|member| Value::Principal(member.who.clone()))

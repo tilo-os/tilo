@@ -1072,6 +1072,7 @@ conversation-delivery-read = Gelesen
 conversation-delivery-failed = Nicht gesendet
 conversation-delivery-uncertain = Status unklar
 conversation-new-messages = Neue Nachrichten
+conversation-read-by = Bis hierher gelesen von { $names }
 conversation-jump-unread = Zu den ersten ungelesenen
 conversation-jump-present = Zum Neuesten
 conversation-earlier-unavailable = Frühere Nachrichten sind auf den Hosts dieses Geräts nicht verfügbar

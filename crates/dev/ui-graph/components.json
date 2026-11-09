@@ -7335,6 +7335,13 @@
           }
         },
         {
+          "name": "read_by",
+          "doc": "Who else has read to it (`seen_by(c, m)`), in a transcript: their faces, small, once, on the line where their reading ends — each of them shows on no other line, and the author never beside their own words.",
+          "type": {
+            "list": "principal"
+          }
+        },
+        {
           "name": "group",
           "doc": "The group the row is in, as the platform reads it over the group's first row: a day for a date. Rows of one group stand together under its heading, in the order they come.",
           "type": {

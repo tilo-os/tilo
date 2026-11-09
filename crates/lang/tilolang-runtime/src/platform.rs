@@ -336,6 +336,7 @@ impl Core {
             }
             Imp::Mentions => self.mentions_import(a),
             Imp::FirstUnseen => self.first_unseen_import(a),
+            Imp::SeenBy => self.seen_by_import(a),
             Imp::MetaOf => {
                 let subject = self.val(a.h(0)?)?;
                 let meta = match subject {
@@ -1246,6 +1247,56 @@ impl Core {
             }
         }
         Ok(None)
+    }
+
+    /// The members, the person looking aside, whose reading of `coll` ends at `at`: their seen
+    /// mark of `coll` names the change that made `at`, so the last line they read is that one.
+    ///
+    /// Read from the marks the host gives of everyone's reading (`crate::Runtime::set_seen`),
+    /// so a conversation shows who read to a line without counting anything: `at`'s own versions
+    /// say which change it is, and each member is one slot read. A member without a mark of
+    /// `coll` reads nothing of it; a mark that names another line read further.
+    pub(crate) fn seen_by_of(
+        &self,
+        looking: &str,
+        coll: &ResourceRef,
+        at: &ResourceRef,
+    ) -> Result<Vec<crate::members::Member>, crate::store::StoreError> {
+        let versions = self.store.borrow().versions(at)?;
+        if versions.is_empty() {
+            return Ok(Vec::new());
+        }
+        let resource = coll.id_string();
+        let mut read = Vec::new();
+        for member in self.read_members() {
+            if member.who.0.eq_ignore_ascii_case(looking) {
+                continue;
+            }
+            // Every member's mark is read, so the view runs again when any of them reads on.
+            self.note_seen_read(&member.who.0, &resource);
+            let Some(mark) = self.seen_mark(&member.who.0, &resource) else {
+                continue;
+            };
+            if versions.iter().any(|version| version.change == mark.change) {
+                read.push(member);
+            }
+        }
+        Ok(read)
+    }
+
+    /// `seen_by(c, m)`: the members whose reading of `c` ends at `m`, the person looking aside:
+    /// who has read to that line. A view that reads it runs again when `m` moves or when one of
+    /// them reads on.
+    fn seen_by_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let coll = self.ref_arg(a.h(0)?)?;
+        let at = self.ref_arg(a.h(1)?)?;
+        let person = self.looking()?;
+        let read = self
+            .seen_by_of(&person, &coll.target, &at.target)
+            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+        // What the answer is made of: `m`'s own versions, noted as read by the answer itself.
+        self.read_versions_of(&at.target);
+        self.ret_h(crate::members::principals(read.iter()))
     }
 
     /// How many of the items of `at`'s collection `field` (of `item`) name `person` in their

@@ -1128,6 +1128,26 @@ impl Runtime {
         self.core.unseen_of(person, at)
     }
 
+    /// The members whose reading of `coll` ends at `at`, `person` aside: who has read to that
+    /// line (`seen_by(c, m)`), read from each member's mark of `coll`.
+    ///
+    /// # Errors
+    ///
+    /// The store could not read the versions of `at`.
+    pub fn seen_by(
+        &self,
+        person: &str,
+        coll: &ResourceRef,
+        at: &ResourceRef,
+    ) -> Result<Vec<crate::ids::Principal>, StoreError> {
+        Ok(self
+            .core
+            .seen_by_of(person, coll, at)?
+            .into_iter()
+            .map(|member| member.who)
+            .collect())
+    }
+
     /// `person` has seen every version of `at` there is now: the mark moves to its newest,
     /// and the host is handed it to keep ([`Self::take_seen`]). Nothing happens while there is
     /// nothing unseen.

@@ -1102,6 +1102,7 @@ conversation-delivery-read = Read
 conversation-delivery-failed = Not sent
 conversation-delivery-uncertain = Status uncertain
 conversation-new-messages = New messages
+conversation-read-by = Read to here by { $names }
 conversation-jump-unread = Jump to first unread
 conversation-jump-present = Jump to present
 conversation-earlier-unavailable = Earlier messages aren't available on this device's hosts

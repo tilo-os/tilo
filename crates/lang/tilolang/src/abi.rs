@@ -251,6 +251,7 @@ imports! {
     RunChanges = "run_changes" ([H] -> [H]);
     Unseen = "unseen" ([H] -> [H]);
     FirstUnseen = "first_unseen" ([H, H, H] -> [H]);
+    SeenBy = "seen_by" ([H, H] -> [H]);
     Mentions = "mentions" ([H, H, H] -> [I64]);
     Steps = "steps" ([H] -> [H]);
     CollOrdered = "coll_ordered" ([H, H] -> [H]);
