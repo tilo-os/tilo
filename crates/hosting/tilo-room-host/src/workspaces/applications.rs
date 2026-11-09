@@ -615,9 +615,8 @@ fn publish_genesis(
             .save_after(&[]);
         super::sealed_records::start_sealed(candidate, keys, (app, record), changes, key, now)?;
     } else {
-        // Establish ownership through the same governor-only StatePeer path
-        // as native prepare_application_record, then merge the standard
-        // factory.
+        // Establish the record's ownership first, then merge the standard
+        // factory onto it: two writes of the same device, in order.
         candidate.publication_mut().publish_document(
             app,
             record,

@@ -1,7 +1,10 @@
-//! Host-owned empty application records, before an authenticated creator joins.
-//! Neither an app document write nor an arbitrary reader can create ownership.
+//! An app's record, as the workspace's own host starts it and as a member
+//! completes its bootstrap. No device starts one in the clear: a workspace
+//! seals its records, so an app's first write is the sealed whole-record write
+//! that founds it (`admit_local`), never a plaintext genesis the owner
+//! publishes ahead of it.
 
-use crate::owner::{NativeWorkspaceOwner, WorkspaceId, publication};
+use crate::owner::{NativeWorkspaceOwner, WorkspaceId};
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
@@ -125,71 +128,6 @@ impl NativeWorkspaceOwner {
                 _ => Err("initialized application capture unavailable".into()),
             }
         })
-    }
-    /// Create an empty, canonical record as this device, signed with its
-    /// own key: the governor's, or a member's the workspace lets create it (its
-    /// app may author records here and the member may change the record),
-    /// as every receiver admits it. Existing records remain byte-identical.
-    /// Publication is durable before this returns; the caller may only then
-    /// admit the creator's channel.
-    pub fn prepare_application_record(
-        &self,
-        workspace: WorkspaceId,
-        creator: &DeviceCert,
-        key: &SigningKey,
-        route: &ApplicationRecord,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        let _turn = self.0.mutation.lock();
-        let candidate = self.view(workspace)?;
-        if creator != candidate.device()
-            || key.verifying_key().to_bytes() != creator.device_public_key
-        {
-            return Err("application creator lacks this device's own signing custody".into());
-        }
-        let member = candidate
-            .peer
-            .permissions(creator.device_public_key, now)
-            .map_err(|error| error.to_string())?;
-        let node =
-            collab_types::document_node(candidate.peer.workspace_id(), &route.app, &route.record);
-        let (created, record) = candidate.change(|live, record| {
-            if live.document(&route.app, &route.record).is_some() {
-                return Ok(false);
-            }
-            if creator != candidate.workspace_host() {
-                if !member
-                    .policy
-                    .app_authors(&route.app, &tilo_action_policy::Context::at_time(now))
-                {
-                    return Err(
-                        "the workspace does not let this application author its records".into(),
-                    );
-                }
-                if !member.allows(&node, tilo_action_policy::ActionKind::Undoable, now) {
-                    return Err("application record creator may not change the record".into());
-                }
-            }
-            let message = live.publication_mut().publish_document(
-                &route.app,
-                &route.record,
-                automerge::AutoCommit::new().save(),
-                key,
-                now,
-            )?;
-            let outgoing = publication::prepare(&publication::request(&message)?)?;
-            publication::append_local(record, outgoing)?;
-            record.generation = record
-                .generation
-                .checked_add(1)
-                .ok_or("native application generation exhausted")?;
-            Ok(true)
-        })?;
-        if !created {
-            return Ok(false);
-        }
-        self.publish_record(workspace, &candidate, record, None)?;
-        Ok(true)
     }
 }
 

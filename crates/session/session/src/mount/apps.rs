@@ -1463,17 +1463,6 @@ fn installed_package(app: &str) -> Option<String> {
         .map(|package| package.package_id)
 }
 
-/// The resource kinds `app` 's installed package declares for the records it keeps, from its signed
-/// manifest: what a workspace takes a record it starts under ([`crate::engine::Engine`] starting an
-/// app's first record). `None` for an app this device has not installed.
-pub(crate) fn declared_resource_kinds(app: &str) -> Option<Vec<String>> {
-    let package = installed_package(app)?;
-    let installed = app_catalogue::apps::read_one_from_env(&package)
-        .ok()
-        .flatten()?;
-    Some(installed.declared_resource_kinds())
-}
-
 /// Why an action an app publishes cannot be run here: the action host an app's resources arrive on
 /// is not mounted in this session.
 fn no_action_host() -> DoorError {

@@ -1034,32 +1034,6 @@ impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
             link.publish_custody(workspace_id);
         }
     }
-
-    /// Start the record empty as this device, from the kind the app's join
-    /// named and the declarations its installed package carries: what lets a
-    /// device that does not hold a record yet write the first change of it,
-    /// as the workspace's host starts it for an app there.
-    fn prepare_record(
-        &self,
-        owner: &NativeWorkspaceOwner,
-        workspace_id: WorkspaceId,
-        app: &str,
-        record: &str,
-        kind: &str,
-    ) -> Result<(), String> {
-        self.check_custody(owner, workspace_id)?;
-        let declared = crate::mount::apps::declared_resource_kinds(app)
-            .ok_or_else(|| format!("{app} is not installed on this device"))?;
-        let route =
-            tilo_peer_state::owner::ApplicationRecord::declared(app, record, kind, &declared)?;
-        let (cert, _, _) =
-            tilo_network_actor::native_ingress::Connect::new(owner.clone(), workspace_id)?
-                .custody(&self.identity)?;
-        let key = self.identity.device_signing_key.clone();
-        owner
-            .prepare_application_record(workspace_id, &cert, &key, &route, SystemTime::now())
-            .map(drop)
-    }
 }
 
 /// The id a listing reports for an invitation, as its 32 bytes: 64 hex characters.

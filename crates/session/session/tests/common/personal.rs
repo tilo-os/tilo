@@ -207,21 +207,19 @@ pub fn hold_workspace(
             )
             .expect("the host admits the workspace's people");
     }
-    // The record the app keeps, created empty as this device's own, before any
-    // app joins it: what the host of a workspace does when one of its records'
-    // apps first opens it.
+    // The record the app keeps, started empty as this device's own, before any
+    // app joins it: a fixture stands in for a workspace whose records the
+    // owner commits as documents. A workspace that seals its records starts
+    // none this way: the app's first write founds it, sealed.
     let record = collab_types::person_record_id(kind);
-    let route = owner::ApplicationRecord::declared(app, &record, kind, &[kind.to_owned()])
-        .expect("the app declares this record of the person's");
-    owner
-        .prepare_application_record(
-            workspace,
-            cert,
-            device,
-            &route,
-            std::time::SystemTime::now(),
-        )
-        .expect("this device creates the record it hosts");
+    owner::testing::start_record(
+        &owner,
+        workspace,
+        app,
+        &record,
+        device,
+        std::time::SystemTime::now(),
+    );
 }
 
 /// What an app presents to join `cluster`'s channel: the certificate, and the

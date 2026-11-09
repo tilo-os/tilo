@@ -469,14 +469,32 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
         .spawn();
     // What the device holds of the workspace before anyone asks for it: a record the joiner has to
     // catch up on.
-    host.prepare_application_record(
-        workspace,
-        &host_cert,
-        &host_key,
-        &tilo_peer_state::owner::ApplicationRecord::host(APP, RECORD).unwrap(),
+    let message = host
+        .with_current(workspace, |view| {
+            view.peer().clone().publication_mut().publish_document(
+                APP,
+                RECORD,
+                AutoCommit::new().save(),
+                &host_key,
+                now,
+            )
+        })
+        .expect("the record's first write signs");
+    let NeighbourMsg::AppDocument { envelope, .. } = message else {
+        panic!("a record's first write is a document");
+    };
+    host.commit_document(
+        tilo_peer_state::owner_commit::OwnerCommitRequest {
+            workspace: workspace.to_string(),
+            operation: tilo_peer_state::owner_commit::CommitOperation::Document {
+                app: APP.into(),
+                record: RECORD.into(),
+                envelope,
+            },
+        },
         now,
     )
-    .expect("the device starts the record");
+    .expect("the owner admits the record's first write as it is");
     let held = DirectSync::over(host.replica(workspace).unwrap(), host_key.clone())
         .owning(host.clone(), workspace)
         .unwrap();
