@@ -17004,6 +17004,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-broker-core",
+ "tilo-channels",
  "tilo-clock",
  "tilo-content",
  "tilo-desktop-model",
@@ -17956,6 +17957,32 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-channels"
+version = "0.1.0"
+dependencies = [
+ "channel-crypto",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "neighbour-wire",
+ "pollster",
+ "postcard",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-clock",
+ "tilo-desktop-model",
+ "tilo-files",
+ "tilo-identity-client",
+ "tilo-identity-host",
+ "tilo-test-env",
+ "tokio",
+ "tracing",
+ "uuid",
+ "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]

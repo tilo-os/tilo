@@ -167,7 +167,9 @@ impl ChannelDirectory for Directory {
 /// someone founds them.
 fn keys(device: u8, vault: u8, admitted: &[u8]) -> (ChannelKeyProvider, tempfile::TempDir) {
     let directory = tempfile::tempdir().expect("a directory to keep channel state in");
-    let broker = Arc::new(Mutex::new(BrokerChannels::default()));
+    let gates = Arc::new(tilo_action_broker::collab_core::BrokerGates(Arc::new(
+        Mutex::new(BrokerChannels::default()),
+    )));
     let encryption = ChannelEncryption::open(
         ChannelEncryptionConfig {
             root: directory.path().join("channels"),
@@ -177,7 +179,7 @@ fn keys(device: u8, vault: u8, admitted: &[u8]) -> (ChannelKeyProvider, tempfile
         Box::new(Directory {
             admitted: admitted.iter().copied().map(key).collect(),
         }),
-        broker,
+        gates,
     )
     .expect("a channel service");
     let provider = ChannelKeyProvider::default();

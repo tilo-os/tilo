@@ -71,6 +71,7 @@ members = [
     "apps/canvas",
     "crates/collab/tilo-action-broker",
     "crates/collab/broker-core",
+    "crates/collab/channels",
     "crates/collab/feedback-transport",
     "crates/session/identity-authority",
     "crates/collab/tilo-identity-ceremony",

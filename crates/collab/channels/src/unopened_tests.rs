@@ -48,7 +48,7 @@ fn late_readers_service(dir: &Path, directory: &LateReaders) -> ChannelEncryptio
             device_key: key(21),
         },
         Box::new(directory.clone()),
-        Arc::new(Mutex::new(BrokerChannels::default())),
+        Arc::new(Gates::default()),
     )
     .unwrap()
 }
@@ -222,7 +222,7 @@ fn routed_service(dir: &Path, directory: &RoutedReaders) -> ChannelEncryption {
             device_key: key(21),
         },
         Box::new(directory.clone()),
-        Arc::new(Mutex::new(BrokerChannels::default())),
+        Arc::new(Gates::default()),
     )
     .unwrap()
 }

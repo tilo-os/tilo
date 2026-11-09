@@ -1,7 +1,14 @@
 //! In-memory workspaces and directories the channel service's tests drive.
-use super::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+use collab_types::{ChannelId, ChannelRoute, Ed25519PublicKey};
+use ed25519_dalek::SigningKey;
+use neighbour_wire::NeighbourMsg;
+use tilo_desktop_model::WorkspaceId;
+
+use crate::encryption::{ChannelDirectory, GovernanceTransport, InboundChannelGovernance};
 
 /// An in-memory workspace: every endpoint publishes to all the others while
 /// the workspace is up, and loses what it publishes while it is down.

@@ -25,7 +25,7 @@ use tilo_action_broker::{
         ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
         ChannelKeyProvider, GovernancePump,
     },
-    collab_core::BrokerChannels,
+    collab_core::{BrokerChannels, BrokerGates},
 };
 use tilo_desktop_model::WorkspaceId;
 use tilo_identity_host::provisioning::IdentityStorage;
@@ -64,7 +64,7 @@ pub(super) fn open(
         Box::new(Directory {
             joined: Arc::clone(&joined),
         }),
-        broker,
+        Arc::new(BrokerGates(broker)),
     )?;
     let park = joined.governance_wake();
     let poke = Arc::clone(&park);

@@ -19,10 +19,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use collab_types::{ChannelId, ChannelRoute, Ed25519PublicKey};
 use neighbour_wire::NeighbourMsg;
 use tilo_action_broker::channel_encryption::{
-    ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess, GovernancePark,
-    GovernancePump, GovernanceTransport, InboundChannelGovernance,
+    ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelGates, ChannelKeyAccess,
+    GovernancePark, GovernancePump, GovernanceTransport, InboundChannelGovernance,
 };
-use tilo_action_broker::collab_core::BrokerChannels;
+use tilo_action_broker::collab_core::{BrokerChannels, BrokerGates};
 use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
 use tilo_identity_host::policy_change;
 use tilo_lock::MutexRecover as _;
@@ -59,6 +59,7 @@ impl Channels {
         let directory = Box::new(Directory {
             engine: Arc::clone(engine),
         });
+        let gates: Arc<dyn ChannelGates> = Arc::new(BrokerGates(broker));
         let service = match MlsVault::open_for_session() {
             Ok(vault) => ChannelEncryption::open(
                 ChannelEncryptionConfig {
@@ -67,7 +68,7 @@ impl Channels {
                     device_key: engine.identity().device_signing_key.clone(),
                 },
                 directory,
-                Arc::clone(&broker),
+                Arc::clone(&gates),
             )
             .inspect_err(|error| {
                 tracing::warn!(%error, "channel encryption state could not be opened");
@@ -78,7 +79,7 @@ impl Channels {
                     %error,
                     "no system secret store answered: only workspaces this device hosts have channel keys"
                 );
-                Some(ChannelEncryption::without_store(directory, broker))
+                Some(ChannelEncryption::without_store(directory, gates))
             }
         };
         let keys = engine.keys();

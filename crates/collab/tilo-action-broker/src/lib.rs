@@ -4,7 +4,11 @@ pub mod app_actions;
 pub mod automation;
 mod broker_error;
 pub mod certificate_authority;
-pub mod channel_encryption;
+/// The channel engine every host runs: its groups, the governance that settles them, and the
+/// keys an endpoint reads a sealed record with.
+pub use tilo_channels as channel_encryption;
+/// When a re-check of what was already admitted is due, and the announcements it waits on.
+pub use tilo_channels::schedule as policy_schedule;
 pub mod collab_app_broker;
 pub mod collab_broker;
 pub mod collab_core;
@@ -13,12 +17,10 @@ pub mod collab_inbound;
 pub mod collab_outbound;
 pub mod collab_presence;
 mod evidence_signer;
-mod governance_pump;
 pub mod local_document_action;
 pub mod owner_commits;
 pub mod personal;
 pub mod policy_clock;
-pub mod policy_schedule;
 pub mod published_authorization;
 pub mod record_content;
 /// The route an app's traffic is addressed on, the same on every host.

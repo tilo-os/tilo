@@ -37,6 +37,7 @@ pub mod provisioning;
 #[cfg(unix)]
 pub mod registry;
 pub mod roles;
+pub mod sources;
 
 #[cfg(all(not(unix), not(target_arch = "wasm32")))]
 mod unsupported_host;

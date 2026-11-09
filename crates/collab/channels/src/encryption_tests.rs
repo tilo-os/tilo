@@ -1,11 +1,12 @@
-use super::testing::*;
+use crate::testing::*;
 use super::*;
 use collab_types::{ArtifactId, ContentRetention};
 use std::sync::atomic::Ordering;
+use crate::gates::Gates;
 
 struct Device {
     service: ChannelEncryption,
-    broker: Arc<Mutex<BrokerChannels>>,
+    gates: Arc<Gates>,
     endpoint: Endpoint,
 }
 
@@ -34,7 +35,7 @@ fn sealed_device(
     dir: &Path,
 ) -> Device {
     workspace.queues.lock().unwrap().entry(id).or_default();
-    let broker = Arc::new(Mutex::new(BrokerChannels::default()));
+    let gates = Arc::new(Gates::default());
     let service = ChannelEncryption::open(
         ChannelEncryptionConfig {
             root: dir.join("channels"),
@@ -44,12 +45,12 @@ fn sealed_device(
         Box::new(Directory {
             policy: policy.clone(),
         }),
-        Arc::clone(&broker),
+        Arc::clone(&gates) as Arc<dyn ChannelGates>,
     )
     .unwrap();
     Device {
         service,
-        broker,
+        gates,
         endpoint: Endpoint {
             workspace: Arc::clone(workspace),
             id,
@@ -92,11 +93,9 @@ fn ready_epoch(access: &ChannelAccess) -> Option<u64> {
 }
 
 fn refuses_plaintext(device: &Device, channel: ChannelId) -> bool {
-    !device.broker.lock().unwrap().document_encryption_allowed(
-        &device.endpoint.workspace_id.to_string(),
-        channel,
-        None,
-    )
+    !device
+        .gates
+        .allows_document(&device.endpoint.workspace_id.to_string(), channel, None)
 }
 
 #[test]
@@ -291,7 +290,7 @@ fn scoped_device(
     narrowed: &Narrowing,
     dir: &Path,
 ) -> Device {
-    let broker = Arc::new(Mutex::new(BrokerChannels::default()));
+    let gates = Arc::new(Gates::default());
     let service = ChannelEncryption::open(
         ChannelEncryptionConfig {
             root: dir.join("channels"),
@@ -304,12 +303,12 @@ fn scoped_device(
             },
             narrowed: narrowed.clone(),
         }),
-        Arc::clone(&broker),
+        Arc::clone(&gates) as Arc<dyn ChannelGates>,
     )
     .unwrap();
     Device {
         service,
-        broker,
+        gates,
         endpoint: Endpoint::join(workspace, workspace_id, id),
     }
 }
@@ -382,13 +381,13 @@ fn units_of_one_reader_set_share_one_group_and_one_commit() {
 
     // The scope's gate is what refuses a unit's cleartext: the unit has no
     // gate of its own, and its payloads are sealed with the scope's keys.
-    let broker = owner.broker.lock().unwrap();
-    assert!(!broker.document_encryption_allowed(&workspace_id.to_string(), unit, None));
+    assert!(!owner.gates.allows_document(&workspace_id.to_string(), unit, None));
     assert!(
-        broker.document_encryption_allowed(&workspace_id.to_string(), unit, Some(&metadata)),
+        owner
+            .gates
+            .allows_document(&workspace_id.to_string(), unit, Some(&metadata)),
         "a sealed unit payload passes a gate that requires encryption"
     );
-    drop(broker);
 
     // The laptop is admitted once for the whole set: one commit, and both
     // units open under it.
@@ -2249,7 +2248,7 @@ fn opening_history_never_creates_a_channel_without_an_existing_key() {
     drop(state);
 }
 
-include!("channel_encryption_unopened_tests.rs");
+include!("unopened_tests.rs");
 
 /// A device whose secret store did not open keeps no channel state of
 /// its own. A workspace is answered that it has no secret store; asking again
@@ -2265,12 +2264,12 @@ fn without_a_store_nothing_is_due() {
     *policy.announces.lock().unwrap() = Some(Announcements::Own(Arc::new(
         std::sync::atomic::AtomicU64::new(1),
     )));
-    let broker = Arc::new(Mutex::new(BrokerChannels::default()));
+    let gates = Arc::new(Gates::default());
     let mut service = ChannelEncryption::without_store(
         Box::new(Directory {
             policy: policy.clone(),
         }),
-        Arc::clone(&broker),
+        Arc::clone(&gates) as Arc<dyn ChannelGates>,
     );
     let endpoint = Endpoint::join(&workspace, workspace_id, 0);
     let now = Instant::now();
@@ -2296,7 +2295,7 @@ fn without_a_store_nothing_is_due() {
         "no governance was sent"
     );
     // The workspace is a governed one too: still no state of its own.
-    let mut governed = ChannelEncryption::without_store(Box::new(Directory { policy }), broker);
+    let mut governed = ChannelEncryption::without_store(Box::new(Directory { policy }), gates);
     assert!(matches!(
         governed.access(workspace_id, channel, now),
         ChannelAccess::NoSecretStore
@@ -2304,8 +2303,8 @@ fn without_a_store_nothing_is_due() {
     assert!(governed.peers.is_empty());
 }
 
-include!("channel_encryption_personal_cluster_tests.rs");
+include!("personal_cluster_tests.rs");
 
-include!("channel_encryption_held_frame_tests.rs");
+include!("held_frame_tests.rs");
 
-include!("channel_encryption_catch_up_tests.rs");
+include!("catch_up_tests.rs");

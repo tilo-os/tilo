@@ -26,13 +26,10 @@ use channel_crypto::VaultKey;
 use collab_types::{ChannelId, ChannelRoute, Ed25519PublicKey};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
-use tilo_action_broker::{
-    channel_encryption::{
-        ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
-        ChannelKeyProvider, GovernancePark, GovernancePump, GovernanceTransport,
-        InboundChannelGovernance,
-    },
-    collab_core::BrokerChannels,
+use tilo_action_broker::channel_encryption::{
+    ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
+    ChannelKeyProvider, GovernancePark, GovernancePump, GovernanceTransport,
+    InboundChannelGovernance, NoGates,
 };
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::StatePeer;
@@ -78,7 +75,7 @@ impl Channels {
                 device_key: device,
             },
             Box::new(directory.clone()),
-            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::new(NoGates),
         )?;
         let link = Link::new(directory);
         let park = Arc::clone(&link.park);

@@ -82,12 +82,11 @@ pub struct BrokerChannels {
     pub states: HashMap<ArtifactId, ChannelState>,
     pub audit: AuditLog,
     pub redactions: RedactionLog,
-    /// Ingress gates of the channels this device's channel encryption
-    /// service takes part in, consulted on every local and peer document
-    /// ingress. Registered before the first op of a channel is accepted and
-    /// refreshed on every membership change; the broker holds the gate,
+    /// Ingress gates of the channels this device's channel encryption service takes part in,
+    /// consulted on every local and peer document ingress. Registered before the first op of a
+    /// channel is accepted and refreshed on every membership change; the broker holds the gate,
     /// never a key.
-    pub gates: HashMap<ChannelId, channel_crypto::ChannelGate>,
+    pub gates: tilo_channels::Gates,
     /// Durable history of content-key ciphertext, so members (including
     /// ones added later) can page back past the in-memory window.
     pub history: Option<super::collab_history::CollabHistoryStore>,
@@ -116,20 +115,7 @@ impl BrokerChannels {
 
     /// Install or refresh a channel's ingress gate.
     pub fn register_channel_gate(&mut self, channel: ChannelId, gate: channel_crypto::ChannelGate) {
-        self.gates.insert(channel, gate);
-    }
-
-    /// The gate governing `channel`, one of `workspace`'s channels: the
-    /// unit's own when it has a group of its own (a record whose readers the
-    /// policy narrows, or one whose group was made before key scopes), and
-    /// the workspace's key scope's otherwise, since a unit seals under its
-    /// scope's keys while naming its own channel.
-    fn gate_for(&self, workspace: &str, channel: ChannelId) -> Option<channel_crypto::ChannelGate> {
-        self.gates.get(&channel).copied().or_else(|| {
-            self.gates
-                .get(&collab_types::workspace_scope(workspace))
-                .copied()
-        })
+        self.gates.register(channel, gate);
     }
 
     /// A route with no gate has not been opened encrypted on this device
@@ -145,8 +131,7 @@ impl BrokerChannels {
         channel: ChannelId,
         encryption: Option<&EncryptionMetadata>,
     ) -> bool {
-        self.gate_for(workspace, channel)
-            .is_none_or(|gate| gate.accepts(encryption, channel))
+        self.gates.allows_document(workspace, channel, encryption)
     }
 
     /// Whether a host's replay of `channel`'s retained history may enter.
@@ -166,7 +151,7 @@ impl BrokerChannels {
         channel: ChannelId,
         encryption: Option<&EncryptionMetadata>,
     ) -> bool {
-        encryption.is_none() || self.document_encryption_allowed(workspace, channel, encryption)
+        self.gates.allows_history(workspace, channel, encryption)
     }
 
     /// The verdict on an op for `channel` from the gate governing it
@@ -179,7 +164,7 @@ impl BrokerChannels {
         channel: ChannelId,
         encryption: Option<&EncryptionMetadata>,
     ) -> collab_types::inbound::OpAdmission {
-        channel_crypto::admission(self.gate_for(workspace, channel), true, channel, encryption)
+        self.gates.admission(workspace, channel, encryption)
     }
 
     /// Append an op validated on `route` to durable history when it belongs
@@ -426,6 +411,18 @@ pub fn apply_redaction_from_envelope(
                 redacted_at: req.redacted_at,
             },
         );
+    }
+}
+
+/// Where a channel service registers the gates this broker refuses plaintext with.
+#[derive(Clone, Default)]
+pub struct BrokerGates(pub Arc<Mutex<BrokerChannels>>);
+
+impl tilo_channels::ChannelGates for BrokerGates {
+    fn register_channel_gate(&self, channel: ChannelId, gate: channel_crypto::ChannelGate) {
+        if let Ok(mut channels) = self.0.lock() {
+            channels.register_channel_gate(channel, gate);
+        }
     }
 }
 

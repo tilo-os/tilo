@@ -1,56 +1,23 @@
-//! End-to-end encryption of collaboration channels on this device.
+//! End-to-end encryption of collaboration channels on this device: one MLS group per channel, whose
+//! members are exactly the devices the workspace's access policy lets read the route
+//! ([`ChannelDirectory::allowed_devices`]), and every participant commits the group to that policy.
 //!
-//! Every document route is a channel with one MLS group, whose members are
-//! exactly the devices the workspace's access policy lets read the route
-//! ([`ChannelDirectory::allowed_devices`]). Every such device is a
-//! participant and runs the same [`ChannelPeer`]: any
-//! of them writes the commit that brings the group in line with the policy,
-//! and every one refuses a commit the policy does not back (see
-//! [`channel_crypto::peer`]). A device that cannot name a channel's record
-//! cannot tell who may read it: it commits nothing to that channel, and only
-//! follows the commits of participants that can.
+//! [`ChannelEncryption::pump`] runs the protocol over the workspace transport: inbound frames
+//! advance the group and access requests wait for the next commit, frames the transport did not take
+//! are published again, and two geneses made at once resolve to one without losing what was sealed
+//! under the other ([`channel_crypto::peer`]). A device that cannot name a channel's record cannot
+//! tell who may read it, so it commits nothing there and only follows participants that can.
 //!
-//! [`ChannelEncryption::access`] answers an application endpoint that wants
-//! the content keys of a route, starting to take part in its channel as
-//! needed: the device asks the participants for access, and creates the
-//! group itself when no genesis of the channel has arrived a short while
-//! later ([`found_after`]). A device that holds no state for a channel
-//! another device asks about waits the same while, to create the group if
-//! no one has; it leaves the channel alone once a genesis arrives. Two
-//! geneses made at once resolve to one, and nothing sealed under the other
-//! is lost (see [`channel_crypto::peer`]). [`ChannelEncryption::pump`] runs
-//! the protocol over the workspace transport:
-//!
-//! - inbound frames advance the group, inbound access requests are kept for
-//!   the next commit;
-//! - every participant moves its group to the access policy, so an invite,
-//!   a removal, a role change that ends access, a new certified device or a
-//!   revoked one becomes a commit from whichever participant gets there
-//!   first (of two on one epoch, every device keeps the lower digest);
-//! - frames the transport did not take are published again, and waiting
-//!   devices re-send their request with backoff. The workspace's host keeps each
-//!   channel's newest frame for whoever was away.
-//!
-//! Every change registers the channel's plaintext gate with the broker,
-//! which refuses plaintext and ciphertext bound to another channel on every
-//! ingress path. The broker itself never holds a key.
-//!
-//! Every change is also announced ([`ChannelKeyProvider::channel_changed`]):
-//! an application endpoint holding a route's keys waits on that signal and
-//! asks the identity service again only when it fires, rather than on a
-//! timer. A policy change becomes a commit within `RECONCILE_INTERVAL` (on
-//! its announcement, or at the expiry, when the directory announces changes:
-//! [`ChannelDirectory::policy_epoch`]); the commit is announced on the
-//! device that wrote it the moment it is made and on every other the moment
-//! its frame arrives, and the endpoint asks for keys at once.
+//! Every change registers the channel's gate ([`ChannelGates`]: plaintext and another channel's
+//! ciphertext are refused on every ingress path) and is announced
+//! ([`ChannelKeyProvider::channel_changed`]), so an endpoint holding a route's keys asks the identity
+//! service again only when they change.
 
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-
-pub use crate::governance_pump::{GovernancePark, GovernancePump};
 
 use channel_crypto::{Access, ChannelContentKeys, ChannelPeer, PeerEvent, VaultKey};
 use collab_types::{
@@ -60,13 +27,13 @@ use collab_types::{
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 
-use crate::collab_core::BrokerChannels;
-use crate::policy_schedule::{PolicySchedule, RECHECK_INTERVAL};
+use crate::gates::ChannelGates;
+use crate::schedule::{PolicySchedule, RECHECK_INTERVAL};
 use tilo_desktop_model::WorkspaceId;
 
 /// How often groups re-check the access policy when their directory
 /// announces no changes, the longest an announced change waits, and how soon
-/// a pass that left work due tries again ([`crate::policy_schedule`]).
+/// a pass that left work due tries again ([`crate::schedule`]).
 const RECONCILE_INTERVAL: Duration = RECHECK_INTERVAL;
 /// First and longest wait before a waiting device asks again.
 const REQUEST_FIRST: Duration = Duration::from_secs(2);
@@ -179,7 +146,7 @@ pub trait GovernanceTransport {
 }
 
 /// The access policy inputs this service needs from the workspace model.
-pub trait ChannelDirectory: Send {
+pub trait ChannelDirectory: collab_types::signer::MaybeSendSync {
     /// Every device that may read `channel`, one of `workspace`'s channels, at
     /// wall-clock `now` (seconds since the Unix epoch). A channel is one
     /// record's, so a Read Deny on that record, on its app or on any pattern
@@ -373,7 +340,7 @@ pub struct ChannelEncryption {
     /// This device's own channel state; `None` when no secret store opened.
     store: Option<ChannelEncryptionConfig>,
     directory: Box<dyn ChannelDirectory>,
-    broker: Arc<Mutex<BrokerChannels>>,
+    gates: Arc<dyn ChannelGates>,
     peers: HashMap<ChannelId, PeerEntry>,
     /// When the groups last re-checked the access policy, and what the next
     /// re-check waits for.
@@ -415,11 +382,11 @@ impl ChannelEncryption {
     pub fn open(
         config: ChannelEncryptionConfig,
         directory: Box<dyn ChannelDirectory>,
-        broker: Arc<Mutex<BrokerChannels>>,
+        gates: Arc<dyn ChannelGates>,
     ) -> std::io::Result<Self> {
         create_private_dir(&config.root)?;
         let state_root = config.root.clone();
-        let mut service = Self::with_store(Some(config), directory, broker);
+        let mut service = Self::with_store(Some(config), directory, gates);
         let now = Instant::now();
         for workspace_dir in std::fs::read_dir(&state_root)? {
             let workspace_dir = workspace_dir?.path();
@@ -455,20 +422,20 @@ impl ChannelEncryption {
     /// every workspace [`ChannelAccess::NoSecretStore`].
     pub fn without_store(
         directory: Box<dyn ChannelDirectory>,
-        broker: Arc<Mutex<BrokerChannels>>,
+        gates: Arc<dyn ChannelGates>,
     ) -> Self {
-        Self::with_store(None, directory, broker)
+        Self::with_store(None, directory, gates)
     }
 
     fn with_store(
         store: Option<ChannelEncryptionConfig>,
         directory: Box<dyn ChannelDirectory>,
-        broker: Arc<Mutex<BrokerChannels>>,
+        gates: Arc<dyn ChannelGates>,
     ) -> Self {
         Self {
             store,
             directory,
-            broker,
+            gates,
             peers: HashMap::new(),
             reconcile: PolicySchedule::default(),
             delivery: 0,
@@ -871,7 +838,7 @@ impl ChannelEncryption {
     /// carry `unit` of `workspace`, `Some(Err(_))` when it does and holds none
     /// of its keys yet. `scope` is the scope its route named, when the caller
     /// has one.
-    fn record_keys(
+    pub(crate) fn record_keys(
         &self,
         workspace: WorkspaceId,
         unit: ChannelId,
@@ -1544,10 +1511,8 @@ impl ChannelEncryption {
         if !gate.encryption_required || self.registered.get(&channel) == Some(&gate) {
             return;
         }
-        if let Ok(mut broker) = self.broker.lock() {
-            broker.register_channel_gate(channel, gate);
-            self.registered.insert(channel, gate);
-        }
+        self.gates.register_channel_gate(channel, gate);
+        self.registered.insert(channel, gate);
     }
 
     /// Record that `channel`'s keys or access changed, and announce it.
@@ -1613,7 +1578,7 @@ impl ChannelKeyAccess {
     }
 
     /// Run `operation` on the service; `None` when the lock is poisoned.
-    fn run<T>(&self, operation: impl FnOnce(&mut ChannelEncryption) -> T) -> Option<T> {
+    pub(crate) fn run<T>(&self, operation: impl FnOnce(&mut ChannelEncryption) -> T) -> Option<T> {
         let mut service = self.inner.lock().ok()?;
         Some(operation(&mut service))
     }
@@ -1856,8 +1821,19 @@ impl ChannelKeyProvider {
     /// The slot of this session: its compositor starts one collaboration
     /// broker and one identity service, which meet here.
     pub fn session() -> Self {
-        static SESSION: std::sync::OnceLock<ChannelKeyProvider> = std::sync::OnceLock::new();
-        SESSION.get_or_init(Self::default).clone()
+        #[cfg(not(target_family = "wasm"))]
+        {
+            static SESSION: std::sync::OnceLock<ChannelKeyProvider> = std::sync::OnceLock::new();
+            SESSION.get_or_init(Self::default).clone()
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            // A page's one thread: the slot is the page's own, not a shared static.
+            thread_local! {
+                static SESSION: ChannelKeyProvider = ChannelKeyProvider::default();
+            }
+            SESSION.with(Clone::clone)
+        }
     }
 
     /// Point the slot at a broker's service (or at none).
@@ -1937,10 +1913,16 @@ impl ChannelKeyProvider {
             let access = self.get()?;
             // Asked off the caller's task: the service takes its lock and
             // reads its state on that thread, never on the host's.
-            let route = route.clone();
-            return tokio::task::spawn_blocking(move || access.record_keys(workspace, &route))
-                .await
-                .unwrap_or_else(|error| Some(Err(error.to_string())));
+            #[cfg(not(target_family = "wasm"))]
+            {
+                let route = route.clone();
+                return tokio::task::spawn_blocking(move || access.record_keys(workspace, &route))
+                    .await
+                    .unwrap_or_else(|error| Some(Err(error.to_string())));
+            }
+            // A page has one thread: the read runs on it.
+            #[cfg(target_family = "wasm")]
+            return access.record_keys(workspace, route);
         }
         self.open_record(workspace, route, wait).await
     }
@@ -1993,13 +1975,13 @@ impl ChannelKeyProvider {
 
 /// The identity service's route keys, from this host's channel service once
 /// one runs.
-impl tilo_identity_host::broker::ChannelKeySource for ChannelKeyProvider {
+impl tilo_identity_host::sources::ChannelKeySource for ChannelKeyProvider {
     fn access(
         &self,
         workspace: WorkspaceId,
         route: &ChannelRoute,
         known_generation: u64,
-    ) -> Option<Result<tilo_identity_host::broker::ChannelKeys, String>> {
+    ) -> Option<Result<tilo_identity_host::sources::ChannelKeys, String>> {
         use runtime_identity::wire::ChannelAccess as Wire;
         let channels = self.get()?;
         let (access, generation) = channels.access_record(workspace, route);
@@ -2110,20 +2092,7 @@ fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Fixtures other hosts' channel tests share: an in-memory workspace transport
-/// and a fixed access policy.
-#[cfg(any(test, feature = "test-support"))]
-#[allow(
-    clippy::wildcard_imports,
-    clippy::missing_panics_doc,
-    clippy::unwrap_used,
-    reason = "test fixtures: a poisoned lock is the test failing"
-)]
-pub mod testing;
-
-mod history;
-
 #[cfg(test)]
 mod tests {
-    include!("channel_encryption_tests.rs");
+    include!("encryption_tests.rs");
 }

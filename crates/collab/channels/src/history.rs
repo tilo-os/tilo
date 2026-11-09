@@ -1,9 +1,10 @@
 //! Maintaining a sealed record's history: opening any of its writes, and
 //! sealing the checkpoint that replaces the ones it covers.
-use super::{
-    ChannelAccess, ChannelContentKeys, ChannelKeyAccess, ChannelRoute, EncryptionMetadata,
-    SignedOp, WorkspaceId,
-};
+use channel_crypto::ChannelContentKeys;
+use collab_types::{ChannelRoute, EncryptionMetadata, SignedOp};
+use tilo_desktop_model::WorkspaceId;
+
+use crate::encryption::{ChannelAccess, ChannelKeyAccess};
 
 /// The keys that open a sealed record's history as a reader took them from
 /// the service once ([`ChannelKeyAccess::history_keys`]): every group it held

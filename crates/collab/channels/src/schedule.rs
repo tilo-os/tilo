@@ -83,7 +83,7 @@ pub const fn wall_instant(policy_at_ns: u64, policy_now_ns: u64, wall_now_ns: u6
 /// Have the process's policy clock announce a change when the wall clock
 /// reaches `unix_ns` ([`tilo_identity_host::policy_change::wake_at`]).
 pub fn announce_at(unix_ns: u64) {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     ANNOUNCE_AT
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -94,11 +94,11 @@ pub fn announce_at(unix_ns: u64) {
 /// Every instant [`announce_at`] was asked for in this process, in order:
 /// a test that holds the wall clock sees what the broker registered, and
 /// announces it itself when it moves the clock there.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static ANNOUNCE_AT: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
 
 /// See [`ANNOUNCE_AT`].
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn announced_at() -> Vec<u64> {
     ANNOUNCE_AT
         .lock()

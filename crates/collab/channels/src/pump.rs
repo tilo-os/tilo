@@ -9,14 +9,17 @@
 //! pass named for work no message brings (a request's backoff, a channel's
 //! founding, a policy expiry).
 
-use std::io;
-use std::sync::{
-    Arc, Condvar, Mutex,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use crate::channel_encryption::{ChannelKeyAccess, GovernanceTransport};
+#[cfg(not(target_family = "wasm"))]
+use std::io;
+use std::sync::atomic::AtomicBool;
+#[cfg(not(target_family = "wasm"))]
+use std::sync::atomic::Ordering;
+
+#[cfg(not(target_family = "wasm"))]
+use crate::encryption::{ChannelKeyAccess, GovernanceTransport};
 
 /// Parks a governance pump between passes: it waits until poked, or for the
 /// deadline the last pass named.
@@ -29,6 +32,10 @@ pub struct GovernancePark {
     ready: Condvar,
 }
 
+#[cfg_attr(
+    target_family = "wasm",
+    allow(dead_code, reason = "a page waits on its own loop, never on a thread")
+)]
 impl GovernancePark {
     #[must_use]
     pub fn new() -> Arc<Self> {
@@ -73,6 +80,10 @@ impl GovernancePark {
 
 /// A device's channel service, settling on a thread of its own; stops when
 /// dropped.
+#[cfg_attr(
+    target_family = "wasm",
+    allow(dead_code, reason = "a page drives the pump from its own loop")
+)]
 pub struct GovernancePump {
     park: Arc<GovernancePark>,
     stop: Arc<AtomicBool>,
@@ -80,11 +91,16 @@ pub struct GovernancePump {
 
 impl Drop for GovernancePump {
     fn drop(&mut self) {
+        #[cfg(not(target_family = "wasm"))]
         self.stop.store(true, Ordering::Relaxed);
         self.park.poke();
     }
 }
 
+#[cfg_attr(
+    target_family = "wasm",
+    allow(dead_code, reason = "a page drives the pump from its own loop")
+)]
 impl GovernancePump {
     /// Run `access`'s governance over `transport` on a thread named `name`,
     /// and `after_pass` after every pass: the host's own work that settles beside
@@ -96,6 +112,10 @@ impl GovernancePump {
     /// ([`ChannelKeyAccess::pump_until_due`]) is due, whichever comes first;
     /// with nothing due it waits for a poke alone. `access`'s
     /// [`ChannelKeyAccess::with_wake`] should be `park`'s own poke.
+    ///
+    /// A host with threads runs this; a host with one thread drives
+    /// [`ChannelKeyAccess::pump`] from its own loop and never spawns.
+    #[cfg(not(target_family = "wasm"))]
     pub fn spawn(
         name: &str,
         park: Arc<GovernancePark>,
@@ -134,18 +154,15 @@ impl GovernancePump {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channel_encryption::testing::{
-        Announcements, Directory, Endpoint, Policy, Workspace, key,
-    };
-    use crate::channel_encryption::{
+    use crate::encryption::{
         ChannelAccess, ChannelEncryption, ChannelEncryptionConfig, InboundChannelGovernance,
     };
-    use crate::collab_core::BrokerChannels;
+    use crate::gates::Gates;
+    use crate::testing::{Announcements, Directory, Endpoint, Policy, Workspace, key};
     use channel_crypto::VaultKey;
     use collab_types::ChannelId;
     use neighbour_wire::NeighbourMsg;
     use std::path::Path;
-    use std::sync::Mutex;
     use std::sync::atomic::AtomicUsize;
     use std::time::Instant;
     use tilo_desktop_model::WorkspaceId;
@@ -187,7 +204,7 @@ mod tests {
             Box::new(Directory {
                 policy: Policy::default(),
             }),
-            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::new(Gates::default()),
         )
         .unwrap();
         let park = GovernancePark::new();
@@ -304,7 +321,7 @@ mod tests {
                 Box::new(Directory {
                     policy: policy.clone(),
                 }),
-                Arc::new(Mutex::new(BrokerChannels::default())),
+                Arc::new(Gates::default()),
             )
             .unwrap();
             (service, Endpoint::join(&workspace, workspace_id, id))
