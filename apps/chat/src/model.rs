@@ -242,6 +242,9 @@ pub struct Message {
     pub history: Vec<EditRecord>,
     /// `Some(parent_id)` when this message is a threaded reply.
     pub parent: Option<Id>,
+    /// The run of the answered message it quotes, when it answers a span rather than the whole
+    /// message: the words as they read, and where they stand in the answered message.
+    pub quoted: Option<crate::record::Quote>,
     pub reactions: Vec<Reaction>,
     /// Who this message refers to, resolved at authoring time. Structure, not
     /// prose: a consumer asks the message who it mentions instead of scanning
@@ -754,6 +757,7 @@ mod tests {
             edited: false,
             history: vec![],
             parent: parent.map(std::string::ToString::to_string),
+            quoted: None,
             reactions: vec![],
             mentions: vec![],
             attachments: Vec::new(),

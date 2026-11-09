@@ -849,6 +849,7 @@ pub fn post(channel: &str, text: &str, parent: Option<&str>) -> Invoke<ChatPart>
             channel: Id::from_raw(channel),
             text: text.into(),
             parent: parent.map(Id::from_raw),
+            quoted: None,
             body: None,
             attachments: Vec::new(),
             mentions: None,

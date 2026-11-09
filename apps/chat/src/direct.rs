@@ -128,6 +128,7 @@ impl ChatApp {
                     channel: id.clone(),
                     text: text.to_owned(),
                     parent: None,
+                    quoted: None,
                     body: None,
                     attachments,
                     mentions: None,

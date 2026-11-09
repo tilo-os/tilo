@@ -880,6 +880,10 @@
         {
           "name": "dismiss",
           "doc": "The close button was pressed. Without it there is no close button."
+        },
+        {
+          "name": "activate",
+          "doc": "The quote was pressed: show the message it quotes, or the run of it it names, where that message stands. Without it the quote is read, not pressed."
         }
       ],
       "semantics": {
@@ -2034,6 +2038,11 @@
         {
           "name": "inline",
           "doc": "Sit within the content, as a list without rows, rather than fill the window.",
+          "type": "bool"
+        },
+        {
+          "name": "error",
+          "doc": "Something failed: the glyph takes the danger colour, and the message reads as an error (a view that could not be shown and why, `shell.md` §6).",
           "type": "bool"
         }
       ],
@@ -4881,6 +4890,18 @@
       "doc": "A field to type text into, bound to the text it edits. Each edit is spliced into that text, never written over it, so people typing in the same text at once all keep what they typed.",
       "props": [
         {
+          "name": "text",
+          "doc": "Text it shows when it binds nothing: read and copied, never edited (a message body, a log). A field given one is read-only; what it reports of its selection is still [`Self::select`].",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "read_only",
+          "doc": "Whether it is read and copied but never edited, even when it binds a field: a value shown for reading.",
+          "type": "bool"
+        },
+        {
           "name": "placeholder",
           "doc": "What to type, shown while it is empty.",
           "type": {
@@ -4941,6 +4962,11 @@
         {
           "name": "submit",
           "doc": "Enter was pressed: what was typed is done (a list's entry), carried with it. With it, Enter ends the text rather than breaking its line; Shift+Enter still breaks a wrapping field's line.",
+          "value": "text"
+        },
+        {
+          "name": "select",
+          "doc": "The selection settled (a drag let go, a double click, a select all, shift and an arrow key): carries the run selected as `<start>:<end>`, byte offsets into the text, or nothing when the selection collapsed. A read-only field reports it so what reads it — a message answered on just the words someone chose — can act on the run; a field being typed in keeps its selection private.",
           "value": "text"
         }
       ],

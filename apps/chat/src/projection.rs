@@ -353,6 +353,7 @@ pub fn message_row(id: &Id, message: &crate::record::Message) -> Message {
             })
             .collect(),
         parent: message.parent.as_ref().map(ToString::to_string),
+        quoted: message.quoted.clone(),
         reactions,
         mentions: message.mentions.clone(),
         attachments: message.attachments.clone(),

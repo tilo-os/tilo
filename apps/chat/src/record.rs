@@ -723,6 +723,10 @@ pub struct Message {
     /// The message it answers in a thread.
     #[model(readonly)]
     pub parent: Option<Id>,
+    /// The run of the answered message it quotes, when it answers a span rather than the whole
+    /// message: what the quote over it shows, and where pressing the quote reveals it.
+    #[model(readonly)]
+    pub quoted: Option<Quote>,
     /// Who reacted with which emoji: the framework's reactions, each the
     /// invoker's own, so this read-only message still takes them.
     #[model(readonly)]
@@ -873,6 +877,7 @@ impl Default for Message {
             edited: false,
             history: Vec::new(),
             parent: None,
+            quoted: None,
             reactions: ui::tilo_resource::Reactions::new(),
             mentions: Vec::new(),
             attachments: Vec::new(),
@@ -915,6 +920,41 @@ pub struct Person {
 impl Identified for Person {
     fn id(&self) -> Id {
         Id::from_raw(self.id.0.clone())
+    }
+}
+
+/// The run of a message a reply quotes, as the reply carries it: the words as they read when
+/// the reply was written, and where in the answered message they stand so the quote opens the
+/// very words it names ([`crate::effects::ChatEffect::RevealMessageRange`]).
+///
+/// A reply that answers a whole message carries none: its `parent` is the message it answers,
+/// and the quote over it shows the start of what that message says. A reply to a *span* of a
+/// message carries one, and the quote shows the span instead.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Quote {
+    /// The words as they read when the reply was written: what the quote shows, however the
+    /// answered message changes after.
+    #[model(label)]
+    pub text: String,
+    /// Where they stand in the answered message's text, in UTF-8 bytes of
+    /// [`Message::text`]: what pressing the quote reveals. A body edited after the quote was
+    /// taken may move the words; the span is kept as written, and the quote itself always
+    /// reads from `text`.
+    pub start: u64,
+    /// Where the run ends, in UTF-8 bytes, exclusive.
+    pub end: u64,
+}
+
+impl Quote {
+    /// Whether the span a reply quotes is one this record may keep: its words are some and
+    /// bounded, and its span is ordered and inside a message of at most
+    /// [`MAX_MESSAGE_TEXT_BYTES`].
+    #[must_use]
+    pub fn valid(&self) -> bool {
+        !self.text.trim().is_empty()
+            && self.text.len() <= MAX_MESSAGE_TEXT_BYTES
+            && self.start < self.end
+            && usize::try_from(self.end).is_ok_and(|end| end <= MAX_MESSAGE_TEXT_BYTES)
     }
 }
 
@@ -1252,6 +1292,8 @@ pub(crate) struct Posting {
     pub text: String,
     pub body: Vec<ClipBlock>,
     pub parent: Option<Id>,
+    /// The run of the message it answers that it quotes, when it answers a span.
+    pub quoted: Option<Quote>,
     /// What it carries besides its words.
     pub attachments: Vec<tilo_reference::Attached>,
     pub appearance: Option<tilo_actions::Appearance>,

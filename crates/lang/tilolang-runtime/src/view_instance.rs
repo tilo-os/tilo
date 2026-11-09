@@ -529,12 +529,13 @@ impl ViewInstance {
     /// The view state slot `key` as it is now; with `unbox`, a scalar's value plain.
     fn state_now(&self, key: &StateKey, unbox: bool) -> Result<Value, RuntimeError> {
         let stored = self.core.view_states.borrow().get(key).cloned();
-        let Some(value) = stored.or_else(|| self.live.state_seen(key)) else {
-            return Err(RuntimeError::NotFound(format!(
-                "the view state `{}`",
-                key.state
-            )));
-        };
+        let value = stored.or_else(|| self.live.state_seen(key));
+        // A slot the person never set is nothing, not a failure: an action reading it as an
+        // argument (a composer's reply target before anything is answered, the run selected
+        // before anything is) runs with nothing there, and the view's own default stands. A
+        // missing slot used to fail the action, which made every action that names an optional
+        // slot fail until a person filled it.
+        let value = value.unwrap_or(Value::none());
         Ok(match value {
             Value::Opt(Some(held)) if unbox => *held,
             other => other,

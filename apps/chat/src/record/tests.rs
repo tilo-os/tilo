@@ -151,6 +151,7 @@ fn reply(parent: &Id, text: &str) -> Invoke<ChatPart> {
             channel: id("c_chat"),
             text: text.into(),
             parent: Some(parent.clone()),
+            quoted: None,
             body: None,
             attachments: Vec::new(),
             mentions: None,
@@ -305,6 +306,7 @@ fn a_post_that_says_nothing_or_is_misplaced_is_refused() {
                 channel: id("c_chat"),
                 text: "look".into(),
                 parent: None,
+                quoted: None,
                 body: None,
                 attachments: vec![tilo_reference::Attached::Image {
                     name: "shot.png".into(),
@@ -333,6 +335,7 @@ fn post_fields(channel: &str, text: &str) -> NewMessage {
         channel: id(channel),
         text: text.into(),
         parent: None,
+        quoted: None,
         body: None,
         attachments: Vec::new(),
         mentions: None,
@@ -371,6 +374,7 @@ fn an_attachment_is_posted_by_its_content_address() {
             channel: id("c_chat"),
             text: String::new(),
             parent: None,
+            quoted: None,
             body: None,
             attachments: vec![tilo_reference::Attached::File {
                 name: "notes.md".into(),
@@ -1920,4 +1924,93 @@ fn a_retry_moves_the_question_to_its_next_attempt_and_a_stale_press_asks_nothing
         1,
         "a stale Retry asks nothing twice"
     );
+}
+
+#[test]
+fn a_reply_that_quotes_a_span_stores_the_span_and_its_words() {
+    // A reply answering a run of a message carries the run as it read when it was written, and
+    // where it stands in the answered message, so the quote draws those words and pressing it
+    // opens on them.
+    let mut ada = Talk::new();
+    let answered = "The curve is flat from April to June, then climbs.";
+    ada.apply(post(answered)).unwrap();
+    let parent = ada.said(answered);
+    let chosen = "flat from April to June";
+    let start = answered.find(chosen).expect("the words are in the message");
+    let end = start + chosen.len();
+    let quote = crate::record::Quote {
+        text: chosen.to_owned(),
+        start: u64::try_from(start).expect("an offset"),
+        end: u64::try_from(end).expect("an offset"),
+    };
+    ada.apply(ChatPart::POST.with(chat_part::Post {
+        message: NewMessage {
+            channel: id("c_chat"),
+            text: "so the summer is the flat one".into(),
+            parent: Some(parent.clone()),
+            quoted: Some(quote.clone()),
+            body: None,
+            attachments: Vec::new(),
+            mentions: None,
+            written: None,
+        },
+    }))
+    .unwrap();
+    let reply = ada
+        .part
+        .state()
+        .unwrap()
+        .messages
+        .iter()
+        .find(|(_, message)| message.parent.as_ref() == Some(&parent))
+        .map(|(_, message)| message.clone())
+        .expect("the reply is stored");
+    assert_eq!(
+        reply.quoted,
+        Some(quote),
+        "the reply keeps the run it quotes, never the whole message"
+    );
+    // And the projection the window and a place read carries it, so the quote draws the span.
+    let rows = ada.rows("c_chat");
+    let parent_text = parent.to_string();
+    let said = rows
+        .iter()
+        .find(|row| row.parent.as_ref() == Some(&parent_text))
+        .expect("the reply's row");
+    assert_eq!(
+        said.quoted.as_ref().map(|quoted| quoted.text.as_str()),
+        Some(chosen)
+    );
+}
+
+#[test]
+fn a_quote_outside_its_answered_message_is_refused() {
+    // A quoted span names a run of the message it answers: one past the end, backwards, or of a
+    // message that is not the one answered is refused, so a quote never opens on nothing.
+    let mut ada = Talk::new();
+    ada.apply(post("A short note")).unwrap();
+    let parent = ada.said("A short note");
+    let quote = |start: u64, end: u64| crate::record::Quote {
+        text: "short".to_owned(),
+        start,
+        end,
+    };
+    for (start, end) in [(0, 500), (5, 2), (3, 3)] {
+        assert!(
+            ada.apply(ChatPart::POST.with(chat_part::Post {
+                message: NewMessage {
+                    channel: id("c_chat"),
+                    text: "an answer".into(),
+                    parent: Some(parent.clone()),
+                    quoted: Some(quote(start, end)),
+                    body: None,
+                    attachments: Vec::new(),
+                    mentions: None,
+                    written: None,
+                },
+            }))
+            .is_err(),
+            "a run {start}..{end} is no span of the answered message"
+        );
+    }
 }
