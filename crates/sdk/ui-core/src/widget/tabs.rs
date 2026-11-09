@@ -41,6 +41,8 @@ mod press;
 mod tips;
 #[path = "tabs_title_menu.rs"]
 mod title_menu;
+#[path = "tabs_toolbar_row.rs"]
+mod toolbar_row;
 use crate::tokens::{EffectiveMotion, MotionSource};
 use pill_layout::{chip_rects, fit_pill_widths};
 
@@ -432,6 +434,10 @@ pub struct TabBar {
     new_tab_words: Option<(f32, f64)>,
     /// The strip shows the new-tab control with its words, the bar having room for them.
     new_tab_labelled: bool,
+    /// The room the window's search keeps for its open query at the least (`None`: the app does
+    /// not search in place, so the bar's slots need no room for it): a narrow window's bar leaves
+    /// the app's slots at least that much to reach back over.
+    search_least: Option<f64>,
     /// Per-tab content marks, keyed by tab id (a sidecar like the others).
     marks: HashMap<u64, TabMark>,
     /// When each busy tab became busy: its arc turns for [`BUSY_TURNING`].
@@ -629,6 +635,7 @@ impl TabBar {
             new_tab: true,
             new_tab_words: None,
             new_tab_labelled: false,
+            search_least: None,
             marks: HashMap::new(),
             busy_since: HashMap::new(),
             busy_drawn: None,
@@ -711,6 +718,15 @@ impl TabBar {
     pub fn set_search_control(&mut self, width: Option<f64>) {
         self.touch();
         self.search_control = width;
+    }
+
+    /// The window's search keeps `least` of room for its open query, reaching back over the
+    /// active tab's slots ([`crate::widget::WindowSearch::least_span`]); `None` where the app does
+    /// not search in place, and the slots owe it nothing. A narrow bar that cannot leave the slots
+    /// both their own room and this much gives up the strip's "+" rather than the query.
+    pub fn set_search_least(&mut self, least: Option<f64>) {
+        self.touch();
+        self.search_least = least;
     }
 
     /// Where the window's search control stands when the active tab put its slots in the bar, and
@@ -1030,71 +1046,6 @@ impl TabBar {
             row.y1.max(pill.y1),
         );
         self.interaction.minimum_target_rect(band)
-    }
-
-    /// Where the active tab's slots stand: in the title's row for one tab, past the strip's own
-    /// leading controls (so the title never paints under the "+"), across a row of their own under
-    /// several, and between the two on the tabs' motion.
-    fn toolbar_row_rect(&self) -> Rect {
-        let tab_row = self.tab_row();
-        if let Some(menu) = self.menu_button_row(tab_row) {
-            return menu;
-        }
-        let solo = {
-            // Past the strip's own leading controls, not merely past the window's icon: a window of
-            // one tab shows its title here, and the "+" stands between the icon and that title —
-            // starting the row under it painted the title over the control's words (and the words
-            // over the title).
-            let x0 = self.tabs_end() + TOOLBAR_LEAD_GAP;
-            let x1 = (self.trailing_limit(tab_row) - self.search_control.unwrap_or(0.0)).max(x0);
-            Rect::new(x0, tab_row.y0, x1, tab_row.y1)
-        };
-        // The back button's glyph sits under the tabs' leading glyph.
-        let lead = self.pill_row().x0 + PILL_PAD_X + ICON_W / 2.0
-            - super::window_controls::CONTROL_PX / 2.0;
-        let below = Rect::new(
-            lead,
-            tab_row.y1,
-            (self.rect.x1
-                - super::window_controls::EDGE_INSET
-                - self.search_control.unwrap_or(0.0))
-            .max(lead),
-            tab_row.y1 + TOOLBAR_ROW_HEIGHT,
-        );
-        let p = self.tabbed_progress();
-        if p <= 0.0 {
-            solo
-        } else if p >= 1.0 {
-            below
-        } else {
-            Rect::new(
-                solo.x0 + (below.x0 - solo.x0) * p,
-                solo.y0 + (below.y0 - solo.y0) * p,
-                solo.x1 + (below.x1 - solo.x1) * p,
-                solo.y1 + (below.y1 - solo.y1) * p,
-            )
-        }
-    }
-
-    /// Show the active tab's slots and lay them out where they stand now,
-    /// a compact window's notice strip under the bar's rows.
-    fn lay_out_toolbar_row(&mut self) {
-        self.touch();
-        self.show_toolbar_row();
-        let rect = self.toolbar_row_rect();
-        self.toolbar_row.lay_out(rect);
-        let strip = self.toolbar_row.strip_height();
-        let top = self.rect.y0 + self.rows_height();
-        self.toolbar_row.place_strip(if strip > 0.0 {
-            Rect::new(
-                self.rect.x0 + super::window_controls::EDGE_INSET,
-                top,
-                (self.rect.x1 - super::window_controls::EDGE_INSET).max(self.rect.x0),
-                top + strip,
-            )
-        } else {
-            Rect::ZERO
-        });
     }
 
     /// Hand the active tab's slots to the row.

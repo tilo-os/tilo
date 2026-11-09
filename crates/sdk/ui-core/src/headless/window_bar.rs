@@ -485,6 +485,12 @@ impl FrameHarness {
         let mut bar = TabBar::new("headless-window", vec![tab], TAB);
         bar.set_window_controls(true);
         bar.set_search_control(Some(SEARCH_CONTROL_ROOM));
+        // The room the window's search keeps: the app says whether it searches in place at all,
+        // as its offer does when the desktop opens the search.
+        bar.set_search_least(
+            (self.window_search.in_place() != crate::widget::InPlace::Nothing)
+                .then(|| crate::widget::WindowSearch::least_span(&self.theme)),
+        );
         bar.set_toolbar(TAB, crate::window_toolbar::shown());
         bar.set_history_control(TAB, self.window_history_control());
         bar.set_group_focused(true);

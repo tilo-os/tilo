@@ -805,6 +805,30 @@ impl Slots {
             .all(|rect| rect.x0 >= lead)
     }
 
+    /// Whether the slots could not keep the room they need across `row`: a button standing on
+    /// another's place, a location `toolbar` declared with nowhere to stand, or a location with
+    /// shorter forms cut short in the one it shows. Where the bar itself took that room (its
+    /// strip's "+" ahead of the row), it asks before it keeps it.
+    pub(super) fn crowded(
+        &self,
+        toolbar: Option<&WindowToolbar>,
+        row: Rect,
+        forms: Option<&LocationForms>,
+    ) -> bool {
+        let declared = toolbar.is_some_and(|toolbar| toolbar.location.is_some());
+        if declared && self.location.area() <= 0.0 {
+            return true;
+        }
+        // A location with shorter forms names itself in one that stands whole: where the room it
+        // got cuts even that one short, the row is short of room.
+        let cut = declared
+            && forms.is_some_and(|forms| {
+                forms.text.len() > 1
+                    && self.location.width() < forms.width(self.form) + forms.chrome
+            });
+        cut || !self.fits(row)
+    }
+
     /// Whether the location is the views' picker.
     pub(crate) fn views_in_location(&self) -> bool {
         self.views_menu.area() > 0.0 && self.views_menu == self.location

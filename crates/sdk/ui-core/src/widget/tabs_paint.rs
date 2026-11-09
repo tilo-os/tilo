@@ -314,6 +314,15 @@ impl TabBar {
         let ((), parts) = crate::scene_parts::record(&mut own, |own| {
             self.draw_fresh(own, transform, tr, theme, presence);
         });
+        // What this drawing shows, before the slots take their places again: a bar that re-places
+        // them under it keeps the drawing for no replay.
+        let drawn = self.paint_epoch;
+        // Drawing measures the slots' labels: where that leaves the slots short of the room they
+        // need, they take their places again and the strip's "+" gives its up, so the bar settles
+        // instead of painting its next frame over a row it has since moved.
+        if self.toolbar_row.take_measured() && self.strip_squeezes_slots() {
+            self.lay_out_toolbar_row();
+        }
         crate::scene_parts::append(scene, &own, parts.as_ref(), None);
         #[cfg(test)]
         {
@@ -323,7 +332,7 @@ impl TabBar {
         // pose of a busy arc it shows.
         let seen = self.people_seen(presence);
         self.painted = self.at_rest().then(|| PaintedBar {
-            epoch: self.paint_epoch,
+            epoch: drawn,
             transform,
             theme: theme.clone(),
             seen,

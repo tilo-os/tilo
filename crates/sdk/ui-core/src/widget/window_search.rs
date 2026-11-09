@@ -679,6 +679,16 @@ impl WindowSearch {
         field_min(theme)
     }
 
+    /// The least room an open search keeps: its query at the narrowest and the parts that never
+    /// give way — the control that closes it and the options a document's search holds, which
+    /// keep the mode and Replace. A window's bar keeps its search this much room to reach back
+    /// over the app's slots, so a narrow window's query stays typeable.
+    #[must_use]
+    pub fn least_span(theme: &Theme) -> f64 {
+        let sibling = f64::from(theme.tokens.spacing.s2);
+        field_min(theme) + 2.0 * (CONTROL_PX + sibling)
+    }
+
     /// Whether the replacement field holds the keyboard.
     #[must_use]
     pub fn replacing(&self) -> bool {

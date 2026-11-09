@@ -3308,11 +3308,23 @@ impl Widget for WindowGroup {
         // One bar per window: the app's own header row holds it where it cannot stand as the
         // bar's slots, and the window draws none above it then.
         self.held_bar = self.offer_bar_to_app();
+        // The room the window's search keeps for its open query, as the app's offer says: a
+        // narrow bar leaves the active tab's slots that much to reach back over.
+        let active_id = self.bar.active_id();
+        let in_place = match self.window_offer(active_id) {
+            Some(offer) => offer.search.into(),
+            None => self
+                .active_host_mut()
+                .map_or(crate::widget::InPlace::Nothing, TileHost::in_place_search),
+        };
+        self.bar.set_search_least(
+            (in_place != crate::widget::InPlace::Nothing)
+                .then(|| super::WindowSearch::least_span(theme)),
+        );
         let bar_node = self
             .navigation_bar_visible()
             .then(|| self.bar.build_layout(taffy, theme, node_map));
         self.lay_bar_over_content(taffy, bar_node);
-        let active_id = self.bar.active_id();
         self.offer_history_controls();
         for (id, host) in &mut self.hosts {
             if *id != active_id {

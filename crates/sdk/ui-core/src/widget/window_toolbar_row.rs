@@ -152,6 +152,8 @@ pub(crate) struct ToolbarRow {
     slot_changes: slot_change::SlotChanges,
     row: Rect,
     slots: Slots,
+    /// Painting measured the row's labels since the last layout took them in.
+    measured: bool,
     hover: Option<Slot>,
     pressed: Option<Slot>,
     /// The location field, while the location is edited.
@@ -221,6 +223,7 @@ impl ToolbarRow {
             slot_changes: slot_change::SlotChanges::default(),
             row: Rect::ZERO,
             slots: Slots::default(),
+            measured: false,
             hover: None,
             pressed: None,
             field: None,
@@ -607,6 +610,23 @@ impl ToolbarRow {
 
     pub(crate) fn toolbar(&self) -> Option<&WindowToolbar> {
         self.shown.as_ref().map(|(_, toolbar)| toolbar)
+    }
+
+    /// Whether the last layout was short of the room the slots need: a button
+    /// sharing another's place, the app's location with nowhere to stand, or
+    /// that location cut short in the shorter form it names itself in. A bar
+    /// that can give the row more room asks before it keeps it.
+    pub(crate) fn crowded(&self) -> bool {
+        let (app_row, _, _) = self.place_reactions(self.row);
+        let forms = self.views_size.as_ref().map(|measured| &measured.forms);
+        self.slots.crowded(self.toolbar(), app_row, forms)
+    }
+
+    /// Whether painting measured the row's labels anew, and what it needs to know how wide they
+    /// are: a bar asks after a draw (so its row, and the strip ahead of it, take their places
+    /// knowing the widths), and asking settles it.
+    pub(crate) fn take_measured(&mut self) -> bool {
+        std::mem::take(&mut self.measured)
     }
 
     /// Lay the slots out across `row`.
