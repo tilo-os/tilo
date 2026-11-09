@@ -22,7 +22,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::join::task_delegation::{MAX_TASK_DELEGATION_NS, TaskDelegation};
 
 /// The address every door connection's run is named under: no record holds it.
-pub(crate) const DOOR_RUNS: &str = "so.tilo.session/agent-door";
+pub(crate) const DOOR_RUNS: &str = tilo_action_broker::services::DOOR_RUN_PREFIX;
 
 /// The door's runs going now, each with its workspace.
 #[derive(Default)]
@@ -114,7 +114,7 @@ pub(crate) fn mint(
     if starter != admitted.person {
         return Err("this device's identity is not the person's who admitted the agent".into());
     }
-    let issue = format!("{DOOR_RUNS}/{}", uuid::Uuid::new_v4().simple());
+    let issue = format!("{DOOR_RUNS}{}", uuid::Uuid::new_v4().simple());
     let delegation = TaskDelegation::sign(
         device,
         certificate.user_public_key,
@@ -215,6 +215,11 @@ mod tests {
         assert_ne!(first.run.issue, second.run.issue, "a run of its own");
         assert_ne!(first.run.agent, second.run.agent, "a task agent of its own");
         assert!(first.run.agent.starts_with("task-"), "{}", first.run.agent);
+        assert!(
+            tilo_action_broker::services::is_door_run(&first.run.issue),
+            "the broker keeps its invocations as the run's: {}",
+            first.run.issue
+        );
         assert!(
             first.run.issue.starts_with(DOOR_RUNS),
             "{}",

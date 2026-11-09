@@ -1814,7 +1814,7 @@ mod tests {
             }],
         };
         let door = TrackerRun {
-            issue: format!("{}/a1", crate::door_runs::DOOR_RUNS),
+            issue: format!("{}a1", crate::door_runs::DOOR_RUNS),
             agent: "task-0123456789ab".into(),
             turn: None,
             delegation: Some(Ok(vec![1, 2, 3])),

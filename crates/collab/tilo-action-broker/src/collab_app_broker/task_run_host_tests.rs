@@ -16,7 +16,7 @@ use tilo_peer_state::join::task_delegation::TaskDelegation;
 
 const HOUR_NS: u64 = 3600 * 1_000_000_000;
 /// The issue the door's connection works in.
-const DOOR_ISSUE: &str = "tasks.tracker/issues/door-session";
+const DOOR_ISSUE: &str = "so.tilo.session/agent-door/door-session";
 /// The host steps' provider in this fixture.
 const DESKTOP_PROVIDER: &str = "test-desktop";
 

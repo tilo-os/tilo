@@ -907,6 +907,21 @@ fn a_run_inside_a_turn_acts_as_the_person_whose_message_caused_it() {
 /// owner beside a tracker issue, so an agent's own invocations on the turn are
 /// admitted.
 #[test]
+fn an_agent_door_connections_run_is_one_of_its_own() {
+    assert!(super::is_door_run(
+        "so.tilo.session/agent-door/8f2c0b6e4a1d4f3c9b7e5a2d1c0f9e8d"
+    ));
+    for refused in [
+        "so.tilo.session/agent-door/",
+        "so.tilo.session/agent-door/a/b",
+        "so.tilo.session/agent-door/a b",
+        "tasks.tracker/issues/i_1",
+    ] {
+        assert!(!super::is_door_run(refused), "{refused}");
+    }
+}
+
+#[test]
 fn a_conversation_turns_message_addresses_a_run() {
     assert!(super::is_conversation_turn(
         "chat.workspace/channels/c_780ce7269827cf52/messages/d76dff0868974728"
