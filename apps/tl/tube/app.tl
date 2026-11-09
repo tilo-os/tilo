@@ -426,7 +426,7 @@ view feed(yt: YouTube) {
                     if here == "search" {
                         search_results(yt)
                     } else if here == "history" {
-                        history_list(yt)
+                        history_list(yt, in_column: false)
                     } else if here == "later" {
                         video_grid(later, "Nothing kept for later", "The videos you keep are here")
                     } else if here == "liked" {
@@ -595,18 +595,19 @@ view watched_page(h: WatchEntry) {
             }
         }
         content: {
-            history_list(yt, fill)
+            history_list(yt, in_column: true, fill)
         }
     }
 }
 
-/// The history in the feed's content: the same rows as its own place draws.
-view history_list(yt: YouTube) {
+/// The history in the feed's content: the same rows as its own place draws. The feed scrolls its
+/// page, so the list stands as tall as its rows there; its own place gives it the column.
+view history_list(yt: YouTube, in_column: Bool) {
     let entries = yt.history.sort_by(.watched, desc)
     if entries.is_empty() {
         ui.EmptyState("Nothing watched yet", message: "The videos you watch are listed here")
     } else {
-        std.list(entries) { (entry, at) ->
+        std.list(entries, in_column: in_column) { (entry, at) ->
             ui.ListItem(item: entry, presence: at) {
                 watch_row(entry)
             }
