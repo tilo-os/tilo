@@ -19,7 +19,6 @@ mod tests;
 
 use ui::headless::InspectionNode;
 use ui::kurbo::Rect;
-use ui::widget::Widget;
 
 /// One problem in one frame, at the widget it is about.
 #[derive(Clone, Debug)]
