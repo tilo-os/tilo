@@ -5,38 +5,54 @@ kind = "browser.application"
 label = "Browser"
 version = 1
 fields = [
-  { path = "bookmarks", type = "Collection<Bookmark>", stored = "collection" },
-  { path = "bookmarks.*.url", type = "String", readonly = true },
-  { path = "bookmarks.*.title", type = "String", label = true },
-  { path = "preferences", type = "Settings", stored = "record" },
+  { path = "bookmarks", type = { collection = { named = "Bookmark" } }, stored = "collection" },
+  { path = "bookmarks.*.url", type = "text", readonly = true },
+  { path = "bookmarks.*.title", type = "text", label = true },
+  { path = "preferences", type = { named = "Settings" }, stored = "record" },
   { path = "preferences.adblock_enabled", type = "bool" },
   { path = "preferences.clear_on_exit", type = "bool" },
-  { path = "preferences.search_engine", type = "String" },
-  { path = "preferences.homepage", type = "String" },
-  { path = "site_exceptions", type = "Set<String>", readonly = true },
+  { path = "preferences.search_engine", type = "text" },
+  { path = "preferences.homepage", type = "text" },
+  { path = "site_exceptions", type = { set = "text" }, readonly = true },
 ]
 
 [[resources.verbs]]
 id = "add-bookmark"
 kind = "undoable"
 params = [
-  { name = "url", required = true, schema = { type = "string" } },
-  { name = "title", required = false, schema = { type = ["string", "null"] } },
+  { name = "url", type = "text", required = true, schema = { type = "string" } },
+  { name = "title", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "remove-bookmark"
 kind = "undoable"
 params = [
-  { name = "bookmark", required = true, schema = { type = "string" } },
+  { name = "bookmark", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "set-site-protection"
 kind = "undoable"
 params = [
-  { name = "origin", required = true, schema = { type = "string" } },
-  { name = "enabled", required = true, schema = { type = "boolean" } },
+  { name = "origin", type = "text", required = true, schema = { type = "string" } },
+  { name = "enabled", type = "bool", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.types]]
+name = "Bookmark"
+fields = [
+  { name = "url", type = "text" },
+  { name = "title", type = "text" },
+]
+
+[[resources.types]]
+name = "Settings"
+fields = [
+  { name = "adblock_enabled", type = "bool" },
+  { name = "clear_on_exit", type = "bool" },
+  { name = "search_engine", type = "text" },
+  { name = "homepage", type = "text" },
 ]
 
 [[resources]]
@@ -44,42 +60,49 @@ kind = "browser.personal-bookmarks"
 label = "Personal bookmarks"
 version = 2
 fields = [
-  { path = "added", type = "Map<Added>", readonly = true },
-  { path = "removed", type = "Set<String>", readonly = true },
-  { path = "receipts", type = "Map<Atom>", readonly = true },
-  { path = "trees", type = "Map<ImportedTree>", readonly = true },
-  { path = "hidden", type = "Set<String>", readonly = true },
+  { path = "added", type = { map = { named = "Added" } }, readonly = true },
+  { path = "removed", type = { set = "text" }, readonly = true },
+  { path = "receipts", type = { map = "text" }, readonly = true },
+  { path = "trees", type = { map = "any" }, readonly = true },
+  { path = "hidden", type = { set = "text" }, readonly = true },
 ]
 
 [[resources.verbs]]
 id = "add-bookmark"
 kind = "undoable"
 params = [
-  { name = "url", required = true, schema = { type = "string" } },
-  { name = "title", required = true, schema = { type = "string" } },
+  { name = "url", type = "text", required = true, schema = { type = "string" } },
+  { name = "title", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "remove-bookmark"
 kind = "undoable"
 params = [
-  { name = "url", required = true, schema = { type = "string" } },
-  { name = "observed_tags", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "url", type = "text", required = true, schema = { type = "string" } },
+  { name = "observed_tags", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
 ]
 
 [[resources.verbs]]
 id = "import-bookmarks"
 kind = "undoable"
 params = [
-  { name = "bundle", required = true, schema = { type = "string" } },
+  { name = "bundle", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "remove-imported-node"
 kind = "undoable"
 params = [
-  { name = "source", required = true, schema = { type = "string" } },
-  { name = "id", required = true, schema = { type = "string" } },
+  { name = "source", type = "text", required = true, schema = { type = "string" } },
+  { name = "id", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.types]]
+name = "Added"
+fields = [
+  { name = "url", type = "text" },
+  { name = "title", type = "text" },
 ]
 
 [[resources]]
@@ -87,46 +110,63 @@ kind = "browser.browsing-history"
 label = "Browsing history"
 version = 1
 fields = [
-  { path = "visits", type = "BTreeMap<String, Visit>", readonly = true },
-  { path = "imported", type = "BTreeMap<String, ImportedVisit>", readonly = true },
-  { path = "import_receipts", type = "BTreeMap<String, Atom>", readonly = true },
-  { path = "forgotten_imports", type = "tilo_resource::Set<String>", readonly = true },
+  { path = "visits", type = { map = { named = "Visit" } }, readonly = true },
+  { path = "imported", type = { map = { named = "ImportedVisit" } }, readonly = true },
+  { path = "import_receipts", type = { map = "text" }, readonly = true },
+  { path = "forgotten_imports", type = { set = "text" }, readonly = true },
 ]
 
 [[resources.verbs]]
 id = "visit"
 kind = "undoable"
 params = [
-  { name = "url", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
-  { name = "title", required = true, schema = { type = "string" } },
-  { name = "at", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "url", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "title", type = "text", required = true, schema = { type = "string" } },
+  { name = "at", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
 ]
 
 [[resources.verbs]]
 id = "import-history-bundle"
 kind = "undoable"
 params = [
-  { name = "bundle", required = true, schema = { type = "string" } },
+  { name = "bundle", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "name-visit"
 kind = "undoable"
 params = [
-  { name = "url", required = true, schema = { type = "string" } },
-  { name = "title", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "url", type = "text", required = true, schema = { type = "string" } },
+  { name = "title", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
 id = "forget"
 kind = "undoable"
 params = [
-  { name = "url", required = true, schema = { type = "string" } },
+  { name = "url", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "clear-history"
 kind = "undoable"
+
+[[resources.types]]
+name = "ImportedVisit"
+fields = [
+  { name = "url", type = "text" },
+  { name = "title", type = "text" },
+  { name = "last", type = "int" },
+  { name = "count", type = "int" },
+]
+
+[[resources.types]]
+name = "Visit"
+fields = [
+  { name = "title", type = "text" },
+  { name = "last", type = "int" },
+  { name = "count", type = "int" },
+]
 
 [[resources]]
 kind = "browser.address-book"
@@ -134,16 +174,31 @@ label = "Address book"
 version = 1
 fields = [
   { path = "enabled", type = "bool" },
-  { path = "profiles", type = "Keyed<AddressProfile>", stored = "keyed" },
-  { path = "profiles.*.id", type = "String" },
-  { path = "profiles.*.label", type = "String", label = true },
-  { path = "profiles.*.full_name", type = "String" },
-  { path = "profiles.*.given_name", type = "String" },
-  { path = "profiles.*.family_name", type = "String" },
-  { path = "profiles.*.street", type = "String" },
-  { path = "profiles.*.city", type = "String" },
-  { path = "profiles.*.region", type = "String" },
-  { path = "profiles.*.postal_code", type = "String" },
-  { path = "profiles.*.country", type = "String" },
+  { path = "profiles", type = { collection = { named = "AddressProfile" } }, stored = "keyed" },
+  { path = "profiles.*.id", type = "text" },
+  { path = "profiles.*.label", type = "text", label = true },
+  { path = "profiles.*.full_name", type = "text" },
+  { path = "profiles.*.given_name", type = "text" },
+  { path = "profiles.*.family_name", type = "text" },
+  { path = "profiles.*.street", type = "text" },
+  { path = "profiles.*.city", type = "text" },
+  { path = "profiles.*.region", type = "text" },
+  { path = "profiles.*.postal_code", type = "text" },
+  { path = "profiles.*.country", type = "text" },
+]
+
+[[resources.types]]
+name = "AddressProfile"
+fields = [
+  { name = "id", type = "text" },
+  { name = "label", type = "text" },
+  { name = "full_name", type = "text" },
+  { name = "given_name", type = "text" },
+  { name = "family_name", type = "text" },
+  { name = "street", type = "text" },
+  { name = "city", type = "text" },
+  { name = "region", type = "text" },
+  { name = "postal_code", type = "text" },
+  { name = "country", type = "text" },
 ]
 

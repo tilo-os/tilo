@@ -5,6 +5,60 @@ kind = "settings.root"
 label = "Settings"
 version = 1
 
+[[resources.verbs]]
+id = "inspect-input-sources"
+kind = "read"
+params = [
+  { name = "query", type = { option = "text" }, required = false },
+  { name = "page", type = { option = "int" }, required = false },
+]
+
+[[resources.verbs]]
+id = "inspect-keyboard-map"
+kind = "read"
+
+[[resources.verbs]]
+id = "inspect-keyboard-sources"
+kind = "read"
+
+[[resources.verbs]]
+id = "storage-summary"
+kind = "read"
+
+[[resources.verbs]]
+id = "search-hub-models"
+kind = "read"
+params = [
+  { name = "query", type = "text", required = true },
+  { name = "format", type = { option = "text" }, required = false },
+]
+
+[[resources.verbs]]
+id = "show-hub-model"
+kind = "read"
+params = [
+  { name = "model", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "discover-thunderbird-accounts"
+kind = "read"
+params = [
+  { name = "prefs", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "choose-thunderbird-metadata"
+kind = "read"
+
+[[resources.verbs]]
+id = "inspect-thunderbird-import"
+kind = "read"
+
+[[resources.verbs]]
+id = "inspect-calendar-choices"
+kind = "read"
+
 [[resources]]
 kind = "settings.appearance"
 label = "Appearance"
@@ -1195,6 +1249,22 @@ name = "Restart"
 fields = [
   { name = "day", type = "text" },
   { name = "before", type = "int" },
+]
+
+[[resources]]
+kind = "settings.agent-door"
+label = "Agents from your other devices"
+version = 1
+person = true
+fields = [
+  { path = "accept_own_devices", type = "bool", readonly = true },
+]
+
+[[resources.verbs]]
+id = "set-accept-own-devices"
+kind = "undoable"
+params = [
+  { name = "on", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
 [[resources]]

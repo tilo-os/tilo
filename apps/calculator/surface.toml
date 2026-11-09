@@ -5,14 +5,14 @@ kind = "calculator.document"
 label = "Calculator"
 version = 1
 fields = [
-  { path = "history", type = "Collection<HistoryEntry>", readonly = true, stored = "collection" },
-  { path = "history.*.expr", type = "String", label = true },
-  { path = "history.*.result", type = "String" },
-  { path = "funcs", type = "Collection<PlotFn>", stored = "collection" },
-  { path = "funcs.*.expr", type = "String", label = true },
+  { path = "history", type = { collection = { named = "HistoryEntry" } }, readonly = true, stored = "collection" },
+  { path = "history.*.expr", type = "text", label = true },
+  { path = "history.*.result", type = "text" },
+  { path = "funcs", type = { collection = { named = "PlotFn" } }, stored = "collection" },
+  { path = "funcs.*.expr", type = "text", label = true },
   { path = "funcs.*.visible", type = "bool" },
-  { path = "surfaces", type = "Collection<PlotFn>", stored = "collection" },
-  { path = "surfaces.*.expr", type = "String", label = true },
+  { path = "surfaces", type = { collection = { named = "PlotFn" } }, stored = "collection" },
+  { path = "surfaces.*.expr", type = "text", label = true },
   { path = "surfaces.*.visible", type = "bool" },
 ]
 
@@ -20,8 +20,8 @@ fields = [
 id = "commit-history"
 kind = "undoable"
 params = [
-  { name = "expr", required = true, schema = { type = "string" } },
-  { name = "result", required = true, schema = { type = "string" } },
+  { name = "expr", type = "text", required = true, schema = { type = "string" } },
+  { name = "result", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -29,7 +29,7 @@ id = "delete-history-entry"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "entry", required = true, schema = { type = "string" } },
+  { name = "entry", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -41,14 +41,14 @@ kind = "undoable"
 id = "add-function"
 kind = "undoable"
 params = [
-  { name = "formula", required = true, schema = { type = "string" } },
+  { name = "formula", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "add-surface"
 kind = "undoable"
 params = [
-  { name = "formula", required = true, schema = { type = "string" } },
+  { name = "formula", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -56,7 +56,7 @@ id = "delete-function"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "function", required = true, schema = { type = "string" } },
+  { name = "function", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -64,6 +64,20 @@ id = "delete-surface"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "surface", required = true, schema = { type = "string" } },
+  { name = "surface", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.types]]
+name = "HistoryEntry"
+fields = [
+  { name = "expr", type = "text" },
+  { name = "result", type = "text" },
+]
+
+[[resources.types]]
+name = "PlotFn"
+fields = [
+  { name = "expr", type = "text" },
+  { name = "visible", type = "bool" },
 ]
 

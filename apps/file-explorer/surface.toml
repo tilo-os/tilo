@@ -28,6 +28,7 @@ params = [
 [[resources.verbs]]
 id = "new-folder"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
   { name = "device", type = "text", required = true, schema = { type = "string" } },
   { name = "parent", required = true, schema = { type = "string" } },
@@ -37,6 +38,7 @@ params = [
 [[resources.verbs]]
 id = "rename"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
   { name = "device", type = "text", required = true, schema = { type = "string" } },
   { name = "folder", type = "text", required = true, schema = { type = "string" } },
@@ -47,6 +49,7 @@ params = [
 [[resources.verbs]]
 id = "trash"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
   { name = "device", type = "text", required = true, schema = { type = "string" } },
   { name = "folder", type = "text", required = true, schema = { type = "string" } },
@@ -56,6 +59,7 @@ params = [
 [[resources.verbs]]
 id = "move"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
   { name = "device", type = "text", required = true, schema = { type = "string" } },
   { name = "from", type = "text", required = true, schema = { type = "string" } },
@@ -67,6 +71,7 @@ params = [
 [[resources.verbs]]
 id = "copy-into"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
   { name = "device", type = "text", required = true, schema = { type = "string" } },
   { name = "from", type = "text", required = true, schema = { type = "string" } },
@@ -77,6 +82,7 @@ params = [
 [[resources.verbs]]
 id = "import-mounted"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
   { name = "device", type = "text", required = true, schema = { type = "string" } },
   { name = "paths", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
@@ -86,6 +92,7 @@ params = [
 [[resources.verbs]]
 id = "cloud-import"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
   { name = "device", type = "text", required = true, schema = { type = "string" } },
   { name = "job_id", type = "text", required = true, schema = { type = "string" } },
@@ -97,6 +104,7 @@ params = [
 [[resources.verbs]]
 id = "write-file"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
   { name = "device", type = "text", required = true, schema = { type = "string" } },
   { name = "folder", required = true, schema = { type = "string" } },
@@ -108,6 +116,7 @@ params = [
 [[resources.verbs]]
 id = "compress"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
   { name = "device", type = "text", required = true, schema = { type = "string" } },
   { name = "from", required = true, schema = { type = "string" } },
@@ -119,6 +128,7 @@ params = [
 [[resources.verbs]]
 id = "extract"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
   { name = "device", type = "text", required = true, schema = { type = "string" } },
   { name = "archive", required = true, schema = { type = "string" } },
@@ -129,6 +139,7 @@ params = [
 [[resources.verbs]]
 id = "record-clipboard-transfer"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
   { name = "device", type = "text", required = true, schema = { type = "string" } },
   { name = "receipt", type = { named = "Receipt" }, required = true, schema = { type = "object", additionalProperties = false, properties = { completed = { type = "integer", minimum = 0 }, cut = { type = "boolean" }, error = { type = ["string", "null"] }, operation = { type = "string" }, restore = { type = "boolean" } }, required = ["operation", "completed", "cut"] } },
@@ -137,6 +148,7 @@ params = [
 [[resources.verbs]]
 id = "record-trash-restore"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
   { name = "device", type = "text", required = true, schema = { type = "string" } },
   { name = "receipt", type = { named = "Receipt" }, required = true, schema = { type = "object", additionalProperties = false, properties = { completed = { type = "integer", minimum = 0 }, cut = { type = "boolean" }, error = { type = ["string", "null"] }, operation = { type = "string" }, restore = { type = "boolean" } }, required = ["operation", "completed", "cut"] } },
@@ -145,9 +157,45 @@ params = [
 [[resources.verbs]]
 id = "revert"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
   { name = "op", type = "text", required = true, schema = { type = "string" } },
 ]
+
+[[resources.verbs]]
+id = "refresh"
+kind = "read"
+
+[[resources.verbs]]
+id = "hand-over"
+kind = "read"
+params = [
+  { name = "file", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "read-text"
+kind = "read"
+params = [
+  { name = "file", type = "text", required = true },
+  { name = "from", type = { option = "int" }, required = false },
+]
+
+[[resources.verbs]]
+id = "copy-selection"
+kind = "read"
+
+[[resources.verbs]]
+id = "clipboard-status"
+kind = "read"
+
+[[resources.verbs]]
+id = "open-terminal"
+kind = "read"
+
+[[resources.verbs]]
+id = "cloud-progress"
+kind = "read"
 
 [[resources.types]]
 name = "Bookmark"

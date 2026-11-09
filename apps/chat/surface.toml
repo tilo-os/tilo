@@ -143,6 +143,7 @@ params = [
   { name = "category", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "kind", type = { option = { named = "ChannelKind" } }, required = false, schema = { oneOf = [{ type = "null" }, { type = "string", enum = ["text", "voice"] }] } },
   { name = "topic", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "participants", type = { option = { list = "text" } }, required = false, schema = { type = ["array", "null"], items = { type = "string" } } },
 ]
 
 [[resources.verbs]]
@@ -296,6 +297,43 @@ kind = "undoable"
 params = [
   { name = "report", type = "text", required = true, schema = { type = "string" } },
   { name = "update", required = true, schema = {} },
+]
+
+[[resources.verbs]]
+id = "read-workspace"
+kind = "read"
+params = [
+  { name = "message", type = { option = "text" }, required = false },
+  { name = "channel", type = { option = "text" }, required = false },
+]
+
+[[resources.verbs]]
+id = "read-messages"
+kind = "read"
+params = [
+  { name = "channel", type = "text", required = true },
+  { name = "pageSize", type = { option = "int" }, required = false },
+  { name = "cursor", type = { option = "text" }, required = false },
+]
+
+[[resources.verbs]]
+id = "export-content"
+kind = "read"
+params = [
+  { name = "channel", type = "text", required = true },
+  { name = "format", type = { option = "text" }, required = false },
+]
+
+[[resources.verbs]]
+id = "start-call"
+kind = "read"
+
+[[resources.verbs]]
+id = "select-input"
+kind = "read"
+params = [
+  { name = "channel", type = "text", required = true },
+  { name = "input", type = "text", required = true },
 ]
 
 [[resources.types]]
@@ -670,6 +708,7 @@ fields = [
   { path = "messages.*.share.access", type = { named = "ShareAccess" } },
   { path = "messages.*.share.open", type = "bool" },
   { path = "messages.*.share.ended", type = "bool" },
+  { path = "messages.*.attempts", type = "int", readonly = true },
   { path = "earlier", type = { map = { map = "int" } }, readonly = true },
 ]
 
@@ -790,6 +829,14 @@ kind = "undoable"
 params = [
   { name = "message", type = "text", required = true, schema = { type = "string" } },
   { name = "pinned", type = "bool", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "retry"
+kind = "undoable"
+params = [
+  { name = "message", type = "text", required = true, schema = { type = "string" } },
+  { name = "reply", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -944,6 +991,7 @@ fields = [
   { name = "work", type = { option = { named = "Work" } } },
   { name = "appearance", type = { option = { named = "ShownAs" } } },
   { name = "share", type = { option = { named = "WindowShare" } } },
+  { name = "attempts", type = "int" },
 ]
 
 [[resources.types]]
@@ -1113,6 +1161,130 @@ fields = [
   { name = "image", type = "any" },
   { name = "added_by", type = "text" },
   { name = "added_at", type = "int" },
+]
+
+[[resources]]
+kind = "chat.agent"
+label = "Agents"
+version = 1
+fields = [
+  { path = "agents", type = { collection = { named = "Agent" } }, stored = "keyed" },
+  { path = "agents.*.id", type = "text" },
+  { path = "agents.*.name", type = "text", label = true },
+  { path = "agents.*.colour", type = { option = "int" } },
+  { path = "agents.*.keeper", type = "text" },
+  { path = "agents.*.model", type = { option = "text" } },
+  { path = "agents.*.bound", type = { list = { named = "Bound" } } },
+  { path = "agents.*.spend_limit_micros", type = { option = "int" } },
+  { path = "agents.*.spent", type = { option = { named = "Spent" } }, stored = "record" },
+  { path = "agents.*.spent.day", type = "text" },
+  { path = "agents.*.spent.cost_micros", type = "int" },
+  { path = "agents.*.state", type = { named = "AgentState" } },
+  { path = "agents.*.created_at", type = "int" },
+]
+
+[[resources.verbs]]
+id = "create-agent"
+kind = "undoable"
+params = [
+  { name = "name", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "keeper", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "id", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "model", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "colour", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], maximum = 255, minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "set-agent-spend-limit"
+kind = "undoable"
+params = [
+  { name = "agent", type = "text", required = true, schema = { type = "string" } },
+  { name = "limit_micros", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "record-agent-spend"
+kind = "undoable"
+params = [
+  { name = "agent", type = "text", required = true, schema = { type = "string" } },
+  { name = "day", type = "text", required = true, schema = { type = "string" } },
+  { name = "cost_micros", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "set-agent-colour"
+kind = "undoable"
+params = [
+  { name = "agent", type = "text", required = true, schema = { type = "string" } },
+  { name = "colour", type = "int", required = true, schema = { type = "integer", maximum = 255, minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "rename-agent"
+kind = "undoable"
+params = [
+  { name = "agent", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+]
+
+[[resources.verbs]]
+id = "set-agent-model"
+kind = "undoable"
+params = [
+  { name = "agent", type = "text", required = true, schema = { type = "string" } },
+  { name = "model", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "set-agent-bound"
+kind = "undoable"
+params = [
+  { name = "agent", type = "text", required = true, schema = { type = "string" } },
+  { name = "bound", type = { list = { named = "Bound" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { answer = { type = "string" }, kinds = { type = "array", items = { type = "string" } }, node = { type = "string" } }, required = ["node", "kinds", "answer"] } } },
+]
+
+[[resources.verbs]]
+id = "retire-agent"
+kind = "undoable"
+params = [
+  { name = "agent", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.types]]
+name = "Agent"
+fields = [
+  { name = "id", type = "text" },
+  { name = "name", type = "text" },
+  { name = "colour", type = { option = "int" } },
+  { name = "keeper", type = "text" },
+  { name = "model", type = { option = "text" } },
+  { name = "bound", type = { list = { named = "Bound" } } },
+  { name = "spend_limit_micros", type = { option = "int" } },
+  { name = "spent", type = { option = { named = "Spent" } } },
+  { name = "state", type = { named = "AgentState" } },
+  { name = "created_at", type = "int" },
+]
+
+[[resources.types]]
+name = "AgentState"
+cases = [
+  { name = "active" },
+  { name = "retired" },
+]
+
+[[resources.types]]
+name = "Bound"
+fields = [
+  { name = "node", type = "text" },
+  { name = "kinds", type = { list = "text" } },
+  { name = "answer", type = "text" },
+]
+
+[[resources.types]]
+name = "Spent"
+fields = [
+  { name = "day", type = "text" },
+  { name = "cost_micros", type = "int" },
 ]
 
 [[resources]]

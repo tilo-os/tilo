@@ -210,27 +210,12 @@ fn normalized(value: &Value) -> Value {
     }
 }
 
-/// What the surface file keeps of a resource the code reports: see the
-/// module docs. Applying it twice changes nothing, so a committed file
-/// compares with the code through it too.
-#[must_use]
-pub fn filed(resource: &Value) -> Value {
-    let mut resource = normalized(resource);
-    let Some(map) = resource.as_object_mut() else {
-        return resource;
-    };
-    for list in ["verbs", "fields", "types"] {
-        if map
-            .get(list)
-            .and_then(Value::as_array)
-            .is_some_and(Vec::is_empty)
-        {
-            map.remove(list);
-        }
-    }
-    for verb in map
-        .get_mut("verbs")
-        .and_then(Value::as_array_mut)
+/// What the surface file keeps of each verb: its id, kind, footprints,
+/// parameters and the value it answers with, without the words that are the
+/// app's own.
+fn filed_verbs(verbs: &mut Value) {
+    for verb in verbs
+        .as_array_mut()
         .into_iter()
         .flatten()
         .filter_map(Value::as_object_mut)
@@ -253,15 +238,32 @@ pub fn filed(resource: &Value) -> Value {
         {
             without_prose(schema);
         }
-        if let Some(returns) = verb.get_mut("returns").and_then(Value::as_object_mut) {
-            if let Some(schema) = returns.get_mut("schema") {
-                without_prose(schema);
-            }
-            // An answer of no declared type says only what its schema says.
-            if returns.get("schema").is_some_and(Value::is_null) {
-                returns.remove("schema");
-            }
+        if let Some(returns) = verb.get_mut("returns") {
+            filed_returns(returns);
         }
+    }
+}
+
+/// What the surface file keeps of a resource the code reports: see the
+/// module docs. Applying it twice changes nothing, so a committed file
+/// compares with the code through it too.
+#[must_use]
+pub fn filed(resource: &Value) -> Value {
+    let mut resource = normalized(resource);
+    let Some(map) = resource.as_object_mut() else {
+        return resource;
+    };
+    for list in ["verbs", "fields", "types"] {
+        if map
+            .get(list)
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+        {
+            map.remove(list);
+        }
+    }
+    if let Some(verbs) = map.get_mut("verbs") {
+        filed_verbs(verbs);
     }
     for field in map
         .get_mut("fields")
@@ -327,6 +329,21 @@ pub fn filed(resource: &Value) -> Value {
         }
     }
     resource
+}
+
+/// What the surface file keeps of the value an action answers with: its
+/// schema, without the prose the type's doc comments put in it.
+fn filed_returns(returns: &mut Value) {
+    let Value::Object(returns) = returns else {
+        return;
+    };
+    if let Some(schema) = returns.get_mut("schema") {
+        without_prose(schema);
+    }
+    // An answer of no declared type says only what its schema says.
+    if returns.get("schema").is_some_and(Value::is_null) {
+        returns.remove("schema");
+    }
 }
 
 /// `schema` without the prose its types' doc comments put in it
@@ -1321,7 +1338,7 @@ mod tests {
         // A file that has them takes no other new verb.
         let mut more = report(&[resource(1, "String", &["rename"])]);
         more.resources[0]["verbs"].as_array_mut().unwrap().extend([
-            read.clone(),
+            read,
             serde_json::json!({"id": "retitle", "kind": "undoable"}),
         ]);
         let found = findings(
@@ -1386,7 +1403,7 @@ mod tests {
         let found = findings(
             "so.tilo.notes",
             &bumped,
-            Some(&written(before.clone())),
+            Some(&written(before)),
             None,
             Level::Error,
         );
@@ -1411,7 +1428,7 @@ mod tests {
         let found = findings(
             "so.tilo.notes",
             &other,
-            Some(&written(map.clone())),
+            Some(&written(map)),
             None,
             Level::Error,
         );
