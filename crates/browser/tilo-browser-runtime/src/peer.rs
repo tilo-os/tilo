@@ -1462,8 +1462,6 @@ pub struct WasmPeer {
     /// The workspace the person takes part in through this page, once joined
     /// as a person: the one that names them.
     speaking_workspace: RefCell<Option<String>>,
-    /// The doors this page asks actions through, one per device it asks.
-    doors: crate::actions::Doors,
 }
 
 /// Tell `workspace` its member, the page's person, goes by `name` from now on:
@@ -1635,7 +1633,6 @@ impl WasmPeer {
             listeners,
             replication,
             speaking_workspace: RefCell::default(),
-            doors: crate::actions::Doors::default(),
         })
     }
 
@@ -2403,10 +2400,10 @@ impl WasmPeer {
         serde_json::to_string(&out).unwrap_or_else(|_| "[]".into())
     }
 
-    /// Ask one action of the device `device` (hex, or empty for the workspace's host) in
-    /// `workspace`: `message` is a JSON `RemoteActionMessage`, `person` the person this page acts
-    /// for, and the answer resolves to the JSON answer the device gave. The session carries the
-    /// request there and its answer back, so the page holds no frames of its own.
+    /// Ask one action of the workspace's host: `message` is a JSON `RemoteActionMessage`, `person`
+    /// the person this page acts for, and the answer resolves to the JSON answer the host gave.
+    /// The session carries the request there and its answer back, so the page holds no frames of
+    /// its own.
     ///
     /// # Errors
     ///
@@ -2416,23 +2413,12 @@ impl WasmPeer {
     pub async fn action_message(
         &self,
         workspace: &str,
-        device: &str,
         person: &str,
         message: &str,
     ) -> Result<String, JsError> {
-        let device = if device.is_empty() {
-            crate::peer_sync::host_of(self.id)
-                .map(|(_, host)| host)
-                .ok_or_else(|| js_error("this page holds no session with a host"))?
-        } else {
-            hex::decode(device)
-                .ok()
-                .and_then(|bytes| bytes.try_into().ok())
-                .ok_or_else(|| js_error("device must be 32 bytes of hex"))?
-        };
-        let door = self
-            .doors
-            .of(&self.handle, workspace_number(workspace)?, device);
+        let number = workspace_number(workspace)?;
+        let door = crate::peer_sync::actions_of(self.id, number)
+            .ok_or_else(|| js_error("this page holds no session with a host"))?;
         let caller =
             tilo_actions::remote::Caller::local_person(person.to_owned()).in_workspace(workspace);
         tilo_browser_peer::session_actions::ask(&door, &caller, message)

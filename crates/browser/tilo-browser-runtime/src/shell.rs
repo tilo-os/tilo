@@ -1268,6 +1268,7 @@ impl BrowserShell {
                 // the walk's switcher — so no card of one is under its pointer.
                 DesktopAsk::Shortcut(_)
                 | DesktopAsk::LeftWorkspace(_)
+                | DesktopAsk::BranchWorkspace { .. }
                 | DesktopAsk::DeleteWorkspace { .. }
                 | DesktopAsk::DeletedWorkspace { .. }
                 | DesktopAsk::Music(_)

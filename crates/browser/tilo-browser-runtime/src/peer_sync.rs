@@ -16,6 +16,7 @@ use collab_types::presence::{
 use iroh::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 use tilo_browser_peer::PeerHandle;
+use tilo_browser_peer::session_actions::SessionActions;
 use tilo_session::sync::{Client, Cmd, Device, OwnPresence, SayPresence, Topic, Transport};
 use tilo_user_identity::DeviceCert;
 use wasm_bindgen::prelude::*;
@@ -230,6 +231,9 @@ struct Page {
     /// Semantic work its agents narrated since the mounts last took it, by workspace, admitted and
     /// bound to the member that published it.
     interactions: HashMap<String, Vec<tilo_actions::SemanticInteraction>>,
+    /// The doors this page asks the host's actions through, one per workspace: one session path,
+    /// shared by the page's Rust and its JavaScript.
+    doors: RefCell<HashMap<u64, tilo_browser_peer::session_actions::SessionActions>>,
 }
 
 thread_local! {
@@ -299,6 +303,7 @@ pub(crate) fn register(
                 workspaces: HashMap::new(),
                 waved: None,
                 interactions: HashMap::new(),
+                doors: RefCell::default(),
             },
         );
     });
@@ -316,9 +321,19 @@ pub(crate) fn handles_of(user: &str) -> Vec<PeerHandle> {
     })
 }
 
-/// `id`'s session, and the device of the host it is with: where the person's agent door is asked.
-pub(crate) fn host_of(id: u32) -> Option<(PeerHandle, [u8; 32])> {
-    PAGES.with_borrow(|pages| pages.get(&id).map(|page| (page.handle.clone(), page.host)))
+/// The door to `workspace`'s host actions for `id`'s page, or `None` while its session has no
+/// host: one session path per workspace, whichever of the page's callers asks.
+pub(crate) fn actions_of(id: u32, workspace: u64) -> Option<SessionActions> {
+    PAGES.with_borrow(|pages| {
+        let page = pages.get(&id)?;
+        let mut doors = page.doors.borrow_mut();
+        Some(
+            doors
+                .entry(workspace)
+                .or_insert_with(|| SessionActions::new(&page.handle, workspace, page.host))
+                .clone(),
+        )
+    })
 }
 
 /// Forget `id`'s peer and what it said.

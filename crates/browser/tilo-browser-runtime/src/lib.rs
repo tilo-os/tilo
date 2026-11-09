@@ -103,8 +103,6 @@ pub fn first_frame_presented() -> bool {
     browser::first_frame_presented()
 }
 #[cfg(target_arch = "wasm32")]
-mod actions;
-#[cfg(target_arch = "wasm32")]
 mod clipboard;
 #[cfg(target_arch = "wasm32")]
 mod console_log;

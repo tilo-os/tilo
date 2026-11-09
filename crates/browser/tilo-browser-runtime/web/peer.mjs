@@ -765,7 +765,7 @@ async function connect({
     /** Ask the workspace's host `message` (a `RemoteActionMessage`) and answer what it said. */
     async function ask(message) {
       try {
-        return JSON.parse(await peer.actionMessage(workspace, '', userPublicKey, JSON.stringify(message)));
+        return JSON.parse(await peer.actionMessage(workspace, userPublicKey, JSON.stringify(message)));
       } catch (error) {
         throw new ActionsError('unavailable', String(error?.message ?? error));
       }
