@@ -234,6 +234,11 @@ impl DesktopTree {
         let emptied = group.tabs.is_empty();
         if emptied {
             strip.window_groups.remove(group_idx);
+            // The window left the desk here: its place and its float go with it, so the space it
+            // stood in is free for the next window.
+            for workspace in &mut self.workspaces {
+                workspace.forget_gone_places();
+            }
         }
         Some((removed, source_group, emptied))
     }
@@ -471,6 +476,11 @@ impl DesktopTree {
             // desktop shows its strip again.
             if self.fullscreen == Some(group_id) {
                 self.fullscreen = None;
+            }
+            // Its place on the canvas goes too, so the next window opened here
+            // stands in the room it left.
+            if let Some(workspace) = self.workspaces.get_mut(ws_idx) {
+                workspace.forget_gone_places();
             }
         }
         Some(RemovedTab {

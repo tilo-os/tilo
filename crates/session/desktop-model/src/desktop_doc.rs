@@ -816,6 +816,10 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
             continue;
         };
         rebuild_strips(doc, &entry, ws);
+        // A place whose window the record no longer holds stands for nothing: a desk written by a
+        // build that left them behind reads back without them, so the first window opened on it is
+        // not pushed past a hole.
+        ws.forget_gone_places();
     }
 }
 

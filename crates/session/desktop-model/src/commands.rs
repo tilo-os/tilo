@@ -671,6 +671,7 @@ fn remove(workspace: &mut Workspace, at: TabIndex, leaving: Leaving) -> Result<T
     }
     if window.tabs.is_empty() {
         groups.remove(group);
+        workspace.forget_gone_places();
     }
     Ok(removed)
 }
@@ -935,7 +936,7 @@ pub fn apply_command(
         DesktopCommand::PlaceGroup { group, place } => place_group(workspace, *group, *place)?,
         DesktopCommand::FloatGroup { group, float } => float_group(workspace, *group, *float)?,
     }
-    free_closed_places(workspace);
+    workspace.forget_gone_places();
     let Workspace {
         strips,
         arrangement,
@@ -969,20 +970,6 @@ fn open_tab(
         pinned: false,
     };
     place(workspace, tab, placement, group, strip)
-}
-
-/// A window closed or moved out of the workspace leaves its canvas place
-/// free, and is no longer floating.
-fn free_closed_places(workspace: &mut Workspace) {
-    let live: std::collections::HashSet<u64> = workspace
-        .strips
-        .iter()
-        .flat_map(|strip| &strip.window_groups)
-        .map(|group| group.id)
-        .collect();
-    workspace
-        .arrangement
-        .retain_groups(|group| live.contains(&group));
 }
 
 /// The largest side a canvas place may have, in canvas pixels: room for a

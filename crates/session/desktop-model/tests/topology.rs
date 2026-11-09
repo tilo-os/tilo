@@ -5,8 +5,8 @@
 )]
 
 use tilo_desktop_model::{
-    DesktopTree, DropTarget, GroupShape, IdMinter, Strip, StripId, Tab, TileContent, WindowGroup,
-    WindowWidth, Workspace, WorkspaceSlot,
+    CanvasPlace, DesktopTree, DropTarget, FloatCorner, FloatPlace, GroupShape, IdMinter, Strip,
+    StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceSlot,
 };
 
 fn tab(id: u64) -> Tab {
@@ -238,6 +238,58 @@ fn a_live_strip_shape_that_loses_or_invents_a_tab_is_refused() {
     assert_eq!(
         layout(&tree, 1),
         vec![(10, vec![100, 101]), (11, vec![110])]
+    );
+}
+
+#[test]
+fn closing_a_window_frees_its_place_on_the_canvas() {
+    let mut tree = tree();
+    {
+        let ws = &mut tree.workspaces[0];
+        ws.arrangement
+            .places
+            .insert(10, CanvasPlace::new(0, 0, 720, 520));
+        ws.arrangement
+            .places
+            .insert(11, CanvasPlace::new(744, 0, 720, 520));
+        ws.arrangement.set_float(
+            11,
+            Some(FloatPlace::new(FloatCorner::TopLeft, 20, 20, 640, 480)),
+        );
+    }
+    let closed = tree.close_tab(110).expect("group 11 holds its only tab");
+    assert!(closed.group_removed);
+    let ws = &tree.workspaces[0];
+    assert_eq!(ws.arrangement.place_of(11), None, "its place went with it");
+    assert_eq!(ws.arrangement.float_of(11), None, "and its float");
+    assert!(
+        ws.arrangement.place_of(10).is_some(),
+        "the windows left keep their places"
+    );
+}
+
+#[test]
+fn the_window_opened_after_a_close_stands_in_the_room_it_left() {
+    let mut tree = tree();
+    {
+        let ws = &mut tree.workspaces[0];
+        ws.arrangement
+            .places
+            .insert(10, CanvasPlace::new(0, 0, 720, 520));
+        ws.arrangement
+            .places
+            .insert(11, CanvasPlace::new(744, 0, 720, 520));
+    }
+    tree.close_tab(110).unwrap();
+    // A window opened on the desk after the close, placed as the desk places one.
+    let ws = &mut tree.workspaces[0];
+    ws.strips[0].window_groups.push(group(12, &[120]));
+    let strips = ws.strips.clone();
+    ws.arrangement.place_missing(&strips);
+    assert_eq!(
+        ws.arrangement.place_of(12),
+        Some(CanvasPlace::new(744, 0, 720, 520)),
+        "the next window stands where the closed one stood, not past a hole"
     );
 }
 

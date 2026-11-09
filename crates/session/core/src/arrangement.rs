@@ -1217,7 +1217,7 @@ fn change(
             Ok(changed)
         }
         ArrangementAction::Close { place } => {
-            if close_place(tree, *place) {
+            if tree.close_tab(*place).is_some() {
                 Ok(true)
             } else {
                 Err("that place is not in the arrangement".into())
@@ -1423,10 +1423,10 @@ fn move_place(
         return Err(taken.into());
     };
     let tab = source.tabs.remove(at);
-    let emptied = source.tabs.is_empty().then_some(group);
-    if let Some(group) = emptied {
-        let emptied = from_strip.window_groups.remove(group).id;
-        held.arrangement.places.remove(&emptied);
+    if source.tabs.is_empty() {
+        from_strip.window_groups.remove(group);
+        // The window left the desk with its last place: its place and float go with it.
+        held.forget_gone_places();
     }
     let holds = |group: &WindowGroup| {
         strip.is_some_and(|strip| group.id == strip)
@@ -1463,33 +1463,6 @@ fn move_place(
     group.tabs.insert(at, tab);
     group.activate_tab(id);
     Ok(true)
-}
-
-/// Close the window `place` , and a group left empty with it. Whether the desk held it.
-fn close_place(tree: &mut DesktopTree, place: u64) -> bool {
-    let Some((workspace, row, group, at)) = locate(tree, place) else {
-        return false;
-    };
-    let Some(held) = tree.workspaces.get_mut(workspace) else {
-        return false;
-    };
-    let Some(strip) = held.strips.get_mut(row) else {
-        return false;
-    };
-    let Some(window) = strip.window_groups.get_mut(group) else {
-        return false;
-    };
-    window.tabs.remove(at);
-    if window.active_tab == place
-        && let Some(first) = window.tabs.first().map(|tab| tab.id)
-    {
-        window.active_tab = first;
-    }
-    if window.tabs.is_empty() {
-        let emptied = strip.window_groups.remove(group).id;
-        held.arrangement.places.remove(&emptied);
-    }
-    true
 }
 
 /// What [`change`] is asked to place: the resource `resource` , through `view` , as the place
