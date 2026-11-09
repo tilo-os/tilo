@@ -302,9 +302,13 @@ else
     # image ships the owner and that it binds the launcher's canonical path.
     if [ "$svc" = "collab" ]; then
       native="$REPO/crates/session/session/src/mount/services.rs"
+      # Where the session starts the plane is the session's own business: any
+      # file of the crate that calls it, besides the one that defines it.
+      callers="$(grep -rlF 'start_action_plane(' "$REPO/crates/session/session/src" \
+                   | grep -vF 'mount/services.rs' || true)"
       if grep -Fq 'pub(crate) fn start_action_plane(' "$native" \
           && grep -Fq 'launcher::services::collab_socket()' "$native" \
-          && grep -Fq 'start_action_plane(' "$REPO/crates/session/session/src/lib.rs"; then
+          && [ -n "$callers" ]; then
         ok "the session starts 'collab' on the launcher's canonical service socket"
       else
         bad "apps [$users] require 'collab', but the session does not visibly serve its plane on launcher::services::collab_socket()."
