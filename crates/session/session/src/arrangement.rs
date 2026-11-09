@@ -3,12 +3,22 @@
 //! side of it — the desk document the session keeps, the compositor's gesture and typing, what an
 //! older build kept beside the desk, and the published door.
 
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "the page publishes its own arrangement through this role next"
+    )
+)]
+
 use std::rc::Rc;
 
+#[cfg(target_os = "linux")]
 use tilo_desktop_surface::DesktopHandle;
 use tilo_session_core::arrangement::Door;
-use tilo_surface_host::{Look, Published};
+use tilo_session_core::door::{Look, Published};
 
+#[cfg(target_os = "linux")]
 use crate::activity::{Activity, now_seconds};
 
 pub use tilo_session_core::arrangement::{
@@ -21,6 +31,7 @@ pub use tilo_session_core::arrangement::{
 /// `person` 's arrangement of `handle` 's desk, whose changes `activity` keeps: a device that kept
 /// its arrangement beside the desk before this build has what it holds opened on the desk, once
 /// ([`crate::desk_migration::arrangement`]).
+#[cfg(target_os = "linux")]
 #[must_use]
 pub(crate) fn open(
     person: &str,
@@ -41,6 +52,7 @@ pub(crate) fn open(
 
 /// What this session's compositor knows of the person's gesture and typing, as the arrangement's
 /// one fixed rule reads it.
+#[cfg(target_os = "linux")]
 pub(crate) const fn busy(underway: tilo_compositor::Underway) -> Busy {
     Busy {
         gesture: underway.gesture,

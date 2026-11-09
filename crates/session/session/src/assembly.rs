@@ -311,12 +311,10 @@ pub(crate) struct Shared {
     pub(crate) clipboard: Rc<crate::mount::clipboard::Clipboard>,
     /// The person's arrangement: the desk this session holds, with history and
     /// undo (shell.md §2), and the app places its windows from it.
-    #[cfg(target_os = "linux")]
     pub(crate) arrangement: Rc<RefCell<crate::arrangement::Arrangement>>,
     /// Whether the person is mid-gesture or typing, as the compositor last
     /// said: what an arranging action that is not their own waits for.
-    #[cfg(target_os = "linux")]
-    pub(crate) underway: Rc<Cell<crate::arrangement::Busy>>,
+    pub(crate) underway: Rc<Cell<tilo_session_core::arrangement::Busy>>,
     /// The person's settings, kept in step with their other devices.
     #[cfg(target_os = "linux")]
     pub(crate) settings: crate::mount::settings_sync::SettingsSync,

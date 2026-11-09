@@ -74,7 +74,6 @@ mod app_names;
 mod app_sheets;
 #[cfg(target_os = "linux")]
 mod app_tiers;
-#[cfg(target_os = "linux")]
 pub mod arrangement;
 #[cfg(target_os = "linux")]
 mod asks;
