@@ -233,6 +233,15 @@ pub fn filed(resource: &Value) -> Value {
         {
             without_prose(schema);
         }
+        if let Some(returns) = verb.get_mut("returns").and_then(Value::as_object_mut) {
+            if let Some(schema) = returns.get_mut("schema") {
+                without_prose(schema);
+            }
+            // An answer of no declared type says only what its schema says.
+            if returns.get("schema").is_some_and(Value::is_null) {
+                returns.remove("schema");
+            }
+        }
     }
     for field in map
         .get_mut("fields")

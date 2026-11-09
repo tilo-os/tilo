@@ -12,7 +12,7 @@ use tilo_pdf::{FieldKind, FormField};
 
 use super::PdfApp;
 use crate::markup::{PagePlanEntry, PdfMarkup};
-use crate::model::FormEntry;
+use crate::model::{FormEntry, FormFieldKind, FormFieldRow, FormFields};
 
 impl PdfApp {
     /// The form fields of the PDF the record marks up, with the values
@@ -47,11 +47,11 @@ impl PdfApp {
             (file, fields)
         };
         let plan = markup.page_plan();
-        let fields: Vec<serde_json::Value> = fields
+        let fields: Vec<FormFieldRow> = fields
             .iter()
             .filter_map(|field| field_row(field, &markup.form_values, &plan))
             .collect();
-        Ok(serde_json::json!({ "file": file, "fields": fields }))
+        serde_json::to_value(FormFields { file, fields }).map_err(|error| error.to_string())
     }
 }
 
@@ -61,20 +61,20 @@ fn field_row(
     field: &FormField,
     values: &BTreeMap<String, FormEntry>,
     plan: &[PagePlanEntry],
-) -> Option<serde_json::Value> {
+) -> Option<FormFieldRow> {
     if field.name.is_empty() {
         return None;
     }
     let checked = field.widgets.iter().find(|widget| widget.checked);
     let (kind, in_file, options, export) = match field.kind {
         FieldKind::Text => (
-            "text",
+            FormFieldKind::Text,
             FormEntry::Text(field.value.clone()),
             Vec::new(),
             None,
         ),
         FieldKind::CheckBox => (
-            "checkbox",
+            FormFieldKind::Checkbox,
             FormEntry::Checked {
                 on: checked.is_some(),
                 export: None,
@@ -96,10 +96,10 @@ fn field_row(
                 on: checked.is_some(),
                 export: checked.map(|widget| widget.export_value.clone()),
             };
-            ("radio", value, options, None)
+            (FormFieldKind::Radio, value, options, None)
         }
         FieldKind::ComboBox | FieldKind::ListBox => (
-            "choice",
+            FormFieldKind::Choice,
             FormEntry::Choice(field.value.clone()),
             field.options.clone(),
             None,
@@ -111,24 +111,26 @@ fn field_row(
         .form_values
         .key(&field.name)
         .set(value.clone());
-    let path = serde_json::to_value(&edit)
-        .ok()
-        .and_then(|edit| edit.get("path").cloned());
+    let path = serde_json::to_value(&edit).ok().and_then(|edit| {
+        edit.get("path")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    });
     let page = field
         .widgets
         .iter()
         .find_map(|widget| shown_page(plan, widget.page));
-    Some(serde_json::json!({
-        "name": field.name,
-        "kind": kind,
-        "value": value,
-        "path": path,
-        "options": options,
-        "export": export,
-        "page": page,
-        "read_only": field.read_only,
-        "required": field.required,
-    }))
+    Some(FormFieldRow {
+        name: field.name.clone(),
+        kind,
+        value,
+        path,
+        options,
+        export,
+        page,
+        read_only: field.read_only,
+        required: field.required,
+    })
 }
 
 /// The 1-based page of the document now showing the file's 0-based page

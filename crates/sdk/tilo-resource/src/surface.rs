@@ -5,13 +5,62 @@
 //! what the OS knows about an app that is not running.
 
 pub use tilo_actions::surface::{
-    FieldSurface, FieldType, NamedType, ParamSurface, Surface, TypeCase, TypeField, TypeSet,
-    VerbSurface,
+    FieldSurface, FieldType, NamedType, ParamSurface, ReturnsSurface, Surface, TypeCase, TypeField,
+    TypeSet, VerbSurface,
 };
 
 use crate::resource::Resource;
 use crate::shape::Shape;
 use crate::vocabulary::{Declaration, vocabulary};
+
+/// The published parameters of an action, each typed by its Rust type when
+/// the code declares one and by its schema otherwise.
+fn params_of(
+    params: &[tilo_actions::ActionParam],
+    param_types: &[(&'static str, FieldTypeOf)],
+    types: &mut TypeSet,
+) -> Vec<ParamSurface> {
+    params
+        .iter()
+        .map(|param| {
+            let schema = param
+                .schema
+                .as_deref()
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let declared = param_types
+                .iter()
+                .find(|(name, _)| *name == param.name.as_ref());
+            let ty = match declared {
+                Some((_, ty)) => ty(types),
+                None => FieldType::from_schema(&schema),
+            };
+            ParamSurface {
+                name: param.name.to_string(),
+                required: param.required,
+                schema,
+                ty,
+                within: None,
+            }
+        })
+        .collect()
+}
+
+/// The value an action answers with, from its result: a JSON value's schema
+/// and its type, typed by `declared` when the code declares one.
+fn returns_of(
+    result: Option<&tilo_actions::ResultSpec>,
+    declared: Option<FieldTypeOf>,
+    types: &mut TypeSet,
+) -> Option<ReturnsSurface> {
+    let tilo_actions::ResultSpec::Json { schema } = result? else {
+        return None;
+    };
+    Some(ReturnsSurface {
+        schema: schema.clone(),
+        ty: declared.map_or_else(|| FieldType::from_schema(schema), |ty| ty(types)),
+    })
+}
 
 fn verb_of(decl: &Declaration, types: &mut TypeSet) -> VerbSurface {
     VerbSurface {
@@ -24,32 +73,8 @@ fn verb_of(decl: &Declaration, types: &mut TypeSet) -> VerbSurface {
             .tags
             .iter()
             .any(|tag| tag == tilo_actions::INCOMING_MESSAGE_TAG),
-        params: decl
-            .params
-            .iter()
-            .map(|param| {
-                let schema = param
-                    .schema
-                    .as_deref()
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null);
-                let declared = decl
-                    .param_types
-                    .iter()
-                    .find(|(name, _)| *name == param.name.as_ref());
-                let ty = match declared {
-                    Some((_, ty)) => ty(types),
-                    None => FieldType::from_schema(&schema),
-                };
-                ParamSurface {
-                    name: param.name.to_string(),
-                    required: param.required,
-                    schema,
-                    ty,
-                    within: None,
-                }
-            })
-            .collect(),
+        params: params_of(&decl.params, &decl.param_types, types),
+        returns: returns_of(decl.result.as_ref(), decl.result_type, types),
         writes: decl.writes.clone(),
         field: decl.field.map(str::to_owned),
     }
@@ -135,6 +160,10 @@ fn surface_in(vocabulary: &crate::Vocabulary, version: u32) -> Surface {
 pub fn reading_surface<R: crate::JsonSchema, E: crate::Effect>(kind: &str, label: &str) -> Surface {
     let mut types = TypeSet::new();
     let root = R::field_type(&mut types);
+    let verbs: Vec<VerbSurface> = E::declarations()
+        .iter()
+        .map(|decl| effect_verb(decl, &mut types))
+        .collect();
     let mut declared = types.into_types();
     // The reading's own record is the resource itself: its fields are the
     // resource's, and only the records it holds stay named types.
@@ -168,15 +197,16 @@ pub fn reading_surface<R: crate::JsonSchema, E: crate::Effect>(kind: &str, label
         label: label.to_owned(),
         version: 1,
         person: false,
-        verbs: E::declarations().iter().map(effect_verb).collect(),
+        verbs,
         fields,
         types: declared,
     }
 }
 
-/// An effect's declaration as a verb of the surface: its id, words and
-/// parameters, each typed by its schema.
-fn effect_verb(decl: &crate::EffectDecl) -> VerbSurface {
+/// An effect's declaration as a verb of the surface: its id, words,
+/// parameters and the value it answers with, each typed by its schema.
+#[must_use]
+pub fn effect_verb(decl: &crate::EffectDecl, types: &mut TypeSet) -> VerbSurface {
     VerbSurface {
         id: decl.id.to_owned(),
         label: decl.label.to_owned(),
@@ -184,49 +214,27 @@ fn effect_verb(decl: &crate::EffectDecl) -> VerbSurface {
         kind: decl.action_kind,
         destructive: decl.risk == tilo_actions::RiskLevel::Destructive,
         incoming_message: false,
-        params: decl
-            .params
-            .iter()
-            .map(|param| {
-                let schema = param
-                    .schema
-                    .as_deref()
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null);
-                let ty = match FieldType::from_schema(&schema) {
-                    FieldType::Any => param_type(param.ty),
-                    ty => ty,
-                };
-                ParamSurface {
-                    name: param.name.to_string(),
-                    required: param.required,
-                    schema,
-                    ty: if param.nullable {
-                        FieldType::Option(Box::new(ty))
-                    } else {
-                        ty
-                    },
-                    within: None,
-                }
-            })
-            .collect(),
+        params: params_of(&decl.params, &decl.param_types, types),
+        returns: decl.result.map(|result| ReturnsSurface {
+            schema: (result.schema)(),
+            ty: result.ty.map_or_else(|| FieldType::Any, |ty| ty(types)),
+        }),
         writes: vec!["record".to_owned()],
         field: None,
     }
 }
 
-/// The surface's type of a parameter declared only by its wire type.
-fn param_type(ty: tilo_actions::ParamType) -> FieldType {
-    use tilo_actions::ParamType;
-    match ty {
-        ParamType::Text | ParamType::Secret => FieldType::Text,
-        ParamType::Integer => FieldType::Int,
-        ParamType::Number => FieldType::Float,
-        ParamType::Boolean => FieldType::Bool,
-        ParamType::DateTime => FieldType::Time,
-        ParamType::Resource => FieldType::Resource(String::new()),
-        ParamType::Object | ParamType::Array => FieldType::Any,
-    }
+/// An app's effects as actions a caller of another language reads: every one
+/// that only reads (`kind = "read"`), answering with the value it declares.
+/// What its window shows (a view's zoom, its caret) is no action of the
+/// catalogue and stays out.
+#[must_use]
+pub fn effect_verbs(rows: &[crate::effect::EffectRow], types: &mut TypeSet) -> Vec<VerbSurface> {
+    rows.iter()
+        .filter(|row| row.kind != tilo_actions::OperationKind::View)
+        .filter(|row| row.action_kind == crate::ActionKind::Read)
+        .map(|row| effect_verb(&crate::EffectDecl::of_row(row), types))
+        .collect()
 }
 
 /// The type of a record of `shape` named `name` (the Rust type `identity`):

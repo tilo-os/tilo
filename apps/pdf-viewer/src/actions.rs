@@ -170,7 +170,7 @@ pub enum PdfEffect {
     /// pages at a time: read on from the `next` an answer gives. Reads the
     /// PDF the record pinned, so a record opened from content reads with no
     /// file. Changes nothing.
-    #[effect(kind = "read", returns, idempotent)]
+    #[effect(kind = "read", returns = crate::model::PdfText, idempotent)]
     ReadText {
         #[param("The first page to read, 1-based; the first page when omitted")]
         from_page: Option<usize>,
@@ -184,7 +184,7 @@ pub enum PdfEffect {
     /// a field edit sets, the path that edit takes (`form_values/<name>`),
     /// its choices or the value a checkbox exports, the page it is on, and
     /// whether it is read-only or required. Changes nothing.
-    #[effect(kind = "read", returns, idempotent)]
+    #[effect(kind = "read", returns = crate::model::FormFields, idempotent)]
     ReadFormFields,
     /// Look at a page
     ///

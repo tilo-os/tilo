@@ -14,6 +14,42 @@ use tilo_doc_codecs::convert;
 
 pub const CONVERSIONS: &[&str] = &["pdf", "docx", "odt", "md", "html", "rtf", "txt"];
 
+/// What a read answers: a part of the document as text, or the picture it
+/// is instead. Either way what the caller learns is a value of this one
+/// shape, published as the read's return type.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, ui::tilo_resource::JsonSchema)]
+pub struct ReadDocument {
+    /// The file or content read, as it was named.
+    pub file: String,
+    /// The format it was read as (`markdown`, `text`), or `picture`.
+    pub format: String,
+    /// The text of this part, for a document that has text.
+    pub text: Option<String>,
+    /// The character this part starts at.
+    pub from: Option<usize>,
+    /// The character to read on from, when the read goes on.
+    pub next: Option<usize>,
+    /// How many characters the whole text has.
+    pub total: Option<usize>,
+    /// The picture's content address, when the read answered a picture.
+    pub picture: Option<String>,
+    /// The picture's media type.
+    pub media_type: Option<String>,
+    /// The picture's size in bytes.
+    pub bytes: Option<usize>,
+    /// The picture's width in pixels.
+    pub width: Option<usize>,
+    /// The picture's height in pixels.
+    pub height: Option<usize>,
+}
+
+impl ReadDocument {
+    /// The answer as the JSON a caller reads.
+    fn answered(self) -> Result<serde_json::Value, String> {
+        serde_json::to_value(self).map_err(|error| error.to_string())
+    }
+}
+
 /// The most characters one read answers with.
 pub const MAX_READ_CHARS: usize = 64 * 1024;
 
@@ -67,7 +103,7 @@ pub fn read_file(path: &Path, from: Option<usize>) -> Result<serde_json::Value, 
     }
     let ext = read_as(path, &bytes)?;
     let (format, text) = as_text(path, &ext, &bytes)?;
-    Ok(page(path, format, &text, from.unwrap_or(0)))
+    page(path, format, &text, from.unwrap_or(0)).answered()
 }
 
 /// What the document kept as `content` in `store` says, read as
@@ -85,7 +121,7 @@ pub fn read_content(
         .read(hash)
         .ok_or_else(|| format!("{name} is not on this device"))?;
     if let Some(format) = picture_format(&bytes) {
-        return Ok(picture(name.trim(), hash, format, &bytes));
+        return picture(name.trim(), hash, format, &bytes).answered();
     }
     if bytes.len() > convert::MAX_DOCUMENT_BYTES {
         return Err(format!(
@@ -95,7 +131,7 @@ pub fn read_content(
     }
     let ext = read_as(path, &bytes)?;
     let (format, text) = as_text(path, &ext, &bytes)?;
-    Ok(page(path, format, &text, from.unwrap_or(0)))
+    page(path, format, &text, from.unwrap_or(0)).answered()
 }
 
 /// The extension `bytes` are read as: the format they hold, whatever
@@ -139,17 +175,21 @@ fn picture(
     hash: &str,
     format: tilo_content::ImageFormat,
     bytes: &[u8],
-) -> serde_json::Value {
+) -> ReadDocument {
     let size = tilo_content::image_size(bytes);
-    serde_json::json!({
-        "file": name,
-        "format": "picture",
-        "picture": format!("tilo.content:{hash}"),
-        "media_type": format.mime,
-        "bytes": bytes.len(),
-        "width": size.map(|(_, width, _)| width),
-        "height": size.map(|(_, _, height)| height),
-    })
+    ReadDocument {
+        file: name.to_owned(),
+        format: "picture".to_owned(),
+        text: None,
+        from: None,
+        next: None,
+        total: None,
+        picture: Some(format!("tilo.content:{hash}")),
+        media_type: Some(format.mime.to_owned()),
+        bytes: Some(bytes.len()),
+        width: size.map(|(_, width, _)| usize::try_from(width).unwrap_or_default()),
+        height: size.map(|(_, _, height)| usize::try_from(height).unwrap_or_default()),
+    }
 }
 
 /// What `bytes` of the file `path` names, read as extension `ext`, say,
@@ -165,19 +205,28 @@ fn as_text(path: &Path, ext: &str, bytes: &[u8]) -> Result<(&'static str, String
 }
 
 /// The part of `text` from character `from` on.
-fn page(path: &Path, format: &str, text: &str, from: usize) -> serde_json::Value {
+fn page(path: &Path, format: &str, text: &str, from: usize) -> ReadDocument {
     let total = text.chars().count();
     let from = from.min(total);
     let to = from.saturating_add(MAX_READ_CHARS).min(total);
     let byte = |n: usize| text.char_indices().nth(n).map_or(text.len(), |(at, _)| at);
-    serde_json::json!({
-        "file": path.display().to_string(),
-        "format": format,
-        "text": text.get(byte(from)..byte(to)).unwrap_or_default(),
-        "from": from,
-        "next": (to < total).then_some(to),
-        "total": total,
-    })
+    ReadDocument {
+        file: path.display().to_string(),
+        format: format.to_owned(),
+        text: Some(
+            text.get(byte(from)..byte(to))
+                .unwrap_or_default()
+                .to_owned(),
+        ),
+        from: Some(from),
+        next: (to < total).then_some(to),
+        total: Some(total),
+        picture: None,
+        media_type: None,
+        bytes: None,
+        width: None,
+        height: None,
+    }
 }
 
 /// The document file at `path` written again as format `to` (an extension
@@ -369,10 +418,8 @@ mod tests {
         let mut from = Some(0);
         while let Some(at) = from {
             let part = page(path, "text", &text, at);
-            joined.push_str(part["text"].as_str().unwrap());
-            from = part["next"]
-                .as_u64()
-                .map(|next| usize::try_from(next).unwrap());
+            joined.push_str(part.text.as_deref().unwrap());
+            from = part.next;
         }
         assert_eq!(joined, text);
     }

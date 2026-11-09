@@ -773,6 +773,72 @@ impl Default for FormEntry {
     }
 }
 
+/// What the reader answers a caller that reads the PDF's pages, page by
+/// page: the text of each page read, and where to read on.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, JsonSchema)]
+pub struct PdfText {
+    /// The PDF read, as the record names it.
+    pub file: String,
+    /// How many pages the PDF has.
+    pub page_count: usize,
+    /// The pages read, in order.
+    pub pages: Vec<PdfPageText>,
+    /// The first page not read, when the PDF goes on.
+    pub next: Option<usize>,
+}
+
+/// One page's text, as [`PdfText`] answers it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, JsonSchema)]
+pub struct PdfPageText {
+    /// The page, 1-based.
+    pub page: usize,
+    /// The page's text, trailing space trimmed.
+    pub text: String,
+}
+
+/// What the reader answers a caller that reads the PDF's form: the PDF and
+/// every field an agent fills with a field edit on `path`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, JsonSchema)]
+pub struct FormFields {
+    /// The PDF whose form was read, as the record names it.
+    pub file: String,
+    /// The form's fields, in the PDF's order.
+    pub fields: Vec<FormFieldRow>,
+}
+
+/// One field of a PDF's form, as [`FormFields`] answers it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, JsonSchema)]
+pub struct FormFieldRow {
+    /// The field's fully qualified name.
+    pub name: String,
+    /// What the field takes: text, a checkbox, a radio group or a choice.
+    pub kind: FormFieldKind,
+    /// Its value now, in the shape a field edit sets.
+    pub value: FormEntry,
+    /// The edit that sets it (`form_values/<name>`).
+    pub path: Option<String>,
+    /// The values a choice or radio group offers.
+    pub options: Vec<String>,
+    /// The value a checkbox exports when it is on.
+    pub export: Option<String>,
+    /// The page it is drawn on, 1-based; absent once it was deleted.
+    pub page: Option<usize>,
+    /// Only its owner may fill it.
+    pub read_only: bool,
+    /// It must be filled before the form is valid.
+    pub required: bool,
+}
+
+/// The kind of a PDF form field, as [`FormFieldRow`] answers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum FormFieldKind {
+    Text,
+    Checkbox,
+    Radio,
+    Choice,
+}
+
 // ----------------------------------------------------------------------
 // Search
 // ----------------------------------------------------------------------

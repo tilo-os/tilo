@@ -10,8 +10,8 @@
 use serde::Serialize;
 use serde_json::{Value as Json, json};
 use tilo_actions::surface::{
-    FieldSurface, FieldType, NamedType, ParamSurface, Surface, TypeCase, TypeField, TypeSet,
-    VerbSurface,
+    FieldSurface, FieldType, NamedType, ParamSurface, ReturnsSurface, Surface, TypeCase, TypeField,
+    TypeSet, VerbSurface,
 };
 use tilo_actions::{ActionKind, ActionParam, ParamType, Pick};
 use tilo_resource::Resource as _;
@@ -337,6 +337,10 @@ fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
                 }
             })
             .collect(),
+        returns: action.result.as_ref().map(|result| ReturnsSurface {
+            schema: Json::Null,
+            ty: field_type_of_type(meta, result, types),
+        }),
         writes: vec![RECORD_UNIT.to_owned()],
         field: None,
     }
@@ -369,6 +373,7 @@ fn edit_verbs() -> Vec<VerbSurface> {
                 within: None,
             },
         ],
+        returns: None,
         writes: vec![RECORD_UNIT.to_owned()],
         field: None,
     };
@@ -382,6 +387,7 @@ fn edit_verbs() -> Vec<VerbSurface> {
         destructive: false,
         incoming_message: false,
         params: Vec::new(),
+        returns: None,
         writes: vec![RECORD_UNIT.to_owned()],
         field: None,
     };
@@ -504,6 +510,7 @@ fn host_verb(id: &str, label: &str, kind: ActionKind, params: Vec<ParamSurface>)
         destructive: false,
         incoming_message: false,
         params,
+        returns: None,
         writes: vec![RECORD_UNIT.to_owned()],
         field: None,
     }

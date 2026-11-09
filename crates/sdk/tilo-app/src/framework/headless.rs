@@ -2287,32 +2287,38 @@ pub fn surface_report<A: ResourceApp>() -> serde_json::Value {
     )
 }
 
-/// The ids of the effects and of the named views a built view publishes.
-type PublishedIds = (Vec<String>, Vec<String>);
+/// What a built view publishes beside its resource's verbs: its effects and
+/// the resource's named views, and what the effects declare, which its surface
+/// publishes as actions of the resource.
+#[derive(Default)]
+struct PublishedActions {
+    /// The ids of every effect, views included.
+    effects: Vec<String>,
+    /// The ids of the resource's named views.
+    views: Vec<String>,
+    /// Every read effect's declaration: what its surface publishes it as.
+    rows: Vec<tilo_resource::effect::EffectRow>,
+}
 
-/// [`PublishedIds`] of `A`'s root `harness` hosts.
-fn published_ids<A: ResourceApp>(harness: &mut FrameHarness) -> PublishedIds {
+/// [`PublishedActions`] of `A`'s root `harness` hosts.
+fn published_ids<A: ResourceApp>(harness: &mut FrameHarness) -> PublishedActions {
     harness
         .with_widget_mut(|root: &mut ResourceRoot| {
             let typed = root.typed::<A::Resource>()?;
             let views = <A::Resource as Resource>::views(&typed.live.get());
-            Some(ids_of(&typed.effects.specs(), views))
+            Some(PublishedActions {
+                effects: typed
+                    .effects
+                    .specs()
+                    .iter()
+                    .map(|spec| spec.id.clone())
+                    .collect(),
+                views: views.into_iter().map(|view| view.id).collect(),
+                rows: typed.effects.rows(),
+            })
         })
         .flatten()
         .unwrap_or_default()
-}
-
-/// The ids of `effects` and of `views`: taken here once rather than in
-/// every app's [`published_ids`].
-#[inline(never)]
-fn ids_of(
-    effects: &[tilo_actions::ActionSpec],
-    views: Vec<tilo_actions::ResourceViewSpec>,
-) -> PublishedIds {
-    (
-        effects.iter().map(|spec| spec.id.clone()).collect(),
-        views.into_iter().map(|view| view.id).collect(),
-    )
 }
 
 /// [`surface_report`] of the app `opening` describes, whose resource's
@@ -2320,9 +2326,9 @@ fn ids_of(
 /// reads the ids of the effects and the named views a built view publishes.
 fn report_surface(
     opening: &Opening,
-    surface: tilo_resource::Surface,
+    mut surface: tilo_resource::Surface,
     person: &[super::PersonKind],
-    published: &dyn Fn(&mut FrameHarness) -> PublishedIds,
+    published: &dyn Fn(&mut FrameHarness) -> PublishedActions,
 ) -> serde_json::Value {
     let collecting = collect_unbound();
     let profile = profile_directory().map(Rc::new).map_err(operation);
@@ -2346,14 +2352,17 @@ fn report_surface(
         )
     });
     // What the view publishes besides the resource's verbs: its effects and
-    // the resource's named views, whose ids must not be the framework's.
-    let (effects, views, view) = match built {
-        Ok(mut opened) => {
-            let (effects, views) = published(&mut opened.harness);
-            (effects, views, None)
-        }
-        Err(error) => (Vec::new(), Vec::new(), Some(error.to_string())),
-    };
+    // the resource's named views, whose ids must not be the framework's. The
+    // app's read effects are actions of its own resource and are published
+    // with it, as a verb of the surface.
+    let mut declared = PublishedActions::default();
+    let mut view = None;
+    match built {
+        Ok(mut opened) => declared = published(&mut opened.harness),
+        Err(error) => view = Some(error.to_string()),
+    }
+    add_effect_verbs(&mut surface, &declared.rows);
+    let PublishedActions { effects, views, .. } = declared;
     let (unbound, opened) = collecting.finish();
     let mut resources = vec![surface];
     resources.extend(opened);
@@ -2377,6 +2386,59 @@ fn report_surface(
         "reserved": super::reserved_action_ids(),
         "view": view,
     })
+}
+
+/// Publish the app's read effects on `surface`: its resource's verbs take
+/// them, each with its parameters and the value it answers with, and the
+/// records and enums that value names join the surface's types.
+fn add_effect_verbs(
+    surface: &mut tilo_resource::Surface,
+    rows: &[tilo_resource::effect::EffectRow],
+) {
+    use tilo_resource::surface::{FieldType, NamedType};
+
+    let mut types = tilo_resource::surface::TypeSet::new();
+    let mut verbs = tilo_resource::surface::effect_verbs(rows, &mut types);
+    let declared: Vec<NamedType> = types.into_types();
+    // A record the resource's fields already declare, named again by a value
+    // an action answers with, keeps the one name: the surface declares it
+    // once.
+    let mut renames: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for named in &declared {
+        let same = surface.types.iter().find(|known| {
+            known.name != named.name && known.fields == named.fields && known.cases == named.cases
+        });
+        if let Some(known) = same {
+            renames.insert(named.name.clone(), known.name.clone());
+        }
+    }
+    let rename = |ty: &FieldType| ty.renamed(&renames);
+    for verb in &mut verbs {
+        for param in &mut verb.params {
+            param.ty = rename(&param.ty);
+        }
+        if let Some(returns) = &mut verb.returns {
+            returns.ty = rename(&returns.ty);
+        }
+    }
+    let renamed: Vec<NamedType> = declared
+        .into_iter()
+        .filter(|named| !renames.contains_key(&named.name))
+        .map(|mut named| {
+            for field in &mut named.fields {
+                field.ty = rename(&field.ty);
+            }
+            for case in &mut named.cases {
+                for field in &mut case.fields {
+                    field.ty = rename(&field.ty);
+                }
+            }
+            named
+        })
+        .filter(|named| !surface.types.iter().any(|known| known.name == named.name))
+        .collect();
+    surface.types.extend(renamed);
+    surface.verbs.extend(verbs);
 }
 
 /// Collects the controls bound to something the resource does not publish

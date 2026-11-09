@@ -5803,14 +5803,18 @@ impl PdfApp {
             let text = document
                 .text(page - 1)
                 .map_err(|error| format!("page {page} cannot be read: {error}"))?;
-            pages.push(serde_json::json!({ "page": page, "text": text.text().trim_end() }));
+            pages.push(crate::model::PdfPageText {
+                page,
+                text: text.text().trim_end().to_owned(),
+            });
         }
-        Ok(serde_json::json!({
-            "file": file,
-            "page_count": count,
-            "pages": pages,
-            "next": (last < count).then_some(last + 1),
-        }))
+        serde_json::to_value(crate::model::PdfText {
+            file,
+            page_count: count,
+            pages,
+            next: (last < count).then_some(last + 1),
+        })
+        .map_err(|error| error.to_string())
     }
 
     /// A picture of page `page` (1-based) of the PDF the record marks up,

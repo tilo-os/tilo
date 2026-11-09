@@ -161,6 +161,10 @@ struct VariantOptions {
     job: bool,
     cancellable: bool,
     returns: bool,
+    /// `returns = Type`: the type of the value it answers with
+    /// ([`JsonSchema`](tilo_resource::JsonSchema)), from which its return
+    /// schema and its kind are published.
+    returns_type: Option<syn::Path>,
     content: bool,
     destructive: bool,
     privileged: bool,
@@ -282,6 +286,9 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.cancellable = true;
             } else if meta.path.is_ident("returns") {
                 options.returns = true;
+                if meta.input.peek(syn::Token![=]) {
+                    options.returns_type = Some(meta.value()?.parse::<syn::Path>()?);
+                }
             } else if meta.path.is_ident("content") {
                 options.content = true;
             } else if meta.path.is_ident("destructive") {
@@ -333,7 +340,7 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.outside_with = Some(meta.value()?.parse::<syn::LitStr>()?.value());
             } else {
                 return Err(meta.error(
-                    "expected `label`, `keywords`, `icon`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
+                    "expected `label`, `keywords`, `icon`, `view`, `row`, `job`, `cancellable`, `returns` (`returns = Type` for the value's type), `content`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, \
                      `own_device`, `attended`, `risk`, `phrase`, `audience`, `untrusted`, `opens_path`, `participant`, `edit`, `member`, \
                      `item = field`, `offload(...)`, `host_render`, `tag = ...`, `outside_with` or `kind`",
@@ -519,6 +526,15 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         } else {
             quote!(#krate::effect::Answers::Nothing)
         };
+        let result = match &options.returns_type {
+            Some(ty) => quote!(::core::option::Option::Some(#krate::effect::EffectResult {
+                schema: <#ty as #krate::JsonSchema>::json_schema,
+                ty: ::core::option::Option::Some(
+                    <#ty as #krate::JsonSchema>::field_type,
+                ),
+            })),
+            None => quote!(::core::option::Option::None),
+        };
         let risk = match (options.destructive, options.privileged, options.sensitive) {
             (true, false, false) => quote!(Destructive),
             (false, true, false) => quote!(Privileged),
@@ -701,6 +717,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 description: #description,
                 params: #params_fn,
                 param_types: #param_types_fn,
+                result: #result,
                 kind: #krate::__private::OperationKind::#kind,
                 row: #row,
                 answers: #answers,
@@ -861,6 +878,10 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 match self {
                     #(#ids)*
                 }
+            }
+
+            fn rows() -> ::std::vec::Vec<#krate::effect::EffectRow> {
+                <[_]>::to_vec(Self::__effect_rows())
             }
 
             #phrase

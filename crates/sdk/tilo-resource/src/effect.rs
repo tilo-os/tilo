@@ -188,6 +188,11 @@ pub trait Effect: Sized + 'static {
     /// One declaration per effect, in order.
     fn declarations() -> Vec<EffectDecl>;
 
+    /// The vocabulary's declarations where they are kept, for a surface that
+    /// publishes an app without running it: every area's, for a vocabulary
+    /// that gathers several.
+    fn rows() -> Vec<EffectRow>;
+
     /// The declaration of the effect `id`, built alone: what binding one
     /// effect to an item reads, so offering it on many items costs one
     /// declaration each, not the whole vocabulary.
@@ -574,6 +579,7 @@ fn kept_type(key: TypeKey, build: impl FnOnce() -> Arc<ActionType>) -> Arc<Actio
 /// one per variant; [`EffectDecl::of_rows`] and [`EffectDecl::of_row`] read
 /// them, the same code for every vocabulary.
 #[doc(hidden)]
+#[derive(Clone)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag is an independent property a declaration states, as the derive's options do"
@@ -590,6 +596,9 @@ pub struct EffectRow {
     pub params: fn() -> Vec<ActionParam>,
     /// The surface types of the parameters whose types describe one, by name.
     pub param_types: fn() -> Vec<(&'static str, crate::surface::FieldTypeOf)>,
+    /// The value it answers with, when the code declares one
+    /// (`returns = Type`): its JSON Schema and its type.
+    pub result: Option<EffectResult>,
     pub kind: OperationKind,
     pub row: bool,
     pub answers: Answers,
@@ -659,6 +668,17 @@ pub fn no_param_types() -> Vec<(&'static str, crate::surface::FieldTypeOf)> {
     Vec::new()
 }
 
+/// The value an effect answers with, as its code declares it
+/// (`#[effect(returns = Type)]`): its JSON Schema, and its type with the
+/// records and enums it names.
+#[derive(Clone, Copy, Debug)]
+pub struct EffectResult {
+    /// Its schema, from [`JsonSchema`](crate::JsonSchema).
+    pub schema: fn() -> serde_json::Value,
+    /// Its surface type, declaring the records and enums it names.
+    pub ty: Option<crate::surface::FieldTypeOf>,
+}
+
 /// The declaration of one effect: what callers see of it.
 #[derive(Clone, Debug)]
 #[allow(
@@ -680,6 +700,9 @@ pub struct EffectDecl {
     /// parameter's wire type ([`ParamType::Object`](tilo_actions::ParamType))
     /// says nothing of, which a package of another language names.
     pub param_types: Vec<(&'static str, crate::surface::FieldTypeOf)>,
+    /// The value it answers with, when the code declares one
+    /// (`returns = Type`); see [`EffectResult`].
+    pub result: Option<EffectResult>,
     /// `View` for an effect that only changes what its caller sees, else
     /// `Effect`.
     pub kind: OperationKind,
@@ -799,7 +822,7 @@ impl EffectDecl {
         rows.iter().find(|row| row.id == id).map(Self::of_row)
     }
 
-    fn of_row(row: &EffectRow) -> Self {
+    pub fn of_row(row: &EffectRow) -> Self {
         Self {
             id: row.id,
             label: row.label,
@@ -808,6 +831,7 @@ impl EffectDecl {
             description: row.description,
             params: (row.params)(),
             param_types: (row.param_types)(),
+            result: row.result,
             kind: row.kind,
             row: row.row,
             answers: row.answers,
@@ -895,7 +919,9 @@ impl EffectDecl {
             result: match self.answers {
                 Answers::Later { returns: false, .. } => ResultSpec::Job,
                 Answers::Value | Answers::Later { returns: true, .. } => ResultSpec::Json {
-                    schema: serde_json::json!({}),
+                    schema: self
+                        .result
+                        .map_or_else(|| serde_json::json!({}), |result| (result.schema)()),
                 },
                 Answers::Content => ResultSpec::Resource {
                     resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.to_owned(),
@@ -982,6 +1008,10 @@ impl Effect for NoEffect {
     const OPERATION: &'static str = "tilo.no-effect";
 
     fn declarations() -> Vec<EffectDecl> {
+        Vec::new()
+    }
+
+    fn rows() -> Vec<EffectRow> {
         Vec::new()
     }
 

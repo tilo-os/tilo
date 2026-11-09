@@ -130,6 +130,49 @@ fn writing_the_source_catalogue_keeps_a_translations_stale_words_reported() {
     assert!(passed, "every translated word is the source's:\n{stderr}");
 }
 
+/// An app's read effects are actions of its resource in the catalogue: a package calls one and
+/// reads a field of the value it answers with, typed by the surface the app publishes.
+#[test]
+fn a_native_app_read_action_answers_with_its_published_type() {
+    let scratch = tempfile::tempdir().unwrap();
+    let dir = scratch.path().join("reader");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(
+        dir.join("app.tl"),
+        "app so.tilo.test.reader \"Reader\"\n\nuse so.tilo.pdf-viewer as pdf\n\n\
+         action file_of(d: pdf.Document) -> Text {\n    let form = pdf.read_form_fields(d)\n    form.file\n}\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
+        .arg("check")
+        .arg(&dir)
+        .arg("--search")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps"))
+        .output_locked()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // A field the PDF's form does not answer with is a compile error, as a typed value's.
+    std::fs::write(
+        dir.join("app.tl"),
+        "app so.tilo.test.reader \"Reader\"\n\nuse so.tilo.pdf-viewer as pdf\n\n\
+         action pages_of(d: pdf.Document) -> Int {\n    let form = pdf.read_form_fields(d)\n    form.pages\n}\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
+        .arg("check")
+        .arg(&dir)
+        .arg("--search")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps"))
+        .output_locked()
+        .unwrap();
+    assert!(!output.status.success(), "a form has no pages");
+}
+
 /// Runs `check` on `dir`, writing with `--write-ids` when `write`: whether it passed, and what
 /// it said.
 fn check(dir: &Path, write: bool) -> (bool, String) {

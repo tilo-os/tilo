@@ -2210,6 +2210,9 @@ struct Published {
     alive: Weak<()>,
     operation: &'static str,
     specs: Box<dyn Fn() -> Vec<ActionSpec>>,
+    /// What the vocabulary declares, independent of any view: what its
+    /// surface publishes of it.
+    rows: fn() -> Vec<tilo_resource::effect::EffectRow>,
 }
 
 /// A view's effect handler, type-erased for the root.
@@ -2682,6 +2685,7 @@ impl<R: Resource> Effects<R> {
             alive,
             operation: E::OPERATION,
             specs: Box::new(specs),
+            rows: E::rows,
         });
     }
 
@@ -2804,6 +2808,13 @@ impl<R: Resource> Effects<R> {
     #[inline(never)]
     pub(crate) fn specs(&self) -> Vec<ActionSpec> {
         self.inner.borrow_mut().specs()
+    }
+
+    /// What every published vocabulary declares, whether or not a view of it
+    /// is showing: what its surface publishes.
+    #[inline(never)]
+    pub(crate) fn rows(&self) -> Vec<tilo_resource::effect::EffectRow> {
+        self.inner.borrow_mut().rows()
     }
 
     /// Answer `op` with the view handler of its vocabulary.
@@ -2929,6 +2940,14 @@ impl Inner {
         self.published
             .iter()
             .flat_map(|entry| (entry.specs)())
+            .collect()
+    }
+
+    fn rows(&mut self) -> Vec<tilo_resource::effect::EffectRow> {
+        self.prune();
+        self.published
+            .iter()
+            .flat_map(|entry| (entry.rows)())
             .collect()
     }
 

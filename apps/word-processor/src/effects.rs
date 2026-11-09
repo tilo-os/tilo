@@ -52,7 +52,7 @@ pub enum WordProcessorEffect {
     /// `OpenDocument`, RTF, HTML, EPUB or Markdown (a text file as itself),
     /// without opening it; the document here stays as it is. A long file
     /// answers in parts: read on from the `next` an answer gives.
-    #[effect(kind = "read", returns, idempotent, audience = "agents")]
+    #[effect(kind = "read", returns = crate::file_convert::ReadDocument, idempotent, audience = "agents")]
     ReadFile {
         #[param("Absolute path of the file")]
         file: ui::tilo_resource::AbsolutePath,
@@ -68,7 +68,7 @@ pub enum WordProcessorEffect {
     /// picture (a scan, a photo) has no text: it answers with `format`
     /// `picture`, its type and size, and an agent whose model sees is shown
     /// it.
-    #[effect(kind = "read", returns, idempotent, audience = "agents")]
+    #[effect(kind = "read", returns = crate::file_convert::ReadDocument, idempotent, audience = "agents")]
     ReadContent {
         #[param("The document's content address, `tilo.content:<hash>`")]
         content: String,
