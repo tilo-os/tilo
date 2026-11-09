@@ -80,7 +80,7 @@ fn runs_of<'a>(seen: &'a Seen, client: &str) -> Vec<&'a wire::AgentRun> {
         .iter()
         .filter(|run| crate::client::of(&run.agent.name).name() == client)
         .collect();
-    runs.sort_by(|a, b| b.last_ms.cmp(&a.last_ms));
+    runs.sort_by_key(|run| std::cmp::Reverse(run.last_ms));
     runs
 }
 

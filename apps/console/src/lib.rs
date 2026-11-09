@@ -400,7 +400,6 @@ impl ResourceApp for App {
             let (nav, reads) = (nav.clone(), reads.clone());
             let (place, run) = (nav.place.clone(), nav.run.clone());
             cx.switch(&place, move |cx, _| {
-                let (nav, reads) = (nav.clone(), reads.clone());
                 let (nav, reads, agent) = (nav.clone(), reads.clone(), nav.agent.clone());
                 cx.switch(&run, move |cx, _| {
                     let (nav, reads) = (nav.clone(), reads.clone());
@@ -424,12 +423,12 @@ impl ResourceApp for App {
                         Arrival::Pending { .. } | Arrival::Failed(_) => door::Door::default(),
                     });
                     let mut rows = agents::live_runs(&runs);
-                    let names = runs
+                    let agent_names = runs
                         .iter()
                         .map(|run| run.agent.name.as_str())
                         .chain(door.grants.iter().map(|grant| grant.agent.as_str()));
                     rows.extend(
-                        agent_card::clients(names)
+                        agent_card::clients(agent_names)
                             .iter()
                             .map(|client| agent_card::live_agent(client)),
                     );
