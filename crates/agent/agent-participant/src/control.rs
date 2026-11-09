@@ -711,6 +711,14 @@ pub trait AgentHostLink: Send + Sync {
     /// Admit the agent device `cert` of `delegation` to its workspaces.
     fn register(&self, cert: &DeviceCert, delegation: &Delegation) -> Result<(), String>;
 
+    /// Call `done` once the workspaces `delegation` names hold the agent
+    /// `cert` as a member of their own, so its session is admitted when it
+    /// joins. A host that admits its agents at once calls it at once.
+    fn when_admitted(&self, cert: &DeviceCert, delegation: &Delegation, done: AdmissionDone) {
+        let _ = (cert, delegation);
+        done();
+    }
+
     /// Refuse the agent device from now on.
     fn withdraw(&self, device_public_key: [u8; 32]);
 
@@ -725,6 +733,9 @@ pub trait AgentHostLink: Send + Sync {
 
 /// Receives the outcome of [`AgentHostLink::request_approval`].
 pub type ApprovalDone = Box<dyn FnOnce(Result<(DeviceCert, Delegation), String>) + Send>;
+
+/// Called once the agent's workspaces admit it ([`AgentHostLink::when_admitted`]).
+pub type AdmissionDone = Box<dyn FnOnce() + Send>;
 
 /// One grant: what was asked, where it stands, and once approved the
 /// agent identity it runs under.

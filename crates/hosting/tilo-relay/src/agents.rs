@@ -34,9 +34,9 @@ use tilo_actions::remote::{
 };
 use tilo_agent_participant::workspace_actions::{ShellRan, WorkspaceMember, WorkspaceShell};
 use tilo_agent_participant::{
-    AgentHost, AgentHostLink, AppCatalogue, ApprovalDone, CatalogueFactory, FeedbackReviewer,
-    HostActions, HostEndpoint, ModelChoice, SupervisorHost, Witness, WorkspaceActions,
-    WorkspaceRecordsLink,
+    AdmissionDone, AgentHost, AgentHostLink, AppCatalogue, ApprovalDone, CatalogueFactory,
+    FeedbackReviewer, HostActions, HostEndpoint, ModelChoice, SupervisorHost, Witness,
+    WorkspaceActions, WorkspaceRecordsLink,
 };
 use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 
@@ -151,6 +151,23 @@ impl AgentHostLink for RelayAgentLink {
         crate::authority_epoch::bump();
         // Governed workspaces take it off their channels and refuse its writes.
         self.reconcile_rooms(device_public_key, None);
+    }
+
+    fn when_admitted(&self, cert: &DeviceCert, delegation: &Delegation, done: AdmissionDone) {
+        let Some(workspaces) = self.workspaces.clone() else {
+            done();
+            return;
+        };
+        let device = delegation.device_public_key;
+        let cert = cert.clone();
+        // Putting an agent on a workspace's roster settles that workspace,
+        // which is work of the runtime's own: it runs there, and the agent's
+        // start waits for it rather than joining a workspace that does not
+        // hold it yet.
+        self.runtime.spawn(async move {
+            workspaces.reconcile_agent(device, Some(&cert)).await;
+            done();
+        });
     }
 
     fn witness(&self, delegation: &Delegation) -> Option<Witness> {
