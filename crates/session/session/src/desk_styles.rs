@@ -210,7 +210,7 @@ mod tests {
 
     /// A meta of one arrangement type and the views that draw it, as the store's module carries
     /// it: what the session reads to find the desk styles (`shell.md` §6).
-    fn meta(types: serde_json::Value, views: serde_json::Value) -> Meta {
+    fn meta(types: &serde_json::Value, views: &serde_json::Value) -> Meta {
         serde_json::from_value(serde_json::json!({
             "app": "so.tilo.shell",
             "title": "Shell",
@@ -247,8 +247,8 @@ mod tests {
     #[test]
     fn a_view_of_the_arrangement_is_a_desk_style_and_another_view_is_not() {
         let meta = meta(
-            arrangement_type(),
-            serde_json::json!([
+            &arrangement_type(),
+            &serde_json::json!([
                 view(
                     "strips",
                     "Strips\n\nThe person's places as windows.",
@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn a_package_with_no_arrangement_type_offers_no_style() {
-        let meta = meta(serde_json::json!([]), serde_json::json!([]));
+        let meta = meta(&serde_json::json!([]), &serde_json::json!([]));
         let modules = [("so.tilo.notes".to_owned(), meta.clone())];
         assert!(styles_of("so.tilo.notes", &meta, &modules).is_empty());
     }
