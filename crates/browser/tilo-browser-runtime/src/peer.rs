@@ -2345,7 +2345,11 @@ impl WasmPeer {
                     hear(self.id, workspace_id, from, &body);
                     None
                 }
-                PeerEvent::Live { from, frame, .. } if from != self.device_key => {
+                PeerEvent::Live {
+                    workspace_id,
+                    from,
+                    frame,
+                } if from != self.device_key => {
                     let publisher = hex::encode(from);
                     let event = match LiveFrame::decode(&frame).ok()? {
                         LiveFrame::Ops(OpsFrame::Preview { seq, record, ops }) => {
@@ -2360,11 +2364,14 @@ impl WasmPeer {
                             publisher,
                             record: record_to_js(record),
                         },
-                        // Semantic work requires an authenticated record
-                        // consumer, and presence no longer comes this way.
-                        LiveFrame::Ops(OpsFrame::Semantic { .. }) | LiveFrame::RetiredPresence => {
+                        // An agent's narrated work is drawn on this page's
+                        // windows once its board admits the publisher.
+                        LiveFrame::Ops(OpsFrame::Semantic { event, .. }) => {
+                            crate::peer_presence::narrated(self.id, workspace_id, from, &event);
                             return None;
                         }
+                        // Presence no longer comes this way.
+                        LiveFrame::RetiredPresence => return None,
                     };
                     serde_json::to_value(event).ok()
                 }

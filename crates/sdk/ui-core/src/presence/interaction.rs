@@ -22,7 +22,7 @@ use tilo_actions::{InteractionPhase, InvocationId, SemanticInteraction};
 use tilo_sort::CompactSort as _;
 use vello::{
     Scene,
-    kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke},
+    kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke},
     peniko::{Color, Fill},
 };
 
@@ -35,6 +35,15 @@ pub const TERMINAL_INTERACTION_DWELL: Duration = Duration::from_millis(3_500);
 /// A painted marker may continue from this agent's recent position on the
 /// same surface. Older positions are no longer a truthful visual continuity.
 const AGENT_MARKER_CONTINUITY: Duration = Duration::from_secs(8);
+/// How long an agent's cursor stays on one target before it moves on: its
+/// approach and a moment's rest, so a person sees where it went before the
+/// next action takes it elsewhere. A faster agent's next target waits for it,
+/// and only its newest waits: the targets in between are skipped, never
+/// strobed through.
+pub const AGENT_TARGET_DWELL: Duration = Duration::from_millis(900);
+/// The shortest time between two arrival flashes of one agent's cursor: a
+/// burst of phases and edits flashes once.
+const AGENT_PULSE_QUIET: Duration = Duration::from_millis(700);
 const EXPIRY_EPSILON: Duration = Duration::from_nanos(1);
 const MAX_VISIBLE_CARDS: usize = 3;
 const CARD_WIDTH: f64 = 300.0;
@@ -45,11 +54,20 @@ const CARD_MARGIN: f64 = 12.0;
 #[derive(Debug, Clone)]
 pub(super) struct InteractionPresenceEntry {
     interaction: SemanticInteraction,
-    /// Arrival of the invocation itself. Phase restatements must not restart
-    /// its approach from the edge or make an old invocation look newest.
+    /// When the invocation began to show: its arrival, or, for an agent
+    /// whose cursor is still resting on its previous target, once that rest
+    /// ends ([`AGENT_TARGET_DWELL`]). Phase restatements must not restart its
+    /// approach from the edge or make an old invocation look newest.
     first_received_at: Instant,
-    /// Arrival of this phase. Drives its brief pulse and visible dwell.
+    /// Arrival of this phase. Drives its visible dwell.
     received_at: Instant,
+    /// When its cursor last flashed for an arrival; `None` when a flash of
+    /// the same agent just went off ([`AGENT_PULSE_QUIET`]).
+    pulsed_at: Option<Instant>,
+    /// A later action of the same agent on the same target took its place,
+    /// or skipped it while it waited: it shows no more, but is remembered
+    /// until it would have expired so its later phases do not bring it back.
+    superseded: bool,
 }
 
 /// Local continuity for the marker which was actually painted for one agent.
@@ -109,18 +127,6 @@ impl PresenceCtx {
         self.apply_interaction_at(interaction, crate::time::now())
     }
 
-    /// Observe semantic work without claiming its resource belongs to this
-    /// rendering surface. The shell People roster uses this after the workspace
-    /// broker has authenticated and routed the event; app canvases continue
-    /// to use `apply_remote_presence`, whose resource-key check prevents an
-    /// interaction from painting in unrelated applications.
-    pub fn observe_interaction(
-        &mut self,
-        interaction: SemanticInteraction,
-    ) -> Result<bool, tilo_actions::InteractionViolation> {
-        self.apply_interaction_at(interaction, crate::time::now())
-    }
-
     pub(crate) fn apply_interaction_at(
         &mut self,
         interaction: SemanticInteraction,
@@ -151,26 +157,94 @@ impl PresenceCtx {
         {
             self.set_display_name(user.clone(), group.label.clone());
         }
-        let first_received_at = self
-            .interactions
-            .get(&interaction.invocation)
-            .map_or(now, |entry| entry.first_received_at);
+        let (first_received_at, superseded, pulsed) =
+            match self.interactions.get(&interaction.invocation) {
+                Some(entry) => (entry.first_received_at, entry.superseded, entry.pulsed_at),
+                None if interaction.actor.kind.acts_for_someone() => {
+                    let (starts_at, pulsed) = self.pace_agent(&interaction, now);
+                    (starts_at, false, pulsed)
+                }
+                None => (now, false, None),
+            };
+        // A phase within the flash its invocation set off carries that flash
+        // on.
+        let pulsed_at = self.pulse_of(&interaction, now).or(pulsed);
         self.interactions.insert(
             interaction.invocation,
             InteractionPresenceEntry {
                 interaction,
                 first_received_at,
                 received_at: now,
+                pulsed_at,
+                superseded,
             },
         );
-        Ok(true)
+        Ok(!superseded)
+    }
+
+    /// When an agent's new invocation `interaction` begins to show, so its
+    /// cursor can be followed: a further action on the target its cursor
+    /// rests on takes that action's place, and the cursor stays; one
+    /// elsewhere waits until the cursor has rested there
+    /// ([`AGENT_TARGET_DWELL`]), taking the place of any that waited before
+    /// it. With it, the flash of the action it takes the place of, which it
+    /// carries on.
+    fn pace_agent(
+        &mut self,
+        interaction: &SemanticInteraction,
+        now: Instant,
+    ) -> (Instant, Option<Instant>) {
+        let actor = &interaction.actor.id;
+        let mut resting: Option<Instant> = None;
+        let mut pulsed = None;
+        for entry in self.interactions.values_mut().filter(|entry| {
+            !entry.superseded
+                && entry.alive_at(now)
+                && entry.interaction.actor.kind.acts_for_someone()
+                && entry.interaction.actor.id == *actor
+        }) {
+            let waiting = now < entry.first_received_at;
+            let same_target = entry.interaction.resource.id == interaction.resource.id
+                && entry.interaction.action.id == interaction.action.id;
+            if same_target && !waiting {
+                entry.superseded = true;
+                // The cursor stays where it rests, and its flash goes on.
+                pulsed = pulsed.max(entry.pulsed_at);
+                continue;
+            }
+            if waiting {
+                entry.superseded = true;
+            } else {
+                resting = Some(resting.map_or(entry.first_received_at, |at| {
+                    at.max(entry.first_received_at)
+                }));
+            }
+        }
+        let starts_at = resting
+            .and_then(|at| at.checked_add(AGENT_TARGET_DWELL))
+            .map_or(now, |rest_ends| rest_ends.max(now));
+        (starts_at, pulsed)
+    }
+
+    /// When `interaction`'s arrival flashes its actor's cursor: now, unless
+    /// a flash of the same agent went off within [`AGENT_PULSE_QUIET`].
+    fn pulse_of(&self, interaction: &SemanticInteraction, now: Instant) -> Option<Instant> {
+        let quiet = self.interactions.values().any(|entry| {
+            entry.interaction.actor.kind.acts_for_someone()
+                && entry.interaction.actor.id == interaction.actor.id
+                && entry.pulsed_at.is_some_and(|at| {
+                    now.saturating_duration_since(at.max(entry.first_received_at))
+                        < AGENT_PULSE_QUIET
+                })
+        });
+        (!quiet).then_some(now)
     }
 
     /// Remove interactions whose visible dwell has ended. Returns whether a
     /// repaint is warranted.
     pub fn prune_interactions(&mut self, now: Instant) -> bool {
         let before = self.interactions.len();
-        self.interactions.retain(|_, entry| entry.visible_at(now));
+        self.interactions.retain(|_, entry| entry.alive_at(now));
         let interactions = &self.interactions;
         self.interaction_markers.retain(|_, marker| {
             interactions.contains_key(&marker.invocation)
@@ -274,21 +348,6 @@ impl PresenceCtx {
             .collect()
     }
 
-    /// Visible semantic work whose authenticated action catalogue names this
-    /// application as its owner. Missing ownership is intentionally excluded:
-    /// a compositor must never guess which foreign window may display it.
-    pub fn visible_interactions_for_app(
-        &self,
-        app_id: &str,
-        now: Instant,
-    ) -> Vec<SemanticInteraction> {
-        self.visible_entries(now)
-            .into_iter()
-            .filter(|entry| entry_belongs_to_app(entry, app_id))
-            .map(|entry| entry.interaction.clone())
-            .collect()
-    }
-
     /// Whether another frame is needed to retire an active dwell.
     pub fn has_visible_interactions(&self, now: Instant) -> bool {
         self.interactions
@@ -313,8 +372,16 @@ impl PresenceCtx {
     pub fn interaction_next_wake_deadline(&self, now: Instant) -> Option<Instant> {
         self.interactions
             .values()
-            .map(InteractionPresenceEntry::expiry_deadline)
-            .map(|deadline| deadline.checked_add(EXPIRY_EPSILON).unwrap_or(deadline))
+            .map(|entry| {
+                // A cursor waiting for its rest on the last target to end
+                // moves on then.
+                if now < entry.first_received_at && !entry.superseded {
+                    entry.first_received_at
+                } else {
+                    let expiry = entry.expiry_deadline();
+                    expiry.checked_add(EXPIRY_EPSILON).unwrap_or(expiry)
+                }
+            })
             .map(|deadline| deadline.max(now))
             .min()
     }
@@ -355,7 +422,7 @@ impl PresenceCtx {
             return None;
         }
         let first_received_at = entry.first_received_at;
-        let received_at = entry.received_at;
+        let pulsed_at = entry.pulsed_at.map(|at| at.max(first_received_at));
         let user = UserId(interaction.actor.id.clone());
         // The tip rests on the control the invocation is bound to: what the
         // agent would press, fully inside the frame.
@@ -398,26 +465,55 @@ impl PresenceCtx {
             now.saturating_duration_since(first_received_at),
         );
         let tip = point_lerp(origin, target, approach);
-        let pulse = if paint.theme.reduce_motion {
-            0.0
-        } else {
-            1.0 - crate::motion::Attention::FLASH.progress_after(
-                crate::motion::Direction::Exit,
-                motion,
-                source,
-                now.saturating_duration_since(received_at),
-            )
+        let pulse = match pulsed_at {
+            Some(pulsed_at) if !paint.theme.reduce_motion => {
+                1.0 - crate::motion::Attention::FLASH.progress_after(
+                    crate::motion::Direction::Exit,
+                    motion,
+                    source,
+                    now.saturating_duration_since(pulsed_at),
+                )
+            }
+            _ => 0.0,
         };
+        let actor_color = super::render::color_for(self, &user, paint.theme);
+        if pulse > 0.0 {
+            let radius = 8.0 + 8.0 * (1.0 - pulse);
+            paint.scene.stroke(
+                &Stroke::new(1.5),
+                paint.transform,
+                actor_color.with_alpha_factor((pulse * 0.72) as f32),
+                None,
+                &Circle::new(target, radius),
+            );
+        }
+        // The agent wears the nametag it wears wherever it points: its mark
+        // and its name, in its colour.
+        let name = self
+            .names
+            .get(&user)
+            .and_then(|name| crate::history_source::human_label(name, &user.0))
+            .map_or_else(
+                || crate::i18n::widget_format("interaction-agent", &[]),
+                str::to_owned,
+            );
+        let bounds = super::render::draw_agent_nametag(
+            paint.scene,
+            paint.transform,
+            paint.text,
+            paint.theme,
+            (tip, viewport),
+            &name,
+            actor_color,
+        );
         let marker = AgentActionMarker {
             invocation: interaction.invocation,
             tip,
             target,
-            bounds: agent_marker_bounds(tip, viewport),
+            bounds,
             approach,
             pulse,
         };
-        let actor_color = super::render::color_for(self, &user, paint.theme);
-        draw_agent_marker_geometry(paint, &marker, actor_color, viewport);
         self.interaction_markers.insert(
             user,
             AgentMarkerContinuity {
@@ -570,58 +666,6 @@ impl PresenceCtx {
         }
     }
 
-    /// Draw the generic rail only for semantic work explicitly owned by one
-    /// application. Compositors use this for foreign surfaces: an external
-    /// client gets collaboration by default, while activity from a different
-    /// app can never be painted over its pixels.
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::cast_precision_loss,
-        reason = "the result is bounded to three cards and viewport dimensions are UI-sized"
-    )]
-    pub fn draw_interactions_for_app(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        viewport: Rect,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        now: Instant,
-        app_id: &str,
-    ) {
-        let entries = self
-            .visible_entries(now)
-            .into_iter()
-            .filter(|entry| entry_belongs_to_app(entry, app_id))
-            .collect::<Vec<_>>();
-        if entries.is_empty() || viewport.width() < 96.0 || viewport.height() < 32.0 {
-            return;
-        }
-        let vertical_room = (viewport.height() - CARD_MARGIN * 2.0).max(0.0);
-        let fit = ((vertical_room + CARD_GAP) / (CARD_HEIGHT + CARD_GAP)).floor() as usize;
-        let visible = entries.len().min(MAX_VISIBLE_CARDS).min(fit);
-        let width = CARD_WIDTH.min((viewport.width() - CARD_MARGIN * 2.0).max(80.0));
-        for (index, entry) in entries.iter().take(visible).enumerate() {
-            let y = viewport.y0 + CARD_MARGIN + index as f64 * (CARD_HEIGHT + CARD_GAP);
-            let placement = InteractionCardPlacement {
-                invocation: entry.interaction.invocation,
-                rect: Rect::new(
-                    viewport.x1 - CARD_MARGIN - width,
-                    y,
-                    viewport.x1 - CARD_MARGIN,
-                    y + CARD_HEIGHT,
-                ),
-                additional: if index + 1 == visible {
-                    entries.len().saturating_sub(visible)
-                } else {
-                    0
-                },
-            };
-            self.draw_interaction_card(scene, transform, text_renderer, theme, entry, &placement);
-        }
-    }
-
     fn visible_entries(&self, now: Instant) -> Vec<&InteractionPresenceEntry> {
         self.visible_entries_excluding(now, &[])
     }
@@ -754,7 +798,15 @@ impl PresenceCtx {
 }
 
 impl InteractionPresenceEntry {
+    /// Whether it shows at `now`: begun, still within its dwell, and not
+    /// taken over by a later action of its agent.
     fn visible_at(&self, now: Instant) -> bool {
+        !self.superseded && now >= self.first_received_at && self.alive_at(now)
+    }
+
+    /// Whether it is still remembered at `now`: within its dwell, shown or
+    /// not.
+    fn alive_at(&self, now: Instant) -> bool {
         let age = now.saturating_duration_since(self.received_at);
         if self.interaction.phase.is_terminal() {
             age <= TERMINAL_INTERACTION_DWELL
@@ -788,7 +840,9 @@ impl InteractionPresenceEntry {
             source,
         );
         now.saturating_duration_since(self.first_received_at) < approach
-            || now.saturating_duration_since(self.received_at) < flash
+            || self.pulsed_at.is_some_and(|at| {
+                now.saturating_duration_since(at.max(self.first_received_at)) < flash
+            })
     }
 }
 
@@ -844,84 +898,6 @@ fn point_lerp(from: Point, to: Point, progress: f64) -> Point {
         from.x + (to.x - from.x) * progress,
         from.y + (to.y - from.y) * progress,
     )
-}
-
-fn agent_marker_bounds(tip: Point, viewport: Rect) -> Rect {
-    let x = if tip.x + 22.0 > viewport.x1 {
-        -1.0
-    } else {
-        1.0
-    };
-    let y = if tip.y + 20.0 > viewport.y1 {
-        -1.0
-    } else {
-        1.0
-    };
-    (Affine::translate((tip.x, tip.y)) * Affine::scale_non_uniform(x, y))
-        .transform_rect_bbox(Rect::new(-0.625, -0.625, 21.625, 19.625))
-        .intersect(viewport)
-}
-
-fn draw_agent_marker_geometry(
-    paint: &mut PaintCtx<'_>,
-    marker: &AgentActionMarker,
-    actor_color: Color,
-    viewport: Rect,
-) {
-    if marker.pulse > 0.0 {
-        let radius = 8.0 + 8.0 * (1.0 - marker.pulse);
-        paint.scene.stroke(
-            &Stroke::new(1.5),
-            paint.transform,
-            actor_color.with_alpha_factor((marker.pulse * 0.72) as f32),
-            None,
-            &Circle::new(marker.target, radius),
-        );
-    }
-
-    // A conventional pointer silhouette communicates approach, while the
-    // attached shared agent tile makes it unmistakably semantic presence.
-    let tip = marker.tip;
-    let direction_x = if tip.x + 22.0 > viewport.x1 {
-        -1.0
-    } else {
-        1.0
-    };
-    let direction_y = if tip.y + 20.0 > viewport.y1 {
-        -1.0
-    } else {
-        1.0
-    };
-    let transform = paint.transform
-        * Affine::translate((tip.x, tip.y))
-        * Affine::scale_non_uniform(direction_x, direction_y);
-    let mut cursor = BezPath::new();
-    cursor.move_to((0.0, 0.0));
-    cursor.line_to((2.2, 17.0));
-    cursor.line_to((6.1, 12.1));
-    cursor.line_to((10.0, 19.0));
-    cursor.line_to((13.0, 17.2));
-    cursor.line_to((9.2, 10.5));
-    cursor.line_to((15.6, 10.0));
-    cursor.close_path();
-    paint
-        .scene
-        .fill(Fill::NonZero, transform, actor_color, None, &cursor);
-    paint.scene.stroke(
-        &Stroke::new(1.25),
-        transform,
-        paint.theme.on_surface(actor_color).ink,
-        None,
-        &cursor,
-    );
-    crate::agent_identity::draw_agent_identity_mark(
-        paint.scene,
-        transform,
-        Rect::new(10.0, 1.0, 21.0, 12.0),
-        actor_color,
-        paint.theme,
-        crate::agent_identity::AgentIdentityStyle::Solid,
-    );
 }
 
 fn sort_entries(entries: &mut [&InteractionPresenceEntry]) {
@@ -1046,15 +1022,6 @@ fn actor_label(presence: &PresenceCtx, user: &UserId, is_agent: bool) -> String 
         (false, Some(name)) => name.to_string(),
         (false, None) => crate::i18n::widget_format("interaction-collaborator", &[]),
     }
-}
-
-fn entry_belongs_to_app(entry: &InteractionPresenceEntry, app_id: &str) -> bool {
-    entry
-        .interaction
-        .action
-        .app
-        .as_ref()
-        .is_some_and(|app| app.id == app_id)
 }
 
 #[cfg(test)]
@@ -1237,34 +1204,6 @@ mod tests {
 
     #[test]
     fn interactions_paint_only_their_addressed_surface() {
-        // phase: foreign_app_fallback_is_strictly_scoped_to_catalogue_owner
-        {
-            let at = crate::time::now();
-            let mut presence = PresenceCtx::empty();
-            let mut writer = interaction(20, 1, InteractionPhase::Applying);
-            writer.action.app = Some(tilo_actions::ActionApp {
-                id: "org.tilo.Writer".into(),
-                label: "Writer".into(),
-            });
-            let mut files = interaction(21, 1, InteractionPhase::Applying);
-            files.action.app = Some(tilo_actions::ActionApp {
-                id: "org.tilo.Files".into(),
-                label: "Files".into(),
-            });
-            let unowned = interaction(22, 1, InteractionPhase::Applying);
-            assert!(presence.apply_interaction_at(writer, at).unwrap());
-            assert!(presence.apply_interaction_at(files, at).unwrap());
-            assert!(presence.apply_interaction_at(unowned, at).unwrap());
-
-            let writer = presence.visible_interactions_for_app("org.tilo.Writer", at);
-            assert_eq!(writer.len(), 1);
-            assert_eq!(writer[0].action.label, "Rename");
-            assert!(
-                presence
-                    .visible_interactions_for_app("org.tilo.Calendar", at)
-                    .is_empty()
-            );
-        }
         // phase: workspace_fanout_only_paints_the_addressed_app_surface
         {
             let at = crate::time::now();
@@ -1303,9 +1242,9 @@ mod tests {
             let at = crate::time::now();
             let mut presence = PresenceCtx::empty();
             for id in 1..=5 {
-                presence
-                    .apply_interaction_at(interaction(id, 1, InteractionPhase::Applying), at)
-                    .unwrap();
+                let mut someone = interaction(id, 1, InteractionPhase::Applying);
+                someone.actor.id = format!("agent-{id}");
+                presence.apply_interaction_at(someone, at).unwrap();
             }
             let cards = presence.interaction_card_layout(Rect::new(0.0, 0.0, 800.0, 600.0), at);
             assert_eq!(cards.len(), 3);
@@ -1365,7 +1304,11 @@ mod tests {
             advanced.approach
         );
         assert!(advanced.tip.x < first.tip.x);
-        assert!(advanced.pulse > 0.99, "the new phase gets one short pulse");
+        assert!(
+            advanced.pulse < first.pulse,
+            "a phase in the same burst carries on the one flash, never restarts it: {}",
+            advanced.pulse
+        );
 
         // phase: motion_stops_after_the_bounded_approach_and_pulse
         assert!(presence.interaction_animation_demand(applying_at, &theme));
@@ -1571,12 +1514,99 @@ mod tests {
         }
     }
 
+    fn on(target: &str, invocation: u128, phase: InteractionPhase) -> SemanticInteraction {
+        let mut action = interaction(invocation, 1, phase);
+        action.resource.id = target.into();
+        action
+    }
+
+    /// A fast agent never strobes: a burst on one target is one action at
+    /// rest there, a new target waits until the cursor rested on the last
+    /// one, and only the newest of the targets that waited is gone to.
+    #[test]
+    fn a_fast_agents_actions_are_paced_so_a_person_can_follow_them() {
+        let at = crate::time::now();
+        let mut presence = PresenceCtx::empty();
+
+        // phase: a_burst_on_one_target_is_one_action
+        for n in 0..8u128 {
+            let when = at + Duration::from_millis(40 * n as u64);
+            presence
+                .apply_interaction_at(on("file:draft", 100 + n, InteractionPhase::Committed), when)
+                .unwrap();
+        }
+        let burst_end = at + Duration::from_millis(280);
+        let shown = presence.visible_interactions(burst_end);
+        assert_eq!(shown.len(), 1, "eight edits read as one: {shown:?}");
+        assert_eq!(shown[0].invocation, InvocationId(Uuid::from_u128(107)));
+        let pulses: std::collections::HashSet<_> = presence
+            .interactions
+            .values()
+            .filter_map(|entry| entry.pulsed_at)
+            .collect();
+        assert_eq!(pulses, [at].into(), "the burst flashes the cursor once");
+
+        // phase: a_new_target_waits_for_the_rest_on_the_last_one
+        let elsewhere_at = at + Duration::from_millis(300);
+        presence
+            .apply_interaction_at(
+                on("file:notes", 200, InteractionPhase::Applying),
+                elsewhere_at,
+            )
+            .unwrap();
+        let waiting = presence.agent_marker_interactions(elsewhere_at);
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(
+            waiting[0].resource.id, "file:draft",
+            "the cursor stays where it rests"
+        );
+        // The rest counts from the burst's last action there.
+        let rest_ends = burst_end + AGENT_TARGET_DWELL;
+        assert_eq!(
+            presence.interaction_next_wake_deadline(elsewhere_at),
+            Some(rest_ends),
+            "the frame that moves it on is asked for"
+        );
+
+        // phase: only_the_newest_waiting_target_is_gone_to
+        presence
+            .apply_interaction_at(
+                on("file:todo", 201, InteractionPhase::Applying),
+                elsewhere_at + Duration::from_millis(10),
+            )
+            .unwrap();
+        presence
+            .apply_interaction_at(
+                {
+                    let mut later = on("file:notes", 200, InteractionPhase::Committed);
+                    later.sequence = 2;
+                    later
+                },
+                rest_ends,
+            )
+            .unwrap();
+        let moved = presence.agent_marker_interactions(rest_ends);
+        assert_eq!(moved.len(), 1);
+        assert_eq!(
+            moved[0].resource.id, "file:todo",
+            "the skipped target never shows"
+        );
+        assert!(
+            presence
+                .visible_interactions(rest_ends)
+                .iter()
+                .all(|shown| shown.resource.id != "file:notes"),
+            "a later phase of a skipped action does not bring it back"
+        );
+    }
+
     #[test]
     fn resolved_interactions_are_excluded_from_fallback_and_expire_on_a_precise_wake() {
         let at = crate::time::now();
         let mut presence = PresenceCtx::empty();
         let resolved = interaction(60, 1, InteractionPhase::Applying);
-        let unresolved = interaction(61, 1, InteractionPhase::Applying);
+        let mut unresolved = interaction(61, 1, InteractionPhase::Applying);
+        unresolved.actor.id = "another-agent".into();
         presence.apply_interaction_at(resolved.clone(), at).unwrap();
         presence
             .apply_interaction_at(unresolved.clone(), at)

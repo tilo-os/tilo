@@ -17,13 +17,21 @@
 //! a frame names it: the host the agent acts through opens it there, as a
 //! window of the person's, so everyone in the workspace sees it as they see a
 //! colleague's, and following the agent brings that window forward.
+//!
+//! Each action the agent takes in a record is narrated as it goes
+//! ([`Presence::acting`]): the semantic work every desktop draws as the
+//! agent's cursor travelling to the control the action is bound to, on the
+//! record's live stream. What the action changed is said as the agent's
+//! selection for a moment, which every window that shows the record
+//! highlights in the agent's colour, and then settles to a caret at its end.
 
 use std::sync::{Arc, Mutex, PoisonError, Weak};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use collab_types::PeerPresencePayload;
 use collab_types::presence::{
-    MAX_ACTIVITY_BYTES, Presence as Frame, ShellPresence, ShellWindow, user_color,
+    MAX_ACTIVITY_BYTES, Presence as Frame, PresenceKey, ShellPresence, ShellSelection, ShellWindow,
+    user_color,
 };
 use serde_json::Value;
 use tilo_actions::InvocationId;
@@ -32,15 +40,22 @@ use tilo_actions::remote::{
     InvokeRequest, ReceiptStatus, application_action_target, application_record_target,
     settle_with,
 };
-use tilo_browser_peer::PeerHandle;
+use tilo_browser_peer::presence_anchors::{presence_anchors, read_presence_anchors};
 use tilo_browser_peer::session_actions::SessionActions;
-use tilo_relay_protocol::live::LiveRecord;
-use tilo_runtime::mcp::ActedRecord;
+use tilo_browser_peer::{PeerHandle, narration};
+use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveRecord, OpsFrame};
+use tilo_runtime::mcp::{ActedRecord, Acting};
 
 /// How often the agent restates itself between calls: the workspace's other
 /// agents restate theirs this often, and a reader that joined after the last
 /// frame still draws it.
 const KEEPALIVE: Duration = Duration::from_secs(1);
+
+/// How long what an action changed stays the agent's selection, highlighted
+/// in its colour, before it settles to the caret at its end: long enough to
+/// see what changed, short enough that the next change reads as new. Changes
+/// to the same text within it grow the one highlight.
+const HIGHLIGHT: Duration = Duration::from_millis(1500);
 
 /// Longest activity line the agent says, the ellipsis included: a line a
 /// person reads at a glance, where the roster draws it.
@@ -78,6 +93,23 @@ struct Said {
     seq: u32,
     activity: Option<String>,
     focus: Option<LiveRecord>,
+    /// What the agent's last change left selected, or its caret.
+    selection: Option<ShellSelection>,
+    /// The change shown highlighted now, until it settles to its caret.
+    highlight: Option<Highlight>,
+    /// The sequence of the agent's narration on the live plane.
+    narrated: u64,
+    /// The records whose live streams this device asked to take part in:
+    /// narration on a record is sealed with that record's keys.
+    joined: Vec<LiveRecord>,
+}
+
+/// What the agent changed, shown as its selection until `until`.
+struct Highlight {
+    key: PresenceKey,
+    start: usize,
+    end: usize,
+    until: Instant,
 }
 
 impl Presence {
@@ -176,6 +208,103 @@ impl Presence {
         }
     }
 
+    /// Narrate what the agent's action `acting` is doing: the semantic work
+    /// on its record's live stream, and once it changed something, that
+    /// change as the agent's selection for [`HIGHLIGHT`], then the caret at
+    /// its end.
+    pub fn acting(self: &Arc<Self>, acting: &Acting) {
+        let record = LiveRecord {
+            app: acting.record.app.clone(),
+            record: acting.record.record.clone(),
+        };
+        let (seq, joining) = {
+            let mut said = self.said.lock().unwrap_or_else(PoisonError::into_inner);
+            said.narrated = said.narrated.wrapping_add(1).max(1);
+            let joining = !said.joined.contains(&record);
+            if joining {
+                said.joined.push(record.clone());
+            }
+            (said.narrated, joining)
+        };
+        // The device asks for the record's keys once; what it narrates waits
+        // for them, and is sealed with them.
+        if joining {
+            let _ = self.peer.open_route(tilo_browser_peer::DocumentRoute {
+                app_id: record.app.clone(),
+                cluster_id: self.cluster.clone(),
+                record: record.record.clone(),
+            });
+        }
+        let narrated = narration::Narrated {
+            agent: &self.label,
+            invocation: acting.invocation,
+            app: &acting.record.app,
+            action: &acting.action,
+            phase: acting.phase.clone(),
+        };
+        if let Some(event) = narration::frame(&narrated, seq, now_ms()) {
+            let frame = LiveFrame::Ops(OpsFrame::Semantic {
+                record,
+                event,
+            });
+            if let Ok(bytes) = frame.encode() {
+                let _ = self.peer.publish_live(self.workspace_id, bytes);
+            }
+        }
+        let Some(changed) = acting
+            .left_at
+            .as_ref()
+            .filter(|_| acting.phase == tilo_actions::InteractionPhase::Committed)
+            .and_then(|place| {
+                let anchor = LiveAnchor {
+                    cursor: hex::decode(&place.anchor).ok()?,
+                };
+                let head = LiveAnchor {
+                    cursor: hex::decode(&place.head).ok()?,
+                };
+                read_presence_anchors(&anchor, &head)
+            })
+        else {
+            return;
+        };
+        let now = Instant::now();
+        {
+            let mut said = self.said.lock().unwrap_or_else(PoisonError::into_inner);
+            let highlight = grown(said.highlight.take(), changed, now);
+            said.selection = shell_selection(&highlight.key, highlight.start, highlight.end);
+            said.highlight = Some(highlight);
+        }
+        self.say();
+        let weak: Weak<Self> = Arc::downgrade(self);
+        tokio::spawn(async move {
+            tokio::time::sleep(HIGHLIGHT).await;
+            let Some(presence) = weak.upgrade() else {
+                return;
+            };
+            presence.settle();
+        });
+    }
+
+    /// The highlight whose time is up settles to the caret at its end; a
+    /// later change keeps its own.
+    fn settle(&self) {
+        {
+            let mut said = self.said.lock().unwrap_or_else(PoisonError::into_inner);
+            // Kept once settled: the next caret in the same text says how
+            // far that change wrote.
+            let Some(caret) = said
+                .highlight
+                .as_ref()
+                .filter(|highlight| highlight.until <= Instant::now())
+                .map(|highlight| shell_selection(&highlight.key, highlight.end, highlight.end))
+            else {
+                return;
+            };
+            said.selection = caret;
+        }
+        self.say();
+    }
+
     /// Say the agent has left, so the workspace drops it from the list
     /// instead of holding a member that never speaks again.
     pub fn leave(&self) {
@@ -185,12 +314,17 @@ impl Presence {
     /// Say the whole of what the agent is: the frame every reader draws it
     /// by, numbered past the last one it said.
     fn say(&self) {
-        let (seq, activity, focus) = {
+        let (seq, activity, focus, selection) = {
             let mut said = self.said.lock().unwrap_or_else(PoisonError::into_inner);
             said.seq = said.seq.wrapping_add(1);
-            (said.seq, said.activity.clone(), said.focus.clone())
+            (
+                said.seq,
+                said.activity.clone(),
+                said.focus.clone(),
+                said.selection.clone(),
+            )
         };
-        let view = frame(
+        let mut view = frame(
             seq,
             now_ms(),
             &self.label,
@@ -198,6 +332,7 @@ impl Presence {
             activity.as_deref(),
             focus.as_ref(),
         );
+        view.selection = selection;
         self.send(Frame::desktop(
             &self.cluster,
             PeerPresencePayload::Shell(Box::new(view)),
@@ -212,8 +347,8 @@ impl Presence {
 }
 
 /// The frame the agent says of itself: its face, what it is doing, and the
-/// record it acts in, as the window a receiver brings the person to. It
-/// reports no caret (an edit's answer names none), so it says no selection.
+/// record it acts in, as the window a receiver brings the person to. Its
+/// selection is what its last change left ([`Presence::acting`]).
 fn frame(
     seq: u32,
     sent_at_ms: u64,
@@ -274,6 +409,49 @@ fn open_request(cluster: &str, focus: &LiveRecord) -> InvokeRequest {
         wait_ms: None,
         appearance: None,
     }
+}
+
+/// `changed` (an editor key and range), as the highlight it makes. An
+/// action that reports only the caret it left wrote up to it: from where its
+/// last change in that text ended, or from the start of a text it had not
+/// been in. Grown over the highlight still shown when it changes the same
+/// text, so a burst of edits reads as one change rather than a flicker of
+/// many.
+fn grown(
+    shown: Option<Highlight>,
+    (key, start, end): (PresenceKey, usize, usize),
+    now: Instant,
+) -> Highlight {
+    let until = now.checked_add(HIGHLIGHT).unwrap_or(now);
+    let same = shown.filter(|shown| shown.key == key);
+    let start = match &same {
+        _ if start != end => start,
+        Some(shown) if shown.end <= end => shown.end,
+        _ => 0,
+    };
+    match same {
+        Some(shown) if now < shown.until => Highlight {
+            key,
+            start: shown.start.min(start),
+            end: shown.end.max(end),
+            until,
+        },
+        _ => Highlight {
+            key,
+            start,
+            end,
+            until,
+        },
+    }
+}
+
+/// The range `start..end` in the editor `key`, as the selection a frame says.
+fn shell_selection(key: &PresenceKey, start: usize, end: usize) -> Option<ShellSelection> {
+    let (anchor, head) = presence_anchors(key, start, end)?;
+    Some(ShellSelection {
+        anchor: hex::encode(anchor.cursor),
+        head: hex::encode(head.cursor),
+    })
 }
 
 /// When the frame is said, in this device's wall-clock milliseconds.
@@ -552,5 +730,50 @@ mod tests {
         assert_eq!(nowhere.focus(), None);
         assert!(nowhere.windows.is_empty());
         assert!(nowhere.activity.is_none());
+    }
+
+    fn paragraph(id: &str) -> PresenceKey {
+        PresenceKey::Resource {
+            app: "so.tilo.word-processor".into(),
+            id: id.into(),
+            kind: "word-processor.document".into(),
+        }
+    }
+
+    /// What an action wrote is highlighted: up to the caret it left in a
+    /// text it had not been in, a burst of writes in that text as one
+    /// growing highlight, and the next write after the highlight settled
+    /// from where the last one ended.
+    #[test]
+    fn what_the_agent_wrote_is_one_highlight_per_burst() {
+        let at = Instant::now();
+        let first = grown(None, (paragraph("p1"), 5, 5), at);
+        assert_eq!(
+            (first.start, first.end),
+            (0, 5),
+            "the new paragraph it wrote"
+        );
+
+        let burst = grown(
+            Some(first),
+            (paragraph("p1"), 9, 9),
+            at + Duration::from_millis(200),
+        );
+        assert_eq!((burst.start, burst.end), (0, 9), "one highlight, grown");
+
+        let later = grown(Some(burst), (paragraph("p1"), 14, 14), at + HIGHLIGHT * 2);
+        assert_eq!(
+            (later.start, later.end),
+            (9, 14),
+            "only what it wrote since"
+        );
+
+        let elsewhere = grown(Some(later), (paragraph("p2"), 3, 7), at + HIGHLIGHT * 2);
+        assert_eq!(
+            (elsewhere.start, elsewhere.end),
+            (3, 7),
+            "a range is its own"
+        );
+        assert!(shell_selection(&elsewhere.key, elsewhere.start, elsewhere.end).is_some());
     }
 }

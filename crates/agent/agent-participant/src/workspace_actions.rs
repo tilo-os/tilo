@@ -65,7 +65,7 @@ use crate::participant::actions::{Outcome, door_outcome, open_row, record_of, re
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use collab_types::DocumentMutation;
 use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller, CallerPrincipal,
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, ActorPlace, Caller, CallerPrincipal,
     CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueRow, Completer, Confirmation,
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
     RemoteActionMessage, application_provider, application_provider_record, pending,
@@ -248,6 +248,8 @@ struct Entry {
     caller: Caller,
     request: InvokeRequest,
     update: InvocationUpdate,
+    /// Where the invocation left its actor in the record it acted on.
+    left_at: Option<ActorPlace>,
 }
 
 #[derive(Default)]
@@ -272,6 +274,7 @@ impl Ledger {
                 caller: caller.clone(),
                 request,
                 update: InvocationUpdate::Accepted { invocation },
+                left_at: None,
             },
         );
     }
@@ -503,10 +506,10 @@ impl WorkspaceActions {
                 answer.map(RemoteActionMessage::Receipt)
             }
             RemoteActionMessage::Observe { invocation, .. } => {
-                let state = self
-                    .ledger()
-                    .owned(caller, &invocation)
-                    .map(|entry| InvocationState::new(invocation, entry.update.clone()));
+                let state = self.ledger().owned(caller, &invocation).map(|entry| {
+                    InvocationState::new(invocation, entry.update.clone())
+                        .left_at(entry.left_at.clone())
+                });
                 Pending::ready(RemoteActionMessage::Update { invocation, state })
             }
             RemoteActionMessage::Cancel { invocation } => {
@@ -1605,9 +1608,9 @@ impl Worker {
         }
         let mut ledger = self.ledger();
         ledger.running = None;
-        let update = match outcome {
-            Ok(output) => InvocationUpdate::Succeeded { invocation, output },
-            Err(Outcome::Failed(error)) => InvocationUpdate::Failed { invocation, error },
+        let (update, left_at) = match outcome {
+            Ok((output, left_at)) => (InvocationUpdate::Succeeded { invocation, output }, left_at),
+            Err(Outcome::Failed(error)) => (InvocationUpdate::Failed { invocation, error }, None),
             Err(Outcome::Rejected(error)) => {
                 ledger.forget(&invocation);
                 return InvocationReceipt {
@@ -1618,6 +1621,7 @@ impl Worker {
         };
         if let Some(entry) = ledger.entries.get_mut(&invocation) {
             entry.update = update.clone();
+            entry.left_at = left_at;
         }
         drop(ledger);
         InvocationState::new(invocation, update).receipt()
@@ -1653,12 +1657,14 @@ impl Worker {
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
     )]
+    /// Run `request`: what it answered, and where it left its actor in the
+    /// record it changed.
     fn perform(
         &mut self,
         workspace_id: u64,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Result<ActionOutput, Outcome> {
+    ) -> Result<(ActionOutput, Option<ActorPlace>), Outcome> {
         let appearance = self
             .admit_appearance(workspace_id, caller, request)
             .map_err(Outcome::Rejected)?;
@@ -1666,10 +1672,12 @@ impl Worker {
             .try_registered_read(workspace_id, caller, request)
             .map_err(|error| *error)?
         {
-            return Ok(output);
+            return Ok((output, None));
         }
         if let Some((named, app)) = application_provider(&request.target.provider) {
-            return self.show_on_desk(workspace_id, caller, named, app, &request.target);
+            return self
+                .show_on_desk(workspace_id, caller, named, app, &request.target)
+                .map(|output| (output, None));
         }
         // Acting on a record waits for that record's keys and no other's;
         // opening an app on a new record needs only the workspace.
@@ -1692,7 +1700,9 @@ impl Worker {
         let target = &request.target;
         let owner = self.serves_as_owner(caller);
         if let Some(named) = provider_workspace(&target.provider) {
-            return self.open_asked(workspace_id, named, owner, target);
+            return self
+                .open_asked(workspace_id, named, owner, target)
+                .map(|output| (output, None));
         }
         let workspace = workspace.ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
         let route = record_of(&target.provider, &workspace)
@@ -1717,7 +1727,9 @@ impl Worker {
             .map_err(|_| Outcome::Rejected(ActionHostError::UnknownAction))?;
         let live = live_actions(&mounted.app);
         if target.address.action == ui::tilo_resource::share::SHARE_LINK {
-            return self.share_link(workspace_id, caller, &route, &live, target, arguments);
+            return self
+                .share_link(workspace_id, caller, &route, &live, target, arguments)
+                .map(|output| (output, None));
         }
         let descriptor = live
             .iter()
@@ -1734,12 +1746,14 @@ impl Worker {
             }
             let contract = descriptor.contract.clone();
             let address = target.address.clone();
-            return self.comment_as_member(
-                workspace_id,
-                caller,
-                (&route, &state, &contract),
-                (&address, &arguments, confirmed),
-            );
+            return self
+                .comment_as_member(
+                    workspace_id,
+                    caller,
+                    (&route, &state, &contract),
+                    (&address, &arguments, confirmed),
+                )
+                .map(|output| (output, None));
         }
         let context = caller_context(request);
         let output = mounted
@@ -1752,11 +1766,17 @@ impl Worker {
                 confirmed,
             )
             .map_err(|error| door_outcome(&error))?;
+        // Where the action left its actor, for the door that shows it
+        // working: the text it wrote, the item it acted on.
+        let left_at = mounted.app.presence().map(|(anchor, head)| ActorPlace {
+            anchor: hex::encode(anchor.cursor),
+            head: hex::encode(head.cursor),
+        });
         let taken = take_all(&mounted.app, &route)
             .map_err(|error| commit_failed(error.to_string(), false))?;
         self.commit_taken(workspace_id, &route, taken)
             .map_err(|reason| commit_failed(reason, true))?;
-        Ok(output)
+        Ok((output, left_at))
     }
 
     /// Open an app on a new record of the workspace `named`, as its

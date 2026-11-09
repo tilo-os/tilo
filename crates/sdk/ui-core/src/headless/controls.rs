@@ -947,17 +947,20 @@ mod locus_tests {
         );
         let marker = markers.first().expect("the agent's mark is painted");
         let [x0, y0, x1, y1] = marker.marker;
+        let mark = vello::kurbo::Rect::new(x0, y0, x1, y1);
+        // The agent's mark is centred on its tip, its nametag beside it.
+        let tip = check.center();
         assert!(
-            check.x0 <= x0 && x0 <= check.x1 && check.y0 <= y0 && y0 <= check.y1,
-            "the pointer tip rests on the check box: {x0},{y0} vs {check:?}"
+            mark.contains(tip) && locus.contains(tip),
+            "the pointer rests on the row's check box: {mark:?} vs {check:?} in {locus:?}"
+        );
+        assert!(
+            mark.width() > mark.height(),
+            "the agent wears its nametag beside its pointer: {mark:?}"
         );
         assert!(
             viewport.x0 <= x0 && x1 <= viewport.x1 && viewport.y0 <= y0 && y1 <= viewport.y1,
             "the whole mark stays inside the window: {marker:?} vs {viewport:?}"
-        );
-        assert!(
-            locus.x0 <= x0 && x0 <= locus.x1 && locus.y0 <= y0 && y0 <= locus.y1,
-            "the tip is on the row it acts on: {x0},{y0} vs {locus:?}"
         );
     }
 

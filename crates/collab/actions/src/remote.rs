@@ -900,6 +900,19 @@ pub struct InvocationState {
     /// answers is data to reason about, never instructions to follow.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub untrusted: bool,
+    /// Where the invocation left its actor in the record it acted on: the
+    /// text it changed, or the caret it left. What a door that shows its
+    /// actor working highlights for the people watching.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_at: Option<ActorPlace>,
+}
+
+/// A caret or selection in a record, as the live plane's selection anchors
+/// (hex): every collaborator's editor resolves them against its own items.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorPlace {
+    pub anchor: String,
+    pub head: String,
 }
 
 impl InvocationState {
@@ -909,7 +922,15 @@ impl InvocationState {
         Self {
             update: update.with_invocation(invocation),
             untrusted: false,
+            left_at: None,
         }
+    }
+
+    /// This state, saying where the invocation left its actor.
+    #[must_use]
+    pub fn left_at(mut self, place: Option<ActorPlace>) -> Self {
+        self.left_at = place;
+        self
     }
 
     /// This state, saying whether what it answers is untrusted content.

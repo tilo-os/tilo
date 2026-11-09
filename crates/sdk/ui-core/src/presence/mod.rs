@@ -807,12 +807,6 @@ impl PresenceCtx {
         }
     }
 
-    pub fn remove_presence(&mut self, key: &PresenceKey, user: &UserId) {
-        if let Some(list) = self.here.get_mut(key) {
-            list.retain(|u| u != user);
-        }
-    }
-
     /// Re-attribute `user` to exactly one `PresenceKey::Tab` at a time, so a
     /// peer switching tabs moves their dot rather than leaving a trail. No-op
     /// (falls back to `register_presence`) if `target` isn't a `Tab` key.
@@ -1045,27 +1039,6 @@ impl PresenceCtx {
         crate::motion::Follow::fading(left, fade)
     }
 
-    /// Whether any pointer's name is fading at `now` (see
-    /// [`Self::pointer_name_opacity`]), or will step aside at the end of its
-    /// linger: a reason to paint the next frame too.
-    pub fn pointer_names_fading(&self, now: Instant, fade: Duration) -> bool {
-        self.pointer_moved.values().any(|moved| {
-            let still = now.saturating_duration_since(*moved);
-            still < POINTER_NAME_LINGER
-                && POINTER_NAME_LINGER.saturating_sub(still) <= fade.max(Duration::from_millis(1))
-        })
-    }
-
-    /// When the next pointer's name starts to step aside, for a host that
-    /// sleeps between frames.
-    pub fn next_pointer_name_fade(&self, now: Instant, fade: Duration) -> Option<Instant> {
-        self.pointer_moved
-            .values()
-            .map(|moved| *moved + POINTER_NAME_LINGER.saturating_sub(fade))
-            .filter(|at| *at > now)
-            .min()
-    }
-
     /// Name the workspace in front: the one
     /// [`Self::availability_of`] and [`Self::call_of`] answer for.
     pub fn set_workspace_in_front(&mut self, workspace: Option<String>) {
@@ -1087,13 +1060,6 @@ impl PresenceCtx {
                 .iter()
                 .find_map(|((_, who), said)| (who == user).then_some(said)),
         }
-    }
-
-    /// How available `user` says they are in `workspace`; available until they
-    /// said.
-    pub fn availability_in(&self, workspace: &str, user: &UserId) -> crate::Availability {
-        self.said(Some(workspace), user)
-            .map_or(crate::Availability::Available, |(state, _)| *state)
     }
 
     /// The voice channel `user` says they are in, in `workspace`.

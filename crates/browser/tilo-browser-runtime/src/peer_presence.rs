@@ -166,7 +166,14 @@ struct Held {
     /// The workspace as the plane numbers it.
     number: u64,
     board: Board,
+    /// Semantic work its agents narrated since the mounts last took it,
+    /// admitted and bound to the member that published it.
+    interactions: Vec<tilo_actions::SemanticInteraction>,
 }
+
+/// The most narrated work a workspace holds for its mounts between two
+/// frames: a burst past it is older than what the frame shows anyway.
+const MAX_HELD_INTERACTIONS: usize = 32;
 
 /// A started page's presence: who it is, the handle it says on, and a board
 /// per workspace it takes part in.
@@ -310,6 +317,7 @@ impl Page {
                         board.seed(self.own());
                         board
                     },
+                    interactions: Vec::new(),
                 },
             );
         }
@@ -411,6 +419,55 @@ pub(crate) fn hear(peer: u32, workspace_id: u64, from: [u8; 32], body: &[u8]) {
     if changed {
         crate::browser::presence::heard(peer, workspace_id);
     }
+}
+
+/// Take semantic work `from` narrated on a record's live stream in
+/// `workspace_id` (`event`): admitted only from a member here that this
+/// page's board knows as an agent
+/// ([`tilo_browser_peer::narration::admit`]), and held for the mounts that
+/// draw the workspace, whose next frame shows it. Work from anyone else, or
+/// that does not hold, is dropped.
+pub(crate) fn narrated(
+    peer: u32,
+    workspace_id: u64,
+    from: [u8; 32],
+    event: &tilo_relay_protocol::live::SemanticFrame,
+) {
+    let admitted = PAGES.with_borrow_mut(|pages| {
+        let Some(page) = pages.get_mut(&peer) else {
+            return false;
+        };
+        page.workspaces
+            .values_mut()
+            .filter(|held| held.number == workspace_id)
+            .any(|held| {
+                let Some(interaction) =
+                    tilo_browser_peer::narration::admit(&held.board, from, event)
+                else {
+                    return false;
+                };
+                if held.interactions.len() >= MAX_HELD_INTERACTIONS {
+                    held.interactions.remove(0);
+                }
+                held.interactions.push(interaction);
+                true
+            })
+    });
+    if admitted {
+        crate::browser::presence::heard(peer, workspace_id);
+    }
+}
+
+/// The semantic work `peer`'s agents narrated in `workspace` since the last
+/// call, oldest first. Empty, and allocating nothing, while there is none.
+pub(crate) fn take_narrated(peer: u32, workspace: &str) -> Vec<tilo_actions::SemanticInteraction> {
+    PAGES.with_borrow_mut(|pages| {
+        pages
+            .get_mut(&peer)
+            .and_then(|page| page.workspaces.get_mut(workspace))
+            .map(|held| std::mem::take(&mut held.interactions))
+            .unwrap_or_default()
+    })
 }
 
 /// What `peer`'s board for `workspace` holds: what the mount draws and lists.

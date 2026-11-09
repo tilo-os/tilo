@@ -122,19 +122,22 @@ fn open(
         .and_then(|bytes| bytes.try_into().ok())
         .ok_or("this computer's login names no person; log in again")?;
     let actions = SessionActions::new(&peer, workspace_id, host);
-    let server = McpServer::new(actions.clone(), device.workspace.clone(), person(user))
-        .with_surface(Surface::Agent)
-        .with_agent_run(run, device.agent.clone());
     // The person's desktops see the agent present from the moment it enters
     // the workspace, not from its first action.
     let presence = mcp_presence::Presence::new(
         &peer,
-        actions,
+        actions.clone(),
         person(user),
         (device.workspace.clone(), workspace_id),
         device.agent.clone(),
     );
     presence.arrive();
+    // And see each action it takes in a record as it goes.
+    let narrating = Arc::clone(&presence);
+    let server = McpServer::new(actions, device.workspace.clone(), person(user))
+    .with_surface(Surface::Agent)
+    .with_agent_run(run, device.agent.clone())
+    .with_narration(Arc::new(move |acting| narrating.acting(&acting)));
     Ok(Session {
         server,
         peer,

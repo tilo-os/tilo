@@ -117,6 +117,18 @@ impl Mount {
             self.here_from(&view);
             self.names_from(&view);
         }
+        // What the workspace's agents are doing: their cursor travels to the
+        // control each action is bound to, over the window that shows it.
+        let narrated = crate::peer_presence::take_narrated(peer, &workspace);
+        if !narrated.is_empty() {
+            self.frame.update_presence(|presence| {
+                narrated.into_iter().fold(false, |shown, interaction| {
+                    presence.apply_interaction(interaction).unwrap_or(false) || shown
+                })
+            });
+            self.pending = true;
+            self.window.request_redraw();
+        }
         // The toolkit's clock times what arrived here, so a sender's skewed clock cannot keep a
         // bubble up. The members' pointers are placed by the rule the session core holds for both
         // hosts: each over the tile it is on, with what they say beside it.

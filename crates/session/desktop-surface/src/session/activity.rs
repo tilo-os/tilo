@@ -208,11 +208,7 @@ impl Door {
         if let Some(open) = state.follows.get(&invocation) {
             return if open.caller == *caller && open.action == action && open.arguments == arguments
             {
-                Ok(InvocationState {
-                    update: open.update.clone(),
-                    untrusted: false,
-                }
-                .receipt())
+                Ok(InvocationState::new(invocation, open.update.clone()).receipt())
             } else {
                 Err(ActionHostError::InvocationConflict)
             };
@@ -252,10 +248,7 @@ impl Door {
             .follows
             .get(id)
             .filter(|open| open.caller == *caller)
-            .map(|open| InvocationState {
-                update: open.update.clone(),
-                untrusted: false,
-            })
+            .map(|open| InvocationState::new(*id, open.update.clone()))
     }
 
     pub(super) fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {

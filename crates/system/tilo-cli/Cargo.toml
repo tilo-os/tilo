@@ -52,7 +52,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "ti
 # their workspaces name.
 tilo-runtime = { path = "../../runtime/tilo-runtime" }
 collab-types = { path = "../../collab/collab-types" }
-# `tilo mcp` asks the host to open the record its agent acts in as a window.
+# `tilo mcp` asks the host to open the record its agent acts in as a window,
+# and narrates what its actions are doing on the live plane.
 tilo-actions = { path = "../../collab/actions" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 
