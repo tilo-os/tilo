@@ -30,6 +30,7 @@ type = "bool"
 [[resources.verbs.params]]
 name = "float"
 required = false
+type = "bool"
 
 [[resources.verbs]]
 id = "show-app"
@@ -639,6 +640,27 @@ type = "int"
 name = "y"
 required = false
 type = "int"
+
+[[resources.verbs]]
+id = "open"
+kind = "undoable"
+
+[[resources.verbs.params]]
+name = "resource"
+required = true
+
+[resources.verbs.params.type]
+resource = ""
+
+[[resources.verbs.params]]
+name = "view"
+required = false
+type = "text"
+
+[[resources.verbs.params]]
+name = "beside"
+required = false
+type = "text"
 
 [[resources.verbs]]
 id = "undo"
