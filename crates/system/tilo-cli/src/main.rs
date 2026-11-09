@@ -45,6 +45,7 @@ mod desktop;
 mod health;
 mod login;
 mod mcp;
+mod mcp_presence;
 mod nouns;
 mod os;
 mod settings;

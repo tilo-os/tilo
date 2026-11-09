@@ -32,6 +32,7 @@ use tilo_relay_protocol::web::HereAction;
 use tilo_runtime::mcp::{McpServer, Surface};
 
 use crate::login::{Device, NOT_LOGGED_IN};
+use crate::mcp_presence;
 
 /// How many of the agent's actions the workspace shows at once.
 const SHOWN_ACTIONS: usize = 8;
@@ -48,10 +49,15 @@ struct Session {
     workspace_id: u64,
     agent: String,
     shown: Mutex<Vec<HereAction>>,
+    /// The agent, present in the workspace while this connection lives.
+    presence: Arc<mcp_presence::Presence>,
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
+        // The agent leaves with the connection: nothing of it is drawn
+        // after this.
+        self.presence.leave();
         self.peer.close();
     }
 }
@@ -90,6 +96,13 @@ impl Serving {
         drop(held);
         Ok(session)
     }
+
+    /// Leave the workspace as the connection ends: the agent says it has
+    /// left while its session can still say so, and the device closes.
+    async fn leaving(&self) {
+        let session = self.session.lock().await.take();
+        drop(session);
+    }
 }
 
 /// The projection over the workspace `peer` is in, its actions asked of the
@@ -115,12 +128,22 @@ fn open(
     )
     .with_surface(Surface::Agent)
     .with_agent_run(run, device.agent.clone());
+    // The person's desktops see the agent present from the moment it enters
+    // the workspace, not from its first action.
+    let presence = mcp_presence::Presence::new(
+        &peer,
+        device.workspace.clone(),
+        workspace_id,
+        device.agent.clone(),
+    );
+    presence.arrive();
     Ok(Session {
         server,
         peer,
         workspace_id,
         agent: device.agent.clone(),
         shown: Mutex::new(Vec::new()),
+        presence,
     })
 }
 
@@ -171,6 +194,9 @@ pub fn serve() -> Result<ExitCode> {
         for task in answering {
             let _ = task.await;
         }
+        // The connection ended (its input closed): the agent leaves the
+        // workspace now, while its session can still say so.
+        serving.leaving().await;
     });
     Ok(ExitCode::SUCCESS)
 }
@@ -229,11 +255,16 @@ fn show(session: &Arc<Session>, request: &Value, answer: &Value) {
     if request.get("method").and_then(Value::as_str) != Some("tools/call") {
         return;
     }
+    let failed = answer.pointer("/result/isError") == Some(&Value::Bool(true))
+        || answer.get("error").is_some();
+    // The workspace sees the agent present, doing this and where, beside the
+    // line this connection adds to the person's recent actions.
+    session
+        .presence
+        .called(request, failed, session.server.acted());
     let Some((title, resource)) = described(request) else {
         return;
     };
-    let failed = answer.pointer("/result/isError") == Some(&Value::Bool(true))
-        || answer.get("error").is_some();
     let title = if failed {
         format!("{title} (failed)")
     } else {
