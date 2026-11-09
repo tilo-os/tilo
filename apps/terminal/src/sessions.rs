@@ -526,15 +526,20 @@ impl Sessions {
         &self,
         request: &serde_json::Value,
     ) -> Result<Vec<EnvironmentSummary>, String> {
-        // Only a shell-hosted tab reaches the supervisor's directory, and
-        // never over its first connection: that one carries the session.
-        if !matches!(self.source, Source::Hosted { .. }) {
-            return Err("environments are managed through Tilo's shell runtime".into());
-        }
-        parse_directory_reply(&crate::HostedProcessServices::ask(
-            request,
-            self.workspace().as_deref(),
-        )?)
+        // A shell-hosted tab asks over a fresh connection of its own, never its
+        // first: that one carries the session. Terminal in a process of its
+        // own asks over the control connection the launcher opened for it.
+        let reply = match self.source {
+            Source::Hosted { .. } => {
+                crate::HostedProcessServices::ask(request, self.workspace().as_deref())?
+            }
+            #[cfg(unix)]
+            Source::Standalone => {
+                crate::inner::ush_service_ask(request, self.workspace().as_deref())?
+            }
+            _ => return Err("environments are managed through Tilo's shell runtime".into()),
+        };
+        parse_directory_reply(&reply)
     }
 }
 
