@@ -52,11 +52,16 @@ mod cases {
         }
 
         fn task(&self, root: &ResourceRef, title: &str) -> ResourceRef {
-            // `new_task` takes the fields a task can be started with before its title, and
-            // this makes one with nothing but a title.
-            let mut args = vec![Value::resource(root)];
-            args.resize(6, Value::none());
-            args.push(Value::text(title));
+            // What the task is made of by name, so the fields a task can be started with come
+            // and go without this caller: `new_task(tasks: root, title: title)`.
+            let args = self.app.args(
+                &self.rt,
+                "new_task",
+                &[
+                    ("tasks", Value::resource(root)),
+                    ("title", Value::text(title)),
+                ],
+            );
             returned_ref(self.call("new_task", args))
         }
 
