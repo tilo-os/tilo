@@ -320,6 +320,17 @@ impl Terminal {
         self.queue(cx, requests, &command)
     }
 
+    /// Stop the command line the session is running.
+    ///
+    /// A session this device runs stops at its shell, as Ctrl+C does there.
+    /// A session its workspace's host runs has no shell here: naming this
+    /// has the host end the run, as the person's Ctrl+C in that session does,
+    /// and answers how many runs it stopped.
+    #[action(keywords = "stop, cancel, interrupt, ctrl c")]
+    pub fn stop(&mut self) -> Result<(), Refusal> {
+        Ok(())
+    }
+
     /// Record a run that ended.
     #[action(external)]
     pub fn record_run(

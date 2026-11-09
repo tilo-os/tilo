@@ -2318,7 +2318,16 @@ impl TerminalWidget {
                 self.try_write_input(text.as_bytes())?;
             }
             E::Paste { text } | E::PastePrimary { text } => self.try_paste(&text)?,
-            E::Interrupt => self.try_write_input(&[0x03])?,
+            E::Interrupt => {
+                if self.headless {
+                    // A terminal with no process of its own has no shell to
+                    // interrupt: the workspace's host stops the run it has
+                    // there, as Ctrl+C in that session does.
+                    self.submit(crate::resource::Terminal::STOP.with(()));
+                } else {
+                    self.try_write_input(&[0x03])?;
+                }
+            }
             E::Clear => self.try_write_input(&[0x0c])?,
             E::Restart => self.restart_session()?,
             E::CopySelection => {
@@ -4267,6 +4276,12 @@ impl TerminalWidget {
         }
         if let Some(b) = bytes {
             let _ = self.try_write_input(&b);
+            // A terminal with no process of its own runs no shell for its
+            // session, so a Ctrl+C here has the workspace's host stop the
+            // run it has there.
+            if b == [0x03] && self.headless {
+                self.submit(crate::resource::Terminal::STOP.with(()));
+            }
             // Typing snaps the viewport back to the live bottom.
             self.set_scroll_offset(0);
             *handled = true;
