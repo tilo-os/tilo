@@ -87,16 +87,44 @@ fn rows(view: &mut ViewInstance) -> Vec<UiNode> {
         .collect()
 }
 
-/// Whether the transcript's "New messages" divider stands over each row.
+/// Whether the transcript's "New messages" divider stands over each row. The list is told the
+/// item the person stopped reading before (`unseen_from`, off `first_unseen`), and the toolkit
+/// stands the divider over that item's row as it builds, so the view's tree names the item and
+/// the row that presents it; a row of that unseen part carries no mark of its own.
 fn dividers(view: &mut ViewInstance) -> Vec<bool> {
+    view.poll_patches().unwrap();
+    let tree = view.tree().clone();
+    let list = list_nodes(&tree).into_iter().next().expect("a transcript");
+    let Some(Value::Ref(unseen)) = list.props.get("unseen_from") else {
+        return vec![false; rows(view).len()];
+    };
     rows(view)
         .iter()
-        .map(|row| {
-            row.children
-                .first()
-                .is_some_and(|first| first.kind == "ui.UnreadDivider")
-        })
+        .map(|row| row_shows_item(row, &unseen.target))
         .collect()
+}
+
+/// Every `ui.VirtualList` under `node`, outermost first.
+fn list_nodes(node: &UiNode) -> Vec<&UiNode> {
+    let mut out = Vec::new();
+    if node.kind == "ui.VirtualList" {
+        out.push(node);
+    }
+    for child in &node.children {
+        out.extend(list_nodes(child));
+    }
+    out
+}
+
+/// Whether `row` presents `at`: its `ui.ListItem` names it (`item:`), which is the item the
+/// list compares against its `unseen_from` to stand the divider over the row.
+fn row_shows_item(row: &UiNode, at: &ResourceRef) -> bool {
+    find(row, "ui.ListItem")
+        .and_then(|item| item.props.get("item"))
+        .is_some_and(|shown| match shown {
+            Value::Ref(shown) => shown.target.id_string() == at.id_string(),
+            _ => false,
+        })
 }
 
 /// What each row of the transcript says: its rich text.
@@ -904,29 +932,10 @@ fn the_transcript_marks_the_first_message_the_person_had_not_seen() {
     ben.host.sync_from(&ben.doc);
     ada.sync_with(&mut ben);
 
-    // The rows the list shows, as the runtime holds them, each with whether the divider stands
-    // over it (a row's first child is the list's divider when it is).
-    let marked = |view: &mut ViewInstance| -> Vec<bool> {
-        view.poll_patches().unwrap();
-        let list = find(view.tree(), "ui.VirtualList")
-            .expect("a transcript")
-            .key
-            .clone();
-        let len = view.list_len(&list).unwrap_or(0);
-        for i in 0..len {
-            let _ = view.row(&list, i).unwrap();
-        }
-        let tree = view.tree().clone();
-        let list = find(&tree, "ui.VirtualList").expect("a transcript");
-        list.children
-            .iter()
-            .map(|row| {
-                row.children
-                    .first()
-                    .is_some_and(|first| first.kind == "ui.UnreadDivider")
-            })
-            .collect()
-    };
+    // The rows the list shows, each with whether the "New messages" divider stands over it: the
+    // list is told the item reading stopped before (`unseen_from`) and draws its divider over
+    // that item's row.
+    let marked = dividers;
 
     // Ada's view stands the divider over the first of the two, and not over the second.
     let mut view = ada.host.open_resource(&target(&design), None).unwrap();
