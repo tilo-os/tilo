@@ -438,6 +438,8 @@ struct Mount {
     stores: Rc<RefCell<Vec<RecordStore>>>,
     /// The single application's record; `None` for the desktop.
     checkout: Option<RecordCheckout>,
+    /// The single application's package id; `None` for the desktop.
+    app: Option<String>,
     /// The workspace's presence board, as the last frame read it: who is
     /// here, where their pointers are, and when what they say animates.
     presence: presence::Presence,
@@ -1550,6 +1552,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         store,
         stores,
         checkout,
+        app: definition.map(|definition| definition.app_id().to_owned()),
         presence: presence::Presence::default(),
         id,
         desktop,
