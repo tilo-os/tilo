@@ -100,6 +100,10 @@ pub(crate) enum HostRequest {
         workspace: String,
         name: String,
     },
+    /// Show `resource` of the app `app` in that app's window, opening one when none is open: the
+    /// page has the workspace's session open the resource there, as a mention's notice does. It
+    /// never reaches the embedding page.
+    ShowInApp { app: String, resource: String },
 }
 
 /// The page's host action that lets the person choose their name; the
@@ -1151,8 +1155,13 @@ impl BrowserShell {
                     }
                 }
                 DesktopAsk::ReportProblem => self.report_problem(),
-                // The person's account, billing beside who they are, is in Settings.
-                DesktopAsk::AccountSettings => self.launch("so.tilo.settings"),
+                // The person's account, billing beside who they are, is Settings' Billing page.
+                DesktopAsk::AccountSettings => {
+                    self.requests.borrow_mut().push(HostRequest::ShowInApp {
+                        app: "so.tilo.settings".into(),
+                        resource: "settings.section:billing".into(),
+                    });
+                }
                 // The agent door is the hosting provider's MCP front door, which serves the
                 // revoke: a page has no door of its own to take a grant back at.
                 DesktopAsk::RevokeAgentGrant(grant) => {
