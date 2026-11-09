@@ -1143,7 +1143,7 @@ async fn a_file_a_member_posted_stays_in_the_room_after_they_leave() {
     let workspaces = relay.workspaces().clone();
     let (workspace, general) = chat_room(&workspaces, &cert).await;
     let blobs = std::sync::Arc::new(
-        tilo_relay::blobs::FsBlobs::new(scratch.path().join("blobs"), None).unwrap(),
+        crate::blobs::FsBlobs::new(scratch.path().join("blobs"), None).unwrap(),
     );
     workspaces.serve_content(blobs.clone());
     let attachments_of = |limits| {
