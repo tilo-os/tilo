@@ -55,6 +55,7 @@ mod certification;
 mod channels;
 mod chrome;
 mod clock_wait;
+mod collaboration;
 mod community;
 mod config;
 mod content;
@@ -525,6 +526,9 @@ struct Shared {
     /// Who is here, as the bar's faces open it: the roster it shows and
     /// where everyone else's pointer is.
     people: Rc<RefCell<people::People>>,
+    /// Whose view this device follows — its own presence word — and which of their place it
+    /// already brought forward.
+    follow: RefCell<tilo_session_core::presence::Follow>,
     /// The monitors of the displays a fullscreen window owns, which the
     /// bars read.
     fullscreen: Rc<RefCell<Vec<String>>>,
@@ -1927,6 +1931,7 @@ impl Session {
             shortcut_guide,
             chrome,
             people,
+            follow: RefCell::default(),
             fullscreen,
             invitable,
             hide_top_bar,
@@ -2840,30 +2845,6 @@ impl Session {
         {
             broker.host_steps_changed();
         }
-    }
-
-    /// Keep the workspaces this session takes part in current with the
-    /// desktop's, and hand the desktop who is here.
-    fn follow_collaboration(&self) {
-        let Some(sync) = &self.shared.sync else {
-            return;
-        };
-        self.shared.handle.read(|tree| sync.follow_desktop(tree));
-        sync.follow();
-        // A workspace's strips and windows are the workspace's: what its
-        // members put there — before this device joined, and since — is this
-        // device's desk too, and what this device arranges there is theirs to
-        // see.
-        self.shared.follow_shared_desktops();
-        // This device's call, as everyone in the workspace reads it, and
-        // theirs as this session's apps show them: a join or leave reaches a
-        // channel's roster on the pass it happened on.
-        if let Some(plane) = &self.action_plane {
-            plane.follow_calls(sync);
-        }
-        // What became of the invitations redeemed is the directory's to say,
-        // and the desk's to show.
-        self.shared.follow_enrollments();
     }
 
     /// Start the shortcuts whose triggers fired since the last pass, and keep

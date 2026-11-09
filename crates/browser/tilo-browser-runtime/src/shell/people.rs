@@ -28,6 +28,8 @@ use ui::winit::event::{ElementState, Modifiers, WindowEvent};
 use ui::winit::keyboard::{Key, NamedKey};
 use ui::{TextRenderer, Theme};
 
+use tilo_session_core::presence::{Follow, Place, Step, Target};
+
 use crate::pinned_roster::PinnedRoster;
 
 /// What the overlay and the banner need from the page this frame.
@@ -49,13 +51,6 @@ pub(super) struct Frame<'a> {
     pub content_top: f64,
 }
 
-/// What following last brought forward.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Tracked {
-    Window(TabId),
-    App(String),
-}
-
 /// The overlay, following and the banner across frames.
 pub(super) struct PagePeople {
     /// The pinned roster, once its code is in and it was first pinned.
@@ -64,11 +59,8 @@ pub(super) struct PagePeople {
     pinned: bool,
     edge: DockEdge,
     banner: FollowBanner,
-    /// Whom this page follows, by roster id.
-    followed: Option<String>,
-    /// What was last brought forward for them: their window here, or
-    /// their app where no window here shows their record.
-    tracked: Option<Tracked>,
+    /// Whom this page follows, and what of their place it already shows: the same machine the native session runs.
+    follow: Follow,
     motion: EffectiveMotion,
     /// The desktop it was last drawn over.
     rect: Rect,
@@ -90,8 +82,7 @@ impl PagePeople {
             pinned: prefs.pinned,
             edge: prefs.edge,
             banner: FollowBanner::default(),
-            followed: None,
-            tracked: None,
+            follow: Follow::default(),
             motion: EffectiveMotion::default(),
             rect: Rect::ZERO,
             pressed: Vec::new(),
@@ -149,18 +140,17 @@ impl PagePeople {
     }
 
     pub(super) fn followed(&self) -> Option<&str> {
-        self.followed.as_deref()
+        self.follow.followed()
     }
 
     /// Follow `id`, or stop following them. The banner finds their row in
     /// the next frame's roster.
     pub(super) fn toggle_follow(&mut self, id: &str) {
-        if self.followed.as_deref() == Some(id) {
+        if self.follow.followed() == Some(id) {
             self.stop_following(false);
             return;
         }
-        self.followed = Some(id.to_owned());
-        self.tracked = None;
+        self.follow.follow(Some(id.to_owned()));
         self.banner
             .started(None, self.motion, MotionSource::Pointer, ui::time::now());
     }
@@ -168,10 +158,9 @@ impl PagePeople {
     /// Stop following; `by_own_input` when the person took their view back
     /// by doing something of their own (the banner says so a moment).
     pub(super) fn stop_following(&mut self, by_own_input: bool) {
-        if self.followed.take().is_none() {
+        if !self.follow.follow(None) {
             return;
         }
-        self.tracked = None;
         self.banner.ended(
             by_own_input,
             self.motion,
@@ -190,33 +179,28 @@ impl PagePeople {
         handle: &DesktopHandle,
         open_app: &dyn Fn(&str) -> bool,
     ) -> bool {
-        let Some(id) = self.followed.as_deref() else {
-            return false;
-        };
-        let Some(person) = people.iter().find(|person| person.id == id) else {
-            // They left: following them ends with them.
-            self.stop_following(false);
-            return false;
-        };
-        let focused_app = person
-            .screen
-            .as_ref()
-            .and_then(|screen| screen.windows.iter().find(|window| window.focused))
-            .map(|window| window.app.clone());
-        let want = match (person.tab, focused_app) {
-            (Some(tab), _) => Tracked::Window(tab),
-            (None, Some(app)) => Tracked::App(app),
-            (None, None) => return false,
-        };
-        if self.tracked.as_ref() == Some(&want) {
-            return false;
+        let places: Vec<Place<'_>> = people
+            .iter()
+            .map(|person| Place {
+                id: &person.id,
+                tab: person.tab,
+                app: person
+                    .screen
+                    .as_ref()
+                    .and_then(|screen| screen.windows.iter().find(|window| window.focused))
+                    .map(|window| window.app.as_str()),
+            })
+            .collect();
+        match self.follow.step(&places) {
+            Step::Bring(Target::Window(tab)) => handle.focus_tab(tab),
+            Step::Bring(Target::App(app)) => open_app(&app),
+            Step::Gone => {
+                // They left: following them ends with them.
+                self.stop_following(false);
+                false
+            }
+            Step::Rest => false,
         }
-        let brought = match &want {
-            Tracked::Window(tab) => handle.focus_tab(*tab),
-            Tracked::App(app) => open_app(app),
-        };
-        self.tracked = Some(want);
-        brought
     }
 
     pub(super) fn needs_animation_frame(&self) -> bool {
@@ -262,8 +246,8 @@ impl PagePeople {
             frame.rect.y1,
         );
         let following = self
-            .followed
-            .as_deref()
+            .follow
+            .followed()
             .map(|id| frame.rows.iter().find(|row| row.id == id).cloned());
         let kept = self.banner.draw(
             scene,
@@ -287,7 +271,7 @@ impl PagePeople {
         if !kept {
             self.stop_following(false);
         }
-        let followed = self.followed.clone();
+        let followed = self.follow.followed().map(str::to_owned);
         let Some(overlay) = self.roster().filter(|overlay| overlay.is_visible()) else {
             ui::window_pictures::want(&[]);
             return;
@@ -380,7 +364,7 @@ impl PagePeople {
         {
             return (true, hit);
         }
-        if self.followed.is_some() {
+        if self.follow.followed().is_some() {
             let escape = matches!(key.logical_key, Key::Named(NamedKey::Escape));
             self.stop_following(!escape);
             return (escape, None);

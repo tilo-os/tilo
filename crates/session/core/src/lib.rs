@@ -5,3 +5,4 @@
 //! removes the copy the other host kept, so the two run the same rules.
 
 pub mod desk;
+pub mod presence;

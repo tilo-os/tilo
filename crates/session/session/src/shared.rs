@@ -2,6 +2,7 @@
 //! each workspace's shared desktop, the workspace's history, the windows left open, and what the
 //! sheets and settings asked for.
 
+use tilo_session_core::presence::{Place, Step, Target};
 use tilo_sheets::Seat as _;
 use tilo_surface_host::WidgetHost;
 
@@ -59,6 +60,70 @@ impl Shared {
             && let Err(why) = arrangement.release()
         {
             tracing::warn!(why, "an arranging action that waited could not be made");
+        }
+    }
+
+    /// Whom this device follows, as its own presence word says: the window of theirs shown here
+    /// comes forward each time the place they work in changes, and their app where no window here
+    /// shows their record. Doing something of their own takes their view back, and the workspace
+    /// hears that they follow nobody.
+    pub(crate) fn follow_people(&self) {
+        let Some(sync) = &self.sync else {
+            return;
+        };
+        let followed = sync.own().following;
+        let mut follow = self.follow.borrow_mut();
+        if followed.is_none() && follow.followed().is_none() {
+            return;
+        }
+        if self.underway.get().holds() {
+            // The person's own gesture or typing: the view is theirs again, and the workspace hears
+            // that they follow nobody.
+            follow.follow(None);
+            drop(follow);
+            self.say_following_nobody();
+            return;
+        }
+        follow.follow(followed);
+        let people = sync.people(&self.handle.read(Clone::clone), &|_: &str| None);
+        let places: Vec<Place<'_>> = people
+            .iter()
+            .map(|person| Place {
+                id: &person.id,
+                tab: person.tab,
+                app: person
+                    .screen
+                    .as_ref()
+                    .and_then(|screen| screen.windows.iter().find(|window| window.focused))
+                    .map(|window| window.app.as_str()),
+            })
+            .collect();
+        match follow.step(&places) {
+            Step::Rest => {}
+            Step::Bring(Target::Window(tab)) => {
+                self.handle.focus_tab(tab);
+            }
+            Step::Bring(Target::App(app)) => {
+                // The app they work in, where the workspace's layout is each person's own: the
+                // window of it here, if this desk has one.
+                self.handle.focus_app(&app);
+            }
+            Step::Gone => {
+                // They left, so following them ends here and the workspace hears it.
+                drop(follow);
+                self.say_following_nobody();
+            }
+        }
+    }
+
+    /// This device follows nobody from now on, and the workspace hears it once.
+    fn say_following_nobody(&self) {
+        let Some(sync) = &self.sync else {
+            return;
+        };
+        let mut own = sync.own();
+        if own.following.take().is_some() {
+            sync.set_own(own);
         }
     }
 
