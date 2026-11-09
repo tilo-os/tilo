@@ -26,9 +26,12 @@ tilo-secret-vault = { path = "../secret-vault" }
 tilo-advisory-lock = { path = "../advisory-lock" }
 tilo-secrets = { path = "../../platform/tilo-secrets" }
 tilo-clock = { path = "../../platform/tilo-clock" }
-workspace-hack = { version = "0.1" }
 whatsapp-rust = { version = "=0.7.0", default-features = false, features = ["tokio-runtime"], optional = true }
 tokio = { workspace = true, features = ["time"], optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { workspace = true, features = ["tokio"], optional = true }

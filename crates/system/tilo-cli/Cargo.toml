@@ -28,7 +28,6 @@ tilo-advisory-lock = { path = "../advisory-lock" }
 # The cleanup record, replaced atomically and durably.
 tilo-files = { path = "../../platform/tilo-files" }
 rustix = { workspace = true, features = ["fs", "std"] }
-workspace-hack = { version = "0.1" }
 tilo-paths.workspace = true
 # The desktop's apps and actions (`tilo open`, `tilo action`, `tilo do`): the
 # control protocol's one client, shared with tilo-control.
@@ -46,6 +45,10 @@ postcard.workspace = true
 hex.workspace = true
 rand.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true

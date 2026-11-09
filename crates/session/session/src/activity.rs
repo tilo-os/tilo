@@ -218,7 +218,7 @@ impl Activity {
     pub(crate) fn open_engine(
         &self,
         options: &crate::Options,
-        handle: &crate::DesktopHandle,
+        handle: &tilo_desktop_surface::DesktopHandle,
     ) -> Option<Arc<crate::engine::Engine>> {
         let engine = crate::options::open_engine(options, handle)?;
         self.attach_engine(Arc::clone(&engine));

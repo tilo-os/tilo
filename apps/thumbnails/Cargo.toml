@@ -20,6 +20,9 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The batch itself, shared with the requester's local fallback so both
 # produce the same bytes.
 thumbnail = { package = "tilo-thumbnail", path = "../../crates/media/thumbnail" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

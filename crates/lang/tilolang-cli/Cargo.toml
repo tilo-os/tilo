@@ -40,7 +40,7 @@ tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 # The generations a saved build is published into for the running app (`src/dev.rs`).
 tilo-app-module = { version = "0.1.0", path = "../../platform/tilo-app-module" }
 toml.workspace = true
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 # The UI host's half of a window and the patch protocol to it: what `layout-check` lays out.
 tilo-ui-host = { path = "../../platform/tilo-ui-host" }
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
@@ -57,3 +57,4 @@ workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", }

@@ -12,11 +12,12 @@ use ui::host_operation::ResourceOperationStart;
 
 use tilo_action_broker::collab_broker::FanoutState;
 
+use crate::plane::Plane;
 use crate::plane::{DeskAuthority, Sealed, ShortcutLibrary};
 use crate::{
-    ActionPlane, DesktopHandle, Options, Plane, Service, Services, activity, activity_provider,
-    plane, surfaces,
+    ActionPlane, Options, Service, Services, activity, activity_provider, plane, surfaces,
 };
+use tilo_desktop_surface::DesktopHandle;
 
 /// What a service answered, as a caller of the action protocol reads it.
 pub(crate) fn answered(started: Started) -> ResourceOperationStart {

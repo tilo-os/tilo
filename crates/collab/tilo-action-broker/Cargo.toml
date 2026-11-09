@@ -42,7 +42,7 @@ libc.workspace = true
 
 runtime-collab = { path = "../../runtime/runtime-collab", features = ["settings-host"] }
 tilo-desktop-model = { path = "../../session/desktop-model" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 collab-types = { path = "../collab-types" }
 channel-crypto = { path = "../channel-crypto" }
 # The channel service's governance messages and wall clock.
@@ -64,7 +64,11 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
 uuid.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", }
 [dev-dependencies]
 runtime-identity-host = { package = "runtime-identity", path = "../../runtime/runtime-identity" }
 # The disclosure regression reaches the real verifier and durable registry store over HTTPS.

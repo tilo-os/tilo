@@ -19,6 +19,9 @@ path = "src/main.rs"
 rustix = { workspace = true, features = ["fs", "process", "std"] }
 # The command line as argparse read it.
 tilo-pycompat = { path = "../tilo-pycompat" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

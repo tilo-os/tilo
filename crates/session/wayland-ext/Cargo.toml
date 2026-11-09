@@ -16,6 +16,9 @@ settings-store = { path = "../../system/settings-store" }
 # The colour a display reports is the colour pipeline's to describe; this
 # crate only parses the bytes that carry it.
 tilo-color-pipeline = { path = "../color-pipeline" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dependencies]

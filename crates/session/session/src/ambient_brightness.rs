@@ -92,7 +92,7 @@ impl Session {
     ///
     /// # Errors
     /// The compositor failed.
-    pub(crate) fn follow_light(&mut self) -> Result<Option<u32>, crate::Error> {
+    pub(crate) fn follow_light(&mut self) -> Result<Option<u32>, tilo_compositor::Error> {
         if let Some(percent) = self.auto_brightness.follow(
             Instant::now(),
             self.compositor.dim_holds_backlight(),

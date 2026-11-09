@@ -8,6 +8,9 @@ description = "Connect to the user's SSH agent on any platform"
 
 [dependencies]
 russh = { version = "0.63.3", default-features = false, features = ["ring"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
 [lints]

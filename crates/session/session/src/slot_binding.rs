@@ -4,7 +4,8 @@
 
 use tilo_actions::ActionAddress;
 
-use crate::{Error, Session, mount, surfaces};
+use crate::{Session, mount, surfaces};
+use tilo_compositor::Error;
 
 impl Session {
     /// Put up the view that draws the shell's window menu, and show it while

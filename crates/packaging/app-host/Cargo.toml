@@ -81,6 +81,9 @@ tilo-test-env = { path = "../../dev/test-env", optional = true }
 
 # systemd notify (sd_notify); missing environment variables are tolerated.
 sd-notify = { workspace = true, optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

@@ -21,7 +21,7 @@ taffy.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 tilo-desktop = { path = "../desktop" }
 tilo-durable-writer = { path = "../../platform/tilo-durable-writer" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 vello.workspace = true
 winit.workspace = true
 bounded-command = { path = "../../system/bounded-command" }
@@ -73,3 +73,4 @@ workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", }

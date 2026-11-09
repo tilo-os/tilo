@@ -45,7 +45,7 @@ tilo-cli-kit = { path = "../cli" }
 # A Rust dylib's exported symbol names contain the dependency crate hash; if an
 # app enables a UI feature absent here, Cargo builds a second `ui` instance and
 # the app can link successfully but fail at runtime with undefined symbols.
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["portal", "webview-adblock", "dmabuf-import", "gpu-video", "mpris"] }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["portal", "webview-adblock", "dmabuf-import", "gpu-video", "mpris"], default-features = false }
 # Apps bind resources, actions and native presentation through this public SDK.
 # Keep its dispatcher and runner in the runtime alongside the internal toolkit.
 tilo-app = { path = "../../sdk/tilo-app" }
@@ -90,7 +90,11 @@ xattr = "1.6.1"
 # File types by extension, for the apps that name them (Files, Mail).
 tilo-mime = { path = "../../platform/tilo-mime" }
 registry-types = { path = "../../packaging/registry-types" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["portal", "webview-adblock", "dmabuf-import", "gpu-video", "mpris"], }
 
 [lints]
 workspace = true

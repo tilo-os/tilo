@@ -1621,7 +1621,7 @@ mod tests {
         let broker = session
             .action_plane
             .as_ref()
-            .and_then(crate::Plane::action_broker)
+            .and_then(crate::plane::Plane::action_broker)
             .expect("the session serves its broker");
         wait_for_people(&broker, workspace_id);
         let job = broker
@@ -1893,7 +1893,7 @@ mod tests {
         let broker = session
             .action_plane
             .as_ref()
-            .and_then(crate::Plane::action_broker)
+            .and_then(crate::plane::Plane::action_broker)
             .expect("the session serves its broker");
         wait_for_people(&broker, workspace_id);
         assert!(

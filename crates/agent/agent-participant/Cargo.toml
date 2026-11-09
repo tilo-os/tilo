@@ -107,7 +107,6 @@ tilo-model-gateway = { default-features = false, features = ["host-backend"], pa
 # Agents' sessions do their I/O on the host's runtime, or one of their own.
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing.workspace = true
-workspace-hack = { version = "0.1" }
 # App workers: an app's code runs in a confined process of this executable,
 # spoken to over framed messages; what it returns is admitted through the
 # isolate before the host signs it.
@@ -125,6 +124,10 @@ image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 # The render service's side of `tilo-video-render`, the confined helper an
 # agent's video renders run in (the helper itself is its binary).
 tilo-video-render = { path = "../../media/video-render", default-features = false }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
 # The worker's confinement: detach, resource limits and, on macOS, Seatbelt.

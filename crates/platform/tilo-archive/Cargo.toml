@@ -26,6 +26,9 @@ lzma-rust2 = { version = "0.23.0", default-features = false, features = ["std", 
 # Its default backend is libbz2-rs-sys, the pure Rust port of libbz2.
 bzip2 = "0.6.1"
 sevenz-rust2 = { version = "0.24.1", default-features = false, features = ["bzip2"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

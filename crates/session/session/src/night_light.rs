@@ -11,8 +11,8 @@ use std::time::Duration;
 use serde_json::{Map, Value};
 use tilo_lock::MutexRecover as _;
 
-use crate::Error;
 use crate::Session;
+use tilo_compositor::Error;
 
 /// The warmth the displays take when the person chose none, in kelvin.
 pub const DEFAULT_TEMPERATURE: u32 = 3_700;

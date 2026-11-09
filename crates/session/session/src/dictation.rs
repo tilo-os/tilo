@@ -28,9 +28,10 @@ use tilo_dictation::{
 use tilo_sheets::Seat as _;
 use tilo_sheets::dictation::{Answer, DictationSeat, Failure, Prompt, RecoveryReason, Stage};
 
+use crate::Options;
 use crate::mount::clipboard::Clipboard;
+use crate::panels::Held;
 use crate::sheets::Sheet;
-use crate::{Held, Options};
 
 /// How much of what is being heard the card shows: the last words, so the person sees the
 /// recognizer following them without the sheet working through a long transcript every frame.
@@ -53,7 +54,7 @@ impl Dictation {
     /// Start the dictation service and mount the sheet that asks about the microphone.
     pub(crate) fn mount(
         compositor: &mut Compositor,
-        doors: &mut crate::Doors,
+        doors: &mut tilo_surface_host::Doors,
         services: &Rc<RefCell<tilo_service::Services>>,
         options: &Options,
     ) -> Self {
@@ -469,7 +470,7 @@ impl OwnFields for DesktopHandle {
 /// from the field they are dictating into.
 fn mount_sheet(
     compositor: &mut Compositor,
-    doors: &mut crate::Doors,
+    doors: &mut tilo_surface_host::Doors,
     options: &Options,
 ) -> Option<DictationSeat> {
     let who = (options.device.as_str(), options.person.as_str());

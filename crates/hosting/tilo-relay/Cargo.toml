@@ -143,7 +143,6 @@ tracing.workspace = true
 # Systemd sd_notify for `Type=notify` — best-effort, silently no-ops
 # outside a systemd session.
 sd-notify.workspace = true
-workspace-hack = { version = "0.1" }
 
 # The browser listener (feature `web`): HTTPS for the durable plane, device
 # certification and the pages' calls.
@@ -232,6 +231,8 @@ runtime-identity = { path = "../../runtime/runtime-identity" }
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 socket2 = "0.6"
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }

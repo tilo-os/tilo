@@ -10,7 +10,6 @@ description = "Portable filesystem operations that only some hosts provide: perm
 tracing.workspace = true
 trash = "5.2.6"
 tilo-paths.workspace = true
-workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
@@ -23,6 +22,8 @@ xattr = "1.6.1"
 cap-std = "3.4.6"
 cap-fs-ext = "3.4.6"
 uuid.workspace = true
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true

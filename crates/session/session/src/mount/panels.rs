@@ -13,7 +13,8 @@ use crate::keys::{
 };
 use crate::panels::{ActivityLayer, Held, Readout, ReadoutPlace, ReadoutPlaces, Reserved};
 use crate::setup::Setup;
-use crate::{BeforeDesk, Doors, SessionCommand};
+use crate::{BeforeDesk, SessionCommand};
+use tilo_surface_host::Doors;
 
 /// What stands before the desk, when it stands there at all: above everything, first to the
 /// keyboard, and while it is up the only surface offering actions.

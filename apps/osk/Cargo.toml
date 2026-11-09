@@ -59,6 +59,9 @@ wayland-client.workspace = true
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
 # memfd_create for the synthetic XKB keymap fd handed to the compositor.
 libc.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

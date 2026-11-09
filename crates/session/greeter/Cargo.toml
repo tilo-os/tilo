@@ -20,7 +20,7 @@ tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 # Mirrors the dep set used by the in-tree `ui`-based apps
 # (file-explorer / terminal): the toolkit plus the trait crates its
 # `Widget` impls reference directly.
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 automerge.workspace = true
 vello.workspace = true
 winit.workspace = true
@@ -41,12 +41,16 @@ rustix = { workspace = true, features = ["event"] }
 chrono = { workspace = true, features = ["clock", "std"] }
 # Battery level and charging state for the status corner, read from sysfs.
 tilo-power-mgmt = { path = "../../system/power", default-features = false }
-workspace-hack = { version = "0.1" }
 tilo-paths.workspace = true
 # Boot mode: the sign-in screen of the initramfs, a child of tilo-boot-signin
 # on its socket, drawn on KMS by the toolkit's CPU host.
 tilo-boot-signin = { path = "../../system/boot-signin" }
 ui-kms = { package = "tilo-ui-kms", path = "../../sdk/ui-kms" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", }
 
 [dev-dependencies]
 tilo-test-env = { path = "../../dev/test-env" }

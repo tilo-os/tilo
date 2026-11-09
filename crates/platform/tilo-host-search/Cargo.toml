@@ -14,9 +14,12 @@ path = "src/lib.rs"
 
 [dependencies]
 tracing.workspace = true
-workspace-hack = { version = "0.1" }
 
 # Spotlight continues a chosen result in the bundle's app, as a user activity.
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
