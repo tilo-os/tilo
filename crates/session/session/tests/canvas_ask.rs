@@ -370,6 +370,41 @@ fn the_ask_places_the_channels_page_not_the_apps_window() {
     );
 }
 
+/// The place the ask makes draws Chat's own page, not an empty frame: the words the person
+/// typed stand in the shell's laid-out tree, drawn from the reading the session's own
+/// `ChatViewService` publishes (shell.md §8.1, "The view").
+///
+/// The arrangement's own fields are not enough to prove this — `shown_as` and `shows` may name
+/// the page while the runtime's `resource(p.record)` lookup finds no reading to draw it, and the
+/// frame then shows nothing (a `WindowWell`) behind its pin and close. A reading's key holds its
+/// id in one canonical form (the path's document and last item, `chat.workspace/<id>`); the place
+/// names it by the path the session publishes it at (`chat.workspace/channels/<id>`), and the
+/// lookup must find the same reading by either, as it does now. No development fixture takes
+/// part: this is the path every person's session takes.
+#[test]
+fn the_conversations_place_draws_the_page_from_the_sessions_own_service() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = session(root.path());
+    ask(&mut session, "what is on my task list?");
+    let place = wait_for(&mut session, "the conversation placed", |session| {
+        arrangement(session)
+            .places
+            .into_iter()
+            .find(|place| place.record.contains("/channels/"))
+    });
+    until(&mut session, "the page's transcript", |session| {
+        session.shell_says("what is on my task list?")
+    });
+    assert!(
+        session.shell_says("what is on my task list?"),
+        "the place draws the conversation's page, holding what the person asked: {:?}; the \
+         shell says {:?}",
+        place.record,
+        session.accessible_labels()
+    );
+}
+
 /// The turn's reply is Chat's own verb offered from the moment the turn exists: the session's
 /// Chat service publishes the summons's message item with Chat's `record-work`, so the kept
 /// agent — whose tools are the broker's catalogue — is offered the address its answer goes to
