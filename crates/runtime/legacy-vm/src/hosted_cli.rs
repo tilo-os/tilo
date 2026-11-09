@@ -37,6 +37,11 @@ usage: tilo-legacy hosted <command>
                          kernel's and the root filesystem's paths
   usage --run DIR --account ID [--from MS] [--to MS]
                          the account's usage records and totals, as JSON
+  run --run DIR --workspace ID --account ID [--environment ID] [--size SIZE]
+      -- PROGRAM [ARG...]
+                         wake the workspace's VM as the account and run one
+                         program in it, as the tenant, its output relayed; exits
+                         with its status. For operators checking a host
   suspend --run DIR WORKSPACE ENVIRONMENT
   stop --run DIR WORKSPACE ENVIRONMENT
 ";
@@ -103,6 +108,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         "files-serve" => files_serve(&Flags::parse(rest, &["--read-only"])?),
         "fetch-guest" => fetch_guest(&Flags::parse(rest, &[])?),
         "status" => ask(&Flags::parse(rest, &[])?, &Request::Status),
+        "run" => run(rest),
         "usage" => {
             let flags = Flags::parse(rest, &[])?;
             let number = |name: &str, default: u64| {
@@ -232,6 +238,76 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
         .serve(&STOP, evict_notice.as_deref())
         .map_err(|e| e.to_string())?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// Wake a workspace's VM and run one program in it, as ush would.
+fn run(args: &[String]) -> Result<ExitCode, String> {
+    use legacy_agent_protocol::client::{self, LaunchIo};
+    use legacy_agent_protocol::{AGENT_PORT, Display, Launch, Stdio};
+    use legacy_vm::hosted::control::VmRequest;
+    use legacy_vm::hosted::size::VmSize;
+
+    let mut parts = args.splitn(2, |arg| arg == "--");
+    let options = parts.next().unwrap_or_default();
+    let program = parts.next().unwrap_or_default();
+    if program.is_empty() {
+        return Err(format!("run: the program follows --\n{USAGE}"));
+    }
+    let flags = Flags::parse(options, &[])?;
+    let size = match flags.get("--size").unwrap_or("small") {
+        "small" => VmSize::Small,
+        "default" => VmSize::Default,
+        "large" => VmSize::Large,
+        "xlarge" => VmSize::Xlarge,
+        other => return Err(format!("run: no VM size {other:?}")),
+    };
+    let request = Request::Ensure {
+        vm: VmRequest {
+            workspace: flags.need("--workspace")?.to_string(),
+            environment: flags.get("--environment").unwrap_or("default").to_string(),
+            account: flags.need("--account")?.to_string(),
+            size,
+        },
+        shares: Vec::new(),
+    };
+    let socket = flags.path("--run")?.join("hosted.sock");
+    let link = match control::ask(&socket, &request, Duration::from_secs(300))
+        .map_err(|e| e.to_string())?
+    {
+        Some(Reply::Ready { link, woke_ms }) => {
+            if let Some(ms) = woke_ms {
+                eprintln!("tilo-legacy hosted: the VM woke in {ms} ms");
+            }
+            link
+        }
+        Some(Reply::Refused(refusal)) => return Err(refusal.message),
+        Some(Reply::Error(message)) => return Err(message),
+        Some(other) => return Err(format!("unexpected reply: {other:?}")),
+        None => return Err(format!("no hosted-VM service at {}", socket.display())),
+    };
+    let stream = link.connect(AGENT_PORT).map_err(|e| e.to_string())?;
+    let (mut stdout, mut stderr) = (std::io::stdout(), std::io::stderr());
+    let status = client::launch(
+        stream,
+        &Launch {
+            argv: program.to_vec(),
+            cwd: None,
+            env: Vec::new(),
+            stdio: Stdio::Relay,
+            display: Display::None,
+        },
+        LaunchIo {
+            stdin: Some(Box::new(std::io::stdin())),
+            stdout: &mut stdout,
+            stderr: &mut stderr,
+            started: &mut |_| {},
+        },
+        |_| {},
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(ExitCode::from(
+        u8::try_from(status.shell_code().clamp(0, 255)).unwrap_or(1),
+    ))
 }
 
 /// One share's server, confined by `confine-fs` before it got here: serve
