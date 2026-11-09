@@ -157,6 +157,10 @@ pub(crate) struct ToolbarRow {
     measured: bool,
     hover: Option<Slot>,
     pressed: Option<Slot>,
+    /// The command the press under way is on, by its id: the app may declare its slots again
+    /// while the button is down and shift which place of the row that command stands in, and the
+    /// release still ends the command the person pressed.
+    pressed_action: Option<String>,
     /// The location field, while the location is edited.
     field: Option<TextInput>,
     /// The field's text the app last heard ([`ToolbarEvent::Edit`]).
@@ -234,6 +238,7 @@ impl ToolbarRow {
             measured: false,
             hover: None,
             pressed: None,
+            pressed_action: None,
             field: None,
             heard: String::new(),
             crumbs: None,
@@ -279,6 +284,7 @@ impl ToolbarRow {
     /// when it ends.
     pub(crate) fn cancel_press(&mut self) {
         self.pressed = None;
+        self.pressed_action = None;
         self.location_press = None;
     }
 
@@ -355,6 +361,7 @@ impl ToolbarRow {
             self.close_menu();
             self.hover = None;
             self.pressed = None;
+            self.pressed_action = None;
             self.outgoing = self
                 .shown
                 .take()
@@ -1449,6 +1456,7 @@ impl ToolbarRow {
         let changed = self.hover.is_some() || self.pressed.is_some();
         self.hover = None;
         self.pressed = None;
+        self.pressed_action = None;
         if let Some((_, crumbs)) = self.crumbs.as_mut() {
             crumbs.hover_at(None);
         }
@@ -1692,6 +1700,7 @@ impl ToolbarRow {
                 self.begin_edit()
             }
             Some(slot) if slot != Slot::Location => {
+                self.pressed_action = self.action_id(slot.clone());
                 self.pressed = Some(slot);
                 true
             }
@@ -1743,10 +1752,33 @@ impl ToolbarRow {
             }
             return true;
         }
-        if self.hit_slot(p).as_ref() == Some(&pressed) {
-            self.activate(&pressed);
+        let over = self.hit_slot(p);
+        // The app may have declared its slots again while the button was down, which can move a
+        // command to another place of the row without moving the button: the release ends the
+        // command it began on, and a control the app put under the pointer since is not it.
+        let same = over.as_ref() == Some(&pressed)
+            || match (&self.pressed_action, over.as_ref()) {
+                (Some(pressed), Some(slot)) => {
+                    self.action_id(slot.clone()).as_ref() == Some(pressed)
+                }
+                _ => false,
+            };
+        self.pressed_action = None;
+        if same {
+            self.activate(over.as_ref().unwrap_or(&pressed));
         }
         true
+    }
+
+    /// The command `slot` stands for, by its id: an action of the app's, or one of the leading
+    /// actions before the location. None for the bar's own controls, which the app cannot move.
+    fn action_id(&self, slot: Slot) -> Option<String> {
+        let toolbar = self.toolbar()?;
+        match slot {
+            Slot::Action(i) => toolbar.actions.get(i).map(|action| action.id.clone()),
+            Slot::Leading(i) => toolbar.leading.get(i).map(|action| action.id.clone()),
+            _ => None,
+        }
     }
 
     /// Hand an event to the location field while it is edited. Enter and

@@ -868,123 +868,228 @@ fn a_row_standing_as_slots_keeps_the_windows_functions() {
     );
 }
 
-/// A header row that stands as the bar's slots can hold a menu: the bar lists the menu's rows
-/// where the button stands, so one click on that button opens the menu, it stays open while the
-/// person reads it, a second click on the button closes it, and a row chosen in it runs.
+/// An app whose window's bar holds a menu, declaring its slots itself: the desktop hands what it
+/// declares to the bar of its tab every frame, as it does for an app that runs on its own.
+struct MenuApp {
+    content: crate::widget::Column,
+    /// What it declares in the window's bar now.
+    toolbar: std::rc::Rc<std::cell::RefCell<crate::window_toolbar::WindowToolbar>>,
+    /// What the bar handed it back, as it took it.
+    heard: std::rc::Rc<std::cell::RefCell<Vec<crate::window_toolbar::ToolbarEvent>>>,
+}
+
+/// The slots an app with a menu declares: its button, listing two orders.
+fn menu_slots() -> crate::window_toolbar::WindowToolbar {
+    crate::window_toolbar::WindowToolbar {
+        actions: vec![
+            crate::window_toolbar::ToolbarAction::new("sort", "arrow-up-down", "Sort")
+                .labelled()
+                .with_items(vec![
+                    crate::window_toolbar::ToolbarAction::new("sort~row-0", "", "Everything"),
+                    crate::window_toolbar::ToolbarAction::new("sort~row-1", "", "Title"),
+                ]),
+        ],
+        ..crate::window_toolbar::WindowToolbar::default()
+    }
+}
+
+impl crate::widget::app_widget::AppWidget for MenuApp {
+    fn app_kind(&self) -> AppKind {
+        AppKind::Editor
+    }
+    fn app_title(&self) -> &'static str {
+        "Notes"
+    }
+    fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
+        crate::widget::app_widget::IconDescriptor::Glyph("N")
+    }
+}
+
+/// The app's own sync: it declares its slots, and takes what the bar handed it back.
+impl crate::widget::Decorator for MenuApp {
+    type Inner = crate::widget::Column;
+
+    fn inner(&self) -> &Self::Inner {
+        &self.content
+    }
+
+    fn inner_mut(&mut self) -> &mut Self::Inner {
+        &mut self.content
+    }
+
+    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        self.heard
+            .borrow_mut()
+            .extend(crate::window_toolbar::take_events());
+        crate::window_toolbar::declare(Some(self.toolbar.borrow().clone()));
+        self.content.sync(state, path);
+    }
+}
+
+/// A Notes-like window whose app declares `slots` in its bar, with the app's own window handle
+/// and what it hears back.
+fn menu_window() -> (
+    crate::headless::FrameHarness,
+    crate::hosted_window::HostedWindow,
+    std::rc::Rc<std::cell::RefCell<crate::window_toolbar::WindowToolbar>>,
+    std::rc::Rc<std::cell::RefCell<Vec<crate::window_toolbar::ToolbarEvent>>>,
+) {
+    crate::window_toolbar::set_hosted(true);
+    let toolbar = std::rc::Rc::new(std::cell::RefCell::new(menu_slots()));
+    let heard = std::rc::Rc::default();
+    let app = MenuApp {
+        content: crate::widget::Column::new().push(Box::new(crate::widget::Text::new("Body"))),
+        toolbar: std::rc::Rc::clone(&toolbar),
+        heard: std::rc::Rc::clone(&heard),
+    };
+    let mut g = WindowGroup::new(
+        10,
+        vec![(
+            TabDescriptor::new(1, "Notes"),
+            TileContent::App(Box::new(app)),
+        )],
+        1,
+        WindowWidth::Normal,
+    );
+    let window = crate::hosted_window::HostedWindow::new();
+    if let Some(host) = g.host_for_tab_mut(1) {
+        host.set_hosted_window(window.clone());
+    }
+    let mut frame = crate::headless::FrameHarness::for_root(
+        crate::State::new(),
+        g,
+        (u32_of(W), u32_of(H)),
+        Theme::dark().with_reduce_motion(true),
+    );
+    for _ in 0..2 {
+        frame.relayout();
+    }
+    (frame, window, toolbar, heard)
+}
+
+/// The sort menu's button in the bar, where it stands.
+fn sort_button(frame: &mut crate::headless::FrameHarness) -> Point {
+    let g = frame.root_mut::<WindowGroup>();
+    g.bar
+        .toolbar_row()
+        .toolbar()
+        .and_then(|toolbar| {
+            toolbar
+                .actions
+                .iter()
+                .position(|action| action.id == "sort")
+        })
+        .and_then(|index| g.bar.toolbar_row().slots().actions.get(index).copied())
+        .expect("the bar lists the sort menu where its button stands")
+        .center()
+}
+
+/// Whether the bar has a menu open, and the rows it lists.
+fn menu(frame: &mut crate::headless::FrameHarness) -> (bool, Vec<String>) {
+    let g = frame.root_mut::<WindowGroup>();
+    let row = g.bar.toolbar_row();
+    (row.popup_open(), row.menu_labels())
+}
+
+/// The row `label` of the open menu, where it stands.
+fn menu_row(frame: &mut crate::headless::FrameHarness, label: &str) -> Rect {
+    let g = frame.root_mut::<WindowGroup>();
+    g.bar
+        .toolbar_row()
+        .menu_row(label)
+        .unwrap_or_else(|| panic!("the menu lists {label}"))
+}
+
+/// A menu in the bar opens on one click, stays open while the person reads it (and while the app
+/// declares its slots again), closes on a second click on its button, and the row chosen in it
+/// reaches the app as that button's row.
 #[test]
 fn a_menu_in_the_bar_opens_on_one_click_and_stays_open() {
     let _settled = crate::motion::testing::settled();
-    // The window's bar hosts the app's slots, as it does in a session.
-    crate::window_toolbar::set_hosted(true);
-    let chosen = std::rc::Rc::new(std::cell::Cell::new(0u8));
-    let picked = std::rc::Rc::clone(&chosen);
-    let (mut frame, window) = shell_window(
-        crate::widget::NavShell::new()
-            .content(Box::new(crate::widget::Text::new("Body")))
-            .content_header(
-                "Design",
-                vec![Box::new(
-                    crate::widget::Button::icon_only("sort", icons::Icon::ArrowUpDown, "Sort")
-                        .with_menu(vec![
-                            crate::widget::MenuItem::selection("Everything"),
-                            crate::widget::MenuItem::action("Title", move || picked.set(2)),
-                        ]),
-                )],
-            ),
-    );
+    let (mut frame, window, toolbar, heard) = menu_window();
     let mut slots = crate::window_slots::WindowSlots::default();
     frame_of(&mut frame, &mut slots, &window);
-    let sort = {
-        let g = frame.root_mut::<WindowGroup>();
-        g.bar
-            .toolbar_row()
-            .slots()
-            .actions
-            .first()
-            .copied()
-            .expect("the bar lists the sort menu where its button stands")
-            .center()
-    };
-    let open = |frame: &mut crate::headless::FrameHarness| {
-        frame
-            .root_mut::<WindowGroup>()
-            .bar
-            .toolbar_row()
-            .popup_open()
-    };
+    let sort = sort_button(&mut frame);
 
     frame.click_at(sort.x, sort.y);
     frame_of(&mut frame, &mut slots, &window);
-    assert!(open(&mut frame), "one click opens the sort menu");
-    let labels = frame
-        .root_mut::<WindowGroup>()
-        .bar
-        .toolbar_row()
-        .menu_labels();
+    let (open, labels) = menu(&mut frame);
+    assert!(open, "one click opens the sort menu");
     assert_eq!(labels, ["Everything", "Title"], "the menu's rows are up");
+    assert!(
+        heard.borrow().is_empty(),
+        "opening the menu runs none of its rows"
+    );
 
-    // It stays up: the frames after the click leave it alone.
-    for _ in 0..4 {
+    // It stays up: the frames after the click leave it alone, and so does the app declaring its
+    // slots again with a command before the menu's button.
+    for _ in 0..3 {
         frame_of(&mut frame, &mut slots, &window);
     }
-    assert!(open(&mut frame), "the menu stays open while it is read");
-
-    // A second click on the button closes it.
-    frame.click_at(sort.x, sort.y);
-    frame_of(&mut frame, &mut slots, &window);
-    assert!(!open(&mut frame), "a second click on the button closes it");
-
-    // A click opens it again, and the row chosen in it runs what it holds.
-    frame.click_at(sort.x, sort.y);
-    frame_of(&mut frame, &mut slots, &window);
-    assert!(open(&mut frame), "it opens again");
-    let row = {
-        let g = frame.root_mut::<WindowGroup>();
-        g.bar.toolbar_row().menu_row("Title")
-    }
-    .expect("the menu lists Title");
-    frame.click_at(row.center().x, row.center().y);
-    frame_of(&mut frame, &mut slots, &window);
-    assert_eq!(chosen.get(), 2, "choosing Title runs its action");
-    assert!(!open(&mut frame), "choosing a row closes the menu");
-
-    // A click opens it once more; then the app declares its slots again, with a command before
-    // the menu's button (a synced app's slots come and go as its data does). The menu stays the
-    // one the person opened, where its own button now stands, and the row they choose in it runs
-    // for that button rather than for whatever took its place in the row.
-    frame.click_at(sort.x, sort.y);
-    frame_of(&mut frame, &mut slots, &window);
-    assert!(open(&mut frame), "it opens again");
-    {
-        let mut g = frame.root_mut::<WindowGroup>();
-        let mut changed = g
-            .tab_toolbar(1)
-            .cloned()
-            .expect("the app declared its slots");
-        changed.actions.insert(
-            0,
-            crate::window_toolbar::ToolbarAction::new("archive", "archive", "Archive"),
-        );
-        g.set_tab_toolbar(1, Some(changed));
-    }
-    frame_of(&mut frame, &mut slots, &window);
-    assert!(
-        open(&mut frame),
-        "the menu stays open while the app declares its slots again"
+    toolbar.borrow_mut().actions.insert(
+        0,
+        crate::window_toolbar::ToolbarAction::new("archive", "archive", "Archive"),
     );
-    chosen.set(0);
-    let row = {
-        let g = frame.root_mut::<WindowGroup>();
-        g.bar.toolbar_row().menu_row("Title")
-    }
-    .expect("the menu lists Title");
+    frame_of(&mut frame, &mut slots, &window);
+    let (open, _) = menu(&mut frame);
+    assert!(
+        open,
+        "the menu stays open while it is read and the app declares its slots again"
+    );
+
+    // The row chosen runs for the menu it stands in, not for whatever now leads the row.
+    let row = menu_row(&mut frame, "Title");
     frame.click_at(row.center().x, row.center().y);
     frame_of(&mut frame, &mut slots, &window);
     assert_eq!(
-        chosen.get(),
-        2,
-        "the row runs for the button the menu was opened from"
+        heard.borrow().as_slice(),
+        [crate::window_toolbar::ToolbarEvent::Action {
+            id: "sort~row-1".into()
+        }],
+        "the row chosen runs for the button the menu belongs to"
     );
+    let (open, _) = menu(&mut frame);
+    assert!(!open, "choosing a row closes the menu");
+
+    // A click opens it again, and a second click on the button closes it.
+    let sort = sort_button(&mut frame);
+    frame.click_at(sort.x, sort.y);
+    frame_of(&mut frame, &mut slots, &window);
+    assert!(menu(&mut frame).0, "the button opens it again");
+    frame.click_at(sort.x, sort.y);
+    frame_of(&mut frame, &mut slots, &window);
+    assert!(
+        !menu(&mut frame).0,
+        "a second click on the button closes it"
+    );
+}
+
+/// A press on a menu in the bar ends on the command it began on: the app declaring its slots
+/// again while the button is down moves that command to another place of the row without moving
+/// the button, and the click still opens the menu the person pressed.
+#[test]
+fn a_press_on_a_menu_survives_the_app_declaring_its_slots_again() {
+    let _settled = crate::motion::testing::settled();
+    let (mut frame, window, toolbar, _heard) = menu_window();
+    let mut slots = crate::window_slots::WindowSlots::default();
+    frame_of(&mut frame, &mut slots, &window);
+    let sort = sort_button(&mut frame);
+
+    frame.send(&crate::synthetic_input::cursor_moved(sort.x, sort.y));
+    frame.send(&crate::synthetic_input::mouse_press());
+    // The app declares another command before the menu: the row packs its buttons from its
+    // trailing end, so the sort menu keeps its place under the pointer and is no longer the
+    // first of the row's actions.
+    toolbar.borrow_mut().actions.insert(
+        0,
+        crate::window_toolbar::ToolbarAction::new("archive", "archive", "Archive"),
+    );
+    frame_of(&mut frame, &mut slots, &window);
+    frame.send(&crate::synthetic_input::mouse_release());
+    frame_of(&mut frame, &mut slots, &window);
+    let (open, labels) = menu(&mut frame);
+    assert!(open, "the press ends on the command it began on");
+    assert_eq!(labels, ["Everything", "Title"], "the sort menu opened");
 }
 
 /// `v` as a logical pixel count: the fixtures' sizes are small.
