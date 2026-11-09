@@ -400,15 +400,20 @@ impl QuickFS {
         while let Some((dir, prefix)) = stack.pop() {
             let entries = self.visible_entries(dir).unwrap_or_default();
             for (ino, kind, name) in entries {
-                let name = name.as_bytes();
-                if !projectable_name(name) {
-                    tracing::warn!(
-                        target: "fs::native",
-                        ino,
-                        "not projecting an entry whose name is not one path component",
-                    );
-                    continue;
-                }
+                let name = match listed(name.as_bytes()) {
+                    Listed::Entry(name) => name,
+                    // The directory's own links (`.`, `..`) are how a listing
+                    // reaches it and its parent, not entries of it.
+                    Listed::Link => continue,
+                    Listed::Unprojectable => {
+                        tracing::warn!(
+                            target: "fs::native",
+                            ino,
+                            "not projecting an entry whose name is not one path component",
+                        );
+                        continue;
+                    }
+                };
                 let mut path = prefix.clone();
                 path.push(name.to_vec());
                 let (hash, size, mtime_ms, known, record, posix, lease) = {
@@ -1045,13 +1050,44 @@ impl QuickFS {
 /// peer's document is whatever bytes the peer wrote, so a separator, a NUL
 /// or a dot-link in it must never reach `Path::join`: `../../etc/cron.d/x`
 /// would leave the tree, and `/etc/cron.d/x` would replace it.
+/// What a name a directory listing gives is.
+#[derive(Debug, PartialEq, Eq)]
+enum Listed<'a> {
+    /// An entry of the directory, named by one path component.
+    Entry(&'a [u8]),
+    /// The directory's own link to itself or its parent.
+    Link,
+    /// An entry whose name is not one path component: it cannot be a file or
+    /// folder anywhere else.
+    Unprojectable,
+}
+
+fn listed(name: &[u8]) -> Listed<'_> {
+    if name == b"." || name == b".." {
+        Listed::Link
+    } else if projectable_name(name) {
+        Listed::Entry(name)
+    } else {
+        Listed::Unprojectable
+    }
+}
+
 pub fn projectable_name(name: &[u8]) -> bool {
     !name.is_empty() && name != b"." && name != b".." && !name.contains(&b'/') && !name.contains(&0)
 }
 
 #[cfg(test)]
 mod projectable_name_tests {
-    use super::projectable_name;
+    use super::{Listed, listed, projectable_name};
+
+    #[test]
+    fn a_directorys_own_links_are_not_entries_nor_unprojectable_names() {
+        assert_eq!(listed(b"."), Listed::Link);
+        assert_eq!(listed(b".."), Listed::Link);
+        assert_eq!(listed(b"notes.md"), Listed::Entry(b"notes.md"));
+        assert_eq!(listed(b"a/b"), Listed::Unprojectable);
+        assert_eq!(listed(b""), Listed::Unprojectable);
+    }
 
     #[test]
     fn only_single_components_are_projected() {
