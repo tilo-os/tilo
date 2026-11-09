@@ -682,7 +682,11 @@ impl Session {
             &options.person,
         ));
         let task_programs = Some(std::sync::Arc::new(
-            crate::task_programs::TaskPrograms::new(std::sync::Arc::clone(&session_doors)),
+            crate::task_programs::TaskPrograms::new(std::sync::Arc::new(
+                crate::task_programs_host::TaskProgramHost::new(std::sync::Arc::clone(
+                    &session_doors,
+                )),
+            )),
         ));
         // The session's own actions, offered to a turn's agent as the broker's steps: the
         // arrangement, its undo, the windows and the notices, which the REPL already calls.
@@ -703,7 +707,7 @@ impl Session {
             person: options.person.clone(),
             signals: Rc::clone(&notice_signals),
             activities: Rc::clone(&activities),
-            surfaces: surfaces.clone(),
+            surfaces,
             sync: sync.clone(),
             notes: std::sync::Arc::clone(&notes),
             notices: notices.clone(),

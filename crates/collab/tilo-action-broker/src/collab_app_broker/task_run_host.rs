@@ -40,7 +40,7 @@ mod asking;
 
 /// The route a task agent's connection is admitted on: the workspace agent
 /// service's, as a launched task agent joins.
-pub const TASK_AGENT_APP: &str = "so.tilo.agent";
+pub use tilo_actions::remote::task_programs::APP as TASK_AGENT_APP;
 
 /// How an invocation of this connection is read back.
 #[derive(Clone)]

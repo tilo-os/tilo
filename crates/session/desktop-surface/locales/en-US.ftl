@@ -1495,3 +1495,6 @@ profile-agent-undo-run = Undo run
 profile-agent-take-over = Take over
 profile-agent-revoke = Revoke access
 profile-agent-now = Now
+task-programs-resource = Task programs
+task-programs-run = Run a program
+task-programs-run-detail = Runs a tilolang program as a step of the task's run, as the agent working the task, and answers what it read or changed.

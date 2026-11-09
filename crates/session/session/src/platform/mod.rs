@@ -29,6 +29,9 @@ pub mod indexes;
 /// What the session's own actions ask of the session that holds them.
 pub mod steps;
 
+/// Where an agent's task programs run.
+pub mod programs;
+
 /// Where a session's own question is answered: the model gateway its host runs.
 pub trait Models: Send + Sync {
     /// The capability a question asked in this session runs on; `None` while the person set no

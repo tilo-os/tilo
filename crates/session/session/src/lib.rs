@@ -320,8 +320,9 @@ mod switcher;
 pub mod sync;
 #[cfg(target_os = "linux")]
 mod system_sounds;
-#[cfg(target_os = "linux")]
 mod task_programs;
+#[cfg(target_os = "linux")]
+mod task_programs_host;
 #[cfg(target_os = "linux")]
 mod task_undo;
 #[cfg(target_os = "linux")]

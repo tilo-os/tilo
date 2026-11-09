@@ -8,71 +8,35 @@
 //! programs made, and the steps `undo` takes back. Every call the program makes is done as the
 //! agent working the task, for the person who started it, attributed to the run, and decided by the
 //! workspace's policy like the agent's own calls. A later run of the issue starts another.
+//!
+//! Where a program runs is the host's: [`Programs`], a task's own process on a Linux desktop and
+//! the page's in-process host on the web.
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "the page starts the task programs its own session runs next"
+    )
+)]
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use tilo_action_broker::collab_app_broker::TASK_AGENT_APP;
+use tilo_actions::remote::Pending;
 use tilo_actions::remote::task_programs as wire;
-use tilo_actions::remote::{Pending, pending};
 use tilo_actions::{ActionArgs, ActionParam, ParamType};
-use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices, TaskRun};
-use tilo_lock::MutexRecover as _;
+use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices};
 
-/// One task's session of the door, over the run's own host.
-type Door = tilo_runtime::mcp::McpServer<Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>>;
+use crate::platform::programs::{ProgramRequest, Programs};
 
-/// A task, by the workspace it runs in, its agent and its issue.
-type TaskKey = (String, String, String);
-
-/// The tasks' sessions of the door, with the run each is of.
+/// A task agent's programs, as this host runs them.
 pub(crate) struct TaskPrograms {
-    /// What a task's host asks the session's own doors before it starts: the records the packages
-    /// the session runs itself keep.
-    doors: Arc<crate::agent_door::SessionDoors>,
-    sessions: std::sync::Mutex<HashMap<TaskKey, (String, Arc<Door>)>>,
+    /// Where a program runs: the task's door on this host, started for its run.
+    programs: Arc<dyn Programs>,
 }
 
 impl TaskPrograms {
-    /// The tasks' programs, whose hosts read the session's own records through `doors` .
-    pub(crate) fn new(doors: Arc<crate::agent_door::SessionDoors>) -> Self {
-        Self {
-            doors,
-            sessions: std::sync::Mutex::default(),
-        }
-    }
-
-    /// The task's session of the door, started for its run `group` when it has none or its last
-    /// run's: over `host` , the run's own host, so everything its programs do is a step the run
-    /// admits.
-    fn session_of(
-        &self,
-        host: &dyn TaskRun,
-        workspace: &str,
-        agent: &str,
-        person: Option<&str>,
-        issue: &str,
-        group: tilo_actions::WorkGroup,
-    ) -> Arc<Door> {
-        let key = (workspace.to_owned(), agent.to_owned(), issue.to_owned());
-        let mut sessions = self.sessions.lock_recover();
-        if let Some((run, door)) = sessions.get(&key)
-            && *run == group.id
-        {
-            return Arc::clone(door);
-        }
-        let run = group.id.clone();
-        let door = Arc::new(
-            Door::for_task(host.door(), workspace.to_owned(), agent, person)
-                .with_work_group(group)
-                .with_task_hosts(Some(Arc::new(crate::agent_door::TaskHosts::new(
-                    person.unwrap_or_else(|| self.doors.person()),
-                    Arc::clone(&self.doors),
-                )))),
-        );
-        // A later run of the issue ends the earlier one's session, its host with it.
-        sessions.insert(key, (run, Arc::clone(&door)));
-        door
+    pub(crate) fn new(programs: Arc<dyn Programs>) -> Self {
+        Self { programs }
     }
 }
 
@@ -106,7 +70,7 @@ const PARAMS: &[ActionParam] = &[PROGRAM, CONFIRM, THIS, RUN, RUN_LABEL];
 
 /// The task's program, described for the broker's catalogue.
 fn descriptor() -> tilo_actions::ActionDescriptor {
-    use crate::i18n::t;
+    use tilo_desktop_surface::i18n::t;
     tilo_actions::ActionDescriptor {
         state: tilo_actions::ActionState::default(),
         semantic_identity: None,
@@ -147,36 +111,13 @@ fn bind(argument: Option<&str>) -> Result<ActionArgs, String> {
     ActionArgs::bind_json(PARAMS, &supplied).map_err(|error| error.to_string())
 }
 
-/// The run's program could not start or run at all.
-fn unavailable(message: String) -> HostStepOutcome {
-    Err(Box::new(tilo_actions::ActionFailure {
-        code: "task_program_unavailable".into(),
-        message,
-        details: None,
-        retryable: true,
-    }))
-}
-
-fn outcome(ran: tilo_runtime::mcp::TaskProgram) -> tilo_actions::ActionOutput {
-    let answer = wire::ProgramAnswer {
-        text: ran.text,
-        failed: ran.failed,
-        answer: ran.answer,
-        refs: ran.refs,
-    };
-    tilo_actions::ActionOutput {
-        value: Some(serde_json::to_value(answer).unwrap_or_default()),
-        resources: Vec::new(),
-    }
-}
-
 impl HostStepServices for TaskPrograms {
     fn provider(&self) -> &'static str {
         wire::PROVIDER
     }
 
     fn app_id(&self) -> &str {
-        TASK_AGENT_APP
+        wire::APP
     }
 
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
@@ -215,55 +156,45 @@ impl HostStepServices for TaskPrograms {
             .id()
             .strip_prefix("agent:")
             .unwrap_or_else(|| actor.id());
-        let door = self.session_of(
-            request
+        self.programs.run(ProgramRequest {
+            workspace: request.workspace,
+            run: request
                 .task_run
                 .ok_or("a task's programs run only as steps of its run")?,
-            request.workspace,
             agent,
-            actor.acting_for(),
+            person: actor.acting_for(),
             issue,
-            tilo_actions::WorkGroup {
+            group: tilo_actions::WorkGroup {
                 id: run,
                 label,
                 kind: "task".into(),
             },
-        );
-        let (complete, answered) = pending();
-        // The program waits on the task's host and on every call it makes: never on the broker's
-        // thread.
-        std::thread::Builder::new()
-            .name("task-program".into())
-            .spawn(move || {
-                let answered = match tilo_rt::try_app() {
-                    Ok(runtime) => match runtime.block_on(door.task_program(
-                        &program,
-                        confirm,
-                        this.as_deref(),
-                    )) {
-                        Ok(ran) => Ok(outcome(ran)),
-                        Err(error) => unavailable(error.to_string()),
-                    },
-                    Err(error) => unavailable(error.to_string()),
-                };
-                complete.complete(answered);
-            })
-            .map_err(|error| error.to_string())?;
-        Ok(answered)
+            program,
+            confirm,
+            this,
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_action_broker::collab_app_broker::BrokerActor;
     use tilo_actions::ActionAddress;
+    use tilo_broker_core::BrokerActor;
+    use tilo_broker_core::steps::TaskRun;
 
-    /// The step as the session serves it, on a door nothing asks beyond.
+    /// A host no step reaches: every case below is refused before a program runs.
+    struct NoPrograms;
+
+    impl Programs for NoPrograms {
+        fn run(&self, _: ProgramRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
+            Err("no program runs in these cases".into())
+        }
+    }
+
+    /// The step as the session serves it.
     fn programs() -> TaskPrograms {
-        let wake = tilo_service::LoopWake::default();
-        let doors = Arc::new(crate::agent_door::SessionDoors::new(wake.handle(), "Pat"));
-        TaskPrograms::new(doors)
+        TaskPrograms::new(Arc::new(NoPrograms))
     }
 
     /// The issue an agent's run is of.
@@ -290,7 +221,7 @@ mod tests {
     fn a_task_step_is_the_agents_and_is_offered_for_tasks() {
         let programs = programs();
         assert_eq!(programs.provider(), wire::PROVIDER);
-        assert_eq!(programs.app_id(), TASK_AGENT_APP);
+        assert_eq!(programs.app_id(), wire::APP);
         assert!(programs.for_tasks(), "a task agent's catalogue offers it");
         let described = programs.descriptors();
         assert_eq!(described.len(), 1);

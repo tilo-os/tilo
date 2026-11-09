@@ -323,9 +323,6 @@ session-lock-screen = Lock screen
 
 ## What an agent's programs are, as the action door offers them: a task agent
 ## writes one program at a time as a step of its task's run.
-task-programs-resource = Task programs
-task-programs-run = Run a program
-task-programs-run-detail = Runs a tilolang program as a step of the task's run, as the agent working the task, and answers what it read or changed.
 
 ## What the person's own devices answered when one of them asked to be
 ## unlocked after a reboot, as their activity history lists it: the package
