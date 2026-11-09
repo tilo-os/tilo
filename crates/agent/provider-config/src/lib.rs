@@ -838,6 +838,40 @@ fn loopback_http_endpoint(endpoint: &str) -> bool {
     }
 }
 
+/// Whether `endpoint` names a literal loopback address on this device: an
+/// `http`/`https` URL whose host is `127.0.0.1` or `::1`, with no userinfo.
+/// A name, even `localhost`, is resolved by something outside the device's
+/// own network stack, so it does not qualify.
+#[must_use]
+pub fn literal_loopback_endpoint(endpoint: &str) -> bool {
+    let Ok(url) = url::Url::parse(endpoint) else {
+        return false;
+    };
+    if !matches!(url.scheme(), "http" | "https") || url.username() != "" || url.password().is_some()
+    {
+        return false;
+    }
+    match url.host() {
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        _ => false,
+    }
+}
+
+/// Whether `profile` is an endpoint on this device that authenticates no
+/// one: no credential and no sign-in, classified as this device, at a
+/// literal loopback address. The model gateway resolves a key for every
+/// other profile and refuses a provider without one, and the request
+/// headers send none for this one. One rule decides both, so a keyless
+/// local plan and the request it sends cannot disagree.
+#[must_use]
+pub fn is_unauthenticated_local(profile: &ProviderProfile) -> bool {
+    profile.location == EndpointLocation::ThisDevice
+        && profile.credential.is_none()
+        && profile.sign_in.is_none()
+        && literal_loopback_endpoint(&profile.endpoint)
+}
+
 /// The hosted providers of a configuration, as they roam with the person:
 /// each names an endpoint on the internet and a reference to its key, never
 /// the key, which each device keeps in its own vault.

@@ -815,11 +815,9 @@ async fn execute(
                 .await
             }
             ProviderProtocol::Anthropic => {
-                if secret.is_none() {
-                    return Err(rig_core::error::ProviderError::request(
-                        "credential required",
-                    ));
-                }
+                // `profile_headers` above admits a missing secret only for a
+                // keyless local profile, and then carries no credential: the
+                // request is answered by a loopback server that takes none.
                 let provider = anthropic::AnthropicConfig::new(secret.unwrap_or_default());
                 run(
                     provider.connect(transport.clone()).completion(model),

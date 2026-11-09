@@ -202,8 +202,10 @@ pub struct Header {
     pub secret: bool,
 }
 
-/// The headers that version and authenticate a request. Anthropic always
-/// needs a key; an OpenAI-compatible endpoint (a local server, say) may not.
+/// The headers that version and authenticate a request. Anthropic needs a
+/// key; an OpenAI-compatible endpoint (a local server, say) may not. A
+/// profile's own rule, which also admits a keyless local endpoint, is
+/// [`profile_headers`].
 ///
 /// # Errors
 ///
@@ -235,16 +237,25 @@ pub fn keyed_headers(
         (ProviderProtocol::Anthropic, None) => {
             Err("Anthropic requests require a configured credential".into())
         }
-        (ProviderProtocol::Anthropic, Some(secret)) => Ok(vec![
-            Header {
-                name: "anthropic-version",
-                value: Zeroizing::new(ANTHROPIC_VERSION.into()),
-                secret: false,
-            },
-            key(secret),
-        ]),
+        (ProviderProtocol::Anthropic, Some(secret)) => Ok(dialect_headers(protocol)
+            .into_iter()
+            .chain([key(secret)])
+            .collect()),
         (ProviderProtocol::OpenAiCompatible, Some(secret)) => Ok(vec![key(secret)]),
         (ProviderProtocol::OpenAiCompatible, None) => Ok(Vec::new()),
+    }
+}
+
+/// The headers a `protocol`'s dialect requires of every request, before its
+/// credential.
+fn dialect_headers(protocol: ProviderProtocol) -> Vec<Header> {
+    match protocol {
+        ProviderProtocol::Anthropic => vec![Header {
+            name: "anthropic-version",
+            value: Zeroizing::new(ANTHROPIC_VERSION.into()),
+            secret: false,
+        }],
+        ProviderProtocol::OpenAiCompatible => Vec::new(),
     }
 }
 
@@ -535,9 +546,14 @@ fn chatgpt_account_id(token: &str) -> Option<String> {
 /// `x-goog-user-project` names another, and Tilo's client project is not
 /// one the person can use.
 ///
+/// A keyless local profile ([`crate::is_unauthenticated_local`])
+/// authenticates no one, so it sends its dialect's headers and no
+/// credential on either protocol: the same rule that let the gateway plan
+/// without a key.
+///
 /// # Errors
 ///
-/// As [`headers`].
+/// Anthropic without a `secret`, unless the profile is a keyless local one.
 pub fn profile_headers(
     profile: &ProviderProfile,
     secret: Option<&str>,
@@ -545,7 +561,11 @@ pub fn profile_headers(
     let key_header = profile
         .key_header
         .unwrap_or_else(|| KeyHeader::of(profile.protocol));
-    let mut all = keyed_headers(profile.protocol, key_header, secret)?;
+    let mut all = match secret {
+        Some(secret) => keyed_headers(profile.protocol, key_header, Some(secret))?,
+        None if crate::is_unauthenticated_local(profile) => dialect_headers(profile.protocol),
+        None => keyed_headers(profile.protocol, key_header, None)?,
+    };
     let constant = |name: &'static str, value: &str| Header {
         name,
         value: Zeroizing::new(value.into()),
@@ -738,6 +758,56 @@ mod tests {
         assert_eq!(openai[0].value.as_str(), "Bearer k");
         assert!(openai[0].secret);
         assert!(headers(OpenAiCompatible, None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_keyless_local_profile_sends_no_credential_on_either_protocol() {
+        for protocol in ProviderProtocol::ALL.iter().copied() {
+            let mut profile = ProviderProfile::local_vllm();
+            profile.protocol = protocol;
+            profile.endpoint = "http://127.0.0.1:8787".into();
+            assert!(crate::is_unauthenticated_local(&profile));
+            let sent: Vec<_> = profile_headers(&profile, None)
+                .unwrap()
+                .iter()
+                .map(|header| (header.name, header.value.to_string(), header.secret))
+                .collect();
+            let expected: &[(&str, &str, bool)] = match protocol {
+                ProviderProtocol::Anthropic => &[("anthropic-version", ANTHROPIC_VERSION, false)],
+                ProviderProtocol::OpenAiCompatible => &[],
+            };
+            assert_eq!(
+                sent,
+                expected
+                    .iter()
+                    .map(|(name, value, secret)| (*name, (*value).to_string(), *secret))
+                    .collect::<Vec<_>>(),
+                "{protocol:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_remote_endpoint_without_a_key_still_refuses_the_anthropic_protocol() {
+        let mut hosted = ProviderProfile::hosted(ProviderProtocol::Anthropic);
+        hosted.credential = None;
+        assert!(!crate::is_unauthenticated_local(&hosted));
+        assert!(profile_headers(&hosted, None).is_err());
+
+        // Named as this device, but at an address something else resolves.
+        let mut named = hosted;
+        named.location = crate::EndpointLocation::ThisDevice;
+        named.endpoint = "http://localhost:8787".into();
+        assert!(!crate::is_unauthenticated_local(&named));
+        assert!(profile_headers(&named, None).is_err());
+
+        // A credential reference means the key is the vault's to resolve.
+        let mut keyed = ProviderProfile::local_vllm();
+        keyed.protocol = ProviderProtocol::Anthropic;
+        keyed.endpoint = "http://127.0.0.1:8787".into();
+        keyed.credential = Some(crate::SecretReference::provider_api_key(&keyed.id));
+        assert!(!crate::is_unauthenticated_local(&keyed));
+        assert!(profile_headers(&keyed, None).is_err());
     }
 
     #[test]

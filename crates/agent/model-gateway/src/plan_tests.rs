@@ -158,7 +158,13 @@ fn child_profile(case: &str) -> ProviderProfile {
         });
         profile.models.push(other);
     }
-    if case != "local-unauthenticated" && case != "local-nonloopback" && case != "local-dns-name" {
+    if !matches!(
+        case,
+        "local-unauthenticated"
+            | "local-nonloopback"
+            | "local-dns-name"
+            | "local-anthropic-unauthenticated"
+    ) {
         profile.credential = Some(agent_provider_config::SecretReference::provider_api_key(
             &profile.id,
         ));
@@ -170,7 +176,7 @@ fn child_profile(case: &str) -> ProviderProfile {
         profile.endpoint = profile.endpoint.replace("127.0.0.1", "localhost");
     }
 
-    if case.starts_with("anthropic") {
+    if case.starts_with("anthropic") || case == "local-anthropic-unauthenticated" {
         profile.protocol = ProviderProtocol::Anthropic;
         profile.endpoint = profile.endpoint.trim_end_matches("/v1").to_owned();
     }
@@ -198,11 +204,17 @@ fn child_plan(case: &str) {
     .unwrap();
     if !matches!(
         case,
-        "local-unauthenticated" | "local-nonloopback" | "local-dns-name"
+        "local-unauthenticated"
+            | "local-nonloopback"
+            | "local-dns-name"
+            | "local-anthropic-unauthenticated"
     ) {
         prepare_plan_credentials(case, &profile);
     }
-    if case == "local-unauthenticated" {
+    if matches!(
+        case,
+        "local-unauthenticated" | "local-anthropic-unauthenticated"
+    ) {
         // Establish disposable custody before querying an empty vault.
         let root = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap()).join("tilo");
         let (reference, authorization) = credential_binding(&profile).unwrap();
@@ -215,7 +227,11 @@ fn child_plan(case: &str) {
             selection_configured(
                 "test-provider",
                 "test-model",
-                ProviderProtocol::OpenAiCompatible
+                if case == "local-anthropic-unauthenticated" {
+                    ProviderProtocol::Anthropic
+                } else {
+                    ProviderProtocol::OpenAiCompatible
+                }
             )
             .is_ok()
         );
@@ -462,6 +478,20 @@ fn completion_error_reply(case: &str) -> String {
     }
 }
 
+/// The peer's answer to a case it need not special-case: a complete turn in
+/// the case's dialect.
+fn success_reply(case: &str) -> String {
+    let body = if matches!(case, "anthropic" | "local-anthropic-unauthenticated") {
+        ANTHROPIC_OUTPUT
+    } else {
+        OUTPUT
+    };
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
 fn temporary_config(test: &str, case: &str) -> TemporaryConfig {
     let nonce = tilo_clock::try_unix_now_ns().unwrap();
     let temp = TemporaryConfig(std::env::temp_dir().join(format!(
@@ -525,17 +555,7 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
                 value if value.parse::<u16>().is_ok() => format!(
                     "HTTP/1.1 {value} Provider Error\r\nRetry-After: 0\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 ),
-                _ => {
-                    let body = if server_case == "anthropic" {
-                        ANTHROPIC_OUTPUT
-                    } else {
-                        OUTPUT
-                    };
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                }
+                _ => success_reply(&server_case),
             };
             stream.write_all(reply.as_bytes()).unwrap();
         }
@@ -956,6 +976,8 @@ fn plan_dispatch_unauthenticated_policy_keeps_other_profiles_in_the_vault() {
     assert!(unauthenticated_local_plan(&profile).unwrap());
     profile.endpoint = "http://user@127.0.0.1:8000/v1".into();
     assert!(unauthenticated_local_plan(&profile).is_err());
+    profile.endpoint = "http://localhost:8000/v1".into();
+    assert!(unauthenticated_local_plan(&profile).is_err());
     profile.endpoint = "http://127.0.0.1:8000/v1".into();
     profile.credential = Some(agent_provider_config::SecretReference::provider_api_key(
         &profile.id,
@@ -996,6 +1018,30 @@ fn plan_dispatch_allows_only_explicit_unauthenticated_literal_loopback() {
             assert!(observed.requests.is_empty());
         }
     }
+}
+
+/// A local endpoint speaking Anthropic's dialect is as credential-free as
+/// an OpenAI-compatible one: the plan decides once that no key is needed,
+/// and the request it sends carries none, so a keyless local server (a
+/// proxy, say) answers it instead of the gateway refusing the dialect.
+#[test]
+fn plan_dispatch_reaches_a_keyless_local_anthropic_endpoint_without_a_credential() {
+    let Some(observed) = run_case(
+        "plan_dispatch_reaches_a_keyless_local_anthropic_endpoint_without_a_credential",
+        "local-anthropic-unauthenticated",
+    ) else {
+        return;
+    };
+    assert!(observed.response.ok, "{:?}", observed.response.error);
+    assert!(observed.response.error.is_none());
+    assert_eq!(observed.requests.len(), 1);
+    let request = &observed.requests[0];
+    assert!(request.starts_with("POST /v1/messages HTTP/1.1\r\n"));
+    let lowered = request.to_ascii_lowercase();
+    assert!(!lowered.contains("x-api-key:"));
+    assert!(!lowered.contains("authorization:"));
+    assert!(request.contains("anthropic-version: 2023-06-01\r\n"));
+    assert_eq!(observed.response.output.as_deref(), Some(ANTHROPIC_OUTPUT));
 }
 
 #[test]
