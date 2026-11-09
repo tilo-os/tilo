@@ -189,9 +189,9 @@ impl TaskSession {
         // The platform's packages, the session's own among them: no record holds their
         // resources, so they are read by no record read; their actions are invoked on the
         // resource the session publishes.
-        let platform = crate::platform_apps::platform_packages()?
-            .into_iter()
-            .chain(std::iter::once(crate::platform_apps::session_package()?));
+        // The session's own description is one of the platform's (`platform_packages`): its
+        // resources are read without a record, and its actions run at the session's door.
+        let platform = crate::platform_apps::platform_packages()?;
         let published: std::collections::HashSet<String> =
             load_apps(&runtime, &mut apps, platform)?
                 .into_iter()
