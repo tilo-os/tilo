@@ -155,6 +155,74 @@ fn a_served_app_opened_in_frames_stands_on_the_canvas() {
     opening_a_served_app_places_its_root("Frames");
 }
 
+/// A placed Tasks root draws its tasks' titles, not the placeholder a row shows for an item
+/// nobody has named: each row reads the title field of its task's own reading, which the
+/// session publishes when the composed list asks for it.
+#[test]
+fn a_placed_tasks_root_draws_its_tasks_titles() {
+    const TASKS: &str = "so.tilo.lang.tasks";
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().expect("a home");
+    let store = home.data().join("tilo-apps");
+    common::install_apps_in(&store, &home.state().join("tilolang"));
+    home.env().set("TILO_APPS_DATA_DIR", &store);
+    let handed = home.home().join("handed");
+    let launcher = launcher_recording(&home, &handed);
+    let apps = apps_at(&home, launcher.path().to_owned());
+    // The apps a development session seeds, served as the session serves a device's own.
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            person: PERSON.to_owned(),
+            shell: true,
+            collab: false,
+            services: vec![Box::new(common::seeded_apps_in(&store))],
+            apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
+            launch: Some(Rc::clone(&apps)),
+            ..Options::default()
+        },
+        &[tilo_compositor::OutputConfig::new(
+            "HEADLESS-1",
+            common::WIDTH,
+            common::HEIGHT,
+        )],
+    )
+    .expect("a session");
+    common::show_preset(&mut session, "Frames");
+    // The seeded tasks the place draws, by the title the seeded scenario gave them.
+    common::until(&mut session, "the seeded tasks", |session| {
+        session
+            .resources()
+            .iter()
+            .flat_map(|resource| resource.children.iter())
+            .any(|resource| resource.label == "Take the bins out")
+    });
+
+    apps.open(&tilo_app_launch::Launch::Package {
+        app: TASKS.to_owned(),
+        open: None,
+    })
+    .expect("the app is opened");
+    common::until(&mut session, "the app's root on the canvas", |session| {
+        common::places(session)
+            .iter()
+            .any(|place| place.shows == TASKS)
+    });
+    // Today lists what is due today or late, and the seeded week's tasks are due then: the
+    // place's window opens in Today, and each of its rows names its task as the record says,
+    // drawn on the canvas where a person reads it.
+    common::until(&mut session, "a task's title in the place", |session| {
+        ["Call the landlord about the boiler", "Book a haircut"]
+            .iter()
+            .any(|title| session.shell_drawn_text_bounds(title).is_some())
+    });
+    let drawn = session.accessible_labels();
+    assert!(
+        !drawn.iter().any(|said| said.contains("Untitled")),
+        "no row of the place shows the placeholder an unnamed item gets: {drawn:?}"
+    );
+}
+
 /// An app no service runs launches as every app did: the launcher is handed it, and no place
 /// stands for it. What proves this test is real is the launcher line a window process leaves.
 #[test]
