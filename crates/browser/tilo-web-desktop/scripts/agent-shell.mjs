@@ -117,7 +117,7 @@ if (!bundle && flag('--build')) {
   log('build.sh', bundle);
   // `quick` (the wasm-dev profile): a debug module of the whole desktop is
   // past wasm-bindgen's function limit, and nothing here measures speed.
-  const result = spawnSync('bash', [join(here, '../tilo-browser-runtime/scripts/build.sh'), bundle, '--profile', 'quick', '--bundle', 'desktop'],
+  const result = spawnSync('bash', [join(here, '../../tilo-browser-runtime/scripts/build.sh'), bundle, '--profile', 'quick', '--bundle', 'desktop'],
     {cwd: repo, stdio: 'inherit'});
   if (result.status !== 0) throw new Error('the desktop bundle build failed');
 }
@@ -868,6 +868,15 @@ try {
         const pinProblem = await pinOverlay(tab);
         note(`${combo}: who is here pins out over the windows`, !pinProblem, pinProblem ?? '');
         await shot(tab, combo, 'presence-with-agent');
+
+        // A window filling the desk: the bar's own controls and the reading it shows stand apart at
+        // every width, the phone's included.
+        if (await press(tab, /^maximize$/i, {what: 'maximizing the window'})) {
+          await sleep(900);
+          await shot(tab, combo, 'maximized');
+          await press(tab, /^(restore|maximize)$/i, {what: 'restoring the window'});
+          await sleep(600);
+        }
         const overlay = await semantics(tab);
         note(`${combo}: the overlay lists the agent`, overlay.some(node => /claude code/i.test(node.name)), names(overlay));
         const exceptions = tab.log.filter(line => line.startsWith('EXC') || /panic/i.test(line));
