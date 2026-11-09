@@ -184,7 +184,6 @@ pub mod files_daemon;
 mod fs_authority;
 #[cfg(target_os = "linux")]
 mod held;
-#[cfg(target_os = "linux")]
 mod here;
 #[cfg(target_os = "linux")]
 mod host_account;

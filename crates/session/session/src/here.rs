@@ -1,6 +1,11 @@
 //! Who is here, and where: the people a workspace's collaborators name, the window each is in, and
 //! the calls in progress in its workspace. This is what the empty launcher lists first.
 
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(dead_code, reason = "the page's collaboration feeds this next")
+)]
+
 use tilo_desktop_search::providers::happening::{CallHere, PersonHere, WindowHere, WorkspaceHere};
 
 use crate::Shared;

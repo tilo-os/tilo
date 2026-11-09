@@ -278,7 +278,6 @@ pub(crate) struct Shared {
     pub(crate) asker: crate::questions::Asker,
     /// Who is here: this session's membership of each workspace, when it
     /// takes part in the collaboration plane.
-    #[cfg(target_os = "linux")]
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
     /// This device's workspaces: what the desk shows of them, and what a join takes in.
     #[cfg(target_os = "linux")]
