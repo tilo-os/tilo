@@ -717,11 +717,6 @@ def own_change(ctx, res):
         raise CheckFailed("; ".join(problems))
 
 
-# What a run answers while it has nobody to ask: a step its grants ask first about waits for a
-# question on its issue, and an agent door connection's run has no issue to put it on.
-UNASKED = "waits for the person to confirm it on the issue"
-
-
 @check("E09", AREA, "An agent's change that asks first is put to the person, and with their answer "
                     "lands in its own workspace's files, not the other's")
 def asked_change(ctx, res):
@@ -739,13 +734,17 @@ def asked_change(ctx, res):
         e["new_file"], e["asked_for_file"] = wrote, asked
         agent.keep()
     res.metrics["new_file"] = {e["name"]: text_of(e["new_file"])[:300] for e in envs}
-    refused = [text_of(e["new_file"]) for e in envs if is_error(e["new_file"]) is not False]
-    if refused and all(UNASKED in said for said in refused):
-        raise core.ExpectedFailure(
-            "a door connection's run cannot put a step that asks first to its person: it waits for a "
-            f"question on a Tasks issue it has none of ({refused[0][:160]})")
+    res.metrics["asked"] = {e["name"]: e["asked_for_file"] for e in envs}
     problems = []
     for e, other in ((one, two), (two, one)):
+        # The person was asked on the desk's sheet, which offers the step once, for the agent
+        # from now on, or not at all.
+        shown = [str(name) for dialog in e["asked_for_file"] for name in dialog.get("targets") or []]
+        if not e["asked_for_file"]:
+            problems.append(f"{e['name']}: terminal#run was not put to the person on the sheet")
+        elif not any("always allow" in name.lower() for name in shown) or \
+                not any(name.strip().lower() == "deny" for name in shown):
+            problems.append(f"{e['name']}: the sheet offers no Always allow and Deny: {shown}")
         if is_error(e["new_file"]) is not False:
             problems.append(f"{e['name']}: terminal#run was refused: {text_of(e['new_file'])[:300]}")
             continue

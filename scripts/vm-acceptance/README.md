@@ -150,8 +150,9 @@ environment's agent asking for the other workspace is refused before anyone is a
 Stop on one leaves the other working (E06); a program of the login outside the environments is
 refused on an environment's door (E07). E08 is an agent's own change, a note through
 `notes#new-note` taken in the run the door starts for its connection, landing in its workspace
-and not the other's. E09 is one that asks first, a file through `terminal#run`: while a door
-connection's run has no issue to put the question on, it is an expected failure naming the wait.
+and not the other's. E09 is one that asks first, a file through `terminal#run`: its run puts the
+question to the person on the desk's sheet (Allow once, Always allow the agent, Deny), the harness
+allows it once by its named control, and the file lands in the agent's own workspace's tree.
 
 `TILO_ACCEPTANCE_HOLD_S=N` keeps a run's VM up N seconds after a check failed, to reach it
 (`t vm ssh`, then `tilo-vm` as the run's user) before it goes.
