@@ -878,6 +878,11 @@ impl Joined {
                 PeerEvent::Ready { workspace_id } if workspace_id == self.workspace => {
                     self.ready = true;
                     self.moderation_due_ms.store(0, Ordering::Relaxed);
+                    // A frame asks what this person may do here, and only now
+                    // may it ask: every mount draws once more, so a page that
+                    // drew and went idle before the workspace was ready (one
+                    // app full tab, untouched) does not stay read-only.
+                    woken.extend(self.mounts.keys().copied());
                 }
                 PeerEvent::CompactionRequested { route, request }
                     if route.cluster_id == self.uuid =>
