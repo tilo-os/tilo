@@ -28,9 +28,15 @@
 //! [`Reason::NoPaymentMethod`] and [`NextStepKind::AddPaymentMethod`]:
 //! nothing asks for a card before that.
 //!
-//! Payment itself (checkout, prices, webhooks) is the provider's. All it
-//! does here is answer this contract: write the account's standing where its
-//! host reads it, and name its pages.
+//! Every type here is written field for field, with enums tagged by their
+//! variant, so it crosses both JSON (the action door) and postcard (a
+//! host's own sockets) as the same value.
+//!
+//! Payment itself (checkout, prices, webhooks, credit, rate limits, fraud
+//! checks) is the provider's. All it does here is answer this contract:
+//! write the account's standing where its host reads it, and name its pages.
+//! The account is the person's: their Tilo identity carries it to every
+//! device, so Settings and the overview of their Tilo show the same standing.
 
 use serde::{Deserialize, Serialize};
 
@@ -79,7 +85,6 @@ pub struct Limits {
     pub sizes: Vec<String>,
     /// VM seconds included per billing period; `None` when the plan bills
     /// every second or sets no such bound.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub included_vm_seconds: Option<u64>,
 }
 
@@ -93,7 +98,6 @@ pub struct PlanOffer {
     pub name: String,
     /// Its price, in the provider's words ("$20 a month, then $0.04 per VM
     /// hour"); `None` for a plan without one.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub price: Option<String>,
     pub limits: Limits,
 }
@@ -184,15 +188,16 @@ pub struct Standing {
     /// The account's id with the host.
     pub account: String,
     /// The [`PlanOffer::id`] it is on; `None` before it chose one.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
     /// Whether a payment method is on file.
     pub payment_method: bool,
     pub entitlements: Vec<Entitlement>,
     /// What the account may use now; `None` while it is entitled to nothing.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub limits: Option<Limits>,
     pub usage: Usage,
+    /// Credit the account has left, in the provider's words ("$12.40
+    /// credit"); `None` when it has none.
+    pub credit: Option<String>,
     /// Newest first.
     pub invoices: Vec<Invoice>,
 }
@@ -215,11 +220,9 @@ pub struct HostAccount {
     /// The plans it offers; none when it sells nothing.
     pub plans: Vec<PlanOffer>,
     /// The account's standing; `None` on a host that sells nothing.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub standing: Option<Standing>,
     /// The provider's page where the person manages billing: payment
     /// methods, plan and invoices.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub manage_billing: Option<String>,
 }
 
@@ -268,13 +271,13 @@ pub enum NextStepKind {
 pub struct NextStep {
     pub kind: NextStepKind,
     /// The provider's page for it; `None` for a step taken in Tilo itself.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub url: Option<String>,
 }
 
 /// Why a host refused an action.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum Reason {
     /// The action needs a Linux machine, the host sells them, and the
     /// account has no payment method on file.
@@ -337,7 +340,13 @@ mod tests {
         let json = serde_json::to_value(&host).unwrap();
         assert_eq!(
             json,
-            serde_json::json!({"host": "Ada's server", "kind": "self-hosted", "plans": []})
+            serde_json::json!({
+                "host": "Ada's server",
+                "kind": "self-hosted",
+                "plans": [],
+                "standing": null,
+                "manage_billing": null
+            })
         );
         assert_eq!(serde_json::from_value::<HostAccount>(json).unwrap(), host);
     }
@@ -356,12 +365,14 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({
-                "reason": {"kind": "no_payment_method"},
+                "reason": "no_payment_method",
                 "message": "This needs a Linux machine.",
                 "next": [{"kind": "add_payment_method", "url": "https://billing.example/card"}]
             })
         );
         assert!(refusal.awaits_the_account());
+        let bytes = postcard::to_allocvec(&refusal).unwrap();
+        assert_eq!(postcard::from_bytes::<Refusal>(&bytes).unwrap(), refusal);
         assert_eq!(
             refusal
                 .step(NextStepKind::AddPaymentMethod)
@@ -379,7 +390,7 @@ mod tests {
         assert!(!limit.awaits_the_account());
         assert_eq!(
             serde_json::to_value(&limit.reason).unwrap(),
-            serde_json::json!({"kind": "too_many_running", "limit": 1, "running": ["ws1"]})
+            serde_json::json!({"too_many_running": {"limit": 1, "running": ["ws1"]}})
         );
     }
 
@@ -415,6 +426,8 @@ mod tests {
             manage_billing: Some("https://billing.example".into()),
         };
         assert!(host.sells());
+        let bytes = postcard::to_allocvec(&host).unwrap();
+        assert_eq!(postcard::from_bytes::<HostAccount>(&bytes).unwrap(), host);
         assert_eq!(host.plan().map(|plan| plan.name.as_str()), Some("Pro"));
         let usage = &host.standing.as_ref().unwrap().usage;
         assert_eq!(usage.vm_seconds(), 90);

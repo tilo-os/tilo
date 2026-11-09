@@ -21,6 +21,8 @@ path = "src/jail_main.rs"
 
 [dependencies]
 collab-types = { path = "../../collab/collab-types" }
+# A refusal carries the host contract's typed reason and next steps.
+tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 fnv.workspace = true
 legacy-agent-protocol = { path = "../legacy-agent-protocol" }
 libc.workspace = true

@@ -181,6 +181,11 @@ impl Captured {
     pub fn take(&self) -> Vec<u8> {
         std::mem::take(&mut *lock(&self.0))
     }
+
+    /// What it collected so far, leaving it there.
+    pub fn peek(&self) -> Vec<u8> {
+        lock(&self.0).clone()
+    }
 }
 
 impl Write for Captured {

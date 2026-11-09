@@ -8725,6 +8725,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-actions",
  "tilo-advisory-lock",
  "tilo-clock",
  "tilo-desktop-entry",
@@ -19218,6 +19219,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-host-account"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "legacy-vm",
+ "serde_json",
+ "tempfile",
+ "tilo-actions",
+ "tilo-files",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-host-search"
 version = "0.1.0"
 dependencies = [
@@ -21374,6 +21388,7 @@ dependencies = [
  "tilo-frame-metrics",
  "tilo-fs",
  "tilo-fs-client",
+ "tilo-host-account",
  "tilo-identity-authority",
  "tilo-identity-host",
  "tilo-live",
@@ -24288,6 +24303,7 @@ dependencies = [
  "tilo-egress",
  "tilo-environment",
  "tilo-files",
+ "tilo-host-account",
  "tilo-oci-images",
  "tilo-paths",
  "tilo-process",

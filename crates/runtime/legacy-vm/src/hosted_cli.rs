@@ -290,6 +290,7 @@ fn ask(flags: &Flags, request: &Request) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         Reply::Done | Reply::Ready { .. } => Ok(ExitCode::SUCCESS),
-        Reply::Refused(message) | Reply::Error(message) => Err(message),
+        Reply::Refused(refusal) => Err(refusal.message),
+        Reply::Error(message) => Err(message),
     }
 }

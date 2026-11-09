@@ -384,10 +384,29 @@ that workspace environment's own, never in a guest sharing the host's kernel
   the next run. A stopped or suspended VM costs nothing.
 - **Plans:** an account's plan bounds its running VMs, its VMs kept and the
   sizes it may use. A refused program says why in plain words, and what to
-  do.
+  do, and the refusal is typed
+  (`tilo_actions::remote::host_account::Refusal`: a reason and the next
+  steps, each with the provider's page).
+- **Selling VMs:** a host that sells them says so in its plans file
+  (`sells`: its name, the plans it offers, the pages where a card is added,
+  limits raised and billing managed). An account the file does not name has
+  no card on file: nothing asks for one until its first Linux program, which
+  the guard refuses with `no_payment_method`. A person's command then waits
+  with Terminal's prompt and runs once the provider adds the account to the
+  file; an agent's is refused at once and tells the person what to do
+  ([`ush.md`](ush.md), "The shell marks each run"). Billing itself (checkout,
+  prices, credit, rate limits, fraud checks) is the provider's: it only
+  writes the plans file and answers its pages.
+- **The account, live:** the session serves the person's account with its
+  host (`tilo.hosting`, `host.account/account`) as a live read: the plans
+  offered, the account's standing, usage per workspace, limits, credit,
+  invoices and where billing is managed, sent again whenever the plans file
+  changes (`crates/hosting/tilo-host-account`). A host that sells nothing
+  answers no plans and no standing.
 - **ush** runs the program through the VM's agent with the shell's streams
   relayed, when the host names its hosted-VM service (`TILO_HOSTED_VM_SOCKET`,
-  `TILO_HOSTED_ACCOUNT`, `TILO_HOSTED_VM_SIZE`). Run records are the shell's,
+  `TILO_HOSTED_ACCOUNT`, `TILO_HOSTED_VM_SIZE`, and `TILO_HOSTED_PLANS`, the
+  plans file a held command follows). Run records are the shell's,
   unchanged. A program whose input and output are the session's terminal
   runs on a terminal in the VM: the keys are relayed as typed, the size
   follows, and the output is recorded like any other.

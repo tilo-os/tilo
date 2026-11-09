@@ -1015,7 +1015,8 @@ impl Session {
                 let now = Some(unix_now());
                 crate::hosted_vm::shares_of(policy.trusted_dirs(now), policy.readable_dirs(now))
             }),
-        );
+        )
+        .with_runs_key(self.opts.runs.clone());
         // The session's terminal is its standard input, as for programs on
         // a device.
         Arc::new(match std::io::stdin().as_fd().try_clone_to_owned() {

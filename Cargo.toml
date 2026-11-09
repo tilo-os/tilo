@@ -254,6 +254,7 @@ members = [
     # Hosting
     "crates/hosting/tilo-delivery-protocol",
     "crates/hosting/tilo-front-door",
+    "crates/hosting/tilo-host-account",
     "crates/hosting/tilo-relay",
     "crates/hosting/tilo-relay-client",
     "crates/hosting/tilo-relay-protocol",

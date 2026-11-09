@@ -175,6 +175,8 @@ tilo-workspace-join = { path = "../../collab/workspace-join" }
 # The address an invitation names, signed: this device's own endpoint, for a
 # link it makes into a workspace it holds.
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
+# The person's account with the host the session runs on, read live.
+tilo-host-account = { path = "../../hosting/tilo-host-account" }
 # The models an agent may plan with: the person's own provider settings.
 agent-provider-config = { path = "../../agent/provider-config" }
 # The session asks the model gateway as Activity, the way an app it starts

@@ -20,9 +20,10 @@ use super::control::{FRAMING, Reply, Request, ShareRequest, VmRequest, VmStatus}
 use super::files::Served;
 use super::firecracker::VmFiles;
 use super::meter::{Ledger, Meter, VmIdentity, summarize};
-use super::plan::{AwakeVm, Plans, Refusal, admit};
+use super::plan::{AwakeVm, Plans, admit};
 use super::valid_name;
 use super::vm::{Clock, HostedVm, Settings, VmError};
+use tilo_actions::remote::host_account;
 
 /// How often awake VMs are asked what runs in them.
 pub const POLL: Duration = Duration::from_secs(1);
@@ -97,7 +98,7 @@ pub struct Service {
 /// Why a wake did not happen.
 #[derive(Debug)]
 pub enum EnsureError {
-    Refused(Refusal),
+    Refused(host_account::Refusal),
     Invalid(String),
     Vm(VmError),
 }
@@ -216,7 +217,6 @@ impl Service {
     fn admit(&self, request: &VmRequest) -> Result<Arc<Entry>, EnsureError> {
         let _admission = lock(&self.admission);
         let plans = Plans::load(&self.config.plans).map_err(EnsureError::Invalid)?;
-        let plan = plans.for_account(&request.account);
         let id = format!("{}/{}", request.workspace, request.environment);
         let (existing_entry, awake, existing) = {
             let vms = lock(&self.vms);
@@ -248,14 +248,17 @@ impl Service {
             )));
         }
         admit(
-            plan,
+            &plans,
+            &request.account,
             &id,
             request.size,
             &awake,
             existing,
             existing_entry.is_some(),
         )
-        .map_err(EnsureError::Refused)?;
+        .map_err(|refusal| {
+            EnsureError::Refused(refusal.typed(plans.sells.as_ref(), &request.account))
+        })?;
         let entry = match existing_entry {
             Some(entry) => entry,
             None => self
@@ -357,7 +360,7 @@ impl Service {
         match request {
             Request::Ensure { vm, shares } => match self.ensure(&vm, &shares) {
                 Ok((link, woke_ms)) => Reply::Ready { link, woke_ms },
-                Err(EnsureError::Refused(refusal)) => Reply::Refused(refusal.to_string()),
+                Err(EnsureError::Refused(refusal)) => Reply::Refused(refusal),
                 Err(error) => Reply::Error(error.to_string()),
             },
             Request::Suspend {
@@ -554,7 +557,7 @@ mod tests {
             vm: request.clone(),
             shares: Vec::new(),
         }) {
-            Reply::Refused(message) => message,
+            Reply::Refused(refusal) => refusal.message,
             other => panic!("expected a refusal, got {other:?}"),
         };
         // phase: a size outside the plan
