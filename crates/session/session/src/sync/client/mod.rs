@@ -27,7 +27,7 @@ use tilo_live::presence::Board;
 use super::Entering;
 use super::presence::{OwnPresence, Plane, Workspace, now_ms};
 use super::{Enrolled, InCall, LiveCall};
-use crate::platform::plane::{Cmd, Device, Event, Topic, Transport, topic_of};
+use crate::platform::plane::{Cmd, Device, Event, SayPresence, Topic, Transport, topic_of};
 
 #[cfg(target_os = "linux")]
 use crate::channels::ChannelLink;
@@ -190,6 +190,9 @@ pub struct Client {
     arrival: RefCell<Option<ArrivalNotice>>,
     outgoing: tokio::sync::mpsc::UnboundedSender<Cmd>,
     arrived: std::sync::mpsc::Receiver<Event>,
+    /// Where this device's word of itself goes on each workspace's presence track, as the transport
+    /// it says on carries it: `None` on a host that says presence nowhere.
+    saying: Option<std::rc::Rc<dyn SayPresence>>,
     /// The window streams that reached this device: their frames, starts,
     /// ends and control, which the shares take ([`Self::take_surfaces`]).
     #[cfg(target_os = "linux")]
@@ -407,11 +410,15 @@ impl Client {
         if let Some(link) = &link {
             link.attach(outgoing.clone());
         }
+        let saying = live
+            .as_ref()
+            .map(|live| std::rc::Rc::new(live.saying()) as std::rc::Rc<dyn SayPresence>);
         let mut sync = Self::over(
             Transport {
                 outgoing,
                 arrived,
                 enrolled,
+                saying,
             },
             Device {
                 publisher,
@@ -462,6 +469,7 @@ impl Client {
             arrival: RefCell::new(None),
             outgoing: plane.outgoing,
             arrived: plane.arrived,
+            saying: plane.saying,
             #[cfg(target_os = "linux")]
             surfaces: RefCell::new(Vec::new()),
             call_audio: RefCell::new(Vec::new()),
@@ -673,6 +681,13 @@ impl Client {
             .active_workspace()
             .filter(|workspace| !workspace.id().is_nil())
             .map(|workspace| topic_of(workspace.id()));
+        self.follow_workspaces(&live, active)
+    }
+
+    /// Follow the workspaces a host names itself — a page's mounts, each showing one — as
+    /// [`Self::follow_desktop`] follows a desk's: take part in each of `live`, leave the ones gone,
+    /// and remember `active` as the one in front. Whether that changed anything.
+    pub fn follow_workspaces(&self, live: &[(Topic, String)], active: Option<Topic>) -> bool {
         let mut joined = Vec::new();
         let mut left = Vec::new();
         let mut changed = false;
@@ -680,7 +695,7 @@ impl Client {
         {
             let mut plane = self.plane.borrow_mut();
             let publisher = *plane.publisher.as_bytes();
-            for (ws, id) in &live {
+            for (ws, id) in live {
                 if plane.workspaces.iter().all(|workspace| workspace.ws != *ws) {
                     plane
                         .workspaces
@@ -745,9 +760,16 @@ impl Client {
     /// with no pass in between.
     pub fn next_deadline(&self) -> Option<Instant> {
         let now = now_ms();
-        let due = self.plane.borrow().next_due(now)?;
+        let due = self.next_due_at()?;
         let wait = (due - now).max(0.0) / 1_000.0;
         Instant::now().checked_add(Duration::from_secs_f64(wait))
+    }
+
+    /// When this device next owes its word in the workspace in front, in Unix milliseconds: what a
+    /// host with its own clock arms a timer with.
+    #[must_use]
+    pub fn next_due_at(&self) -> Option<f64> {
+        self.plane.borrow().next_due(now_ms())
     }
 
     /// Hear everything that reached the plane since the last call. Whether anything did.
@@ -842,9 +864,9 @@ impl Client {
         });
     }
 
-    /// One member's presence frame as its track carried it, opened by the workspace's board.
-    #[cfg(target_os = "linux")]
-    fn heard_body(&self, workspace: &str, from: EndpointId, body: &[u8]) {
+    /// One member's presence frame as its track carried it, opened by the workspace's board: what a
+    /// host that carries the frames itself (a page's endpoint) hands its session.
+    pub fn heard_body(&self, workspace: &str, from: EndpointId, body: &[u8]) {
         self.heard_word(workspace, from, |board, now| {
             board.heard(*from.as_bytes(), body, now)
         });
@@ -1535,34 +1557,22 @@ impl Client {
         word
     }
 
-    #[cfg_attr(
-        target_arch = "wasm32",
-        allow(
-            clippy::unused_self,
-            reason = "the page's live plane keeps this device's word next"
-        )
-    )]
     /// Say `frames` on `ws` 's presence track, each as the object the board numbered: one object
-    /// per frame, sealed with the workspace scope's keys. Nothing while this session holds no plane
-    /// there: presence is ephemeral, and the next change says where its sender is.
+    /// per frame, sealed with the workspace scope's keys. Nothing while this session says presence
+    /// nowhere: presence is ephemeral, and the next change says where its sender is.
     fn say_frames(&self, ws: DeskWorkspaceId, frames: Vec<(u32, Presence)>) {
         #[cfg(test)]
         self.said
             .borrow_mut()
             .extend(frames.iter().map(|(_, frame)| frame.clone()));
-        #[cfg(target_os = "linux")]
-        {
-            let Some(live) = &self.live else {
-                return;
-            };
-            for (sequence, frame) in frames {
-                if let Err(error) = live.say(ws, sequence, &frame) {
-                    tracing::warn!(%error, "presence was not said on the live plane");
-                }
+        let Some(saying) = &self.saying else {
+            return;
+        };
+        for (sequence, frame) in frames {
+            if let Err(error) = saying.say(ws, sequence, &frame) {
+                tracing::warn!(%error, "presence was not said on the live plane");
             }
         }
-        #[cfg(not(target_os = "linux"))]
-        let _ = (ws, frames);
     }
 
     /// What this device said since the last call, as a session with no plane of its own would have
@@ -1640,6 +1650,20 @@ impl Client {
     #[must_use]
     pub fn members(&self, workspace: &str) -> Vec<Shown> {
         self.plane.borrow().shown(workspace, now_ms())
+    }
+
+    /// How many times what `workspace` knows of its people changed: a surface that draws one
+    /// workspace's people draws again when this moved, and asks for no frame while it holds still.
+    #[must_use]
+    pub fn here_revision(&self, workspace: &str) -> u64 {
+        self.plane.borrow().revision_of(workspace)
+    }
+
+    /// This device's own word, as the roster draws it beside everyone else's here.
+    #[must_use]
+    pub fn own_here(&self) -> Shown {
+        let publisher = *self.plane.borrow().publisher.as_bytes();
+        presence::own_shown(&self.own_word(), publisher)
     }
 
     /// The calls in progress in every workspace this session takes part in, as those in them say:
@@ -1725,6 +1749,7 @@ impl Client {
                 outgoing,
                 arrived,
                 enrolled,
+                saying: None,
             },
             Device {
                 publisher,

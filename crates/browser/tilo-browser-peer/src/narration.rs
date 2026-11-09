@@ -4,11 +4,11 @@
 //! agent the way they see a colleague: its cursor travelling to the control
 //! each action is bound to.
 
+use collab_types::presence::Shown;
 use tilo_actions::{
     ActionAddress, ActionApp, ActionResource, ActorKind, INTERACTION_VERSION, InteractionAction,
     InteractionActor, InteractionAnchor, InteractionPhase, InvocationId, SemanticInteraction,
 };
-use tilo_live::presence::Board;
 use tilo_relay_protocol::live::SemanticFrame;
 
 /// The instance a narration names as its source: an agent acts through the
@@ -65,15 +65,17 @@ pub fn frame(narrated: &Narrated<'_>, seq: u64, sent_at_ms: u64) -> Option<Seman
     })
 }
 
-/// The semantic work `event` carries, as `board`'s member `from` did it:
-/// `None` unless `from` is here as an agent and the work is well formed and
-/// names the execution its frame does. Its actor is that member, whatever
-/// the work claims: a device says only what its own agent does.
+/// The semantic work `event` carries, as `from` did it, on a page that has `here` as its members:
+/// `None` unless `from` is one of them as an agent and the work is well formed and names the
+/// execution its frame does. Its actor is that member, whatever the work claims: a device says only
+/// what its own agent does.
 #[must_use]
-pub fn admit(board: &Board, from: [u8; 32], event: &SemanticFrame) -> Option<SemanticInteraction> {
-    board
-        .member(from)
-        .filter(|member| member.here && member.agent())?;
+pub fn admit(here: &[Shown], from: [u8; 32], event: &SemanticFrame) -> Option<SemanticInteraction> {
+    let publisher = hex::encode(from);
+    here.iter()
+        .find(|member| member.publisher == publisher)?
+        .agent
+        .then_some(())?;
     let mut interaction: SemanticInteraction =
         serde_json::from_str(&event.interaction_json).ok()?;
     if interaction.invocation.0 != event.execution {
@@ -110,33 +112,21 @@ mod tests {
     )]
 
     use super::*;
-    use collab_types::presence::{Payload, Presence, ShellPresence};
 
-    const WORKSPACE: &str = "ws";
-
-    /// A board on which `agent` is here as an agent and `person` as a
-    /// person.
-    fn board(agent: [u8; 32], person: [u8; 32]) -> Board {
-        let mut board = Board::new(WORKSPACE, [1; 32]);
-        for (publisher, is_agent, label) in [(agent, true, "Claude Code"), (person, false, "Bob")] {
-            let shell = ShellPresence {
-                seq: 1,
-                sent_at_ms: 1,
+    /// The members of a page's workspace on which `agent` is here as an
+    /// agent and `person` as a person.
+    fn here(agent: [u8; 32], person: [u8; 32]) -> Vec<Shown> {
+        [(agent, true, "Claude Code"), (person, false, "Bob")]
+            .into_iter()
+            .map(|(publisher, agent, label)| Shown {
+                publisher: hex::encode(publisher),
+                epoch: 1,
+                agent,
                 label: label.into(),
-                agent: is_agent,
                 colour: "#81a8ff".into(),
-                activity: None,
-                place: None,
-                size: [0, 0],
-                windows: Vec::new(),
-                selection: None,
-                chat: None,
-                reaction: None,
-            };
-            let frame = Presence::desktop(WORKSPACE, Payload::Shell(Box::new(shell)));
-            board.hear(publisher, &frame, 1.0);
-        }
-        board
+                ..Shown::default()
+            })
+            .collect()
     }
 
     /// An action is narrated as work a page admits from the agent that did
@@ -159,7 +149,7 @@ mod tests {
         .expect("a well-formed action is narrated");
         assert_eq!((event.execution, event.seq), (invocation.0, 3));
         let agent = [7; 32];
-        let admitted = admit(&board(agent, [8; 32]), agent, &event).expect("admitted");
+        let admitted = admit(&here(agent, [8; 32]), agent, &event).expect("admitted");
         assert_eq!(admitted.invocation, invocation);
         assert_eq!(admitted.action.label, "New sheet");
         assert_eq!(admitted.resource.id, "workbook");
@@ -173,7 +163,7 @@ mod tests {
     #[test]
     fn only_an_agent_here_narrates_work_and_only_as_itself() {
         let (agent, person, stranger) = ([7; 32], [8; 32], [9; 32]);
-        let board = board(agent, person);
+        let present = here(agent, person);
         let action = ActionAddress::new("workbook", "new-sheet");
         let invocation = InvocationId::new();
         let event = frame(
@@ -189,7 +179,7 @@ mod tests {
         )
         .unwrap();
 
-        let admitted = admit(&board, agent, &event).expect("the agent's work is drawn");
+        let admitted = admit(&present, agent, &event).expect("the agent's work is drawn");
         assert_eq!(
             admitted.actor.id,
             hex::encode(agent),
@@ -199,22 +189,22 @@ mod tests {
         assert_eq!(admitted.actor.for_person, None);
 
         assert!(
-            admit(&board, person, &event).is_none(),
+            admit(&present, person, &event).is_none(),
             "a person narrates no work"
         );
         assert!(
-            admit(&board, stranger, &event).is_none(),
+            admit(&present, stranger, &event).is_none(),
             "nor does a stranger"
         );
         let mut elsewhere = event;
         elsewhere.execution = InvocationId::new().0;
         assert!(
-            admit(&board, agent, &elsewhere).is_none(),
+            admit(&present, agent, &elsewhere).is_none(),
             "work that names another execution is not drawn"
         );
         let mut malformed = elsewhere;
         malformed.execution = invocation.0;
         malformed.interaction_json = "{}".into();
-        assert!(admit(&board, agent, &malformed).is_none());
+        assert!(admit(&present, agent, &malformed).is_none());
     }
 }

@@ -222,14 +222,13 @@ export function httpsPost(origin, fetcher = (...args) => globalThis.fetch(...arg
  * The live layer of one workspace: this page's presence on the workspace's
  * board, and the members' ephemeral previews.
  *
- * The board is the peer's (`peer.sayPresence`, `peer.presenceDue`,
- * `peer.presenceMembers`): it keeps what this page says of itself — its face,
- * its pointer, its wave, who it follows — and says what changed on one
- * schedule, the rate and the repeats and the keepalives every device's
- * presence keeps; it merges what the members say into each of them. This
- * layer hands it each change, arms one timer for the next thing it owes, and
- * reads back who is here. The mount draws them, through the same path a
- * native desktop does.
+ * The board is the session's, run here through the peer (`peer.sayPresence`,
+ * `peer.presenceDue`, `peer.presenceMembers`): it keeps what this page says
+ * of itself — its face, its pointer, its wave, who it follows — and says what
+ * changed on the one schedule every device's presence keeps; it merges what
+ * the members say into each of them. This layer hands it each change, arms
+ * one timer for the next thing it owes, and reads back who is here. The mount
+ * draws them, through the same path a native desktop does.
  */
 export function createLiveLayer(peer, runtime, workspace, {
   participant, ready = Promise.resolve(),

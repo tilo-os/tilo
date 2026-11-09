@@ -248,6 +248,7 @@ fn a_transport_another_host_brings_carries_the_same_words() {
             outgoing,
             arrived,
             enrolled,
+            saying: None,
         },
         Device {
             publisher,

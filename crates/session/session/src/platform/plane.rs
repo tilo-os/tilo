@@ -17,6 +17,25 @@ pub struct Transport {
     pub arrived: std::sync::mpsc::Receiver<Event>,
     /// What became of the enrollments and entries asked for since the last call.
     pub enrolled: std::sync::mpsc::Receiver<crate::sync::Enrolled>,
+    /// The workspace presence tracks this host says on: this desktop's live plane, or a page's own
+    /// endpoint. `None` where the host says presence nowhere.
+    pub saying: Option<std::rc::Rc<dyn SayPresence>>,
+}
+
+/// Where a session's presence frames go: one host's live plane, or a page's own endpoint. Presence
+/// is ephemeral and the next change says where its sender is, so a frame that finds no plane is
+/// dropped rather than held.
+pub trait SayPresence: std::fmt::Debug {
+    /// Say `frame` as object `sequence` of `workspace`'s presence track.
+    ///
+    /// # Errors
+    /// This host holds no plane for the workspace, or the plane could not carry it.
+    fn say(
+        &self,
+        workspace: tilo_desktop_model::WorkspaceId,
+        sequence: u32,
+        frame: &collab_types::presence::Presence,
+    ) -> Result<(), String>;
 }
 
 /// What a host's transport announces about the device it runs for: where the plane knows it and

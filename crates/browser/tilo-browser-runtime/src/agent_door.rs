@@ -103,7 +103,7 @@ pub(crate) fn serve(
     woken: &Arc<AtomicBool>,
 ) -> Revoked {
     let revoked = Revoked::default();
-    if let Some((peer, host)) = peer.and_then(crate::peer_presence::host_of)
+    if let Some((peer, host)) = peer.and_then(crate::peer_sync::host_of)
         && let Ok(workspace) = crate::peer::workspace_number(workspace)
     {
         session.serve_agent_door(Arc::new(PageDoor::new(

@@ -15,7 +15,7 @@ use ui::presence::PresenceKey;
 use ui::tokens::EffectiveMotion;
 use wasm_bindgen::prelude::*;
 
-use crate::peer_presence::BoardView;
+use crate::peer_sync::BoardView;
 
 use super::{Mount, error, with_mount_quietly};
 
@@ -108,7 +108,7 @@ impl Mount {
         let workspace = self.workspace.clone();
         let tiles = self.tiles();
         let now = Self::now_ms();
-        let Some(view) = crate::peer_presence::view(peer, &workspace, now) else {
+        let Some(view) = crate::peer_sync::view(peer, &workspace) else {
             return;
         };
         let changed = view.revision != self.presence.revision;
@@ -119,7 +119,7 @@ impl Mount {
         }
         // What the workspace's agents are doing: their cursor travels to the
         // control each action is bound to, over the window that shows it.
-        let narrated = crate::peer_presence::take_narrated(peer, &workspace);
+        let narrated = crate::peer_sync::take_narrated(peer, &workspace);
         if !narrated.is_empty() {
             self.frame.update_presence(|presence| {
                 let mut shown = false;
@@ -216,10 +216,10 @@ impl Mount {
             return;
         };
         let members = view.members.iter().map(LiveMember::of).collect();
-        let own = tilo_live::presence::own_shown(&view.own, view.device);
+        let own = LiveMember::of(&view.own);
         let changed = {
             let mut here = desktop.here.borrow_mut();
-            let members = here.set_members(Some(LiveMember::of(&own)), Some(members));
+            let members = here.set_members(Some(own), Some(members));
             let note = here.set_unavailable(view.note.clone());
             members || note
         };

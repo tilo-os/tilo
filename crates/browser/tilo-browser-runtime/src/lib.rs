@@ -209,9 +209,9 @@ mod peer;
 // The person's agent door, as the page carries it to their host.
 #[cfg(target_arch = "wasm32")]
 mod agent_door;
-// The page's presence on its workspaces' boards.
+// The page's collaboration plane: the session's sync over this page's endpoint.
 #[cfg(target_arch = "wasm32")]
-mod peer_presence;
+mod peer_sync;
 // The sign-in route's answer to a service (`web/sign-in.mjs`).
 #[cfg(target_arch = "wasm32")]
 mod sign_in_page;

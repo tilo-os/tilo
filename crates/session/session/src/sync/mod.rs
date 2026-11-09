@@ -9,11 +9,11 @@
     target_arch = "wasm32",
     allow(dead_code, reason = "the page's transport is handed these boards next")
 )]
-pub(crate) mod presence;
+pub mod presence;
 
 use tilo_desktop_model::{WorkspaceId as DeskWorkspaceId, WorkspaceSlot as DeskSlot};
 
-pub use crate::platform::plane::{Cmd, Device, Event, Topic, Transport};
+pub use crate::platform::plane::{Cmd, Device, Event, SayPresence, Topic, Transport};
 pub use presence::OwnPresence;
 pub use tilo_live::presence::Call as InCall;
 /// A call in progress in a workspace, as the people in it say.

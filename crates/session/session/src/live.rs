@@ -743,6 +743,41 @@ impl Live {
     }
 }
 
+/// This plane's presence track, as the transport the session says on carries it: the words this
+/// device says of itself, said in the workspace they are about.
+pub(crate) struct Say(Arc<Shared>);
+
+impl std::fmt::Debug for Say {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("live plane")
+    }
+}
+
+impl crate::platform::plane::SayPresence for Say {
+    fn say(
+        &self,
+        workspace: WorkspaceId,
+        sequence: u32,
+        presence: &collab_types::presence::Presence,
+    ) -> Result<(), String> {
+        let plane = self
+            .0
+            .planes
+            .lock_recover()
+            .get(&workspace)
+            .map(|joined| Arc::clone(&joined.plane))
+            .ok_or_else(|| "this workspace has no live plane".to_owned())?;
+        tilo_live::presence::say(&plane, sequence, presence).map_err(|error| error.to_string())
+    }
+}
+
+impl Live {
+    /// A handle that says this plane's presence frames, for the transport the session says on.
+    pub(crate) fn saying(&self) -> Say {
+        Say(Arc::clone(&self.shared))
+    }
+}
+
 impl Drop for Live {
     fn drop(&mut self) {
         drop(self.stopped.take());

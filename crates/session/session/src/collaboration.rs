@@ -6,7 +6,6 @@ use crate::sync::presence::live_record;
 use collab_types::presence::{ShellPresence, ShellWindow};
 use tilo_desktop_surface::navigation;
 use tilo_live::presence::{Point, Tile, anchor};
-use tilo_relay_protocol::live::{LiveLayout, LiveRecord};
 
 use crate::Session;
 
@@ -113,19 +112,15 @@ fn shell(
     area: Option<ui::kurbo::Rect>,
     focus: &Focus,
 ) -> Option<Box<ShellPresence>> {
-    let windows: Vec<(LiveRecord, [f64; 4], bool)> = shown
-        .iter()
-        .filter_map(|&(tab, rect)| {
-            let record = live_record(tree, tab, records.get(&tab)?)?;
-            Some((
-                record,
-                [rect.x0, rect.y0, rect.x1, rect.y1],
-                focus.focused == Some(tab),
-            ))
-        })
-        .collect();
-    let area = area?;
-    let layout = LiveLayout::place([area.x0, area.y0, area.x1, area.y1], &windows)?;
+    let layout = crate::sync::presence::placed(
+        area,
+        shown,
+        |tab| {
+            let record = live_record(tree, tab, records.get(&tab)?);
+            record.map(|record| (record.app, record.record))
+        },
+        focus.focused,
+    )?;
     Some(Box::new(ShellPresence {
         // The board numbers each view it says: this one only says what changed.
         seq: 0,

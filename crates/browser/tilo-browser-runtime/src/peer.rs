@@ -17,8 +17,8 @@
 //!
 //! HTTP goes through the page's `post(path, session, body)` (its `fetch`).
 //! Presence — who is here, their pointer, what their shell shows — rides the
-//! workspace's session like every other device's: [`crate::peer_presence`]
-//! keeps it on the board and reads the members' answers back
+//! workspace's live plane like every other device's, kept on the session's own
+//! board ([`crate::peer_sync`]) and read back as the members answer
 //! ([`WasmPeer::take_live_events`]). Documents reach the desktop's
 //! `CollaborationManager` through [`WasmPeer::collab_transport`].
 
@@ -38,7 +38,7 @@ use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList, Revocation
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
-use crate::peer_presence::{JsPresence, due, hear, members, release, say, set_label};
+use crate::peer_sync::{JsPresence, due, hear, members, release, say, set_label};
 
 pub(crate) fn js_error(error: impl std::fmt::Display) -> JsError {
     JsError::new(&error.to_string())
@@ -810,7 +810,7 @@ pub async fn revoke_device(root: JsValue, key_hex: String) -> Result<String, JsE
     )
     .await
     .map_err(js_error)?;
-    for handle in crate::peer_presence::handles_of(&hex::encode(entry.user_public_key)) {
+    for handle in crate::peer_sync::handles_of(&hex::encode(entry.user_public_key)) {
         handle.revoke(entry.clone()).map_err(js_error)?;
     }
     serde_json::to_string(&entry).map_err(js_error)
@@ -1590,7 +1590,7 @@ impl WasmPeer {
             next.set(id.wrapping_add(1).max(1));
             id
         });
-        crate::peer_presence::register(id, &handle, &reporter_cert, &owner_cert, &display_name);
+        crate::peer_sync::register(id, &handle, &reporter_cert, &owner_cert, &display_name);
         // A lobby started beside the workspace's peer does not rename the
         // page's person.
         if crate::page_person::claim(id) {
@@ -1847,7 +1847,7 @@ impl WasmPeer {
     /// Throws for a malformed workspace.
     #[wasm_bindgen(js_name = leavePresence)]
     pub fn leave_presence(&self, workspace: &str) -> Result<(), JsError> {
-        crate::peer_presence::leave(self.id, workspace)
+        crate::peer_sync::leave(self.id, workspace)
     }
 
     /// Publish ephemeral `ops` (JSON array of `{kind: 'insert'|'delete', at,
@@ -2375,7 +2375,7 @@ impl WasmPeer {
                         // An agent's narrated work is drawn on this page's
                         // windows once its board admits the publisher.
                         LiveFrame::Ops(OpsFrame::Semantic { event, .. }) => {
-                            crate::peer_presence::narrated(self.id, workspace_id, from, &event);
+                            crate::peer_sync::narrated(self.id, workspace_id, from, &event);
                             return None;
                         }
                         // Presence no longer comes this way.

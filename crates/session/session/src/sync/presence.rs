@@ -11,7 +11,7 @@ use tilo_desktop_model::WorkspaceId as DeskWorkspaceId;
 use tilo_desktop_surface::host::records::{app_of, wire_record};
 use tilo_live::presence;
 use tilo_live::presence::{Board, Device};
-use tilo_relay_protocol::live::LiveRecord;
+use tilo_relay_protocol::live::{LiveLayout, LiveRecord};
 use ui::record::RecordId;
 
 /// What this session says of itself here.
@@ -198,6 +198,14 @@ impl Plane {
             .map_or(0, |workspace| workspace.board.revision())
     }
 
+    /// How many times what `workspace` knows of its people changed.
+    pub(super) fn revision_of(&self, workspace: &str) -> u64 {
+        self.workspaces
+            .iter()
+            .find(|held| held.id == workspace)
+            .map_or(0, |held| held.board.revision())
+    }
+
     /// Everyone here in `workspace`, as a surface that draws them reads them.
     pub(super) fn shown(&self, workspace: &str, now_ms: f64) -> Vec<Shown> {
         self.workspaces
@@ -253,6 +261,31 @@ pub(crate) fn bindings(
             ))
         })
         .collect()
+}
+
+/// Where this person's windows are on their screen, as presence says it to the others: the windows of
+/// `shown` that name a record, laid out in `area` by the rule every host places by, and which of them
+/// the person works in. `None` while the surface shows no screen to place anything on.
+#[must_use]
+pub fn placed(
+    area: Option<ui::kurbo::Rect>,
+    shown: &[(tilo_desktop_model::TabId, ui::kurbo::Rect)],
+    record_of: impl Fn(tilo_desktop_model::TabId) -> Option<(String, String)>,
+    focused: Option<tilo_desktop_model::TabId>,
+) -> Option<LiveLayout> {
+    let windows: Vec<(LiveRecord, [f64; 4], bool)> = shown
+        .iter()
+        .filter_map(|&(tab, rect)| {
+            let (app, record) = record_of(tab)?;
+            Some((
+                LiveRecord { app, record },
+                [rect.x0, rect.y0, rect.x1, rect.y1],
+                focused == Some(tab),
+            ))
+        })
+        .collect();
+    let area = area?;
+    LiveLayout::place([area.x0, area.y0, area.x1, area.y1], &windows)
 }
 
 /// What the window `tab` shows, as presence names it to the others: the app it runs and its record's
