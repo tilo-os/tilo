@@ -1386,7 +1386,7 @@ fn indexes_off_frame(entries: &[SearchEntry]) -> bool {
     if let Some(forced) = FORCE_OFF_FRAME.with(std::cell::Cell::get) {
         return forced;
     }
-    cfg!(target_arch = "wasm32")
+    crate::runner::IN_A_PAGE
         || entries.len() >= OFF_THREAD_ENTRIES
         || entries.iter().any(|entry| entry.body.is_some())
 }

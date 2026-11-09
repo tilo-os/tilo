@@ -144,9 +144,6 @@ D2 = 1
 [apps.totp]
 D2 = 1
 
-[apps.tube]
-D2 = 1
-
 [apps.video-editor]
 D2 = 3
 
