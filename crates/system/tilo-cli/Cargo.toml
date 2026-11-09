@@ -35,6 +35,17 @@ tilo-paths.workspace = true
 tilo-control = { path = "../../session/control-cli" }
 # `tilo settings`: the profile's settings, held or followed.
 settings-store = { path = "../settings-store" }
+# `tilo login` and `tilo mcp`: this computer as one of the person's devices,
+# certified by the root their browser tab holds, in their workspace.
+tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
+ed25519-dalek.workspace = true
+postcard.workspace = true
+hex.workspace = true
+rand.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [dev-dependencies]
 tempfile.workspace = true

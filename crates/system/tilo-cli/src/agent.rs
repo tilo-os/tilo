@@ -183,7 +183,15 @@ pub fn run(cmd: AgentCmd) -> Result<ExitCode> {
 
 fn connect(tool: Tool, remote: Option<&Remote>) -> Result<ExitCode> {
     let Some(door) = nouns::program(DOOR) else {
-        bail!("connecting an agent needs a Tilo desktop, which this computer doesn't have");
+        // No desktop here: a computer logged in to the person's workspace
+        // (`tilo login`) serves the agent itself, as `tilo mcp`.
+        if remote.is_none() && crate::login::logged_in() {
+            return connect_login(tool);
+        }
+        bail!(
+            "connecting an agent needs a Tilo desktop, or this computer logged in first: \
+             tilo login '<code from your Tilo tab>'"
+        );
     };
     if nouns::program(tool.command()).is_none() {
         bail!(
@@ -225,6 +233,53 @@ fn connect(tool: Tool, remote: Option<&Remote>) -> Result<ExitCode> {
     Ok(crate::exit_code(output.status.code()))
 }
 
+/// The agent tool's own command that registers `tilo mcp` (this program)
+/// as the server `tilo`.
+fn login_registration(tool: Tool, tilo: &std::path::Path) -> Vec<OsString> {
+    let mut args: Vec<OsString> = match tool {
+        Tool::Claude => ["mcp", "add", "--scope", "user"]
+            .map(OsString::from)
+            .to_vec(),
+        Tool::Codex => ["mcp", "add"].map(OsString::from).to_vec(),
+    };
+    args.extend([
+        "tilo".into(),
+        "--".into(),
+        tilo.as_os_str().to_owned(),
+        "mcp".into(),
+    ]);
+    args
+}
+
+fn connect_login(tool: Tool) -> Result<ExitCode> {
+    if nouns::program(tool.command()).is_none() {
+        bail!(
+            "{} isn't installed here; install it, then run this again",
+            tool.title()
+        );
+    }
+    let tilo = std::env::current_exe().context("finding this program")?;
+    let output = Command::new(tool.command())
+        .args(login_registration(tool, &tilo))
+        .output()
+        .with_context(|| format!("running {}", tool.command()))?;
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if output.status.success() || said.contains("already exists") {
+        println!(
+            "{} now has Tilo's tools (MCP server tilo). If it loads tools only when it starts, restart it; \
+             then its tilo_status tool says whom it acts as.",
+            tool.title()
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+    eprint!("{said}");
+    Ok(crate::exit_code(output.status.code()))
+}
+
 fn models(cmd: ModelsCmd) -> Result<ExitCode> {
     let args: Vec<String> = match cmd {
         ModelsCmd::List => vec!["snapshot".into()],
@@ -252,6 +307,42 @@ fn models(cmd: ModelsCmd) -> Result<ExitCode> {
         .status()
         .with_context(|| format!("running {}", manager.display()))?;
     Ok(crate::exit_code(status.code()))
+}
+
+#[cfg(test)]
+mod login_tests {
+    use super::*;
+
+    #[test]
+    fn a_logged_in_computer_registers_tilo_mcp_as_the_server_tilo() {
+        let tilo = std::path::Path::new("/home/me/.local/bin/tilo");
+        assert_eq!(
+            login_registration(Tool::Claude, tilo),
+            [
+                "mcp",
+                "add",
+                "--scope",
+                "user",
+                "tilo",
+                "--",
+                "/home/me/.local/bin/tilo",
+                "mcp"
+            ]
+            .map(OsString::from)
+        );
+        assert_eq!(
+            login_registration(Tool::Codex, tilo),
+            [
+                "mcp",
+                "add",
+                "tilo",
+                "--",
+                "/home/me/.local/bin/tilo",
+                "mcp"
+            ]
+            .map(OsString::from)
+        );
+    }
 }
 
 #[cfg(test)]

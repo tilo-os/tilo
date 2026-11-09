@@ -43,6 +43,7 @@ mod aliases;
 mod cleanup;
 mod desktop;
 mod health;
+mod login;
 mod nouns;
 mod os;
 mod settings;
@@ -166,6 +167,24 @@ enum Cmd {
         #[command(subcommand)]
         cmd: DeviceCmd,
     },
+    /// Log this computer in as one of your devices, with the code your Tilo
+    /// tab copied.
+    #[command(
+        after_help = "Example:\n  tilo login 'https://tilo.sh/#/@eu1.tilo.sh/w/<workspace>?pair=<code>' --agent \"Claude Code\"\n\n\
+                      In Tilo in your browser, choose \"Set up with your agent\" for the code. It works once, for 10 minutes, \
+                      and only for the tab that copied it. Your identity stays in your browser: this computer gets a device \
+                      key of its own, which that tab certifies."
+    )]
+    Login {
+        /// The code your Tilo tab copied.
+        code: String,
+        /// The agent that runs here, as your workspace shows it.
+        #[arg(long, default_value = "Tilo CLI")]
+        agent: String,
+    },
+    /// Tilo's MCP server over stdio, for the agent on this computer
+    /// (`tilo agent connect` adds it).
+    Mcp,
     /// Connect agents to this desktop, and choose their models.
     Agent {
         #[command(subcommand)]
@@ -348,8 +367,15 @@ fn command_here(here: Here) -> clap::Command {
                 "device" => !(here.system || nouns::any_present(nouns::DEVICE, here.has)),
                 "status" | "rollback" => !here.system,
                 "update" => !(here.apps || here.system),
-                "agent" => !((here.has)(agent::DOOR) || (here.has)(agent::MODELS)),
+                "agent" => {
+                    !((here.has)(agent::DOOR) || (here.has)(agent::MODELS) || login::logged_in())
+                }
                 "package" => !nouns::any_present(nouns::PACKAGE, here.has),
+                // A desktop's agents use its own door; elsewhere this
+                // computer logs in to the person's workspace instead.
+                "login" => here.desktop || (here.has)(agent::DOOR),
+                // Started by agent tools (`tilo agent connect`), not typed.
+                "mcp" => true,
                 _ => return sub,
             };
             if absent { sub.hide(true) } else { sub }
@@ -418,7 +444,9 @@ fn device_examples(here: Here) -> String {
 
 fn agent_here(agent: clap::Command, here: Here) -> clap::Command {
     agent
-        .mut_subcommand("connect", |sub| sub.hide(!(here.has)(agent::DOOR)))
+        .mut_subcommand("connect", |sub| {
+            sub.hide(!((here.has)(agent::DOOR) || login::logged_in()))
+        })
         .mut_subcommand("models", |sub| sub.hide(!(here.has)(agent::MODELS)))
 }
 
@@ -689,6 +717,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
         }
         Cmd::Device { cmd } => run_system_command(cmd),
         Cmd::Agent { cmd } => agent::run(cmd),
+        Cmd::Login { code, agent } => login::login(&code, &agent),
+        Cmd::Mcp => login::mcp(),
         Cmd::Settings { cmd } => settings::run(cmd).map(|()| ExitCode::SUCCESS),
         Cmd::Package => bail!("package needs a verb; `tilo package --help` lists them"),
         Cmd::App { args } if args.first().is_some_and(|verb| verb == "open") => {
@@ -1760,7 +1790,7 @@ mod tests {
             system: false,
             has: |_| false,
         };
-        assert_eq!(listed(elsewhere), ["app"]);
+        assert_eq!(listed(elsewhere), ["app", "login"]);
         let help = command_here(elsewhere).render_help().to_string();
         for absent in [
             "tilo open",
@@ -1777,7 +1807,9 @@ mod tests {
             system: false,
             has: |_| false,
         };
-        assert!(listed(nothing).is_empty(), "{:?}", listed(nothing));
+        // A bare computer (the tilo.sh installer's) logs in to the person's
+        // workspace, and does nothing else yet.
+        assert_eq!(listed(nothing), ["login"]);
         assert!(
             !command_here(nothing)
                 .render_help()
