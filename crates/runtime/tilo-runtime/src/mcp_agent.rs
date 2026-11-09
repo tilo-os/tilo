@@ -1243,6 +1243,34 @@ fn outcome(value: &Value) -> Reply {
             format!("failed: {code}: {message}")
         }
         "cancelled" => "cancelled".to_owned(),
+        "item" | "progress" => {
+            let id = value
+                .get("invocation_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let mut text = format!("pending {id}: still running");
+            // A run in a shell says what it printed so far as it prints it.
+            if let Some(tail) = value
+                .pointer("/update/value/tail")
+                .and_then(Value::as_str)
+                .filter(|tail| !tail.trim().is_empty())
+            {
+                let total = value
+                    .pointer("/update/value/total")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default();
+                let _ = write!(
+                    text,
+                    "; its output so far ({total} bytes), newest last:\n{}",
+                    tail.trim_end()
+                );
+            }
+            let _ = write!(
+                text,
+                "\ntilo_status {{invocation_id}} says how it went; {{\"cancel\": true}} stops it"
+            );
+            text
+        }
         _ => {
             let id = value
                 .get("invocation_id")

@@ -16,7 +16,11 @@
 //!    follows the run until it ends.
 //!
 //! The run comes back as the same [`ShellRan`] a local shell gives, and
-//! becomes the same run record.
+//! becomes the same run record. What the command prints as it prints it is
+//! passed on to the caller ([`Watching::seen`]), and a caller that stops the
+//! run has the member's device end the command there
+//! ([`Watching::stop`]): the run comes back
+//! [`cancelled`](ShellRan::cancelled).
 
 use std::collections::BTreeMap;
 use std::net::ToSocketAddrs as _;
@@ -28,10 +32,10 @@ use iroh::{Endpoint, EndpointAddr, EndpointId};
 use legacy_vm::hosted::control::{self, Reply, Request, VmRequest};
 use legacy_vm::hosted::size::VmSize;
 use serde::Deserialize;
-use tilo_actions::remote::environment_runs::{self, CommandRan, RunCommand};
+use tilo_actions::remote::environment_runs::{self, CommandRan, RunCommand, RunOutput};
 use tilo_actions::remote::{ActionHost, Caller, InvokeArgument, InvokeRequest, ReceiptStatus};
 use tilo_actions::{InvocationId, InvocationUpdate};
-use tilo_agent_participant::workspace_actions::ShellRan;
+use tilo_agent_participant::workspace_actions::{ShellRan, Watching};
 use tilo_peer_state::actions::ActionPlane;
 
 /// The placer's address (`host:port`).
@@ -50,6 +54,11 @@ const PLACE_PATIENCE: Duration = Duration::from_secs(30);
 const RUN_PATIENCE: Duration = Duration::from_secs(6 * 60 * 60);
 /// How long one answer from the member is waited for.
 const ANSWER_PATIENCE: Duration = Duration::from_secs(60);
+/// How long one wait for the member to move is, so a cancel is noticed
+/// while the run is followed rather than after it ends.
+const CHANGE_PATIENCE: Duration = Duration::from_millis(100);
+/// How long the member is given to keep a cancel.
+const CANCEL_PATIENCE: Duration = Duration::from_secs(10);
 
 /// One VM host's member device.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -125,7 +134,8 @@ impl PlacedShells {
     }
 
     /// Run `command` in `workspace`'s session `session` on the VM host the
-    /// placer names for the workspace.
+    /// placer names for the workspace, showing the caller what it prints
+    /// while it runs and stopping it there when the caller asks.
     ///
     /// # Errors
     ///
@@ -136,10 +146,13 @@ impl PlacedShells {
         session: &str,
         command: &str,
         agent: bool,
+        watching: Watching<'_>,
     ) -> Result<ShellRan, String> {
         let (plane, endpoint) = self.asking.get().ok_or("the host is not running yet")?;
         let mut waited = None;
-        let host = self.place(workspace, &mut waited)?;
+        let Some(host) = self.place(workspace, &mut waited, watching.stop)? else {
+            return Ok(shell_ran(stopped_before_start(command, waited)));
+        };
         let member = self.members.get(&host).ok_or_else(|| {
             format!("the placer named {host}, which is no VM host this host knows")
         })?;
@@ -152,7 +165,7 @@ impl PlacedShells {
             account: self.account.clone(),
             size: self.size.as_str().to_owned(),
         };
-        let mut ran = run_on(&device, &asked)?;
+        let mut ran = run_on(&device, &asked, watching)?;
         if let Some(words) = waited {
             ran.output.insert_str(0, &words);
         }
@@ -160,8 +173,14 @@ impl PlacedShells {
     }
 
     /// The host that runs `workspace`'s VM, waiting while none has room and
-    /// keeping the line that said so in `waited`.
-    fn place(&self, workspace: &str, waited: &mut Option<String>) -> Result<String, String> {
+    /// keeping the line that said so in `waited`; `None` when `stopping`
+    /// ended the wait.
+    fn place(
+        &self,
+        workspace: &str,
+        waited: &mut Option<String>,
+        stop: Option<&(dyn Fn() -> bool + Sync)>,
+    ) -> Result<Option<String>, String> {
         let vm = VmRequest {
             workspace: workspace.to_owned(),
             environment: ENVIRONMENT.to_owned(),
@@ -169,18 +188,47 @@ impl PlacedShells {
             size: self.size,
         };
         loop {
+            if stop.is_some_and(|stop| stop()) {
+                return Ok(None);
+            }
             match ask_placer(&self.placer, &Request::Place { vm: vm.clone() })? {
-                Reply::Placed { host } => return Ok(host),
+                Reply::Placed { host } => return Ok(Some(host)),
                 Reply::Busy(words) => {
                     waited
                         .get_or_insert_with(|| format!("ush: {words} Waiting; Ctrl+C cancels.\n"));
-                    std::thread::sleep(BUSY_RETRY);
+                    wait(BUSY_RETRY, stop);
                 }
                 Reply::Refused(refusal) => return Err(refusal.message),
                 Reply::Error(error) => return Err(format!("the placer: {error}")),
                 other => return Err(format!("the placer answered {other:?}")),
             }
         }
+    }
+}
+
+/// Wait `for_`, or until `stop` says so.
+fn wait(for_: Duration, stop: Option<&(dyn Fn() -> bool + Sync)>) {
+    let until = Instant::now().checked_add(for_);
+    while !stop.is_some_and(|stop| stop()) {
+        let Some(until) = until.filter(|until| Instant::now() < *until) else {
+            return;
+        };
+        std::thread::sleep(
+            until
+                .saturating_duration_since(Instant::now())
+                .min(CHANGE_PATIENCE),
+        );
+    }
+}
+
+/// The run of a command stopped while it waited for room: it ran nothing.
+fn stopped_before_start(command: &str, waited: Option<String>) -> CommandRan {
+    CommandRan {
+        command: command.to_owned(),
+        output: waited.unwrap_or_default(),
+        exit: 130,
+        cancelled: true,
+        ..CommandRan::default()
     }
 }
 
@@ -230,10 +278,12 @@ fn ask_placer(placer: &str, request: &Request) -> Result<Reply, String> {
         .ok_or_else(|| format!("the placer {placer} closed without an answer"))
 }
 
-/// Run `asked` on `device` and follow it until it ends.
+/// Run `asked` on `device`, showing `watching` what it prints and stopping
+/// it there when asked, until it ends.
 fn run_on(
     device: &tilo_peer_state::actions::RemoteDevice,
     asked: &RunCommand,
+    watching: Watching<'_>,
 ) -> Result<CommandRan, String> {
     let serde_json::Value::Object(argument) =
         serde_json::to_value(asked).map_err(|error| error.to_string())?
@@ -261,14 +311,31 @@ fn run_on(
         return Err(format!("the VM host refused the run: {error}"));
     }
     let until = Instant::now().checked_add(RUN_PATIENCE);
+    let mut stop_asked = false;
     loop {
         if until.is_some_and(|until| Instant::now() >= until) {
             return Err("the VM host did not finish the run in time".into());
         }
-        if let Some(change) = device.next_change(&caller, &invocation) {
-            let _ = change.wait_timeout(ANSWER_PATIENCE);
+        // The cancel is asked for once, and then the run is followed to the
+        // end it gives: what it printed until then comes back with it.
+        if !stop_asked && watching.stop.is_some_and(|stop| stop()) {
+            let answer = device
+                .cancel(&caller, &invocation)
+                .wait_timeout(CANCEL_PATIENCE);
+            stop_asked = matches!(answer, Ok(Some(_)));
+            continue;
+        }
+        if let Some(mut change) = device.next_change(&caller, &invocation) {
+            while let Err(again) = change.wait_timeout(CHANGE_PATIENCE) {
+                if watching.stop.is_some_and(|stop| stop())
+                    || until.is_some_and(|until| Instant::now() >= until)
+                {
+                    break;
+                }
+                change = again;
+            }
         } else {
-            std::thread::sleep(Duration::from_millis(500));
+            std::thread::sleep(CHANGE_PATIENCE);
         }
         let Some(state) = device.observe(&caller, &invocation) else {
             continue;
@@ -282,9 +349,14 @@ fn run_on(
             }
             InvocationUpdate::Failed { error, .. } => return Err(error.message),
             InvocationUpdate::Cancelled { .. } => return Err("the run was cancelled".into()),
-            InvocationUpdate::Accepted { .. }
-            | InvocationUpdate::Progress { .. }
-            | InvocationUpdate::Item { .. } => {}
+            InvocationUpdate::Accepted { .. } | InvocationUpdate::Progress { .. } => {}
+            InvocationUpdate::Item { value, .. } => {
+                if let Some(seen) = watching.seen
+                    && let Ok(printed) = serde_json::from_value::<RunOutput>(value)
+                {
+                    seen(&printed);
+                }
+            }
         }
     }
 }
@@ -303,6 +375,7 @@ fn shell_ran(ran: CommandRan) -> ShellRan {
         exit: ran.exit,
         output: ran.output.into_bytes(),
         truncated: ran.truncated,
+        cancelled: ran.cancelled,
         started_ms: ran.started_ms,
         ended_ms: ran.ended_ms,
         refusal: ran.refusal,

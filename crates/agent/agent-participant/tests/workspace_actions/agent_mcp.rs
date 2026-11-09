@@ -480,6 +480,124 @@ async fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
     }
 }
 
+/// A command that takes minutes is not silent while it runs: what it printed
+/// so far comes back with the `pending` answer and with `tilo_status`, and
+/// the agent's cancel ends it in the workspace's shell, recording the run it
+/// stopped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agents_long_run_shows_its_output_and_its_cancel_ends_it() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let computer = enrol(
+        &root,
+        "Claude Code on build-box",
+        DeviceCapabilities::member(),
+    );
+    let state = support::scratch_dir();
+    let shell_state = tempfile::tempdir().unwrap();
+    let shells = shell_state.path().join("shells");
+    let hosted = harness::hosted::start(
+        &root,
+        &host,
+        state.path(),
+        Options {
+            shell: Some(tilo_relay::agents::host_shells(shells.clone()).unwrap()),
+            ..Options::offering(common::catalogue, ModelChoice::Scripted)
+        },
+    )
+    .await;
+    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    let agent = Browser::open(&hosted, &computer, &host).await;
+    let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
+        collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
+    ) else {
+        panic!("a key names a person")
+    };
+    let server = McpServer::new(
+        SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
+        WORKSPACE.into(),
+        person,
+    )
+    .with_surface(Surface::Agent)
+    .with_agent_run("run-9", "Claude Code");
+
+    // A build that prints, then takes a long time: the call answers pending
+    // with the id this agent chose for it, and what it printed until then.
+    let invocation = "3f6b8c0e-0000-4000-8000-000000000009".to_owned();
+    let (ran, failed) = tool(
+        &server,
+        "tilo_do",
+        json!({"path": "terminal#run",
+               "args": {"command": "echo building && sleep 300 && echo never"},
+               "invocation_id": invocation,
+               "wait_ms": 2000}),
+    )
+    .await;
+    assert!(failed, "a run still going is no success: {ran}");
+    assert!(
+        ran.contains("pending"),
+        "the call is answered pending: {ran}"
+    );
+    assert!(
+        ran.contains("building"),
+        "the pending answer shows what the run printed: {ran}"
+    );
+    assert!(!ran.contains("never"), "{ran}");
+
+    // Asking how it went shows the newest output as it stands.
+    let (status, failed) = tool(&server, "tilo_status", json!({"invocation_id": invocation})).await;
+    assert!(failed, "a run still going is no success: {status}");
+    assert!(
+        status.contains("building") && status.contains("still running"),
+        "the pending run says what it printed: {status}"
+    );
+
+    // The agent cancels it, and the workspace's shell ends the command.
+    let asked_at = Instant::now();
+    let _ = tool(
+        &server,
+        "tilo_status",
+        json!({"invocation_id": invocation, "cancel": true}),
+    )
+    .await;
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let (status, _) = tool(&server, "tilo_status", json!({"invocation_id": invocation})).await;
+        if status.trim() == "cancelled" {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline && asked_at.elapsed() < Duration::from_secs(30),
+            "the run was never cancelled: {status}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // The run it stopped is recorded like any other end: the command, where
+    // it ran, and the status a stopped command has.
+    loop {
+        let runs = terminal_runs(&mut browser);
+        if let Some(stopped) = runs
+            .iter()
+            .find(|run| run.command.0.starts_with("echo building"))
+        {
+            assert_eq!(stopped.exit, 130, "{stopped:?}");
+            assert!(
+                stopped.ended_ms >= stopped.started_ms,
+                "the run says when it ended: {stopped:?}"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the stopped run never reached the browser: {runs:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// The workspace's shared desk as a page first writes it: one strip and no
 /// window yet.
 fn put_desk(browser: &mut Browser) -> DocumentRoute {

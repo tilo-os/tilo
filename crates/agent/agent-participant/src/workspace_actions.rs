@@ -24,7 +24,8 @@
 //!   invocation, a different request under a used id is a conflict, and a
 //!   refused invocation is forgotten (nothing ran). An invocation is
 //!   accepted at once and runs on the service's own thread; `Observe`
-//!   reports where it stands, and `Cancel` stops one that has not started.
+//!   reports where it stands, and `Cancel` stops one that has not started or
+//!   ends the shell command of one that runs ([`terminal`]).
 //!
 //! Document invocations serve the host user's own devices. Anyone else the
 //! workspace admits may only comment through them (actions on a `comments`
@@ -49,9 +50,10 @@
 mod feedback;
 mod reads;
 mod terminal;
-pub use terminal::{ShellRan, TERMINAL_APP, WorkspaceShell};
+pub use terminal::{ShellRan, TERMINAL_APP, Watching, WorkspaceShell};
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
@@ -250,6 +252,9 @@ struct Entry {
     update: InvocationUpdate,
     /// Where the invocation left its actor in the record it acted on.
     left_at: Option<ActorPlace>,
+    /// Set while the host's shell runs this invocation: what a cancel of it,
+    /// or a Ctrl+C in the session it runs in, stops.
+    stop: Option<Arc<AtomicBool>>,
 }
 
 #[derive(Default)]
@@ -275,6 +280,7 @@ impl Ledger {
                 request,
                 update: InvocationUpdate::Accepted { invocation },
                 left_at: None,
+                stop: None,
             },
         );
     }
@@ -570,6 +576,12 @@ impl WorkspaceActions {
             return Err(ActionHostError::NotCancellable {
                 reason: "the invocation has finished".into(),
             });
+        }
+        // A run in the host's shell ends there, as on a Ctrl+C, and settles
+        // as cancelled once what it printed is recorded.
+        if let Some(stop) = &entry.stop {
+            stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            return Ok(());
         }
         if running {
             return Err(ActionHostError::NotCancellable {
@@ -1584,6 +1596,15 @@ impl Worker {
             (caller, request)
         };
         if let Some(receipt) = self.start_terminal_run(workspace_id, &caller, &request) {
+            let mut ledger = self.ledger();
+            ledger.running = None;
+            if matches!(receipt.status, ReceiptStatus::Rejected { .. }) {
+                ledger.forget(&invocation);
+            }
+            drop(ledger);
+            return receipt;
+        }
+        if let Some(receipt) = self.stop_terminal_runs(&caller, &request) {
             let mut ledger = self.ledger();
             ledger.running = None;
             if matches!(receipt.status, ReceiptStatus::Rejected { .. }) {

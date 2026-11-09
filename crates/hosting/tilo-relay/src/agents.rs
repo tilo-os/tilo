@@ -32,7 +32,9 @@ use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueQuery,
     Confirmation, ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
-use tilo_agent_participant::workspace_actions::{ShellRan, WorkspaceMember, WorkspaceShell};
+use tilo_agent_participant::workspace_actions::{
+    ShellRan, Watching, WorkspaceMember, WorkspaceShell,
+};
 use tilo_agent_participant::{
     AdmissionDone, AgentHost, AgentHostLink, AppCatalogue, ApprovalDone, CatalogueFactory,
     FeedbackReviewer, HostActions, HostEndpoint, ModelChoice, SupervisorHost, Witness,
@@ -368,13 +370,24 @@ impl WorkspaceShell for HostShells {
         session: &str,
         command: &str,
         agent: bool,
+        watching: Watching<'_>,
     ) -> Result<ShellRan, String> {
         let shells = match self {
             Self::Here(shells) => shells,
-            Self::Placed(placed) => return placed.run(workspace, session, command, agent),
+            Self::Placed(placed) => {
+                return placed.run(workspace, session, command, agent, watching);
+            }
         };
         let ran = shells
-            .run(workspace, session, command, agent)
+            .run_for(
+                workspace,
+                session,
+                command,
+                agent,
+                None,
+                watching.stop,
+                watching.seen,
+            )
             .map_err(|error| error.to_string())?;
         Ok(ShellRan {
             command: ran.command,
@@ -382,6 +395,7 @@ impl WorkspaceShell for HostShells {
             exit: ran.exit,
             output: ran.output,
             truncated: ran.truncated,
+            cancelled: ran.cancelled,
             started_ms: ran.started_ms,
             ended_ms: ran.ended_ms,
             refusal: ran.refusal,
