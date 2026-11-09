@@ -34,6 +34,8 @@ pub(crate) struct DeskKey {
     revealed: bool,
     /// The windows whose app stopped answering ([`DesktopHandle::unresponsive_revision`]).
     not_responding: u64,
+    /// The desk styles' revision: a package installed or taken away moves it (shell.md §6).
+    styles: u64,
 }
 
 /// The kind of the desk's resource: the origin kind a shell's type holds.
@@ -310,6 +312,17 @@ impl Surfaces {
     }
 }
 
+/// The desk styles every installed package offers, with the revision that moves when the
+/// session re-reads its store: a package installed or taken away moves the desk's reading.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Styles {
+    pub(crate) revision: u64,
+    pub(crate) list: Vec<shell_part::DeskStyleReading>,
+    /// The store's fingerprint the list was read at: a store that reads the same is not read
+    /// again.
+    pub(crate) fingerprint: Option<String>,
+}
+
 /// The desk as the session reads it. See the module docs.
 pub(crate) struct Desk {
     pub(crate) handle: DesktopHandle,
@@ -333,6 +346,10 @@ pub(crate) struct Desk {
     /// This device's workspaces' record, when the session holds one: the invitations a workspace's
     /// people made are kept there, by the device that made them.
     pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
+    /// The desk styles every installed package offers, as `session.desk_styles` reads them
+    /// (shell.md §6): what the person's switch offers. The session fills it from its package
+    /// store, and moves it when a package is installed or taken away.
+    pub(crate) styles: std::rc::Rc<std::cell::RefCell<Styles>>,
 }
 
 /// What a window with no title is called.
@@ -663,6 +680,7 @@ impl Desk {
                 self.surfaces.overlays.revision(),
                 self.surfaces.overlays.here(),
             ),
+            styles: self.styles.borrow().revision,
             agents: self.seats.revision(),
             revealed: self.surfaces.overlays.revealed(std::time::Instant::now()),
             // Which apps stopped answering is the compositor's, published through the handle beside
@@ -784,6 +802,7 @@ impl Desk {
             badges: self.signals.badges(),
             people,
             tray: self.tray_items(),
+            styles: self.styles.borrow().list.clone(),
             // What the screen says of its edges moves without the desk; the link publishes it
             // beside this reading and carries it over (`SessionLink::publish_edges`).
             ..DeskReading::default()

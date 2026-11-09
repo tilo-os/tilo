@@ -11,6 +11,26 @@ pub(super) fn publish_platform_roots(link: &SessionLink) {
     }
 }
 
+/// The four desk styles `so.tilo.shell` ships, as the session lists them: a view of the
+/// arrangement each, named by its doc line (shell.md §6).
+pub(super) fn shipped_styles() -> Vec<DeskStyleReading> {
+    [
+        ("strips", "Strips"),
+        ("frames", "Frames"),
+        ("spaces", "Spaces"),
+        ("desktop", "Desktop"),
+    ]
+    .into_iter()
+    .map(|(name, line)| DeskStyleReading {
+        style: format!("so.tilo.shell:{name}"),
+        package: "so.tilo.shell".to_owned(),
+        name: name.to_owned(),
+        line: line.to_owned(),
+        loads: true,
+    })
+    .collect()
+}
+
 /// A desk at rest with two windows and two workspaces.
 pub(super) fn reading_with_windows() -> DeskReading {
     DeskReading {
@@ -18,6 +38,7 @@ pub(super) fn reading_with_windows() -> DeskReading {
         clock: "4:28 PM".to_owned(),
         workspace: "Desk".to_owned(),
         strip: "Main".to_owned(),
+        styles: shipped_styles(),
         windows: vec![
             WindowReading {
                 key: "11".to_owned(),

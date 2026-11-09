@@ -13,21 +13,26 @@
 /// session's chrome decides. Nothing here draws a window: the desk's windows are the
 /// compositor's, behind this view.
 view desk(d: Desk) {
-    desk_around(d, .none, fill)
+    desk_around(d, .none, false) {
+    }
 }
 
-/// The desk, with the arrangement `front` filling the room between its bar and its foot, as its
-/// preset shows it (`shown_preset`): the dock stands over that room on its own edge, as the
-/// chrome's does, so a window is as tall as the desk rather than stopping short of the dock. On a
-/// compact output that room is a phone's, too little for a window's bar to lose to a floating
-/// dock, so the dock takes its own room at the foot instead and the window fills what is left.
+/// The desk, with the arrangement `front` filling the room between its bar and its foot, as the
+/// style the person chose shows it (`screen`): the dock stands over that room on its own edge,
+/// as the chrome's does, so a window is as tall as the desk rather than stopping short of the
+/// dock. On a compact output that room is a phone's, too little for a window's bar to lose to a
+/// floating dock, so the dock takes its own room at the foot instead and the window fills what
+/// is left.
 ///
 /// The switcher is a panel over the desk rather than a page of it: it takes that room and
 /// centres itself there, where the surfaces that go on past a display are given the same room
 /// as a page that scrolls. Until the session says its walk outlasted a flick
 /// (`switcher_revealed`) the desk is the one at rest, so a flick between two windows shows
 /// nothing over either.
-view desk_around(d: Desk, front: Option<Arrangement>) {
+///
+/// `traditional` makes this the traditional desktop's chrome: its bar lists the window in
+/// front's actions, and its own bar is drawn (`top_bar`). The desktop style passes it.
+template view desk_around(d: Desk, front: Option<Arrangement>, traditional: Bool, content: View) {
     let s = shell
     let dock_takes_room = front != .none
         and dock_shows(s, d)
@@ -40,24 +45,12 @@ view desk_around(d: Desk, front: Option<Arrangement>) {
     layers {
         stack(gap: .tight, fill) {
             if bar_shows(s, d) {
-                bar_on_edge(s, d)
+                bar_on_edge(s, d, traditional)
             }
             if resting {
-                if let a = front {
-                    stack(gap: .tight, fill) {
-                        at_rest(d)
-                        shown_preset(
-                            a,
-                            bar_lists_actions(
-                                s,
-                                d,
-                                space.width_class == .expanded or space.width_class == .wide,
-                            ),
-                            fill,
-                        )
-                    }
-                } else {
+                stack(gap: .tight, fill) {
                     at_rest(d)
+                    content
                 }
             } else if d.here == "switcher" {
                 surface(d, fill)
@@ -94,33 +87,70 @@ view desk_around(d: Desk, front: Option<Arrangement>) {
     }
 }
 
-/// The desk as the whole of a display (`tilo-session --shell screen`): the bar, the dock and the
-/// desk's surfaces around the person's arrangement as the preset they picked shows it, each
-/// app's window standing in the well its place leaves it, as a window of the desk shows it
-/// (`desk_view`). The traditional desktop on a roomy display is its own whole screen, its frames
-/// under the desk's bar and dock.
+/// The room the room between the bar and the foot gives the arrangement: how wide the desk's
+/// bar lists actions decides whether each frame's own bar gives way to it (`bar_lists_actions`).
+fn desk_lists(traditional: Bool, roomy: Bool) -> Bool {
+    bar_lists_actions_for(shell, root Desk, roomy, traditional)
+}
+
+/// The desk the person's style draws its places through, with `traditional` for the desktop
+/// style's chrome and `body` the places: every style that shows the arrangement beside the
+/// desk's bar and dock draws through this, so no style repeats the chrome.
+template view desk_style(a: Arrangement, traditional: Bool, body: View) {
+    desk_around(root Desk, .some(a), traditional, body)
+}
+
+/// Strips
 ///
-/// This is the one definition of the whole screen: the arrangement's default view (`desk_view`)
-/// draws it, so a person shows the desk as a window and as a display by the same code, and the
-/// session's `screen` layer and a window's `desk_view` never drift apart.
-view screen(a: Arrangement) {
-    let v = viewing
-    if (v.showing == .desktop or bar_is_traditional(shell)) and not space.compact {
+/// The person's places as windows in rows and strips, scrolled sideways (`strips_view`).
+view strips(a: Arrangement) {
+    let lists = desk_lists(false, space.width_class == .expanded or space.width_class == .wide)
+    desk_style(a, false) {
+        strips_view(a, viewing, lists, fill)
+    }
+}
+
+/// Frames
+///
+/// The places at points on a pannable, zoomable canvas, each in its own frame.
+view frames(a: Arrangement) {
+    desk_style(a, false) {
+        canvas(a, "Canvas", true)
+    }
+}
+
+/// Spaces
+///
+/// The places at points, each drawn as its own view standing as content.
+view spaces(a: Arrangement) {
+    desk_style(a, false) {
+        canvas(a, "Spaces", false)
+    }
+}
+
+/// Desktop
+///
+/// Frames on a floating desk under the traditional bar, the focused window's commands in it,
+/// on a roomy display; a compact output shows the window in front alone in the desk's own
+/// chrome, as a phone does.
+view desktop(a: Arrangement) {
+    let lists = desk_lists(true, space.width_class == .expanded or space.width_class == .wide)
+    if not space.compact {
         layers(fill) {
-            traditional_desktop(
-                a,
-                bar_lists_actions(
-                    shell,
-                    root Desk,
-                    space.width_class == .expanded or space.width_class == .wide,
-                ),
-                fill,
-            )
+            traditional_desktop(a, lists, fill)
             desk(root Desk, fill)
         }
     } else {
-        desk_around(root Desk, .some(a), fill)
+        desk_style(a, true) {
+            front_window(a, lists, fill)
+        }
     }
+}
+
+/// The desk style the person shows, as the session found it (`Viewing.style`, a package and a
+/// view): the strips when their record names none, so a shell that has never picked one opens.
+fn style_of(v: Viewing) -> Text {
+    if v.style != "" { v.style } else { "so.tilo.shell:strips" }
 }
 
 /// The dock's ground on `edge`: the theme's material for the style the person picked, edge to
@@ -149,28 +179,12 @@ view dock_ground(s: Shell, d: Desk, edge: Edge) {
     }
 }
 
-/// What stands between the bar and the dock when the desk shows the arrangement: the places as
-/// the preset the person picked lays them out, under the switch between the presets, as
-/// `desk_view` shows them. The traditional desktop shows the window in front alone here, as a
-/// compact display does, its bar's actions giving way when the desk's bar lists them (`lists`).
-view shown_preset(a: Arrangement, lists: Bool) {
-    let v = viewing
-    if v.showing == .desktop {
-        front_window(a, lists, fill)
-    } else if v.showing == .frames {
-        framed_canvas(a, fill)
-    } else if v.showing == .spaces {
-        spaces_canvas(a, fill)
-    } else {
-        strips_view(a, v, lists, fill)
-    }
-}
-
 /// The top bar on the edge it rides: the whole width with its parts spread along it at the `full`
 /// fit, or an inset run centred on the edge at the floating one, where it covers less of what is
 /// under it. Its ground is the theme's material for the bar's style either way; how much of the
-/// output it spans is what its fit says.
-view bar_on_edge(s: Shell, d: Desk) {
+/// output it spans is what its fit says. `traditional` draws the desktop style's bar, which lists
+/// the window in front's commands (`top_bar`).
+view bar_on_edge(s: Shell, d: Desk, traditional: Bool) {
     let on_top = s.bar_edge == .top
     // The stack holds the bar at its own height: the bar fills the desk's width, and takes no
     // share of its height, so the desk's windows get the room the bar leaves.
@@ -184,7 +198,7 @@ view bar_on_edge(s: Shell, d: Desk) {
                     material: if s.bar_finish == .translucent { .glass } else { .calm },
                     fill,
                 ) {
-                    top_bar(d)
+                    top_bar(d, traditional)
                 }
             }
         } else if s.bar_fit == .full {
@@ -196,7 +210,7 @@ view bar_on_edge(s: Shell, d: Desk) {
                     material: if s.bar_finish == .translucent { .glass } else { .calm },
                     fill,
                 ) {
-                    top_bar(d)
+                    top_bar(d, traditional)
                 }
             }
         } else if on_top {
@@ -207,7 +221,7 @@ view bar_on_edge(s: Shell, d: Desk) {
                     edge: .top,
                     material: if s.bar_finish == .translucent { .glass } else { .calm },
                 ) {
-                    top_bar(d)
+                    top_bar(d, traditional)
                 }
             }
         } else {
@@ -218,7 +232,7 @@ view bar_on_edge(s: Shell, d: Desk) {
                     edge: .bottom,
                     material: if s.bar_finish == .translucent { .glass } else { .calm },
                 ) {
-                    top_bar(d)
+                    top_bar(d, traditional)
                 }
             }
         }
@@ -228,14 +242,12 @@ view bar_on_edge(s: Shell, d: Desk) {
 /// The bar's parts in the person's order, as the run the person reorders by dragging a part:
 /// what the desk's bar and the desk window's bar both draw. The traditional desktop shows its
 /// own bar instead (`traditional.tl`), where the focused window's commands stand beside the
-/// parts the person chose, so a person picks between the two by picking the preset.
+/// parts the person chose, so a person picks between the two by picking the style.
 ///
-/// The bar follows the desk's preset (`Viewing.showing`) as well as the chrome's: a desk shown
-/// as the traditional desktop gets its bar, whose focused window's commands list what the
-/// window's own header had to give way, even before the person applies the chrome preset that
-/// makes it their own.
-view top_bar(d: Desk) {
-    if bar_is_traditional(shell) or viewing.showing == .desktop {
+/// `traditional` is the desktop style's chrome: its bar lists the focused window's commands
+/// whatever the chrome's own preset, so `top_bar` draws `traditional_bar`.
+view top_bar(d: Desk, traditional: Bool) {
+    if traditional or bar_is_traditional(shell) {
         traditional_bar(d)
     } else {
         bar(d)

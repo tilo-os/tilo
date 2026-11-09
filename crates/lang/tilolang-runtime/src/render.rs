@@ -941,27 +941,49 @@ impl Core {
             None => self.chosen_view(shown, offer, acc),
         };
         let view = {
-            let registry = self.registry.borrow();
-            match (named, row) {
-                (Some(view), _) => registry.view_of_type(ty, view).ok_or_else(|| {
-                    RuntimeError::Package(format!(
+            let found = {
+                let registry = self.registry.borrow();
+                match (named, row) {
+                    // A named view: the resource's own package's, or — when the name is a view
+                    // an installed package declares of a shared type, a desk style
+                    // (`shell.md` §6) — that package's, so a `show` draws a style another
+                    // package wrote.
+                    (Some(view), _) => registry
+                        .view_of_type(ty, view)
+                        .or_else(|| registry.style_view(ty, view)),
+                    (None, true) => registry.row_view(ty),
+                    (None, false) => match chosen {
+                        Some(view) => Some(view),
+                        None => registry.default_view(ty),
+                    },
+                }
+            };
+            found.ok_or_else(|| {
+                // A style reference names its package (`app:view`): one whose package this
+                // runtime does not hold yet is the ask for that package, and the call waits on
+                // it rather than faulting — the session publishes it, and the desk draws it
+                // when it arrives.
+                if let Some(view) = named
+                    && !row
+                    && let Some((app, _)) = view.split_once(':')
+                    && !Self::own_package(app, ty, &self.registry.borrow())
+                {
+                    return self.missing_view(app, view);
+                }
+                if let Some(view) = named {
+                    return RuntimeError::Package(format!(
                         "`show`: `{ty}` has no view `{view}` that takes it alone"
-                    ))
-                })?,
-                (None, true) => registry.row_view(ty).ok_or_else(|| {
-                    RuntimeError::Package(format!(
+                    ));
+                }
+                if row {
+                    return RuntimeError::Package(format!(
                         "`show`: the type `{ty}` declares no row view to draw it as a row"
-                    ))
-                })?,
-                (None, false) => match chosen {
-                    Some(view) => view,
-                    None => registry.default_view(ty).ok_or_else(|| {
-                        RuntimeError::Package(format!(
-                            "`show`: the type `{ty}` has no default view to draw it with"
-                        ))
-                    })?,
-                },
-            }
+                    ));
+                }
+                RuntimeError::Package(format!(
+                    "`show`: the type `{ty}` has no default view to draw it with"
+                ))
+            })?
         };
         let vt = self.view_target(&view)?;
         if vt.params.len() != 1 {
@@ -971,6 +993,18 @@ impl Core {
             )));
         }
         Ok((vt, vec![Value::Ref(shown.clone())]))
+    }
+
+    /// Whether `app` is the package that holds the type `ty`: its own package declares that
+    /// type. A style reference names another package (`me.styles:timeline`), which this answers
+    /// `false` for.
+    fn own_package(app: &str, ty: &str, registry: &crate::registry::Registry) -> bool {
+        match crate::foreign::foreign_type(ty) {
+            Some(key) => key.app == app,
+            None => registry
+                .type_info(ty)
+                .is_some_and(|(pkg, _)| pkg.meta.app == app),
+        }
     }
 
     /// A `show` of a resource whose type a Rust app draws: that view's tree, made the runtime's and

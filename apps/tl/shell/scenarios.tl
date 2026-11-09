@@ -1648,7 +1648,7 @@ action a_foreign_place(a: Arrangement, strip: Text, index: Int, title: Text) -> 
 /// strips stand side by side in one row, and the narrow list holds focus.
 scenario "a desk of places" -> Arrangement {
     let v = viewing
-    v.showing = .strips
+    v.style = "so.tilo.shell:strips"
     let a = root Arrangement
     let row = a_workspace(a, "Desk")
     let one = a_strip(a, row, "One", 667)
@@ -1696,7 +1696,7 @@ scenario "a desk of places" -> Arrangement {
 /// as its tabs, the place in front filling the window under them.
 scenario "a window of several places" -> Arrangement {
     let v = viewing
-    v.showing = .strips
+    v.style = "so.tilo.shell:strips"
     let a = root Arrangement
     let row = a_workspace(a, "Desk")
     let group = a_strip(a, row, "Notes", 667)
@@ -1713,7 +1713,7 @@ scenario "a window of several places" -> Arrangement {
 /// the dock as the chrome's lone window fills its strip.
 scenario "a window alone on the desk" -> Arrangement {
     let v = viewing
-    v.showing = .strips
+    v.style = "so.tilo.shell:strips"
     let a = root Arrangement
     let row = a_workspace(a, "Desk")
     let one = a_strip(a, row, "Note", 1000)
@@ -1726,7 +1726,7 @@ scenario "a window alone on the desk" -> Arrangement {
 /// from when they make a strip.
 scenario "an empty strip" -> Arrangement {
     let v = viewing
-    v.showing = .strips
+    v.style = "so.tilo.shell:strips"
     let a = root Arrangement
     let row = a_workspace(a, "Desk")
     a_strip(a, row, "Empty", 667)
@@ -1739,7 +1739,7 @@ scenario "an empty strip" -> Arrangement {
 /// beside — a column after the one it came from (shell.md §3).
 scenario "a reference lands beside its place" -> Arrangement {
     let v = viewing
-    v.showing = .strips
+    v.style = "so.tilo.shell:strips"
     let a = root Arrangement
     let row = a_workspace(a, "Desk")
     let talks = a_strip(a, row, "Chat", 667)
@@ -1768,7 +1768,7 @@ scenario "a reference lands beside its place" -> Arrangement {
 /// the terminal beside them is a window, shown in its well.
 scenario "a canvas of spaces" -> Arrangement {
     let v = viewing
-    v.showing = .frames
+    v.style = "so.tilo.shell:frames"
     let a = root Arrangement
     let row = a_workspace(a, "Desk")
     let s = a_strip(a, row, "Canvas", 667)
@@ -1814,7 +1814,7 @@ scenario "a canvas of spaces" -> Arrangement {
 /// beside them is a window, shown in its well.
 scenario "resources standing as content" -> Arrangement {
     let v = viewing
-    v.showing = .spaces
+    v.style = "so.tilo.shell:spaces"
     let a = root Arrangement
     let row = a_workspace(a, "Desk")
     let s = a_strip(a, row, "Spaces", 667)
@@ -1930,7 +1930,7 @@ scenario "the traditional desktop" {
     let beside = pinned.last() ?? rest.last()
     let channel = channel_named("design")
     let v = viewing
-    v.showing = .desktop
+    v.style = "so.tilo.shell:desktop"
     let a = root Arrangement
     let row = a_workspace(a, "Desk")
     let desk = a_strip(a, row, "Desk", 667)
@@ -2035,7 +2035,7 @@ scenario "the traditional desktop, a terminal in front" {
     s.dock_items.insert(DockItem(key: "files", title: "Files", icon: "folder"))
     apply(s, .windows_desktop)
     let v = viewing
-    v.showing = .desktop
+    v.style = "so.tilo.shell:desktop"
     let a = root Arrangement
     let row = a_workspace(a, "Desk")
     a_workspace(a, "Errands")

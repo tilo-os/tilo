@@ -117,6 +117,58 @@ pub fn install(store: &Path, scratch: &Path) -> Vec<String> {
     installed
 }
 
+/// Build the tilolang package written at `dir` (a directory of `.tl` files) and install it into
+/// the store `store`, signing it with the test process's publisher key. A desk-style package in
+/// a test is written into a scratch directory and installed here, exactly as a person installs
+/// one into their own store (`shell.md` §6); the session then lists its style like any other.
+///
+/// # Panics
+/// The package does not compile, or the store refuses it.
+pub fn install_package(dir: &Path, store: &Path) -> String {
+    let scratch = dir.with_file_name(format!(
+        "{}-built",
+        dir.file_name()
+            .expect("a directory is named")
+            .to_string_lossy()
+    ));
+    std::fs::create_dir_all(&scratch).expect("a scratch directory for the build");
+    let out = scratch.join("tapps");
+    let built = package::build(
+        &BuildOptions {
+            dir: dir.to_path_buf(),
+            search: vec![packages()],
+            out: out.clone(),
+            tilo_runtime: runtime().to_owned(),
+            tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.to_owned(),
+            version: "0.1.0".to_owned(),
+        },
+        &publisher(&scratch),
+    )
+    .unwrap_or_else(|error| panic!("{} builds: {error}", dir.display()));
+    let mut installed = String::new();
+    for app in built {
+        let tapp = std::fs::File::open(&app.tapp).expect("the built .tapp reads");
+        let source = app.tapp.display().to_string();
+        package_store::PackageStore::at(store)
+            .install(
+                std::io::BufReader::new(tapp),
+                move |_meta| {
+                    Ok(package_store::Admission {
+                        pinned: false,
+                        attested_by: String::new(),
+                        source,
+                        held: false,
+                    })
+                },
+                None,
+            )
+            .unwrap_or_else(|error| panic!("{}: {error}", app.app));
+        installed = app.app;
+    }
+    std::fs::remove_dir_all(&out).ok();
+    installed
+}
+
 /// Copy the package at `from` into `to` , created.
 fn copy_package(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).expect("the package's directory");

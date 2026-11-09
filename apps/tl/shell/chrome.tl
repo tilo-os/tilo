@@ -524,13 +524,20 @@ fn bar_shows(s: Shell, d: Desk) -> Bool {
 /// (`ui.WindowFrame(lists_actions:)`), so the window's own bar keeps its title and the shell's
 /// controls alone: each action stands once, in the menu the bar lists it in, never twice.
 ///
-/// A desk shown as the traditional desktop (`Viewing.showing == .desktop`) counts as one: its
-/// bar is that bar (`top_bar`), so its frames let their bar's actions give way to it.
+/// The desktop desk style's chrome (`traditional`), and a desk whose chrome is the traditional
+/// desktop's (`bar_is_traditional`), count as one: that bar lists them, so its frames let their
+/// bar's actions give way to it.
 fn bar_lists_actions(s: Shell, d: Desk, roomy: Bool) -> Bool {
+    bar_lists_actions_for(s, d, roomy, false)
+}
+
+/// [`bar_lists_actions`] with `traditional`: the desktop style passes it, so its frames give way
+/// to the desk's bar whatever the chrome's own preset.
+fn bar_lists_actions_for(s: Shell, d: Desk, roomy: Bool, traditional: Bool) -> Bool {
     if not bar_shows(s, d) {
         return false
     }
-    if bar_is_traditional(s) or viewing.showing == .desktop {
+    if traditional or bar_is_traditional(s) {
         return true
     }
     roomy and s.bar_parts.any(p -> p.slot == Slot.app_menu and p.shown)

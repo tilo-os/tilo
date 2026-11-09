@@ -501,6 +501,29 @@ pub struct DeskReading {
     /// The running applications' tray items, in the order they registered.
     #[serde(default)]
     pub tray: Vec<TrayReading>,
+    /// The desk styles every installed package offers, as the session finds them (shell.md
+    /// §6): each a view of the arrangement, listed by its own doc line, so the person's switch
+    /// offers every style wherever it was written.
+    #[serde(default)]
+    pub styles: Vec<DeskStyleReading>,
+}
+
+/// A desk style, as the desk's reading names it: a view of the arrangement an installed
+/// package declares (shell.md §6).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeskStyleReading {
+    /// The view reference: a package and a view (`so.tilo.shell:strips`), as `Viewing.style`
+    /// names it.
+    pub style: String,
+    /// The package that declares it.
+    pub package: String,
+    /// The view's own name, as its declaration writes it.
+    pub name: String,
+    /// The view's doc line, in its author's words: what the switch lists it by.
+    pub line: String,
+    /// Whether the style loads: false for one whose package does not compile against the shell
+    /// and the session, so the switch can say so.
+    pub loads: bool,
 }
 
 /// A workspace the person's desk shows, as their arrangement names it.
@@ -896,6 +919,7 @@ pub struct SessionOrigin {
     rooms: BTreeMap<String, Kept<RoomReading>>,
     notices: BTreeMap<String, Kept<NoticeReading>>,
     notice_actions: BTreeMap<String, Kept<NoticeActionReading>>,
+    styles: BTreeMap<String, Kept<DeskStyleReading>>,
     arrangement_workspaces: BTreeMap<String, Kept<ArrangementWorkspaceReading>>,
     arrangement_rows: BTreeMap<String, Kept<ArrangementRowReading>>,
     arrangement_strips: BTreeMap<String, Kept<ArrangementStripReading>>,
@@ -920,6 +944,7 @@ impl SessionOrigin {
             rooms: BTreeMap::new(),
             notices: BTreeMap::new(),
             notice_actions: BTreeMap::new(),
+            styles: BTreeMap::new(),
             arrangement_workspaces: BTreeMap::new(),
             arrangement_rows: BTreeMap::new(),
             arrangement_strips: BTreeMap::new(),
@@ -1228,6 +1253,26 @@ impl SessionOrigin {
                         ("notice", text(&a.notice)),
                         ("key", text(&a.key)),
                         ("label", text(&a.label)),
+                    ]
+                },
+            ));
+        }
+        if let (Ok(ty), Some(collection)) = (kind("desk_style"), field(desk, "styles")) {
+            writes.extend(sync_items(
+                &mut self.styles,
+                &reading.styles,
+                root,
+                &collection,
+                ty,
+                |s| s.style.clone(),
+                |s| {
+                    vec![
+                        ("key", text(&s.style)),
+                        ("style", text(&s.style)),
+                        ("package", text(&s.package)),
+                        ("name", text(&s.name)),
+                        ("line", text(&s.line)),
+                        ("loads", Value::Bool(s.loads)),
                     ]
                 },
             ));
@@ -1628,6 +1673,16 @@ impl SessionOrigin {
                     .find(|a| format!("{}:{}", a.notice, a.key) == key)
             {
                 self.notice_actions.insert(
+                    key,
+                    Kept {
+                        at,
+                        was: was.clone(),
+                    },
+                );
+            } else if is("desk_style")
+                && let Some(was) = reading.styles.iter().find(|s| s.style == key)
+            {
+                self.styles.insert(
                     key,
                     Kept {
                         at,

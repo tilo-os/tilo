@@ -94,21 +94,6 @@ enum Width {
     wide
 }
 
-/// A way of laying out the same resources and actions, which the person picks: a preset of
-/// shell.md §6, whose finer settings live underneath (§8). Each is a shell's root view.
-enum Preset {
-    /// Columns of places, scrolled horizontally, with strips stacked and scrolled vertically.
-    strips
-    /// Places at points on a pannable, zoomable surface, each drawn in a frame.
-    frames
-    /// Places at points, each drawn as its own view: resources standing as content on one
-    /// surface, grouped by where they are rather than by a frame around them.
-    spaces
-    /// The traditional desktop: frames on a floating desk, the focused window's own commands in the
-    /// top bar, and a floating dock at the foot, the shape macOS and GNOME people know.
-    desktop
-}
-
 /// The width a strip's per-mille stands for, as the nearest of the three.
 fn width_of(permille: Int) -> Width {
     if permille <= 500 { .narrow } else if permille < 900 { .normal } else { .wide }
@@ -123,12 +108,38 @@ fn permille_of(w: Width) -> Int {
     }
 }
 
+/// A way of laying out the same resources and actions a person picked before styles were views
+/// (`shell.md` §6): `Viewing.showing` kept one. It is declared still, and unchanged, so the
+/// record the old shell wrote — an enum value the store holds as it wrote it — reads as it was
+/// and the migration below can name the style it stands for. Nothing writes it again.
+enum Preset {
+    /// Columns of places, scrolled horizontally, with strips stacked and scrolled vertically.
+    strips
+    /// Places at points on a pannable, zoomable surface, each drawn in a frame.
+    frames
+    /// Places at points, each drawn as its own view: resources standing as content on one
+    /// surface, grouped by where they are rather than by a frame around them.
+    spaces
+    /// The traditional desktop: frames on a floating desk, the focused window's own commands in the
+    /// top bar, and a floating dock at the foot, the shape macOS and GNOME people know.
+    desktop
+}
+
 /// What the person shows of their arrangement, and which strip stands in front: the shell's own
 /// view of it, in their own record (`records: .own`, `root viewing: Viewing`). The arrangement
 /// is the session's and the same whichever way it is shown; this is what changes when the
-/// person picks a preset or brings a strip forward, and switching keeps every place where it was.
+/// person picks a desk style or brings a strip forward, and switching keeps every place where
+/// it was.
 type Viewing {
-    /// Which preset the person shows.
+    /// The desk style the person shows, as a view reference: a package and a view
+    /// (`so.tilo.shell:strips`, `me.styles:timeline`). A desk style is a view of the
+    /// arrangement any installed package declares (shell.md §6); empty shows this shell's
+    /// strips.
+    style: Text
+    /// The preset the person showed before styles were views. It kept its declaration, its type
+    /// and its default, so a record the old shell wrote reads as it was, a record made now
+    /// reads the strips, and the migration below names the style it stands for. Nothing writes
+    /// it again.
     showing: Preset = .strips
     /// The strip in front, by its key; empty for none.
     focused: Text
@@ -136,43 +147,49 @@ type Viewing {
 
 root viewing: Viewing
 
+/// A desk style picked before styles were views: the preset's name turned into this package's
+/// view of it (`strips` into `so.tilo.shell:strips`), so the person's choice is kept. A record
+/// whose `style` is already set keeps it.
+migration action name_the_style(v: Viewing) {
+    if v.style == "" {
+        v.style = style_named(v.showing)
+    }
+}
+
+/// The style reference a preset stands for: this package's own view of that name (`shell.md`
+/// §6, the four that ship).
+fn style_named(p: Preset) -> Text {
+    match p {
+        .frames => "so.tilo.shell:frames",
+        .spaces => "so.tilo.shell:spaces",
+        .desktop => "so.tilo.shell:desktop",
+        .strips => "so.tilo.shell:strips",
+    }
+}
+
 default view viewing_settings for Viewing
 
-/// The shell's own settings: the preset the desk shows, and where to pick another (§6, §8).
+/// The shell's own settings: the desk style the person shows, and where to pick another (§6,
+/// §8). The styles every installed package offers are listed by their own words; picking one
+/// switches the desk, and the style's own settings stand under the list, from its own record.
 view viewing_settings(v: Viewing) {
+    let d = root Desk
     page {
         section("Desk") {
-            ui.Text("The same places, shown four ways. Switching keeps every window where it is.")
-            preset_switch(v)
+            ui.Text(
+                "The same places, shown as the style you pick. Switching keeps every window where it is.",
+            )
+            style_switch(v, d)
         }
     }
 }
 
-/// The preset the person shows, as the string the session publishes it as (`strips`, `frames`,
-/// `spaces`).
-fn showing_text(v: Viewing) -> Text {
-    match v.showing {
-        .strips => "strips",
-        .frames => "frames",
-        .spaces => "spaces",
-        .desktop => "desktop",
-    }
-}
-
-/// The preset `text` names, or the strips for one this build does not know: a record from a
-/// newer shell still opens.
-fn preset_named(text: Text) -> Preset {
-    if text == "frames" {
-        .frames
-    } else if text == "spaces" { .spaces } else if text == "desktop" { .desktop } else { .strips }
-}
-
-/// Shows the desk through `shown` (§6): the scrolling strips, the framed canvas or the spaces
-/// canvas. Switching keeps the arrangement: the same places stand where they were, drawn
-/// another way.
-action show_preset(v: Viewing, shown: Preset) (icon: .layout_grid, label: "Show as") {
-    require v.showing != shown "It is shown that way already"
-    v.showing = shown
+/// Shows the desk through the style `shown` (§6): a view reference, a package and a view
+/// (`so.tilo.shell:strips`). Switching keeps the arrangement: the same places stand where they
+/// were, drawn another way.
+action show_style(v: Viewing, shown: Text) (icon: .layout_grid, label: "Show as") {
+    require v.style != shown "It is shown that way already"
+    v.style = shown
 }
 
 /// Makes the strip `strip` the one in front: what a press on a column's header does.

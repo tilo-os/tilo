@@ -68,6 +68,7 @@ mod desk_doc;
 mod desk_migration;
 mod desk_resource;
 mod desk_restore;
+pub mod desk_styles;
 pub mod desktop_services;
 /// A Rust app's sample resources and views, in a development session only.
 #[cfg(feature = "dev-rust-views")]
@@ -1349,13 +1350,14 @@ impl Session {
         )));
         // The session's own actions, offered to a turn's agent as the broker's steps: the
         // arrangement, its undo, the windows and the notices, which the REPL already calls.
-        // Each is answered on the loop's pass, where the arrangement is.
+        // The desk's styles, read from the store, share the desk's reading (shell.md §6).
         let session_actions = std::sync::Arc::new(session_actions::SessionActions::new(
             std::sync::Arc::clone(&session_doors),
         ));
         session_doors.keep_actions(std::sync::Arc::clone(&session_actions));
         // The agents the person admits at its door, as the desk and the bar show them.
         let seats = agent_door::Seats::new();
+        let styles = Rc::new(std::cell::RefCell::new(desk_resource::Styles::default()));
         let desk = || desk_resource::Desk {
             seats: std::sync::Arc::clone(&seats),
             handle: handle.clone(),
@@ -1367,6 +1369,7 @@ impl Session {
             notices: notices.clone(),
             tray: tray.clone(),
             engine: engine.clone(),
+            styles: Rc::clone(&styles),
         };
         let desk_service = desk();
         let shell = if options.shell {
@@ -1387,16 +1390,14 @@ impl Session {
         } else {
             None
         };
-        // The surfaces the shell stands in for read as nothing, as they draw
-        // nothing: the shell's parts are what a client finds there, while the
-        // desktop's own desk and chrome keep their actions.
+        // The surfaces the shell stands in for read as nothing: the shell's parts are what a
+        // client finds there, while the desktop's own desk and chrome keep their actions.
         let aside: Vec<tilo_surface_host::Shared> = if shell.is_some() {
             vec![Rc::clone(&desk_door), Rc::clone(&chrome_door)]
         } else {
             Vec::new()
         };
-        // Who is here, over the windows: the roster the bar's faces open and
-        // where everyone else's pointer is.
+        // Who is here, over the windows: the roster the bar's faces open, and their pointers.
         let people = people::mount(
             &mut compositor,
             &mut doors,

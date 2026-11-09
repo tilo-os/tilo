@@ -164,6 +164,9 @@ impl Shell {
         };
         shell.person = shell.desk.person.clone();
         shell.follow_outputs(compositor, doors);
+        // The desk styles every installed package offers, before the first frame draws the
+        // switch: a shell that starts already knows what its person may pick (shell.md §6).
+        shell.refresh_styles();
         shell.publish();
         Ok(shell)
     }
@@ -479,6 +482,24 @@ impl Shell {
     /// Hand the shell the person's arrangement, which its views draw, whenever it changed.
     pub(crate) fn publish_arrangement(&self, reading: ArrangementReading) {
         self.link.publish_arrangement(reading);
+    }
+
+    /// Read the desk styles every installed package offers, when the person's package store
+    /// moved: a style the person or their agent installed is offered by the switch without a
+    /// restart (`shell.md` §6). Cheap when nothing was installed, which is what every frame
+    /// runs.
+    pub(crate) fn refresh_styles(&mut self) {
+        let Ok(catalog) = package_store::Catalog::from_env() else {
+            return;
+        };
+        let moved = crate::desk_styles::fingerprint(&catalog);
+        let mut styles = self.desk.styles.borrow_mut();
+        if styles.fingerprint == Some(moved.clone()) {
+            return;
+        }
+        styles.fingerprint = Some(moved);
+        styles.list = crate::desk_styles::installed(&catalog);
+        styles.revision = styles.revision.saturating_add(1);
     }
 
     /// The link the session publishes the desk on and the shell asks through: what a test stages a
@@ -1190,6 +1211,10 @@ impl crate::Session {
                     title, body,
                 ));
         }
+        // The desk styles every installed package offers: read when the store moved, so a
+        // style a person or their agent installed is offered without a restart (shell.md §6).
+        // Read before the desk is published, so the reading carries the list.
+        shell.refresh_styles();
         shell.publish();
         let arrangement = self.shared.arrangement.borrow().reading();
         shell.publish_readings(&self.shared.services.borrow());

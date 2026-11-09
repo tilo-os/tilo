@@ -60,6 +60,29 @@ type Desk (origin: session.desk) {
     windows: Collection<Win>
     /// The running applications' tray items, in the order they registered.
     tray: Collection<TrayItem>
+    /// The desk styles every installed package offers, as the session publishes them: each
+    /// a view of the arrangement (`shell.md` §6), listed by its own words. The person's choice
+    /// names one of them in `Viewing.style`.
+    styles: Collection<DeskStyle>
+}
+
+/// A desk style: a view of the arrangement an installed package declares, as the session
+/// finds it (`shell.md` §6). Its `style` is the view reference the person's choice keeps
+/// (`so.tilo.shell:strips`, `me.styles:timeline`).
+type DeskStyle (origin: session.desk_style) {
+    /// The style, by the view reference it names: what the session keeps it by.
+    key: Text merge register
+    /// The view reference: a package and a view, what `Viewing.style` names.
+    style: Text merge register
+    /// The package that declares it.
+    package: Text merge register
+    /// The view's own name, as its declaration writes it.
+    name: Text merge register
+    /// The view's doc line, in its author's words: what the switch lists it by.
+    line: Text merge register
+    /// Whether the style loads: false for one whose package does not compile against the shell
+    /// and the session, so the switch can say so.
+    loads: Bool
 }
 
 /// A workspace on this device.
@@ -176,18 +199,19 @@ default view desk_view for arrangement
 
 default view shell_settings for Shell
 
-/// The person's desk as a window or a display shows it: the top bar on its edge, the switch between
-/// the presets under it and the preset they picked under that. The bar reads `desk`, this package's
-/// other root, as any view reads a root of the package it uses. A change of the arrangement runs
-/// the preset body; a change of the desk reading runs the bar.
+/// The person's desk as a window or a display shows it: the desk style the person picked
+/// (`Viewing.style`), drawing the arrangement. The bar reads `desk`, this package's other root,
+/// as any view reads a root of the package it uses.
 ///
-/// The whole screen is `screen`'s view (`desk.tl`), which this calls: a person meets the same
-/// desk as a window and as a display, and neither drifts from the other.
+/// This is the arrangement's default view, so it is the one view a style is drawn *through* and
+/// never one of the styles: a desk style is a view of the arrangement any installed package
+/// declares (`shell.md` §6), found by the type its one parameter takes, never a keyword and never
+/// this view's name. `show` draws the style `Viewing.style` names, in the package it names.
 ///
-/// The traditional desktop is the one preset that is the chrome's too: picking its layout
+/// The traditional desktop is the one style that is the chrome's too: picking its layout
 /// (`apply` of `windows_desktop`) lays the desk out that way, as picking it in the switch does.
 view desk_view(a: Arrangement) {
-    screen(a, fill)
+    show(a, view: style_of(viewing), fill)
 }
 
 /// The time, to the minute, and the timer Clocks runs beside it: its label and what it has
@@ -280,13 +304,14 @@ view bar_part(d: Desk, part: BarPart) {
             ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
                 on press: session.tilo_menu()
             }
-            // The switch between the presets, in the bar's own seat rather than in a row of its
-            // own, so nothing stands between a window and the bar. A bar too narrow for it beside
-            // the clock and the status gives it up, as it gives up the strip and the focused
-            // window's menu; the same switch is a page of Settings, so the preset a person picked
-            // is never out of reach, and no control is pressed into its neighbour to keep it here.
+            // The switch between the desk styles, in the bar's own seat rather than in a row of
+            // its own, so nothing stands between a window and the bar. A bar too narrow for it
+            // beside the clock and the status gives it up, as it gives up the strip and the
+            // focused window's menu; the same switch is a page of Settings, so the style a
+            // person picked is never out of reach, and no control is pressed into its neighbour
+            // to keep it here.
             if not bar_is_narrow(space.width) {
-                preset_menu(viewing)
+                style_menu(viewing, d)
             }
         }
     } else if part.slot == .workspace {
