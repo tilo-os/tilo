@@ -862,13 +862,20 @@ fn the_rail_adapts_and_navigates_through_published_actions() {
         })
         .expect("the viewer is mounted");
     }
-    // The shared shell docks the rail while the grid keeps its minimum
-    // width beside it; narrower, the rail is a screen of its own. The
-    // sidebar starts as its rail (a short flat set of places), so it
-    // stays docked down to the rail beside the grid's minimum.
+    // The shared shell docks the places while their own minimum stands
+    // beside the grid's minimum (200 + 280 px); narrower, they are a screen
+    // of their own, with no grid beside them. They start as a labelled list
+    // beside the grid and read as a rail only where a narrower window
+    // shrinks them.
     {
         use ui::widget::SidebarPlacement::{Docked, Screen};
-        for (width, placement) in [(1280, Docked), (800, Docked), (420, Docked), (340, Screen)] {
+        for (width, placement) in [
+            (1280, Docked),
+            (800, Docked),
+            (480, Docked),
+            (420, Screen),
+            (340, Screen),
+        ] {
             let mut framed = ui::headless::Framed::new(
                 ui::State::new(),
                 TubeApp::sample(),
@@ -878,7 +885,7 @@ fn the_rail_adapts_and_navigates_through_published_actions() {
             assert_eq!(
                 framed.shell.geometry().sidebar,
                 placement,
-                "the shared shell adapts the rail at {width} px"
+                "the shared shell adapts the places at {width} px"
             );
             if placement == Screen && !framed.sidebar_open_for_test() {
                 ui::headless::Framed::harness_mut(&mut framed)
@@ -886,7 +893,7 @@ fn the_rail_adapts_and_navigates_through_published_actions() {
             }
             assert!(
                 framed.sidebar_open_for_test(),
-                "the window bar's sidebar toggle reaches the rail at {width} px"
+                "the window bar's sidebar toggle reaches the places at {width} px"
             );
         }
     }
