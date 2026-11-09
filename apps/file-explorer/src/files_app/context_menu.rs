@@ -235,60 +235,19 @@ impl FilesState {
                     .primary()
                     .and_then(|index| displayed.get(index))
             {
+                if self.offers_sharing(entry) {
+                    // What Files shows is shared by the workspace it is in: the
+                    // row opens the desk's own invite sheet, where the link and
+                    // the part it brings people in at are picked, and where the
+                    // people the directory knows are offered. Sharing leads a
+                    // group of its own, directly above the file's properties.
+                    spec.push((String::new(), None));
+                    spec.push((t("files-share"), Some(FileCommand::Share)));
+                }
                 spec.push((
                     t("files-menu-properties"),
                     Some(FileCommand::ShowProperties),
                 ));
-                if self.offers_sharing(entry) {
-                    // What Files shows is shared by the workspace it is in: the
-                    // link the invite sheet makes, and one bound to a person
-                    // the directory knows, whose device alone may redeem it.
-                    spec.push((
-                        t_args(
-                            "files-share-copy-link",
-                            &[arg(
-                                "role",
-                                t(crate::share_invite::role_key(
-                                    crate::share_invite::DEFAULT_ROLE,
-                                )),
-                            )],
-                        ),
-                        Some(FileCommand::Share {
-                            role: crate::share_invite::DEFAULT_ROLE.to_owned(),
-                            recipient: None,
-                        }),
-                    ));
-                    for (role, label) in crate::share_invite::ROLES {
-                        if role == crate::share_invite::DEFAULT_ROLE {
-                            continue;
-                        }
-                        spec.push((
-                            t_args("files-share-copy-link", &[arg("role", t(label))]),
-                            Some(FileCommand::Share {
-                                role: role.to_owned(),
-                                recipient: None,
-                            }),
-                        ));
-                    }
-                    for human in self
-                        .trusted_humans
-                        .humans()
-                        .iter()
-                        .filter(|human| !human.devices.is_empty())
-                        .take(16)
-                    {
-                        spec.push((
-                            t_args(
-                                "files-share-invite-person",
-                                &[arg("person", human.display_name.clone())],
-                            ),
-                            Some(FileCommand::Share {
-                                role: crate::share_invite::DEFAULT_ROLE.to_owned(),
-                                recipient: Some(hex::encode(human.person.as_bytes())),
-                            }),
-                        ));
-                    }
-                }
                 if entry.availability.is_some() {
                     spec.push((
                         t("files-availability-title-short"),

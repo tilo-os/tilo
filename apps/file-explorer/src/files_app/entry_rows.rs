@@ -464,9 +464,9 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
     }
     if entry.record_id.is_some() {
         resource.actions.push(row_action(
-            &FilesEffect::ShareLink { entry: id() },
-            "share-link",
-            "Create one-time share link",
+            &FilesEffect::Share { entry: id() },
+            "share",
+            t("files-share"),
         ));
     }
     resource

@@ -4042,7 +4042,7 @@ mod command_path_tests {
     /// its own fixture.
     #[test]
     fn sharing_history_and_identity_surfaces_use_governed_identity() {
-        sharing_offers_the_workspaces_invitation();
+        sharing_offers_the_desks_invite_sheet();
         governed_history_surfaces_open_real_detail_panels();
         history_activity_intent_preserves_selected_version_and_signed_identity();
         running_files_reloads_new_renamed_removed_and_expired_governed_devices();
@@ -4082,14 +4082,14 @@ mod command_path_tests {
         (directory, person)
     }
 
-    /// Sharing a folder offers the workspace's invitation: the link the invite
-    /// sheet makes, at the part picked, and as the person the directory knows,
-    /// and the desk's answer is the link Files copies.
-    fn sharing_offers_the_workspaces_invitation() {
+    /// Sharing a folder offers one row: the desk's own invite sheet, where the
+    /// link into the workspace is made and the part it brings people in at is
+    /// picked, asked of the desk as the person using Files.
+    fn sharing_offers_the_desks_invite_sheet() {
         let root = tempfile::tempdir().unwrap();
         let folder = root.path().join("shared-assets");
         std::fs::create_dir(&folder).unwrap();
-        let (directory, person) = adas_directory();
+        let (directory, _person) = adas_directory();
         let mut w = FileExplorerWidget::new();
         w.state().workspace_roots = vec![root.path().to_path_buf()];
         w.state().trusted_humans = directory;
@@ -4099,35 +4099,32 @@ mod command_path_tests {
         w.state().selection.select_only(0);
 
         let spec = w.state().context_menu_spec(&[]);
-        assert!(spec.iter().any(|(label, command)| {
-            label == "Copy invite link (editor)"
-                && *command
-                    == Some(FileCommand::Share {
-                        role: "editor".into(),
-                        recipient: None,
-                    })
-        }));
-        assert!(spec.iter().any(|(label, command)| {
-            label == "Copy invite link (viewer)"
-                && *command
-                    == Some(FileCommand::Share {
-                        role: "viewer".into(),
-                        recipient: None,
-                    })
-        }));
-        assert!(spec.iter().any(|(label, command)| {
-            label == "Invite Ada Lovelace"
-                && *command
-                    == Some(FileCommand::Share {
-                        role: "editor".into(),
-                        recipient: Some(hex::encode(person)),
-                    })
-        }));
+        let sharing: Vec<_> = spec
+            .iter()
+            .filter(|(label, _)| label.starts_with("Share") || label.contains("invite link"))
+            .collect();
+        assert_eq!(
+            sharing,
+            [&("Share…".to_owned(), Some(FileCommand::Share))],
+            "one sharing row, and it is the desk's sheet"
+        );
+        let at = spec
+            .iter()
+            .position(|(label, _)| label == "Share…")
+            .expect("the sharing row");
+        assert_eq!(
+            spec.get(at - 1),
+            Some(&(String::new(), None)),
+            "sharing opens a group of its own, a separator above it"
+        );
+        assert_eq!(
+            spec.get(at + 1).map(|(label, _)| label.as_str()),
+            Some("Properties…"),
+            "the group stands directly before the file's properties, and the \
+             menu joins a one-row group to the one it opens"
+        );
 
-        assert!(w.state().apply_command(FileCommand::Share {
-            role: "viewer".into(),
-            recipient: None,
-        }));
+        assert!(w.state().apply_command(FileCommand::Share));
         let request = w
             .take_collab_requests()
             .into_iter()
@@ -4137,18 +4134,14 @@ mod command_path_tests {
                 } => Some(request),
                 _ => None,
             })
-            .expect("the invitation is asked of the desk");
+            .expect("the sheet is asked of the desk");
         assert_eq!(request.target.provider, "so.tilo.session");
         assert_eq!(request.target.address.resource, "session:desk");
-        assert_eq!(request.target.address.action, "issue-invitation");
+        assert_eq!(request.target.address.action, "show-invite");
         assert_eq!(
             request.argument,
-            ui::tilo_actions::remote::InvokeArgument::Json(
-                serde_json::json!({"role": "viewer"})
-                    .as_object()
-                    .cloned()
-                    .expect("an object")
-            )
+            ui::tilo_actions::remote::InvokeArgument::Json(serde_json::Map::new()),
+            "the workspace in front is the one the person is looking at"
         );
         ui::widget::Collaborative::handle_collab_event(
             &mut w,
@@ -4157,29 +4150,16 @@ mod command_path_tests {
                     tilo_actions::remote::InvocationReceipt {
                         invocation: request.invocation,
                         status: tilo_actions::remote::ReceiptStatus::Completed {
-                            output: tilo_actions::ActionOutput {
-                                value: Some(serde_json::json!({
-                                    "invite": "ab".repeat(32),
-                                    "link": "https://tilo.so/join#ab",
-                                    "role": "viewer",
-                                    "expires_at_ns": 1,
-                                })),
-                                resources: Vec::new(),
-                            },
+                            output: tilo_actions::ActionOutput::default(),
                         },
                     },
                 ),
             },
         );
         assert_eq!(
-            w.state().status.as_deref(),
-            Some(
-                t_args(
-                    "files-share-invitation-copied",
-                    &[arg("role", t("files-share-role-viewer"))]
-                )
-                .as_str()
-            )
+            w.state().status,
+            None,
+            "the sheet says what became of it; Files says nothing more"
         );
     }
 

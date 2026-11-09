@@ -255,14 +255,10 @@ pub enum FileCommand {
     ShowProperties,
     /// Open detailed residency, transfer, policy, replica and freshness state.
     ShowAvailability,
-    /// Ask the workspace's invitation for the selected entry and copy its link:
-    /// what Files shows is shared by inviting people into the workspace it is
-    /// in, at `role`, and for a person the directory knows, with a link only
-    /// their device can redeem.
-    Share {
-        role: String,
-        recipient: Option<String>,
-    },
+    /// Open the desk's invite sheet on the workspace the selected entry is in:
+    /// what Files shows is shared by inviting people into that workspace, and
+    /// the sheet is where the link and the part it grants are picked.
+    Share,
     /// Open recent immutable versions and conflict state for the selected record.
     ShowHistory,
     /// Select an exact immutable version in the dedicated history sheet.

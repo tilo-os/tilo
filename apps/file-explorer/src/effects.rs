@@ -484,12 +484,12 @@ pub enum FilesEffect {
         #[param("The receiver's TLS port")]
         port: u16,
     },
-    /// Copy the workspace's invitation link, which brings whoever it is sent
-    /// to in at the role Files offers.
+    /// Open the desk's invite sheet on the workspace the entry is in, where a
+    /// link into it is made and the part it brings people in at is picked.
     #[effect(row, job)]
     #[effect(keywords = "share, invite, send link, share file")]
-    #[effect(icon = "link")]
-    ShareLink {
+    #[effect(icon = "share-2")]
+    Share {
         #[param("The entry's row id")]
         entry: String,
     },

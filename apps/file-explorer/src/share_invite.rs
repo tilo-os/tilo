@@ -1,12 +1,12 @@
-//! Sharing what Files shows: the workspace's invitation.
+//! Sharing what Files shows: the desk's own invite sheet.
 //!
 //! A folder is shared by the workspace it lives in, so what Files offers on it
-//! is the invitation into that workspace — the same one the session's invite
-//! sheet makes. It asks the desk through the action broker, as the person using
-//! Files ([`session_actions::ISSUE_INVITATION`]), naming the part the link
-//! brings someone in at and, for a person the directory knows, that only their
-//! device can redeem it. Whether the person may invite at all is the workspace's
-//! own governance, decided where the invitation is made.
+//! is the sheet the bar's invite button opens — the one place a link into the
+//! workspace is made, the part it brings someone in at picked and the people
+//! the directory knows offered. Files asks the desk for it through the action
+//! broker, as the person using Files ([`session_actions::SHOW_INVITE`]); whether
+//! they may invite at all is the workspace's own governance, decided where the
+//! sheet and the invitation are.
 
 use tilo_actions::InvocationId;
 use tilo_actions::remote::session_actions;
@@ -15,94 +15,24 @@ use tilo_actions::remote::{
     RemoteActionTarget,
 };
 use ui::collaboration::{CollabEvent, CollabRequest};
-use ui::time::Duration;
 
-/// The parts a link can bring someone in at, with what each one is called,
-/// the way the invite sheet offers them.
-pub const ROLES: [(&str, &str); 4] = [
-    ("viewer", "files-share-role-viewer"),
-    ("commenter", "files-share-role-commenter"),
-    ("editor", "files-share-role-editor"),
-    ("moderator", "files-share-role-moderator"),
-];
-
-/// The part a link brings someone in at when the person does not pick one,
-/// as the invite sheet's own default.
-pub const DEFAULT_ROLE: &str = "editor";
-
-/// How long a link Files copied stays on the clipboard: long enough to paste
-/// it into a message to whoever it is for, and no longer, because the link is
-/// what admits them.
-pub const ON_CLIPBOARD_FOR: Duration = Duration::from_secs(300);
-
-/// What the part `role` is called, in the person's words.
-#[must_use]
-pub fn role_key(role: &str) -> &'static str {
-    ROLES
-        .iter()
-        .find(|(key, _)| *key == role)
-        .map_or("files-share-role-editor", |(_, label)| *label)
-}
-
-/// An invitation asked of the desk: the part it brings someone in at, and for
-/// a person the workspace knows, the link only their device can redeem.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Ask {
-    pub role: String,
-    pub recipient: Option<String>,
-}
-
-impl Ask {
-    /// An invitation at `role`, for anyone holding the link.
-    #[must_use]
-    pub fn anyone(role: &str) -> Self {
-        Self {
-            role: role.to_owned(),
-            recipient: None,
-        }
-    }
-
-    /// An invitation only `person`'s device can redeem.
-    #[must_use]
-    pub fn person(role: &str, person: &str) -> Self {
-        Self {
-            role: role.to_owned(),
-            recipient: Some(person.to_owned()),
-        }
-    }
-}
-
-/// The link an invitation is handed over as.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Invitation {
-    pub link: String,
-    pub role: String,
-}
-
-/// The invitation Files has asked for and not yet been answered, and the
-/// requests it makes for the session.
+/// The sheet Files has asked the desk to open and not yet been answered, and
+/// the requests it makes for the session.
 #[derive(Debug, Default)]
 pub struct ShareInvite {
     requests: Vec<CollabRequest>,
-    asking: Option<(InvocationId, Ask)>,
+    asking: Option<InvocationId>,
 }
 
 impl ShareInvite {
-    /// Ask the desk for an invitation. One at a time: a second ask before the
-    /// first is answered says so instead of making a second link.
-    pub fn ask(&mut self, ask: Ask) -> Result<(), String> {
+    /// Ask the desk to open its invite sheet on the workspace in front. One at
+    /// a time: a second ask before the first is answered says so instead of
+    /// opening it twice.
+    pub fn ask(&mut self) -> Result<(), String> {
         if self.asking.is_some() {
-            return Err("An invitation is already being made".to_owned());
+            return Err("The invite sheet is already opening".to_owned());
         }
         let invocation = InvocationId::new();
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("role".to_owned(), serde_json::Value::from(ask.role.clone()));
-        if let Some(recipient) = &ask.recipient {
-            arguments.insert(
-                "recipient".to_owned(),
-                serde_json::Value::from(recipient.clone()),
-            );
-        }
         self.requests.push(CollabRequest::RemoteAction {
             message: RemoteActionMessage::Invoke(InvokeRequest {
                 on_behalf_of: None,
@@ -111,10 +41,10 @@ impl ShareInvite {
                     provider: session_actions::PROVIDER.into(),
                     address: tilo_actions::ActionAddress::new(
                         session_actions::DESK_RESOURCE,
-                        session_actions::ISSUE_INVITATION,
+                        session_actions::SHOW_INVITE,
                     ),
                 },
-                argument: InvokeArgument::Json(arguments),
+                argument: InvokeArgument::Json(serde_json::Map::new()),
                 context: None,
                 confirmation: None,
                 revision: None,
@@ -122,14 +52,14 @@ impl ShareInvite {
                 appearance: None,
             }),
         });
-        self.asking = Some((invocation, ask));
+        self.asking = Some(invocation);
         Ok(())
     }
 
-    /// Whether an invitation is still being made, and for what.
+    /// Whether the sheet is still being opened.
     #[must_use]
-    pub fn asking(&self) -> Option<&Ask> {
-        self.asking.as_ref().map(|(_, ask)| ask)
+    pub fn asking(&self) -> bool {
+        self.asking.is_some()
     }
 
     /// Requests for the session, oldest first.
@@ -137,8 +67,8 @@ impl ShareInvite {
         std::mem::take(&mut self.requests)
     }
 
-    /// The desk's answer to the invitation asked for here, when `event` is it.
-    pub fn handle_event(&mut self, event: &CollabEvent) -> Option<Result<Invitation, String>> {
+    /// The desk's answer to the sheet asked for here, when `event` is it.
+    pub fn handle_event(&mut self, event: &CollabEvent) -> Option<Result<(), String>> {
         let CollabEvent::RemoteAction { message } = event else {
             return None;
         };
@@ -147,17 +77,11 @@ impl ShareInvite {
             RemoteActionMessage::Update { invocation, .. } => *invocation,
             _ => return None,
         };
-        let ask = self
-            .asking
-            .as_ref()
-            .filter(|(asked, _)| *asked == invocation)?
-            .1
-            .clone();
+        self.asking.filter(|asked| *asked == invocation)?;
         let answer = match message {
             RemoteActionMessage::Receipt(InvocationReceipt { status, .. }) => match status {
                 ReceiptStatus::Accepted => {
-                    // Follow it: the desk answers once the workspace has made
-                    // the invitation.
+                    // Follow it: the desk answers once the sheet is up.
                     self.requests.push(CollabRequest::RemoteAction {
                         message: RemoteActionMessage::Observe {
                             invocation,
@@ -167,25 +91,20 @@ impl ShareInvite {
                     });
                     None
                 }
-                ReceiptStatus::Completed { output } => Some(invitation(&ask, output)),
+                ReceiptStatus::Completed { .. } => Some(Ok(())),
                 ReceiptStatus::Failed { error } => Some(Err(error.message.clone())),
                 ReceiptStatus::Rejected { error } => Some(Err(error.to_string())),
                 ReceiptStatus::Cancelled { message } => Some(Err(message
                     .clone()
-                    .unwrap_or_else(|| "The invitation was cancelled".to_owned()))),
+                    .unwrap_or_else(|| "Opening the invite sheet was cancelled".to_owned()))),
             },
-            RemoteActionMessage::Update { state, .. } => {
-                let update = &state.as_ref()?.update;
-                match update {
-                    tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
-                        Some(invitation(&ask, output))
-                    }
-                    tilo_actions::InvocationUpdate::Failed { error, .. } => {
-                        Some(Err(error.message.clone()))
-                    }
-                    _ => None,
+            RemoteActionMessage::Update { state, .. } => match &state.as_ref()?.update {
+                tilo_actions::InvocationUpdate::Succeeded { .. } => Some(Ok(())),
+                tilo_actions::InvocationUpdate::Failed { error, .. } => {
+                    Some(Err(error.message.clone()))
                 }
-            }
+                _ => None,
+            },
             _ => None,
         };
         if answer.is_some() {
@@ -193,20 +112,6 @@ impl ShareInvite {
         }
         answer
     }
-}
-
-/// The link `output` answers with, as the invitation `ask` asked for.
-fn invitation(ask: &Ask, output: &tilo_actions::ActionOutput) -> Result<Invitation, String> {
-    output
-        .value
-        .as_ref()
-        .and_then(|value| value.get("link"))
-        .and_then(serde_json::Value::as_str)
-        .map(|link| Invitation {
-            link: link.to_owned(),
-            role: ask.role.clone(),
-        })
-        .ok_or_else(|| "The invitation came back without a link".to_owned())
 }
 
 #[cfg(test)]
@@ -231,8 +136,8 @@ mod tests {
         }
     }
 
-    /// The invocation the desk is asked with, and the arguments it carries.
-    fn asked(invite: &mut ShareInvite) -> (InvocationId, serde_json::Value) {
+    /// The invocation the desk is asked with, which asks for its invite sheet.
+    fn asked(invite: &mut ShareInvite) -> InvocationId {
         let requests = invite.take_requests();
         let [
             CollabRequest::RemoteAction {
@@ -248,49 +153,25 @@ mod tests {
                 provider: session_actions::PROVIDER.into(),
                 address: tilo_actions::ActionAddress::new(
                     session_actions::DESK_RESOURCE,
-                    session_actions::ISSUE_INVITATION,
+                    session_actions::SHOW_INVITE,
                 ),
             }
         );
         let InvokeArgument::Json(arguments) = &request.argument else {
-            panic!("an invitation names its part");
+            panic!("the sheet is asked for on the workspace in front");
         };
-        (
-            request.invocation,
-            serde_json::Value::Object(arguments.clone()),
-        )
+        assert!(
+            arguments.is_empty(),
+            "the sheet takes the workspace in front"
+        );
+        request.invocation
     }
 
     #[test]
-    fn an_invitation_is_the_desks_own_action_asked_with_its_part_and_person() {
+    fn sharing_asks_the_desk_for_its_invite_sheet() {
         let mut invite = ShareInvite::default();
-        invite
-            .ask(Ask::anyone(DEFAULT_ROLE))
-            .expect("nothing is being made");
-        let (_, arguments) = asked(&mut invite);
-        assert_eq!(arguments, serde_json::json!({"role": "editor"}));
-
-        let mut invite = ShareInvite::default();
-        invite
-            .ask(Ask::person("viewer", "ab".repeat(32).as_str()))
-            .expect("nothing is being made");
-        let (_, arguments) = asked(&mut invite);
-        assert_eq!(
-            arguments,
-            serde_json::json!({"role": "viewer", "recipient": "ab".repeat(32)}),
-            "a link the directory knows the person for is only their device's"
-        );
-    }
-
-    #[test]
-    fn a_second_invitation_waits_for_the_first_and_follows_a_running_one() {
-        let mut invite = ShareInvite::default();
-        invite.ask(Ask::anyone(DEFAULT_ROLE)).unwrap();
-        let (invocation, _) = asked(&mut invite);
-        assert_eq!(
-            invite.ask(Ask::anyone("viewer")),
-            Err("An invitation is already being made".to_owned())
-        );
+        invite.ask().expect("nothing is opening");
+        let invocation = asked(&mut invite);
         assert_eq!(
             invite.handle_event(&receipt(invocation, ReceiptStatus::Accepted)),
             None
@@ -306,7 +187,7 @@ mod tests {
             },
         ] = requests.as_slice()
         else {
-            panic!("a running invitation is followed: {requests:?}");
+            panic!("a sheet still opening is followed: {requests:?}");
         };
         assert_eq!(*followed, invocation);
         assert_eq!(
@@ -314,30 +195,24 @@ mod tests {
                 invocation,
                 InvocationUpdate::Succeeded {
                     invocation,
-                    output: tilo_actions::ActionOutput {
-                        value: Some(serde_json::json!({"link": "tilo://join/ab"})),
-                        resources: Vec::new(),
-                    },
+                    output: tilo_actions::ActionOutput::default(),
                 },
             )),
-            Some(Ok(Invitation {
-                link: "tilo://join/ab".into(),
-                role: "editor".into(),
-            }))
+            Some(Ok(()))
         );
-        assert!(invite.asking().is_none(), "the answer settles the ask");
-        invite
-            .ask(Ask::anyone(DEFAULT_ROLE))
-            .expect("the next invitation is made again");
+        assert!(!invite.asking(), "the answer settles the ask");
+        invite.ask().expect("the sheet opens again");
     }
 
     #[test]
-    fn a_refused_invitation_says_why_and_an_answered_one_copied_from_the_receipt() {
+    fn a_second_ask_waits_and_a_refused_one_says_why() {
         let mut invite = ShareInvite::default();
-        invite
-            .ask(Ask::person(DEFAULT_ROLE, "ab".repeat(32).as_str()))
-            .unwrap();
-        let (invocation, _) = asked(&mut invite);
+        invite.ask().unwrap();
+        let invocation = asked(&mut invite);
+        assert_eq!(
+            invite.ask(),
+            Err("The invite sheet is already opening".to_owned())
+        );
         assert_eq!(
             invite.handle_event(&receipt(
                 invocation,
@@ -348,29 +223,6 @@ mod tests {
             Some(Err(ActionHostError::NotPermitted.to_string())),
             "a member who may not invite is refused by the workspace"
         );
-
-        let mut invite = ShareInvite::default();
-        invite.ask(Ask::anyone(DEFAULT_ROLE)).unwrap();
-        let (invocation, _) = asked(&mut invite);
-        assert_eq!(
-            invite.handle_event(&receipt(
-                invocation,
-                ReceiptStatus::Completed {
-                    output: tilo_actions::ActionOutput {
-                        value: Some(serde_json::json!({
-                            "invite": "ab".repeat(32),
-                            "link": "https://tilo.so/join#ab",
-                            "role": "editor",
-                            "expires_at_ns": 1,
-                        })),
-                        resources: Vec::new(),
-                    },
-                },
-            )),
-            Some(Ok(Invitation {
-                link: "https://tilo.so/join#ab".into(),
-                role: "editor".into(),
-            }))
-        );
+        assert!(!invite.asking());
     }
 }

@@ -2557,17 +2557,13 @@ impl FilesState {
                 self.structure_dirty = true;
                 return Ok(Ran::Pending);
             }
-            FilesEffect::ShareLink { entry } => {
+            FilesEffect::Share { entry } => {
                 self.refuse_while_answering()?;
                 let target = self
                     .visible_entry_path(&entry)
                     .ok_or_else(|| "file entry is no longer visible".to_string())?;
                 self.select_entry(&target)?;
-                if !self.apply_command(FileCommand::Share {
-                    role: crate::share_invite::DEFAULT_ROLE.to_owned(),
-                    recipient: None,
-                }) || self.share_invite.asking().is_none()
-                {
+                if !self.apply_command(FileCommand::Share) || !self.share_invite.asking() {
                     return Err(self
                         .status
                         .clone()
@@ -4402,7 +4398,7 @@ impl FilesState {
                 }
                 true
             }
-            FileCommand::Share { role, recipient } => {
+            FileCommand::Share => {
                 let entry = self
                     .selection
                     .primary()
@@ -4415,19 +4411,9 @@ impl FilesState {
                     self.status = Some(t("files-share-needs-workspace"));
                     return true;
                 }
-                let ask = match &recipient {
-                    Some(person) => crate::share_invite::Ask::person(&role, person),
-                    None => crate::share_invite::Ask::anyone(&role),
-                };
-                match self.share_invite.ask(ask) {
+                match self.share_invite.ask() {
                     Ok(()) => {
-                        self.status = Some(match &recipient {
-                            Some(person) => t_args(
-                                "files-share-invitation-for",
-                                &[arg("person", self.person_label(person))],
-                            ),
-                            None => t("files-share-invitation-making"),
-                        });
+                        self.status = Some(t("files-share-opening"));
                         self.structure_dirty = true;
                     }
                     Err(reason) => self.status = Some(reason),
@@ -7282,30 +7268,19 @@ impl FilesState {
         true
     }
 
-    /// Copy the link the desk made for the invitation Files asked for, and say
-    /// what it is: the workspace's invitation, handed over as the invite sheet
-    /// hands one. Returns whether the status line changed.
+    /// Take the desk's answer to the sheet Files asked for: once it is open the
+    /// action that asked is answered and the status line cleared, and a refusal
+    /// says why. Returns whether the status line changed.
     fn handle_share_event(&mut self, event: &ui::collaboration::CollabEvent) -> bool {
         let Some(answer) = self.share_invite.handle_event(event) else {
             return false;
         };
         let status = match &answer {
-            Ok(invitation) => {
-                let _ = ui::try_clipboard_copy_secret(
-                    &invitation.link,
-                    crate::share_invite::ON_CLIPBOARD_FOR,
-                );
-                self.answer_effect(Ok(tilo_actions::ActionOutput {
-                    value: Some(serde_json::json!({ "url": invitation.link })),
-                    resources: Vec::new(),
-                }));
-                Some(t_args(
-                    "files-share-invitation-copied",
-                    &[arg(
-                        "role",
-                        t(crate::share_invite::role_key(&invitation.role)),
-                    )],
-                ))
+            // The sheet is up: what to make of it is the person's, in the session's own surface, so
+            // Files says nothing more and the action that asked for it is answered.
+            Ok(()) => {
+                self.answer_effect(Ok(tilo_actions::ActionOutput::default()));
+                None
             }
             Err(reason) => {
                 self.answer_effect(Err(tilo_actions::ActionFailure {
@@ -7315,7 +7290,7 @@ impl FilesState {
                     retryable: false,
                 }));
                 Some(t_args(
-                    "files-share-invitation-failed",
+                    "files-share-failed",
                     &[arg("reason", reason.clone())],
                 ))
             }
@@ -7328,21 +7303,6 @@ impl FilesState {
     /// the workspace an entry is in, so anything inside one is shared the same way.
     fn offers_sharing(&self, entry: &crate::model::Entry) -> bool {
         crate::model::workspace_root_for(&entry.path, &self.workspace_roots).is_some()
-    }
-
-    /// What the directory calls the person `key`, by their user key.
-    fn person_label(&self, key: &str) -> String {
-        hex::decode(key)
-            .ok()
-            .and_then(|key| <[u8; 32]>::try_from(key).ok())
-            .map_or_else(
-                || key.chars().take(8).collect(),
-                |key| {
-                    self.trusted_humans.display_name_or_fingerprint(
-                        &fs_protocol::Ed25519PublicKey::from_bytes(key),
-                    )
-                },
-            )
     }
 
     fn open_nearby_device_picker(&mut self, targets: &[ui::collaboration::NearbyTransferTarget]) {

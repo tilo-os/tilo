@@ -76,10 +76,10 @@ mod tests {
             assert_eq!(
                 t_args_for(
                     "de-DE",
-                    "files-share-invitation-for",
-                    &[arg("person", "Zoë <Admin>")]
+                    "files-share-failed",
+                    &[arg("reason", "Zoë <Admin>")]
                 ),
-                "Einladung für Zoë <Admin> wird erstellt…"
+                "Das Einladungsfenster wurde nicht geöffnet: Zoë <Admin>"
             );
         }
     }
@@ -89,11 +89,7 @@ mod tests {
     fn localised_formatting_plurals_and_pseudolocale() {
         // --- phase: pseudolocale_expands_copy_and_preserves_nonlinguistic_data ---
         {
-            let rendered = t_args_for(
-                "qps-ploc",
-                "files-share-invitation-copied",
-                &[arg("role", "Zoë 🔗")],
-            );
+            let rendered = t_args_for("qps-ploc", "files-share-failed", &[arg("reason", "Zoë 🔗")]);
             assert!(rendered.starts_with('⟦'));
             assert!(rendered.ends_with('⟧'));
             assert!(
@@ -115,12 +111,8 @@ mod tests {
             );
             let hostile = "{ $count } <b>not markup</b>";
             assert_eq!(
-                t_args_for(
-                    "en-US",
-                    "files-share-invitation-for",
-                    &[arg("person", hostile)]
-                ),
-                format!("Making {hostile}’s invitation…")
+                t_args_for("en-US", "files-share-failed", &[arg("reason", hostile)]),
+                format!("The invite sheet did not open: {hostile}")
             );
         }
 
