@@ -1040,8 +1040,17 @@ try {
   // given to. Its title bar is where the tree publishes it ("Close <name>");
   // the body begins below it.
   const overTheWindow = async name => {
-    const titleRow = JSON.parse(await find(a.tab, `Close ${name}`));
-    if (!titleRow?.bounds) return {...centre};
+    // The tree publishes a window where it is drawn; a window it does not
+    // name yet has no place for the fingers, and a point guessed at the
+    // desk's middle would be another window's — so the tree is asked again.
+    let titleRow = null;
+    for (let turn = 0; turn < 80; turn++) {
+      await a.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+      titleRow = JSON.parse(await find(a.tab, `Close ${name}`));
+      if (titleRow?.bounds) break;
+      await sleep(250);
+    }
+    if (!titleRow?.bounds) await failed(`${name}'s window is not in the page's tree, so the fingers have no window to be on`);
     const b = titleRow.bounds;
     const [x0, y0, x1, y1] = Array.isArray(b)
       ? b : [b.x0 ?? b.x, b.y0 ?? b.y, b.x1 ?? b.x + b.width, b.y1 ?? b.y + b.height];
@@ -1074,7 +1083,8 @@ try {
   await settle(a.tab, 2);
   const keptPan = await panOf(a.tab);
   const sheetBefore = await picture(a.tab);
-  // The fingers are on Sheets, the window now in front: a person's are.
+  // The fingers are on Sheets, the window now in front: a person's are. The
+  // strip has done gliding it into view, so where the tree draws it lasts.
   const overSheets = await overTheWindow('Sheets');
   await sidewaysSwipe(a.tab, overSheets.x, overSheets.y, forward);
   const sheetPan = await panOf(a.tab);
