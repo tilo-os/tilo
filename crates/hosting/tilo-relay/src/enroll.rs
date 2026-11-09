@@ -530,7 +530,7 @@ fn certified_personal_devices(
         if cert.user_public_key == user
             && cert.capabilities.is_personal_device()
             && verify_device_cert_at(cert, now_ns).is_ok()
-            && !revocations.refuses(&cert)
+            && !revocations.refuses(cert)
             && !devices.contains(&cert.device_public_key)
         {
             devices.push(cert.device_public_key);
