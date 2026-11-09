@@ -21,6 +21,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "targets",
     "environments",
     "host",
+    "held",
 ];
 
 /// Where the target scenarios' session runs, and the environments the
@@ -31,6 +32,38 @@ pub(crate) fn target(name: &str) -> Option<(SessionTarget, Vec<EnvironmentSummar
         "targets" | "environments" => Some((SessionTarget::environment("work"), environments())),
         _ => None,
     }
+}
+
+/// What a hosted workspace's shell printed for a command its host holds until the person adds a
+/// card: the command's start, the host's hold with its typed refusal, and what ush says of it, the
+/// marks keyed with the session's `key` as ush writes them.
+pub(crate) fn held(key: &str) -> Vec<u8> {
+    use base64::Engine as _;
+    use ui::tilo_actions::remote::host_account::{NextStep, NextStepKind, Reason, Refusal};
+    let b64 = |text: &str| base64::engine::general_purpose::STANDARD.encode(text);
+    let message = "This needs a Linux machine. Tilo Cloud runs Linux machines for accounts with a \
+                   card on file, and this account has none yet. Add a card to continue.";
+    let refusal = Refusal {
+        reason: Reason::NoPaymentMethod,
+        message: message.into(),
+        next: vec![NextStep {
+            kind: NextStepKind::AddPaymentMethod,
+            url: Some("https://tilo.sh/billing/card?account=acct-ada".into()),
+        }],
+    };
+    let refusal = serde_json::to_string(&refusal).unwrap_or_default();
+    let prompt =
+        format!("\x1b]133;A;k={key}\x07\x1b[1;32mada@build-box\x1b[0m:\x1b[1;34m~/site\x1b[0m$ ");
+    format!(
+        "{prompt}cargo test\r\n\
+         \x1b]133;C;k={key};cmd={};cwd={};t=1\x07\
+         \x1b]133;W;k={key};a=0;r={}\x07\
+         ush: cargo: needs a Linux machine. Waiting for the card; Ctrl+C cancels.\r\n",
+        b64("cargo test"),
+        b64("/home/ada/site"),
+        b64(&refusal),
+    )
+    .into_bytes()
 }
 
 /// What the scenario's process printed.

@@ -2964,7 +2964,14 @@ impl TerminalWidget {
         if let Some((target, environments)) = crate::scenarios::target(name) {
             self.show_target(target, environments);
         }
-        self.feed(&crate::scenarios::output(name));
+        if name == "held" {
+            // The session's marks are read with its key, as a live session's are.
+            let key = crate::runs::new_key();
+            self.runs.marks = Some(crate::runs::Marks::new(key.clone()));
+            self.feed(&crate::scenarios::held(&key));
+        } else {
+            self.feed(&crate::scenarios::output(name));
+        }
         if name == "ended" {
             self.mark_disconnected("Session ended — input unavailable");
         }
