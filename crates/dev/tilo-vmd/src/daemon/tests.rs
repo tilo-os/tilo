@@ -1118,6 +1118,45 @@ fn restored_slot_views_preserve_global_layers_and_refuse_missing_layers() {
     assert!(!missing.calls.iter().any(|call| call.starts_with("start ")));
 }
 
+/// The VM's person (`slot create --identity device`) runs on the machine's
+/// identity tree, and comes back on it when the VM boots: a restore that
+/// handed its session a private identity root left the person, after a cold
+/// boot, in identity recovery on a device key of nobody's.
+#[test]
+fn the_vms_person_comes_back_at_boot_on_the_machines_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let slots = SlotStore::new(root.path());
+    let layers = LayerStore::new(root.path());
+    let locks = Locks::new(root.path());
+    let mut apply = RecordingApply::default();
+    let (mut me, _) = slots
+        .create("proof", SlotKind::Headless, Owner::default(), &[])
+        .unwrap();
+    me.device_identity = true;
+    slots.save(&me).unwrap();
+    let hash = "05".repeat(32);
+    fs::create_dir_all(layers.path(&hash).join("usr")).unwrap();
+    let (_, generation) = slots
+        .prepare_swap(
+            &me,
+            "shell",
+            &hash,
+            ComponentInfo::new(Scope::Session, Vec::new()),
+        )
+        .unwrap()
+        .unwrap();
+    slots.set_current(&mut me, generation.number).unwrap();
+    assert!(restore_slots(&slots, &layers, &locks, &mut apply).is_empty());
+    for unit in ["user@60001.service", "tilo-vm-session@proof.service"] {
+        let dropin = &apply.dropins[&(unit.into(), apply::LAYERS_DROPIN.into())];
+        assert!(!dropin.contains("TILO_IDENTITY_ROOT"), "{unit}: {dropin}");
+        assert!(
+            dropin.contains("TILO_TEST_CONTROL_FIRST_USE=keep"),
+            "{unit}: {dropin}"
+        );
+    }
+}
+
 #[test]
 fn a_board_session_running_before_restore_restarts_onto_its_merged_layers() {
     let root = tempfile::tempdir().unwrap();

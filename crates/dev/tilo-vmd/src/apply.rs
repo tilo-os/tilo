@@ -512,6 +512,32 @@ pub fn seat_dropin(record: &SlotRecord) -> Option<String> {
 /// image's own login).
 const DEVICE_FIRST_USE_ENVIRONMENT: &str = "Environment=TILO_TEST_CONTROL_FIRST_USE=keep\n";
 
+/// The identity a stand-in slot's session runs on, as its drop-in says it:
+/// the same whether the slot was just made or is brought back at boot.
+///
+/// # Errors
+/// The slot's account has no usable home.
+pub fn identity_environment(
+    apply: &mut dyn Apply,
+    record: &SlotRecord,
+    session: &Session,
+) -> Result<String, DaemonError> {
+    if !session.stand_in {
+        return Ok(String::new());
+    }
+    // This VM's person runs on the machine's identity tree, as a device's
+    // first login does; every other stand-in gets a private, removable one.
+    if !record.device_identity {
+        return apply.slot_identity_environment(&session.user);
+    }
+    // A compositor with a control socket skips first use unless told to keep
+    // it, and the slot unit hands every session that socket, so tilo-session
+    // does not add the marker it gives a dev image's own login. This VM's
+    // person is that login: its first session goes through onboarding,
+    // which tilo-vmd then presses through.
+    Ok(DEVICE_FIRST_USE_ENVIRONMENT.to_owned())
+}
+
 pub fn slot_identity_environment(home: &std::path::Path) -> Result<String, DaemonError> {
     let home = home
         .to_str()
@@ -591,19 +617,7 @@ pub fn activate(
     }
 
     let mut dropin = apply.session_layer_dropin(&record.name, generation.number, layers)?;
-    // This VM's person runs on the machine's identity tree, as a device's
-    // first login does; every other stand-in gets a private, removable one.
-    if session.stand_in && !record.device_identity {
-        dropin.push_str(&apply.slot_identity_environment(&session.user)?);
-    }
-    // A compositor with a control socket skips first use unless told to keep
-    // it, and the slot unit hands every session that socket, so tilo-session
-    // does not add the marker it gives a dev image's own login. This VM's
-    // person is that login: its first session goes through onboarding,
-    // which tilo-vmd then presses through.
-    if session.stand_in && record.device_identity {
-        dropin.push_str(DEVICE_FIRST_USE_ENVIRONMENT);
-    }
+    dropin.push_str(&identity_environment(apply, record, &session)?);
     for unit in layered_units(&session, uid) {
         let text = if unit == session.unit
             && generation

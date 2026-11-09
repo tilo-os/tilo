@@ -310,9 +310,9 @@ fn prepare_slot_session(
         return Ok(());
     }
     let mut dropin = apply.session_layer_dropin(&record.name, generation.number, &paths)?;
-    if session.stand_in {
-        dropin.push_str(&apply.slot_identity_environment(&session.user)?);
-    }
+    // The drop-in `apply::activate` wrote: the VM's person keeps running on
+    // the machine's identity tree after a reboot, not on a private one.
+    dropin.push_str(&apply::identity_environment(apply, record, &session)?);
     let uid = apply::session_uid(apply, &session)?;
     for unit in apply::layered_units(&session, uid) {
         apply.write_dropin(&unit, apply::LAYERS_DROPIN, &dropin)?;
