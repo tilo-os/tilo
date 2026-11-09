@@ -13,6 +13,11 @@
 #      follows from node to node; made XFS with reflink the first time, so every
 #      VM's disk is a reflinked copy of the guest's root filesystem, and mounted
 #      at /var/lib/tilo-hosted;
+#   3b. the member identity: this host's own Tilo device, certified by the
+#      operator that runs the relay, from TILO_VM_MEMBER_IDENTITIES (a
+#      directory holding <pod name>.tar, made with tilo-enroll device-key and
+#      install-cert), unpacked onto the state disk the first time only, so the
+#      device key stays with the host's disk as the host moves between nodes;
 #   4. the guest: the image the release key signed, fetched once per digest
 #      (TILO_VM_GUEST_REF overrides the one this build pins);
 #   5. `tilo-legacy hosted serve`, jailed, which suspends every VM when the
@@ -65,6 +70,20 @@ chown root:root "$data/jails"
 chmod 0755 "$data/jails"
 mkdir -p "$run"
 chown tilo-hosted:tilo-hosted "$run"
+
+# 3b. the member identity
+member=$data/member
+pod=${HOSTNAME:-$(hostname)}
+if [ -n "${TILO_VM_MEMBER_IDENTITIES:-}" ] && [ ! -e "$member/root/device-private/keypair.bin" ]; then
+  [ -f "$TILO_VM_MEMBER_IDENTITIES/$pod.tar" ] || { say "no member identity for $pod"; exit 1; }
+  say "installing the member identity of $pod"
+  rm -rf "$member.new"
+  mkdir -m 0700 "$member.new"
+  tar -xf "$TILO_VM_MEMBER_IDENTITIES/$pod.tar" -C "$member.new" --no-same-owner
+  chown -R tilo-hosted:tilo-hosted "$member.new"
+  rm -rf "$member"
+  mv "$member.new" "$member"
+fi
 
 # 4. the guest
 # The service's own home: skopeo reads its configuration under $HOME.
