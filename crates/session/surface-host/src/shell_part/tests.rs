@@ -6,7 +6,7 @@
 )]
 
 use super::*;
-use crate::door::Published;
+use tilo_session_core::door::Published;
 
 fn reading() -> DeskReading {
     DeskReading {

@@ -6,4 +6,5 @@
 
 pub mod arrangement;
 pub mod desk;
+pub mod door;
 pub mod presence;

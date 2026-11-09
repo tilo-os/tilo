@@ -10,7 +10,6 @@
 #![cfg(target_os = "linux")]
 
 mod desktop;
-mod door;
 mod frames;
 mod i18n;
 pub mod shell_part;
@@ -21,8 +20,8 @@ mod widget;
 pub use desktop::{
     DeskGesture, DesktopHost, PointerSamples, StripPolicy, WindowObserver, desktop, desktop_with,
 };
-pub use door::{Doors, Look, Published, Shared, Shot, through_door};
 pub use shell_part::{DeskReading, SessionLink, ShellPart, ShellWork};
+pub use tilo_session_core::door::{Doors, Look, Published, Shared, Shot, through_door};
 pub use well_policy::{DeskHost, WellDesk, WellPolicy, well_policy};
 pub use widget::WidgetHost;
 

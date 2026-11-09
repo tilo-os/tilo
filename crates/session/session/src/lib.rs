@@ -23,8 +23,16 @@
 //! resources beside the desktop's, and [`Session::invoke`] reaches their
 //! actions as it reaches the desktop's, by address.
 
-// The session's roles: the desk, the chrome, the records, the people and
-// the workspaces — what every host runs, the web page included.
+// The session's state between frames, as every host runs it, and the roles
+// that keep it: the desk, the chrome, the records, the people and the
+// workspaces — what every host runs, the web page included.
+mod assembly;
+pub use assembly::Session;
+// Nothing compiled for the web reads this state yet: the roles that do land
+// with the batches that ungate them.
+#[cfg_attr(target_arch = "wasm32", allow(unused_imports))]
+pub(crate) use assembly::Shared;
+
 pub mod host_actions;
 pub mod overlays;
 pub mod records;
