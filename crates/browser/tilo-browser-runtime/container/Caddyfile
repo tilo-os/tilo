@@ -23,8 +23,11 @@
 		# configured (TILO_WEB_EMBEDDER, see entrypoint.sh; an embed posts its
 		# state to that site alone), may frame the app: an embed joins on the
 		# visitor's first click, which another site could otherwise take with
-		# a frame laid under its own page.
-		Content-Security-Policy "frame-ancestors {$TILO_WEB_FRAME_ANCESTORS:'self'}"
+		# a frame laid under its own page. A default: this block also deletes
+		# a header, which makes Caddy apply all of it as the answer is
+		# written, after a route's own policy (/sign-in), which would be
+		# overwritten otherwise.
+		?Content-Security-Policy "frame-ancestors {$TILO_WEB_FRAME_ANCESTORS:'self'}"
 		X-Content-Type-Options nosniff
 		Referrer-Policy no-referrer
 		-Server
@@ -110,13 +113,13 @@
 	# form the browser posts to the service that asked, which is another
 	# origin by definition: `form-action` names the origins a sign-in link may
 	# name at all (`web/sign-in.mjs` accepts nothing else), so no other site
-	# can be handed a person's answer. The site-wide header above still
-	# applies beside this one.
+	# can be handed a person's answer. Its policy is the whole of the page's,
+	# so it names the site-wide frame-ancestors too.
 	handle /sign-in {
 		root * /srv/tilo-web
 		header {
 			Cache-Control "no-cache"
-			Content-Security-Policy "form-action https: http://localhost:* http://127.0.0.1:*"
+			Content-Security-Policy "frame-ancestors {$TILO_WEB_FRAME_ANCESTORS:'self'}; form-action https: http://localhost:* http://127.0.0.1:*"
 		}
 		rewrite * /sign-in.html
 		file_server {
