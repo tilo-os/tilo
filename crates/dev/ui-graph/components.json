@@ -726,6 +726,11 @@
           "type": "bool"
         },
         {
+          "name": "added",
+          "doc": "Every change it counts only put items in (`$noun`): what it says is new rather than changed.",
+          "type": "bool"
+        },
+        {
           "name": "more",
           "doc": "The window's document holds more resources than the mark counted: what it says is a lower bound, and says so.",
           "type": "bool"

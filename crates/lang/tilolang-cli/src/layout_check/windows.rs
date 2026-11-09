@@ -1371,6 +1371,46 @@ fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own() {
 }
 
 #[test]
+fn a_channels_header_says_what_the_person_has_not_seen_of_it_by_whom() {
+    // A catch-up says what happened while the person was away, in the terms of what the window
+    // shows: a channel of items Mia, Leo and Ada put in says how many are new, never that three
+    // people changed one message.
+    tilo_ui_host::i18n::ensure();
+    ui::clock::freeze_for_capture();
+    let packages = app_packages("chat");
+    let mut channels = stage::Staged::over(
+        "so.tilo.lang.chat",
+        &packages,
+        "a team's channels",
+        (1280, 800),
+        ui::Theme::light(),
+        None,
+        &[],
+    )
+    .expect("the scenario stages");
+    channels
+        .lay_out(
+            (1280, 800),
+            ui::Theme::light(),
+            ui::interaction::InteractionEnvironment::POINTER,
+            1.0,
+        )
+        .expect("the app lays out");
+    let tree = channels.composed().expect("the window composes");
+    let mark = window_mark(&tree).expect("the channel's header says what is new");
+    assert_eq!(
+        mark.props.get("count"),
+        Some(&tilo_render_protocol::patch::Value::Int(7)),
+        "seven items wait, not one change: {mark:?}"
+    );
+    assert_eq!(
+        mark.props.get("added"),
+        Some(&tilo_render_protocol::patch::Value::Bool(true)),
+        "every one of them is new: {mark:?}"
+    );
+}
+
+#[test]
 fn a_scenario_that_fails_is_said_rather_than_shown_empty() {
     tilo_ui_host::i18n::ensure();
     let (app, packages) = packages();

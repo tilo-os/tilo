@@ -41,6 +41,9 @@ pub struct ChangeMarkProps {
     pub count: i64,
     /// It marks a window, in its header: it says how many changes and by whom.
     pub window: bool,
+    /// Every change it counts only put items in (`$noun`): what it says is new rather than
+    /// changed.
+    pub added: bool,
     /// The window's document holds more resources than the mark counted: what it says is a
     /// lower bound, and says so.
     pub more: bool,
@@ -82,6 +85,7 @@ impl ChangeMarkProps {
             kind: self.kind.clone(),
             count: self.count,
             window: self.window,
+            added: self.added,
             more: self.more,
             activate: self.activate.clone(),
             // A row's mark shows no catch-up: the views of one belong to the mark placed.
@@ -200,6 +204,7 @@ impl ChangeMarkProps {
         let noun_one = self.noun_one.clone();
         let count = self.count;
         let window = self.window;
+        let added = self.added;
         let more = self.more;
         let activate = self.activate.clone();
         let mut who: Vec<Person> = Vec::new();
@@ -225,10 +230,11 @@ impl ChangeMarkProps {
             let names = names(&who);
             match noun.filter(|noun| !noun.is_empty()) {
                 Some(noun) => crate::i18n::widget_format(
-                    if more {
-                        "change-window-changed-more"
-                    } else {
-                        "change-window-changed"
+                    match (added, more) {
+                        (true, false) => "change-window-new",
+                        (true, true) => "change-window-new-more",
+                        (false, true) => "change-window-changed-more",
+                        (false, false) => "change-window-changed",
                     },
                     &[
                         ("who", names.into()),
@@ -456,6 +462,27 @@ mod tests {
         };
         assert_eq!(said(1), "Mia changed one message");
         assert_eq!(said(3), "Mia changed 3 messages");
+    }
+
+    /// A window's mark of changes that only put items in says what is new and who put it there:
+    /// "6 new messages from Mia, Leo and Ada", never that they changed them.
+    #[test]
+    fn a_mark_of_new_items_says_what_is_new() {
+        crate::i18n::I18nManager::register_widget_messages();
+        crate::i18n::I18nManager::set_locale("en-US");
+        let said = |count: i64| {
+            crate::i18n::widget_format(
+                "change-window-new",
+                &[
+                    ("who", "Mia, Leo and Ada".into()),
+                    ("count", count.into()),
+                    ("noun", "messages".into()),
+                    ("one", "message".into()),
+                ],
+            )
+        };
+        assert_eq!(said(1), "One new message from Mia, Leo and Ada");
+        assert_eq!(said(6), "6 new messages from Mia, Leo and Ada");
     }
 
     /// German's perfect tense agrees with the person it names ("Mia hat …"), and a window's mark

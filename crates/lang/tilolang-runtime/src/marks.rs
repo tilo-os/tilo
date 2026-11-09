@@ -309,12 +309,11 @@ impl Core {
         // "tasks"). A window's mark stands for the document's own resource, whose type only the
         // store names. Both numbers come from the type's one `<id>.noun` message, so the count
         // and the noun agree.
-        let ty = if self.type_of_ref(&at.ty).is_ok() {
-            Some(at.ty.clone())
-        } else {
-            self.store.borrow().type_of(at).ok()
-        };
-        if let Some((one, many)) = ty.as_deref().and_then(|ty| self.item_nouns(ty)) {
+        if let Some((one, many)) = self
+            .resolved_type(at)
+            .as_deref()
+            .and_then(|ty| self.item_nouns(ty))
+        {
             mark.props.insert("noun_one".to_owned(), Value::Text(one));
             mark.props.insert("noun".to_owned(), Value::Text(many));
         }
@@ -553,11 +552,19 @@ impl Core {
             mark.props.insert("more".to_owned(), Value::Bool(true));
         }
         self.fill_mark(&mut mark, &at, &unseen, viewer, acc);
-        // The count is what changed, one per item: what the person catches up on.
-        mark.props.insert(
-            "count".to_owned(),
-            Value::Int(i64::try_from(groups.len()).unwrap_or(i64::MAX)),
-        );
+        // A window counts the items the changes were made over rather than the versions that
+        // made them: what the person catches up on.
+        let count = unseen.iter().fold(0i64, |sum, version| {
+            sum.saturating_add(i64::from(version.count.max(1)))
+        });
+        mark.props.insert("count".to_owned(), Value::Int(count));
+        // Every change only put items in: what is new is said as new, not as changed.
+        if unseen
+            .iter()
+            .all(|version| self.puts_items_in(version, &at))
+        {
+            mark.props.insert("added".to_owned(), Value::Bool(true));
+        }
         // Activating the chip opens the catch-up, so what the chip does is show its list, not
         // the run of the newest step.
         mark.events.remove("activate");
@@ -579,6 +586,37 @@ impl Core {
             None => node.children.push(slot(name, &node.key, mark)),
         }
         Ok(())
+    }
+
+    /// The type of the resource `at` shows: its ref names one, and a window's mark stands for
+    /// the document's own resource, whose type only the store names.
+    fn resolved_type(&self, at: &ResourceRef) -> Option<String> {
+        if self.type_of_ref(&at.ty).is_ok() {
+            Some(at.ty.clone())
+        } else {
+            self.store.borrow().type_of(at).ok()
+        }
+    }
+
+    /// Whether `version` only put items into one of `at`'s collections: a change to a collection
+    /// of what the window shows and nothing else, and no item taken out of it.
+    fn puts_items_in(&self, version: &Version, at: &ResourceRef) -> bool {
+        if version.kind != VersionKind::Changed
+            || version.left.is_some()
+            || version.fields.len() != 1
+        {
+            return false;
+        }
+        let Some(ty) = self.resolved_type(at) else {
+            return false;
+        };
+        let Some((_, info)) = self.type_of_ref(&ty).ok() else {
+            return false;
+        };
+        info.fields.iter().any(|field| {
+            field.kind == crate::meta::FieldKind::Collection
+                && version.fields.first() == Some(&field.id)
+        })
     }
 
     /// The catch-up a window's mark opens (*Since you looked*): the changes it counts, grouped

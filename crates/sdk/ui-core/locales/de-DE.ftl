@@ -974,6 +974,14 @@ change-window-changed = Geändert von { $who }: { $count ->
     [one] { $count } { $one }
    *[other] { $count } { $noun }
 }
+change-window-new = Neu von { $who }: { $count ->
+    [one] { $count } { $one }
+   *[other] { $count } { $noun }
+}
+change-window-new-more = Neu von { $who }: mindestens { $count ->
+    [one] { $count } { $one }
+   *[other] { $count } { $noun }
+}
 change-mark-names-two = { $first } und { $second }
 change-mark-names-three = { $first }, { $second } und { $third }
 change-mark-names-more = { $first }, { $second } und { $count } weitere

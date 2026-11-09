@@ -987,6 +987,17 @@ change-window-changed = { $who } changed { $count ->
     [one] one { $one }
    *[other] { $count } { $noun }
 }
+# A window's mark when every change it counted only put items in: what is new, and who put it
+# there ("7 new messages from Mia and Leo").
+change-window-new = { $count ->
+    [one] One new { $one } from { $who }
+   *[other] { $count } new { $noun } from { $who }
+}
+# The same, for a mark that counted a page of what it shows, with more than it says.
+change-window-new-more = { $count ->
+    [one] At least one new { $one } from { $who }
+   *[other] At least { $count } new { $noun } from { $who }
+}
 # The names a window's mark lists, as a sentence reads them; past three it names the first two
 # and counts the rest, as its faces do.
 change-mark-names-two = { $first } and { $second }
