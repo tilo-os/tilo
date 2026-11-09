@@ -400,7 +400,8 @@ impl ResourceApp for App {
             let (nav, reads) = (nav.clone(), reads.clone());
             let (place, run) = (nav.place.clone(), nav.run.clone());
             cx.switch(&place, move |cx, _| {
-                let (nav, reads, agent) = (nav.clone(), reads.clone(), nav.agent.clone());
+                let (nav, reads) = (nav.clone(), reads.clone());
+                let (nav, reads, agent) = (nav.clone(), reads, nav.agent);
                 cx.switch(&run, move |cx, _| {
                     let (nav, reads) = (nav.clone(), reads.clone());
                     cx.switch(&agent, move |cx, _| window(cx, &nav, &reads))

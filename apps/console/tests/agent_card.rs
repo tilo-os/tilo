@@ -136,17 +136,17 @@ fn argument(request: &InvokeRequest) -> serde_json::Value {
     }
 }
 
+/// The resource `AGENT` names, among `resources` or their children.
+fn find_in(resources: &[ui::tilo_actions::ResourceSpec]) -> Option<ui::tilo_actions::ResourceSpec> {
+    resources.iter().find_map(|resource| {
+        (resource.id.as_str() == AGENT)
+            .then(|| resource.clone())
+            .or_else(|| find_in(&resource.children))
+    })
+}
+
 #[test]
 fn each_agent_is_published_with_its_card_and_its_commands() {
-    fn find_in(
-        resources: &[ui::tilo_actions::ResourceSpec],
-    ) -> Option<ui::tilo_actions::ResourceSpec> {
-        resources.iter().find_map(|resource| {
-            (resource.id.as_str() == AGENT)
-                .then(|| resource.clone())
-                .or_else(|| find_in(&resource.children))
-        })
-    }
     let mut app = opened();
     let resources = app.harness().resources();
     let agent = find_in(&resources).unwrap_or_else(|| panic!("{AGENT} is published"));
