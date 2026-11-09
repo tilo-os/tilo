@@ -358,3 +358,156 @@ fn the_card_folds_on_escape_once_the_person_moved_to_the_bar() {
         session.host.intents.borrow()
     );
 }
+
+/// Search the person closed and opened again starts them afresh: what they typed before is not
+/// left in the field as plain text with the caret after it, where typing would append to a query
+/// they no longer want.
+#[test]
+fn a_search_opened_again_does_not_keep_the_query_of_the_last_one() {
+    let mut session = session((1280, 800));
+    session.frame();
+    session.search_chord();
+    session.frame();
+    for _ in 0..3 {
+        session.frame();
+    }
+    session.type_text("notes");
+    session.settle_search();
+    assert_eq!(session.handle.search_rows().0, "notes");
+
+    // Escape on a typed field clears it; the person closes the search with a second Escape.
+    session
+        .chrome
+        .send_host_event(&ui::synthetic_input::named_key(NamedKey::Escape));
+    session.frame();
+    session
+        .chrome
+        .send_host_event(&ui::synthetic_input::named_key(NamedKey::Escape));
+    session.frame();
+    assert!(!session.handle.search_open(), "the search closed");
+
+    session.search_chord();
+    session.frame();
+    for _ in 0..3 {
+        session.frame();
+    }
+    assert!(session.handle.search_open(), "the chord opened it again");
+    let (query, _) = session.handle.search_rows();
+    assert_eq!(
+        query, "",
+        "the search reopened with the last one's text in its field: typing would append to it"
+    );
+}
+
+/// Closing search by a press elsewhere and opening it again starts empty: the design sets an
+/// empty search card (its groups named, the person's recents leading), so the last search's text
+/// is not left as plain text with the caret after it, where typing would append to it.
+#[test]
+fn a_search_opened_again_after_a_press_away_starts_empty() {
+    let mut session = session((1280, 800));
+    session.frame();
+    session.search_chord();
+    session.frame();
+    for _ in 0..3 {
+        session.frame();
+    }
+    session.type_text("notes");
+    session.settle_search();
+    assert_eq!(session.handle.search_rows().0, "notes");
+
+    // A press off the card closes search, as a person clicking their desk does.
+    session.chrome.click_at(8.0, 780.0);
+    session.frame();
+    assert!(
+        !session.handle.search_open(),
+        "the press off the card closed search"
+    );
+
+    session.search_chord();
+    session.frame();
+    for _ in 0..3 {
+        session.frame();
+    }
+    assert!(session.handle.search_open(), "the chord opened it again");
+    assert_eq!(
+        session.handle.search_rows().0,
+        "",
+        "the reopened field holds the last search's text: typing would append to it"
+    );
+    // The first thing typed is the query alone.
+    session.type_text("s");
+    session.settle_search();
+    assert_eq!(session.handle.search_rows().0, "s");
+}
+
+/// Search closed with Escape on an empty field and opened again: the field starts empty, with the
+/// caret in it, and the first thing typed is the query.
+#[test]
+fn a_search_closed_with_escape_opens_again_empty() {
+    let mut session = session((1280, 800));
+    session.frame();
+    session.search_chord();
+    session.frame();
+    for _ in 0..3 {
+        session.frame();
+    }
+    session.type_text("notes");
+    session.settle_search();
+    session
+        .chrome
+        .send_host_event(&ui::synthetic_input::named_key(NamedKey::Escape));
+    session.frame();
+    session
+        .chrome
+        .send_host_event(&ui::synthetic_input::named_key(NamedKey::Escape));
+    session.frame();
+    assert!(!session.handle.search_open());
+    session.search_chord();
+    session.frame();
+    for _ in 0..3 {
+        session.frame();
+    }
+    session.type_text("s");
+    session.settle_search();
+    assert_eq!(session.handle.search_rows().0, "s");
+}
+
+/// Choosing a row closes search; opening search again starts empty, so the first key typed is the
+/// query rather than an addition to the search the person already took a row from.
+#[test]
+fn a_search_opened_again_after_a_choice_starts_empty() {
+    let mut session = session((1280, 800));
+    session.frame();
+    session.search_chord();
+    session.frame();
+    for _ in 0..3 {
+        session.frame();
+    }
+    session.type_text("notes");
+    session.settle_search();
+    assert_eq!(session.handle.search_rows().0, "notes");
+    session
+        .chrome
+        .send_host_event(&ui::synthetic_input::named_key(NamedKey::Enter));
+    session.frame();
+    session.frame();
+    assert!(
+        !session.handle.search_open(),
+        "Enter took the row and closed search"
+    );
+
+    session.search_chord();
+    session.frame();
+    for _ in 0..3 {
+        session.frame();
+    }
+    assert!(session.handle.search_open(), "the chord opened it again");
+    assert_eq!(
+        session.handle.search_rows().0,
+        "",
+        "the reopened field holds the last search's text: typing would append to it"
+    );
+    session.type_text("c");
+    session.settle_search();
+    assert_eq!(session.handle.search_rows().0, "c");
+}
