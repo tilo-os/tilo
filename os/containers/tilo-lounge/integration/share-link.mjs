@@ -103,17 +103,23 @@ const shownText = tab => tab.evaluate(`(() => {
 })()`).catch(() => '');
 
 /** Wait until `tab` shows `text`; resolves to how long that took. */
-const shows = async (tab, text, what, timeout = 120_000) => {
+const shows = async (tab, text, what, timeout = 120_000, required = true) => {
   const from = Date.now();
   for (;;) {
     if ((await shownText(tab)).includes(text)) return Date.now() - from;
-    if (Date.now() - from > timeout) await failed(`${what}: "${text}" never showed`);
+    if (Date.now() - from > timeout) {
+      if (!required) return null;
+      await failed(`${what}: "${text}" never showed`);
+    }
     await sleep(200);
   }
 };
 
 const type = async (tab, text) => {
-  for (const ch of text) await tab.send('Input.insertText', {text: ch});
+  for (const ch of text) {
+    await tab.send('Input.dispatchKeyEvent', {type: 'keyDown', key: ch, text: ch});
+    await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', key: ch});
+  }
 };
 
 /** Screenshots of `tab` in light and dark as `name-<scheme>.png`. */
@@ -157,20 +163,61 @@ try {
   report.adaBar = adaBar;
   if (!adaBar.share) await failed('Ada’s bar offers no Share in a workspace');
   if (!adaBar.tilo.includes(`/#/@${hostRoute}/w/${workspace}/${APP}`)) await failed(`Open in Tilo leads elsewhere: ${adaBar.tilo}`);
-  // The document's text field as the page's accessibility mirror offers it
-  // (its semantic tree's text input, a textarea named as the app names it):
-  // focused and written in as a screen reader's person writes.
-  const field = `[...document.querySelectorAll('textarea')].find(area => !area.readOnly && /text/i.test(area.getAttribute('aria-label') ?? ''))`;
-  await until(ada, `(() => { globalThis.tiloMount?.requestSemantics?.(); return Boolean(${field}); })()`, 'the document’s text field', 60_000);
+  // The document's text field: the editor publishes it without a place on
+  // screen, so a person's click goes where it draws its first line, under
+  // the window's header, as its placeholder shows.
+  await until(ada, `(() => { globalThis.tiloMount?.requestSemantics?.(); return JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? null).includes('MultilineTextInput'); })()`, 'the document’s text field', 60_000);
   // What the app offers here and whether each is available now: an editor
   // that takes no keys says why in its own words.
   writeFileSync(`${out}/ada-actions.json`, await ada.evaluate(`JSON.stringify(globalThis.tiloMount?.actions?.() ?? null, null, 1)`).catch(error => String(error)));
   writeFileSync(`${out}/ada-state.json`, await ada.evaluate(`JSON.stringify((({semantics, ...rest}) => rest)(globalThis.tiloMount?.state?.() ?? {}), null, 1)`).catch(error => String(error)));
-  const focus = () => ada.evaluate(`(() => { const area = ${field}; area.focus(); return document.activeElement === area; })()`);
-  if (!await focus()) await failed('the document’s text field did not take focus');
+  const focus = async () => {
+    const canvas = JSON.parse(await ada.evaluate('JSON.stringify(globalThis.tiloMount.canvas.getBoundingClientRect())'));
+    const x = canvas.x + Math.min(400, canvas.width / 2), y = canvas.y + 104;
+    await ada.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await ada.send('Input.dispatchMouseEvent', {type, x, y, button: 'left', clickCount: 1});
+    }
+    await sleep(500);
+  };
+  // A person writes once the page lets them: the workspace's answer to what
+  // they may do here arrives just after the page opens.
+  await until(ada, `(globalThis.tiloMount?.actions?.() ?? []).some(action => action.address?.action === 'field-edit' && action.contract?.availability?.state === 'available')`,
+    'the document taking edits', 60_000);
+  // Writes `text` as Ada's next words: from the keyboard, as she types; if
+  // the keys never reach the editor, through the app's own field edit (what
+  // its controls and an agent use), so the rest still runs, and the run
+  // fails at its end on the keyboard alone.
+  let written = '';
+  const write = async text => {
+    const before = await ada.evaluate('globalThis.tiloMount?.state()?.frames ?? null');
+    await focus();
+    // The click put the caret where it landed: the words go after the rest.
+    for (const type of ['rawKeyDown', 'keyUp']) {
+      await ada.send('Input.dispatchKeyEvent', {type, key: 'End', code: 'End', windowsVirtualKeyCode: 35, modifiers: 2});
+    }
+    await type(ada, text);
+    written += text;
+    const typed = await shows(ada, text.trim(), 'Ada’s typed words', 15_000, false);
+    if (typed !== null) return;
+    report.keyboard = {
+      reached: false,
+      // What the click landed on, and where the page's input went.
+      under: await ada.evaluate(`(() => { const c = globalThis.tiloMount.canvas.getBoundingClientRect();
+        const at = document.elementFromPoint(c.x + Math.min(400, c.width / 2), c.y + 104);
+        return at ? \`\${at.tagName}#\${at.id}.\${at.className}\` : null; })()`),
+      lastInput: await ada.evaluate('globalThis.tiloMount?.state()?.lastInput ?? null'),
+      framesBefore: before,
+      framesAfter: await ada.evaluate('globalThis.tiloMount?.state()?.frames ?? null'),
+      focused: await ada.evaluate('`${document.activeElement?.tagName}.${document.activeElement?.className}`'),
+    };
+    const answer = await ada.evaluate(`JSON.stringify(globalThis.tiloMount.invokeAction('scratchpad.note', 'field-edit',
+      {edit: {path: [{field: 'body'}], op: 'set', value: ${JSON.stringify(written)}}}, {confirm: true}))`);
+    report.keyboard.edited = JSON.parse(answer ?? 'null');
+    await shows(ada, text.trim(), 'Ada’s words written through the field edit');
+  };
   const first = `Shared from Ada ${Date.now().toString(36)}`;
-  await type(ada, first);
-  await shows(ada, first, 'Ada’s own words');
+  await write(first);
 
   // 2. Share, then Copy link: the clipboard the page writes is the link.
   await ada.evaluate(`navigator.clipboard.writeText = text => { globalThis.__copied = text; return Promise.resolve(); }`);
@@ -198,9 +245,8 @@ try {
 
   // 4. Ada writes on; Bo sees it as she writes.
   const next = ` and then ${Date.now().toString(36)}`;
-  await focus();
   const typed = Date.now();
-  await type(ada, next);
+  await write(next);
   await shows(bo, next.trim(), 'Ada’s next words on Bo’s page');
   report.liveEditMs = Date.now() - typed;
 
@@ -218,15 +264,23 @@ try {
   const run = `console.run:${process.env.SHARE_LINK_RUN ?? 'no-such-run'}`;
   const runLink = `${base}app/#/@${hostRoute}/w/${workspace}/so.tilo.console/-/${run}`;
   report.runLink = runLink;
-  await arrive(bo, runLink, 'Bo at a run');
-  report.runTarget = JSON.parse(await bo.evaluate('JSON.stringify(globalThis.tiloRouter?.route?.target ?? null)'));
+  // In a browser of its own: a link is opened fresh, not by editing the
+  // address of a page already open on another app.
+  const cy = await person('cy', {width: 390, height: 844, scale: 2, mobile: true});
+  await arrive(cy, runLink, 'Cy at a run');
+  report.runTarget = JSON.parse(await cy.evaluate('JSON.stringify(globalThis.tiloRouter?.route?.target ?? null)'));
   if (report.runTarget?.app !== 'so.tilo.console' || report.runTarget?.resource?.id !== run) {
     await failed(`the run link opened ${JSON.stringify(report.runTarget)}`);
   }
   await sleep(3000);
-  const said = await bo.evaluate(`document.getElementById('status')?.textContent ?? ''`);
+  const said = await cy.evaluate(`document.getElementById('status')?.textContent ?? ''`);
   if (/not there|cannot open/.test(said)) await failed(`the run's view did not open: ${said}`);
-  await shoot(bo, 'run-390');
+  report.runShows = (await shownText(cy)).slice(0, 400);
+  await shoot(cy, 'run-390');
+  if (report.keyboard?.reached === false) {
+    report.error = 'Ada’s keys never reached the editor of a document opened full tab';
+    finish(1);
+  }
   report.ok = true;
   finish(0);
 } catch (error) {
