@@ -1003,6 +1003,20 @@ try {
   const centre = await centreOf(a.tab);
   await search(a.tab, a.command, 'notes', 'Notes');
   await settle(a.tab, 2);
+  // The person's fingers are on the window they are looking at, not on
+  // whatever else the strip's centre happens to be over: the open window is
+  // brought into view, and its own body is what the gesture is given to. Its
+  // title row is where the tree publishes it; below it is the app's content.
+  const titleRow = JSON.parse(await find(a.tab, 'Close Notes'));
+  if (titleRow?.bounds) {
+    const b = titleRow.bounds;
+    const [x0, y0, x1, y1] = Array.isArray(b)
+      ? b : [b.x0 ?? b.x, b.y0 ?? b.y, b.x1 ?? b.x + b.width, b.y1 ?? b.y + b.height];
+    // The row is the window's title bar: its body begins below it, and the
+    // body is roomy enough that a point a few rows down is still inside.
+    centre.x = Math.round(centre.corner.x + (x0 + x1) / 2);
+    centre.y = Math.round(centre.corner.y + y1 + 200);
+  }
   const windowsBefore = (await snapshot(a.tab)).windows;
   const startPan = await panOf(a.tab);
   if (!startPan) failed('the strip does not overflow, so nothing can pan');
