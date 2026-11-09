@@ -175,7 +175,8 @@ class Terminal:
 
     def run(self, command: str) -> None:
         """Type `command` at the environment's shell (Tilo's own, `ush-sh`) and press Enter."""
-        self.call("run", {"command": command, "confirm": True})
+        # The first command in a new environment waits for its guest to be set up.
+        self.call("run", {"command": command, "confirm": True}, timeout=SHELL_S)
 
     def bash(self, script: str) -> None:
         """Run `script` in the guest's bash: what a person's script or an agent's tools run."""
