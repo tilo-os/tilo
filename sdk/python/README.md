@@ -26,8 +26,10 @@ async def main():
             await document.flush()                      # assignments are sent at once; this waits
 
         async for event in ws.watch("pdf-viewer/visa-form.pdf"):
-            print(event.sentence, "by", event.by)       # the agent's changes, as they land
-            if event.kind == "run" and event.phase == "succeeded":
+            if event.kind != "change":
+                continue
+            print(event.sentence, "by", event.by or event.run)
+            if event.run:                               # a change the agent made
                 break
 
 asyncio.run(main())

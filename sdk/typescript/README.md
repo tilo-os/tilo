@@ -26,8 +26,9 @@ await ws.run("Fill Jane's application", async () => {
 });
 
 for await (const event of ws.watch("pdf-viewer/visa-form.pdf")) {
-  console.log(event.sentence, "by", event.by);     // the agent's changes, as they land
-  if (event.kind === "run" && event.phase === "succeeded") break;
+  if (event.kind !== "change") continue;
+  console.log(event.sentence, "by", event.by ?? event.run);   // a change, as it lands
+  if (event.run !== null) break;                   // one the applicant's agent made
 }
 ```
 
