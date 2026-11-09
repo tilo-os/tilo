@@ -75,7 +75,7 @@ fn person() -> Person {
         .load_reconciled_cached()
         .expect("the registry reads");
     let profile = registry
-        .person_identity()
+        .certified_identity()
         .expect("this device's person is known");
     let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
         .expect("this device's certificate");

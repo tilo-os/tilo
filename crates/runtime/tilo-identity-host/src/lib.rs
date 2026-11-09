@@ -15,7 +15,6 @@
 
 #[cfg(unix)]
 pub mod broker;
-#[cfg(unix)]
 pub mod certificates;
 #[cfg(unix)]
 pub mod certification_ceremony;

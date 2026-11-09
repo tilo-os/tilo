@@ -522,7 +522,7 @@ fn read_custody() -> Option<Custody> {
         .ok()?
         .load_reconciled_cached()
         .ok()?;
-    let profile = registry.person_identity()?;
+    let profile = registry.certified_identity()?;
     let store = DeviceFleetStore::from_env().ok()?;
     let fleet = store
         .certified_fleet(&profile.id, profile.user_public_key)
@@ -541,7 +541,7 @@ fn secret_sync_key() -> Option<tilo_seal::SecretKey> {
         .ok()?
         .load_reconciled_cached()
         .ok()?;
-    let profile = registry.person_identity()?;
+    let profile = registry.certified_identity()?;
     DeviceFleetStore::from_env()
         .ok()?
         .secret_sync_key(&profile.id)

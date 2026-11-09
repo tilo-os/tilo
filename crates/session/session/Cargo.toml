@@ -57,6 +57,9 @@ tilo-session-core = { path = "../core" }
 tilo-desktop-model = { path = "../desktop-model" }
 # The desk's window policy, whose tab calls an app's asks are answered with.
 tilo-desktop-policy = { path = "../desktop-policy" }
+# This device's identity: the certificate it presents and the key it signs with, from the store its
+# host keeps them in.
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 # The action broker's half every host runs: what a step is taken by, the step seam, the route.
 tilo-broker-core = { path = "../../collab/broker-core" }
 tilo-desktop-surface = { path = "../desktop-surface" }
@@ -199,7 +202,6 @@ tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 # This device's relays wait in the collaboration endpoint until a workspace
 # it shows has someone else in it, and its key is published only then.
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
-tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 # The device's certificate authority the broker admits a join with: the
 # identity store's selected identity and the devices it certifies now.
 tilo-identity-authority = { path = "../identity-authority" }

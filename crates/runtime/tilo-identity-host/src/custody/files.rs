@@ -40,7 +40,7 @@ impl Custody for Files {
             crate::registry::IdentityRegistryStore::from_env().map_err(|e| e.to_string())?;
         let registry = store.load_reconciled_cached().map_err(|e| e.to_string())?;
         let profile = registry
-            .person_identity()
+            .certified_identity()
             .ok_or("this device has no identity to sign in with")?;
         let cert = tilo_user_identity::persist::read_device_cert(
             &self.paths.device_cert_for_user(&profile.user_public_key),

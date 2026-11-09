@@ -89,7 +89,7 @@ fn person() -> Person {
         .load_reconciled_cached()
         .expect("the registry reads");
     let profile = registry
-        .person_identity()
+        .certified_identity()
         .expect("this device's person is known");
     let store = DeviceFleetStore::from_env().expect("the device fleet");
     let now = tilo_clock::unix_now_ns();
