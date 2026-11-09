@@ -231,3 +231,154 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
+
+/// The runs the browser holds of the workspace's Terminal sessions.
+fn terminal_runs(browser: &mut Browser) -> Vec<terminal::resource::Run> {
+    browser.pump();
+    let sessions: Vec<DocumentRoute> = browser
+        .documents
+        .keys()
+        .filter(|route| route.app_id == "so.tilo.terminal")
+        .cloned()
+        .collect();
+    // Read as the record's document, not mounted: a live Terminal claims
+    // the session for its own process as it opens.
+    sessions
+        .iter()
+        .flat_map(|route| {
+            let mut doc = automerge::AutoCommit::new();
+            for (_, bytes) in browser.documents.get(route).into_iter().flatten() {
+                let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes);
+            }
+            <terminal::resource::Terminal as ui::tilo_resource::Resource>::read(&doc)
+                .map(|session| {
+                    session
+                        .runs
+                        .iter()
+                        .map(|(_, run)| run.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let computer = enrol(
+        &root,
+        "Claude Code on build-box",
+        DeviceCapabilities::member(),
+    );
+    let state = support::scratch_dir();
+    // A workspace's shell works in a directory an environment may be
+    // granted: not one below /dev, where the scratch state is.
+    let shell_state = tempfile::tempdir().unwrap();
+    let shells = shell_state.path().join("shells");
+    let hosted = harness::hosted::start(
+        &root,
+        &host,
+        state.path(),
+        Options {
+            shell: Some(tilo_relay::agents::host_shells(shells.clone())),
+            ..Options::offering(common::catalogue, ModelChoice::Scripted)
+        },
+    )
+    .await;
+    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    let agent = Browser::open(&hosted, &computer, &host).await;
+    let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
+        collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
+    ) else {
+        panic!("a key names a person")
+    };
+    let server = McpServer::new(
+        SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
+        WORKSPACE.into(),
+        person,
+    )
+    .with_surface(Surface::Agent)
+    .with_agent_run("run-7", "Claude Code");
+
+    let (listed, _) = tool(&server, "tilo_ls", json!({"path": "terminal"})).await;
+    eprintln!("tilo_ls terminal:\n{listed}");
+    assert!(listed.contains("terminal"), "{listed}");
+
+    // No session yet: the agent names the command, and the host opens its
+    // session, runs it in the workspace's shell and answers with the run.
+    let (ran, failed) = tool(
+        &server,
+        "tilo_do",
+        json!({"path": "terminal#run", "args": {"command": "echo hello from the host && mkdir src && echo 'fn main() {}' > src/main.rs && ls src"}}),
+    )
+    .await;
+    eprintln!("tilo_do terminal#run:\n{ran}");
+    assert!(!failed, "{ran}");
+    assert!(
+        ran.contains("hello from the host")
+            && ran.contains("main.rs")
+            && ran.contains("\"exit\":0"),
+        "{ran}"
+    );
+    let files = shells.join(WORKSPACE).join("files");
+    assert!(files.join("src/main.rs").is_file(), "{}", files.display());
+
+    // The same session keeps its place for the next command.
+    let (again, failed) = tool(
+        &server,
+        "tilo_do",
+        json!({"path": "terminal#run", "args": {"command": "cd src && pwd"}}),
+    )
+    .await;
+    assert!(!failed && again.contains("/src"), "{again}");
+
+    // The browser sees the runs on the session record: the commands, where
+    // they ran and how they ended, recorded as the agent's run.
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let runs = terminal_runs(&mut browser);
+        if runs.len() >= 2 {
+            let groups: Vec<tilo_actions::WorkGroup> = browser
+                .documents
+                .iter()
+                .filter(|(route, _)| route.app_id == "so.tilo.terminal")
+                .flat_map(|(_, changes)| {
+                    let mut doc = automerge::AutoCommit::new();
+                    for (_, bytes) in changes {
+                        let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes);
+                    }
+                    doc.get_changes(&[])
+                        .iter()
+                        .filter_map(|change| change.message())
+                        .filter_map(|message| {
+                            tilo_actions::ActionContext::from_change_message(message)
+                        })
+                        .filter_map(|context| context.group)
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            assert!(
+                groups
+                    .iter()
+                    .any(|run| run.id == "run-7" && run.label == "Claude Code"),
+                "History keeps the runs as the agent's: {groups:?}"
+            );
+            assert!(
+                runs.iter()
+                    .any(|run| run.command.0.starts_with("echo hello from the host")
+                        && run.exit == 0
+                        && run.cwd.0 == files.to_string_lossy())
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the runs never reached the browser: {runs:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
