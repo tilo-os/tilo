@@ -14,13 +14,13 @@ fn admitted_runtime_factory_preserves_exact_caller_and_ignores_client_identity_l
     let created = Arc::new(Mutex::new(Vec::new()));
     let seen = created.clone();
     endpoint
-        .serve_sessions(Arc::new(move || {
+        .serve_workspaces(one_factory(Arc::new(move || {
             let caller = Caller::authenticated([4; 32], [5; 32])
                 .in_workspace("workspace")
                 .in_new_execution();
             seen.lock().unwrap().push(caller.clone());
             McpServer::admitted(host.clone(), caller)
-        }))
+        })))
         .unwrap();
     run(async {
         let first = open(&endpoint, "forged actor execution:00000000").await;
@@ -55,7 +55,7 @@ fn admitted_runtime_factory_failure_or_wrong_audience_never_falls_back_to_keyles
             Some("secret".into()),
         ));
         endpoint
-            .serve_sessions(Arc::new(move || {
+            .serve_workspaces(one_factory(Arc::new(move || {
                 if !wrong_audience {
                     return Err(std::io::Error::other("custody fenced"));
                 }
@@ -65,7 +65,7 @@ fn admitted_runtime_factory_failure_or_wrong_audience_never_falls_back_to_keyles
                         .in_workspace("other-workspace")
                         .in_new_execution(),
                 )
-            }))
+            })))
             .unwrap();
         run(async {
             let response = endpoint

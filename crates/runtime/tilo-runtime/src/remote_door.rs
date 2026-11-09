@@ -39,7 +39,7 @@ use iroh::{Endpoint, EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::PersonalSync;
-use tilo_user_identity::DeviceCert;
+use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 /// ALPN of the agent door between two of the person's devices.
@@ -146,6 +146,13 @@ pub trait PersonsDevices: Send + Sync {
     /// Whether `certificate`, shown on a connection the transport proved is
     /// from `dialer`, is one of the person's devices now.
     fn admit(&self, dialer: [u8; 32], certificate: &DeviceCert) -> Result<(), Refusal>;
+
+    /// The revocations the person's identity root signed, as this device's
+    /// store holds them: what a proof signed by one of the person's devices
+    /// is checked against. Empty for a directory that holds none.
+    fn revocations(&self) -> RevocationList {
+        RevocationList::new()
+    }
 }
 
 /// The person's devices as their own store holds them: the identity root it
@@ -202,6 +209,16 @@ impl PersonsDevices for PersonalDevices {
                     _ => Refusal::NotCertified(why),
                 })
         })
+    }
+
+    fn revocations(&self) -> RevocationList {
+        let entries = self.0.read(tilo_peer_state::PersonalStore::revocations);
+        let mut revocations = RevocationList::new();
+        for entry in entries {
+            // The store only ever holds entries its root signed.
+            let _ = revocations.insert(entry);
+        }
+        revocations
     }
 }
 

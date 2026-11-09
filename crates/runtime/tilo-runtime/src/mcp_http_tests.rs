@@ -2,6 +2,8 @@ use super::*;
 
 #[path = "mcp_admission_tests.rs"]
 mod admission_tests;
+#[path = "mcp_http_grant_tests.rs"]
+mod grant_tests;
 #[path = "mcp_settle_tests.rs"]
 pub(crate) mod settle_tests;
 use hyper::HeaderMap;
@@ -344,6 +346,13 @@ fn endpoint(host: StubHost) -> Arc<Endpoint<StubHost>> {
         "owner".into(),
         Some("secret".into()),
     )
+}
+
+/// The resolver that serves one factory to every workspace's session.
+fn one_factory<H: ActionHost + Clone + Send + Sync + 'static>(
+    factory: crate::mcp::SessionFactory<H>,
+) -> SessionResolver<H> {
+    Arc::new(move |_| Ok(factory.clone()))
 }
 
 fn bearer_headers(pairs: &[(&'static str, &str)]) -> HeaderMap {
@@ -709,6 +718,7 @@ fn explicit_mcp_workspace_is_only_a_canonical_workspace_identifier() {
         address: "127.0.0.1:7070".parse().unwrap(),
         token: Some("secret".into()),
         workspace: None,
+        grants: Grants::Optional,
     };
     assert!(config.validate().is_ok());
     for workspace in [
@@ -1693,9 +1703,12 @@ fn session_delete_idle_expiry_and_endpoint_drop_retire_run_lifetimes() {
     run(async {
         let first = open(&endpoint, "same label").await;
         let second = open(&endpoint, "same label").await;
-        let retained = endpoint.find(&first).unwrap();
+        let retained = endpoint.find("workspace", &first).unwrap();
         let first_caller = retained.execution_caller();
-        let second_caller = endpoint.find(&second).unwrap().execution_caller();
+        let second_caller = endpoint
+            .find("workspace", &second)
+            .unwrap()
+            .execution_caller();
         assert!(first_caller.execution_is_live());
         assert!(second_caller.execution_is_live());
         let deleted = endpoint
@@ -1721,7 +1734,10 @@ fn session_delete_idle_expiry_and_endpoint_drop_retire_run_lifetimes() {
             .last_used = Instant::now().checked_sub(SESSION_IDLE).unwrap();
         let third = open(&endpoint, "same label").await;
         assert!(!second_caller.execution_is_live());
-        let third_caller = endpoint.find(&third).unwrap().execution_caller();
+        let third_caller = endpoint
+            .find("workspace", &third)
+            .unwrap()
+            .execution_caller();
         assert!(third_caller.execution_is_live());
         drop(endpoint);
         assert!(!third_caller.execution_is_live());
@@ -1748,10 +1764,10 @@ fn logical_session_reconnect_stays_live_but_expired_id_cannot_renew_itself() {
     let endpoint = endpoint(StubHost::default());
     run(async {
         let id = open(&endpoint, "same label").await;
-        let connection = endpoint.find(&id).unwrap();
+        let connection = endpoint.find("workspace", &id).unwrap();
         let caller = connection.execution_caller();
         drop(connection);
-        let reconnected = endpoint.find(&id).unwrap();
+        let reconnected = endpoint.find("workspace", &id).unwrap();
         let resumed = reconnected.execution_caller();
         assert_eq!(caller.execution_id(), resumed.execution_id());
         assert!(caller.execution_is_live());
@@ -1762,11 +1778,14 @@ fn logical_session_reconnect_stays_live_but_expired_id_cannot_renew_itself() {
             .get_mut(&id)
             .unwrap()
             .last_used = Instant::now().checked_sub(SESSION_IDLE).unwrap();
-        assert!(endpoint.find(&id).is_none());
+        assert!(endpoint.find("workspace", &id).is_none());
         assert!(!caller.execution_is_live());
         assert!(!resumed.execution_is_live());
         let replacement = open(&endpoint, "same label").await;
-        let fresh = endpoint.find(&replacement).unwrap().execution_caller();
+        let fresh = endpoint
+            .find("workspace", &replacement)
+            .unwrap()
+            .execution_caller();
         assert_ne!(fresh.execution_id(), caller.execution_id());
         assert!(fresh.execution_is_live());
     });
