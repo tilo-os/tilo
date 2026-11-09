@@ -330,52 +330,96 @@ impl SessionSearch {
         }
     }
 
-    /// The results of the one search the palette and an agent's `tilo` tool run, over the sources
-    /// the person has on, in the ranking's order: what text typed on the canvas places (shell.md
-    /// §8). Every one, as ranked: the best resource to place may stand below many actions the text
-    /// names ("Inbox" under each conversation's "Move to inbox").
-    #[must_use]
-    pub(crate) fn find(&self, needle: &str) -> Vec<tilo_desktop_search::Hit> {
-        let needle = needle.trim();
+    /// The sources a search asks over `workspace`, and what this device's action host publishes
+    /// there: one list, so a tool's search finds what the palette finds.
+    fn sources(
+        &self,
+        workspace: &str,
+        scope: &Scope,
+    ) -> (Vec<Arc<dyn Source>>, Vec<PublishedActions>) {
         let now = ui::time::unix_now();
-        if needle.is_empty() {
-            return Vec::new();
-        }
-        let (settings, catalogue) = self.for_workspace("");
+        let (settings, catalogue) = self.for_workspace(workspace);
         let kept = self.kept.borrow();
-        let mut sources: Vec<Box<dyn Source>> = vec![
-            Box::new(settings),
-            Box::new(catalogue),
-            Box::new(Arc::clone(&kept.host_apps)),
-            Box::new(Waiting::new("", self.notifications.borrow().clone())),
-            Box::new(Continue::new(
+        // Every workspace's places name their workspace when the search is widened; the one in
+        // front needs no name.
+        let continue_places = match scope {
+            Scope::Everywhere => Continue::everywhere(
                 &self.places.borrow(),
-                "",
+                workspace,
+                self.open_tabs.borrow().clone(),
+                self.workspaces.borrow().clone(),
+                now,
+                app_name,
+            ),
+            _ => Continue::new(
+                &self.places.borrow(),
+                workspace,
                 self.open_tabs.borrow().clone(),
                 now,
                 app_name,
+            ),
+        };
+        let mut sources: Vec<Arc<dyn Source>> = vec![
+            Arc::new(Happening::new(
+                scope.everywhere(),
+                self.here.borrow().clone(),
             )),
+            Arc::new(settings),
+            Arc::new(catalogue),
+            Arc::clone(&kept.host_apps) as Arc<dyn Source>,
+            Arc::new(Waiting::new(workspace, self.notifications.borrow().clone())),
+            Arc::new(continue_places),
         ];
+        {
+            let downloaded = self.downloaded.borrow();
+            sources.push(Arc::new(Downloaded::new(
+                workspace,
+                downloaded.reading.clone(),
+                &downloaded.published,
+            )));
+        }
         if let Some(content) = &kept.content {
-            sources.push(Box::new(Arc::clone(content)));
+            sources.push(Arc::clone(content) as Arc<dyn Source>);
         }
         if let Some(files) = &kept.files {
-            sources.push(Box::new(Arc::clone(files)));
+            sources.push(Arc::clone(files) as Arc<dyn Source>);
+        }
+        if let Some(records) = &self.records {
+            sources.push(Arc::new(record_rows::Records::new(
+                workspace,
+                records.held(workspace),
+            )));
         }
         let mut published = vec![PublishedActions {
             app: DESKTOP_APP.into(),
-            workspace: String::new(),
+            workspace: workspace.to_owned(),
             actions: self.own.borrow().clone(),
             types: self.own_types.borrow().clone(),
         }];
         if let Some(apps) = &self.apps {
-            sources.push(Box::new(Jobs(apps.jobs())));
-            published.extend(apps.published(""));
+            sources.push(Arc::new(Jobs(apps.jobs())));
+            // A search over one workspace offers that workspace's actions;
+            // one that reaches everywhere offers every workspace's.
+            published.extend(apps.published(if scope.everywhere() { "" } else { workspace }));
         }
-        sources.push(Box::new(tilo_desktop_search::providers::Captures(
+        (sources, published)
+    }
+
+    /// The results of one search over the sources a query that names a resource asks, in the
+    /// ranking's order: what text typed on the canvas places (shell.md §8). Every one, as ranked:
+    /// the best resource to place may stand below many actions the text names ("Inbox" under each
+    /// conversation's "Move to inbox").
+    #[must_use]
+    pub(crate) fn find(&self, needle: &str) -> Vec<tilo_desktop_search::Hit> {
+        let needle = needle.trim();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let (mut sources, published) = self.sources("", &Scope::Workspace);
+        sources.push(Arc::new(tilo_desktop_search::providers::Captures(
             published.clone(),
         )));
-        sources.push(Box::new(tilo_desktop_search::providers::Published(
+        sources.push(Arc::new(tilo_desktop_search::providers::Published(
             published,
         )));
         let refs: Vec<&dyn Source> = sources.iter().map(|source| &**source).collect();
@@ -687,82 +731,20 @@ impl SearchHost for SessionSearch {
     }
 
     fn feed(&self, workspace: &str, scope: &Scope) -> SearchHostFeed {
-        let now = ui::time::unix_now();
-        let (settings, catalogue) = self.for_workspace(workspace);
-        let kept = self.kept.borrow();
-        // Every workspace's places name their workspace when the search is widened; the one in
-        // front needs no name.
-        let continue_places = match scope {
-            Scope::Everywhere => Continue::everywhere(
-                &self.places.borrow(),
-                workspace,
-                self.open_tabs.borrow().clone(),
-                self.workspaces.borrow().clone(),
-                now,
-                app_name,
-            ),
-            _ => Continue::new(
-                &self.places.borrow(),
-                workspace,
-                self.open_tabs.borrow().clone(),
-                now,
-                app_name,
-            ),
-        };
-        let mut sources: Vec<Arc<dyn Source>> = vec![
-            Arc::new(Happening::new(
-                scope.everywhere(),
-                self.here.borrow().clone(),
-            )),
-            Arc::new(settings),
-            Arc::new(catalogue),
-            Arc::clone(&kept.host_apps) as Arc<dyn Source>,
-            Arc::new(Waiting::new(workspace, self.notifications.borrow().clone())),
-            Arc::new(continue_places),
-        ];
-        {
-            let downloaded = self.downloaded.borrow();
-            sources.push(Arc::new(Downloaded::new(
-                workspace,
-                downloaded.reading.clone(),
-                &downloaded.published,
-            )));
-        }
-        if let Some(content) = &kept.content {
-            sources.push(Arc::clone(content) as Arc<dyn Source>);
-        }
-        if let Some(files) = &kept.files {
-            sources.push(Arc::clone(files) as Arc<dyn Source>);
-        }
-        if let Some(records) = &self.records {
-            sources.push(Arc::new(record_rows::Records::new(
-                workspace,
-                records.held(workspace),
-            )));
-        }
+        let (mut sources, published) = self.sources(workspace, scope);
+        // A question typed by the person is answered here, by the model their AI settings choose:
+        // never by a tool that searches.
         sources.push(Arc::new(crate::search_ask::Ask::new(
-            std::sync::Arc::clone(&self.ask),
+            Arc::clone(&self.ask),
             workspace,
             self.wake.clone(),
         )));
-        let mut published = vec![PublishedActions {
-            app: DESKTOP_APP.into(),
-            workspace: workspace.to_owned(),
-            actions: self.own.borrow().clone(),
-            types: self.own_types.borrow().clone(),
-        }];
-        if let Some(apps) = &self.apps {
-            sources.push(Arc::new(Jobs(apps.jobs())));
-            // A search over one workspace offers that workspace's actions;
-            // one that reaches everywhere offers every workspace's.
-            published.extend(apps.published(if scope.everywhere() { "" } else { workspace }));
-        }
         SearchHostFeed {
-            applications: kept.lists.applications.clone(),
+            applications: self.kept.borrow().lists.applications.clone(),
             published,
             sources,
             preferences: self.preferences.borrow().clone(),
-            now,
+            now: ui::time::unix_now(),
             usage: self.usage.borrow().clone(),
         }
     }
