@@ -127,6 +127,63 @@ class Install(unittest.TestCase):
         self.assertIn("has no", done.stderr)
         self.assertFalse(self.installed.exists())
 
+@unittest.skipUnless(shutil.which("openssl"), "the install script verifies with openssl, which this image lacks")
+class Release(unittest.TestCase):
+    """A release as tools/ci/publish/cli-release.sh lays it out: its archives packed and summed by
+    it, SHA256SUMS signed as the release key signs it (a DER ECDSA P-256 signature over SHA-256,
+    here by a local key; the rehearsal check signs it through cosign as KMS does)."""
+
+    RELEASE = REPO / "tools/ci/publish/cli-release.sh"
+
+    def test_the_installer_installs_what_the_release_tooling_packs_and_sums(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = pathlib.Path(scratch)
+            program = root / "tilo"
+            program.write_bytes(b"#!/bin/sh\necho released tilo\n")
+            program.chmod(0o755)
+            builds = root / "builds"
+            builds.mkdir()
+            for system in ("linux-x86_64", "linux-aarch64", "macos-aarch64", "macos-x86_64"):
+                run("bash", self.RELEASE, "pack", program, builds / f"tilo-{system}.tar.gz", env={**os.environ, "TMPDIR": scratch})
+            release = root / "releases/v1.2.3"
+            run("bash", self.RELEASE, "sums", release, builds, env={**os.environ, "TMPDIR": scratch})
+            again = root / "again"
+            run("bash", self.RELEASE, "pack", program, again, env={**os.environ, "TMPDIR": scratch})
+            self.assertEqual(again.read_bytes(), (builds / "tilo-linux-x86_64.tar.gz").read_bytes(), "packing is reproducible")
+            key, pub = root / "release.key", root / "release.pub"
+            run("openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", key)
+            run("openssl", "ec", "-in", key, "-pubout", "-out", pub)
+            run("openssl", "dgst", "-sha256", "-sign", key, "-out", release / "SHA256SUMS.sig", release / "SHA256SUMS")
+            home = root / "home"
+            home.mkdir()
+            done = subprocess.run(
+                ["sh", SCRIPT],
+                capture_output=True,
+                text=True,
+                env={
+                    "PATH": os.environ["PATH"],
+                    "HOME": str(home),
+                    "TILO_RELEASES": f"file://{root / 'releases'}",
+                    "TILO_VERSION": "v1.2.3",
+                    "TILO_RELEASE_KEY": str(pub),
+                },
+            )
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(run(home / ".local/bin/tilo").stdout, b"released tilo\n")
+            names = sorted(line.split()[1] for line in (release / "SHA256SUMS").read_text().splitlines())
+            self.assertEqual(names, sorted(f"tilo-{s}.tar.gz" for s in ("linux-aarch64", "linux-x86_64", "macos-aarch64", "macos-x86_64")))
+
+    def test_a_release_without_both_linux_archives_is_refused(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = pathlib.Path(scratch)
+            program = root / "tilo"
+            program.write_bytes(b"x")
+            run("bash", self.RELEASE, "pack", program, root / "tilo-linux-x86_64.tar.gz", env={**os.environ, "TMPDIR": scratch})
+            done = subprocess.run(["bash", self.RELEASE, "sums", root / "out", root], capture_output=True, text=True, env={**os.environ, "TMPDIR": scratch})
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn("tilo-linux-aarch64.tar.gz", done.stderr)
+
+
 class Trust(unittest.TestCase):
     def test_the_script_trusts_the_key_releases_are_signed_with(self):
         script = SCRIPT.read_text()

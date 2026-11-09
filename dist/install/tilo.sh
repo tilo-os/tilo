@@ -8,7 +8,8 @@
 # SHA-256), checked with openssl, and the archive for this machine must match
 # its line there. Anything else stops the install before a file is written.
 #
-# Where releases come from ($TILO_RELEASES, for a mirror):
+# Where releases come from ($TILO_RELEASES, for a mirror; tools/ci/publish/cli-release.sh
+# makes and publishes them with each release tag, and tilo.sh serves them):
 #   $TILO_RELEASES/latest/SHA256SUMS        sha256sum lines of the archives
 #   $TILO_RELEASES/latest/SHA256SUMS.sig    DER ECDSA signature of SHA256SUMS
 #   $TILO_RELEASES/latest/tilo-<os>-<arch>.tar.gz   holding `tilo`

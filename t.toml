@@ -2461,6 +2461,76 @@ outputs = ["/target/publish/relay/receipt.json"]
 on = ["tag:v[0-9]*.[0-9]*.[0-9]*"]
 id_token = ["registry.tilo.so"]
 
+# ---- The tilo command ----------------------------------------------------------------------
+#
+# What `curl -fsSL https://tilo.sh | sh` installs (dist/install/tilo.sh), by
+# tools/ci/publish/cli-release.sh: one statically linked archive per Linux architecture, built on a
+# node of that architecture, and one per Mac architecture, built on a Mac; their SHA256SUMS; its
+# signature by the release key. It is released with the relay, on release tags: sign-cli alone
+# holds the release key, publish-cli alone the package token, and neither runs anywhere else.
+# cli-rehearsal signs the same release with a throwaway key the same way, publishes it into a
+# directory laid out as tilo.sh serves it, and installs it from there with the installer.
+#
+# A release carries both Linux archives or none; a Mac archive whose build did not pass (no Mac
+# connected) is left out, and the installer tells a Mac that this release has none.
+
+[[check]]
+name = "cli-{arch}"
+run = "bash tools/ci/publish/cli-release.sh build {arch}-unknown-linux-musl /target/publish/cli/linux-{arch}"
+# The C the program links (ring, SQLite) compiles against musl's headers, which the image lacks.
+setup = { run = "dnf install -y --setopt=install_weak_deps=False musl-gcc && dnf clean all" }
+requires = ["arch={arch}"]
+outputs = ["/target/publish/cli/linux-{arch}/*"]
+default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+[[check]]
+name = "cli-macos-{arch}"
+run = "set -eu\nbash tools/ci/publish/cli-release.sh build {arch}-apple-darwin \"${CARGO_TARGET_DIR:-$PWD/target}/publish/cli/macos-{arch}\"\n"
+requires = ["os=macos", "arch=arm64"]
+outputs = ["/target/publish/cli/macos-{arch}/*"]
+default = false
+[check.matrix]
+arch = ["aarch64", "x86_64"]
+
+[[check]]
+name = "cli-release"
+run = "bash tools/ci/publish/cli-release.sh sums /target/publish/cli/release /target/publish/cli/linux-x86_64 /target/publish/cli/linux-aarch64 /target/publish/cli/macos-aarch64 /target/publish/cli/macos-x86_64"
+needs = ["cli-x86_64", "cli-aarch64"]
+needs_any_outcome = ["cli-macos-aarch64", "cli-macos-x86_64"]
+requires = ["arch=any"]
+outputs = ["/target/publish/cli/release/*"]
+default = false
+
+[[check]]
+name = "cli-rehearsal"
+run = "bash tools/ci/publish/cli-release.sh rehearse /target/publish/cli/release"
+needs = ["cli-release", "signing-tools"]
+requires = ["arch=x86_64"]
+on = ["stable", "dispatch", "idle"]
+heavy = true
+
+[[check]]
+name = "sign-cli"
+run = "bash tools/ci/publish/cli-release.sh sign /target/publish/cli/release"
+needs = ["cli-release", "cli-rehearsal", "signing-tools"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/cli/release/SHA256SUMS.sig", "/target/publish/cli/release/SHA256SUMS.bundle", "/target/publish/cli/release/dry-run.pub"]
+cache = false
+on = ["tag:v[0-9]*.[0-9]*.[0-9]*"]
+id_token = ["sts.amazonaws.com"]
+
+[[check]]
+name = "publish-cli"
+run = "bash tools/ci/publish/cli-release.sh publish /target/publish/cli/release"
+needs = ["cli-release", "sign-cli"]
+requires = ["arch=x86_64"]
+cache = false
+on = ["tag:v[0-9]*.[0-9]*.[0-9]*"]
+secrets = ["TILO_PACKAGES_TOKEN"]
+
 [[check]]
 name = "image-legacy-guest"
 run = "bash tools/ci/publish/legacy-guest.sh build /target/publish/legacy-guest/agent /target/publish/legacy-guest/image"
