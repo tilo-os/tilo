@@ -339,7 +339,7 @@ pub fn trusted_devices(
             key_hex: hex::encode(cert.device_public_key),
             fingerprint: fingerprint(&cert.device_public_key),
             current: current == Some(cert.device_public_key),
-            revoked: fleet.refuses(&cert),
+            revoked: fleet.refuses(cert),
             can_host: cert.capabilities.can_act_as_host,
         })
         .collect())

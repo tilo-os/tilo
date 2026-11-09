@@ -334,7 +334,7 @@ fn admit_cert(
     now_ns: u64,
 ) -> Result<AuthenticatedPeer, AuthError> {
     verify_device_cert_at(cert, now_ns)?;
-    if revocations.refuses_at(&cert, now_ns) {
+    if revocations.refuses_at(cert, now_ns) {
         return Err(AuthError::Revoked);
     }
     if !trust.admits(cert, own_user_public_key) {

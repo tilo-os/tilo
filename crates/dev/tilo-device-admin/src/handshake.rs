@@ -213,7 +213,7 @@ pub fn admit(
     if &cert.user_public_key != own_user_public_key {
         return Err(Refusal::OtherIdentity);
     }
-    if revocations.refuses_at(&cert, now_ns) {
+    if revocations.refuses_at(cert, now_ns) {
         return Err(Refusal::Revoked);
     }
     if !cert.capabilities.can_administer_devices {

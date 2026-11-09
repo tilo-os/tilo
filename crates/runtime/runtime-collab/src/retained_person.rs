@@ -223,7 +223,7 @@ impl SignedRetainedPersonProof {
         for entry in entries {
             merged.insert(entry).map_err(io::Error::other)?;
         }
-        if merged.refuses(&installed) {
+        if merged.refuses(installed) {
             return Err(refused());
         }
         Ok(VerifiedRetainedPersonEpoch {
@@ -256,7 +256,7 @@ impl SignedRetainedPersonProof {
         for entry in entries {
             merged.insert(entry).map_err(io::Error::other)?;
         }
-        if merged.refuses(&installed) {
+        if merged.refuses(installed) {
             return Err(refused());
         }
         helper.check_current()?;

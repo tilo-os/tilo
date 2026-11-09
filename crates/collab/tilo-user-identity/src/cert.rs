@@ -910,22 +910,22 @@ impl<'de> serde::de::Visitor<'de> for BinaryCert {
         let user_public_key: [u8; 32] = seq.next_element()?.ok_or_else(|| missing(0))?;
         let device_public_key: [u8; 32] = seq.next_element()?.ok_or_else(|| missing(1))?;
         let device_label: String = seq.next_element()?.ok_or_else(|| missing(2))?;
-        let BinaryCapabilitiesOf(capabilities, issued) =
+        let BinaryCapabilitiesOf(capabilities, names_issuer) =
             seq.next_element()?.ok_or_else(|| missing(3))?;
         let issued_at_ns: u64 = seq.next_element()?.ok_or_else(|| missing(4))?;
         let expires_at_ns: Option<u64> = seq.next_element()?.ok_or_else(|| missing(5))?;
         let signature: serde_bytes::ByteArray<64> =
             seq.next_element()?.ok_or_else(|| missing(6))?;
-        let issuer = if issued {
+        let issuer = if names_issuer {
             if self.nested {
                 return Err(A::Error::custom(
                     "a certificate's issuer has no issuer itself",
                 ));
             }
-            let issuer = seq
-                .next_element_seed(BinaryCert { nested: true })?
-                .ok_or_else(|| missing(7))?;
-            Some(Box::new(issuer))
+            Some(Box::new(
+                seq.next_element_seed(BinaryCert { nested: true })?
+                    .ok_or_else(|| missing(7))?,
+            ))
         } else {
             None
         };
@@ -1853,7 +1853,7 @@ mod tests {
     /// for its longest lifetime.
     fn make_stand_in(seed: u8) -> (ed25519_dalek::SigningKey, DeviceCert) {
         let root = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
-        let key = ed25519_dalek::SigningKey::from_bytes(&[seed + 2; 32]);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[seed.wrapping_add(2); 32]);
         let mut cert = prepare_stand_in_cert(
             root.verifying_key().to_bytes(),
             key.verifying_key().to_bytes(),
@@ -1874,7 +1874,9 @@ mod tests {
             device_label: "Browser".to_owned(),
             capabilities: DeviceCapabilities::member(),
             issued_at_ns,
-            expires_at_ns: Some(issued_at_ns + crate::CertificationPolicy::browser().lifetime_ns),
+            expires_at_ns: Some(
+                issued_at_ns.saturating_add(crate::CertificationPolicy::browser().lifetime_ns),
+            ),
             signature: [0; 64],
             issuer: Some(Box::new(issuer.clone())),
         }
@@ -1949,9 +1951,9 @@ mod tests {
             |c: &mut DeviceCapabilities| c.can_administer_devices = true,
             |c: &mut DeviceCapabilities| c.agent = Some(AgentScope::AllWorkspaces),
         ] {
-            let mut wide = cert.clone();
-            widen(&mut wide.capabilities);
-            others.push(wide);
+            let mut widened = cert.clone();
+            widen(&mut widened.capabilities);
+            others.push(widened);
         }
         let mut forever = cert.clone();
         forever.expires_at_ns = None;
@@ -1975,7 +1977,7 @@ mod tests {
             2_000,
             2_000 + DAY_NS,
         );
-        second.issuer = Some(Box::new(cert.clone()));
+        second.issuer = Some(Box::new(cert));
         assert!(sign_device_cert(&mut second, &key).is_err());
         let second = forced(second, &key);
         assert!(verify_stand_in_cert(&second).is_err());
@@ -2029,7 +2031,7 @@ mod tests {
         // The issuer is bound: another certificate of the same stand-in key,
         // or a changed one, breaks the signature.
         let mut moved = cert.clone();
-        let mut renewed = stand_in.clone();
+        let mut renewed = stand_in;
         renewed.issued_at_ns = 1_500;
         renewed = forced(renewed, &ed25519_dalek::SigningKey::from_bytes(&[1; 32]));
         verify_stand_in_cert(&renewed).unwrap();

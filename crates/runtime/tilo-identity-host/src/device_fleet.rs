@@ -85,7 +85,7 @@ impl DeviceFleet {
                 &cert.user_public_key == person
                     && cert.capabilities.is_personal_device()
                     && verify_device_cert_at(cert, now_ns).is_ok()
-                    && !self.refuses(&cert)
+                    && !self.refuses(cert)
             })
             .map(|cert| cert.device_public_key)
             .collect()

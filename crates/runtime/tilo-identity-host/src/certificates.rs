@@ -49,7 +49,7 @@ fn check_identity_and_revocation(
     fleet: &DeviceFleet,
     cert: &DeviceCert,
 ) -> Result<(), String> {
-    if cert.user_public_key != profile.user_public_key || fleet.refuses(&cert) {
+    if cert.user_public_key != profile.user_public_key || fleet.refuses(cert) {
         return Err("device revoked or identity mismatched".into());
     }
     Ok(())

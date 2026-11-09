@@ -135,7 +135,7 @@ impl Workspaces {
                 "room administration requires a person's device, not an agent's grant",
             ));
         }
-        if self.revocations().refuses(&device) {
+        if self.revocations().refuses(device) {
             return Err(CollaborationError::new("device revoked"));
         }
         tilo_user_identity::verify_device_cert_at(device, now)

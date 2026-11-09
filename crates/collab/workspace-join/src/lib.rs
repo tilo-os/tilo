@@ -911,7 +911,7 @@ fn validate_certificate(
 ) -> Result<(), String> {
     tilo_user_identity::verify_device_cert_at(certificate, now_ns)
         .map_err(|error| error.to_string())?;
-    if revocations.refuses(&certificate) {
+    if revocations.refuses(certificate) {
         return Err("device certificate is revoked".into());
     }
     Ok(())

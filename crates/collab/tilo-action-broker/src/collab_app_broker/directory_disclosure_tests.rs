@@ -412,7 +412,7 @@ impl Fixture {
 #[tokio::test(flavor = "current_thread")]
 async fn cached_private_metadata_is_filtered_on_wire_and_bridge_for_authenticated_people() {
     tokio::task::LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let Fixture {
                 owner,
                 editor,
@@ -486,7 +486,7 @@ async fn cached_private_metadata_is_filtered_on_wire_and_bridge_for_authenticate
                 false,
                 "",
             );
-        })
+        }))
         .await;
 }
 

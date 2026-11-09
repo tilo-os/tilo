@@ -327,7 +327,7 @@ impl PersonalStore {
         certificate: &DeviceCert,
         now: SystemTime,
     ) -> Result<bool, String> {
-        if self.revocations.refuses(&certificate) {
+        if self.revocations.refuses(certificate) {
             return Err("device revoked".into());
         }
         let verified = admitted(self.root, certificate, now)?;
