@@ -140,7 +140,10 @@ d-rhx3oobw = Line
     .doc = The view's doc line, in its author's words: what the switch lists it by.
 
 d-ifgxec27 = Loads
-    .doc = Whether the style loads: false for one whose package does not compile against the shell and the session, so the switch can say so.
+    .doc = Whether the style loads: false for one whose package does not compile against the shell and the session, or whose view failed when it ran, so the switch can say so and the desk shows the built-in strips until it is fixed (`shell.md` §6).
+
+d-eihyiyeb = Reason
+    .doc = Why the style does not load, in the runtime's words, when it does not; empty when it does.
 
 d-zxwtaxaw-filter-loads = Loads
 

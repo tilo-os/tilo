@@ -27,6 +27,7 @@ pub(super) fn shipped_styles() -> Vec<DeskStyleReading> {
         name: name.to_owned(),
         line: line.to_owned(),
         loads: true,
+        reason: String::new(),
     })
     .collect()
 }

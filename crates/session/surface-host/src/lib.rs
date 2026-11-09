@@ -23,6 +23,7 @@ pub use desktop::{
 };
 pub use door::{Doors, Look, Published, Shared, Shot, through_door};
 pub use shell_part::{DeskReading, SessionLink, ShellPart, ShellWork};
+pub use tilolang_tilo::runtime::foreign::ViewFailure;
 pub use well_policy::{DeskHost, WellDesk, WellPolicy, well_policy};
 pub use widget::WidgetHost;
 

@@ -398,3 +398,7 @@ session-agent-name = Assistent
 # The conversation a person asks in, made with Chat's own actions on the
 # first ask (shell.md §8.1).
 session-ask-conversation = Assistent
+
+desk-style-failed-app-name = Schreibtisch
+desk-style-failed-title = Dein Schreibtischstil konnte nicht angezeigt werden
+desk-style-failed-body = { $style } konnte nicht angezeigt werden, daher zeigt der Schreibtisch Streifen. Deine Wahl bleibt erhalten und der Stil wird wieder angezeigt, sobald er repariert ist. ({ $reason })

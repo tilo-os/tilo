@@ -171,6 +171,67 @@ view timeline(a: shell.Arrangement) {
 
     use tilolang_runtime::Value;
 
+    /// A style whose view traps when it runs: a division that is not a number, which the
+    /// runtime refuses in the middle of the call (`shell.md` §6, "Nothing can lock a person
+    /// out").
+    const TRAPPING: &str = r#"app me.broken "A broken style"
+
+use so.tilo.shell as shell
+
+/// A style that fails.
+view broken(a: shell.Arrangement) {
+    let places = a.places.count()
+    ui.Text("at {places / 0}")
+}
+"#;
+
+    /// The same style after its package was fixed: a plain sentence, no trap.
+    const WORKING: &str = r#"app me.broken "A working style"
+
+use so.tilo.shell as shell
+
+/// A style that works.
+view broken(a: shell.Arrangement) {
+    ui.Text("a working style")
+}
+"#;
+
+    /// A shell whose `desk_view` names the style `view` of the package `app`.
+    fn shell_naming(app: &str, view: &str) -> App {
+        let source = format!(
+            r#"app so.tilo.shell "Shell"
+
+use so.tilo.session as session
+
+type Arrangement (origin: session.arrangement) {{
+    places: Collection<ArrangementPlace>
+}}
+
+type ArrangementPlace (origin: session.arrangement_place) {{
+    key: Text
+    title: Text
+}}
+
+root arrangement: Arrangement
+
+default view desk_view for arrangement
+
+/// The shipped strips style.
+view strips(a: Arrangement) {{
+    stack {{
+        text("strips")
+    }}
+}}
+
+/// What draws the desk: the style the person chose, by name.
+view desk_view(a: Arrangement) {{
+    show(a, view: "{app}:{view}")
+}}
+"#
+        );
+        App::compile(&source, &[session()])
+    }
+
     /// The shell's `arrangement` root, made: what a desk style draws.
     fn arrangement_of(rt: &Runtime, shell: &App) -> tilolang_runtime::ResourceRef {
         let ty = shell
@@ -181,5 +242,129 @@ view timeline(a: shell.Arrangement) {
             .map(|r| r.ty.clone())
             .expect("the shell declares its arrangement as a named root");
         rt.create_root(&ty).expect("the arrangement is made")
+    }
+
+    /// The desk a failed style shows: a failed state naming the view, drawn where the call
+    /// stands, in place of a blank frame or an endless skeleton.
+    fn failed_state(view: &ViewInstance) -> Option<String> {
+        fn find(node: &tilolang_runtime::UiNode, out: &mut Option<String>) {
+            if node.kind == "ui.EmptyState" {
+                *out = Some(
+                    node.props
+                        .get("title")
+                        .and_then(|t| match t {
+                            tilolang_runtime::Value::Text(text) => Some(text.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default(),
+                );
+            }
+            for child in &node.children {
+                find(child, out);
+            }
+        }
+        let mut out = None;
+        find(view.tree(), &mut out);
+        out
+    }
+
+    #[test]
+    fn a_style_whose_view_traps_draws_a_failed_state_and_is_reported() {
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let shell = shell_naming("me.broken", "broken");
+        shell.load(&rt);
+        App::compile(TRAPPING, &[session(), shell.meta().clone()]).load(&rt);
+        let root = arrangement_of(&rt, &shell);
+        let view = rt
+            .open_view(
+                &me(),
+                &shell.view("desk_view"),
+                vec![Value::resource(&root)],
+            )
+            .unwrap_or_else(|why| panic!("{why}"));
+        assert_eq!(
+            failed_state(&view).as_deref(),
+            Some("This couldn't be shown"),
+            "a trapping style draws a failed state where it stands: {}",
+            dump(view.tree())
+        );
+        let reported = rt.take_view_failures();
+        let said = reported
+            .iter()
+            .find(|failure| failure.app == "me.broken")
+            .unwrap_or_else(|| panic!("the failure is reported: {reported:?}"));
+        assert_eq!(said.view, "broken", "the view own name: {said:?}");
+        assert!(!said.reason.is_empty(), "with why: {said:?}");
+    }
+
+    #[test]
+    fn a_style_whose_package_does_not_load_draws_a_failed_state_and_is_reported() {
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let shell = shell_naming("me.miscompiled", "miscompiled");
+        shell.load(&rt);
+        // The host tried the package and could not load it: nothing more is coming, so the
+        // call draws a failed state rather than a skeleton that never fills.
+        rt.app_failed("me.miscompiled", "the module does not load".to_owned());
+        let root = arrangement_of(&rt, &shell);
+        let view = rt
+            .open_view(
+                &me(),
+                &shell.view("desk_view"),
+                vec![Value::resource(&root)],
+            )
+            .unwrap_or_else(|why| panic!("{why}"));
+        assert_eq!(
+            failed_state(&view).as_deref(),
+            Some("This couldn't be shown"),
+            "a style whose package did not load draws a failed state: {}",
+            dump(view.tree())
+        );
+        let reported = rt.take_view_failures();
+        let said = reported
+            .iter()
+            .find(|failure| failure.reason == "the module does not load")
+            .unwrap_or_else(|| panic!("the failure is reported: {reported:?}"));
+        assert_eq!(said.app, "me.miscompiled", "{said:?}");
+        assert_eq!(said.view, "me.miscompiled:miscompiled", "{said:?}");
+    }
+
+    #[test]
+    fn a_fixed_style_package_brings_the_style_back() {
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let shell = shell_naming("me.broken", "broken");
+        shell.load(&rt);
+        // The package was tried and did not load: the desk shows its failed state.
+        rt.app_failed("me.broken", "the module does not load".to_owned());
+        let root = arrangement_of(&rt, &shell);
+        let failed = rt
+            .open_view(
+                &me(),
+                &shell.view("desk_view"),
+                vec![Value::resource(&root)],
+            )
+            .unwrap_or_else(|why| panic!("{why}"));
+        assert!(failed_state(&failed).is_some(), "{}", dump(failed.tree()));
+        rt.take_view_failures();
+        // The package is fixed and installed again, and loads: its style draws again, live,
+        // with no restart.
+        App::compile(WORKING, &[session(), shell.meta().clone()]).load(&rt);
+        let back = rt
+            .open_view(
+                &me(),
+                &shell.view("desk_view"),
+                vec![Value::resource(&root)],
+            )
+            .unwrap_or_else(|why| panic!("{why}"));
+        assert!(
+            failed_state(&back).is_none(),
+            "the fixed package's style draws again, no restart: {}",
+            dump(back.tree())
+        );
+        assert_eq!(
+            drawn(&back),
+            ["a working style"],
+            "the style's own words stand on the desk: {}",
+            dump(back.tree())
+        );
     }
 }

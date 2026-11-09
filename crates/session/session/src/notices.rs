@@ -327,6 +327,29 @@ pub(crate) fn tell_desk_not_opened(notices: &DesktopNotifications, refusal: &Sta
     );
 }
 
+/// Tell the person the desk style they chose could not be shown: its package did not load, or
+/// its view failed when it ran, so the desk draws the built-in strips while their choice stays
+/// as it was (`shell.md` §6, "Nothing can lock a person out"). `style` is the style as the
+/// switch names it, and `reason` what failed. It stays until they let it go: it says what the
+/// desk is showing instead of what they picked.
+pub(crate) fn desk_style_failed_notice(style: &str, reason: &str) -> Notice {
+    let mut notice = Notice::new(
+        t("desk-style-failed-app-name"),
+        2,
+        t("desk-style-failed-title"),
+        t_args(
+            "desk-style-failed-body",
+            &[
+                ("style", style.to_owned().into()),
+                ("reason", reason.to_owned().into()),
+            ],
+        ),
+    );
+    notice.machine_wide = false;
+    notice.expires_after = Some(Duration::from_secs(30));
+    notice
+}
+
 /// What a paste of files has to tell the person, or `None` when it went through: the files it could
 /// not paste and why, what stopped it before it began, or that a paste the last session was in the
 /// middle of was taken back.

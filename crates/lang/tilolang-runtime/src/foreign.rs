@@ -549,6 +549,124 @@ impl WantedPackages {
     }
 }
 
+/// A view call that could not be shown: its package did not load, or its view failed when it
+/// ran. What a `show` boundary draws in its failed state instead of a blank frame or an endless
+/// waiting state, and what it reports to its host ([`FailedViews`]) so the session can say so
+/// (shell.md §6, "Nothing can lock a person out").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ViewFailure {
+    /// The app whose view could not be shown.
+    pub app: String,
+    /// The view's name, as the caller named it: its id or name, without its package.
+    pub view: String,
+    /// Why, in the runtime's own words: the load's refusal, or what the view failed with.
+    pub reason: String,
+}
+
+impl std::fmt::Display for ViewFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.view.is_empty() {
+            write!(f, "`{}` could not be shown: {}", self.app, self.reason)
+        } else {
+            write!(
+                f,
+                "`{}`'s view `{}` could not be shown: {}",
+                self.app, self.view, self.reason
+            )
+        }
+    }
+}
+
+/// The view calls that failed, by the fragment's key in the tree: each its app, view and reason.
+///
+/// A view call fails in one of two ways, and both end in a failed state rather than a fault of
+/// the whole screen: its package could not be loaded here (the host refused it: it does not
+/// compile against this runtime's packages, or it is not one), or its view failed when it ran
+/// (a trap). What the failure is stands until the call runs again and succeeds, so a screen
+/// that shows it reports it once however often it draws.
+#[derive(Debug, Default)]
+pub struct FailedViews {
+    /// What failed, by the call's key in the tree.
+    failed: BTreeMap<String, ViewFailure>,
+    /// The apps whose package the host could not load here, each with why: a view of theirs is
+    /// a failed state rather than a wait, since nothing more is coming.
+    apps: BTreeMap<String, String>,
+    /// The apps whose package failed to load and then loaded: what the host says the person's
+    /// choice is back.
+    recovered: Vec<String>,
+    /// The view calls whose failure ended — the call ran again and succeeded: what the host
+    /// says the person's view is back.
+    recovered_views: Vec<ViewFailure>,
+    /// Answers the host has not taken yet: what it says the person should hear about.
+    said: Vec<ViewFailure>,
+}
+
+impl FailedViews {
+    /// The package of `app` did not load, for `reason`: every call of one of its views draws a
+    /// failed state naming it, now and until the app's package arrives.
+    pub(crate) fn app_failed(&mut self, app: &str, reason: String) {
+        self.apps.insert(app.to_owned(), reason);
+    }
+
+    /// The app's package arrived after all: it is no longer failed to load, and the host is
+    /// told so ([`FailedViews::take_recovered`]) — a desk style that failed comes back.
+    pub(crate) fn app_arrived(&mut self, app: &str) {
+        if self.apps.remove(app).is_some() {
+            self.recovered.push(app.to_owned());
+        }
+    }
+
+    /// The apps whose package failed to load and now loaded: what the host says the person's
+    /// choice is back (`shell.md` §6, "Nothing can lock a person out"). Each once.
+    pub(crate) fn take_recovered(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.recovered)
+    }
+
+    /// Why the package of `app` failed to load, when it did.
+    #[must_use]
+    pub fn failed_app(&self, app: &str) -> Option<&str> {
+        self.apps.get(app).map(String::as_str)
+    }
+
+    /// `failure` is what the call at `key` draws now. Whether it is news: the first time that
+    /// call fails, or the first time it fails for a different reason.
+    pub(crate) fn note(&mut self, key: &str, failure: ViewFailure) -> bool {
+        match self.failed.get(key) {
+            Some(was) if *was == failure => false,
+            _ => {
+                self.said.push(failure.clone());
+                self.failed.insert(key.to_owned(), failure);
+                true
+            }
+        }
+    }
+
+    /// The call at `key` runs again and succeeded: it is no longer failed, and if it had
+    /// failed the host is told the view came back (`take_recovered`).
+    pub(crate) fn cleared(&mut self, key: &str) {
+        if let Some(was) = self.failed.remove(key) {
+            self.recovered_views.push(was);
+        }
+    }
+
+    /// The views whose failure ended since the last call — the call ran again and succeeded:
+    /// what the host says the person's choice is back (`shell.md` §6). Each once.
+    pub(crate) fn take_recovered_views(&mut self) -> Vec<ViewFailure> {
+        std::mem::take(&mut self.recovered_views)
+    }
+
+    /// What the host has not been told about yet, each once.
+    pub(crate) fn take(&mut self) -> Vec<ViewFailure> {
+        std::mem::take(&mut self.said)
+    }
+
+    /// Whether any call draws a failed state now.
+    #[must_use]
+    pub fn any(&self) -> bool {
+        !self.failed.is_empty()
+    }
+}
+
 /// `json` as the value `ty` declares, as a reading of another app publishes it.
 ///
 /// A reading is plain JSON — what its service serialised (a number for an `Int`, a string for

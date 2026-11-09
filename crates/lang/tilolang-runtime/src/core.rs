@@ -154,6 +154,10 @@ pub struct Core {
     /// The apps a view read a resource of before their package was loaded here: what the host
     /// loads ([`crate::Runtime::take_wanted_packages`]).
     pub wanted_packages: RefCell<crate::foreign::WantedPackages>,
+    /// The view calls that could not be shown: their package did not load here, or their view
+    /// failed when it ran ([`crate::foreign::FailedViews`]). What each call draws as its failed
+    /// state, and what the host is told once so the session can say it (shell.md §6).
+    pub failed_views: RefCell<crate::foreign::FailedViews>,
     /// The seen marks the person set here, for the host to keep in their own record
     /// ([`crate::seen`]).
     pub seen_writes: RefCell<Vec<crate::seen::SeenWrite>>,
@@ -286,6 +290,7 @@ impl Core {
             foreign: RefCell::new(crate::foreign::Foreign::default()),
             rust_views: crate::rust_views::Shared::default(),
             wanted_packages: RefCell::new(crate::foreign::WantedPackages::default()),
+            failed_views: RefCell::new(crate::foreign::FailedViews::default()),
             seen_writes: RefCell::new(Vec::new()),
             seen_undo: RefCell::new(None),
             costs,

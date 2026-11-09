@@ -394,3 +394,7 @@ session-agent-name = Assistant
 # The conversation a person asks in, made with Chat's own actions on the
 # first ask (shell.md §8.1).
 session-ask-conversation = Assistant
+
+desk-style-failed-app-name = Desk
+desk-style-failed-title = Your desk style could not be shown
+desk-style-failed-body = { $style } could not be shown, so the desk shows Strips. Your choice is kept and the style is shown again once it is fixed. ({ $reason })

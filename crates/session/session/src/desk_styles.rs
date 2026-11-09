@@ -98,6 +98,28 @@ pub fn installed(
     out
 }
 
+/// The compiled module of the installed package `app`, from the person's store: what a view of
+/// its that the shell composes runs as, when the session's own services keep no records of it.
+///
+/// A desk style is a view of another installed package, and no session service runs that
+/// package's records — a style is code and nothing else — so the module is read from the
+/// store's row the way `installed_shell` reads the shell's (`Bundle::read`). Without it, a
+/// style the person chose would wait for a package nothing would ever publish.
+#[must_use]
+pub fn module_from_store(app: &str) -> Option<std::sync::Arc<[u8]>> {
+    // The shell's own package is what the part runs, never one it loads beside itself: the
+    // store holds it, and sending it here would load a second copy.
+    if app == tilo_surface_host::shell_part::SHELL_APP {
+        return None;
+    }
+    let catalog = package_store::Catalog::from_env().ok()?;
+    let installed = app_catalogue::apps::read_one(&catalog, app)
+        .ok()
+        .flatten()?;
+    let bundle = Bundle::read(&installed.payload_root).ok()?;
+    Some(std::sync::Arc::from(bundle.wasm))
+}
+
 /// One app whose module did not read: a style the switch says it cannot load, named by the
 /// package, so a person who installed it sees why rather than seeing nothing.
 fn unreadable(package: &str) -> tilo_surface_host::shell_part::DeskStyleReading {
@@ -107,6 +129,7 @@ fn unreadable(package: &str) -> tilo_surface_host::shell_part::DeskStyleReading 
         name: String::new(),
         line: String::new(),
         loads: false,
+        reason: "the package carries no description that reads".to_owned(),
     }
 }
 
@@ -176,6 +199,7 @@ fn styles_of(
             name: v.name.clone(),
             line: v.doc.lines().next().unwrap_or("").trim().to_owned(),
             loads: true,
+            reason: String::new(),
         })
         .collect()
 }
@@ -234,7 +258,8 @@ mod tests {
                 view("notes", "Notes", "Desk"),
             ]),
         );
-        let found = styles_of("so.tilo.shell", &meta);
+        let modules = [("so.tilo.shell".to_owned(), meta.clone())];
+        let found = styles_of("so.tilo.shell", &meta, &modules);
         assert_eq!(
             found.iter().map(|s| s.style.as_str()).collect::<Vec<_>>(),
             ["so.tilo.shell:strips"],
@@ -251,6 +276,7 @@ mod tests {
     #[test]
     fn a_package_with_no_arrangement_type_offers_no_style() {
         let meta = meta(serde_json::json!([]), serde_json::json!([]));
-        assert!(styles_of("so.tilo.notes", &meta).is_empty());
+        let modules = [("so.tilo.notes".to_owned(), meta.clone())];
+        assert!(styles_of("so.tilo.notes", &meta, &modules).is_empty());
     }
 }
