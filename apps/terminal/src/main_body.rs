@@ -6260,48 +6260,41 @@ fn ush_service_backend(
 ///
 /// # Errors
 /// No launcher connection, or the supervisor did not answer.
-#[cfg(unix)]
 pub(crate) fn ush_service_ask(
     request: &serde_json::Value,
     workspace: Option<&str>,
 ) -> Result<String, String> {
-    if !(USH_SERVICE.was_taken() || ush_service_fd().is_some()) {
-        return Err("environments are managed through Tilo's shell runtime".into());
-    }
+    use runtime_portal::service_socket::{ControlError, ServiceSocketError};
+
     let mut request = request.clone();
     crate::sessions::with_workspace(&mut request, workspace);
     let mut line = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
     line.push(b'\n');
-    let ask = |stream: &std::os::unix::net::UnixStream| -> Result<String, String> {
-        let mut writer = stream;
-        writer
-            .write_all(b"{\"op\":\"hello\",\"protocol\":2}\n")
-            .and_then(|()| writer.flush())
-            .map_err(|e| e.to_string())?;
-        let (hello, rights) =
-            runtime_portal::fd_transport::recv_with_fds(stream).map_err(|e| e.to_string())?;
-        let ready = serde_json::from_slice::<serde_json::Value>(&hello).ok();
-        if !rights.is_empty()
-            || ready
-                .as_ref()
-                .is_none_or(|value| value["result"] != "ready" || value["protocol"] != 2)
-        {
-            return Err(t("terminal-service-protocol-unavailable"));
-        }
-        writer
-            .write_all(&line)
-            .and_then(|()| writer.flush())
-            .map_err(|e| e.to_string())?;
-        let (reply, rights) =
-            runtime_portal::fd_transport::recv_with_fds(stream).map_err(|e| e.to_string())?;
-        if !rights.is_empty() {
-            return Err("the shell runtime answered with descriptors nobody asked for".into());
-        }
-        String::from_utf8(reply).map_err(|e| e.to_string())
-    };
     // SAFETY: this instance alone owns the inherited fd; the exchange keeps
     // only the control connection and hands out no lease.
-    unsafe { USH_SERVICE.with_control(ask) }.map_err(|error| error.to_string())?
+    let exchanged = unsafe {
+        USH_SERVICE.exchange(|link| -> Result<String, String> {
+            link.send(b"{\"op\":\"hello\",\"protocol\":2}\n")
+                .map_err(|e| e.to_string())?;
+            let negotiation = link.answer().map_err(|e| e.to_string())?;
+            let ready = serde_json::from_slice::<serde_json::Value>(&negotiation).ok();
+            if ready
+                .as_ref()
+                .is_none_or(|value| value["result"] != "ready" || value["protocol"] != 2)
+            {
+                return Err(t("terminal-service-protocol-unavailable"));
+            }
+            link.send(&line).map_err(|e| e.to_string())?;
+            let answer = link.answer().map_err(|e| e.to_string())?;
+            String::from_utf8(answer).map_err(|e| e.to_string())
+        })
+    };
+    exchanged.map_err(|error| match error {
+        ControlError::Socket(
+            ServiceSocketError::Missing | ServiceSocketError::InUse | ServiceSocketError::Poisoned,
+        ) => "environments are managed through Tilo's shell runtime".to_owned(),
+        other => other.to_string(),
+    })?
 }
 
 #[cfg(windows)]

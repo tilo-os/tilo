@@ -533,11 +533,17 @@ impl Sessions {
             Source::Hosted { .. } => {
                 crate::HostedProcessServices::ask(request, self.workspace().as_deref())?
             }
-            #[cfg(unix)]
             Source::Standalone => {
                 crate::inner::ush_service_ask(request, self.workspace().as_deref())?
             }
-            _ => return Err("environments are managed through Tilo's shell runtime".into()),
+            Source::None => {
+                return Err("environments are managed through Tilo's shell runtime".into());
+            }
+            // A scripted source answers no directory, as it always has.
+            #[cfg(test)]
+            Source::Scripted(_) => {
+                return Err("environments are managed through Tilo's shell runtime".into());
+            }
         };
         parse_directory_reply(&reply)
     }
