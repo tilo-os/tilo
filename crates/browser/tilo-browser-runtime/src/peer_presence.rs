@@ -249,6 +249,19 @@ pub(crate) fn register(
     });
 }
 
+/// Every started page of the person whose root is `user` (hex): what changes
+/// for that person as a whole, such as a revocation their root signs, reaches
+/// all of their sessions at once.
+pub(crate) fn handles_of(user: &str) -> Vec<PeerHandle> {
+    PAGES.with_borrow(|pages| {
+        pages
+            .values()
+            .filter(|page| page.user == user)
+            .map(|page| page.handle.clone())
+            .collect()
+    })
+}
+
 /// Forget `id`'s peer and what it said.
 pub(crate) fn release(id: u32) {
     PAGES.with_borrow_mut(|pages| {

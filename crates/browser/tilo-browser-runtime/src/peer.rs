@@ -34,7 +34,7 @@ use tilo_browser_peer::{
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveRecord, OpsFrame, PreviewOp};
-use tilo_user_identity::{DeviceCert, RevocationList};
+use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList, RevocationReason};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
@@ -313,6 +313,12 @@ struct ConnectConfig {
     /// The person's chosen name, for history and presence; empty for none.
     #[serde(default)]
     display_name: String,
+    /// The revocations this person's root signed, as the page kept them: the
+    /// session announces them to its host with its certificate, so a host
+    /// refuses a device of theirs, or a stand-in it holds for them, from the
+    /// moment each entry names.
+    #[serde(default)]
+    revocations: Vec<RevocationEntry>,
 }
 
 /// The certified user as the toolkit's local identity.
@@ -786,6 +792,28 @@ pub async fn certify_stand_in(root: JsValue, key_hex: String) -> Result<String, 
     tilo_user_identity::canonical::canonical_bytes(&cert)
         .map(hex::encode)
         .map_err(js_error)
+}
+
+/// Revoke `keyHex` — a device key of this person's, or the stand-in approver
+/// their host holds — with the root the page holds (`root`): resolves to the
+/// root-signed revocation as JSON, which the page keeps beside the person. It
+/// is announced to every session of theirs at once, so their hosts refuse
+/// what the key signs from now on and keep valid what it signed before.
+#[wasm_bindgen(js_name = revokeDevice)]
+pub async fn revoke_device(root: JsValue, key_hex: String) -> Result<String, JsError> {
+    let root = PageSigner::from_js(&root)?;
+    let entry = tilo_browser_peer::revoke_device(
+        &root,
+        device_key(&key_hex)?,
+        tilo_clock::unix_now_ns(),
+        RevocationReason::Retired,
+    )
+    .await
+    .map_err(js_error)?;
+    for handle in crate::peer_presence::handles_of(&hex::encode(entry.user_public_key)) {
+        handle.revoke(entry.clone()).map_err(js_error)?;
+    }
+    serde_json::to_string(&entry).map_err(js_error)
 }
 
 /// The new devices waiting at the host at `post` for the member root the
@@ -1530,12 +1558,21 @@ impl WasmPeer {
         let reporter_cert = config.cert.clone();
         let owner_cert = config.host_cert.clone();
         let display_name = config.display_name;
+        let mut revocations = RevocationList::new();
+        for entry in config.revocations {
+            // A session announces only its own person's revocations: a host
+            // reads a hello's entries as its sender's root's, and refuses one
+            // signed by another.
+            if entry.user_public_key == config.cert.user_public_key {
+                revocations.insert(entry).map_err(js_error)?;
+            }
+        }
         let handle = PeerHandle::start(
             PeerConfig {
                 host: config.address.host(),
                 cert: config.cert,
                 host_cert: config.host_cert,
-                revocations: RevocationList::new(),
+                revocations,
             },
             Arc::new(signer),
             store,

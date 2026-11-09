@@ -17815,6 +17815,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-browser-peer",
+ "tilo-clock",
  "tilo-content",
  "tilo-desktop",
  "tilo-desktop-model",
