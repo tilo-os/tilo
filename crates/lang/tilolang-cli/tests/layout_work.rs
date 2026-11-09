@@ -5,6 +5,14 @@
 //! builds and the text it shapes outside the cache — counters that the same sources give the
 //! same numbers on any machine, in any build profile.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "test assertions"
+)]
+
 use std::path::Path;
 
 use tilolang_cli::layout_check::{self, Options};
