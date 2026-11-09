@@ -84,6 +84,9 @@ struct Notes {
     /// Who is in the workspace, as this host's roster names them; `None` for
     /// a host that reads no roster.
     here: Arc<Mutex<Option<Vec<tilo_actions::remote::Here>>>>,
+    /// Whether this host puts a note's deletion to the person before it runs,
+    /// as a workspace whose grants ask does.
+    asks: Arc<Mutex<bool>>,
 }
 
 /// What a workspace answers about its installed apps.
@@ -132,7 +135,14 @@ impl Notes {
                 name: "Ada".into(),
                 kind: "person".into(),
             }]))),
+            asks: Arc::default(),
         }
+    }
+
+    /// The same host, putting a note's deletion to the person first.
+    fn asking(self) -> Self {
+        *self.asks.lock().unwrap() = true;
+        self
     }
 
     /// One new step in every note's history: `entry` as the history verb
@@ -891,6 +901,11 @@ impl ActionHost for Notes {
             || request.target.address.resource == format!("tl:{APP}");
         if !known || (request.target.provider != WORKSPACE && !*self.running.lock().unwrap()) {
             return Pending::ready(Err(ActionHostError::UnknownAction));
+        }
+        // What the workspace's grants put to the person first: nothing runs
+        // until they allow it.
+        if *self.asks.lock().unwrap() && request.target.address.action == "delete" {
+            return Pending::ready(Err(ActionHostError::ConfirmationRequired));
         }
         if request.target.provider == WORKSPACE {
             *self.running.lock().unwrap() = true;
@@ -2807,5 +2822,29 @@ fn a_watch_answers_changes_runs_and_presence() {
         .await;
         assert!(!failed, "{again}");
         assert_eq!(again["events"], json!([]), "{again}");
+    });
+}
+
+/// An action the person must allow: a typed call answers `pending` with the
+/// ask rather than holding the caller, and the text a model reads is what it
+/// was.
+#[test]
+fn an_action_the_person_must_allow_answers_pending_with_the_ask() {
+    let host = Notes::new(true).asking();
+    run(async {
+        let server = agent(&host);
+        let (asked, failed) = answer(&server, "tilo_do", json!({"path":"notes/Todo#delete"})).await;
+        assert!(!failed, "pending is not an error: {asked}");
+        assert_eq!(asked["status"], "pending");
+        let id = asked["invocation_id"]
+            .as_str()
+            .expect("the call names its invocation");
+        assert_eq!(asked["ask"]["invocation_id"], id);
+        assert_eq!(asked["path"], "notes/Todo#delete");
+
+        // A model still reads the refusal's words.
+        let (text, failed) = tool(&server, "tilo_do", json!({"path":"notes/Todo#delete"})).await;
+        assert!(failed, "{text}");
+        assert!(text.contains("requires confirmation"), "{text}");
     });
 }

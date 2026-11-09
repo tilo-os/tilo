@@ -2406,6 +2406,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 reply.structured = Some(json!({
                     "status": "pending",
                     "invocation_id": id,
+                    "path": path,
                     "ask": {"invocation_id": id},
                 }));
                 return Ok(reply);
