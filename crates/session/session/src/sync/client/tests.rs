@@ -1112,3 +1112,76 @@ fn where_i_am_is_said_with_the_rest_of_the_word_and_only_when_it_moves() {
     assert!(sync.set_where(None, Some(shell(3))));
     assert!(!sync.take_said().is_empty());
 }
+
+/// A host that names the workspaces it shows itself — a page's mounts, each showing one — takes
+/// part in each of them, says its word in the one in front, and keeps a schedule of its own for
+/// each: what one of them owes is pumped without the other hearing it.
+#[test]
+fn a_host_that_names_its_workspaces_says_and_pumps_each_of_them() {
+    let publisher = device(0x32);
+    let (outgoing, mut said) = tokio::sync::mpsc::unbounded_channel();
+    let (_heard, arrived) = std::sync::mpsc::channel();
+    let (_landed, enrolled) = std::sync::mpsc::channel();
+    let sync = Client::over(
+        Transport {
+            outgoing,
+            arrived,
+            enrolled,
+            saying: None,
+        },
+        Device {
+            publisher,
+            endpoint: EndpointAddr::new(publisher),
+            person: Some(root(0x05)),
+            name: "Page".to_owned(),
+        },
+        OwnPresence {
+            label: "Quinten".to_owned(),
+            ..OwnPresence::default()
+        },
+    );
+    let showing = [
+        (topic(WORKSPACE), WORKSPACE.to_owned()),
+        (topic(OTHER_WORKSPACE), OTHER_WORKSPACE.to_owned()),
+    ];
+    sync.follow_workspaces(&showing, Some(topic(WORKSPACE)));
+    let commands = sent(&mut said);
+    for workspace in [WORKSPACE, OTHER_WORKSPACE] {
+        assert!(
+            commands
+                .iter()
+                .any(|command| matches!(command, Cmd::Join(ws) if *ws == topic(workspace))),
+            "the host takes part in every workspace it shows"
+        );
+    }
+    let word = sync.take_said();
+    for workspace in [WORKSPACE, OTHER_WORKSPACE] {
+        assert!(
+            word.iter().any(
+                |frame| frame.cluster == workspace && matches!(frame.payload, Payload::Arrived)
+            ),
+            "a workspace this host joins hears it arrive there: {word:?}"
+        );
+    }
+    // What changes after the join is said in the workspace in front alone.
+    assert!(sync.set_own(OwnPresence {
+        label: "Quinn".to_owned(),
+        ..OwnPresence::default()
+    }));
+    let changed = sync.take_said();
+    assert!(!changed.is_empty());
+    assert!(
+        changed.iter().all(|frame| frame.cluster == WORKSPACE),
+        "the front workspace hears what changed: {changed:?}"
+    );
+
+    // Each of the two keeps a schedule of its own, whether or not it is in front: what one owes
+    // waits on that one's clock, and the other's is untouched.
+    assert!(sync.next_due_in(WORKSPACE).is_some());
+    assert!(sync.next_due_in(OTHER_WORKSPACE).is_some());
+    assert!(
+        !sync.due_in(OTHER_WORKSPACE),
+        "nothing is owed before the rate ceiling passes"
+    );
+    assert!(sync.take_said().is_empty());
+}
