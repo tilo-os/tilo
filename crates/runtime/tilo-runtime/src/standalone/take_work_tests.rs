@@ -55,7 +55,11 @@ fn a_member_is_configured_by_the_relay_it_serves() {
     let endpoint = public(3);
     env.set(RELAY_ENDPOINT_ENV, hex::encode(endpoint));
     let relay = Relay::from_env().unwrap().unwrap();
-    assert_eq!(relay.device(), [0x22; 32], "requests are still the device's");
+    assert_eq!(
+        relay.device(),
+        [0x22; 32],
+        "requests are still the device's"
+    );
     assert_eq!(relay.endpoint_addr().unwrap().id.as_bytes(), &endpoint);
     env.set(RELAY_ENDPOINT_ENV, "not hex");
     assert!(Relay::from_env().is_err(), "an endpoint id that is no key");
@@ -63,7 +67,9 @@ fn a_member_is_configured_by_the_relay_it_serves() {
 
 /// An endpoint id: the public half of a key seeded `seed`.
 fn public(seed: u8) -> [u8; 32] {
-    SigningKey::from_bytes(&[seed; 32]).verifying_key().to_bytes()
+    SigningKey::from_bytes(&[seed; 32])
+        .verifying_key()
+        .to_bytes()
 }
 
 #[test]
