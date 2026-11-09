@@ -2640,6 +2640,10 @@ impl Widget for Button {
     /// its name beside it where the bar has room for the words and its icon alone where it has
     /// none, and one its header keeps in its menu, or one that opens a menu of its own, is
     /// listed behind the bar's own "…". `None` for a button with no name to show.
+    ///
+    /// A button that shows its glyph alone asked for that: the bar draws it as the glyph the
+    /// app put on it instead of spending the room a second control needs on words the button
+    /// itself keeps off. Its name is still what it says for itself (its tooltip, its menu row).
     fn window_slot(&self, id: String) -> Option<crate::window_toolbar::ToolbarAction> {
         let name = self.accessibility()?.name.filter(|name| !name.is_empty())?;
         let icon = self.icon.map_or("", crate::icons::Icon::name);
@@ -2649,6 +2653,8 @@ impl Widget for Button {
         Some(
             if self.menu_only || self.opens_menu || self.icon.is_none() {
                 action.in_menu()
+            } else if self.label.trim().is_empty() {
+                action
             } else {
                 action.labelled()
             },

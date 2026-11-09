@@ -1443,8 +1443,18 @@ impl AppCheck<'_> {
             let Some(resource) = resource_of(&listed, &named, &default.ty) else {
                 continue;
             };
-            staged.open(resource);
+            staged.open(resource.clone());
             self.run(staged, &format!("{title}, then a {} opened", view.name))?;
+            // An app whose rows open where they stand (a task opened in its list) answers the
+            // record's own door with its place: its page is still a view the app draws, from
+            // the row's menu, so the run opens it by its name as that menu row does.
+            if !shows(&self.shown, &self.meta.app, &view.name) {
+                staged.open_with(&resource, &view.id);
+                self.run(
+                    staged,
+                    &format!("{title}, then a {} opened on its own", view.name),
+                )?;
+            }
         }
         for view in surface_views(self.meta) {
             if shows(&self.shown, &self.meta.app, &view.name) {

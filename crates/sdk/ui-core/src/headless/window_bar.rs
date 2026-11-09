@@ -39,39 +39,47 @@ impl FrameHarness {
     /// controls stand at its trailing end ([`Self::row_holds_bar`]).
     pub fn present_in_window_bar(&mut self) {
         self.invalidate_local();
-        if self.window_bar {
-            return;
+        if !self.window_bar {
+            self.window_bar = true;
+            crate::window_toolbar::set_hosted(true);
+            if let Some(history) = &mut self.history {
+                history.remove_fallback_bar();
+                history.set_open_button(false);
+                history.set_window_presents(true);
+            }
         }
-        self.window_bar = true;
-        crate::window_toolbar::set_hosted(true);
-        if let Some(history) = &mut self.history {
-            history.remove_fallback_bar();
-            history.set_open_button(false);
-            history.set_window_presents(true);
-        }
-        // The bar the frame offers its content's header row, and whether the row holds it: a
-        // row that does fills the window, one that does not leaves the bar its band above.
+        // The bar the frame offers its content's header row: a row that takes it fills the
+        // window, with the window's controls at its trailing end, and one that does not leaves
+        // the bar its band above ([`Self::row_holds_bar`]). Every frame offers it, as a window's
+        // frame does, so the row a screen the app opened brought with it is offered too.
         let bar = self.window_bar_offer();
         crate::widget::window_header::offer_root_header_bar(self.root.as_mut(), Some(bar));
-        self.lay_out_the_window();
-        self.row_holds = crate::widget::window_header::content_bar(self.root.as_ref()).is_some();
         // A row holding the bar carries the search the app keeps in it; a bar over the frame
         // presents the window's own.
         crate::widget::window_header::offer_window_search(self.root.as_mut(), !self.row_holds);
-        self.lay_out_the_window();
         let frame = self.content_viewport(self.viewport);
         if let Err(error) = self.resize(frame) {
             tracing::warn!(%error, "window bar: the frame under it did not lay out");
         }
+        self.refresh_row_holds();
     }
 
-    /// Lay the app's frame out over the whole window, whatever size the window keeps: what the
-    /// bar or the header row was just offered changes the frame's structure.
-    fn lay_out_the_window(&mut self) {
-        self.invalidate_layout_tree();
-        self.invalidate_local();
-        if let Err(error) = self.try_relayout() {
-            tracing::warn!(%error, "window bar: the frame did not lay out");
+    /// Read whether the app's frame holds the window's bar in a header row of its own, from the
+    /// frame just laid out: a row that draws one takes the bar, and the window's controls stand
+    /// at its trailing end. A row that appeared with the screen the app opened makes the frame
+    /// lay itself out again in the room the row leaves, so the window shows one bar either way.
+    fn refresh_row_holds(&mut self) {
+        let holds = crate::widget::window_header::content_bar(self.root.as_ref()).is_some();
+        if holds == self.row_holds {
+            return;
+        }
+        self.row_holds = holds;
+        // The search follows the bar it stands in: the row's own while the row is the bar, the
+        // window's while the bar stands over the frame.
+        crate::widget::window_header::offer_window_search(self.root.as_mut(), !self.row_holds);
+        let frame = self.content_viewport(self.viewport);
+        if let Err(error) = self.resize(frame) {
+            tracing::warn!(%error, "window bar: the frame under it did not lay out");
         }
     }
 
@@ -136,7 +144,11 @@ impl FrameHarness {
     ) -> Result<(), crate::widget::WidgetLayoutError> {
         self.present_in_window_bar();
         let frame = self.content_viewport(viewport);
-        self.relayout_themed(frame, theme)
+        self.relayout_themed(frame, theme)?;
+        // What the app built this frame may draw a row the last one did not (a screen it
+        // opened): the window shows one bar either way.
+        self.refresh_row_holds();
+        Ok(())
     }
 
     /// The History control the window lists beside the app's slots, as the
