@@ -506,10 +506,12 @@ async fn change_refusal(
     };
     // The change itself must say what it does and stay inside what its app
     // publishes, before the relay keeps or forwards it.
-    let (standings, payloads) = {
-        let runtime = ws.lock().await;
-        (runtime.standings.clone(), runtime.store.payloads().clone())
-    };
+    let (standings, payloads) =
+        crate::workspace::standings_deciding(ws, claimed, |standings, payloads| {
+            crate::surfaces::refusal(payloads, delta, standings).is_some()
+                || crate::surfaces::role_refusal(delta, standings, claimed).is_some()
+        })
+        .await;
     let refused = crate::surfaces::refusal(&*payloads, delta, standings.as_deref())
         .or_else(|| crate::surfaces::role_refusal(delta, standings.as_deref(), claimed));
     if let Some(reason) = refused {

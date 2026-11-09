@@ -229,6 +229,20 @@ impl Workspaces {
         let mut workspace = workspace.lock().await;
         let mut candidate = workspace.peer().clone();
         if !candidate.admit_certificate(device.clone(), &self.inner.host.key, system_time(now))? {
+            // Admitted already, but an earlier entry can have been cut off
+            // between committing the admission and settling it (its page
+            // closed meanwhile): the relay would then decide the device's
+            // changes against standings that leave it out. Settle what
+            // governance holds before answering.
+            if !self
+                .inner
+                .host
+                .access
+                .projects_standing(workspace.workspace_id(), device.device_public_key)
+                .await
+            {
+                self.settle(&mut workspace).await?;
+            }
             return Ok(false);
         }
         let state = workspace.collaboration().clone();

@@ -200,6 +200,70 @@ async fn a_crowds_shared_writes_hold_each_invitation_grant_and_challenge_across_
     relay.shutdown().await;
 }
 
+/// An entry cut off between committing a device's admission and settling it
+/// (the page that asked closed meanwhile) leaves governance holding the
+/// device while the relay decides its changes against standings without it.
+/// The device's next entry finds it admitted already, and settles what
+/// governance holds before answering, so its changes are decided with it.
+#[tokio::test]
+async fn an_entry_cut_off_before_its_settle_is_settled_by_the_next() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let workspaces = relay.workspaces();
+    let created = workspaces.create("Demo").await.unwrap();
+    let page = {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let mut page = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes(),
+            device_label: "browser".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut page, &root).unwrap();
+        page
+    };
+    // The first entry commits the admission and stops there.
+    {
+        let governed = workspaces.workspace(&created.workspace).await.unwrap();
+        let mut governed = governed.lock().await;
+        let now = SystemTime::now();
+        let mut candidate = governed.peer().clone();
+        assert!(
+            candidate
+                .admit_certificate(page.clone(), &workspaces.inner.host.key, now)
+                .unwrap()
+        );
+        let state = governed.collaboration().clone();
+        governed
+            .commit(candidate, &workspaces.inner.host.key, now, |_, _| Ok(state))
+            .unwrap();
+    }
+    let access = &workspaces.inner.host.access;
+    assert!(
+        !access
+            .projects_standing(created.workspace_id, page.device_public_key)
+            .await,
+        "the cut-off entry left the device out of the standings changes are decided against"
+    );
+
+    assert!(
+        !workspaces.enter(&created.workspace, &page).await.unwrap(),
+        "the device is admitted already"
+    );
+    assert!(
+        access
+            .projects_standing(created.workspace_id, page.device_public_key)
+            .await,
+        "the next entry settled the admission"
+    );
+    relay.shutdown().await;
+}
+
 #[tokio::test]
 async fn every_settled_decision_is_announced_with_its_room() {
     use tilo_action_policy::{Answer, Grant, KindSet, Role, Subject};

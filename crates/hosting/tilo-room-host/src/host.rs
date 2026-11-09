@@ -787,6 +787,21 @@ impl GovernedAccessWriter {
         &self.shell_payloads
     }
 
+    /// Whether the relay decides `workspace_id`'s changes against standings
+    /// that hold `device`'s. A workspace this relay has not opened yet is
+    /// projected by the settle that opens it, so it counts as holding it.
+    pub(crate) async fn projects_standing(&self, workspace_id: u64, device: [u8; 32]) -> bool {
+        let Some(workspace) = self.workspaces.lock().await.get(&workspace_id).cloned() else {
+            return true;
+        };
+        workspace
+            .lock()
+            .await
+            .standings
+            .as_ref()
+            .is_none_or(|standings| standings.contains_key(&device))
+    }
+
     /// Replace the standing of each member device of the workspace.
     pub(crate) async fn replace_standings(
         &self,
@@ -804,7 +819,7 @@ impl GovernedAccessWriter {
             crate::peer::MAX_AUTOBOUND_WORKSPACES,
         )
         .await?;
-        workspace.lock().await.standings = Some(Arc::new(standings));
+        workspace.lock().await.project_standings(standings);
         Ok(())
     }
 

@@ -310,10 +310,11 @@ async fn commit_refusal(
     let Envelope::Delta { delta: bytes, .. } = delta else {
         return None;
     };
-    let (standings, payloads) = {
-        let runtime = ws.lock().await;
-        (runtime.standings.clone(), runtime.store.payloads().clone())
-    };
+    let (standings, payloads) =
+        crate::workspace::standings_deciding(ws, author, |standings, payloads| {
+            crate::surfaces::refusal(payloads, bytes, standings).is_some()
+        })
+        .await;
     if let Some(reason) = crate::surfaces::refusal(&*payloads, bytes, standings.as_deref()) {
         tracing::warn!(%reason, device = %hex::encode(author), "refused a document change");
         file_refusal_of(ws, delta, &reason).await;
