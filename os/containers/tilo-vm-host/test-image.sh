@@ -23,6 +23,13 @@ inside pasta --version >/dev/null || die 'no pasta'
 inside skopeo --version >/dev/null || die 'no skopeo'
 inside mkfs.xfs -V >/dev/null || die 'no mkfs.xfs'
 inside tilo-legacy hosted help | grep -q -- '--evict-notice' || die 'tilo-legacy hosted lacks --evict-notice'
+inside tilo-legacy hosted help | grep -q -- '--memory-mib' || die 'tilo-legacy hosted lacks --memory-mib'
+# The start's own mkfs.xfs line, on a scratch file: the state disk's filesystem is made only
+# on a node, the first time, so a bad option there would otherwise first fail in production.
+mkfs=$(grep -E '^\s*mkfs\.xfs ' "$root/usr/local/bin/tilo-vm-host" | sed 's/"\$state_device"/\/tmp\/state.img/')
+[[ -n $mkfs ]] || die 'the start makes no XFS'
+inside sh -c "truncate -s 512M /tmp/state.img && $mkfs && rm /tmp/state.img" \
+  || die "the start's mkfs.xfs fails: $mkfs"
 
 helper=$root/usr/libexec/tilo/tilo-hosted-jail
 [[ $(stat -c '%u:%g %a' "$helper") == "0:10001 750" ]] \

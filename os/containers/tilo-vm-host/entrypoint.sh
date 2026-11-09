@@ -16,7 +16,8 @@
 #   4. the guest: the image the release key signed, fetched once per digest
 #      (TILO_VM_GUEST_REF overrides the one this build pins);
 #   5. `tilo-legacy hosted serve`, jailed, which suspends every VM when the
-#      eviction notice (TILO_VM_EVICT_NOTICE) appears and on SIGTERM.
+#      eviction notice (TILO_VM_EVICT_NOTICE) appears and on SIGTERM, and wakes
+#      no more VMs than its memory budget (TILO_VM_MEMORY_MIB) holds.
 set -eu
 
 state_device=${TILO_VM_STATE_DEVICE:-/dev/tilo-vm-state}
@@ -51,7 +52,8 @@ done
 [ -b "$state_device" ] || { say "no state disk at $state_device"; exit 1; }
 if ! blkid -p "$state_device" >/dev/null 2>&1; then
   say "making XFS on the new state disk $state_device"
-  mkfs.xfs -q -m reflink=1 -L tilo-vm-state "$state_device"
+  # An XFS label holds 12 characters at most.
+  mkfs.xfs -q -m reflink=1 -L tilovmstate "$state_device"
 fi
 mkdir -p "$data"
 mountpoint -q "$data" || mount -t xfs -o noatime "$state_device" "$data"
@@ -78,4 +80,5 @@ set -- --state "$data/state" --run "$run" --kernel "$kernel" --disk-image "$root
   --jail-helper /usr/libexec/tilo/tilo-hosted-jail --jail-config /etc/tilo/hosted-jail.json
 if [ -n "${TILO_VM_PLANS:-}" ]; then set -- "$@" --plans "$TILO_VM_PLANS"; fi
 if [ -n "${TILO_VM_EVICT_NOTICE:-}" ]; then set -- "$@" --evict-notice "$TILO_VM_EVICT_NOTICE"; fi
+if [ -n "${TILO_VM_MEMORY_MIB:-}" ]; then set -- "$@" --memory-mib "$TILO_VM_MEMORY_MIB"; fi
 exec setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all -- tilo-legacy hosted serve "$@"

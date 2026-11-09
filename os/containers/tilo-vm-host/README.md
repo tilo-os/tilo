@@ -19,6 +19,9 @@ environment's Linux programs in a jailed Firecracker VM
   whatever watches the cloud writes when the node is being taken back; every
   VM is then suspended onto the volume, and the next host the volume follows
   restores each on its next command.
+- **A memory budget** (optional): `TILO_VM_MEMORY_MIB`, the most the VMs
+  awake at once may take together by their sizes; a wake past it is refused
+  in plain words.
 - **Plans** (optional): `TILO_VM_PLANS`, the account plans file the service
   admits wakes against.
 - **The guest**: the digest this build pins (`os/hosted-guest-snapshot.env`),
