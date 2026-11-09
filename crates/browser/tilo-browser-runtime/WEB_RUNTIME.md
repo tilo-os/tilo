@@ -166,8 +166,11 @@ where the workspace has one. It shoots the person's workspace just after the
 agent connected (the agent followed, its card open), who is here with the agent
 pinned on screen, and the follow while an edit lands, at a laptop's and a
 phone's width in light and dark, and records the follow through a few of the
-agent's actions. Everything lands under `--out` (`shots/`, `video/`, and the
-run's log), and it exits non-zero naming the step that broke.
+agent's actions. Each shot's tone says which theme the shell drew: a first
+visit has chosen none, so it is the light or dark its browser is in, and the
+run flips the emulated scheme to see the shell follow it. Everything lands
+under `--out` (`shots/`, `video/`, and the run's log), and it exits non-zero
+naming the step that broke.
 
 ```sh
 # on a build machine; fetch the run's `--out` directory back after

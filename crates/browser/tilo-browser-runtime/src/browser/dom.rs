@@ -91,10 +91,13 @@ struct Shown {
 /// Show the next mount made as HTML rather than on a WebGPU canvas: each
 /// frame calls `present(meta, ops, fonts)` with the frame's DOM operations
 /// (`tilo_cpu_raster::dom`), and text in the scene carries its characters.
+///
+/// The theme is the page's, whichever way a mount shows it
+/// ([`crate::page_theme`]): the page starts following the browser's light
+/// or dark before anything mounts, so no theme is set here.
 #[wasm_bindgen]
 pub fn present_as_dom(present: Function) {
     ui::text_render::present_text(true);
-    crate::page_theme::follow_browser_scheme();
     PRESENTER.with_borrow_mut(|slot| *slot = Some(Presenter { present }));
 }
 

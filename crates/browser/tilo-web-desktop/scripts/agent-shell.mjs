@@ -316,6 +316,10 @@ for (let attempt = 1; started === null; attempt += 1) {
     '--packet-relay', `127.0.0.1:${relayPort}`,
     '--allowed-origin', siteOrigin, '--listing-description', 'A workspace for a person and their agent',
     '--default-role', 'editor', '--room-records',
+    // A host of people's own workspaces, as the site it stands in for is: the
+    // first screen sets the person up in one, and a host that keeps none
+    // refuses that outright.
+    '--own-workspaces',
     // The apps the workspace opens with: the ones the agent drives, which the
     // person's desktop shows too. The Terminal's sessions run on the host,
     // beside the workspace's records.
@@ -1107,12 +1111,26 @@ try {
         note(`${combo}: who is here shows the agent present`, roster.some(node => /claude code/i.test(node.name)), names(roster));
         await sleep(1500);
         await shot(tab, combo, 'landing', {expect: [/^everyone here$/i, /claude code/i]});
-        // A light scheme the shell does not draw is said with what it drew:
-        // the page takes its theme from the person's settings, and only the
-        // reduced-motion and contrast queries from the browser.
+        // A first visit has chosen neither light nor dark, so the shell
+        // draws the one its browser is in; the shot's tone says which.
         const drew = await luminance(scratch, tab);
-        note(`${combo}: the shell draws this scheme`, drew !== null && (theme === 'light' ? drew > 0.5 : drew < 0.5),
-          `prefers-color-scheme is ${theme} in this tab (emulated before load); the shot's mean luminance is ${drew === null ? 'unreadable' : drew.toFixed(2)}, so the shell drew its own theme`);
+        check(`${combo}: the shell draws this scheme`, drew !== null && (theme === 'light' ? drew > 0.5 : drew < 0.5),
+          `prefers-color-scheme is ${theme} in this tab (emulated before load); the shot's mean luminance is ${drew === null ? 'unreadable' : drew.toFixed(2)}`);
+        // The person's system flips under the page: it follows, and draws
+        // the other scheme without a reload.
+        const other = theme === 'light' ? 'dark' : 'light';
+        const tone = async wanted => {
+          const value = await luminance(scratch, tab);
+          return value !== null && (wanted === 'light' ? value > 0.5 : value < 0.5) ? value : undefined;
+        };
+        const emulate = value => tab.send('Emulation.setEmulatedMedia', {features: [{name: 'prefers-color-scheme', value}]});
+        await emulate(other);
+        const flipped = await until(() => tone(other), 15000, 300);
+        check(`${combo}: the shell follows the system as it flips`, flipped !== undefined,
+          flipped === undefined ? `the page still draws at a mean luminance of ${await luminance(scratch, tab)} after ${other}` : `the mean luminance is ${flipped.toFixed(2)}`);
+        await shot(tab, combo, `flipped-${other}`);
+        await emulate(theme);
+        await until(() => tone(theme), 15000, 300);
 
         // 5. A few of the agent's actions, with the person following: the
         //    recording, and `following-mid-edit` from the first write.
