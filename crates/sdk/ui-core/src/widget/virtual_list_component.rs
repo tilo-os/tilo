@@ -629,6 +629,17 @@ impl ListModel for DescribedRows {
     fn key_presenting(&self, id: &str) -> Option<String> {
         DescribedRows::key_presenting(self, id)
     }
+
+    fn item_presented(&self, key: &String) -> Option<String> {
+        if let Held::Given(items) = &self.held
+            && let Some(item) = items.iter().find(|item| item.key == *key)
+        {
+            return item.item.as_ref().map(|shown| shown.0.clone());
+        }
+        // A row of a loop over a collection is keyed by the loop and the item's id
+        // (`<loop>/<id>`): the id is what the app names the row's item by.
+        key.split_once('/').map(|(_, item)| item.to_owned())
+    }
 }
 
 /// The list a described [`VirtualList`] is: over its items, under the one context menu its

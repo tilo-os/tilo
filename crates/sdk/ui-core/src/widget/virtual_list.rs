@@ -180,6 +180,13 @@ pub trait ListModel {
         None
     }
 
+    /// The item the row `key` shows, as the app names a row's item: what a row keeps when the
+    /// app names the list's rows again under keys of their own. `None` when the model cannot
+    /// say, or the row shows no item.
+    fn item_presented(&self, _key: &Self::Key) -> Option<String> {
+        None
+    }
+
     /// What the row `index` is grouped by, when the model groups its rows: the list draws the
     /// heading over the first row of each group ([`RowGroup`]), a disclosure the keyboard
     /// reaches like a row and assistive technology reads as one. `None` for a row in no group,
@@ -432,6 +439,10 @@ pub struct VirtualList<M: ListModel> {
     /// that leaves the list closes with it ([`Self::set_open`]). One row stands open at a
     /// time, and the row builder is told which row it is drawing.
     open: Option<M::Key>,
+    /// The row that stood open when the app named the list's rows again
+    /// ([`ListModelChange::Reset`]): its keys are read anew, and until they arrive the row is
+    /// not one that left ([`Self::close_open_leaving`]).
+    rereading_open: Option<M::Key>,
     /// Rows whose measured height is on its way to another, at the height they show now: a row
     /// that grew into its item, or whose content changed, moves the rows after it as it
     /// arrives, and the list clips it to the height it shows.
@@ -665,6 +676,7 @@ impl<M: ListModel> VirtualList<M> {
             on_opened: None,
             on_closed: None,
             open: None,
+            rereading_open: None,
             growth: Vec::new(),
             growing: HashSet::new(),
             menus: RowMenus::None,

@@ -161,12 +161,24 @@ impl<M: ListModel> VirtualList<M> {
         if changes.is_empty() {
             return;
         }
+        // The app names the list's rows again: its keys are read anew, and the row standing
+        // open waits for them rather than closing with the keys that went
+        // ([`Self::close_open_leaving`]).
+        let rereading = changes
+            .iter()
+            .any(|change| matches!(change, ListModelChange::Reset));
+        if rereading {
+            self.rereading_open = self.open.clone();
+        }
         // Rows whose content changed, and nothing else: every key stays where it was, so the
         // changed rows are built anew and mounted in place ([`Self::invalidate_rows`]), not the
-        // list rebuilt.
-        if changes
-            .iter()
-            .all(|change| matches!(change, ListModelChange::RowsChanged { .. }))
+        // list rebuilt. A list whose rows were named again reconciles, to see what the new keys
+        // hold.
+        if !rereading
+            && self.rereading_open.is_none()
+            && changes
+                .iter()
+                .all(|change| matches!(change, ListModelChange::RowsChanged { .. }))
         {
             let keys = changes
                 .iter()
@@ -188,13 +200,45 @@ impl<M: ListModel> VirtualList<M> {
     /// Close the row standing open when its item left the list: what the person is reading
     /// where it stands is always a row of the list they see, so an item that goes — to another
     /// place, another query, away — closes with it.
+    ///
+    /// The app naming its rows again ([`ListModelChange::Reset`]) is not an item going: the
+    /// keys go until it answers with the ones it reads now, and the row may stand among them
+    /// under the key it had. The open waits for that answer, and closes when the rows arrive
+    /// without its row.
     pub(super) fn close_open_leaving(&mut self) {
         let Some(open) = self.open.as_ref() else {
+            self.rereading_open = None;
             return;
         };
         if self.model.index_of(open).is_some() {
+            self.rereading_open = None;
             return;
         }
+        if self.rereading_open.is_some() {
+            // The row the person is reading stands among the rows the app names now, under the
+            // key it has now: the open follows it rather than shut.
+            let named = self
+                .model
+                .item_presented(open)
+                .and_then(|item| self.model.key_presenting(&item));
+            if let Some(key) = named {
+                if let Some(was) = self.open.replace(key.clone())
+                    && was != key
+                {
+                    self.growing.remove(&was);
+                    self.growth.retain(|(grown, _)| *grown != was);
+                }
+                self.growing.insert(key.clone());
+                self.invalidate_rows([key]);
+                self.rereading_open = None;
+                return;
+            }
+            // The app has not named the rows it reads yet: the open waits for its answer.
+            if (0..self.model.len()).all(|index| self.model.key_at(index).is_none()) {
+                return;
+            }
+        }
+        self.rereading_open = None;
         let open = self.open.take();
         // The row that went takes its growth with it: nothing measures it again, and a
         // height on its way nowhere would ask for frames that never settle.
