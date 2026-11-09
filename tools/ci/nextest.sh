@@ -172,8 +172,9 @@ fi
 # group out by the manifest's probe, taken here, where the tests run. It joins the filter the run
 # already has (nextest takes one), so a job given none of its own keeps the goldens out too. Only
 # a run that tests a package the manifest names probes: an ordinary job pays nothing for a probe
-# whose leave-out it could not meet.
-if (( nextest )) && [[ ${3:-} == run ]]; then
+# whose leave-out it could not meet. A tree with no manifest
+# (.config/nextest-capabilities.toml) maps no capability, so it leaves nothing out either.
+if (( nextest )) && [[ ${3:-} == run && -f $root/.config/nextest-capabilities.toml ]]; then
     runtime_packages=$tested
     [[ $runtime_packages != " " ]] || runtime_packages=${T_NEXTEST_PACKAGES:-}
     # shellcheck disable=SC2086 # one package per word, as the runners name them
