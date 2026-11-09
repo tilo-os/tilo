@@ -7396,7 +7396,7 @@
       "slots": [
         {
           "name": "menu",
-          "doc": "What the item offers on its context menu (a right-click, the Menu key or a long press opens it, and selects the row): each of its allowed actions, after the menu the row's view placed (`attached`) and without those that menu placed already, so every action stays reachable.",
+          "doc": "What the item offers on its context menu (a right-click, the Menu key or a long press opens it, and selects the row unless the row opens where it stands): each of its allowed actions, after the menu the row's view placed (`attached`) and without those that menu placed already, so every action stays reachable.",
           "accepts": {
             "one_of": [
               "MenuItem",
