@@ -367,12 +367,13 @@ impl Checkbox {
     }
 
     /// Go on from the box a rebuild dropped: its mark, on its way or at
-    /// rest. Showing what it showed, a change since moves from there, as
-    /// the input that made it asks; showing something else, it rests.
-    fn take_up(&mut self, kept: KeptCheck) {
+    /// rest. The same box shown another value since moves from there, as
+    /// the input that made it asks; another box's that it merely stands
+    /// where, showing something else, rests.
+    fn take_up(&mut self, kept: KeptCheck, found: crate::motion::Found) {
         self.motion = kept.motion;
         let shown = self.shown();
-        if kept.shown != shown {
+        if kept.shown != shown && found == crate::motion::Found::Where {
             self.motion.snap(shown.0, shown.1);
         }
     }
@@ -692,8 +693,8 @@ impl Widget for Checkbox {
             flex_shrink: 1.0,
             ..Default::default()
         };
-        if let Some(kept) = self.hand_on.build(self.identity().as_deref()) {
-            self.take_up(kept);
+        if let Some((kept, found)) = self.hand_on.build(self.identity().as_deref()) {
+            self.take_up(kept, found);
         }
         taffy.widget_leaf(style, node_map, self)
     }
@@ -742,8 +743,8 @@ impl Widget for Checkbox {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.control.rect = crate::widget::layout_rect(taffy, node, origin);
-        if let Some(kept) = self.hand_on.place(self.control.rect) {
-            self.take_up(kept);
+        if let Some((kept, found)) = self.hand_on.place(self.control.rect) {
+            self.take_up(kept, found);
         }
     }
 

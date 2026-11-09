@@ -139,9 +139,11 @@ impl Toggle {
     /// Go on from the switch a rebuild dropped: its knob, on its way or at
     /// rest. Showing what it showed, a change since moves from there, as
     /// the input that made it asks; showing something else, it rests.
-    fn take_up(&mut self, kept: KeptSwitch) {
+    fn take_up(&mut self, kept: KeptSwitch, found: crate::motion::Found) {
         self.switch = kept.switch;
-        if kept.on != self.control.is_checked {
+        // The same switch, changed since, goes there as the input asks; one
+        // that only stands where another was rests on what it shows.
+        if kept.on != self.control.is_checked && found == crate::motion::Found::Where {
             self.switch.snap(self.control.is_checked);
         }
     }
@@ -756,16 +758,16 @@ impl Widget for Toggle {
             ..Default::default()
         };
         let identity = self.identity().map(str::to_owned);
-        if let Some(kept) = self.hand_on.build(identity.as_deref()) {
-            self.take_up(kept);
+        if let Some((kept, found)) = self.hand_on.build(identity.as_deref()) {
+            self.take_up(kept, found);
         }
         taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.control.rect = crate::widget::layout_rect(taffy, node, origin);
-        if let Some(kept) = self.hand_on.place(self.control.rect) {
-            self.take_up(kept);
+        if let Some((kept, found)) = self.hand_on.place(self.control.rect) {
+            self.take_up(kept, found);
         }
     }
 

@@ -2532,6 +2532,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 .momentum
                 .give_needs_frame(crate::motion::frame_now())
             || self.reveal_in_progress(crate::motion::frame_now())
+            // A row growing into its document, or shutting it away, moves only as frames are
+            // laid out: the next one continues where this one stood.
+            || self.growth.iter().any(|(_, growth)| growth.is_moving(now))
             || self.row_motion.is_moving(now)
             || self.arrivals.is_moving(now)
             || self.reorder.is_active()

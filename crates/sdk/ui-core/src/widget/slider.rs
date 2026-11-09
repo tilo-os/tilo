@@ -1216,7 +1216,7 @@ impl Widget for Slider {
             ..Default::default()
         };
         let identity = self.identity().map(str::to_owned);
-        if let Some(kept) = self.hand_on.build(identity.as_deref()) {
+        if let Some((kept, _)) = self.hand_on.build(identity.as_deref()) {
             self.take_up(kept);
         }
         taffy.widget_leaf(style, node_map, self)
@@ -1231,7 +1231,7 @@ impl Widget for Slider {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
-        if let Some(kept) = self.hand_on.place(self.rect) {
+        if let Some((kept, _)) = self.hand_on.place(self.rect) {
             self.take_up(kept);
         }
     }

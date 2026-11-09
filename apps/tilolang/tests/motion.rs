@@ -33,27 +33,85 @@ use ui::time::testing::with_monotonic_time;
 
 const DESKTOP: (u32, u32) = (1280, 800);
 
+/// How far apart the test draws its frames: the pace a display presents them.
+const FRAME: ui::time::Duration = ui::time::Duration::from_millis(16);
+
+thread_local! {
+    /// Where the test's clock stands: what the last frame it drew was at, and where the input
+    /// it sends stands. A press and the frames after it share one clock, as a person's do.
+    static AT: std::cell::RefCell<Option<ui::time::Instant>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Set where the test's clock stands.
+fn set_at(at: ui::time::Instant) {
+    AT.with(|clock| *clock.borrow_mut() = Some(at));
+}
+
+/// The instant the test's clock stands at.
+fn at_now() -> ui::time::Instant {
+    AT.with(|clock| {
+        *clock
+            .borrow_mut()
+            .get_or_insert_with(ui::time::Instant::now)
+    })
+}
+
+/// The scene the scenario stages in a window a person drives: the same fixtures, with the
+/// theme's motion playing as it plays live, at rest.
 fn staged(scenario: &str) -> TestApp<TlApp> {
     support::installed("tasks");
-    let mut app =
-        TestApp::<TlApp>::capture_at(Some(scenario), DESKTOP).expect("the scenario stages");
+    let mut app = TestApp::<TlApp>::drive_at(scenario, DESKTOP).expect("the scenario stages");
+    set_at(ui::time::Instant::now());
     settle(&mut app);
     app
 }
 
-/// Run frames until the window settles on the toolkit's clock: what a capture shows.
+/// How far ahead a settle follows a wake the window set for itself: a timer it wants a frame at.
+/// A wake further out leaves the window at rest now.
+const SETTLE_HORIZON: ui::time::Duration = ui::time::Duration::from_secs(1);
+
+/// Run the frames the window asks for until it asks for none, then the idle pass that finishes
+/// what they started: the scene at rest, as a person sees it a moment after it opened.
 fn settle(app: &mut TestApp<TlApp>) {
-    for _ in 0..8 {
-        app.harness()
-            .settle_for_capture(ui::time::Duration::from_millis(300));
-        app.harness().relayout();
+    for _ in 0..600 {
+        let now = at_now();
+        let schedule = with_monotonic_time(now, || app.harness().frame_schedule());
+        let at = if schedule.needs_animation_frame {
+            now + FRAME
+        } else if schedule.queued_work {
+            now
+        } else if let Some(deadline) = schedule
+            .next_wake_deadline
+            .filter(|deadline| *deadline <= now + SETTLE_HORIZON)
+        {
+            deadline.max(now)
+        } else {
+            with_monotonic_time(now, || app.idle());
+            return;
+        };
+        set_at(at);
+        with_monotonic_time(at, || {
+            app.frame();
+        });
     }
+    panic!(
+        "the window settles: it is asked for a frame by {:?}",
+        app.harness().frame_requesters()
+    );
+}
+
+/// Run the frame due at `at`: whether the window wanted one.
+fn draw(app: &mut TestApp<TlApp>, at: ui::time::Instant) -> bool {
+    set_at(at);
+    with_monotonic_time(at, || app.frame())
 }
 
 /// Run the frame due at `at` and draw it: whether the window wanted a frame, and what it drew.
 fn frame_at(app: &mut TestApp<TlApp>, at: ui::time::Instant) -> (bool, Vec<u8>) {
+    set_at(at);
     with_monotonic_time(at, || {
-        let drew = app.harness().poll_frame().expect("a frame");
+        let drew = app.frame();
         let pixels = app.harness().render_rgba();
         (drew, pixels)
     })
@@ -110,10 +168,12 @@ fn open_place(app: &mut TestApp<TlApp>, label: &str) {
         .find_map(|access| place(access, label))
         .and_then(|access| access.bounds)
         .unwrap_or_else(|| panic!("the sidebar offers {label}"));
-    app.harness().click_at(
-        f64::midpoint(bounds.x0, bounds.x1),
-        f64::midpoint(bounds.y0, bounds.y1),
-    );
+    with_monotonic_time(at_now(), || {
+        app.harness().click_at(
+            f64::midpoint(bounds.x0, bounds.x1),
+            f64::midpoint(bounds.y0, bounds.y1),
+        );
+    });
     settle(app);
 }
 
@@ -151,7 +211,11 @@ fn list_band(app: &mut TestApp<TlApp>) -> [f64; 4] {
 
 /// Whether the window still has motion to play.
 fn moving(app: &mut TestApp<TlApp>) -> bool {
-    app.harness().frame_schedule().needs_animation_frame
+    // Read at the instant the last frame was drawn at: a motion is measured against the clock
+    // the test's frames run on, not the machine's, which lags the frames the test drew.
+    with_monotonic_time(at_now(), || {
+        app.harness().frame_schedule().needs_animation_frame
+    })
 }
 
 /// The rect of the text field the window shows under the semantics name `name`: the entry at a
@@ -197,21 +261,31 @@ fn shown_button(app: &mut TestApp<TlApp>, name: &str) -> Option<[f64; 4]> {
         .map(|node| node.rect)
 }
 
-/// Bring the window's Delete command within reach: a button of its own, or the row of the "…"
-/// beside the item's title, opened here so that only the press that follows is what the frames
-/// measure.
-fn reach_delete(app: &mut TestApp<TlApp>) -> Delete {
+/// Bring the window's Delete command within reach: a button of its own, or the task's own
+/// command on the row's menu, opened here so that only the press that follows is what the
+/// frames measure.
+fn reach_delete(app: &mut TestApp<TlApp>, title: &str) -> Delete {
     if let Some(rect) = shown_button(app, "Delete") {
         return Delete::Button(rect);
     }
-    let targets = app.harness().targets();
-    let (_, more) = targets
-        .iter()
-        .find(|(id, _)| id.ends_with("~more"))
-        .expect("the item's commands are behind the \"…\" beside its title");
-    let more = more.center();
-    with_monotonic_time(ui::time::Instant::now(), || {
-        app.harness().click_at(more.x, more.y);
+    let [x, y, w, h] = rows(app)
+        .into_iter()
+        .find(|(name, _)| name == title)
+        .unwrap_or_else(|| panic!("the list shows {title}: {:?}", rows(app)))
+        .1;
+    let (x, y) = (x + w / 2.0, y + h / 2.0);
+    with_monotonic_time(at_now(), || {
+        let harness = app.harness();
+        harness.send(&ui::synthetic_input::cursor_moved(x, y));
+        for state in [
+            ui::winit::event::ElementState::Pressed,
+            ui::winit::event::ElementState::Released,
+        ] {
+            harness.send(&ui::synthetic_input::mouse_input(
+                state,
+                ui::winit::event::MouseButton::Right,
+            ));
+        }
     });
     settle(app);
     let row = app
@@ -222,7 +296,7 @@ fn reach_delete(app: &mut TestApp<TlApp>) -> Delete {
             node.role() == ui::accesskit::Role::MenuItem && node.label() == Some("Delete")
         })
         .and_then(|(_, node)| node.bounds())
-        .expect("the \"…\" offers the command the bar keeps there");
+        .expect("the row's menu offers Delete");
     Delete::Row([row.x0, row.y0, row.x1 - row.x0, row.y1 - row.y0])
 }
 
@@ -354,7 +428,7 @@ fn open_task(app: &mut TestApp<TlApp>, title: &str) {
         .find(|(name, _)| name == title)
         .unwrap_or_else(|| panic!("the list shows {title}"))
         .1;
-    with_monotonic_time(ui::time::Instant::now(), || {
+    with_monotonic_time(at_now(), || {
         app.harness().click_at(x + w / 2.0, y + h / 2.0);
     });
     settle(app);
@@ -387,7 +461,7 @@ fn checking_a_task_off_fills_its_box_over_frames() {
     let (band, held) = page_box(&mut app);
     assert!(!held, "the task's box starts open");
 
-    let start = ui::time::Instant::now();
+    let start = at_now();
     let (_, rest) = frame_at(&mut app, start);
     let before = pixels_in(&mut app, &rest, band);
 
@@ -439,7 +513,7 @@ fn a_task_a_person_adds_lands_in_the_list() {
     open_place(&mut app, "Inbox");
     let before_rows = rows(&mut app).len();
     let band = list_band(&mut app);
-    let start = ui::time::Instant::now();
+    let start = at_now();
     let (_, rest) = frame_at(&mut app, start);
     let before = pixels_in(&mut app, &rest, band);
 
@@ -500,8 +574,8 @@ fn the_rows_a_person_removes_leave_the_list() {
     // from the pane it opened, takes the row it made. It stands at the list's foot, so nothing
     // below it has to make way.
     open_task(&mut app, "Reply to Mia about Sunday lunch");
-    let remove = reach_delete(&mut app);
-    press_delete(&mut app, &remove, ui::time::Instant::now());
+    let remove = reach_delete(&mut app, "Reply to Mia about Sunday lunch");
+    press_delete(&mut app, &remove, at_now());
     settle(&mut app);
     assert_eq!(
         rows(&mut app).len(),
@@ -512,9 +586,9 @@ fn the_rows_a_person_removes_leave_the_list() {
     // The command reached first, so what is measured is the press and the rows it moves: the task
     // takes the step under it with it, and the rows below make way for the rest.
     open_task(&mut app, "Find the last service date");
-    let remove = reach_delete(&mut app);
+    let remove = reach_delete(&mut app, "Find the last service date");
     let band = list_band(&mut app);
-    let start = ui::time::Instant::now();
+    let start = at_now();
     let (_, rest) = frame_at(&mut app, start);
     let before = pixels_in(&mut app, &rest, band);
     let pressed = start + ui::time::Duration::from_millis(100);
@@ -523,6 +597,8 @@ fn the_rows_a_person_removes_leave_the_list() {
     let mut frames = Vec::new();
     for step in 1..=14 {
         let at = pressed + ui::time::Duration::from_millis(16 * step);
+        set_at(at);
+        with_monotonic_time(at, || app.idle());
         let (_, pixels) = frame_at(&mut app, at);
         frames.push(pixels);
     }
@@ -585,6 +661,7 @@ fn frame_work(app: &mut TestApp<TlApp>, at: ui::time::Instant) -> (FrameWork, Ve
     };
     let started = ui::rt::thread_cpu_time().expect("a thread's CPU clock");
     let mut cpu = std::time::Duration::ZERO;
+    set_at(at);
     let (drew, pixels) = with_monotonic_time(at, || {
         let drew = app.harness().poll_frame().expect("a frame");
         cpu = ui::rt::thread_cpu_time()
@@ -640,28 +717,41 @@ fn the_mark_box(app: &mut TestApp<TlApp>) -> [f64; 4] {
         .expect("the opened task's box")
 }
 
+/// What a still window costs a frame: what its frames do in work, not how long a machine busy
+/// with other work takes to run them. It lays out nothing: no rebuild, no node built.
+fn still_frames(
+    app: &mut TestApp<TlApp>,
+    start: ui::time::Instant,
+) -> (Vec<std::time::Duration>, usize, Vec<u8>) {
+    let mut still = Vec::new();
+    let mut dirtied = 0;
+    let mut rest = Vec::new();
+    for step in 0..8 {
+        let at = start + ui::time::Duration::from_millis(16 * step);
+        // A still frame is one the window draws with nothing of the app moving: a widget asks for
+        // it, and the window paints what it already shows.
+        with_monotonic_time(at, || {
+            ui::motion::want_frames_until(at + ui::time::Duration::from_millis(1));
+        });
+        let (work, pixels) = frame_work(app, at);
+        assert!(work.drew, "a still window draws the frame it is asked for");
+        assert_eq!(work.rebuilt, 0, "a still frame rebuilds no layout");
+        assert_eq!(work.nodes, 0, "a still frame builds no layout nodes");
+        dirtied = dirtied.max(work.marked_dirty);
+        still.push(work.cpu);
+        rest = pixels;
+    }
+    (still, dirtied, rest)
+}
+
 #[test]
 fn a_frame_of_the_mark_costs_what_a_still_frame_costs() {
     let mut app = staged("a busy week");
     let mark = the_mark_box(&mut app);
     assert!(!moving(&mut app), "the window rests before the mark moves");
 
-    // What a still window costs a frame: what its frame does in work, not how long a machine
-    // busy with other work takes to run it. It lays out nothing: no rebuild, no node built.
-    let start = ui::time::Instant::now();
-    let mut still = Vec::new();
-    let mut rest = Vec::new();
-    let mut still_dirty = 0;
-    for step in 0..8 {
-        let at = start + ui::time::Duration::from_millis(16 * step);
-        let (work, pixels) = frame_work(&mut app, at);
-        assert!(work.drew, "a still window draws the frame it is asked for");
-        assert_eq!(work.rebuilt, 0, "a still frame rebuilds no layout");
-        assert_eq!(work.nodes, 0, "a still frame builds no layout nodes");
-        still_dirty = still_dirty.max(work.marked_dirty);
-        still.push(work.cpu);
-        rest = pixels;
-    }
+    let start = at_now();
+    let (still, still_dirty, rest) = still_frames(&mut app, start);
     let before = pixels_in(&mut app, &rest, mark);
 
     // Tick the opened task off: its box fills over the frames that follow.
@@ -672,6 +762,9 @@ fn a_frame_of_the_mark_costs_what_a_still_frame_costs() {
     let mut series = Vec::new();
     let mut playing = Vec::new();
     let mut step = 0;
+    // Where the press lands: the app has answered it, so the frame rebuilt no layout and the
+    // views it answers with rendered nothing new.
+    let mut rendered = with_monotonic_time(pressed, || renders(&mut app));
     loop {
         step += 1;
         let at = pressed + ui::time::Duration::from_millis(16 * step);
@@ -680,20 +773,23 @@ fn a_frame_of_the_mark_costs_what_a_still_frame_costs() {
         playing.push(moving(&mut app));
         let landed = work.rebuilt == 0;
         works.push(work);
-        if landed {
+        let now = with_monotonic_time(at, || renders(&mut app));
+        let answered = now == rendered;
+        rendered = now;
+        if landed && answered {
             break;
         }
         assert!(step <= 3, "the press lands within a few frames");
     }
-    let landed_at = pressed + ui::time::Duration::from_millis(16 * step);
-    let rendered = with_monotonic_time(landed_at, || renders(&mut app));
     assert_eq!(
         playing.last(),
         Some(&true),
         "the mark is on its way where the press lands"
     );
+    // The frames from here on are the mark's own: the press has landed, the app answered it.
+    let landed = works.len();
 
-    // The mark's own frames, until it settles.
+    // The mark's own frames, until it settles: they render none of the views again.
     while playing.last() == Some(&true) {
         step += 1;
         let at = pressed + ui::time::Duration::from_millis(16 * step);
@@ -701,20 +797,15 @@ fn a_frame_of_the_mark_costs_what_a_still_frame_costs() {
         series.push(difference(&mut app, &pixels, &before, mark));
         playing.push(moving(&mut app));
         works.push(work);
+        assert!(
+            with_monotonic_time(at, || renders(&mut app)) == rendered,
+            "frame {step} of the mark renders no boundary of the view again"
+        );
         assert!(step <= 16, "the mark settles");
     }
-    let ended_at = pressed + ui::time::Duration::from_millis(16 * step);
-    assert!(
-        with_monotonic_time(ended_at, || renders(&mut app)) == rendered,
-        "the mark's frames render no boundary of the view again"
-    );
 
     // What the mark's own frames cost: a repaint. They rebuild no layout, build no node,
     // mark no more widgets for a measure than a still frame, and render none of the view.
-    let landed = works
-        .iter()
-        .position(|work| work.rebuilt == 0)
-        .expect("the press lands");
     let mut moving = Vec::new();
     for (index, work) in works.iter().enumerate().skip(landed) {
         assert_eq!(
@@ -755,6 +846,24 @@ fn a_frame_of_the_mark_costs_what_a_still_frame_costs() {
     );
 }
 
+/// Half a second of the window's idle ticks, as a live window runs them: how many frames it
+/// asked for, and the CPU they cost.
+fn idle_ticks(app: &mut TestApp<TlApp>, start: ui::time::Instant) -> (usize, std::time::Duration) {
+    let mut produced = 0;
+    let mut cpu = std::time::Duration::ZERO;
+    for step in 0..30 {
+        let at = start + ui::time::Duration::from_millis(16 * step);
+        let began = ui::rt::thread_cpu_time().expect("a thread's CPU clock");
+        if draw(app, at) {
+            produced += 1;
+        }
+        cpu += ui::rt::thread_cpu_time()
+            .expect("a thread's CPU clock")
+            .saturating_sub(began);
+    }
+    (produced, cpu)
+}
+
 /// A still window is not a frame source: left alone, it produces no frames at all, and a frame
 /// something outside it forces re-measures nothing, syncs nothing and asks no History surface
 /// anything, because nothing it shows moved.
@@ -770,19 +879,8 @@ fn a_still_window_produces_no_frames() {
         "the window rests before it is left alone"
     );
 
-    let start = ui::time::Instant::now();
-    let mut produced = 0;
-    let mut cpu = std::time::Duration::ZERO;
-    for step in 0..30 {
-        let at = start + ui::time::Duration::from_millis(16 * step);
-        let began = ui::rt::thread_cpu_time().expect("a thread's CPU clock");
-        if with_monotonic_time(at, || app.frame()) {
-            produced += 1;
-        }
-        cpu += ui::rt::thread_cpu_time()
-            .expect("a thread's CPU clock")
-            .saturating_sub(began);
-    }
+    let start = at_now();
+    let (produced, cpu) = idle_ticks(&mut app, start);
     assert_eq!(
         produced, 0,
         "an idle window produces no frame: what it would draw, it already shows"
@@ -819,11 +917,14 @@ fn a_still_window_produces_no_frames() {
         let mut step = 0;
         loop {
             step += 1;
-            assert!(step <= 20, "the mark settles");
+            assert!(
+                step <= 20,
+                "the mark settles: the window is asked for a frame by {:?}",
+                app.harness().frame_requesters()
+            );
             let at = pressed + ui::time::Duration::from_millis(16 * step);
             let quiet_before = app.harness().quiet_frames();
-            let (drew, samples) =
-                ui::tilo_resource::profiling::observe(|| with_monotonic_time(at, || app.frame()));
+            let (drew, samples) = ui::tilo_resource::profiling::observe(|| draw(&mut app, at));
             let quiet = app.harness().quiet_frames() > quiet_before;
             let layout = app.harness().last_relayout();
             if !moving(&mut app) {
@@ -881,7 +982,7 @@ fn the_frames_a_person_sees() {
     // A task checked off in its row.
     let mut app = staged("a busy week");
     let band = row_box(&mut app, "Buy oat milk and eggs");
-    let start = ui::time::Instant::now();
+    let start = at_now();
     let (_, _) = frame_at(&mut app, start);
     shot(&mut app, "check-off-00-rest");
     let pressed = start + ui::time::Duration::from_millis(100);
@@ -897,7 +998,7 @@ fn the_frames_a_person_sees() {
 
     // A task added at the list's foot.
     let mut app = staged("a busy week");
-    let start = ui::time::Instant::now();
+    let start = at_now();
     let _ = frame_at(&mut app, start);
     let [x, y, w, h] = field(&mut app, "New task");
     let pressed = start + ui::time::Duration::from_millis(100);
@@ -916,10 +1017,10 @@ fn the_frames_a_person_sees() {
 
     // Two removals from the pane: the first reads the list's order, the second glides.
     let mut app = staged("a busy week");
-    let start = ui::time::Instant::now();
+    let start = at_now();
     let _ = frame_at(&mut app, start);
     shot(&mut app, "remove-00-rest");
-    let remove = reach_delete(&mut app);
+    let remove = reach_delete(&mut app, "Book a haircut");
     press_delete(
         &mut app,
         &remove,
@@ -931,14 +1032,14 @@ fn the_frames_a_person_sees() {
         .find(|(name, _)| name == "Book a haircut")
         .expect("the list shows the task")
         .1;
-    with_monotonic_time(ui::time::Instant::now(), || {
+    with_monotonic_time(at_now(), || {
         app.harness().click_at(x + w / 2.0, y + h / 2.0);
     });
     settle(&mut app);
-    let (_, _) = frame_at(&mut app, ui::time::Instant::now());
+    let (_, _) = frame_at(&mut app, at_now());
     shot(&mut app, "remove-01-opened");
-    let remove = reach_delete(&mut app);
-    let pressed = ui::time::Instant::now() + ui::time::Duration::from_millis(100);
+    let remove = reach_delete(&mut app, "Book a haircut");
+    let pressed = at_now() + ui::time::Duration::from_millis(100);
     press_delete(&mut app, &remove, pressed);
     for step in 1..=10 {
         let at = pressed + ui::time::Duration::from_millis(16 * step);

@@ -2682,7 +2682,7 @@ impl Widget for ListRow {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.laid_out = true;
-        if let Some(kept) = self.hand_on.build(self.identity().as_deref()) {
+        if let Some((kept, _)) = self.hand_on.build(self.identity().as_deref()) {
             self.take_up(kept);
         }
         let metrics = self.metrics(theme);
@@ -2846,7 +2846,7 @@ impl Widget for ListRow {
             self.dirty = true;
         }
         self.rect = rect;
-        if let Some(kept) = self.hand_on.place(rect) {
+        if let Some((kept, _)) = self.hand_on.place(rect) {
             self.take_up(kept);
         }
         let Some(trailing) = &mut self.trailing else {

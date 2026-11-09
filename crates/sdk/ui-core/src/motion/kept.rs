@@ -8,7 +8,7 @@
 //! ([`take_kept`] by identity, [`take_kept_at`] by place) instead of
 //! starting over: a banner that was already shown stays shown at rest, one
 //! still opening goes on opening, a sorted table's rows go on moving. What
-//! nothing takes up by the end of the next frame is let go, so the store
+//! nothing takes up within [`KEPT_FRAMES`] frames is let go, so the store
 //! only ever holds what one rebuild dropped.
 //!
 //! A widget that finds nothing arrived: it moves in, unless its window is
@@ -21,7 +21,10 @@
 //!
 //! A control (a switch's knob, a box's mark, a slider's thumb, a badge)
 //! does this through a [`HandOn`]: by the id it was given, else by its
-//! kind and place.
+//! kind and place. A [`Found`] says which, since only the widget itself
+//! knows what a value that differs from the one left means: the same
+//! widget, built again, lived through that change and plays it; one that
+//! merely stands where another was rests.
 
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
@@ -35,8 +38,8 @@ struct Kept {
     /// Where it was laid out or drawn.
     at: Option<Rect>,
     value: Box<dyn Any>,
-    /// A frame ended since it was left: the next frame's end lets it go.
-    stale: bool,
+    /// The frames ended since it was left: past [`KEPT_FRAMES`] the next frame's end lets it go.
+    stale: u8,
 }
 
 thread_local! {
@@ -71,7 +74,7 @@ pub fn keep<T: 'static>(id: impl Into<String>, at: Option<Rect>, value: T) {
             id,
             at,
             value: Box::new(value),
-            stale: false,
+            stale: 0,
         });
     });
 }
@@ -126,6 +129,19 @@ enum Carry {
     Bound,
 }
 
+/// How a widget found what a dropped one left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Found {
+    /// By its identity: the same widget, built again from fresh data. A
+    /// value unlike the one left is a change it lived through, and plays
+    /// it like any other.
+    Same,
+    /// By its place: the widget standing where another was, which may show
+    /// something else. A value unlike the one left is not its own change,
+    /// so it rests on it.
+    Where,
+}
+
 /// The hand-on of a widget its view may build anew on every change: the
 /// widget built in its place goes on from the motion this one leaves
 /// ([`keep`]), found by the identity it was given, else by its kind and
@@ -133,8 +149,9 @@ enum Carry {
 ///
 /// The widget calls [`Self::build`] from `build_layout` with its identity
 /// (`None`: it is known by its place) and [`Self::place`] from
-/// `apply_layout`; either returns what a predecessor left, once. Dropped,
-/// the widget [`leaves`](Self::leave) its motion for its successor.
+/// `apply_layout`; either returns what a predecessor left and how it was
+/// found ([`Found`]), once. Dropped, the widget [`leaves`](Self::leave)
+/// its motion for its successor.
 #[derive(Debug)]
 pub struct HandOn<T: 'static> {
     identity: Option<String>,
@@ -155,9 +172,10 @@ impl<T: 'static> Default for HandOn<T> {
 }
 
 impl<T: 'static> HandOn<T> {
-    /// At its first build, what the widget with the same `identity` left;
-    /// `None` waits for its place ([`Self::place`]).
-    pub fn build(&mut self, identity: Option<&str>) -> Option<T> {
+    /// At its first build, what the widget with the same `identity` left,
+    /// and that it is the same widget ([`Found::Same`]); `None` waits for
+    /// its place ([`Self::place`]).
+    pub fn build(&mut self, identity: Option<&str>) -> Option<(T, Found)> {
         if self.carry != Carry::Fresh {
             return None;
         }
@@ -168,12 +186,12 @@ impl<T: 'static> HandOn<T> {
         } else {
             Carry::Placing
         };
-        left
+        left.map(|left| (left, Found::Same))
     }
 
     /// Laid out at `at`. At its first layout, a widget its identity matched
-    /// nothing for takes what was left from this place.
-    pub fn place(&mut self, at: Rect) -> Option<T> {
+    /// nothing for takes what was left from this place ([`Found::Where`]).
+    pub fn place(&mut self, at: Rect) -> Option<(T, Found)> {
         self.place_by(at, |was| {
             let near = |a: f64, b: f64| (a - b).abs() < 0.5;
             near(was.x0, at.x0) && near(was.y0, at.y0) && near(was.width(), at.width())
@@ -183,13 +201,13 @@ impl<T: 'static> HandOn<T> {
     /// [`Self::place`], for a widget whose box changes with what it shows
     /// (a badge's count): `near` says whether a predecessor laid out at a
     /// place stood where this one stands.
-    pub fn place_by(&mut self, at: Rect, near: impl Fn(Rect) -> bool) -> Option<T> {
+    pub fn place_by(&mut self, at: Rect, near: impl Fn(Rect) -> bool) -> Option<(T, Found)> {
         self.at = Some(at);
         if self.carry != Carry::Placing {
             return None;
         }
         self.carry = Carry::Bound;
-        take_where::<T>(|entry| entry.at.is_some_and(&near))
+        take_where::<T>(|entry| entry.at.is_some_and(&near)).map(|left| (left, Found::Where))
     }
 
     /// The widget is dropped: leave `value` for the one a rebuild puts in
@@ -207,17 +225,23 @@ impl<T: 'static> HandOn<T> {
     }
 }
 
-/// A frame's layout and drawing ended: what was left before the frame
-/// that just ended and nothing took up is let go.
+/// The frame ends a left motion state waits for the widget a rebuild puts in its place. A view whose
+/// rows the app answers for drops its widgets as it builds the tree anew and lays out their
+/// successors a frame or two later; the frame the successor is laid out is the one that takes
+/// them up.
+const KEPT_FRAMES: u8 = 2;
+
+/// A frame's layout and drawing ended: what nothing took up in the frames
+/// since it was left is let go.
 pub(crate) fn frame_ended() {
     KEPT.with(|kept| {
         let mut kept = kept.borrow_mut();
         if kept.is_empty() {
             return;
         }
-        kept.retain(|entry| !entry.stale);
+        kept.retain(|entry| entry.stale < KEPT_FRAMES);
         for entry in kept.iter_mut() {
-            entry.stale = true;
+            entry.stale = entry.stale.saturating_add(1);
         }
     });
 }
@@ -291,20 +315,20 @@ mod tests {
             assert_eq!(hand_on.place(at(y)), None);
             hand_on.leave(value);
         };
-        // By identity, wherever the successor stands.
+        // By identity, wherever the successor stands: the same widget.
         left(Some("wifi"), 0.0, 5);
         let mut next = HandOn::<u16>::default();
-        assert_eq!(next.build(Some("wifi")), Some(5));
+        assert_eq!(next.build(Some("wifi")), Some((5, Found::Same)));
         assert_eq!(next.place(at(40.0)), None, "taken once");
-        // Without one, by place.
+        // Without one, by place: another's may have stood there.
         left(None, 0.0, 1);
         left(None, 40.0, 2);
         let mut second = HandOn::<u16>::default();
         assert_eq!(second.build(None), None);
-        assert_eq!(second.place(at(40.0)), Some(2));
+        assert_eq!(second.place(at(40.0)), Some((2, Found::Where)));
         let mut first = HandOn::<u16>::default();
         first.build(None);
-        assert_eq!(first.place(at(0.0)), Some(1));
+        assert_eq!(first.place(at(0.0)), Some((1, Found::Where)));
         // Rows sharing an identity go on in the order they were left.
         let mut rows: Vec<_> = (0..2).map(|_| HandOn::<u16>::default()).collect();
         for (y, row) in [0.0, 40.0].into_iter().zip(&mut rows) {
@@ -315,16 +339,16 @@ mod tests {
             row.leave(value);
         }
         let mut row = HandOn::<u16>::default();
-        assert_eq!(row.build(Some("row")), Some(7));
+        assert_eq!(row.build(Some("row")), Some((7, Found::Same)));
         let mut row = HandOn::<u16>::default();
-        assert_eq!(row.build(Some("row")), Some(8));
+        assert_eq!(row.build(Some("row")), Some((8, Found::Same)));
         // A widget never laid out leaves nothing.
         HandOn::<u16>::default().leave(9);
         KEPT.with(|kept| assert!(kept.borrow().is_empty()));
     }
 
     #[test]
-    fn what_nothing_takes_up_is_let_go_after_the_next_frame() {
+    fn what_nothing_takes_up_is_let_go_after_a_few_frames() {
         keep("sync", None, 1_u32);
         frame_ended();
         assert_eq!(
@@ -334,6 +358,12 @@ mod tests {
         );
         keep("sync", None, 1_u32);
         frame_ended();
+        frame_ended();
+        assert_eq!(
+            take_kept::<u32>("sync"),
+            Some(1),
+            "a rebuild whose successor is laid out a frame later"
+        );
         frame_ended();
         assert_eq!(take_kept::<u32>("sync"), None);
         KEPT.with(|kept| assert!(kept.borrow().is_empty()));

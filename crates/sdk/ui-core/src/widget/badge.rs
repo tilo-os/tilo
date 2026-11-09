@@ -683,7 +683,7 @@ impl Widget for Badge {
                     || near(was.x1, at.x1)
                     || near(was.center().x, at.center().x))
         });
-        if let Some(kept) = left {
+        if let Some((kept, _)) = left {
             self.take_up(kept);
         }
         if self.face.resized(self.rect) {
