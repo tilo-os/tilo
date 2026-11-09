@@ -998,6 +998,16 @@ async function connect({
     /** Issue an invitation to the workspace (`rooms.rs`): resolves to its
      * text, when the person's role lets them invite. */
     createInvitation: options => membership.createInvitation(options),
+    /** Redeem `invitation` (its text) at this peer's host as this very
+     * device, under the certificate it holds: the workspace it grants admits
+     * this device, so connecting to it later with the same device key gets
+     * in. Resolves to `{workspace}` once admitted; nothing connects. */
+    admitTo: async invitation => {
+      const certified = await store.get(CERTIFICATE);
+      if (!certified) throw new AdmissionError('refused', 'This device holds no certificate to ask with yet');
+      return join({origin, invitation, certified, custody, runtime, fetch: fetcher, displayName, label,
+        ...(profile ? {profile} : {}), admitOnly: true});
+    },
     /** Who is in the workspace, for its owner (`rooms.rs`): `list()`,
      * `setRole`, `remove`, `cancelInvitation`. */
     get membership() { return membership; },
@@ -1408,7 +1418,7 @@ async function keptDeviceCertificate({runtime, profile, slot = 0, store, desktop
 
 async function join({
   origin, invitation, identity, displayName = '', label = 'Browser', signal, onProgress, pollMs = 2000,
-  admissionToken, runtime, custody, profile, storage = globalThis.localStorage, fetch: fetcher, certified, ...connectOptions
+  admissionToken, runtime, custody, profile, storage = globalThis.localStorage, fetch: fetcher, certified, admitOnly = false, ...connectOptions
 }) {
   // A device certified elsewhere (`certified`, a paired device) asks as
   // itself; any other asks as the person whose root the page holds.
@@ -1463,6 +1473,7 @@ async function join({
   }
   forget();
   onProgress?.({phase: 'admitted', room: reply.room, workspaceName: reply.name, role: reply.role.toLowerCase()});
+  if (admitOnly) return {workspace: reply.room};
   return connect({
     ...connectOptions, origin, identity, userPublicKey: person.userPublicKey, workspace: reply.room, label, displayName, custody, runtime, signal,
     profile: connectOptions.store ? undefined : profile,

@@ -1023,6 +1023,17 @@ export async function startEntryPage({mode}) {
       return peer;
     },
     reconnect: async ({origin, room}) => {
+      // A device paired to a person kept elsewhere goes on as that device,
+      // under the certificate it holds: into a workspace its key was
+      // admitted to (the person's own, say), never as a new device.
+      const paired = remembering(() => keptMembership({host: {origin}}));
+      if (paired?.paired) {
+        const profile = identityProfile(paired, paired.origin);
+        const custody = await openDeviceCustody({profile, storage: idbStorage(), requireExisting: true});
+        displayName = chosenDisplayName(paired.userPublicKey) ?? defaultDisplayName(paired.userPublicKey);
+        return withCustody(custody, () => connectPeer({origin, workspace: room, userPublicKey: paired.userPublicKey,
+          profile, custody, displayName, runtime, requireExistingCertificate: true}));
+      }
       const identity = currentIdentity() ?? await browserIdentity({create: false});
       const kept = identity && hostToReconnect(origin, identity.userPublicKey);
       if (!kept) return null;
@@ -1233,10 +1244,8 @@ export async function startEntryPage({mode}) {
     // A tab an agent just signed in as a device of the person: it paired
     // through the home workspace, and opens the person's own one next.
     if (!embed && page.peer && takeOpenOwn()) {
-      void ensureOwnWorkspace(page).then(own => {
-        own.peer?.dispose?.();
-        return openWorkspace({choice: ownChoice(own), page, status});
-      }, error => console.warn('signed in: opening your workspace', error));
+      void ensureOwnWorkspace(page).then(own => openWorkspace({choice: ownChoice(own), page, status}),
+        error => console.warn('signed in: opening your workspace', error));
     }
     // What the kept profile says of linked accounts, or that none is kept:
     // either way a linked account's picture may be worn now, and never
@@ -1881,7 +1890,6 @@ function offerFirstRun({page, identityActions}) {
       if (!hostedOwn) {
         try {
           hostedOwn = await ensureOwnWorkspace(page);
-          hostedOwn.peer?.dispose?.();
         } catch (error) {
           if (error?.code !== 'unknown_action' && !/no such action is offered/i.test(error?.message ?? '')) throw error;
           console.info('first run: this host keeps no workspaces of people\'s own;', error?.message);

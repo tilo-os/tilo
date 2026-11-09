@@ -8,23 +8,23 @@
  * there (`page.peer`, in the site's home workspace): the host's own operation
  * `room.create-own` (provider `tilo.host`) makes the workspace, or finds the
  * one the person has, and answers an invitation only the person's devices
- * can redeem. The page joins with it as any invitation is joined
- * (`joinWorkspace`), becoming the workspace's administrator as it is
- * admitted, and remembers it among the workspaces it entered, so the
- * desktop's switcher offers it and a bare entry can reopen it. A workspace
- * this browser already entered is not joined again.
+ * can redeem. The page's own device redeems it (`peer.admitTo`), becoming
+ * the workspace's administrator as it is admitted, under the device key it
+ * holds the home workspace with: the workspace lets in the device that
+ * redeemed it, so it is that key that opens the workspace next. The page
+ * remembers it among the workspaces it entered, so the desktop's switcher
+ * offers it and opening it reconnects. A workspace this browser already
+ * entered is not redeemed again.
  *
- * Resolves to `{id, name, host, origin, peer}`: the workspace's id (a UUID,
- * what a link and every action name it by), its name, the host's name as a
- * link shows it (`tilo.sh`), its origin, and the peer in it when the page
- * joined just now (the caller opens it or disposes it), else `null`.
+ * Resolves to `{id, name, host, origin}`: the workspace's id (a UUID, what a
+ * link and every action name it by), its name, the host's name as a link
+ * shows it (`tilo.sh`), and its origin.
  *
  * A host that keeps no workspaces of people's own offers no such operation:
  * that, and every other refusal, rejects with an `OwnWorkspaceError`, whose
  * `refusal` is the host's typed refusal when it gave one
  * (`{reason, message, next}`, `host_account::Refusal`).
  */
-import {joinWorkspace} from './peer.mjs';
 import {enteredWorkspaces, hostDeviceOf, rememberEntered} from './workspaces.mjs';
 
 /** The host's own operation that makes, or answers, the person's workspace. */
@@ -60,13 +60,14 @@ export function invitationText(hex) {
 
 /**
  * Make or find the person's own workspace on the host of `page.peer` (or of
- * `page`, a peer itself), join it unless this browser entered it already,
- * and remember it. `name` names a new workspace ("My workspace" when
- * omitted; one the person has keeps its own). See the module.
+ * `page`, a peer itself), have the peer's device admitted to it unless this
+ * browser entered it already, and remember it. `name` names a new
+ * workspace ("My workspace" when omitted; one the person has keeps its
+ * own). See the module.
  */
-export async function ensureOwnWorkspace(page, {name = null, join = joinWorkspace, store = globalThis.localStorage, ...joinOptions} = {}) {
+export async function ensureOwnWorkspace(page, {name = null, store = globalThis.localStorage} = {}) {
   const peer = page?.peer ?? page;
-  if (!peer?.actions?.invoke || !peer.origin) throw new TypeError('the page holds no workspace on its host to ask from');
+  if (!peer?.actions?.invoke || !peer.admitTo || !peer.origin) throw new TypeError('the page holds no workspace on its host to ask from');
   const origin = new URL(peer.origin).origin;
   let entry;
   try {
@@ -86,14 +87,10 @@ export async function ensureOwnWorkspace(page, {name = null, join = joinWorkspac
   const named = typeof made.name === 'string' && made.name ? made.name : null;
   const hostDevice = hostDeviceOf(peer.host?.hostCert);
   const entered = enteredWorkspaces(store).some(kept => kept.origin === origin && kept.room === id);
-  let joined = null;
   if (!entered) {
     if (!made.invitation?.invitation) throw new OwnWorkspaceError('the host issued no invitation to your workspace', {code: 'malformed'});
-    joined = await join({
-      ...joinOptions, origin, invitation: invitationText(made.invitation.invitation),
-      ...(peer.displayName ? {displayName: peer.displayName} : {}),
-    });
+    await peer.admitTo(invitationText(made.invitation.invitation));
   }
   if (hostDevice) rememberEntered({origin, room: id, hostDevice, name: named}, store);
-  return {id, name: named, host: new URL(origin).host, origin, peer: joined};
+  return {id, name: named, host: new URL(origin).host, origin};
 }
