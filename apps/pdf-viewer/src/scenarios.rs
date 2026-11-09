@@ -31,6 +31,7 @@ pub const SCENARIOS: &[&str] = &[
     "sign",
     "reorder",
     "import",
+    "form",
     "loading",
     "error",
 ];
@@ -42,6 +43,14 @@ const WITHOUT_DOCUMENT: &[&str] = &["empty", "loading", "error"];
 pub(crate) const SAMPLE_PDF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sample.pdf"));
 /// The name it is pinned under.
 pub(crate) const SAMPLE_NAME: &str = "Field Notes on Estuarine Birds.pdf";
+
+/// The form the `form` scenario shows filled: a text field `name`, a
+/// checkbox `agree` and a choice `colour`.
+pub(crate) const FORM_PDF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/form.pdf"));
+/// The name it is pinned under.
+const FORM_NAME: &str = "Application.pdf";
+/// The scenario showing a filled form.
+const FORM: &str = "form";
 
 /// The word of page 1 the selection scenario selects.
 pub(crate) const SELECTED_WORD: &str = "harrier";
@@ -69,8 +78,13 @@ pub(crate) fn shows_sample(scenario: Option<&str>) -> bool {
 /// stage: the document's bytes, in the content store the record's source
 /// is read from.
 pub(crate) fn fixture(fixture: &mut Fixture<PdfMarkup>) {
+    let document = if fixture.scenario() == Some(FORM) {
+        FORM_PDF
+    } else {
+        SAMPLE_PDF
+    };
     if shows_sample(fixture.scenario())
-        && let Err(error) = fixture.content().put(SAMPLE_PDF)
+        && let Err(error) = fixture.content().put(document)
     {
         tracing::warn!(%error, "keeping the sample document failed");
     }
@@ -83,6 +97,9 @@ pub(crate) fn scenario(scenario: Option<&str>) -> Vec<Invoke<PdfMarkup>> {
     if !shows_sample(scenario) {
         return Vec::new();
     }
+    if scenario == Some(FORM) {
+        return filled_form();
+    }
     let len = u64::try_from(SAMPLE_PDF.len()).unwrap_or(u64::MAX);
     let mut actions = vec![crate::actions::pin_source_action(
         &tilo_content::hash_bytes(SAMPLE_PDF),
@@ -91,6 +108,26 @@ pub(crate) fn scenario(scenario: Option<&str>) -> Vec<Invoke<PdfMarkup>> {
     )];
     actions.extend(sample_review().iter().map(Invoke::from));
     actions
+}
+
+/// The form pinned as the record's source and filled in, each field by
+/// the edit an agent fills it with.
+fn filled_form() -> Vec<Invoke<PdfMarkup>> {
+    use crate::actions::set_form_value_action;
+    use crate::model::FormEntry;
+    let len = u64::try_from(FORM_PDF.len()).unwrap_or(u64::MAX);
+    vec![
+        crate::actions::pin_source_action(&tilo_content::hash_bytes(FORM_PDF), len, FORM_NAME),
+        set_form_value_action("name", &FormEntry::Text("Amara Okafor".into())),
+        set_form_value_action(
+            "agree",
+            &FormEntry::Checked {
+                on: true,
+                export: None,
+            },
+        ),
+        set_form_value_action("colour", &FormEntry::Choice("Blue".into())),
+    ]
 }
 
 /// A plausible hand-drawn signature as normalised `[0,1]²` strokes, so a
