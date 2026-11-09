@@ -1666,21 +1666,8 @@ impl Worker {
         let workspace = state.workspace.clone();
         let target = &request.target;
         let owner = self.serves_as_owner(caller);
-        if let Some(workspace) = provider_workspace(&target.provider) {
-            if !owner
-                || tilo_relay_protocol::room_workspace_id(workspace).ok() != Some(workspace_id)
-            {
-                return Err(Outcome::Rejected(ActionHostError::UnknownAction));
-            }
-            let app = target
-                .address
-                .resource
-                .strip_prefix(APPLICATION_RESOURCE_PREFIX)
-                .filter(|_| target.address.action == APPLICATION_OPEN_ACTION)
-                .filter(|app| self.catalogue.get(app).is_some())
-                .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?
-                .to_owned();
-            return self.open_new(workspace_id, workspace, &app);
+        if let Some(named) = provider_workspace(&target.provider) {
+            return self.open_asked(workspace_id, named, owner, target);
         }
         let workspace = workspace.ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
         let route = record_of(&target.provider, &workspace)
@@ -1729,15 +1716,50 @@ impl Worker {
                 (&address, &arguments, confirmed),
             );
         }
+        let context = caller_context(request);
         let output = mounted
             .app
-            .invoke_appearing(&target.address, &arguments, confirmed, appearance.as_ref())
+            .invoke_in(
+                context.as_ref(),
+                appearance.as_ref(),
+                &target.address,
+                &arguments,
+                confirmed,
+            )
             .map_err(|error| door_outcome(&error))?;
         let taken = take_all(&mounted.app, &route)
             .map_err(|error| commit_failed(error.to_string(), false))?;
         self.commit_taken(workspace_id, &route, taken)
             .map_err(|reason| commit_failed(reason, true))?;
         Ok(output)
+    }
+
+    /// Open an app on a new record of the workspace `named`, as its
+    /// workspace's own action asks (`app.<app>#open`): only for the
+    /// workspace's owner, in the workspace the session is in.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt the host records"
+    )]
+    fn open_asked(
+        &mut self,
+        workspace_id: u64,
+        named: &str,
+        owner: bool,
+        target: &tilo_actions::remote::RemoteActionTarget,
+    ) -> Result<ActionOutput, Outcome> {
+        if !owner || tilo_relay_protocol::room_workspace_id(named).ok() != Some(workspace_id) {
+            return Err(Outcome::Rejected(ActionHostError::UnknownAction));
+        }
+        let app = target
+            .address
+            .resource
+            .strip_prefix(APPLICATION_RESOURCE_PREFIX)
+            .filter(|_| target.address.action == APPLICATION_OPEN_ACTION)
+            .filter(|app| self.catalogue.get(app).is_some())
+            .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?
+            .to_owned();
+        self.open_new(workspace_id, named, &app)
     }
 
     /// Commit what the owner's action changed, each record on its own
@@ -2163,6 +2185,20 @@ impl Worker {
 }
 
 /// The arguments an invocation carries, as the door binds them.
+/// What a caller may say of its own invocation, which History keeps: the
+/// work it belongs to (an agent's run), what it is for, and the gesture it
+/// was part of. Who invoked it is the host's to say, from the session that
+/// carried it, and what it did the action's.
+fn caller_context(request: &InvokeRequest) -> Option<tilo_actions::ActionContext> {
+    let said = request.context.as_ref()?;
+    Some(tilo_actions::ActionContext {
+        group: said.group.clone(),
+        purpose: said.purpose.clone(),
+        gesture: said.gesture,
+        ..tilo_actions::ActionContext::default()
+    })
+}
+
 fn invoke_arguments(argument: &InvokeArgument) -> serde_json::Map<String, serde_json::Value> {
     match argument {
         InvokeArgument::None => serde_json::Map::new(),
