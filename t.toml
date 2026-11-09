@@ -4481,13 +4481,80 @@ env = { TILO_RELEASE_OUT = "/target/publish/web-entry/release" }
 requires = ["arch=any"]
 on = ["dispatch"]
 
-# The Lounge: its image is built and used by publish-site on main — two headless browsers join
-# it through the web entry, chat, share a desk and see each other present — and this chain
-# releases that image rather than building a second one. carry-lounge pulls the gated
-# `dev-<commit>` anonymously and pins it by digest, sign-lounge signs that digest, and
-# publish-lounge tags it `sha-<commit>` for cloud-deploy. A commit whose Lounge publish-site has
-# not published is refused by name, so the release waits for a gated build instead of shipping
-# an image no one used.
+# The Lounge, built and gated here: the programs, the image and the image used by people — two
+# headless browsers joining it through the web entry, chatting, sharing a desk and seeing each
+# other present, then one of them opening a shared document's link. One check per step, so a
+# change leaves the earlier ones cached, and the gate runs on any commit and branch instead of
+# only in the publication on main. Image-lounge-context publishes the app surfaces from the
+# apps' history, so these read Git; the image is built at the commit time of the newest commit
+# that changed it, as every image here is.
+[[check]]
+name = "lounge-binaries"
+run = "bash tools/ci/publish/lounge-binaries.sh /target/publish/lounge/binaries"
+env = { CARGO_BUILD_JOBS = "8" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/lounge/binaries/**"]
+default = false
+
+[[check]]
+name = "image-lounge-context"
+run = "bash tools/ci/publish/lounge-context.sh /target/publish/lounge/context /target/publish/lounge/binaries"
+needs = ["lounge-binaries"]
+outputs = ["/target/publish/lounge/context/**"]
+requires = ["arch=x86_64"]
+git = true
+default = false
+
+[[check]]
+name = "image-lounge"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+run = "bash os/containers/tilo-lounge/test-entrypoint.sh\nbash tools/ci/publish/oci-build.sh /target/publish/lounge/context /target/publish/lounge/context/Containerfile /target/publish/lounge --build-arg SOURCE_REVISION=$(cat /target/publish/lounge/context/source-revision)\nbash os/containers/tilo-lounge/test-image.sh /target/publish/lounge/image.oci.tar"
+needs = ["image-lounge-context"]
+# The entrypoint is also held against the programs the image carries, not only against its stub:
+# every flag it passes has to be one this build's `tilo-relay room` reads.
+env = { TILO_RELAY_BIN = "/target/publish/lounge/context/bin/tilo-relay" }
+outputs = ["/target/publish/lounge/image.oci.tar", "/target/publish/lounge/digest"]
+requires = ["arch=x86_64"]
+isolation = "vm"
+git = true
+default = false
+
+# The gate's own programs, built for the node's architecture as development builds: the
+# certificate mint the site's TLS needs, and the tilo command the workspace's agent runs. Neither
+# is a release build; the gate is about the image and the pages, not about a published artifact.
+# A selection of two packages resolves fewer features than the whole workspace's build does, so
+# the warnings-as-errors flags are off here (as they are for the other checks that only build a
+# program to run it): the lints themselves are `clippy`'s, over every package at once.
+[[check]]
+name = "lounge-gate-tools"
+run = "cargo build --locked -p tilo-crypto --bin tilo-crypto -p tilo-cli --bin tilo\nrm -rf /target/publish/lounge/gate-tools\nmkdir -p /target/publish/lounge/gate-tools\ncp \"$CARGO_TARGET_DIR/debug/tilo-crypto\" \"$CARGO_TARGET_DIR/debug/tilo\" /target/publish/lounge/gate-tools/\n"
+env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/lounge/gate-tools/**"]
+default = false
+
+# The image, run and used as the deployment runs it: a fresh volume reaching Ready, the
+# workspace listed in its public directory, the web entry served beside it, and people in
+# browsers using the Lounge through it. It keeps everything it found in /target/lounge-gate —
+# each page's snapshot and console, the site's and the Lounge's logs — as its outputs, and says
+# in its log what the pages said as they failed.
+[[check]]
+name = "lounge-gate"
+run = "bash os/containers/tilo-lounge/test-integration.sh /target/publish/lounge/image.oci.tar /target/publish/web-desktop/bundle /target/lounge-gate"
+setup = { run = "dnf install -y --setopt=install_weak_deps=False buildah && dnf clean all" }
+needs = ["image-lounge", "web-desktop-bundle", "lounge-gate-tools"]
+env = { TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge/gate-tools/tilo" }
+requires = ["arch=x86_64"]
+isolation = "vm"
+outputs = ["/target/lounge-gate/**"]
+timeout_secs = 3600
+default = false
+
+# Releasing the image the gate passed: this chain does not build a second one. carry-lounge
+# pulls the published `dev-<commit>` anonymously and pins it by digest, sign-lounge signs that
+# digest, and publish-lounge tags it `sha-<commit>` for cloud-deploy. A commit whose Lounge
+# image has not been published is refused by name, so the release waits for a gated build
+# instead of shipping an image no one used.
 [[check]]
 name = "carry-lounge"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
