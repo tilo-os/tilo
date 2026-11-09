@@ -70,10 +70,12 @@ pub(crate) fn run_id(resource: &str) -> Option<&str> {
 
 /// The view a run opens in: its page in this window, opened by
 /// [`ConsoleEffect::ViewRun`]. Declaring it is what gives each run its link
-/// (`share-link`).
+/// (`share-link`). A run is read from the workspace's history, which the
+/// desktop's session serves, so its link opens the desktop at this view.
 fn run_view() -> ui::tilo_actions::ResourceViewSpec {
     ui::tilo_actions::ResourceViewSpec::new("run", "Run", ConsoleEffect::VIEW_RUN.id)
         .with_primary(true)
+        .on_desktop()
 }
 
 /// The run `id` as the resource its address names, labelled by the run when

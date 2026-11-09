@@ -99,8 +99,10 @@ for anyone who has it: the same link with an invitation of the person's own in
 its `invite` secret, written by the runtime (`formatInviteLink`). Open in Tilo
 opens the same place on the desktop; a document of its own opens as its app
 there. At phone width the bar keeps the same four things with the names cut
-short. `os/containers/tilo-lounge/integration/share-link.mjs` drives it with
-two people's browsers against the Lounge image.
+short. A view whose content the desktop's session serves (a run, read from
+the workspace's history) is declared `on_desktop`, and its link opens the
+desktop at that view instead. `os/containers/tilo-lounge/integration/share-link.mjs`
+drives it with two people's browsers against the Lounge image.
 
 ## Fonts
 

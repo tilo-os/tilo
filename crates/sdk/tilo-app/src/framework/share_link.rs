@@ -378,7 +378,9 @@ fn minting(request: &ShareRequest, publisher: &Publisher<'_>) -> Result<Minting,
             id: request.resource.clone(),
             span,
         });
-    let mode = match text("mode").unwrap_or("app") {
+    // A view that opens on the whole desktop is linked there; any other
+    // opens its app alone full tab. The caller may ask for either.
+    let mode = match text("mode").unwrap_or(if view.desktop { "desktop" } else { "app" }) {
         "app" => Mode::App,
         "desktop" => Mode::Desktop,
         other => return Err(format!("Unknown mode `{other}`")),
@@ -478,11 +480,13 @@ mod tests {
                     id: "message".into(),
                     primary: true,
                     range: true,
+                    desktop: false,
                 },
                 SharedView {
                     id: "thread".into(),
                     primary: false,
                     range: false,
+                    desktop: false,
                 },
             ],
             invite: false,
@@ -535,6 +539,30 @@ mod tests {
                 .unwrap()
                 .ends_with("chat.message:01JA?view=thread")
         );
+    }
+
+    #[test]
+    fn a_view_read_from_the_desktop_is_linked_on_the_desktop() {
+        let mut desktop = request(&serde_json::json!({}));
+        desktop.views[0].desktop = true;
+        let link = |request: &ShareRequest| {
+            render(
+                &minting(request, &CHAT).unwrap(),
+                &page(Some("https://tilo.so/")),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            link(&desktop),
+            format!(
+                "https://tilo.so/#/@ada.tilo.cloud/w/{WORKSPACE}/so.tilo.chat/-/chat.message:01JA"
+            )
+        );
+        desktop.args = serde_json::json!({"mode": "app"})
+            .as_object()
+            .cloned()
+            .unwrap();
+        assert!(link(&desktop).starts_with("https://tilo.so/app/#/"));
     }
 
     #[test]

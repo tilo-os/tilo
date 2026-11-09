@@ -31,6 +31,7 @@ fn test_published_view(action: &str, view_id: &str, primary: bool) -> PublishedA
             label: "Editor".into(),
             description: None,
             open_action: action.into(),
+            desktop: false,
             primary,
             range: None,
             mount: Some(tilo_actions::ResourceViewMountSpec::new(

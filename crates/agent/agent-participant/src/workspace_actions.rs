@@ -2276,6 +2276,7 @@ impl Worker {
                 id: view.id.clone(),
                 primary: view.primary,
                 range: view.range.is_some(),
+                desktop: view.desktop,
             })
             .collect();
         let request = ui::tilo_resource::share::ShareRequest {

@@ -237,6 +237,9 @@ pub struct ResourceViewDescriptor {
     pub mount: Option<ResourceViewMountSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub range: Option<ResourceViewRangeSpec>,
+    /// The view opens on the whole desktop ([`crate::ResourceViewSpec::desktop`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub desktop: bool,
 }
 
 impl ResourceViewDescriptor {
@@ -256,6 +259,7 @@ impl ResourceViewDescriptor {
                 primary: view.primary,
                 mount: view.mount.clone(),
                 range: view.range.clone(),
+                desktop: view.desktop,
             })
     }
 }
@@ -1123,6 +1127,7 @@ mod tests {
                 primary: true,
                 range: None,
                 mount: None,
+                desktop: false,
             })
         );
         assert!(

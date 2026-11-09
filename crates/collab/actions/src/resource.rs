@@ -446,6 +446,12 @@ pub struct ResourceViewSpec {
     pub mount: Option<ResourceViewMountSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub range: Option<ResourceViewRangeSpec>,
+    /// The view opens on the whole desktop, not in its app alone full tab:
+    /// what it shows comes from the desktop's session (a workspace's
+    /// history, say), which a page showing one app does not run. A link to
+    /// it opens the desktop at this view.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub desktop: bool,
 }
 
 impl ResourceViewSpec {
@@ -462,7 +468,15 @@ impl ResourceViewSpec {
             primary: false,
             mount: None,
             range: None,
+            desktop: false,
         }
+    }
+
+    /// Open it on the whole desktop ([`Self::desktop`]).
+    #[must_use]
+    pub fn on_desktop(mut self) -> Self {
+        self.desktop = true;
+        self
     }
 
     #[must_use]

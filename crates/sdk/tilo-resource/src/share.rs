@@ -51,6 +51,10 @@ pub struct SharedView {
     pub primary: bool,
     /// Whether the view opens at a range of the resource's text.
     pub range: bool,
+    /// Whether the view opens on the whole desktop rather than its app
+    /// alone full tab: its link is a desktop link unless asked otherwise.
+    #[serde(default)]
+    pub desktop: bool,
 }
 
 /// What a `share-link` invocation asks for: the resource it was published
@@ -82,6 +86,7 @@ pub fn offer(resource: &mut tilo_actions::ResourceSpec) {
             id: view.id.clone(),
             primary: view.primary,
             range: view.range.is_some(),
+            desktop: view.desktop,
         })
         .collect();
     let target = Target::new(resource.id.as_str().to_owned());
