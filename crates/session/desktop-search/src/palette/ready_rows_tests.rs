@@ -25,7 +25,7 @@ struct SlowContent {
 }
 
 impl SearchProvider for SlowContent {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Calendar"
     }
     fn search(&self, _: &str) -> Vec<SearchResult> {
@@ -38,7 +38,7 @@ impl SearchProvider for SlowContent {
         _: usize,
         _: usize,
     ) -> SearchPage {
-        self.asked.set(self.asked.get() + 1);
+        self.asked.set(self.asked.get().saturating_add(1));
         if !self.released.load(Ordering::SeqCst) {
             let mut page = SearchPage::empty();
             page.pending = Some(PendingToken::new(1));
@@ -130,7 +130,8 @@ fn titles(search: &DesktopSearch) -> Vec<String> {
 
 /// Frames until the desk shows `title`, or the deadline passes.
 fn frames_until(search: &mut DesktopSearch, title: &str) {
-    let deadline = ui::time::now() + Duration::from_secs(10);
+    let now = ui::time::now();
+    let deadline = now.checked_add(Duration::from_secs(10)).unwrap_or(now);
     while !titles(search).iter().any(|shown| shown == title) && ui::time::now() < deadline {
         frame(search);
         std::thread::sleep(Duration::from_millis(1));

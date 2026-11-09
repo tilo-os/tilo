@@ -2134,7 +2134,7 @@ mod tests {
         let rows: Vec<&Node> = keyed(&tree, "ui.Banner", "@failed-");
         assert_eq!(rows.len(), 1, "the failed attempt still says what happened");
         assert!(
-            rows[0].props.get("action").is_none(),
+            !rows[0].props.contains_key("action"),
             "an earlier attempt offers no Retry: the question is in a later one"
         );
         assert!(

@@ -169,22 +169,12 @@ fn the_session_reads_what_the_connector_kept_through_its_own_store() {
 /// `socket`, with `workspace` one of the workspaces it draws. This is exactly what the shell part
 /// is lent (`ui::content::lend_content`).
 fn session_store(socket: &Path, workspace: &str) -> Option<tilo_content::ContentStore> {
-    let saved = std::env::var_os("TILO_FS_BLOB_SOCKET");
-    // SAFETY: the test runs alone under the environment lock every test holds.
-    unsafe { std::env::set_var("TILO_FS_BLOB_SOCKET", socket) };
+    // The session's socket is read once, when the store is made, so the variable is set for
+    // exactly that call and put back from the scope.
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_FS_BLOB_SOCKET", socket);
     tilo_content_device::set_session_workspaces(vec![workspace.to_owned()]);
-    let store = tilo_content_device::session(workspace);
-    match saved {
-        Some(value) => {
-            // SAFETY: as above.
-            unsafe { std::env::set_var("TILO_FS_BLOB_SOCKET", value) };
-        }
-        None => {
-            // SAFETY: as above.
-            unsafe { std::env::remove_var("TILO_FS_BLOB_SOCKET") };
-        }
-    }
-    store
+    tilo_content_device::session(workspace)
 }
 
 #[test]
