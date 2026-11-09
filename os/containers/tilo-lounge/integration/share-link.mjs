@@ -3,7 +3,9 @@
 // in a browser of their own on a phone-sized screen, opens that link and
 // gets that one document full tab, with the first person's words and then
 // their next ones as they write them, and the first person shown present in
-// the bar. A link to an agent run opens Console on that run's page.
+// the bar. A link to an agent run opens the whole desktop with Console on
+// that run's page: a run is read from the workspace's history, which the
+// desktop's session serves.
 //
 // Both people come in through the Lounge's door as everyone does (the
 // deployment admits everyone as an editor), so the link they share is the
@@ -64,6 +66,16 @@ const person = async (name, {width, height, scale = 1, mobile = false}) => {
   const browser = await launch({args: browserArgs});
   browsers.push(browser);
   const tab = await browser.tab();
+  // A file the page could not fetch is what stops it before it can say
+  // why, so each one goes into the tab's log with what the browser said.
+  const urls = new Map();
+  browser.on(({sessionId, method, params}) => {
+    if (sessionId !== tab.sessionId) return;
+    if (method === 'Network.requestWillBeSent') urls.set(params.requestId, params.request.url);
+    if (method === 'Network.loadingFailed') tab.log.push(`LOAD ${urls.get(params.requestId)}: ${params.errorText}${params.blockedReason ? ` (${params.blockedReason})` : ''}`);
+    if (method === 'Network.responseReceived' && params.response.status >= 400) tab.log.push(`LOAD ${params.response.url}: ${params.response.status}`);
+  });
+  await tab.send('Network.enable', {});
   await tab.send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: scale, mobile});
   if (mobile) await tab.send('Emulation.setTouchEmulationEnabled', {enabled: true}).catch(() => {});
   // Someone who has been here before: a browser new to the site opens on the
@@ -171,6 +183,9 @@ try {
   // that takes no keys says why in its own words.
   writeFileSync(`${out}/ada-actions.json`, await ada.evaluate(`JSON.stringify(globalThis.tiloMount?.actions?.() ?? null, null, 1)`).catch(error => String(error)));
   writeFileSync(`${out}/ada-state.json`, await ada.evaluate(`JSON.stringify((({semantics, ...rest}) => rest)(globalThis.tiloMount?.state?.() ?? {}), null, 1)`).catch(error => String(error)));
+  // Where each press lands, for when the keys never reach the editor.
+  await ada.evaluate(`globalThis.__presses = []; addEventListener('pointerdown', event => globalThis.__presses.push(
+    \`\${document.elementsFromPoint(event.clientX, event.clientY).slice(0, 4).map(at => \`\${at.tagName}#\${at.id}.\${at.className}\`).join(' > ')} \${event.pointerType} arrival=\${document.documentElement.dataset.arrival}\`), true); true`);
   const focus = async () => {
     const canvas = JSON.parse(await ada.evaluate('JSON.stringify(globalThis.tiloMount.canvas.getBoundingClientRect())'));
     const x = canvas.x + Math.min(400, canvas.width / 2), y = canvas.y + 104;
@@ -210,6 +225,8 @@ try {
       framesBefore: before,
       framesAfter: await ada.evaluate('globalThis.tiloMount?.state()?.frames ?? null'),
       focused: await ada.evaluate('`${document.activeElement?.tagName}.${document.activeElement?.className}`'),
+      presses: await ada.evaluate('globalThis.__presses ?? null'),
+      phase: await ada.evaluate('globalThis.tiloMount?.state()?.phase ?? null'),
     };
     const answer = await ada.evaluate(`JSON.stringify(globalThis.tiloMount.invokeAction('scratchpad.note', 'field-edit',
       {edit: {path: [{field: 'body'}], op: 'set', value: ${JSON.stringify(written)}}}, {confirm: true}))`);
@@ -260,14 +277,20 @@ try {
   await until(bo, `Boolean(document.querySelector('.bar-sheet'))`, 'Bo’s Share sheet');
   await shoot(bo, 'share-sheet-390');
 
-  // 6. A link to an agent run opens Console full tab on that run's page.
+  // 6. A link to an agent run opens the desktop, Console on that run's page.
   const run = `console.run:${process.env.SHARE_LINK_RUN ?? 'no-such-run'}`;
-  const runLink = `${base}app/#/@${hostRoute}/w/${workspace}/so.tilo.console/-/${run}`;
+  const runLink = `${base}#/@${hostRoute}/w/${workspace}/so.tilo.console/-/${run}`;
   report.runLink = runLink;
   // In a browser of its own: a link is opened fresh, not by editing the
   // address of a page already open on another app.
   const cy = await person('cy', {width: 390, height: 844, scale: 2, mobile: true});
-  await arrive(cy, runLink, 'Cy at a run');
+  await cy.navigate(runLink);
+  await until(cy, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, 'Cy at a run arriving', 300_000);
+  if (await cy.evaluate('document.documentElement.dataset.arrival') !== 'done') {
+    await failed(`Cy at a run stopped: ${await cy.evaluate("document.getElementById('status')?.textContent")}`);
+  }
+  await until(cy, `globalThis.tiloMount?.state()?.livePlace?.focus?.app === 'so.tilo.console'`, 'Console focused on the desktop', 60_000);
+  report.runPlace = JSON.parse(await cy.evaluate('JSON.stringify(globalThis.tiloMount?.state()?.livePlace?.focus ?? null)'));
   report.runTarget = JSON.parse(await cy.evaluate('JSON.stringify(globalThis.tiloRouter?.route?.target ?? null)'));
   if (report.runTarget?.app !== 'so.tilo.console' || report.runTarget?.resource?.id !== run) {
     await failed(`the run link opened ${JSON.stringify(report.runTarget)}`);
