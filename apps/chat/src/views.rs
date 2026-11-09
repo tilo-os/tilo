@@ -295,7 +295,8 @@ impl Channel {
         }
         let messages = rows
             .iter()
-            .map(|row| Message {
+            .enumerate()
+            .map(|(index, row)| Message {
                 id: row.id.clone(),
                 author: row.author.clone(),
                 ts: row.ts,
@@ -303,6 +304,16 @@ impl Channel {
                 edited: row.edited,
                 attempts: row.attempts,
                 reply_to: row.parent.as_deref().and_then(|parent| {
+                    // A reply that answers the message right above it needs no quote: the person
+                    // reads what is answered just over the answer. A reply to anything else
+                    // keeps its quote.
+                    if index
+                        .checked_sub(1)
+                        .and_then(|before| rows.get(before))
+                        .is_some_and(|before| before.id == parent)
+                    {
+                        return None;
+                    }
                     rows.iter()
                         .find(|held| held.id == parent)
                         .map(|quoted| Quote {
@@ -801,6 +812,11 @@ fn message_row(c: &Channel, message: &Message, continues: bool, cx: &ViewCx) -> 
         Gap::Related,
         vec![leading, ui::fill(content)],
     );
+    // The avatar stands at the top of the row, level with the author line: left to centre it,
+    // the avatar of a message that carries a quote and a long answer would stand halfway down
+    // the message, beside the words instead of the name — the very defect a person's own
+    // avatar never shows because their message is one line.
+    let lined = ui::arg(lined, "align", ui::text("start"));
     let body = node::with(lined, vec![bar]);
     // Activating the message places it: its own resource, which is the system's open.
     match Channel::message_resource(&message.id) {
@@ -1698,6 +1714,155 @@ mod tests {
             texts(&tree).iter().any(|text| text == "No messages yet"),
             "an empty channel says so"
         );
+    }
+
+    #[test]
+    fn a_reply_to_the_message_above_it_carries_no_quote() {
+        // An agent answering the message right above it needs no quote: the person reads what is
+        // answered just over the answer. A reply to anything else keeps its quote.
+        const ME: &str = "ba944082ab57230fec2b518bd058a677d056dc648ac5c766f392f5f69fc1ee8c";
+        let mut chat = crate::record::Chat::default();
+        chat.open_channel(
+            Id::from_raw("c_ask"),
+            crate::record::Conversation {
+                name: "Assistant".to_owned(),
+                participants: vec![
+                    crate::record::Participant::person(ME).atom(),
+                    crate::record::Participant::agent("assistant").atom(),
+                ],
+                ..crate::record::Conversation::default()
+            },
+        );
+        let message = |id: &str, author: &str, ts: i64, text: &str, parent: Option<&str>| {
+            let mut message = row("c_ask", id, author, ts, text);
+            message.parent = parent.map(str::to_owned);
+            message
+        };
+        let rows = vec![
+            message("m_one", ME, 1_782_470_400, "first", None),
+            message("m_two", ME, 1_782_470_410, "second", None),
+            message(
+                "m_three",
+                "agent:assistant",
+                1_782_470_420,
+                "answers the second",
+                Some("m_two"),
+            ),
+            message(
+                "m_four",
+                "agent:assistant",
+                1_782_470_430,
+                "answers the first",
+                Some("m_one"),
+            ),
+        ];
+        let mut names = Names {
+            me: "Quinn Davis".to_owned(),
+            ..Names::default()
+        };
+        names
+            .agents
+            .insert("assistant".to_owned(), "Assistant".to_owned());
+        let channel = Channel::read(&chat, &rows, "c_ask", ME, &names);
+        let by_id = |id: &str| {
+            channel
+                .messages
+                .iter()
+                .find(|message| message.id == id)
+                .unwrap_or_else(|| panic!("the message {id}"))
+        };
+        assert!(
+            by_id("m_three").reply_to.is_none(),
+            "a reply to the message right above it needs no quote"
+        );
+        assert!(
+            by_id("m_four").reply_to.is_some(),
+            "a reply to a message further up keeps its quote"
+        );
+        // And the page draws no quote for the one, and one for the other.
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        assert!(
+            keyed(&tree, "ui.Quote", "@quote-m_three").is_empty(),
+            "no quote stands over the reply to the message above it"
+        );
+        assert_eq!(
+            keyed(&tree, "ui.Quote", "@quote-m_four").len(),
+            1,
+            "the reply to a message further up carries its quote"
+        );
+    }
+
+    #[test]
+    fn a_messages_avatar_stands_on_its_author_line() {
+        // Every message's avatar leads the line its author's name and the time stand on: the
+        // row starts its own children at the top, so the avatar of a message that carries a
+        // quote and a long answer stays level with the byline and never drops to the middle of
+        // the words underneath it. The person's own message and the agent's reply draw alike.
+        const ME: &str = "ba944082ab57230fec2b518bd058a677d056dc648ac5c766f392f5f69fc1ee8c";
+        let mut chat = crate::record::Chat::default();
+        chat.open_channel(
+            Id::from_raw("c_ask"),
+            crate::record::Conversation {
+                name: "Assistant".to_owned(),
+                participants: vec![
+                    crate::record::Participant::person(ME).atom(),
+                    crate::record::Participant::agent("assistant").atom(),
+                ],
+                ..crate::record::Conversation::default()
+            },
+        );
+        let mut said = row("c_ask", "m_reply", "agent:assistant", 1_782_470_420, "Hi");
+        said.parent = Some("m_ask".to_owned());
+        let rows = vec![row("c_ask", "m_ask", ME, 1_782_470_400, "hello"), said];
+        let mut names = Names {
+            me: "Quinn Davis".to_owned(),
+            ..Names::default()
+        };
+        names
+            .agents
+            .insert("assistant".to_owned(), "Assistant".to_owned());
+        let channel = Channel::read(&chat, &rows, "c_ask", ME, &names);
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        for id in ["m_ask", "m_reply"] {
+            let node = walk(&tree)
+                .into_iter()
+                .find(|node| node.kind == "row" && node.key.contains(&format!("@message-{id}")))
+                .unwrap_or_else(|| panic!("the message {id}'s row"));
+            assert_eq!(
+                node.props.get("align"),
+                Some(&Value::Text("start".to_owned())),
+                "the message {id}'s row starts its avatar on the author line"
+            );
+            // The avatar is the row's lead, outside the content that holds the byline and the
+            // body: a growing body never moves the face.
+            let avatar = node
+                .children
+                .iter()
+                .find(|child| child.kind == "ui.Avatar")
+                .unwrap_or_else(|| panic!("the message {id}'s row leads with its avatar"));
+            assert!(
+                avatar.key.contains("avatar-"),
+                "the row's lead is the author's avatar: {}",
+                avatar.key
+            );
+            let content = node
+                .children
+                .iter()
+                .find(|child| child.kind == "stack" && child.key.contains("content-"))
+                .unwrap_or_else(|| panic!("the message {id}'s content"));
+            let byline = walk(content)
+                .into_iter()
+                .find(|node| node.kind == "row" && node.key.contains(&format!("by-{id}")))
+                .unwrap_or_else(|| panic!("the message {id}'s byline stands in its content"));
+            assert!(
+                !has_kind(byline, "ui.Avatar"),
+                "the byline carries no avatar of its own: the row's lead does"
+            );
+        }
     }
 
     #[test]
