@@ -59,26 +59,31 @@ impl GrantKey {
         Ok(ed25519_dalek::SigningKey::from_bytes(&seed))
     }
 
-    /// `key` with `cert`, which must certify it as an agent's grant of
-    /// `scope` that holds at `now_ns`.
+    /// `key` with `cert`, which must certify it as an agent's grant that
+    /// holds at `now_ns` and reaches no more than `asked`: what the person
+    /// was asked to approve, or less of it where they chose so.
     ///
     /// # Errors
-    /// The certificate is for another key or scope, is no grant, or does not
-    /// hold.
+    /// The certificate is for another key or reaches more than was asked, is
+    /// no grant, or does not hold.
     pub fn new(
         key: ed25519_dalek::SigningKey,
         cert: DeviceCert,
-        scope: AgentScope,
+        asked: AgentScope,
         now_ns: u64,
     ) -> Result<Self, Refused> {
         if cert.device_public_key != key.verifying_key().to_bytes() {
             return Err(Refused("the certificate is for another key".into()));
         }
-        if cert.capabilities.agent != Some(scope) {
+        let certified = cert
+            .capabilities
+            .agent
+            .filter(|certified| certified.within(asked));
+        let Some(scope) = certified else {
             return Err(Refused(
                 "the certificate does not grant what was approved".into(),
             ));
-        }
+        };
         tilo_user_identity::verify_device_cert_at(&cert, now_ns)
             .map_err(|error| Refused(format!("the certificate does not hold: {error}")))?;
         Ok(Self { key, cert, scope })
@@ -132,7 +137,8 @@ impl GrantKey {
         hex::encode(self.cert.user_public_key)
     }
 
-    /// What the grant reaches.
+    /// What the grant reaches: the scope the person certified, which is what
+    /// the door holds to from then on.
     #[must_use]
     pub const fn scope(&self) -> AgentScope {
         self.scope

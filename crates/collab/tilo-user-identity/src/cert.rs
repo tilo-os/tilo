@@ -96,6 +96,18 @@ impl AgentScope {
         }
     }
 
+    /// Whether a grant of `self` reaches no more than `asked` does, so it
+    /// may stand for what a person was asked to approve: the same scope, or —
+    /// where they were asked to approve all their workspaces — one of them.
+    /// A wider grant never stands for a narrower request.
+    #[must_use]
+    pub fn within(self, asked: Self) -> bool {
+        match asked {
+            Self::AllWorkspaces => true,
+            Self::Workspace(_) => self == asked,
+        }
+    }
+
     /// Whether the grant may make workspaces: only one that reaches all of
     /// them, so a workspace it makes is one it reaches.
     #[must_use]
@@ -1241,6 +1253,11 @@ mod tests {
         assert!(!one.makes_workspaces());
         assert!(AgentScope::AllWorkspaces.reaches(workspace));
         assert!(AgentScope::AllWorkspaces.makes_workspaces());
+        // One workspace narrows what all of them was, and never the reverse.
+        assert!(one.within(AgentScope::AllWorkspaces));
+        assert!(one.within(one));
+        assert!(AgentScope::AllWorkspaces.within(AgentScope::AllWorkspaces));
+        assert!(!AgentScope::AllWorkspaces.within(one));
         for malformed in [
             "",
             "ALL",

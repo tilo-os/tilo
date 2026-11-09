@@ -793,12 +793,7 @@ async fn the_grant_is_exactly_what_the_door_asked_the_person_to_certify() {
     let proof = |asked: &Asked| {
         SignInProof::sign(alice.cert.clone(), &alice.device, ISSUER, asked.challenge).unwrap()
     };
-    let one = AgentScope::parse("0b0c8f0e-6f4a-4f2f-9d1c-2f2b0a5e11aa").unwrap();
-    let wrong: [(&str, Certify<'_>); 4] = [
-        (
-            "a narrower scope than asked",
-            Box::new(|asked| alice.certify(asked, one, asked.expires_ms)),
-        ),
+    let wrong: [(&str, Certify<'_>); 3] = [
         (
             "another key",
             Box::new(|asked| {
@@ -845,6 +840,72 @@ async fn the_grant_is_exactly_what_the_door_asked_the_person_to_certify() {
     assert_eq!(reply.status(), StatusCode::FORBIDDEN);
     assert!(door.store.grants_of(&alice.id()).is_empty());
     assert!(door.store.grants_of(&mallory.id()).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_person_may_narrow_a_grant_to_one_workspace_and_never_widen_it() {
+    let hosted = Arc::new(Hosted::default());
+    let alice = Person::new(1);
+    let studio = hosted.add(&alice.id(), "Studio").await;
+    let garden = hosted.add(&alice.id(), "Garden").await;
+    let door = door(&hosted);
+    let client = register(&door).await;
+    let proof = |asked: &Asked| {
+        SignInProof::sign(alice.cert.clone(), &alice.device, ISSUER, asked.challenge).unwrap()
+    };
+    // The person's Tilo takes a code out of a grant it certified, and the
+    // grant the door then holds.
+    async fn granted(
+        door: &Arc<Door>,
+        client: &str,
+        person: &Person,
+        asked: Asked,
+        cert: DeviceCert,
+    ) -> store::Grant {
+        let proof = SignInProof::sign(person.cert.clone(), &person.device, ISSUER, asked.challenge)
+            .unwrap();
+        let reply = answer(door, &answer_form(&asked, &proof, &cert)).await;
+        let code = returned(&reply)["code"].clone();
+        json_body(redeem(door, client, &code, VERIFIER).await).await;
+        door.store.grants_of(&person.id())[0].clone()
+    }
+
+    // The agent asked for all of them and the person chose one: the grant is
+    // that workspace's, not the agent's request.
+    let asked = authorize(&door, &client, ISSUER).await;
+    assert_eq!(asked.scope, AgentScope::AllWorkspaces);
+    let narrowed = AgentScope::parse(&studio.id).unwrap();
+    let cert = alice.certify(&asked, narrowed, asked.expires_ms);
+    let grant = granted(&door, &client, &alice, asked, cert).await;
+    assert_eq!(grant.scope, store::Scope::Workspace(studio.id.clone()));
+    assert_eq!(grant.key().unwrap().scope(), narrowed);
+
+    // A workspace of the person's own that the host does not hold is not one
+    // a grant may be narrowed to.
+    let asked = authorize(&door, &client, ISSUER).await;
+    let nowhere = AgentScope::parse("0b0c8f0e-6f4a-4f2f-9d1c-2f2b0a5e11aa").unwrap();
+    let cert = alice.certify(&asked, nowhere, asked.expires_ms);
+    let reply = answer(&door, &answer_form(&asked, &proof(&asked), &cert)).await;
+    assert_eq!(returned(&reply)["error"], "invalid_target");
+    assert_eq!(door.store.grants_of(&alice.id()).len(), 1);
+
+    // Asked for one workspace, the door takes that one and nothing else: not
+    // all of them, and not another.
+    let pinned = format!("{ISSUER}/w/{}", garden.id);
+    for (why, scope) in [
+        ("all of them", AgentScope::AllWorkspaces),
+        ("another workspace", AgentScope::parse(&studio.id).unwrap()),
+    ] {
+        let asked = authorize(&door, &client, &pinned).await;
+        assert_eq!(asked.scope, AgentScope::parse(&garden.id).unwrap());
+        let cert = alice.certify(&asked, scope, asked.expires_ms);
+        let reply = answer(&door, &answer_form(&asked, &proof(&asked), &cert)).await;
+        assert_eq!(reply.status(), StatusCode::FORBIDDEN, "{why}");
+    }
+    let asked = authorize(&door, &client, &pinned).await;
+    let cert = alice.certify(&asked, asked.scope, asked.expires_ms);
+    let grant = granted(&door, &client, &alice, asked, cert).await;
+    assert_eq!(grant.scope, store::Scope::Workspace(garden.id));
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -14,8 +14,10 @@
 //! `return` with `pending`, `proof` and `grant` (each a canonical encoding,
 //! base64url), or `pending` and `decision=deny`. The door checks the proof
 //! ([`SignInProof::verify`]) against the person's own revocation list, and
-//! the certificate against the key and scope it asked for, and gives the
-//! browser a session cookie for its grants page.
+//! the certificate against the key and the scope it asked for — the person
+//! may narrow a grant to one of their workspaces, never widen one — and
+//! gives the browser a session cookie for its grants page. The grant the
+//! door records reaches what the certificate says.
 //!
 //! A challenge belongs to one authorization in progress and is spent by
 //! the first proof that answers it.

@@ -81,7 +81,9 @@ struct Pending {
     challenge: [u8; 32],
     /// The key made for the grant, waiting for the person's certificate.
     key: ed25519_dalek::SigningKey,
-    /// What the grant reaches: the workspace the agent was pointed at, or all.
+    /// What the person is asked to approve: the workspace the agent was
+    /// pointed at, or all of them. The certificate they answer with may be
+    /// narrower — one of their workspaces where all were asked for.
     scope: AgentScope,
     expires_ms: u64,
 }
@@ -372,9 +374,10 @@ impl Door {
             Ok(key) => key,
             Err(reply) => return reply,
         };
-        if let AgentScope::Workspace(_) = pending.scope {
-            // The host shows the grant only that workspace, if it is theirs.
-            let workspace = pending.scope.name();
+        if let AgentScope::Workspace(_) = key.scope() {
+            // The host shows the grant only that workspace, if it is theirs:
+            // whoever narrowed the grant, it names one this person holds.
+            let workspace = key.scope().name();
             let has = self
                 .directory
                 .workspaces(&key)
