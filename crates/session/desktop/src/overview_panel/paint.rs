@@ -123,6 +123,14 @@ impl OverviewPanel {
         let content = self.content_rect();
         let here_rect = self.here_rect();
         let whole = self.scrolls_whole_panel();
+        // Where the list stands, as the shared scrollbar reads it: what the fade below the band
+        // and the thumb both answer from.
+        let viewport_height = self.viewport_height();
+        let scrolled = ui::widget::ScrollMetrics::new(
+            viewport_height + self.max_scroll_y(),
+            viewport_height,
+            self.scroll_y,
+        );
         if whole {
             scene.push_layer(
                 Fill::NonZero,
@@ -179,7 +187,7 @@ impl OverviewPanel {
             &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
             band,
         );
-        if self.scroll_y + 0.5 < self.max_scroll_y() {
+        if scrolled.max_scroll() - scrolled.offset > 0.5 {
             ui::surface::content_edge_fade(
                 scene,
                 transform,
@@ -198,6 +206,7 @@ impl OverviewPanel {
             theme,
             panel,
             if whole { content } else { band },
+            scrolled,
         );
     }
 
@@ -210,19 +219,18 @@ impl OverviewPanel {
         theme: &Theme,
         panel: Rect,
         viewport: Rect,
+        metrics: ui::widget::ScrollMetrics,
     ) {
-        let overflow = self.max_scroll_y();
-        if overflow <= 0.5 {
+        if !metrics.overflows() {
             return;
         }
         let lane = Rect::new(self.content_rect().x1, viewport.y0, panel.x1, viewport.y1);
         let bar = ui::widget::Scrollbar::vertical();
-        let height = self.viewport_height();
         bar.draw(
             scene,
             transform,
             bar.track_in(lane, theme),
-            ui::widget::ScrollMetrics::new(height + overflow, height, self.scroll_y),
+            metrics,
             theme,
             false,
         );
