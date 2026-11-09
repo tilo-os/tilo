@@ -5,6 +5,8 @@
 use std::collections::HashMap;
 use std::hash::{Hash as _, Hasher as _};
 
+use tilo_sort::CompactSort as _;
+
 use tilo_actions::remote::workspace_activity as wire;
 
 use super::{
@@ -14,6 +16,11 @@ use super::{
     WorkspaceScope, comparison_change_labels, comparison_field_changes, detail_provenance,
     handled_outcome, humanize_app_id, local_resume_snapshot, t, t_args,
 };
+
+/// The app whose records are shell sessions: a step there ran a program.
+const TERMINAL_APP: &str = "so.tilo.terminal";
+/// The app whose records are web pages.
+const BROWSER_APP: &str = "so.tilo.browser";
 
 fn millis(at: SystemTime) -> i64 {
     at.duration_since(SystemTime::UNIX_EPOCH)
@@ -196,6 +203,7 @@ pub fn is_read(action: &str) -> bool {
         wire::REPLAY,
         wire::DETAIL,
         wire::FOCUS,
+        wire::RUNS,
     ]
     .contains(&action)
 }
@@ -225,9 +233,13 @@ pub fn refused_to_agent(
     action: &str,
     arguments: &serde_json::Map<String, serde_json::Value>,
 ) -> Option<String> {
-    let all_workspaces = action == wire::FEED
-        && read::<wire::FeedQuery>(arguments)
-            .is_ok_and(|query| query.scope == wire::Scope::AllWorkspaces);
+    let all_workspaces = match action {
+        wire::FEED => read::<wire::FeedQuery>(arguments)
+            .is_ok_and(|query| query.scope == wire::Scope::AllWorkspaces),
+        wire::RUNS => read::<wire::RunsQuery>(arguments)
+            .is_ok_and(|query| query.scope == wire::Scope::AllWorkspaces),
+        _ => false,
+    };
     (is_personal(action) || all_workspaces).then(|| t("activity-served-personal-only"))
 }
 
@@ -298,6 +310,10 @@ impl WorkspaceActivityPane {
             wire::SUMMARY => serde_json::to_value(self.serve_summary()),
             wire::REPLAY => serde_json::to_value(self.serve_replay()),
             wire::FOCUS => serde_json::to_value(self.serve_focus()),
+            wire::RUNS => {
+                let query: wire::RunsQuery = read(arguments)?;
+                serde_json::to_value(tree.read(|tree| self.serve_runs(&query, tree)))
+            }
             wire::DETAIL => {
                 let query: wire::DetailQuery = read(arguments)?;
                 serde_json::to_value(tree.write(|tree| self.serve_detail(&query, tree)))
@@ -360,6 +376,162 @@ impl WorkspaceActivityPane {
                 .collect(),
             pending: self.feed_coverage.pending_tree,
             mutations: self.host.mutations_available(),
+        }
+    }
+
+    /// Every agent run the history holds in `query`'s scope, newest first, each as the actions it
+    /// took: one per record it changed, with the changes of the history that are that action.
+    /// A run none of whose changes the history lists here is left out, as the feed leaves out
+    /// what it does not hold.
+    pub fn serve_runs(&mut self, query: &wire::RunsQuery, tree: &impl ActivityTree) -> wire::Runs {
+        self.set_scope(scope(query.scope), tree);
+        let entries = self.timeline.entries();
+        let mut runs = Vec::new();
+        for indexed in &self.agent_runs {
+            let mut actions = Vec::new();
+            let mut first: Option<&HistoryEntry> = None;
+            let mut last: Option<&HistoryEntry> = None;
+            for step in &indexed.run.steps {
+                let mut changes = entries
+                    .iter()
+                    .filter(|entry| self.agent_step_contains(indexed, step, &entry.id));
+                let Some(oldest) = changes.next() else {
+                    continue;
+                };
+                let newest = changes.last().unwrap_or(oldest);
+                first = Some(first.map_or(oldest, |held| {
+                    if held.timestamp <= oldest.timestamp {
+                        held
+                    } else {
+                        oldest
+                    }
+                }));
+                last = Some(last.map_or(newest, |held| {
+                    if held.timestamp >= newest.timestamp {
+                        held
+                    } else {
+                        newest
+                    }
+                }));
+                let summary = step.sentence();
+                actions.push(wire::RunAction {
+                    range: wire::Range {
+                        from: hex(&oldest.id),
+                        to: hex(&newest.id),
+                    },
+                    at_ms: millis(oldest.timestamp),
+                    summary: if summary.is_empty() {
+                        self.timeline.summary_of(oldest).to_owned()
+                    } else {
+                        summary
+                    },
+                    view: self.action_view(step, oldest),
+                    app_id: step.app.clone(),
+                    record: step.record.clone(),
+                    undo: self.can_undo_agent_record(step).then(|| wire::Offer {
+                        action: wire::DetailAction::UndoRecord,
+                        label: t("activity-detail-undo-step"),
+                    }),
+                });
+            }
+            let (Some(first), Some(last)) = (first, last) else {
+                continue;
+            };
+            let run = &indexed.run;
+            let undoable = self.host.mutations_available()
+                && run.task.is_some()
+                && run.steps.iter().all(|step| self.record_is_open(step));
+            // A run is an agent's work whatever its changes' author record says, and it acted for
+            // whoever issued it: the person and their agent never read alike.
+            let mut agent = author(&first.author);
+            agent.name = self.agent_name(run);
+            agent.relation = wire::Relation::Software;
+            if agent.on_behalf_of.is_none() && run.issued_by.is_some() {
+                agent.on_behalf_of = Some(self.issuer_name(run));
+            }
+            runs.push(wire::AgentRun {
+                id: run.id.clone(),
+                agent,
+                workspace: first.context.as_ref().and_then(|context| {
+                    context
+                        .facets
+                        .iter()
+                        .find(|facet| facet.key == "workspace")
+                        .map(|facet| facet.value.clone())
+                }),
+                instruction: run.instruction.clone().unwrap_or_else(|| run.label.clone()),
+                decision: run.decision.clone(),
+                started_ms: millis(first.timestamp),
+                last_ms: millis(last.timestamp),
+                range: wire::Range {
+                    from: hex(&first.id),
+                    to: hex(&last.id),
+                },
+                actions,
+                undo_blocked: (!undoable).then(|| t("activity-undo-task-needs-open")),
+            });
+        }
+        runs.compact_sort_by(|a, b| b.last_ms.cmp(&a.last_ms).then_with(|| a.id.cmp(&b.id)));
+        let total = runs.len();
+        runs.truncate(query.page());
+        wire::Runs {
+            runs,
+            total,
+            pending: self.feed_coverage.pending_tree,
+            mutations: self.host.mutations_available(),
+        }
+    }
+
+    /// What one step of a run shows when opened: the file it changed, the program it ran, the
+    /// page it acted on, or else the record, as the change `entry` names it.
+    fn action_view(&self, step: &ui::RunStep, entry: &HistoryEntry) -> wire::ActionView {
+        let app_label = self
+            .host
+            .app_display_name(&step.app)
+            .unwrap_or_else(|| humanize_app_id(&step.app));
+        let named = entry
+            .context
+            .as_ref()
+            .and_then(|context| context.resource.as_ref())
+            .map(|resource| wire::Target {
+                app_id: Some(step.app.clone()).filter(|app| !app.is_empty()),
+                app_label: Some(app_label.clone()),
+                id: resource.id.clone(),
+                kind: resource.kind.clone(),
+                label: ui::human_label(&resource.label, &resource.id)
+                    .unwrap_or(&resource.id)
+                    .to_owned(),
+            });
+        let path = RecordId::parse(&step.record).and_then(|record| record.file_path());
+        let target = named.unwrap_or_else(|| wire::Target {
+            app_id: Some(step.app.clone()).filter(|app| !app.is_empty()),
+            app_label: Some(app_label),
+            id: step.record.clone(),
+            kind: String::new(),
+            label: path.as_ref().and_then(|path| path.file_name()).map_or_else(
+                || step.record.clone(),
+                |name| name.to_string_lossy().into_owned(),
+            ),
+        });
+        if let Some(path) = path {
+            return wire::ActionView::File {
+                target,
+                path: path.to_string_lossy().into_owned(),
+                lines: Vec::new(),
+            };
+        }
+        match step.app.as_str() {
+            TERMINAL_APP => wire::ActionView::Command {
+                command: target.label.clone(),
+                target,
+                output: Vec::new(),
+                exit: None,
+            },
+            BROWSER_APP => wire::ActionView::Page {
+                url: target.label.clone(),
+                target,
+            },
+            _ => wire::ActionView::Record { target },
         }
     }
 

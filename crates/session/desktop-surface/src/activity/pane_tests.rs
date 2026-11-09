@@ -430,6 +430,55 @@ mod tests {
         (tree, records, pane, record)
     }
 
+    /// An agent's run is served as the timeline of what it did: the agent, never a person, what
+    /// it was asked and why, and each record it changed as an action whose view is that record
+    /// (here a file) and whose changes are the history's own, so undo names them.
+    #[test]
+    fn a_served_run_is_the_agents_timeline_of_actions_over_the_historys_changes() {
+        let (tree, _records, mut pane, record) = agent_task_fixture();
+        let served = pane.serve_runs(&wire::RunsQuery::default(), &tree);
+        assert_eq!(served.total, 1);
+        let run = &served.runs[0];
+        assert_eq!(run.agent.name, "Quill");
+        assert_eq!(run.agent.relation, wire::Relation::Software);
+        assert_eq!(run.agent.on_behalf_of.as_deref(), Some("Ada"));
+        assert_eq!(
+            run.instruction,
+            "Rewrite the opening and preserve the pricing table"
+        );
+        assert_eq!(
+            run.decision.as_deref(),
+            Some("The opening was vague; the pricing table was already correct.")
+        );
+        assert_eq!(run.actions.len(), 1, "one record changed, one action");
+        let action = &run.actions[0];
+        assert_eq!(action.summary, "Rewrite the launch story");
+        assert_eq!(
+            (action.app_id.as_str(), action.record.as_str()),
+            ("org.tilo.Writer", record.as_str())
+        );
+        let wire::ActionView::File { path, target, .. } = &action.view else {
+            panic!(
+                "a file the agent changed opens as that file: {:?}",
+                action.view
+            );
+        };
+        assert!(path.ends_with("campaign-brief.tilo-doc"), "{path}");
+        assert_eq!(target.app_id.as_deref(), Some("org.tilo.Writer"));
+        assert!(
+            action.undo.is_some(),
+            "its record is open here, so it undoes alone"
+        );
+        // The action's changes and the run's are ranges of the feed's own entries.
+        for range in [&action.range, &run.range] {
+            assert!(
+                pane.select_range(range),
+                "{range:?} names changes the history lists"
+            );
+        }
+        assert!(run.started_ms <= run.last_ms);
+    }
+
     /// An app whose content is the workspace's own document (Notes' notebook) keeps it beside its
     /// records: what was done in it, by a person or an agent's task, is still part of the
     /// workspace's history.
