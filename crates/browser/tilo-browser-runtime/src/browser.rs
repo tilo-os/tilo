@@ -1193,6 +1193,35 @@ fn host_offers(config: &Config) -> crate::shell::HostOffers {
     }
 }
 
+/// What the page's desk asks its history: the workspace's own records, the
+/// model this page may ask, and who the people its places name are.
+///
+/// The model is the host's, else a provider the person set up here: without
+/// one nothing is asked and the history keeps its deterministic digest.
+fn serve_history(
+    surface: &mut tilo_desktop_surface::DesktopSurface,
+    config: &Config,
+    store: Rc<dyn durable_store::DurableStore>,
+    shared: &crate::desktop::Shared,
+    persistence: &Rc<crate::desktop::Persistence>,
+    here: &tilo_desktop::here::Here,
+    people: &Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>>,
+) {
+    let models = (config.models.is_some() || crate::host_services::page_models_set_up())
+        .then(|| config.models().ok())
+        .flatten();
+    surface.set_history_source(Box::new(crate::history::PageHistory::new(
+        &config.workspace,
+        config.peer,
+        config.author(),
+        store,
+        shared.clone(),
+        crate::history::person_of(here, people, config.author()),
+        Rc::clone(persistence),
+        models,
+    )));
+}
+
 fn present_desktop(
     id: u64,
     config: &Config,
@@ -1213,24 +1242,17 @@ fn present_desktop(
     )
     .map_err(error)?;
     let persistence = Rc::new(persistence);
-    // The model the history asks, when this page has one: the host's, else a
-    // provider the person set up here. Without one nothing is asked and the
-    // history keeps its deterministic digest.
-    let models = (config.models.is_some() || crate::host_services::page_models_set_up())
-        .then(|| config.models().ok())
-        .flatten();
     let here = tilo_desktop::here::Here::default();
     let people: Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>> = Rc::default();
-    surface.set_history_source(Box::new(crate::history::PageHistory::new(
-        &config.workspace,
-        config.peer,
-        config.author(),
-        Rc::clone(&dyn_history_store),
-        shared.clone(),
-        crate::history::person_of(&here, &people, config.author()),
-        Rc::clone(&persistence),
-        models,
-    )));
+    serve_history(
+        &mut surface,
+        config,
+        dyn_history_store,
+        &shared,
+        &persistence,
+        &here,
+        &people,
+    );
     let (session, openings) =
         tilo_desktop_surface::session::serve(config.workspace.clone(), Arc::clone(&shared.woken));
     surface.serve_activity(openings.activity());
