@@ -1110,6 +1110,7 @@ overview-tilo-about = About Tilo
 overview-tilo-workspace-usage = { $host }, { $time } this month
 overview-tilo-plan-used-of = { $used } of { $included } hr
 overview-tilo-plan-used = { $used }
+overview-tilo-credit = { $amount } credit
 overview-tilo-no-card = No card yet: added the first time something needs a Linux machine
 overview-tilo-no-plan = No plan chosen
 overview-tilo-host-device = This device

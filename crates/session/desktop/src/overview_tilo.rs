@@ -169,7 +169,10 @@ fn host_row(index: usize, host: &HostAccount) -> TiloItem {
         }))),
     }
     if let Some(credit) = host.standing.as_ref().and_then(|s| s.credit.clone()) {
-        facts.push(Fact::text(credit));
+        facts.push(Fact::text(t_args(
+            "overview-tilo-credit",
+            &[("amount", credit.into())],
+        )));
     }
     TiloItem {
         key: format!("overview-host:{index}"),

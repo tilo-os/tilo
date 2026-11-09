@@ -1129,6 +1129,7 @@ overview-tilo-about = Über Tilo
 overview-tilo-workspace-usage = { $host }, { $time } diesen Monat
 overview-tilo-plan-used-of = { $used } von { $included } Std.
 overview-tilo-plan-used = { $used }
+overview-tilo-credit = { $amount } Guthaben
 overview-tilo-no-card = Noch keine Karte: wird erst gebraucht, wenn etwas eine Linux-Maschine braucht
 overview-tilo-no-plan = Kein Tarif gewählt
 overview-tilo-host-device = Dieses Gerät
