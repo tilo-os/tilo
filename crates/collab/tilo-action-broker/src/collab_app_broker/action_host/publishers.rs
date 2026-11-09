@@ -40,4 +40,21 @@ impl AppBrokerState {
             .or_else(|| self.manifest_offer(app_id, address))
             .is_some_and(|action| action.operation_kind == tilo_actions::OperationKind::View)
     }
+
+    /// Why the plain `open` of `app_id` is refused before anything launches, when the app is one
+    /// this session runs itself: it has no window process, and its `open` places its root instead
+    /// (`docs/designs/app-language/one-app-model.md` §3). Answering at once is the difference
+    /// between a refusal the caller can act on and a wait for a process that never publishes.
+    /// `None` for an app a window of starts.
+    pub(super) fn served_open_refusal(&self, app_id: &str) -> Option<String> {
+        let root = self
+            .services
+            .launcher
+            .as_ref()
+            .and_then(|launcher| launcher.served(app_id))?;
+        Some(format!(
+            "{app_id} is served by this session: it has no window to open; open its resource {root} \
+             instead"
+        ))
+    }
 }

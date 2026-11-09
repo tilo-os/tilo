@@ -196,6 +196,18 @@ impl Service for ModelService {
             .map(|held| held.address.clone())
     }
 
+    /// Every app this host keeps a record of, with the address it is published at: what
+    /// [`Self::hosted`] answers, for a host that asks about them all at once.
+    fn served(&self) -> Vec<(String, String)> {
+        self.records
+            .iter()
+            .filter_map(|held| {
+                let app = self.owners.get(&held.address)?;
+                Some((app.clone(), held.address.clone()))
+            })
+            .collect()
+    }
+
     fn read(&self, resource: &str) -> Option<Json> {
         let held = self.records.iter().find(|held| {
             held.address == resource || resource.starts_with(&format!("{}/", held.address))

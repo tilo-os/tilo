@@ -1906,6 +1906,12 @@ impl AppBrokerState {
                 Some(offered),
             )
         };
+        // An app whose model this session runs itself has no window process to launch: the plain
+        // `open` of it is the session's own `open` step, which places its root
+        // (`docs/designs/app-language/one-app-model.md` §3).
+        if let Some(reason) = self.served_open_refusal(&app_id) {
+            return Err(ActionHostError::Unavailable { reason });
+        }
         // Only a caller on this machine launches apps on this desktop.
         if caller.workspace().is_none() {
             return Err(ActionHostError::UnknownAction);
@@ -2834,6 +2840,12 @@ impl AppBrokerState {
         {
             if caller.workspace().is_none() {
                 return Err(ActionHostError::UnknownAction);
+            }
+            // An app whose model this session runs has no window to open: answer its `open` at
+            // once, naming the resource the session places
+            // (`docs/designs/app-language/one-app-model.md` §3).
+            if let Some(reason) = self.served_open_refusal(app_id) {
+                return Err(ActionHostError::Unavailable { reason });
             }
             if !policy.may_in(
                 &workspace,

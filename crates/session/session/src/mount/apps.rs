@@ -475,6 +475,24 @@ impl Apps {
         self.start_asked_of_services();
         self.follow_ended();
         self.follow_policy();
+        self.follow_served();
+    }
+
+    /// Tell the launches what this session serves: each app whose model a service runs, by the
+    /// resource it is served at. An `open` of one places that resource rather than awaiting a
+    /// window process that never publishes
+    /// (`docs/designs/app-language/one-app-model.md` §3), and a task's `open` of one is refused at
+    /// once with the same reason.
+    fn follow_served(&self) {
+        let (Some(services), Some(launches)) = (
+            self.state.borrow().services.clone(),
+            self.state.borrow().launches.clone(),
+        ) else {
+            return;
+        };
+        for (app, root) in services.borrow().served() {
+            launches.serves(&app, &root);
+        }
     }
 
     /// Bring what the person's authority in a workspace is published as up to the policy the desk

@@ -199,6 +199,19 @@ pub enum ArrangementAction {
         #[serde(default)]
         before: Option<u64>,
     },
+    /// The system's `open` (`docs/designs/app-language/one-app-model.md` §3): the resource
+    /// `resource` placed with its view `view` (empty for its primary one) beside the place showing
+    /// `beside` — the conversation of the turn that asked, by its address — or beside the place in
+    /// front when it names none. A resource already standing is brought forward instead. The door
+    /// resolves it into the `Place` (or `Activate`) it makes before the step is recorded, so the
+    /// record holds ids. Appended last.
+    Open {
+        resource: String,
+        #[serde(default)]
+        view: String,
+        #[serde(default)]
+        beside: String,
+    },
 }
 
 /// Where a place made on the desk now goes: the workspace in front, its row, and the ids the
@@ -740,6 +753,75 @@ impl Arrangement {
         Ok(Some(surface.place))
     }
 
+    /// The system's `open` (`docs/designs/app-language/one-app-model.md` §3): stand `resource`
+    /// with its view `view` (empty for its primary one) beside the place that shows `beside`'s
+    /// resource — the conversation of the turn that asked — or beside the place in front when
+    /// `beside` names nothing. A resource already standing on the desk is brought forward instead,
+    /// so opening what is shown raises it rather than standing a second place.
+    ///
+    /// Returns the place's id, or `None` when the desk already held one and brought it forward.
+    ///
+    /// # Errors
+    /// The desk has no workspace in front, or `resource` names nothing published.
+    pub(crate) fn open_place(
+        &mut self,
+        asked: &str,
+        resource: &str,
+        view: &str,
+        beside: &str,
+    ) -> Result<Option<u64>, String> {
+        if let Some(held) = self.place_of(resource) {
+            // Opening what is open brings it forward; one already in front is where it should be,
+            // and asking to activate it again would refuse ("that place is in front already").
+            match self.ask(
+                asked,
+                ArrangementAction::Activate { place: held },
+                Busy::default(),
+            ) {
+                Ok(_) => {}
+                Err(why) if why == "that place is in front already" => {}
+                Err(why) => return Err(why),
+            }
+            return Ok(None);
+        }
+        let anchor = if beside.trim().is_empty() {
+            None
+        } else {
+            self.place_of(beside)
+        };
+        let surface = self.surface_at()?;
+        // The point the new place stands at: the anchor's own place, so the free space nearest it
+        // keeps a gap from it and never covers it (`Arrangement::free_place_near`). With no anchor
+        // the place comes to the canvas' origin, as a place made by `place` without a point does.
+        let at = anchor
+            .and_then(|place| {
+                self.handle.read(|tree| {
+                    let (workspace, row, group, _) = locate(tree, place)?;
+                    let held = tree.workspaces.get(workspace)?;
+                    let id = held.strips.get(row)?.window_groups.get(group)?.id;
+                    held.arrangement.place_of(id)
+                })
+            })
+            .map_or((0, 0), |place| {
+                (i64::from(place.right()), i64::from(place.y))
+            });
+        let action = ArrangementAction::Place {
+            workspace: surface.workspace,
+            row: surface.row,
+            strip: surface.strip,
+            place: surface.place,
+            resource: resource.to_owned(),
+            view: view.to_owned(),
+            x: at.0,
+            y: at.1,
+            width: DEFAULT_WIDTH,
+            height: DEFAULT_HEIGHT,
+            float: None,
+        };
+        self.ask(asked, action, Busy::default())?;
+        Ok(Some(surface.place))
+    }
+
     /// The place of `workspace` (a workspace's slot) that already shows `resource`, if one
     /// stands: what opening an app the workspace already shows brings forward.
     fn place_in(&self, workspace: u64, resource: &str) -> Option<u64> {
@@ -1185,6 +1267,11 @@ fn change(
             },
         ),
         ArrangementAction::Float { place, float } => float_place(tree, *place, *float),
+        // Resolved into the `Place` (or `Activate`) it makes before it reaches the record, where
+        // the desk's ids and the place it stands beside are known.
+        ArrangementAction::Open { .. } => {
+            Err("an open is resolved into the place it makes before it reaches the record".into())
+        }
         ArrangementAction::Snap { place, row, before } => {
             snap_back(tree, *place, *row, *before, by_the_person)
         }
@@ -1598,6 +1685,7 @@ fn verb(action: &ArrangementAction) -> &'static str {
         ArrangementAction::Activate { .. } => "activate",
         ArrangementAction::Pin { .. } => "pin",
         ArrangementAction::Place { .. } | ArrangementAction::PlaceFound { .. } => "place",
+        ArrangementAction::Open { .. } => "open",
         ArrangementAction::Float { .. } => "float",
         ArrangementAction::Snap { .. } => "snap-back",
         // Refused before it is stepped: it names no change of the desk.
@@ -2000,6 +2088,24 @@ fn placing_actions() -> Vec<ActionSpec> {
                 y: args.integer("y").unwrap_or_default(),
             },
         ),
+        action(
+            "open",
+            "Open a resource with its own view, beside what the ask is in",
+            vec![
+                required("resource", ParamType::Resource, "The resource it shows"),
+                optional("view", ParamType::Text, "The view it shows it through"),
+                optional(
+                    "beside",
+                    ParamType::Text,
+                    "The resource whose place it stands beside, by its address; the place in front when left out",
+                ),
+            ],
+            |args| ArrangementAction::Open {
+                resource: text(args, "resource"),
+                view: args.text("view").unwrap_or_default().to_owned(),
+                beside: text(args, "beside"),
+            },
+        ),
     ]
 }
 
@@ -2198,6 +2304,27 @@ impl Published for ArrangementDoor {
             });
             placed.map_err(|why| tilo_actions::DoorError::Unavailable {
                 code: "nothing_to_place".to_owned(),
+                reason: why,
+            })?;
+            return Ok(ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ));
+        }
+        // The system's `open` is resolved here, where the desk's ids and its places are: it
+        // becomes the `Place` it makes beside its anchor, or the `Activate` that brings what is
+        // open forward, and the record only ever holds ids.
+        if let ArrangementAction::Open {
+            resource,
+            view,
+            beside,
+        } = &action
+        {
+            let opened = self
+                .arrangement
+                .borrow_mut()
+                .open_place(&asked, resource, view, beside);
+            opened.map_err(|why| tilo_actions::DoorError::Unavailable {
+                code: "nowhere_to_open".to_owned(),
                 reason: why,
             })?;
             return Ok(ui::host_operation::ResourceOperationStart::Completed(
