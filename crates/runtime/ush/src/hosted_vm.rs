@@ -118,6 +118,8 @@ pub struct HostedPrograms {
     /// The session's terminal, when it has one: programs on it run on a
     /// terminal in the VM.
     terminal: Option<OwnedFd>,
+    /// Where the last refusal is told, for a caller that answers it typed.
+    refusals: Option<std::sync::Arc<std::sync::Mutex<Option<host_account::Refusal>>>>,
 }
 
 impl HostedPrograms {
@@ -135,7 +137,19 @@ impl HostedPrograms {
             environment,
             shares,
             terminal: None,
+            refusals: None,
         }
+    }
+
+    /// Tell `slot` each refusal that ends a program, so the caller can
+    /// answer it typed (a run's answer to the agent that asked for it).
+    #[must_use]
+    pub fn reporting_refusals(
+        mut self,
+        slot: std::sync::Arc<std::sync::Mutex<Option<host_account::Refusal>>>,
+    ) -> Self {
+        self.refusals = Some(slot);
+        self
     }
 
     /// Programs whose input and output are the session's own get a
@@ -310,6 +324,11 @@ impl HostedPrograms {
                 // agent's run too, from the same mark.
                 if refusal.awaits_the_account() {
                     self.mark(io, &|key| held_mark(key, agent, &refusal));
+                }
+                if let Some(slot) = &self.refusals {
+                    *slot
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(refusal.clone());
                 }
                 let words = if agent && refusal.awaits_the_account() {
                     format!(

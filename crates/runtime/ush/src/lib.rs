@@ -88,6 +88,7 @@ pub mod terminal_sessions;
 pub mod tilo_side;
 pub mod version;
 pub mod workspace;
+pub mod workspace_shell;
 
 pub use store::Store;
 /// The package id every `ush` grant is written against.
