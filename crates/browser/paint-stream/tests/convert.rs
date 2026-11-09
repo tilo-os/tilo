@@ -1,5 +1,6 @@
 //! The converter and patches against snapshots recorded from a real engine
-//! (`tools/record-fixture.mjs` over `fixtures/layers.html`, 800x600).
+//! (`tools/record-fixture.mjs` over `fixtures/layers.html` and
+//! `fixtures/form.html`, 800x600).
 
 #![allow(
     clippy::expect_used,
@@ -8,9 +9,9 @@
     reason = "in a test these are the assertion, not a hazard; fixtures are checked in"
 )]
 
-use tilo_paint_stream::snapshot::convert;
+use tilo_paint_stream::snapshot::{CHOICE_BOX, CHOICE_MARK, convert};
 use tilo_paint_stream::{
-    Anchor, BlobRef, Color, Frame, Item, LayerId, Patch, PatchError, Point, ROOT, decode, encode,
+    Anchor, BlobRef, Color, Frame, Item, LayerId, Patch, PatchError, Point, ROOT, Rect, decode, encode,
 };
 
 const VIEWPORT: Point = Point { x: 800.0, y: 600.0 };
@@ -26,6 +27,38 @@ fn snapshot(state: &str) -> serde_json::Value {
 
 fn frame(state: &str, seq: u64) -> Frame {
     convert(&snapshot(state), VIEWPORT, seq).expect("convert")
+}
+
+/// The form of `fixtures/form.html`: `empty` as it loads, `filled` with every
+/// kind of answer given.
+fn form(state: &str, seq: u64) -> Frame {
+    let path = format!(
+        "{}/tests/fixtures/form.{state}.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let raw = std::fs::read_to_string(&path).expect("fixture");
+    let snapshot: serde_json::Value = serde_json::from_str(&raw).expect("fixture json");
+    convert(&snapshot, VIEWPORT, seq).expect("convert")
+}
+
+/// Every line of text a frame draws, whichever layer draws it.
+fn all_texts(frame: &Frame) -> Vec<String> {
+    frame
+        .layers
+        .keys()
+        .flat_map(|id| texts(frame, *id))
+        .collect()
+}
+
+/// The boxes of the items a frame draws as `part` of their element.
+fn parts(frame: &Frame, part: u32) -> Vec<Rect> {
+    frame
+        .layers
+        .values()
+        .flat_map(|layer| layer.items.iter())
+        .filter(|item| item.key().part == part)
+        .filter_map(Item::rect)
+        .collect()
 }
 
 fn texts(frame: &Frame, layer: LayerId) -> Vec<String> {
@@ -370,4 +403,101 @@ fn a_password_never_leaves_the_host() {
         all.iter().any(|t| t == "\u{2022}".repeat(6).as_str()),
         "shown as six dots: {all:?}"
     );
+}
+
+#[test]
+fn a_ticked_box_and_the_one_chosen_of_two_reach_the_viewer() {
+    // The engine's theme paints a checkbox and a radio button, and a snapshot
+    // carries no theme: without their marks a viewer could not tell a ticked
+    // box from an empty one, which is the answer the page holds.
+    let empty = form("empty", 1);
+    let filled = form("filled", 2);
+    let mut boxes = parts(&filled, CHOICE_BOX);
+    assert_eq!(boxes.len(), 4, "two checkboxes and two radio buttons");
+    assert_eq!(
+        parts(&empty, CHOICE_BOX),
+        boxes,
+        "a box is there chosen or not"
+    );
+    assert!(
+        parts(&empty, CHOICE_MARK).is_empty(),
+        "nothing is chosen yet"
+    );
+    let marks = parts(&filled, CHOICE_MARK);
+    assert_eq!(marks.len(), 2, "the ticked box and the chosen radio button");
+    // Down the page: "I agree", "Send me news", "Yes", "No". The marks are in
+    // the first and the last, and in no other.
+    boxes.sort_by(|a, b| a.y.total_cmp(&b.y));
+    let mut marked: Vec<usize> = marks
+        .iter()
+        .map(|mark| {
+            boxes
+                .iter()
+                .position(|held| {
+                    mark.x >= held.x
+                        && mark.y >= held.y
+                        && mark.x + mark.w <= held.x + held.w
+                        && mark.y + mark.h <= held.y + held.h
+                })
+                .expect("a mark is inside the box it marks")
+        })
+        .collect();
+    marked.sort_unstable();
+    assert_eq!(marked, [0, 3]);
+}
+
+#[test]
+fn what_a_page_only_sends_for_a_box_is_not_drawn_as_its_words() {
+    // A checkbox's value ("yes", "news") is what the page sends for it, never
+    // words it shows; its label is.
+    let drawn = all_texts(&form("filled", 1));
+    for sent in ["yes", "no", "news"] {
+        assert!(
+            !drawn.iter().any(|text| text == sent),
+            "{sent:?} in {drawn:?}"
+        );
+    }
+    assert!(drawn.iter().any(|text| text == "I agree"), "{drawn:?}");
+}
+
+#[test]
+fn the_option_a_select_shows_and_the_lines_of_a_textarea_are_drawn() {
+    let empty = all_texts(&form("empty", 1));
+    let filled = all_texts(&form("filled", 2));
+    assert!(
+        empty.iter().any(|text| text == "Select a purpose"),
+        "{empty:?}"
+    );
+    assert!(
+        filled.iter().any(|text| text == "Visiting family"),
+        "{filled:?}"
+    );
+    assert!(
+        !filled
+            .iter()
+            .any(|text| text == "Select a purpose" || text == "Tourism"),
+        "only the option shown is drawn: {filled:?}"
+    );
+    assert!(
+        filled.iter().any(|text| text == "Maria Elena"),
+        "{filled:?}"
+    );
+    for line in ["14 Canal Street, Flat 3", "Utrecht 3511 AB"] {
+        assert!(
+            filled.iter().any(|text| text == line),
+            "{line:?} in {filled:?}"
+        );
+        assert!(!empty.iter().any(|text| text == line));
+    }
+}
+
+#[test]
+fn answering_a_form_reaches_a_viewer_as_a_patch() {
+    let empty = form("empty", 1);
+    let filled = form("filled", 2);
+    let mut viewer: Frame = decode(&encode(&empty).expect("encode")).expect("decode");
+    let patch: Patch = decode(&encode(&empty.diff(&filled)).expect("encode")).expect("decode");
+    viewer.apply(&patch).expect("apply");
+    assert_eq!(viewer, filled);
+    assert_eq!(parts(&viewer, CHOICE_MARK).len(), 2);
 }

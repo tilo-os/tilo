@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Form</title>
+<style>
+  body { margin: 16px; font: 14px/1.4 sans-serif; background: #fff; color: #111; }
+  label { display: block; margin: 8px 0; }
+  input[type=text], select, textarea { font-size: 14px; padding: 4px; }
+  textarea { width: 300px; height: 80px; }
+</style>
+</head>
+<body>
+<form>
+  <label>Given names <input id="given" type="text"></label>
+  <label><input id="agree" type="checkbox" value="yes"> I agree</label>
+  <label><input id="news" type="checkbox" value="news"> Send me news</label>
+  <label><input id="refused-yes" type="radio" name="refused" value="yes"> Yes</label>
+  <label><input id="refused-no" type="radio" name="refused" value="no"> No</label>
+  <label>Purpose <select id="purpose"><option value="">Select a purpose</option><option>Tourism</option><option>Visiting family</option></select></label>
+  <label>Address <textarea id="address"></textarea></label>
+</form>
+</body>
+</html>

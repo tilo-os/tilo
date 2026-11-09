@@ -7,7 +7,7 @@
 //!
 //! Capture a snapshot with [`COMPUTED_STYLES`]; pass the result to [`convert`].
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde_json::Value;
 
@@ -84,6 +84,15 @@ const PART_BORDER: u32 = 1;
 const PART_IMAGE: u32 = 2;
 const PART_FIELD: u32 = 3;
 const PART_VECTOR: u32 = 4;
+/// The part of a checkbox or a radio button that says it is chosen: drawn
+/// only while it is.
+pub const CHOICE_MARK: u32 = 5;
+/// The box of a checkbox or a radio button the page gave no box of its own.
+pub const CHOICE_BOX: u32 = 6;
+/// The first line of a field that holds several; a field has few.
+const PART_LINE: u32 = 32;
+/// Lines of one field a frame carries.
+const MAX_FIELD_LINES: usize = 64;
 /// Shapes one inline SVG may carry; larger drawings are not icons.
 const MAX_SHAPES: usize = 256;
 /// Nesting below an `<svg>` searched for shapes.
@@ -189,6 +198,12 @@ struct Doc<'a> {
     layout_of: HashMap<i64, usize>,
     sources: HashMap<i64, &'a str>,
     input_values: HashMap<i64, &'a str>,
+    /// A textarea's text, which an input's value does not carry.
+    text_values: HashMap<i64, &'a str>,
+    /// The checkboxes and radio buttons that are chosen, and the options.
+    checked: HashSet<i64>,
+    selected: HashSet<i64>,
+    node_value: Vec<i64>,
     /// Per node, attribute name/value string indices, alternating.
     attributes: Vec<Vec<i64>>,
     children: HashMap<i64, Vec<i64>>,
@@ -228,6 +243,35 @@ impl<'a> Doc<'a> {
             .ok()
             .and_then(|n| self.node_name.get(n))
             .map_or("", |&i| self.string(i))
+    }
+
+    /// The words of the option a `<select>` shows as chosen.
+    fn chosen_option(&self, select: i64) -> String {
+        let below = |node: i64| self.children.get(&node).into_iter().flatten().copied();
+        let option = below(select)
+            .flat_map(|child| match self.name(child) {
+                "OPTGROUP" => below(child).collect::<Vec<_>>(),
+                _ => vec![child],
+            })
+            .find(|node| self.name(*node) == "OPTION" && self.selected.contains(node));
+        let Some(option) = option else {
+            return String::new();
+        };
+        let words = self
+            .attr(option, "label")
+            .filter(|label| !label.trim().is_empty())
+            .map_or_else(
+                || {
+                    below(option)
+                        .filter_map(|child| usize::try_from(child).ok())
+                        .filter(|child| self.node_type.get(*child) == Some(&3))
+                        .filter_map(|child| self.node_value.get(child))
+                        .map(|value| self.string(*value))
+                        .collect::<String>()
+                },
+                str::to_owned,
+            );
+        words.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
     fn parent_of(&self, node: i64) -> i64 {
@@ -314,6 +358,8 @@ fn parse(snapshot: &Value) -> Result<Doc<'_>, SnapshotError> {
             .zip(ints(&v["value"]))
             .collect()
     };
+    // The nodes a snapshot marks: it lists those a thing is true of.
+    let flagged = |v: &Value| -> HashSet<i64> { ints(&v["index"]).into_iter().collect() };
     let resolve = |m: HashMap<i64, i64>| -> HashMap<i64, &str> {
         m.into_iter()
             .map(|(n, s)| {
@@ -358,6 +404,10 @@ fn parse(snapshot: &Value) -> Result<Doc<'_>, SnapshotError> {
         layout_text: ints(&layout["text"]),
         sources: resolve(rare(&nodes["currentSourceURL"])),
         input_values: resolve(rare(&nodes["inputValue"])),
+        text_values: resolve(rare(&nodes["textValue"])),
+        checked: flagged(&nodes["inputChecked"]),
+        selected: flagged(&nodes["optionSelected"]),
+        node_value: ints(&nodes["nodeValue"]),
         attributes,
         children,
         layout_node,
@@ -614,7 +664,7 @@ impl Converter<'_> {
                     },
                 );
             }
-            if matches!(name, "INPUT" | "TEXTAREA") {
+            if matches!(name, "INPUT" | "TEXTAREA" | "SELECT") {
                 self.field(node, li, order, rect);
             }
             if name == "svg" {
@@ -625,8 +675,41 @@ impl Converter<'_> {
 
     /// Form fields draw their value through the engine's shadow tree, which
     /// the snapshot omits: draw value or placeholder from the node instead.
+    ///
+    /// What a viewer is shown is what the page holds: the text of an input,
+    /// the lines of a textarea, the option a select shows, and whether a
+    /// checkbox or a radio button is chosen.
     fn field(&mut self, node: i64, li: usize, order: i64, rect: Rect) {
-        let raw = self.doc.input_values.get(&node).copied().unwrap_or("");
+        let name = self.doc.name(node);
+        let kind = self.doc.attr(node, "type").unwrap_or("");
+        if name == "INPUT" {
+            let radio = kind.eq_ignore_ascii_case("radio");
+            if radio || kind.eq_ignore_ascii_case("checkbox") {
+                self.choice(node, li, order, rect, radio);
+                return;
+            }
+        }
+        if name == "TEXTAREA" {
+            self.lines(node, li, order, rect);
+            return;
+        }
+        let chosen;
+        let raw = if name == "SELECT" {
+            // A list shown open lays its options out as boxes of its own.
+            let open = self.doc.attr(node, "multiple").is_some()
+                || self
+                    .doc
+                    .attr(node, "size")
+                    .and_then(|size| size.trim().parse::<u32>().ok())
+                    .is_some_and(|size| size > 1);
+            if open {
+                return;
+            }
+            chosen = self.doc.chosen_option(node);
+            chosen.as_str()
+        } else {
+            self.doc.input_values.get(&node).copied().unwrap_or("")
+        };
         // A password never leaves the host: viewers see its length as dots,
         // as the page itself shows it.
         let masked;
@@ -677,6 +760,158 @@ impl Converter<'_> {
                 color,
             },
         );
+    }
+
+    /// A checkbox or a radio button is painted by the engine's own theme,
+    /// which a snapshot does not carry. Its box is drawn here when the page
+    /// gave it none of its own, and its mark when it is chosen, so whoever
+    /// watches is shown the answer the page holds. Its value is what the page
+    /// sends for it, not words it shows, and is never drawn.
+    fn choice(&mut self, node: i64, li: usize, order: i64, rect: Rect, round: bool) {
+        let side = rect.w.min(rect.h);
+        if side <= 0.0 {
+            return;
+        }
+        let color = css_color(self.doc.style(li, S::Fg)).unwrap_or_default();
+        let node_key = self.doc.node_key(node);
+        let bordered = [
+            S::BorderTopW,
+            S::BorderRightW,
+            S::BorderBottomW,
+            S::BorderLeftW,
+        ]
+        .into_iter()
+        .any(|width| px(self.doc.style(li, width)) > 0.0)
+            && !matches!(self.doc.style(li, S::BorderStyle), "none" | "hidden");
+        let filled = css_color(self.doc.style(li, S::Bg)).is_some_and(|bg| bg.0[3] > 0);
+        if !bordered && !filled {
+            self.push(
+                node,
+                order,
+                1,
+                Item::Border {
+                    key: ItemKey {
+                        node: node_key,
+                        part: CHOICE_BOX,
+                    },
+                    rect,
+                    widths: [1.0; 4],
+                    colors: [color; 4],
+                    radius: if round { side / 2.0 } else { 2.0 },
+                },
+            );
+        }
+        if !self.doc.checked.contains(&node) {
+            return;
+        }
+        let inset = (side / 4.0).max(1.0);
+        let mark = Rect::new(
+            rect.x + inset,
+            rect.y + inset,
+            (rect.w - inset * 2.0).max(1.0),
+            (rect.h - inset * 2.0).max(1.0),
+        );
+        self.push(
+            node,
+            order,
+            3,
+            Item::Fill {
+                key: ItemKey {
+                    node: node_key,
+                    part: CHOICE_MARK,
+                },
+                rect: mark,
+                color,
+                radius: if round { mark.w.min(mark.h) / 2.0 } else { 1.0 },
+            },
+        );
+    }
+
+    /// A textarea's text, a line box to each line. The client shapes the
+    /// text itself, so lines are broken here at about the width the box
+    /// gives by an average letter, and as many are drawn as the box shows:
+    /// text past them ends in an ellipsis, as it is scrolled out of sight.
+    fn lines(&mut self, node: i64, li: usize, order: i64, rect: Rect) {
+        let value = self.doc.text_values.get(&node).copied().unwrap_or("");
+        let (text, color) = if value.is_empty() {
+            (
+                self.doc.attr(node, "placeholder").unwrap_or(""),
+                PLACEHOLDER,
+            )
+        } else {
+            (
+                value,
+                css_color(self.doc.style(li, S::Fg)).unwrap_or_default(),
+            )
+        };
+        if text.is_empty() {
+            return;
+        }
+        let font = self.font(li);
+        let pad = px(self.doc.style(li, S::PaddingLeft)) + px(self.doc.style(li, S::BorderLeftW));
+        let line = font.size * 1.25;
+        let width = (rect.w - pad * 2.0).max(font.size);
+        let most = (width / (font.size * 0.5)).max(1.0);
+        let letters_of =
+            |word: &str| f32::from(u16::try_from(word.chars().count()).unwrap_or(u16::MAX));
+        let mut rows: Vec<String> = Vec::new();
+        for paragraph in text.split('\n') {
+            let mut row = String::new();
+            let mut letters = 0.0_f32;
+            for word in paragraph.split(' ') {
+                let length = letters_of(word);
+                if letters > 0.0 && letters + 1.0 + length > most {
+                    rows.push(std::mem::take(&mut row));
+                    letters = 0.0;
+                }
+                if letters > 0.0 {
+                    row.push(' ');
+                    letters += 1.0;
+                }
+                row.push_str(word);
+                letters += length;
+            }
+            rows.push(row);
+            if rows.len() > MAX_FIELD_LINES {
+                break;
+            }
+        }
+        let bottom = rect.y + rect.h;
+        let mut fits = 0_usize;
+        let mut below = rect.y + pad;
+        while fits < MAX_FIELD_LINES && (fits == 0 || below + line <= bottom) {
+            fits = fits.saturating_add(1);
+            below += line;
+        }
+        if rows.len() > fits {
+            rows.truncate(fits);
+            if let Some(last) = rows.last_mut() {
+                last.push('\u{2026}');
+            }
+        }
+        let node_key = self.doc.node_key(node);
+        let mut top = rect.y + pad;
+        for (index, row) in rows.into_iter().enumerate() {
+            let part = PART_LINE.saturating_add(u32::try_from(index).unwrap_or(u32::MAX));
+            if !row.is_empty() {
+                self.push(
+                    node,
+                    order,
+                    3,
+                    Item::Text {
+                        key: ItemKey {
+                            node: node_key,
+                            part,
+                        },
+                        rect: Rect::new(rect.x + pad, top, width, line),
+                        text: row,
+                        font: font.clone(),
+                        color,
+                    },
+                );
+            }
+            top += line;
+        }
     }
 
     /// An inline `<svg>`'s shapes, with the fill and stroke the engine
