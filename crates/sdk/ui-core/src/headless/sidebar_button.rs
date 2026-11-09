@@ -51,12 +51,13 @@ impl FrameHarness {
         self.deliver_bar_events(&mut bar)
     }
 
-    /// Where the window's sidebar stands now: what the bar's button shows,
-    /// what the window's shell holds and what its frame lays out.
+    /// Where the window's sidebar stands now: what the bar's button shows
+    /// (hidden where the bar shows the way back in its place), what the
+    /// window's shell holds and what its frame lays out.
     ///
     /// # Errors
-    /// While the bar has no sidebar button or no shell with a sidebar is
-    /// laid out.
+    /// While the bar has neither a sidebar button nor the way back, or no
+    /// shell with a sidebar is laid out.
     pub fn window_sidebar_shown(&mut self) -> Result<SidebarShown, String> {
         let width = f64::from(self.viewport.0);
         let toolbar = self
@@ -65,9 +66,21 @@ impl FrameHarness {
             .toolbar()
             .cloned()
             .ok_or("the window bar shows none of the app's slots")?;
-        let bar = toolbar
-            .sidebar
-            .ok_or_else(|| format!("the window bar shows no sidebar button: {toolbar:?}"))?;
+        // A narrow window's bar puts the button aside for the way back once a
+        // screen in front covers the sidebar's own: that bar shows it hidden.
+        let back = toolbar
+            .leading
+            .iter()
+            .any(|action| action.id == crate::widget::WINDOW_BACK);
+        let bar = match toolbar.sidebar {
+            Some(shown) => shown,
+            None if back => false,
+            None => {
+                return Err(format!(
+                    "the window bar shows no sidebar button: {toolbar:?}"
+                ));
+            }
+        };
         let shell = window_sidebar_shell(self.root.as_ref()).ok_or_else(|| {
             format!(
                 "no nav shell with a sidebar is laid out under the bar: {}",
