@@ -100,7 +100,6 @@ hand-text 1 crates/session/capture-studio/src/surface.rs
 hand-text 4 crates/session/desktop-surface/src/drill_in.rs
 hand-text 1 crates/session/desktop-surface/src/surface/arrivals.rs
 hand-text 2 crates/session/desktop-surface/src/surface/hung.rs
-hand-text 2 crates/session/desktop/src/collaborators.rs
 hand-text 13 crates/session/desktop/src/desk_widgets/paint.rs
 hand-text 2 crates/session/desktop/src/display_identify.rs
 hand-text 2 crates/session/desktop/src/feedback_picker.rs

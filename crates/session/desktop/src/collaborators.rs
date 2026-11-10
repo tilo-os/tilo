@@ -15,7 +15,7 @@
 //! returned by [`CollaboratorsOverlay::handle_event`].
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
 
 use ui::icons::Icon;
@@ -402,7 +402,8 @@ pub fn says_automatically(row: &RosterRow) -> bool {
         })
 }
 
-/// One of their windows inside their screen `screen`: its app's mark, what it is called here under it where there is room, and the ring of the one they work in.
+/// One of their windows inside their screen `screen`: its ground, its app's mark, what it is
+/// called here under it where there is room, and the ring of the one they work in.
 fn paint_screen_window(
     scene: &mut Scene,
     transform: Affine,
@@ -412,7 +413,6 @@ fn paint_screen_window(
     window: &crate::here::ScreenWindow,
     colour: Color,
 ) {
-    let colors = &theme.tokens.colors;
     let tile = Rect::new(
         screen_rect.x0 + window.rect.x0 * screen_rect.width(),
         screen_rect.y0 + window.rect.y0 * screen_rect.height(),
@@ -423,21 +423,16 @@ fn paint_screen_window(
     if tile.width() < 4.0 || tile.height() < 4.0 {
         return;
     }
-    let shape = RoundedRect::from_rect(tile, 4.0);
-    let ground = if window.name.is_some() {
-        colors.surfaces.content
-    } else {
-        colors.surfaces.raised
-    };
-    scene.fill(
-        vello::peniko::Fill::NonZero,
+    // The tile is a well in the screen's card, and its rest edge is the well's own.
+    let on = ui::widget::paint_surface(
+        scene,
         transform,
-        ground,
-        None,
-        &shape,
+        tile,
+        ui::widget::SurfaceLevel::Raised,
+        theme,
     );
-    let ink = colors.text_dim;
-    let style = theme
+    let ink = on.tokens.colors.text_dim;
+    let style = on
         .text(TextRole::Caption)
         .with_weight(ui::text_render::TextWeight::Medium);
     let line_h = f64::from(theme.text(TextRole::Caption).line_height_px());
@@ -464,60 +459,28 @@ fn paint_screen_window(
     };
     glyph.draw_with_stroke(scene, transform, mark, ink, 1.5);
     if let Some(name) = name {
-        let max = (tile.width() - 8.0).max(0.0);
-        let shown = text.elide_to_width_style(name, ui::num::f32_of_f64(max), &style);
-        let (said, _) = text.measure_style(&shown, None, &style);
-        text.draw_style(
-            scene,
-            &shown,
+        let lines = Rect::new(
+            tile.x0 + 4.0,
+            mark.y1 + 4.0,
+            tile.x1 - 4.0,
+            mark.y1 + 4.0 + line_h,
+        );
+        ui::widget::TextLineFace::styled(name, &style, TextRole::Caption).paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text, &on),
+            lines,
             ink,
-            transform
-                .pre_translate((tile.center().x - f64::from(said) / 2.0, mark.y1 + 4.0).into()),
-            None,
-            &style,
         );
     }
-    let (edge, width) = if window.focused {
-        (colour, 2.0)
-    } else {
-        (colors.surfaces.content_edge, 1.0)
-    };
-    scene.stroke(
-        &vello::kurbo::Stroke::new(width),
-        transform,
-        edge,
-        None,
-        &shape,
-    );
-}
-
-/// Say `line` in the middle of `rect`, elided to what fits.
-fn paint_said(
-    scene: &mut Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    line: &str,
-) {
-    let style = theme.text(TextRole::Caption);
-    let max = (rect.width() - 16.0).max(0.0);
-    let shown = text.elide_to_width_style(line, ui::num::f32_of_f64(max), &style);
-    let (said, line_h) = text.measure_style(&shown, None, &style);
-    text.draw_style(
-        scene,
-        &shown,
-        theme.tokens.colors.text_dim,
-        transform.pre_translate(
-            (
-                rect.center().x - f64::from(said) / 2.0,
-                rect.center().y - f64::from(line_h) / 2.0,
-            )
-                .into(),
-        ),
-        None,
-        &style,
-    );
+    // The one they work in wears their colour: the surface's own edge stands everywhere else.
+    if window.focused {
+        scene.stroke(
+            &vello::kurbo::Stroke::new(2.0),
+            transform,
+            colour,
+            None,
+            &ui::surface::edge_outline(tile, ui::widget::SurfaceLevel::Raised.radius(theme)),
+        );
+    }
 }
 
 /// How tall each person's mirror of their screen stands: what the panel's room allows, in the screen's own shape, and none at all when that leaves no room for a picture.
@@ -562,7 +525,9 @@ fn under_height(row: &RosterRow, mirror_h: f64, theme: &Theme) -> f64 {
     }
 }
 
-/// Someone's screen as a small picture: their windows where they stand, each named under its app's mark where there is room, the one they work in ringed in their colour.
+/// Someone's screen as a small picture: a window card holding their windows where they stand,
+/// each named under its app's mark where there is room, the one they work in ringed in their
+/// colour, and a line where there is nothing to show.
 fn paint_screen(
     scene: &mut Scene,
     transform: Affine,
@@ -575,8 +540,6 @@ fn paint_screen(
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    let colors = &theme.tokens.colors;
-    let radius = f64::from(theme.tokens.radii.control);
     let aspect = screen.map_or(16.0 / 10.0, |screen| screen.size.0 / screen.size.1.max(1.0));
     // Their screen keeps its shape inside the room the card gives it.
     let (width, height) = if rect.width() / aspect <= rect.height() {
@@ -585,57 +548,33 @@ fn paint_screen(
         (rect.height() * aspect, rect.height())
     };
     let screen_rect = Rect::from_center_size(rect.center(), (width, height));
-    let shape = RoundedRect::from_rect(screen_rect, radius);
-    scene.fill(
-        vello::peniko::Fill::NonZero,
-        transform,
-        colors.surfaces.base,
-        None,
-        &shape,
-    );
-    scene.push_layer(
-        vello::peniko::Fill::NonZero,
-        vello::peniko::BlendMode::default(),
-        1.0,
-        transform,
-        &shape,
-    );
     let windows = screen
         .map(|screen| screen.windows.as_slice())
         .unwrap_or_default();
-    if windows.is_empty() {
-        let line = if screen.is_some() {
-            t_args(
-                "people-panel-nothing-open",
-                &[("name", row.label.clone().into())],
-            )
-        } else {
-            t_args(
-                "people-panel-screen-private",
-                &[("name", row.label.clone().into())],
-            )
-        };
-        paint_said(scene, transform, text, theme, screen_rect, &line);
-    }
-    for window in windows {
-        paint_screen_window(
-            scene,
-            transform,
-            text,
-            theme,
-            screen_rect,
-            window,
-            row.color,
-        );
-    }
-    scene.pop_layer();
-    scene.stroke(
-        &vello::kurbo::Stroke::new(1.0),
-        transform,
-        colors.surfaces.content_edge,
-        None,
-        &shape,
-    );
+    ui::widget::paint_window_card(scene, transform, screen_rect, theme, |scene, on| {
+        for window in windows {
+            paint_screen_window(scene, transform, text, on, screen_rect, window, row.color);
+        }
+        if windows.is_empty() {
+            let line = if screen.is_some() {
+                t_args(
+                    "people-panel-nothing-open",
+                    &[("name", row.label.clone().into())],
+                )
+            } else {
+                t_args(
+                    "people-panel-screen-private",
+                    &[("name", row.label.clone().into())],
+                )
+            };
+            ui::widget::TextLineFace::styled(&line, &on.text(TextRole::Caption), TextRole::Caption)
+                .paint(
+                    &mut ui::paint::PaintCtx::new(scene, transform, text, on),
+                    screen_rect,
+                    on.tokens.colors.text_dim,
+                );
+        }
+    });
 }
 
 /// The panel's header line: who is here besides this person, counted as the list is (the others, never this person, who is the "you" of the words; "2 here" over one row read as someone missing).
@@ -1144,41 +1083,21 @@ impl CollaboratorsOverlay {
         let cursor = cursor.map(|p| Point::new(p.x, p.y + self.scroll_offset()));
         if self.rows.is_empty() {
             let empty = t("people-panel-empty");
-            let style = theme.text(TextRole::Body);
-            let (w, h) = text.measure_style(&empty, None, &style);
-            text.draw_style(
-                scene,
-                &empty,
-                colors.text_dim,
-                transform.pre_translate(
-                    (
-                        self.body.center().x - f64::from(w) / 2.0,
-                        self.body.center().y - f64::from(h) / 2.0,
-                    )
-                        .into(),
-                ),
-                None,
-                &style,
-            );
+            ui::widget::TextLineFace::styled(&empty, &theme.text(TextRole::Body), TextRole::Body)
+                .paint(
+                    &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+                    self.body,
+                    colors.text_dim,
+                );
         }
         for heading in &self.headings {
             let style = theme
                 .text(TextRole::Caption)
                 .with_weight(ui::text_render::TextWeight::Medium);
-            let (_, h) = text.measure_style(&heading.text, None, &style);
-            text.draw_style(
-                scene,
-                &heading.text,
+            ui::widget::TextLineFace::styled(&heading.text, &style, TextRole::Caption).paint(
+                &mut ui::paint::PaintCtx::new(scene, scrolled, text, theme),
+                heading.rect,
                 colors.text_dim,
-                scrolled.pre_translate(
-                    (
-                        heading.rect.x0,
-                        heading.rect.center().y - f64::from(h) / 2.0,
-                    )
-                        .into(),
-                ),
-                None,
-                &style,
             );
         }
         let agent_tag = t("people-panel-agent-tag");
@@ -1217,13 +1136,12 @@ impl CollaboratorsOverlay {
             let card = under.map_or(place.rect, |under| place.rect.union(under));
             let lifted = hovered || opened || following;
             if under.is_some() && lifted {
-                let radius = f64::from(theme.tokens.radii.control);
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
+                ui::widget::paint_surface(
+                    scene,
                     scrolled,
-                    theme.tokens.colors.surfaces.raised,
-                    None,
-                    &vello::kurbo::RoundedRect::from_rect(card.inset(-2.0), radius),
+                    card.inset(-2.0),
+                    ui::widget::SurfaceLevel::Raised,
+                    theme,
                 );
             }
             let interaction = ui::widget::Interaction {
@@ -1445,14 +1363,15 @@ impl CollaboratorsOverlay {
                 );
             }
             if following && mirror.is_some() {
-                // Their colour runs the card's whole height: whose view this is.
+                // Their colour runs the card's whole height: whose view this is. It is the
+                // person's own colour, which the theme cannot name.
                 let bar = Rect::new(card.x0 + 1.0, card.y0 + 6.0, card.x0 + 3.0, card.y1 - 6.0);
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     scrolled,
                     row.color,
                     None,
-                    &vello::kurbo::RoundedRect::from_rect(bar, 1.0),
+                    &bar,
                 );
             }
         }

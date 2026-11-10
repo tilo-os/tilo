@@ -209,13 +209,13 @@ impl OverviewPanel {
         // A question makes its row taller than the one it stood on: a list whose foot would cut
         // it scrolls, so the person reads what they are asked and answers there.
         if asking.is_some() {
-            self.scroll_asking_into_view();
+            self.reveal_asking();
         }
     }
 
-    /// Scroll the list so the row asking is whole above its foot, where the scroll can reach that
-    /// far.
-    fn scroll_asking_into_view(&mut self) {
+    /// Bring the row asking its question whole into the list's band, so the person reads what
+    /// they are asked and answers there.
+    fn reveal_asking(&mut self) {
         let asking = (0..self.tilo_rows.len()).find(|&index| {
             self.tilo_item(index)
                 .is_some_and(|item| self.tilo_asks(item))
@@ -223,13 +223,8 @@ impl OverviewPanel {
         let Some(index) = asking else {
             return;
         };
-        let over = self.tilo_rect(index).y1 - self.list_band().y1;
-        if over <= 0.5 {
-            return;
-        }
-        let scrolled = (self.scroll_y + over).clamp(0.0, self.max_scroll_y());
-        if (scrolled - self.scroll_y).abs() > f64::EPSILON {
-            self.scroll_y = scrolled;
+        let row = self.tilo_rect(index);
+        if self.reveal(row) {
             self.bump();
         }
     }

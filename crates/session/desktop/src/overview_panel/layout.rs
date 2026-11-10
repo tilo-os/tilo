@@ -247,7 +247,8 @@ impl OverviewPanel {
         self.metrics = metrics;
         self.grid = grid;
         self.laid_out = self.rect;
-        self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll_y());
+        // The theme's density may have moved what there is to scroll.
+        let _ = self.pan_by(0.0);
         if had_layout {
             self.scroll_selection_into_view();
         }
@@ -337,6 +338,43 @@ impl OverviewPanel {
             } else {
                 0.0
             }
+    }
+
+    /// How far the list's own scroll pans it: none at all where the whole panel scrolls instead.
+    pub(super) fn pan(&self) -> f64 {
+        if self.scrolls_whole_panel() {
+            0.0
+        } else {
+            self.scroll_y
+        }
+    }
+
+    /// Pan the list `delta` further, kept inside what there is to scroll, saying whether it moved.
+    fn pan_by(&mut self, delta: f64) -> bool {
+        let offset = (self.scroll_y + delta).clamp(0.0, self.max_scroll_y());
+        if (offset - self.scroll_y).abs() <= f64::EPSILON {
+            return false;
+        }
+        self.scroll_y = offset;
+        true
+    }
+
+    /// Pan the list so the row drawn at `rect` stands whole in the band it scrolls in, where the
+    /// scroll reaches that far. Says whether the list moved.
+    pub(super) fn reveal(&mut self, rect: Rect) -> bool {
+        let band = if self.scrolls_whole_panel() {
+            self.content_rect()
+        } else {
+            self.list_band()
+        };
+        let delta = if rect.y1 > band.y1 + 0.5 {
+            rect.y1 - band.y1
+        } else if rect.y0 < band.y0 - 0.5 {
+            rect.y0 - band.y0
+        } else {
+            return false;
+        };
+        self.pan_by(delta)
     }
 
     /// The panel: centred alone, at the display's trailing edge beside the picture, sized to what
@@ -437,12 +475,7 @@ impl OverviewPanel {
     pub(super) fn list_slot_rect(&self, slot: usize) -> Rect {
         let c = self.content_rect();
         let m = self.metrics;
-        let scroll = if self.scrolls_whole_panel() {
-            0.0
-        } else {
-            self.scroll_y
-        };
-        let y0 = self.list_top() - scroll
+        let y0 = self.list_top() - self.pan()
             + f64_of_usize(slot) * (m.workspace_row_h + m.workspace_row_gap);
         Rect::new(c.x0, y0, c.x1, y0 + m.workspace_row_h)
     }
@@ -565,13 +598,15 @@ impl OverviewPanel {
         };
         let bottom = top + height;
         let view = self.viewport_height();
-        let mut y = self.scroll_y;
-        if top < y {
-            y = top;
-        } else if bottom > y + view {
-            y = bottom - view;
-        }
-        self.scroll_y = y.clamp(0.0, self.max_scroll_y());
+        let start = self.scroll_y;
+        let y = if top < start {
+            top
+        } else if bottom > start + view {
+            bottom - view
+        } else {
+            start
+        };
+        self.pan_by(y - start);
     }
 
     /// The workspace at `p` , by its place among the cards. A row panned out of the list's band

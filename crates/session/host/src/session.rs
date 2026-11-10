@@ -3813,14 +3813,14 @@ mod tests {
         planes.later(7, 12_000);
         assert_eq!(
             planes.describe(),
-            "plane 7: not joined — no live plane was reached; asking again at 12000"
+            "plane 7: not joined. No live plane was reached; asking again at 12000"
         );
         assert_eq!(planes.missed(7), 1);
         assert_eq!(planes.missed(7), plane::MISSES_BEFORE_NOTE);
         planes.refused(7, 60_000);
         assert_eq!(
             planes.describe(),
-            "plane 7: not joined — the workspace does not admit this page's plane; asking again \
+            "plane 7: not joined. The workspace does not admit this page's plane; asking again \
              at 60000"
         );
         assert_eq!(planes.missed(7), 1, "an answer starts the count again");

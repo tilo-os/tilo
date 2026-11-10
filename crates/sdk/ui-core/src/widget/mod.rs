@@ -3401,7 +3401,7 @@ pub use primitives::{
     StatusCluster, StatusClusterFace, StatusClusterLayout, StatusSlot, Surface, SurfaceLevel,
     TextBlockFace, TextLineAlign, TextLineFace, TextStack, TextStackFace, TextStackProps,
     badge_label, badge_size, control_fill, control_radius, paint_control_row, paint_see_through,
-    paint_severity_rail, paint_surface, paint_unread_badge,
+    paint_severity_rail, paint_surface, paint_unread_badge, paint_window_card,
 };
 pub use row_menu::RowMenu;
 pub mod context_menu_area;

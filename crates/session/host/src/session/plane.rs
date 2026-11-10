@@ -158,11 +158,11 @@ impl Planes {
                     format!("plane {workspace_id}: asking the host for its live session since {since_ms}")
                 }
                 Waiting::Later { at_ms } => format!(
-                    "plane {workspace_id}: not joined — no live plane was reached; asking \
+                    "plane {workspace_id}: not joined. No live plane was reached; asking \
                      again at {at_ms}"
                 ),
                 Waiting::Refused { at_ms } => format!(
-                    "plane {workspace_id}: not joined — the workspace does not admit this \
+                    "plane {workspace_id}: not joined. The workspace does not admit this \
                      page's plane; asking again at {at_ms}"
                 ),
             });
