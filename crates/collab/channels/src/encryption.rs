@@ -1813,14 +1813,16 @@ impl ChannelEncryption {
                 store.state.peers(workspace).forget(channel)?;
                 return Ok(false);
             }
-            // State an earlier build kept in another form: authentic, this
-            // device's own, and unreadable here. It is dropped, and the device
-            // asks to join again and is handed the channel's keys anew, so an
-            // upgrade never leaves a channel this device cannot open.
+            // State in a format no upgrade reaches (state an earlier build
+            // saved is upgraded as it loads): authentic and this device's own,
+            // but unreadable. Dropped, so the device can ask to join again;
+            // what only this device held is gone, which is why it is an error.
             Err(channel_crypto::Error::OtherFormat) => {
-                tracing::info!(
+                tracing::error!(
                     %workspace,
-                    "channel state was kept in another format by an earlier build; joining again"
+                    channel = %channel.0,
+                    "channel state is in a format no upgrade reaches: dropping it and joining again; \
+                     keys only this device held are lost"
                 );
                 store.state.peers(workspace).forget(channel)?;
                 return Ok(false);
@@ -1830,6 +1832,14 @@ impl ChannelEncryption {
         let Some(peer) = opened else {
             return Ok(false);
         };
+        if let Some(from) = peer.upgraded_from() {
+            tracing::info!(
+                %workspace,
+                channel = %channel.0,
+                from,
+                "channel state an earlier build saved was upgraded and kept in the current format"
+            );
+        }
         self.insert_peer(workspace, channel, peer, now);
         Ok(true)
     }

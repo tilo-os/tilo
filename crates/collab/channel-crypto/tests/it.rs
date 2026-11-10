@@ -24,3 +24,5 @@ mod sealed_persistence;
 mod third_member_joins;
 #[path = "two_member_round_trip.rs"]
 mod two_member_round_trip;
+#[path = "upgraded_state.rs"]
+mod upgraded_state;
