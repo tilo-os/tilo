@@ -1163,16 +1163,35 @@ fn seconds(cx: &ActionCx) -> i64 {
 }
 
 /// A portable address, never copied content, a local path or an access grant.
+///
+/// Its kind may be empty when its id is a resource's published address
+/// (`tl:<app>:<id>`, as a tilolang app publishes one): the address names the
+/// resource and the catalogue its kind, exactly as [`tilo_reference::Embed`]
+/// reads one, so a reference to a resource no catalogue has loaded yet still
+/// attaches and resolves where it is read. Any other id names its kind.
 pub(crate) fn valid_reference(reference: &tilo_reference::ResourceRef) -> bool {
     let field = |value: &str, max: usize| {
         !value.trim().is_empty() && value.len() <= max && !value.chars().any(char::is_control)
     };
-    field(&reference.kind, 128)
-        && reference
-            .kind
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-        && field(&reference.id, 2048)
+    let published = |id: &str| {
+        // `tl:<app>:<id>`: the app is dotted and never holds a `:`, so the address says its app
+        // and its published id, and its kind is whatever the catalogue resolves it to.
+        id.strip_prefix("tl:")
+            .and_then(|rest| rest.split_once(':'))
+            .is_some_and(|(app, id)| !app.is_empty() && !id.is_empty())
+    };
+    // A named kind is bounded like any other address; an empty one is only a resource's
+    // published address, the form the catalogue reads without a kind.
+    let kind = if reference.kind.is_empty() {
+        published(&reference.id)
+    } else {
+        field(&reference.kind, 128)
+            && reference
+                .kind
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    };
+    kind && field(&reference.id, 2048)
         && !reference.id.starts_with(['/', '\\'])
         && !reference.id.contains("://")
         && field(&reference.label, 512)

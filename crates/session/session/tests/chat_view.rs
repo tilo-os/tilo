@@ -553,34 +553,54 @@ fn front_workspace(session: &Session) -> String {
         .expect("a workspace is in front")
 }
 
-/// The channel's reading, from the session: its messages as the page draws them.
-fn reading(session: &Session, channel: &str) -> serde_json::Value {
-    session
-        .read(&format!("chat.workspace/channels/{channel}"))
-        .unwrap_or_else(|| panic!("the session serves the channel {channel}"))
-}
-
 #[test]
 fn a_resource_dropped_on_the_composer_rides_with_the_message_and_the_agents_turn_names_it() {
+    // A real session, with the workspace's seeded tilolang apps: no development fixture stands
+    // between the drop and Chat's record. A question typed on the canvas asks the workspace's
+    // agent, and the conversation it opens is served by the session's own `ChatViewService` —
+    // Chat's `page` drawn over the record. A resource dropped on that composer — here the root
+    // of Tasks, which the workspace publishes by its address
+    // (`tl:so.tilo.lang.tasks:root-…`) — rides with the message the person sends, named in both
+    // the draft's chip and the message's by the title its app publishes.
     let _settled = ui::motion::testing::settled();
     let root = common::private_home();
-    let mut session = session(root.path());
-    place(&mut session, CHANNEL);
-    common::until(&mut session, "the channel's page", |session| {
-        session.shell_says(MESSAGE)
+    let mut session = common::seeded_session(root.path());
+    common::until(&mut session, "the canvas", |session| {
+        common::on_screen(session, common::CANVAS_ENTRY).is_some()
     });
-    // The channel offers its own `attach`: the verb a drop on the composer runs.
+    // The person asks the workspace's agent a question: the session opens the conversation and
+    // places it on the canvas.
+    common::press(&mut session, common::CANVAS_ENTRY);
+    common::type_text(&mut session, "what is left?");
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(tilo_compositor::InputEvent::Key {
+                keycode: 28,
+                pressed,
+            })
+            .expect("a key");
+        session
+            .step(std::time::Duration::from_millis(1))
+            .expect("a frame");
+    }
+    let placed = common::wait_for(&mut session, "the conversation placed", |session| {
+        common::places(session)
+            .into_iter()
+            .find(|place| place.record.starts_with("chat.workspace/channels/"))
+    });
+    let address = placed.record;
+    let channel = address
+        .trim_start_matches("chat.workspace/channels/")
+        .to_owned();
+    // The channel's own verb a drop runs: `attach`, published by the service on the channel's
+    // item, taking the channel and the resource the drag carried.
     let item = session
         .service_resources()
         .into_iter()
         .find(|spec| {
-            spec.id.as_str().ends_with(&format!(":{CHANNEL_ID}"))
-                || spec
-                    .id
-                    .as_str()
-                    .ends_with(&format!("/channels/{CHANNEL_ID}"))
+            spec.id.as_str() == address && spec.actions.iter().any(|action| action.id == "attach")
         })
-        .filter(|spec| spec.actions.iter().any(|action| action.id == "attach"))
         .map(|spec| spec.id.as_str().to_owned())
         .unwrap_or_else(|| {
             panic!(
@@ -592,59 +612,78 @@ fn a_resource_dropped_on_the_composer_rides_with_the_message_and_the_agents_turn
                     .collect::<Vec<_>>()
             )
         });
-    // A drop on the composer is that verb with the resource the drag carried: a resource the
-    // workspace publishes, as a canvas place or a search hit drags it.
-    const DROPPED: &str = "tube.video:vid_rust_async";
-    let socket = root.path().join("test-control.sock");
+    // The resource dropped on the composer: the root of Tasks, which the workspace publishes by
+    // its address, with the title its app publishes it under.
+    let (dropped, title) = {
+        let published = session
+            .service_resources()
+            .into_iter()
+            .find(|spec| {
+                spec.kind == "tl.so.tilo.lang.tasks.Tasks"
+                    && spec.id.as_str().starts_with("tl:so.tilo.lang.tasks:")
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "the workspace publishes Tasks' root: {:?}",
+                    session
+                        .service_resources()
+                        .into_iter()
+                        .map(|spec| spec.id.as_str().to_owned())
+                        .collect::<Vec<_>>()
+                )
+            });
+        (published.id.as_str().to_owned(), published.label.clone())
+    };
     let mut arguments = serde_json::Map::new();
-    arguments.insert("channel".into(), json!(CHANNEL_ID));
-    arguments.insert("resource".into(), json!(DROPPED));
+    arguments.insert("channel".into(), json!(channel));
+    arguments.insert("resource".into(), json!(dropped));
     session
         .invoke(&item, "attach", &arguments)
         .unwrap_or_else(|error| panic!("the drop on the composer attaches: {error:?}"));
-    // The person types their words and sends: what was dropped rides with the message, as the
-    // composer's chip showed it.
-    let (x, y, w, h) = session
-        .shell_text_bounds("Message #design-crit")
-        .unwrap_or_else(|| {
-            panic!(
-                "the composer's field is on screen: {:?}",
-                session.accessible_labels()
-            )
-        });
-    assert_eq!(
-        common::control(
-            &mut session,
-            &socket,
-            &json!({"op": "click_at", "x": x + w / 2.0, "y": y + h / 2.0})
-        ),
-        json!({"ok": {}}),
-        "the click on the composer is taken"
-    );
-    assert_eq!(
-        common::control(&mut session, &socket, &json!({"op": "type", "text": TYPED})),
-        json!({"ok": {}}),
-        "the text is typed"
-    );
-    common::until(&mut session, "the typed draft", |session| {
-        session.shell_says(TYPED)
+    // The draft's chip names the resource by the title its app publishes, never the address the
+    // drag carried or a step of it (`root-fjqi4yze`): the chip a person reads over the composer.
+    common::until(&mut session, "the draft's chip", |session| {
+        session
+            .read(&address)
+            .and_then(|reading| {
+                reading["draft"]["label"]
+                    .as_str()
+                    .filter(|label| !label.is_empty())
+                    .map(str::to_owned)
+            })
+            .is_some()
     });
+    let reading = session
+        .read(&address)
+        .unwrap_or_else(|| panic!("the session serves the channel's reading: {address}"));
     assert_eq!(
-        common::control(
-            &mut session,
-            &socket,
-            &json!({"op": "click_named", "name": "Send"})
-        ),
-        json!({"ok": {}}),
-        "the Send button takes the press"
+        reading["draft"]["label"].as_str(),
+        Some(title.as_str()),
+        "the draft's chip says the resource's title: {reading}"
     );
+    assert_eq!(
+        reading["draft"]["resource"]["id"].as_str(),
+        Some(dropped.as_str()),
+        "the chip holds the address it was dropped by: {reading}"
+    );
+    // The person types their words and sends, through the channel's own `post`: the verb the
+    // composer's field and its Send button both run, routed by the session's door to the service
+    // that publishes it.
+    let mut post_arguments = serde_json::Map::new();
+    post_arguments.insert("channel".into(), json!(channel));
+    post_arguments.insert("text".into(), json!(TYPED));
+    session
+        .invoke(&address, "post", &post_arguments)
+        .unwrap_or_else(|error| panic!("the channel's post runs: {error:?}"));
     let posted = |session: &Session| {
-        reading(session, CHANNEL_ID)["messages"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|message| message["text"].as_str() == Some(TYPED))
-            .cloned()
+        session.read(&address).and_then(|reading| {
+            reading["messages"].as_array().and_then(|messages| {
+                messages
+                    .iter()
+                    .find(|message| message["text"].as_str() == Some(TYPED))
+                    .cloned()
+            })
+        })
     };
     common::until(&mut session, "the posted message", |session| {
         posted(session).is_some()
@@ -652,62 +691,62 @@ fn a_resource_dropped_on_the_composer_rides_with_the_message_and_the_agents_turn
     let message = posted(&session).unwrap_or_else(|| {
         panic!(
             "the channel holds the sent message: {:?}; the shell refused {:?}",
-            reading(&session, CHANNEL_ID)["messages"],
+            session.read(&address),
             session.shell_refusals()
         )
     });
-    // The message carries the dropped resource as its attachment: the chip the page draws.
-    let attachments = message["attachments"]
+    // The message carries the dropped resource as its attachment, named by the title its app
+    // publishes: the chip the page draws beside the person's words.
+    let sent_attachment = message["attachments"]
         .as_array()
-        .cloned()
-        .unwrap_or_default();
-    assert!(
-        attachments.iter().any(|attachment| {
-            attachment["resource"]["id"].as_str() == Some(DROPPED)
-                && attachment["kind"].as_str() == Some("resource")
-        }),
-        "the message carries the resource that was dropped on the composer: {message}"
-    );
-    // The agent's turn names it: an agent answering this message is asked what the person
-    // wrote and told which resource they handed it. The instruction a turn is asked with is
-    // built from the message's own words and attachments (`instruction_of`), which is what
-    // the pass hands the agent's run; `#design-crit` is the demo's channel of people with no
-    // agent in it, so no run is derived here and the message is read as the page read it.
-    let channel: chat::views::Channel = serde_json::from_value(reading(&session, CHANNEL_ID))
-        .expect("the channel's reading is a channel");
-    let sent = channel
-        .messages
-        .iter()
-        .find(|message| message.text == TYPED)
-        .expect("the page holds the message the person sent");
-    let attachments: Vec<tilo_reference::Attached> = sent
-        .attachments
-        .iter()
-        .filter_map(|attachment| {
-            let target = attachment.resource.as_ref()?;
-            Some(tilo_reference::Attached::resource(
-                tilo_reference::ResourceAt {
-                    app: target.ty.split('.').next().unwrap_or("chat").to_owned(),
-                    record: None,
-                    reference: tilo_reference::ResourceRef::whole(
-                        target.ty.clone(),
-                        target.id.clone(),
-                        attachment.label.clone(),
-                    ),
-                },
-                None,
-                attachment.label.clone(),
-            ))
+        .and_then(|attachments| {
+            attachments.iter().find(|attachment| {
+                attachment["resource"]["id"].as_str() == Some(dropped.as_str())
+                    && attachment["kind"].as_str() == Some("resource")
+            })
         })
-        .collect();
+        .unwrap_or_else(|| panic!("the message carries the resource that was dropped: {message}"))
+        .clone();
+    assert_eq!(
+        sent_attachment["label"].as_str(),
+        Some(title.as_str()),
+        "the message's chip says the resource's title, never its id: {message}"
+    );
+    // The agent's turn names it by that title: an agent answering this message is asked what
+    // the person wrote and told which resource they handed it. The instruction a turn is asked
+    // with is built from the message's own words and attachments (`instruction_of`), which is
+    // what the pass hands the agent's run — read here from the page's attachment, which is the
+    // record's own reference drawn.
+    let sent = tilo_reference::Attached::resource(
+        tilo_reference::ResourceAt {
+            app: dropped
+                .strip_prefix("tl:")
+                .and_then(|rest| rest.split_once(':'))
+                .map_or_else(|| "chat".to_owned(), |(app, _)| app.to_owned()),
+            record: None,
+            reference: tilo_reference::ResourceRef::whole(
+                sent_attachment["resource"]["ty"]
+                    .as_str()
+                    .unwrap_or_default(),
+                dropped.clone(),
+                title.clone(),
+            ),
+        },
+        None,
+        title.clone(),
+    );
     let instruction = tilo_session::conversations::instruction_of(&chat::record::Message {
-        text: sent.text.clone(),
-        attachments,
+        text: message["text"].as_str().unwrap_or_default().to_owned(),
+        attachments: vec![sent],
         ..chat::record::Message::default()
     });
     assert!(
-        instruction.contains(DROPPED),
-        "the turn names the resource the message attached: {instruction}"
+        instruction.contains(&title),
+        "the turn names the resource by its title: {instruction}"
+    );
+    assert!(
+        instruction.contains(&dropped),
+        "the turn says where the resource is too: {instruction}"
     );
     assert!(
         instruction.starts_with(TYPED),
