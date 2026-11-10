@@ -401,14 +401,21 @@ impl Workspace {
         self.row_tree()
     }
 
+    /// The key of the window's own list: the column the shell shows, not a list a row standing
+    /// open holds in its document, which a window's rows carry too once it opens.
+    fn root_list(&self) -> String {
+        fn outermost(node: &UiNode) -> Option<String> {
+            if node.kind == "ui.VirtualList" && !node.key.starts_with(DETAIL) {
+                return Some(node.key.clone());
+            }
+            node.children.iter().find_map(outermost)
+        }
+        outermost(&self.composed()).expect("the window shows a list of its own")
+    }
+
     /// The tree of the first row the app rendered for the list it shows.
     fn row_tree(&self) -> Option<tilolang_tilo::runtime::UiNode> {
-        let list = self
-            .window
-            .view()
-            .lists()
-            .into_iter()
-            .find(|key| !key.starts_with(DETAIL))?;
+        let list = self.root_list();
         let view = self
             .window
             .instance()
@@ -418,15 +425,13 @@ impl Workspace {
 
     /// The rows of the root's list, as its list reads them.
     fn root_rows(&self) -> Rc<RefCell<RemoteRows>> {
-        let lists = self.window.view().lists();
-        let key = lists
-            .iter()
-            .find(|key| !key.starts_with(DETAIL))
-            .unwrap_or_else(|| panic!("the root lists its items: {lists:?}"));
-        self.window
-            .view()
-            .rows_of(key)
-            .unwrap_or_else(|| panic!("the window holds the rows of {key}: {lists:?}"))
+        let key = self.root_list();
+        self.window.view().rows_of(&key).unwrap_or_else(|| {
+            panic!(
+                "the window holds the rows of {key}: {:?}",
+                self.window.view().lists()
+            )
+        })
     }
 
     fn show_rows(&mut self, range: std::ops::Range<usize>) {

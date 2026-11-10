@@ -634,13 +634,12 @@ fn a_sync_the_workspace_cannot_keep_leaves_nothing_behind_and_is_taken_in_again(
             .map(|(_, at)| at.to_owned())
     });
     let when = when.unwrap_or_else(|| panic!("the notice says when the mail was read: {said:#?}"));
-    let clock = when.as_bytes();
+    // The time reads in the clock the person chose in Settings, as every time the window shows
+    // does: `14:05` or `2:05 PM`.
+    let clock = ui::clock::configured();
     assert!(
-        clock.len() >= 5
-            && clock[0].is_ascii_digit()
-            && clock[1].is_ascii_digit()
-            && clock[2] == b':',
-        "the clock time a person reads: {when}"
+        (0..24).any(|hour| (0..60).any(|minute| ui::clock::hour_minute(hour, minute) == when)),
+        "the clock time a person reads: {when}, read in {clock:?}"
     );
 
     // The workspace takes changes again: the next sync takes in what the server said before,
