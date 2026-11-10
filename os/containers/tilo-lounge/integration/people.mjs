@@ -41,6 +41,12 @@ if (!site || !relay || !origin || !out || !rolesFile) {
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
+// Brief: the steps that caught what broke between two people's pages (chat,
+// presence, a call and the names on its card, the strip over a few apps),
+// for a check that runs in minutes. The gate runs it all: every app, the
+// menus, an invitation.
+const brief = process.env.TILO_PEOPLE_BRIEF === '1';
+const BRIEF_APPS = ['Notes', 'Sheets', 'Calculator', 'Clocks', 'Weather', 'Tasks'];
 
 const report = {site, relay, origin, at: new Date().toISOString()};
 // Every page this run opened, so a failure leaves what each one said behind.
@@ -668,8 +674,17 @@ try {
   // The relay describes both as here: both pages opened their HTTPS sessions.
   // That is the host's own count, not the live plane's — the plane is read
   // from each page's channel diagnostics below.
-  const listed = await directory();
-  const lounge = listed.workspaces?.find(workspace => workspace.room === keptA.room);
+  // A page counts there once its session is open, a moment after it joined:
+  // the directory is read until both are, or a minute has passed.
+  const bothHere = here => [keptA, keptB].every(person => here.some(face => face.userPublicKey === person.userPublicKey));
+  let listed;
+  let lounge;
+  for (const deadline = Date.now() + 60_000; ;) {
+    listed = await directory();
+    lounge = listed.workspaces?.find(workspace => workspace.room === keptA.room);
+    if ((lounge && bothHere(lounge.here ?? [])) || Date.now() > deadline) break;
+    await sleep(500);
+  }
   if (!lounge) failed(`the directory does not list the workspace both joined: ${JSON.stringify(listed)}`);
   report.listing = lounge;
   const here = lounge.here ?? [];
@@ -797,7 +812,10 @@ try {
       if (card) return card;
       if (Date.now() > deadline) {
         await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-        failed(`${what} does not read ${JSON.stringify(who)} with a run time: ${JSON.stringify(cards)}`);
+        // Who this page shows as here, by device and by person: a card that
+        // cannot name someone says whether their person was known at all.
+        const here = await herePeople(person.tab).catch(() => null);
+        failed(`${what} does not read ${JSON.stringify(who)} with a run time: ${JSON.stringify(cards)}; here: ${JSON.stringify(here)}`);
       }
       await sleep(300);
     }
@@ -1026,7 +1044,8 @@ try {
   const history = await a.tab.evaluate('history.length');
 
   // Every app the Lounge offers opens from the launcher's search.
-  const applications = (await nav(a.tab))?.applications ?? [];
+  const offered = (await nav(a.tab))?.applications ?? [];
+  const applications = brief ? offered.filter(application => BRIEF_APPS.includes(application.label)) : offered;
   if (!applications.length) failed('the Lounge offers no app');
   const opened = [];
   // What a person waits for: Enter on the app's row, to the desk showing its
@@ -1068,29 +1087,34 @@ try {
   }
 
   // Two fingers sideways over Notes, which does not scroll that way: the
-  // strip pans by the gesture and the windows stay as they were.
+  // strip pans by the gesture and the windows stay as they were. The brief
+  // run leaves it to the gate: its few windows put a different one at each
+  // place on the desk.
   const centre = await centreOf(a.tab);
-  await search(a.tab, a.command, 'notes', 'Notes');
-  await settle(a.tab, 2);
-  const windowsBefore = (await snapshot(a.tab)).windows;
-  const panBefore = await panOf(a.tab);
-  if (!panBefore) failed('the strip does not overflow, so nothing can pan');
-  // The way the strip still has room: a gesture at its end pans nothing.
-  const forward = panBefore.offset < panBefore.max / 2;
-  const frameBefore = await picture(a.tab);
-  await sidewaysSwipe(a.tab, centre.x, centre.y, forward, async () => {
-    const midScroll = await a.tab.screenshot();
-    if (midScroll) writeFileSync(`${out}/strip-mid-scroll.png`, midScroll);
-  });
-  const panAfter = await panOf(a.tab);
-  const moved = panAfter.offset - panBefore.offset;
-  report.sideways = {forward, before: panBefore, after: panAfter};
-  if (Math.abs(moved) < 1) {
-    failed(`two fingers sideways do not pan the strip over Notes: ${JSON.stringify(report.sideways)}`);
+  let forward = true;
+  if (!brief) {
+    await search(a.tab, a.command, 'notes', 'Notes');
+    await settle(a.tab, 2);
+    const windowsBefore = (await snapshot(a.tab)).windows;
+    const panBefore = await panOf(a.tab);
+    if (!panBefore) failed('the strip does not overflow, so nothing can pan');
+    // The way the strip still has room: a gesture at its end pans nothing.
+    forward = panBefore.offset < panBefore.max / 2;
+    const frameBefore = await picture(a.tab);
+    await sidewaysSwipe(a.tab, centre.x, centre.y, forward, async () => {
+      const midScroll = await a.tab.screenshot();
+      if (midScroll) writeFileSync(`${out}/strip-mid-scroll.png`, midScroll);
+    });
+    const panAfter = await panOf(a.tab);
+    const moved = panAfter.offset - panBefore.offset;
+    report.sideways = {forward, before: panBefore, after: panAfter};
+    if (Math.abs(moved) < 1) {
+      failed(`two fingers sideways do not pan the strip over Notes: ${JSON.stringify(report.sideways)}`);
+    }
+    if ((await snapshot(a.tab)).windows.join() !== windowsBefore.join()) failed('a sideways pan changed the windows');
+    if (await picture(a.tab) === frameBefore) failed('the strip did not repaint as it panned');
+    console.log(`ok: two fingers sideways pan the strip over Notes (${panBefore.offset} to ${panAfter.offset})`);
   }
-  if ((await snapshot(a.tab)).windows.join() !== windowsBefore.join()) failed('a sideways pan changed the windows');
-  if (await picture(a.tab) === frameBefore) failed('the strip did not repaint as it panned');
-  console.log(`ok: two fingers sideways pan the strip over Notes (${panBefore.offset} to ${panAfter.offset})`);
 
   // The same gesture over Sheets, whose grid scrolls sideways itself: the app
   // takes it and the strip stays where it was.
@@ -1100,9 +1124,11 @@ try {
   // The search slides the strip to Sheets: the swipe waits until it is at rest.
   await search(a.tab, a.command, 'sheets', 'Sheets');
   await settle(a.tab, 2);
+  // Where B2 is, read once the strip is at rest: read while it still slides,
+  // the fingers would land wherever B2 was, on another window by then.
+  const keptPan = await restingPan(a.tab);
   const cell = await sheetCell(a.tab);
   if (!cell) failed('Sheets shows no cell B2 to swipe over');
-  const keptPan = await restingPan(a.tab);
   const sheetBefore = await picture(a.tab);
   await sidewaysSwipe(a.tab, cell.x, cell.y, forward);
   const sheetPan = await panOf(a.tab);
@@ -1113,228 +1139,232 @@ try {
   if (await picture(a.tab) === sheetBefore) failed('Sheets did not scroll sideways with the fingers');
   console.log('ok: the same gesture scrolls Sheets and leaves the strip');
 
-  // A pinch, which a browser sends as Ctrl+wheel, is the window's zoom and
-  // never a pan, with or without a sideways part.
-  const beforePinch = await panOf(a.tab);
-  for (let i = 0; i < 6; i++) await wheel(a.tab, centre.x, centre.y, {deltaY: -40, modifiers: 2});
-  await settle(a.tab, 2);
-  for (let i = 0; i < 6; i++) await wheel(a.tab, centre.x, centre.y, {deltaX: 10, deltaY: -20, modifiers: 2});
-  await settle(a.tab, 2);
-  const afterPinch = await panOf(a.tab);
-  report.pinch = {before: beforePinch, after: afterPinch};
-  if ((afterPinch?.offset ?? 0) !== (beforePinch?.offset ?? 0)) {
-    failed(`a pinch moved the strip: ${JSON.stringify(report.pinch)}`);
-  }
-  console.log('ok: a pinch zooms and never pans the strip');
+  let invited = null;
+  if (!brief) {
+    // A pinch, which a browser sends as Ctrl+wheel, is the window's zoom and
+    // never a pan, with or without a sideways part.
+    const beforePinch = await panOf(a.tab);
+    for (let i = 0; i < 6; i++) await wheel(a.tab, centre.x, centre.y, {deltaY: -40, modifiers: 2});
+    await settle(a.tab, 2);
+    for (let i = 0; i < 6; i++) await wheel(a.tab, centre.x, centre.y, {deltaX: 10, deltaY: -20, modifiers: 2});
+    await settle(a.tab, 2);
+    const afterPinch = await panOf(a.tab);
+    report.pinch = {before: beforePinch, after: afterPinch};
+    if ((afterPinch?.offset ?? 0) !== (beforePinch?.offset ?? 0)) {
+      failed(`a pinch moved the strip: ${JSON.stringify(report.pinch)}`);
+    }
+    console.log('ok: a pinch zooms and never pans the strip');
 
-  // The window menu, from a secondary click in the window's own bar: what the
-  // desktop can do to that window, and choosing a row does it.
-  const barRow = JSON.parse(await find(a.tab, 'Maximize')) ?? JSON.parse(await find(a.tab, 'Close'));
-  const bar = {x: centre.corner.x + 400, y: centre.corner.y + 40};
-  if (barRow) {
-    const [x0, y0, x1, y1] = Array.isArray(barRow.bounds)
-      ? barRow.bounds
-      : [barRow.bounds.x0 ?? barRow.bounds.x, barRow.bounds.y0 ?? barRow.bounds.y,
-         barRow.bounds.x1 ?? barRow.bounds.x + barRow.bounds.width,
-         barRow.bounds.y1 ?? barRow.bounds.y + barRow.bounds.height];
-    bar.x = centre.corner.x + (x0 + x1) / 2;
-    bar.y = centre.corner.y + (y0 + y1) / 2;
-  }
-  const wasMaximized = (await nav(a.tab))?.maximized;
-  await rightClick(a.tab, bar.x, bar.y);
-  const menuRow = await choose(a.tab, /^(Fill the strip|Give the strip back)$/);
-  if (!menuRow) failed('a secondary click in the window bar opens no window menu');
-  await settle(a.tab, 1);
-  const nowMaximized = (await nav(a.tab))?.maximized;
-  if (nowMaximized === wasMaximized) failed(`the window menu's row changed nothing: ${JSON.stringify({menuRow, wasMaximized})}`);
-  report.windowMenu = {row: menuRow, wasMaximized, nowMaximized};
-  console.log(`ok: the window menu opens from the window bar (${menuRow})`);
+    // The window menu, from a secondary click in the window's own bar: what the
+    // desktop can do to that window, and choosing a row does it.
+    const barRow = JSON.parse(await find(a.tab, 'Maximize')) ?? JSON.parse(await find(a.tab, 'Close'));
+    const bar = {x: centre.corner.x + 400, y: centre.corner.y + 40};
+    if (barRow) {
+      const [x0, y0, x1, y1] = Array.isArray(barRow.bounds)
+        ? barRow.bounds
+        : [barRow.bounds.x0 ?? barRow.bounds.x, barRow.bounds.y0 ?? barRow.bounds.y,
+           barRow.bounds.x1 ?? barRow.bounds.x + barRow.bounds.width,
+           barRow.bounds.y1 ?? barRow.bounds.y + barRow.bounds.height];
+      bar.x = centre.corner.x + (x0 + x1) / 2;
+      bar.y = centre.corner.y + (y0 + y1) / 2;
+    }
+    const wasMaximized = (await nav(a.tab))?.maximized;
+    await rightClick(a.tab, bar.x, bar.y);
+    const menuRow = await choose(a.tab, /^(Fill the strip|Give the strip back)$/);
+    if (!menuRow) failed('a secondary click in the window bar opens no window menu');
+    await settle(a.tab, 1);
+    const nowMaximized = (await nav(a.tab))?.maximized;
+    if (nowMaximized === wasMaximized) failed(`the window menu's row changed nothing: ${JSON.stringify({menuRow, wasMaximized})}`);
+    report.windowMenu = {row: menuRow, wasMaximized, nowMaximized};
+    console.log(`ok: the window menu opens from the window bar (${menuRow})`);
 
-  // A right-click in the chat's composer is the text's menu.
-  await search(a.tab, a.command, 'chat', 'Chat');
-  await settle(a.tab, 2);
-  const composer = JSON.parse(await find(a.tab, 'Message composer'));
-  if (!composer) failed('the chat has no composer to right-click');
-  const [cx0, cy0, cx1, cy1] = Array.isArray(composer.bounds)
-    ? composer.bounds
-    : [composer.bounds.x0 ?? composer.bounds.x, composer.bounds.y0 ?? composer.bounds.y,
-       composer.bounds.x1 ?? composer.bounds.x + composer.bounds.width,
-       composer.bounds.y1 ?? composer.bounds.y + composer.bounds.height];
-  await rightClick(a.tab, centre.corner.x + (cx0 + cx1) / 2, centre.corner.y + (cy0 + cy1) / 2);
-  const textRow = (await namesOf(a.tab)).find(name => /^(Paste|Paste and match style|Copy|Cut|Select all)/) ?? null;
-  if (!textRow) failed('a right-click in a text field offers no text menu');
-  report.contextMenu = textRow;
-  console.log(`ok: a right-click in a text field offers the text menu (${textRow})`);
-  await key(a.tab, 'Escape');
+    // A right-click in the chat's composer is the text's menu.
+    await search(a.tab, a.command, 'chat', 'Chat');
+    await settle(a.tab, 2);
+    const composer = JSON.parse(await find(a.tab, 'Message composer'));
+    if (!composer) failed('the chat has no composer to right-click');
+    const [cx0, cy0, cx1, cy1] = Array.isArray(composer.bounds)
+      ? composer.bounds
+      : [composer.bounds.x0 ?? composer.bounds.x, composer.bounds.y0 ?? composer.bounds.y,
+         composer.bounds.x1 ?? composer.bounds.x + composer.bounds.width,
+         composer.bounds.y1 ?? composer.bounds.y + composer.bounds.height];
+    await rightClick(a.tab, centre.corner.x + (cx0 + cx1) / 2, centre.corner.y + (cy0 + cy1) / 2);
+    const textRow = (await namesOf(a.tab)).find(name => /^(Paste|Paste and match style|Copy|Cut|Select all)/) ?? null;
+    if (!textRow) failed('a right-click in a text field offers no text menu');
+    report.contextMenu = textRow;
+    console.log(`ok: a right-click in a text field offers the text menu (${textRow})`);
+    await key(a.tab, 'Escape');
 
-  // Report a problem: the bar's own avatar, then the card's row.
-  await press(a.tab, (await namesOf(a.tab)).find(name => /\(you\)/.test(name)) ?? 'Profile');
-  const reportRow = await choose(a.tab, /^Report a problem/);
-  if (!reportRow) failed('the profile card offers no Report a problem');
-  // Picking what to report takes every event: nothing under the pointer
-  // reacts to it, and the strip the desk shows stays where it was.
-  await settle(a.tab, 2);
-  const pickingPan = await panOf(a.tab);
-  await sidewaysSwipe(a.tab, centre.x, centre.y, true);
-  if ((await panOf(a.tab))?.offset !== pickingPan?.offset) {
-    failed('a sideways wheel panned the strip under the report picker');
-  }
-  report.reportProblem = reportRow;
-  console.log(`ok: Report a problem opens its picker (${reportRow})`);
-  await key(a.tab, 'Escape');
+    // Report a problem: the bar's own avatar, then the card's row.
+    await press(a.tab, (await namesOf(a.tab)).find(name => /\(you\)/.test(name)) ?? 'Profile');
+    const reportRow = await choose(a.tab, /^Report a problem/);
+    if (!reportRow) failed('the profile card offers no Report a problem');
+    // Picking what to report takes every event: nothing under the pointer
+    // reacts to it, and the strip the desk shows stays where it was.
+    await settle(a.tab, 2);
+    const pickingPan = await panOf(a.tab);
+    await sidewaysSwipe(a.tab, centre.x, centre.y, true);
+    if ((await panOf(a.tab))?.offset !== pickingPan?.offset) {
+      failed('a sideways wheel panned the strip under the report picker');
+    }
+    report.reportProblem = reportRow;
+    console.log(`ok: Report a problem opens its picker (${reportRow})`);
+    await key(a.tab, 'Escape');
 
-  // The launcher's chord opens the search, and Escape closes it opening
-  // nothing: the keys a browser leaves to the page.
-  await click(a.tab, 640, 700);
-  await key(a.tab, 'k', a.command);
-  await until(a.tab, '!!globalThis.tiloMount?.state()?.searchOpen', 'the search chord', 30_000);
-  await key(a.tab, 'Escape');
-  await until(a.tab, '!globalThis.tiloMount?.state()?.searchOpen', 'the search closing', 30_000);
-  console.log('ok: the search chord opens the search and Escape closes it');
+    // The launcher's chord opens the search, and Escape closes it opening
+    // nothing: the keys a browser leaves to the page.
+    await click(a.tab, 640, 700);
+    await key(a.tab, 'k', a.command);
+    await until(a.tab, '!!globalThis.tiloMount?.state()?.searchOpen', 'the search chord', 30_000);
+    await key(a.tab, 'Escape');
+    await until(a.tab, '!globalThis.tiloMount?.state()?.searchOpen', 'the search closing', 30_000);
+    console.log('ok: the search chord opens the search and Escape closes it');
 
-  // None of it reached the browser.
-  const browser = {
-    scrollY: await a.tab.evaluate('window.scrollY'),
-    scrollX: await a.tab.evaluate('window.scrollX'),
-    scale: await a.tab.evaluate('globalThis.visualViewport?.scale ?? 1'),
-    history: await a.tab.evaluate('history.length'),
-  };
-  report.browser = {...browser, historyAtArrival: history};
-  if (browser.scrollY !== 0 || browser.scrollX !== 0) failed(`the page scrolled: ${JSON.stringify(browser)}`);
-  if (Math.abs(browser.scale - 1) > 0.001) failed(`the page zoomed: ${JSON.stringify(browser)}`);
-  if (browser.history !== history) failed(`the page navigated: ${JSON.stringify(browser)}`);
-  console.log('ok: no wheel, key or click reached the browser');
+    // None of it reached the browser.
+    const browser = {
+      scrollY: await a.tab.evaluate('window.scrollY'),
+      scrollX: await a.tab.evaluate('window.scrollX'),
+      scale: await a.tab.evaluate('globalThis.visualViewport?.scale ?? 1'),
+      history: await a.tab.evaluate('history.length'),
+    };
+    report.browser = {...browser, historyAtArrival: history};
+    if (browser.scrollY !== 0 || browser.scrollX !== 0) failed(`the page scrolled: ${JSON.stringify(browser)}`);
+    if (Math.abs(browser.scale - 1) > 0.001) failed(`the page zoomed: ${JSON.stringify(browser)}`);
+    if (browser.history !== history) failed(`the page navigated: ${JSON.stringify(browser)}`);
+    console.log('ok: no wheel, key or click reached the browser');
 
-  // A person the workspace lets invite, from the page itself: the workspace
-  // declares them one while their page stands open (the roles file the
-  // deployment mounts, which the Lounge takes in again as it changes), and
-  // the bar offers inviting without a reload, as a promotion reaches the
-  // native desk.
-  const offeredBefore = (await snapshot(a.tab)).names.filter(name => name === 'Invite');
-  report.inviteBefore = offeredBefore.length;
-  if (offeredBefore.length) await failed('the bar offered inviting before the workspace allowed it', a.tab);
-  writeFileSync(rolesFile, JSON.stringify({owners: [keptA.userPublicKey], moderators: []}), {mode: 0o644});
-  const allowedAt = Date.now();
-  await waitFor(a.tab, 'Invite', "the bar's invite button");
-  report.inviteAfterMs = Date.now() - allowedAt;
-  console.log(`ok: the page offers inviting ${report.inviteAfterMs} ms after the workspace allowed it, with no reload`);
+    // A person the workspace lets invite, from the page itself: the workspace
+    // declares them one while their page stands open (the roles file the
+    // deployment mounts, which the Lounge takes in again as it changes), and
+    // the bar offers inviting without a reload, as a promotion reaches the
+    // native desk.
+    const offeredBefore = (await snapshot(a.tab)).names.filter(name => name === 'Invite');
+    report.inviteBefore = offeredBefore.length;
+    if (offeredBefore.length) await failed('the bar offered inviting before the workspace allowed it', a.tab);
+    writeFileSync(rolesFile, JSON.stringify({owners: [keptA.userPublicKey], moderators: []}), {mode: 0o644});
+    const allowedAt = Date.now();
+    await waitFor(a.tab, 'Invite', "the bar's invite button");
+    report.inviteAfterMs = Date.now() - allowedAt;
+    console.log(`ok: the page offers inviting ${report.inviteAfterMs} ms after the workspace allowed it, with no reload`);
 
-  // The page's own sheet, the same one a desk shows: the role a link brings
-  // someone in at, chosen before the link is made.
-  if (!await press(a.tab, 'Invite')) await failed("the bar's invite button could not be pressed", a.tab);
-  await waitFor(a.tab, 'Invite people', 'the invite sheet');
-  if (!await press(a.tab, 'Commenter')) await failed('the invite sheet offers no Commenter part', a.tab);
-  await until(a.tab, `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes('add comments, but cannot edit it')`,
-    "the sheet's chosen role under the choice", 60_000);
-  if (!await press(a.tab, 'Create link')) await failed('the invite sheet offers no Create link', a.tab);
-  const made = await (async () => {
-    const deadline = Date.now() + 120_000;
-    for (;;) {
-      const link = (await nodeValues(a.tab)).find(value => sealedLink.test(value));
-      if (link) return link;
-      if (Date.now() > deadline) {
-        const handed = (await nodeValues(a.tab)).filter(value => /^https?:/.test(value));
-        await failed(`the sheet handed over no short link: ${JSON.stringify(handed)}`, a.tab);
+    // The page's own sheet, the same one a desk shows: the role a link brings
+    // someone in at, chosen before the link is made.
+    if (!await press(a.tab, 'Invite')) await failed("the bar's invite button could not be pressed", a.tab);
+    await waitFor(a.tab, 'Invite people', 'the invite sheet');
+    if (!await press(a.tab, 'Commenter')) await failed('the invite sheet offers no Commenter part', a.tab);
+    await until(a.tab, `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes('add comments, but cannot edit it')`,
+      "the sheet's chosen role under the choice", 60_000);
+    if (!await press(a.tab, 'Create link')) await failed('the invite sheet offers no Create link', a.tab);
+    const made = await (async () => {
+      const deadline = Date.now() + 120_000;
+      for (;;) {
+        const link = (await nodeValues(a.tab)).find(value => sealedLink.test(value));
+        if (link) return link;
+        if (Date.now() > deadline) {
+          const handed = (await nodeValues(a.tab)).filter(value => /^https?:/.test(value));
+          await failed(`the sheet handed over no short link: ${JSON.stringify(handed)}`, a.tab);
+        }
+        await sleep(250);
       }
-      await sleep(250);
-    }
-  })();
-  report.link = made;
-  if (new URL(made).origin !== new URL(site).origin) await failed(`the link is not at this site: ${made}`, a.tab);
-  const long = (await nodeValues(a.tab)).find(value => typeof value === 'string' && value.includes('invite='));
-  if (long) await failed(`the sheet shows the invitation's own text beside the link: ${long.slice(0, 120)}`, a.tab);
-  console.log(`ok: the sheet made a link a site keeps: handle in the path, key in the fragment (${made})`);
-  await dump(a.tab, '8-a-invite-sheet');
+    })();
+    report.link = made;
+    if (new URL(made).origin !== new URL(site).origin) await failed(`the link is not at this site: ${made}`, a.tab);
+    const long = (await nodeValues(a.tab)).find(value => typeof value === 'string' && value.includes('invite='));
+    if (long) await failed(`the sheet shows the invitation's own text beside the link: ${long.slice(0, 120)}`, a.tab);
+    console.log(`ok: the sheet made a link a site keeps: handle in the path, key in the fragment (${made})`);
+    await dump(a.tab, '8-a-invite-sheet');
 
-  // The workspace as the invitation describes it, before this person joins:
-  // the name and how many people it has, which the host counts itself.
-  const listedNow = (await directory()).workspaces?.find(workspace => workspace.room === keptA.room);
-  if (!listedNow) await failed('the directory stopped listing the workspace', a.tab);
-  const ownName = (await snapshot(a.tab)).names
-    .find(name => / \(you\): your profile$/.test(name))?.replace(/ \(you\): your profile$/, '') ?? null;
-  if (!ownName) await failed("A's page names no person of its own", a.tab);
-  report.inviter = ownName;
+    // The workspace as the invitation describes it, before this person joins:
+    // the name and how many people it has, which the host counts itself.
+    const listedNow = (await directory()).workspaces?.find(workspace => workspace.room === keptA.room);
+    if (!listedNow) await failed('the directory stopped listing the workspace', a.tab);
+    const ownName = (await snapshot(a.tab)).names
+      .find(name => / \(you\): your profile$/.test(name))?.replace(/ \(you\): your profile$/, '') ?? null;
+    if (!ownName) await failed("A's page names no person of its own", a.tab);
+    report.inviter = ownName;
 
-  // Someone else opens the link the sheet handed over, in a browser of their
-  // own: the page says who invited them, to what, how many people are in it
-  // and what the part lets them do — all from the host's verification of the
-  // invitation, not from the link alone.
-  const c = await followLink('C', made);
-  const people = listedNow.members === 1 ? '1 person' : `${listedNow.members} people`;
-  for (const expected of [`${ownName} invites you to`, listedNow.name, people,
-    'Commenter — you can add comments, but not edit shared work.']) {
-    if (!c.card.includes(expected)) {
-      await failed(`the invitation card does not say "${expected}": ${c.card.slice(0, 400)}`, c.tab);
-    }
-  }
-  if (!c.buttons.includes('Join') || !c.buttons.includes('Not now')) {
-    await failed(`the invitation card offers neither Join nor Not now: ${JSON.stringify(c.buttons)}`, c.tab);
-  }
-  report.card = c.card;
-  console.log(`ok: the link says who invited them, where and as what: ${c.card}`);
-  await dump(c.tab, '9-c-invitation-card');
-
-  // Joining is the whole of it: the invitation is its inviter's approval, so
-  // no one in the workspace is offered a chance to let this person in while
-  // they arrive.
-  const pressed = await c.tab.evaluate(`(() => {
-    const card = [...document.querySelectorAll('form.tilo-entry-card')].at(-1);
-    const button = card && [...card.querySelectorAll('button')].find(button => button.textContent.trim() === 'Join');
-    if (button) button.click();
-    return !!button;
-  })()`);
-  if (!pressed) await failed('the invitation card went away before Join', c.tab);
-  const arrivalDeadline = Date.now() + 240_000;
-  let offered = null;
-  for (;;) {
-    offered ??= (await snapshot(a.tab)).names.find(name => /^Let .+ in$/.test(name)) ?? null;
-    const arrival = await c.tab.evaluate(`document.documentElement.dataset.arrival ?? null`).catch(() => null);
-    if (arrival === 'done') break;
-    if (arrival === 'stopped') await failed('the invitation did not take: the page stopped', c.tab);
-    if (Date.now() > arrivalDeadline) await failed('the invitation arriving', c.tab);
-  }
-  if (offered) {
-    await failed(`the page asked its person to let the invitation's person in (${offered}); an invitation is its inviter's approval`, a.tab);
-  }
-  await mounted(c.tab, 'C');
-  const keptC = JSON.parse(await membership(c.tab));
-  report.invited = keptC;
-  if (!keptC?.userPublicKey || keptC.room !== keptA.room) {
-    await failed(`the invitation's person joined ${JSON.stringify(keptC)}, not ${keptA.room}`, c.tab);
-  }
-  if (keptC.userPublicKey === keptA.userPublicKey || keptC.userPublicKey === keptB.userPublicKey) {
-    await failed("the invitation's person is someone who was already here", c.tab);
-  }
-  console.log(`ok: ${keptC.userPublicKey.slice(0, 8)} arrived from the link in A's workspace, with no one letting them in`);
-  await dump(c.tab, '10-c-arrived');
-
-  // The desk each person is in is the desk the new person is on too: A's
-  // People list names them beside B.
-  const rowsAfter = await (async () => {
-    const deadline = Date.now() + 120_000;
-    for (;;) {
-      const rows = await herePeople(a.tab);
-      if (Array.isArray(rows) && rows.length === 2) return rows;
-      if (Date.now() > deadline) {
-        await dump(a.tab, 'timeout-people-invited');
-        await failed(`A's desk does not show the invitation's person beside B: ${JSON.stringify(rows)}`, a.tab);
+    // Someone else opens the link the sheet handed over, in a browser of their
+    // own: the page says who invited them, to what, how many people are in it
+    // and what the part lets them do — all from the host's verification of the
+    // invitation, not from the link alone.
+    const c = await followLink('C', made);
+    invited = c;
+    const people = listedNow.members === 1 ? '1 person' : `${listedNow.members} people`;
+    for (const expected of [`${ownName} invites you to`, listedNow.name, people,
+      'Commenter — you can add comments, but not edit shared work.']) {
+      if (!c.card.includes(expected)) {
+        await failed(`the invitation card does not say "${expected}": ${c.card.slice(0, 400)}`, c.tab);
       }
-      await sleep(500);
     }
-  })();
-  report.hereAfter = rowsAfter.map(row => ({id: row.id, user: row.user ?? null, label: row.label}));
-  const invitedRow = rowsAfter.find(row => row.id !== report.presence.a.id);
-  if (!invitedRow) await failed('the two rows A sees are one person', a.tab);
-  if (invitedRow.user && invitedRow.user !== keptC.userPublicKey) {
-    await failed(`A's desk shows the invitation's arrival as ${invitedRow.user}`, a.tab);
+    if (!c.buttons.includes('Join') || !c.buttons.includes('Not now')) {
+      await failed(`the invitation card offers neither Join nor Not now: ${JSON.stringify(c.buttons)}`, c.tab);
+    }
+    report.card = c.card;
+    console.log(`ok: the link says who invited them, where and as what: ${c.card}`);
+    await dump(c.tab, '9-c-invitation-card');
+
+    // Joining is the whole of it: the invitation is its inviter's approval, so
+    // no one in the workspace is offered a chance to let this person in while
+    // they arrive.
+    const pressed = await c.tab.evaluate(`(() => {
+      const card = [...document.querySelectorAll('form.tilo-entry-card')].at(-1);
+      const button = card && [...card.querySelectorAll('button')].find(button => button.textContent.trim() === 'Join');
+      if (button) button.click();
+      return !!button;
+    })()`);
+    if (!pressed) await failed('the invitation card went away before Join', c.tab);
+    const arrivalDeadline = Date.now() + 240_000;
+    let offered = null;
+    for (;;) {
+      offered ??= (await snapshot(a.tab)).names.find(name => /^Let .+ in$/.test(name)) ?? null;
+      const arrival = await c.tab.evaluate(`document.documentElement.dataset.arrival ?? null`).catch(() => null);
+      if (arrival === 'done') break;
+      if (arrival === 'stopped') await failed('the invitation did not take: the page stopped', c.tab);
+      if (Date.now() > arrivalDeadline) await failed('the invitation arriving', c.tab);
+    }
+    if (offered) {
+      await failed(`the page asked its person to let the invitation's person in (${offered}); an invitation is its inviter's approval`, a.tab);
+    }
+    await mounted(c.tab, 'C');
+    const keptC = JSON.parse(await membership(c.tab));
+    report.invited = keptC;
+    if (!keptC?.userPublicKey || keptC.room !== keptA.room) {
+      await failed(`the invitation's person joined ${JSON.stringify(keptC)}, not ${keptA.room}`, c.tab);
+    }
+    if (keptC.userPublicKey === keptA.userPublicKey || keptC.userPublicKey === keptB.userPublicKey) {
+      await failed("the invitation's person is someone who was already here", c.tab);
+    }
+    console.log(`ok: ${keptC.userPublicKey.slice(0, 8)} arrived from the link in A's workspace, with no one letting them in`);
+    await dump(c.tab, '10-c-arrived');
+
+    // The desk each person is in is the desk the new person is on too: A's
+    // People list names them beside B.
+    const rowsAfter = await (async () => {
+      const deadline = Date.now() + 120_000;
+      for (;;) {
+        const rows = await herePeople(a.tab);
+        if (Array.isArray(rows) && rows.length === 2) return rows;
+        if (Date.now() > deadline) {
+          await dump(a.tab, 'timeout-people-invited');
+          await failed(`A's desk does not show the invitation's person beside B: ${JSON.stringify(rows)}`, a.tab);
+        }
+        await sleep(500);
+      }
+    })();
+    report.hereAfter = rowsAfter.map(row => ({id: row.id, user: row.user ?? null, label: row.label}));
+    const invitedRow = rowsAfter.find(row => row.id !== report.presence.a.id);
+    if (!invitedRow) await failed('the two rows A sees are one person', a.tab);
+    if (invitedRow.user && invitedRow.user !== keptC.userPublicKey) {
+      await failed(`A's desk shows the invitation's arrival as ${invitedRow.user}`, a.tab);
+    }
+    console.log(`ok: A's desk shows ${invitedRow.label} beside B`);
+    await dump(a.tab, '11-a-people-invited');
   }
-  console.log(`ok: A's desk shows ${invitedRow.label} beside B`);
-  await dump(a.tab, '11-a-people-invited');
 
   // Nothing failed in either page.
-  const both = [...a.tab.log, ...b.tab.log, ...c.tab.log];
+  const both = [...a.tab.log, ...b.tab.log, ...(invited?.tab.log ?? [])];
   const errors = both.filter(line => /^EXC/.test(line) || /panic/i.test(line));
-  report.logs = {a: a.tab.log.slice(-10), b: b.tab.log.slice(-10), c: c.tab.log.slice(-10)};
+  report.logs = {a: a.tab.log.slice(-10), b: b.tab.log.slice(-10), c: invited?.tab.log.slice(-10) ?? null};
   if (errors.length) failed(`pages reported errors: ${errors.slice(0, 5).join('; ')}`);
 
   // The desk one person arranged is the desk the other shows: neither page's

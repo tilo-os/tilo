@@ -4683,6 +4683,21 @@ requires = ["arch=x86_64"]
 outputs = ["/target/page-boot/**"]
 timeout_secs = 1200
 
+# Two people on the page, each in their own browser, against the Lounge's relay run directly as
+# page-boot runs it: the gate's people step, brief (chat, presence, a call and the names on its
+# card, the strip panned and a sideways swipe over Sheets among a few apps), so what broke between
+# two people's pages is caught in minutes. The gate runs the whole step: every app the Lounge
+# offers, the menus, an invitation.
+[[check]]
+name = "page-two-people"
+run = "bash os/containers/tilo-lounge/test-page-two-people.sh /target/publish/web-desktop/bundle /target/page-two-people"
+needs = ["lounge-binaries", "image-lounge-context", "lounge-gate-tools", "web-desktop-bundle"]
+env = { TILO_RELAY_BIN = "/target/publish/lounge/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/context/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto" }
+requires = ["arch=x86_64"]
+outputs = ["/target/page-two-people/**"]
+timeout_secs = 1200
+default = false
+
 # Releasing the Lounge: t's own image-lounge build of the released commit (the same cached build
 # the gate runs), with the entrypoint and image tests its check runs, signed with the release key
 # and published as `sha-<commit>` for cloud-deploy, on stable and on a release tag. Published on
