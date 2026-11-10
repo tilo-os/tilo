@@ -3004,6 +3004,9 @@ mod manual_composition_tests;
 mod number_input_layout_tests;
 
 #[cfg(test)]
+#[path = "app/context_menu_input_tests.rs"]
+mod context_menu_input_tests;
+#[cfg(test)]
 #[path = "app/history_tests.rs"]
 pub(crate) mod framework_history_tests;
 #[cfg(test)]

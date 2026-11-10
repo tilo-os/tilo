@@ -492,6 +492,10 @@ pub struct ContextMenu {
     /// `MouseInput` carries no position, so this is tracked from
     /// `CursorMoved` to map a press to a row.
     last_cursor: Point,
+    /// The row a press took, which the release on it runs: a press highlights
+    /// the row and the menu stays open, so letting go elsewhere cancels it and
+    /// what a command starts (a rename's field) never sees half a click.
+    held: Option<usize>,
     /// Where the menu was opened at the pointer, until the pointer moves
     /// away from there. A host repeats a still pointer's position after a
     /// rebuild ([`crate::pointer_replay`]); that repeat is not the person
@@ -593,6 +597,7 @@ impl ContextMenu {
             rect: Rect::ZERO,
             hovered: None,
             last_cursor: Point::ZERO,
+            held: None,
             opened_under: None,
             selection: None,
             row_height: ROW_HEIGHT,
@@ -1079,6 +1084,7 @@ impl ContextMenu {
         self.appear.show(false);
         self.opened_under = None;
         self.active_touch = None;
+        self.held = None;
         self.anchor_row = None;
         self.submenu = None;
         self.submenu_focused = false;
@@ -1835,6 +1841,10 @@ impl Widget for ContextMenu {
                 button: MouseButton::Left,
                 ..
             } => {
+                // A press starts afresh: one whose release never came (the
+                // window lost the pointer) is forgotten, as the host forgets
+                // every press it handed out.
+                self.held = None;
                 // A press on the bar grabs or pages it and takes no row. The
                 // region answers in its own flag: the host that routed the
                 // press here may have marked it handled already.
@@ -1850,7 +1860,14 @@ impl Widget for ContextMenu {
                 if self.place_query_caret(self.last_cursor) {
                     // A press in the field puts the caret there.
                 } else if let Some(idx) = self.item_at([self.last_cursor.x, self.last_cursor.y]) {
-                    self.click_item(idx);
+                    // The row the press took stays lit, and the menu stays open
+                    // until the button comes up: the release on this row runs
+                    // it, and one anywhere else leaves the menu as it was.
+                    self.held = Some(idx);
+                    if self.hovered != Some(idx) {
+                        self.set_hover(Some(idx));
+                        self.dirty = true;
+                    }
                 } else {
                     // An open menu is modal-ish: swallow the dismiss click
                     // so it doesn't also activate whatever sits underneath.
@@ -1864,6 +1881,16 @@ impl Widget for ContextMenu {
                 ..
             } => {
                 self.scroll_event(event, ctx);
+                if let Some(idx) = self.held.take() {
+                    // The press is the row's until this release: a pointer
+                    // still over it runs the row, one that left it first runs
+                    // nothing and the menu stays open.
+                    let over = self.item_at([self.last_cursor.x, self.last_cursor.y]);
+                    if over == Some(idx) {
+                        self.click_item(idx);
+                    }
+                    *ctx.handled = true;
+                }
             }
             WindowEvent::Touch(touch) => {
                 let point = self.drawn.to_local(ctx.logical(touch.location));
@@ -2119,6 +2146,7 @@ mod nested_and_anchored_tests {
         crate::synthetic_input::cursor_moved(p.x, p.y)
     }
     use crate::synthetic_input::mouse_press;
+    use crate::synthetic_input::mouse_release;
     use crate::synthetic_input::named_key;
     use crate::testing::dispatch;
     fn paint(m: &mut ContextMenu) {
@@ -2177,6 +2205,7 @@ mod nested_and_anchored_tests {
             .unwrap();
         dispatch(&mut m, &cursor_at(nested_row.center()));
         dispatch(&mut m, &mouse_press());
+        dispatch(&mut m, &mouse_release());
         assert_eq!(fired.load(Ordering::SeqCst), 1);
         assert_eq!(m.take_submenu_selection(), Some((1, 1)));
         assert!(!m.is_open());
@@ -2251,6 +2280,7 @@ mod nested_and_anchored_tests {
         );
         dispatch(&mut m, &cursor_at(target.center()));
         dispatch(&mut m, &mouse_press());
+        dispatch(&mut m, &mouse_release());
         assert_eq!(fired.load(Ordering::SeqCst), 1);
         assert_eq!(m.take_submenu_selection(), Some((1, 1)));
         assert!(!m.is_open(), "the whole menu closes");
