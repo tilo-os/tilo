@@ -148,23 +148,6 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     .tilo-invite-role { font-size: 13px; color: #b9b9c0; }
     .tilo-invite-role strong { font-weight: 600; color: #e6e6e9; }
     .tilo-invite .tilo-entry-actions { margin-top: 4px; }
-    /* Who waits to join and the workspace's wait list (entry-page.mjs
-       `waitingCard`): a row each, the person or address, then its answers. */
-    .tilo-waiting { width: min(480px, calc(100vw - 32px)); gap: 16px; max-height: calc(100% - 32px); overflow: auto; }
-    .tilo-waiting h2 { margin: 0; font-size: 17px; font-weight: 600; color: #f2f2f4; }
-    .tilo-waiting h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; color: #e6e6e9; }
-    .tilo-waiting ul { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
-    .tilo-waiting ul[hidden] { display: none; }
-    .tilo-waiting li { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 6px 0; border-top: 1px solid #2a2c32; }
-    .tilo-waiting li:first-child { border-top: 0; }
-    .tilo-waiting .tilo-waiting-who { display: grid; flex: 1; min-width: 0; color: #e6e6e9; }
-    .tilo-waiting .tilo-waiting-contact { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .tilo-waiting time { font-size: 12px; color: #8f8f99; }
-    .tilo-waiting time.tilo-waiting-invited { color: #9fd3ae; }
-    .tilo-waiting li button { flex: none; padding: 6px 12px; }
-    .tilo-waiting .tilo-waiting-none { color: #9b9ba3; }
-    .tilo-waiting section:empty { display: none; }
-    .tilo-waiting .tilo-waiting-note { margin: 0 0 8px; font-size: 13px; color: #9b9ba3; }
     /* Pairing a device: the link's sheet, the ask on the device that sent
        it, and the code a new device shows while it waits (entry-page.mjs). */
     .tilo-pair { width: min(400px, calc(100vw - 32px)); gap: 16px; max-height: calc(100% - 32px); overflow: auto; }

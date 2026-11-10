@@ -82,7 +82,6 @@ mod unbuildable_windows;
 mod views;
 mod voice;
 pub(crate) use voice::carried_call_room;
-mod wait_list;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -105,20 +104,6 @@ pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
 pub use collaboration::{CollaborationError, GovernanceCompletion};
 pub use listing::DoorRefusal;
 pub use pages::PreAdmitRequest;
-pub use wait_list::{Mailbox, Secrets as WaitListSecrets, WaitListed};
-
-/// An invitation someone who may invite asked the workspace to mail to an
-/// address on its wait list ([`Workspaces::mail_wait_list`]).
-pub struct WaitListMail {
-    /// Completed only after the operator durably accepts the mail.
-    pub queued: tokio::sync::oneshot::Sender<bool>,
-    pub to: Mailbox,
-    /// The invitation's web link.
-    pub link: String,
-    /// A secret that takes the entry off the list, for the mail's removal
-    /// link; the entry keeps only its SHA-256.
-    pub removal: [u8; 32],
-}
 // The administration vocabulary (the actions' names and answers), under the
 // daemon's historic paths.
 pub use tilo_relay_session::workspaces::{
@@ -198,8 +183,6 @@ struct GovernedWorkspace {
     device: Option<DeviceKeys>,
     /// The owner's pre-admissions and notices.
     admissions: admissions::Admissions,
-    /// The addresses people left at its door without an invitation.
-    wait_list: wait_list::WaitList,
     /// Whom moderation removed, and when: the public door keeps them out for
     /// the day.
     door: door::Door,
@@ -348,7 +331,6 @@ impl GovernedWorkspace {
         };
         let mut this = Self {
             admissions: admissions::Admissions::open(&path)?,
-            wait_list: wait_list::WaitList::open(&path)?,
             door: door::Door::open(&path)?,
             parts,
             path,
@@ -436,7 +418,6 @@ impl GovernedWorkspace {
         parts.collect(&record.peer);
         Ok(Self {
             admissions: admissions::Admissions::open(&path)?,
-            wait_list: wait_list::WaitList::open(&path)?,
             door: door::Door::open(&path)?,
             record,
             peer: Replica::new(peer),
@@ -496,28 +477,6 @@ impl GovernedWorkspace {
     /// invitation hands that one back rather than minting one.
     fn invitation_for(&self, person: [u8; 32], now_ns: u64) -> Option<IssuedInvitation> {
         self.collaboration().invitation_for(person, now_ns)
-    }
-
-    /// Take off the wait list everyone who joined with an invitation sent
-    /// for their entry. A failed write leaves them for the next time.
-    fn forget_joined_wait_list(&mut self) {
-        let ledger = &self.record.collaboration;
-        match self
-            .wait_list
-            .joined(|invite| ledger.redeemed(invite), tilo_clock::unix_now_ns())
-        {
-            Ok(0) => {}
-            Ok(count) => tracing::info!(
-                workspace = %self.record.workspace,
-                count,
-                "invited addresses left the wait list on joining"
-            ),
-            Err(error) => tracing::warn!(
-                workspace = %self.record.workspace,
-                %error,
-                "the wait list kept invited addresses that joined"
-            ),
-        }
     }
 
     /// Record `state` alone: challenges, invitations, receipts. Governance and
@@ -888,9 +847,6 @@ struct WorkspacesInner {
     /// The workspaces this host serves for the device of its person that governs
     /// them ([`crate::hosted`]).
     hosting: crate::hosted::Hosting,
-    /// Where invitations to mail to wait-list addresses go, once whoever
-    /// runs the relay sends mail ([`Workspaces::mail_wait_list`]).
-    wait_list_mail: std::sync::OnceLock<(String, tokio::sync::mpsc::UnboundedSender<WaitListMail>)>,
     /// The workspaces of people's own, once the host's operator offers them
     /// ([`Workspaces::offer_own_workspaces`]).
     own: std::sync::OnceLock<own::OwnWorkspaces>,
@@ -1093,7 +1049,6 @@ impl Workspaces {
                 resealing: std::sync::atomic::AtomicBool::new(false),
                 hosting: crate::hosted::Hosting::new(host.clone()),
                 host,
-                wait_list_mail: std::sync::OnceLock::new(),
                 own: std::sync::OnceLock::new(),
                 memberships: memberships::Memberships::default(),
                 agent_door: agent_door::AgentDoor::default(),
@@ -1476,25 +1431,6 @@ impl Workspaces {
     #[must_use]
     pub fn governance_changes(&self) -> tokio::sync::broadcast::Receiver<String> {
         self.inner.changes.subscribe()
-    }
-
-    /// The invitations members ask to mail to addresses on a wait list,
-    /// for whoever runs the relay to send from the web entry `door`: until
-    /// this is called, the workspaces send no mail and refuse to, and they mail
-    /// only invitations on that door
-    /// ([`tilo_relay_protocol::workspaces::invitation_on_door`]). `None` once
-    /// called before.
-    #[must_use]
-    pub fn mail_wait_list(
-        &self,
-        door: &str,
-    ) -> Option<tokio::sync::mpsc::UnboundedReceiver<WaitListMail>> {
-        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-        self.inner
-            .wait_list_mail
-            .set((door.to_owned(), sender))
-            .ok()?;
-        Some(receiver)
     }
 
     /// Each member write to a record the governor's copy took in. A slow

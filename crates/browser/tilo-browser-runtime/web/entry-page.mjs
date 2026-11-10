@@ -34,7 +34,7 @@ import {createReconnect, domReconnectView} from './reconnect.mjs';
 import {followConnection} from './connection-status.mjs';
 import {followRefusal, hostUnreachable, reachedHost, refusalText, rejoinedName, retryUnreachable} from './session-refusal.mjs';
 import {rendererUnavailable} from './webgpu-safety.mjs';
-import {createWorkspaceActions, invitedLine} from './workspace-actions.mjs';
+import {createWorkspaceActions} from './workspace-actions.mjs';
 import {sameEntry} from './entered-workspaces.mjs';
 import {
   chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneWorkspaces,
@@ -505,121 +505,6 @@ function askLine({label: text, action, save}) {
     form.append(label, error, submit, cancel);
     document.body.append(form);
     input.focus();
-  });
-}
-
-/** A link to hand on: shown to select, with a button that copies it
- * (inside the person's click, which a browser's clipboard asks for). */
-function shareCard({title, body, link}) {
-  return new Promise(resolve => {
-    const form = document.createElement('form');
-    form.className = 'tilo-entry-card';
-    form.dataset.card = 'share';
-    const heading = Object.assign(document.createElement('p'), {textContent: title});
-    const about = Object.assign(document.createElement('p'), {textContent: body});
-    const field = Object.assign(document.createElement('input'), {name: 'link', value: link, readOnly: true});
-    field.setAttribute('aria-label', 'Link');
-    field.addEventListener('focus', () => field.select());
-    const copy = Object.assign(document.createElement('button'), {type: 'button', textContent: 'Copy link'});
-    copy.addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText(link);
-        copy.textContent = 'Copied';
-      } catch {
-        field.focus();
-        copy.textContent = 'Select the link and copy it';
-      }
-    });
-    const done = Object.assign(document.createElement('button'), {type: 'submit', textContent: 'Done'});
-    form.addEventListener('submit', event => { event.preventDefault(); form.remove(); resolve(); });
-    form.append(heading, about, field, copy, done);
-    document.body.append(form);
-    copy.focus();
-  });
-}
-
-/** When a wait-list address was left, as the inviter reads dates. */
-const addedAt = atMs => new Intl.DateTimeFormat(undefined, {dateStyle: 'medium', timeStyle: 'short'}).format(new Date(atMs));
-
-/** The addresses on the workspace's wait list, each to invite (`invite(entry)`
- * makes and shares an invitation for it) or take off the list (`unlist`), as
- * `load()` resolves them; read again after every decision. Resolves when
- * closed. */
-function waitingCard({load, invite, unlist}) {
-  return new Promise(resolve => {
-    const form = document.createElement('form');
-    form.className = 'tilo-entry-card tilo-waiting';
-    form.dataset.card = 'waiting';
-    const heading = Object.assign(document.createElement('h2'), {textContent: 'Waiting to join'});
-    const listed = document.createElement('section');
-    listed.dataset.list = 'wait-list';
-    const error = document.createElement('p');
-    error.className = 'tilo-entry-error';
-    error.setAttribute('role', 'alert');
-    error.hidden = true;
-    const close = Object.assign(document.createElement('button'), {type: 'submit', textContent: 'Close'});
-    form.addEventListener('submit', event => { event.preventDefault(); form.remove(); resolve(); });
-    const said = refusal => { error.textContent = refusal?.message ?? String(refusal); error.hidden = false; };
-    const button = (text, run) => {
-      const made = Object.assign(document.createElement('button'), {type: 'button', textContent: text});
-      made.addEventListener('click', run);
-      return made;
-    };
-    const show = async () => {
-      let contacts = [];
-      try { contacts = await load(); } catch (refusal) { said(refusal); }
-      // The wait list: addresses people left at the door, oldest first.
-      listed.replaceChildren();
-      if (!contacts.length) {
-        listed.append(Object.assign(document.createElement('p'), {className: 'tilo-waiting-none',
-          textContent: 'Nobody is waiting to join.'}));
-        return;
-      }
-      const title = Object.assign(document.createElement('h3'), {textContent: `Wait list · ${contacts.length}`});
-      const about = Object.assign(document.createElement('p'), {className: 'tilo-waiting-note',
-        textContent: 'They asked to join without an invitation. Invite sends them a link to join; they leave the list once they join.'});
-      const rows = document.createElement('ul');
-      rows.append(...contacts.map(entry => {
-        const item = document.createElement('li');
-        const who = document.createElement('span');
-        who.className = 'tilo-waiting-who';
-        who.append(Object.assign(document.createElement('span'), {className: 'tilo-waiting-contact', textContent: entry.contact, title: entry.contact}),
-          Object.assign(document.createElement('time'), {dateTime: new Date(entry.addedAtMs).toISOString(), textContent: addedAt(entry.addedAtMs)}));
-        // Invited already: said, so nobody invites them twice.
-        if (entry.invitedAtMs != null) {
-          who.append(Object.assign(document.createElement('time'), {className: 'tilo-waiting-invited',
-            dateTime: new Date(entry.invitedAtMs).toISOString(), textContent: invitedLine(entry.invitedAtMs)}));
-        }
-        item.append(who, button(entry.invitedAtMs == null ? 'Invite' : 'Invite again', () => decide(async () => {
-          const sent = await invite(entry);
-          if (sent?.mailed) mailed(entry.contact, sent.link);
-        }, entry.requestId)), button('Remove', () => decide(unlist, entry.requestId)));
-        return item;
-      }));
-      listed.append(title, about, rows);
-    };
-    // A mailed invitation, said, with its link to copy should the mail not
-    // arrive.
-    const sent = document.createElement('p');
-    sent.className = 'tilo-waiting-sent';
-    sent.setAttribute('role', 'status');
-    sent.hidden = true;
-    const mailed = (contact, link) => {
-      const copy = button('Copy link', async () => {
-        copy.textContent = await navigator.clipboard.writeText(link).then(() => 'Copied', () => 'Copy failed');
-      });
-      sent.replaceChildren(`Invitation emailed to ${contact}. `, copy);
-      sent.hidden = false;
-    };
-    const decide = async (choice, requestId) => {
-      error.hidden = true;
-      sent.hidden = true;
-      try { await choice(requestId); } catch (refusal) { said(refusal); }
-      await show();
-    };
-    form.append(heading, listed, sent, error, close);
-    document.body.append(form);
-    void show();
   });
 }
 
@@ -1296,18 +1181,6 @@ export async function startEntryPage({mode}) {
       peer: page.peer,
       machines: () => (person() ? ownedHosts(person()) : []),
       lobby: async origin => connectPeer({origin, identity: await rootOfThisPage(page.peer), runtime, displayName, live: false}),
-      // The invitation's short link, sealed onto this site's shelf, as the
-      // sheet makes it: the site keeps ciphertext it cannot read and the key
-      // rides in the link's fragment. A shelf that answers with nothing
-      // leaves the invitation's own text, which joins just the same.
-      inviteLink: async invitation => {
-        try {
-          return await runtime.sealedInvitationLink(page.entry.base, page.peer.origin, invitation);
-        } catch (error) {
-          console.warn('invitation not shelved:', error?.message ?? error);
-          return invitation;
-        }
-      },
       open: async ({origin, room, name, hostDevice: holder}) => {
         keepJoinedHost({origin, room, userPublicKey: (await rootOfThisPage(page.peer)).userPublicKey});
         remembering(() => rememberEntered(runtime, {origin, room, name, hostDevice: holder}));
@@ -1317,8 +1190,6 @@ export async function startEntryPage({mode}) {
       ui: {
         askWorkspaceName: save => askLine({label: 'Name of the new workspace', action: 'Create', save}),
         chooseMachine: origins => card('Create the workspace on', [...origins.map(origin => [new URL(origin).host, origin]), ['Cancel', null]]),
-        share: shareCard,
-        waitingList: waitingCard,
         fail: text => card(text, [['Close', null]]),
       },
     }) : null;

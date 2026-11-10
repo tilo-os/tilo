@@ -133,7 +133,6 @@ impl Room {
             .env("TILO_ROOMS_SITE_ORIGINS", "https://tilo.sh,https://tilo.so")
             .env("TILO_ROOMS_ROOT_FILE", &root_file)
             .env("TILO_ROOMS_FEEDBACK_CHANNEL", "feedback")
-            .env("TILO_ROOMS_WAIT_LIST_MAX", "16")
             // The listeners, on loopback, each on a port the kernel picks as it binds: two rooms on
             // one machine take the ports they are given, and the room announces the ones it bound.
             .env("TILO_ROOMS_STATE", state.path().join("tilo-rooms"))
@@ -799,7 +798,7 @@ fn invite(room: &Room, member_page: &PeerHandle, person: [u8; 32]) -> String {
                 role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
                 expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
                 inviter_name: Some("The Lounge".to_owned()),
-                wait_list_entry: None,
+                retired_wait_list_entry: None,
                 // The invitation names the person it is for: a workspace taking people by
                 // invitation answers its door with it when they ask.
                 recipient: Some(person),

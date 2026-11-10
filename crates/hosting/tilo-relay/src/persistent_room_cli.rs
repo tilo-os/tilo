@@ -24,7 +24,7 @@ use anyhow::{Context, bail, ensure};
 use ed25519_dalek::SigningKey;
 use tilo_relay::daemon::RelayIdentity;
 use tilo_relay::web::WebHandle;
-use tilo_relay::workspaces::{WaitListed, Workspaces};
+use tilo_relay::workspaces::Workspaces;
 use tilo_relay_protocol::directory::Listing;
 use tilo_relay_protocol::operator::{self, OperatorCommand, OperatorEvent, hex32};
 use tilo_relay_protocol::workspaces::WorkspaceRole;
@@ -167,27 +167,6 @@ pub struct PersistentArgs {
         conflicts_with = "members_only"
     )]
     pub invitation_only: bool,
-    /// How many requests left at the door the workspace keeps while it takes
-    /// people by invitation: each is an address (an email) someone who asked
-    /// without an invitation leaves, on the workspace's wait list for whoever
-    /// may invite until they take it off. `0`: the door keeps none.
-    #[arg(
-        long = "wait-list-max",
-        value_name = "COUNT",
-        default_value_t = 0,
-        requires = "members_only"
-    )]
-    pub wait_list_max: usize,
-    /// Whoever runs the workspace sends mail from the web entry DOOR (a URL
-    /// ending in `/`): members may ask it to mail an invitation on that
-    /// door to a confirmed address on the wait list, which it hears as an
-    /// `invite_mail` event.
-    #[arg(
-        long = "wait-list-mail",
-        value_name = "DOOR",
-        requires = "wait_list_max"
-    )]
-    pub wait_list_mail: Option<String>,
     /// A file of more owners and moderators, `{"owners": [hex],
     /// "moderators": [hex]}`, read again whenever it changes, so a role is
     /// granted or taken back while the workspace runs.
@@ -698,237 +677,6 @@ impl Removals {
     /// now.
     fn taken_in(&self, members: &[tilo_peer_state::GovernedMember]) -> Vec<[u8; 32]> {
         newly_removed(&mut self.lock().seen, members)
-    }
-}
-
-/// What an [`OperatorCommand::WaitList`] carries.
-struct WaitListAsk {
-    request: String,
-    contact: String,
-    removal_sha256: String,
-    confirm_sha256: Option<String>,
-    language: String,
-}
-
-/// Keep the request someone left at the door without an invitation, while
-/// the workspace takes people by invitation and keeps a wait list.
-async fn answer_wait_list(
-    context: &PersistentRoom,
-    governance: &Governance,
-    ask: WaitListAsk,
-) -> OperatorEvent {
-    let WaitListAsk {
-        request,
-        contact,
-        removal_sha256,
-        confirm_sha256,
-        language,
-    } = ask;
-    let refused = |reason: String, full: bool| OperatorEvent::WaitListRefused {
-        request: request.clone(),
-        reason,
-        full,
-    };
-    if !governance.members_only || governance.wait_list_max == 0 {
-        return refused("the workspace keeps no wait list".into(), false);
-    }
-    let Some(removal) = hex32(&removal_sha256) else {
-        return refused("the removal digest must be 64 hex characters".into(), false);
-    };
-    let confirm = match confirm_sha256.as_deref().map(hex32) {
-        None => None,
-        Some(Some(confirm)) => Some(confirm),
-        Some(None) => {
-            return refused(
-                "the confirmation digest must be 64 hex characters".into(),
-                false,
-            );
-        }
-    };
-    let secrets = tilo_relay::workspaces::WaitListSecrets { removal, confirm };
-    match context
-        .workspaces
-        .wait(
-            &context.workspace,
-            &contact,
-            secrets,
-            &language,
-            governance.wait_list_max,
-        )
-        .await
-    {
-        Ok(WaitListed::Added { mail }) => OperatorEvent::WaitListed {
-            request,
-            added: true,
-            mail,
-        },
-        Ok(WaitListed::Already { mail }) => OperatorEvent::WaitListed {
-            request,
-            added: false,
-            mail,
-        },
-        Ok(WaitListed::Full) => refused("the wait list is full".into(), true),
-        Err(error) => refused(error.to_string(), false),
-    }
-}
-
-fn mailbox(mailbox: tilo_relay::workspaces::Mailbox) -> operator::WaitListMailbox {
-    operator::WaitListMailbox {
-        contact: mailbox.contact,
-        language: mailbox.language,
-    }
-}
-
-/// Take off the wait list the entry whose removal secret hashes to
-/// `removal_sha256`, for whoever left it: answered alike whether or not
-/// one did.
-async fn answer_unlist(
-    context: &PersistentRoom,
-    request: String,
-    removal_sha256: &str,
-) -> OperatorEvent {
-    let Some(removal) = hex32(removal_sha256) else {
-        return OperatorEvent::WaitListFailed {
-            request,
-            reason: "the removal digest must be 64 hex characters".into(),
-        };
-    };
-    match context
-        .workspaces
-        .leave_wait_list_for_operator(&context.workspace, removal)
-        .await
-    {
-        Ok((told, contact)) => OperatorEvent::Unlisted {
-            request,
-            told: told.map(mailbox),
-            contact_sha256: contact.map(hex::encode),
-        },
-        Err(error) => OperatorEvent::WaitListFailed {
-            request,
-            reason: error.to_string(),
-        },
-    }
-}
-
-/// Confirm the entry whose confirmation secret hashes to `confirm_sha256`.
-async fn answer_confirm(
-    context: &PersistentRoom,
-    request: String,
-    confirm_sha256: &str,
-) -> OperatorEvent {
-    let Some(confirm) = hex32(confirm_sha256) else {
-        return OperatorEvent::WaitListFailed {
-            request,
-            reason: "the confirmation digest must be 64 hex characters".into(),
-        };
-    };
-    match context
-        .workspaces
-        .confirm_wait_list(&context.workspace, confirm)
-        .await
-    {
-        Ok(confirmed) => OperatorEvent::Confirmed { request, confirmed },
-        Err(error) => OperatorEvent::WaitListFailed {
-            request,
-            reason: error.to_string(),
-        },
-    }
-}
-
-/// Where the entry whose removal secret hashes to `removal_sha256` stands.
-async fn answer_standing(
-    context: &PersistentRoom,
-    request: String,
-    removal_sha256: &str,
-) -> OperatorEvent {
-    let Some(removal) = hex32(removal_sha256) else {
-        return OperatorEvent::WaitListFailed {
-            request,
-            reason: "the removal digest must be 64 hex characters".into(),
-        };
-    };
-    match context
-        .workspaces
-        .wait_list_standing(&context.workspace, removal)
-        .await
-    {
-        Ok(standing) => OperatorEvent::Standing { request, standing },
-        Err(error) => OperatorEvent::WaitListFailed {
-            request,
-            reason: error.to_string(),
-        },
-    }
-}
-
-/// The answer to a command about the wait list.
-async fn answer_wait_list_command(
-    context: &PersistentRoom,
-    governance: &Governance,
-    command: OperatorCommand,
-) -> OperatorEvent {
-    match command {
-        OperatorCommand::WaitList {
-            request,
-            contact,
-            removal_sha256,
-            confirm_sha256,
-            language,
-        } => {
-            let ask = WaitListAsk {
-                request,
-                contact,
-                removal_sha256,
-                confirm_sha256,
-                language,
-            };
-            answer_wait_list(context, governance, ask).await
-        }
-        OperatorCommand::Unlist {
-            request,
-            removal_sha256,
-        } => answer_unlist(context, request, &removal_sha256).await,
-        OperatorCommand::Confirm {
-            request,
-            confirm_sha256,
-        } => answer_confirm(context, request, &confirm_sha256).await,
-        OperatorCommand::Standing {
-            request,
-            removal_sha256,
-        } => answer_standing(context, request, &removal_sha256).await,
-        _ => OperatorEvent::WaitListFailed {
-            request: String::new(),
-            reason: "not a wait-list command".into(),
-        },
-    }
-}
-
-/// The event that has the operator mail an invitation a member asked for.
-fn invite_mail(
-    mail: tilo_relay::workspaces::WaitListMail,
-    request: String,
-) -> (OperatorEvent, tokio::sync::oneshot::Sender<bool>) {
-    (
-        OperatorEvent::InviteMail {
-            request,
-            to: mailbox(mail.to),
-            link: mail.link,
-            removal: hex::encode(mail.removal),
-        },
-        mail.queued,
-    )
-}
-
-type MailAcks = std::collections::BTreeMap<String, tokio::sync::oneshot::Sender<bool>>;
-
-fn publish_invite_mail(asked: tilo_relay::workspaces::WaitListMail, mail_acks: &mut MailAcks) {
-    mail_acks.retain(|_, sender| !sender.is_closed());
-    if mail_acks.len() >= 512 {
-        let _ = asked.queued.send(false);
-    } else {
-        let request = hex::encode(rand::random::<[u8; 32]>());
-        let (event, queued) = invite_mail(asked, request.clone());
-        mail_acks.insert(request, queued);
-        println!("{}", event.to_line());
     }
 }
 
@@ -1639,9 +1387,6 @@ pub(crate) async fn run(
         roles_file: persistent.roles_file.clone(),
         inactive_after_mins: persistent.inactive_after_days.saturating_mul(24 * 60),
         state: state.clone(),
-        members_only: persistent.members_only,
-        wait_list_max: persistent.wait_list_max,
-        wait_list_mail: persistent.wait_list_mail.clone(),
     };
     let result = tokio::select! {
         result = serve_operator(&context, &governance, &mut operator) => result,
@@ -1668,12 +1413,6 @@ struct Governance {
     roles_file: Option<PathBuf>,
     inactive_after_mins: u64,
     state: PathBuf,
-    /// The workspace takes people by invitation (`--members-only`).
-    members_only: bool,
-    /// Requests left at the door it keeps (`--wait-list-max`).
-    wait_list_max: usize,
-    /// The door whoever runs it sends mail from (`--wait-list-mail`).
-    wait_list_mail: Option<String>,
 }
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -1836,16 +1575,6 @@ async fn prune_idle(
             last_seen.remove(key);
         }
     }
-    // Addresses left at the door and not confirmed in time go too, also
-    // while nobody touches the wait list.
-    if governance.wait_list_max > 0
-        && let Err(error) = context
-            .workspaces
-            .expire_wait_list(&context.workspace)
-            .await
-    {
-        tracing::warn!("the wait list kept unconfirmed addresses: {error}");
-    }
     governance.write_last_seen(last_seen)
 }
 
@@ -1938,22 +1667,11 @@ async fn serve_operator(
     // grants or takes back reaches the workspace without a restart.
     let mut roles_tick = tokio::time::interval(Duration::from_secs(ROLES_FILE_EVERY_SECS));
     let mut roles_seen = governance.roles_changed_at();
-    let mut mail_acks = MailAcks::new();
-    let mut mail = governance
-        .wait_list_mail
-        .as_ref()
-        .and_then(|door| context.workspaces.mail_wait_list(door));
     // A deployment that runs the room without an operator leaves its input at
     // its end: the room then keeps serving, and only a command ends it.
     let mut operator_open = true;
     loop {
         tokio::select! {
-            Some(asked) = async {
-                match mail.as_mut() {
-                    Some(mail) => mail.recv().await,
-                    None => std::future::pending().await,
-                }
-            } => publish_invite_mail(asked, &mut mail_acks),
             _ = roles_tick.tick(), if governance.roles_file.is_some() => {
                 let changed_at = governance.roles_changed_at();
                 if changed_at != roles_seen {
@@ -1985,17 +1703,6 @@ async fn serve_operator(
                     tracing::info!(
                         "the operator closed its input; the workspace keeps serving"
                     );
-                }
-                Some(Ok(command @ (OperatorCommand::WaitList { .. }
-                | OperatorCommand::Unlist { .. }
-                | OperatorCommand::Confirm { .. }
-                | OperatorCommand::Standing { .. }))) => {
-                    println!("{}", answer_wait_list_command(context, governance, command).await.to_line());
-                }
-                Some(Ok(OperatorCommand::InviteMailQueued { request, queued })) => {
-                    if let Some(sender) = mail_acks.remove(&request) {
-                        let _ = sender.send(queued);
-                    }
                 }
                 Some(Ok(OperatorCommand::Admit { .. })) => bail!("a persistent workspace admits guests through its door"),
                 Some(Ok(OperatorCommand::Shutdown {})) => return Ok(()),
@@ -2287,7 +1994,7 @@ mod tests {
                     role: WorkspaceRole::Editor,
                     expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3600 * NS_PER_SEC),
                     inviter_name: Some("Member".into()),
-                    wait_list_entry: None,
+                    retired_wait_list_entry: None,
                     recipient: None,
                 },
             )

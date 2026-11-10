@@ -1187,9 +1187,6 @@ impl Workspaces {
         };
         if committed {
             self.settle(workspace).await?;
-            // Someone invited from the wait list is in now: their entry
-            // leaves it.
-            workspace.forget_joined_wait_list();
             // The person whose own workspace this is administers it from
             // their first device on.
             let owner = self

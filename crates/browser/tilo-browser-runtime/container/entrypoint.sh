@@ -9,8 +9,8 @@
 #                       problems to, optional (unset: reports are not offered)
 #   TILO_WEB_HOME_DOOR  the door everyone joins it through: an https:// address
 #                       ending in /, which the door's own paths hang off
-#                       (`join` and `errors`; a host's `presence` and wait list
-#                       too, where it serves one). Unset: its people reconnect
+#                       (`join` and `errors`; a host's `presence` too, where
+#                       it serves one). Unset: its people reconnect
 #                       and others need an invitation, as for a workspace its
 #                       host does not list. A workspace a relay lists has its
 #                       door at

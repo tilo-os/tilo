@@ -14,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Version of this protocol, announced in [`OperatorEvent::Started`].
-pub const VERSION: u16 = 5;
+pub const VERSION: u16 = 6;
 
 /// The child reports [`OperatorEvent::Online`] at most this often, and only
 /// when the numbers changed, so a busy workspace does not flood the service.
@@ -55,62 +55,6 @@ pub enum OperatorCommand {
     /// Stop the workspace. A struct variant, so `deny_unknown_fields` holds for
     /// it too (serde ignores extra fields on a tagged unit variant).
     Shutdown {},
-    /// Keep the request of someone who asked at the door of a persistent
-    /// workspace that takes people by invitation, without one: the address
-    /// `contact` ([`crate::workspaces::contact_address`]) its answer goes to. The
-    /// workspace keeps it on its wait list for whoever may invite. The
-    /// child answers [`OperatorEvent::WaitListed`] or
-    /// [`OperatorEvent::WaitListRefused`] for the same `request`.
-    WaitList {
-        /// The service's name for this command's answer (hex), so two
-        /// visitors leaving one address are each answered.
-        request: String,
-        contact: String,
-        /// SHA-256 (hex) of the secret the service hands the visitor
-        /// ([`crate::workspaces::WAIT_LIST_REMOVAL_BYTES`]): whoever holds it takes
-        /// the entry off again ([`OperatorCommand::Unlist`]). The secret
-        /// itself never reaches the workspace.
-        removal_sha256: String,
-        /// SHA-256 (hex) of the secret the confirmation mail carries, when
-        /// the service sends mail: the entry stays unconfirmed, and hidden
-        /// from inviters, until it is confirmed ([`OperatorCommand::Confirm`]),
-        /// and expires unconfirmed. Without one the entry is listed at once.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        confirm_sha256: Option<String>,
-        /// The language the visitor read the door in (`en`, `de`), for the
-        /// mails the entry gets later.
-        language: String,
-    },
-    /// Take the entry whose removal secret hashes to `removal_sha256` off
-    /// the wait list, for whoever left it. The child answers
-    /// [`OperatorEvent::Unlisted`] for the same `request` whether or not an
-    /// entry had that secret, or [`OperatorEvent::WaitListFailed`].
-    Unlist {
-        /// The service's name for this command's answer (hex).
-        request: String,
-        /// SHA-256 (hex) of the removal secret.
-        removal_sha256: String,
-    },
-    /// Confirm the entry whose confirmation secret hashes to
-    /// `confirm_sha256`. The child answers [`OperatorEvent::Confirmed`] or
-    /// [`OperatorEvent::WaitListFailed`] for the same `request`.
-    Confirm {
-        /// The service's name for this command's answer (hex).
-        request: String,
-        /// SHA-256 (hex) of the confirmation secret.
-        confirm_sha256: String,
-    },
-    /// Where the entry whose removal secret hashes to `removal_sha256`
-    /// stands, for whoever left it. The child answers [`OperatorEvent::Standing`]
-    /// or [`OperatorEvent::WaitListFailed`] for the same `request`.
-    Standing {
-        /// The service's name for this command's answer (hex).
-        request: String,
-        /// SHA-256 (hex) of the removal secret.
-        removal_sha256: String,
-    },
-    /// Acknowledge durable enqueue of an invitation, not provider delivery.
-    InviteMailQueued { request: String, queued: bool },
 }
 
 /// What the workspace relay reports to the workspace service.
@@ -175,109 +119,6 @@ pub enum OperatorEvent {
         /// The removal is a ban.
         banned: bool,
     },
-    /// The workspace keeps the request of an [`OperatorCommand::WaitList`]:
-    /// `added`, or it kept one for that address already.
-    WaitListed {
-        /// The command's `request`.
-        request: String,
-        added: bool,
-        /// Mail the address the confirmation link now: the command carried
-        /// a confirmation digest, and the address was not mailed within the
-        /// hour.
-        #[serde(default, skip_serializing_if = "is_false")]
-        mail: bool,
-    },
-    /// An [`OperatorCommand::WaitList`] the workspace did not keep.
-    WaitListRefused {
-        /// The command's `request`.
-        request: String,
-        /// Why, for the operator's log.
-        reason: String,
-        /// The workspace keeps as many such requests as it takes already: the
-        /// door says so, rather than that it failed.
-        #[serde(default, skip_serializing_if = "is_false")]
-        full: bool,
-    },
-    /// An [`OperatorCommand::Unlist`] was done: no entry has that removal
-    /// secret now. Whether one had it is not said to whoever asked.
-    Unlisted {
-        /// The command's `request`.
-        request: String,
-        /// Where to tell that the address left the list: an entry had that
-        /// secret, and its address had been confirmed.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        told: Option<WaitListMailbox>,
-        /// Relay-private SHA-256 of `workspaces::contact_key`, even for a pending
-        /// entry, so the door can cancel its queued mail and receipts. Never
-        /// returned by the door's public removal endpoint.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        contact_sha256: Option<String>,
-    },
-    /// An [`OperatorCommand::Unlist`], [`OperatorCommand::Confirm`] or
-    /// [`OperatorCommand::Standing`] the workspace could not do.
-    WaitListFailed {
-        /// The command's `request`.
-        request: String,
-        /// Why, for the operator's log.
-        reason: String,
-    },
-    /// The answer to an [`OperatorCommand::Confirm`]: whether an entry had
-    /// that confirmation secret (it is listed now), or none did (it was
-    /// taken off, or not confirmed in time).
-    Confirmed {
-        /// The command's `request`.
-        request: String,
-        confirmed: bool,
-    },
-    /// The answer to an [`OperatorCommand::Standing`].
-    Standing {
-        /// The command's `request`.
-        request: String,
-        standing: WaitListStanding,
-    },
-    /// Someone who may invite asked the workspace to mail an invitation to a
-    /// confirmed wait-list entry: send it, from the workspace's door.
-    InviteMail {
-        request: String,
-        to: WaitListMailbox,
-        /// The invitation's web link, on the workspace's own door.
-        link: String,
-        /// A secret (hex) that takes the entry off the list, for the mail's
-        /// removal link; the workspace keeps only its SHA-256.
-        removal: String,
-    },
-}
-
-/// Where a mail about a wait-list entry goes.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WaitListMailbox {
-    /// The address, as typed.
-    pub contact: String,
-    /// The language the mail is in (`en` or `de`).
-    pub language: String,
-}
-
-impl std::fmt::Debug for WaitListMailbox {
-    /// Without the address, which no log names.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WaitListMailbox")
-            .field("language", &self.language)
-            .finish_non_exhaustive()
-    }
-}
-
-/// Where a request left at the door stands, for whoever left it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum WaitListStanding {
-    /// Left, its address not confirmed yet.
-    Pending,
-    /// On the list.
-    Listed,
-    /// On the list, and invited.
-    Invited,
-    /// Not on the list (taken off, joined, or never confirmed).
-    Gone,
 }
 
 /// Why an admitted pairing code certified nobody.
@@ -375,15 +216,6 @@ fn is_zero(count: &u32) -> bool {
     *count == 0
 }
 
-/// Whether a flag is unset, which the line leaves out.
-#[allow(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "serde's skip_serializing_if hands the field by reference"
-)]
-fn is_false(flag: &bool) -> bool {
-    !*flag
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,84 +275,12 @@ mod tests {
                 user_public_key: "cd".repeat(32),
                 banned: true,
             },
-            OperatorEvent::WaitListed {
-                request: "12".repeat(32),
-                added: true,
-                mail: true,
-            },
-            OperatorEvent::WaitListRefused {
-                request: "12".repeat(32),
-                reason: "the wait list is full".into(),
-                full: true,
-            },
-            OperatorEvent::Unlisted {
-                contact_sha256: None,
-                request: "12".repeat(32),
-                told: Some(WaitListMailbox {
-                    contact: "Ada@example.org".into(),
-                    language: "de".into(),
-                }),
-            },
-            OperatorEvent::WaitListFailed {
-                request: "12".repeat(32),
-                reason: "disk full".into(),
-            },
-            OperatorEvent::Confirmed {
-                request: "12".repeat(32),
-                confirmed: true,
-            },
-            OperatorEvent::Standing {
-                request: "12".repeat(32),
-                standing: WaitListStanding::Invited,
-            },
-            OperatorEvent::InviteMail {
-                request: "ab".repeat(32),
-                to: WaitListMailbox {
-                    contact: "Ada@example.org".into(),
-                    language: "en".into(),
-                },
-                link: "https://tilo.example/?invite=AAEC".into(),
-                removal: "cd".repeat(32),
-            },
         ]
     }
 
     #[test]
-    fn protocol_five_round_trips_and_pins_its_wire_form() {
-        assert_eq!(VERSION, 5);
-        let wait = OperatorCommand::WaitList {
-            request: "12".repeat(32),
-            contact: "Ada@example.org".into(),
-            removal_sha256: "ab".repeat(32),
-            confirm_sha256: Some("cd".repeat(32)),
-            language: "de".into(),
-        };
-        assert_eq!(
-            wait.to_line(),
-            format!(
-                "{{\"op\":\"wait_list\",\"request\":\"{}\",\"contact\":\"Ada@example.org\",\"removal_sha256\":\"{}\",\"confirm_sha256\":\"{}\",\"language\":\"de\"}}\n",
-                "12".repeat(32),
-                "ab".repeat(32),
-                "cd".repeat(32)
-            )
-        );
-        assert_eq!(OperatorCommand::from_line(&wait.to_line()).unwrap(), wait);
-        let unlist = OperatorCommand::Unlist {
-            request: "12".repeat(32),
-            removal_sha256: "ab".repeat(32),
-        };
-        assert_eq!(
-            unlist.to_line(),
-            format!(
-                "{{\"op\":\"unlist\",\"request\":\"{}\",\"removal_sha256\":\"{}\"}}\n",
-                "12".repeat(32),
-                "ab".repeat(32)
-            )
-        );
-        assert_eq!(
-            OperatorCommand::from_line(&unlist.to_line()).unwrap(),
-            unlist
-        );
+    fn protocol_six_round_trips_and_pins_its_wire_form() {
+        assert_eq!(VERSION, 6);
         for event in current_events() {
             assert_eq!(OperatorEvent::from_line(&event.to_line()).unwrap(), event);
         }
@@ -533,74 +293,6 @@ mod tests {
             }
             .to_line(),
             "tilo-room-operator {\"event\":\"online\",\"people\":7}"
-        );
-    }
-
-    #[test]
-    fn wait_list_confirmations_and_standings_round_trip_and_name_no_address_in_a_log() {
-        for command in [
-            OperatorCommand::InviteMailQueued {
-                request: "12".repeat(32),
-                queued: false,
-            },
-            OperatorCommand::InviteMailQueued {
-                request: "12".repeat(32),
-                queued: true,
-            },
-            OperatorCommand::Confirm {
-                request: "12".repeat(32),
-                confirm_sha256: "cd".repeat(32),
-            },
-            OperatorCommand::Standing {
-                request: "12".repeat(32),
-                removal_sha256: "ab".repeat(32),
-            },
-        ] {
-            assert_eq!(
-                OperatorCommand::from_line(&command.to_line()).unwrap(),
-                command
-            );
-        }
-        assert_eq!(
-            OperatorEvent::Standing {
-                request: "12".repeat(32),
-                standing: WaitListStanding::Pending,
-            }
-            .to_line(),
-            format!(
-                "tilo-room-operator {{\"event\":\"standing\",\"request\":\"{}\",\"standing\":\"pending\"}}",
-                "12".repeat(32)
-            )
-        );
-        let mailbox = WaitListMailbox {
-            contact: "Ada@example.org".into(),
-            language: "en".into(),
-        };
-        assert!(
-            !format!("{mailbox:?}").contains("Ada"),
-            "a mailbox is never logged with its address"
-        );
-    }
-
-    #[test]
-    fn pending_removal_contact_digest_round_trips_only_on_the_private_operator_wire() {
-        let event = OperatorEvent::Unlisted {
-            request: "12".repeat(32),
-            told: None,
-            contact_sha256: Some("ab".repeat(32)),
-        };
-        assert_eq!(OperatorEvent::from_line(&event.to_line()).unwrap(), event);
-        let old = format!(
-            "tilo-room-operator {{\"event\":\"unlisted\",\"request\":\"{}\"}}",
-            "12".repeat(32)
-        );
-        assert_eq!(
-            OperatorEvent::from_line(&old).unwrap(),
-            OperatorEvent::Unlisted {
-                request: "12".repeat(32),
-                told: None,
-                contact_sha256: None,
-            }
         );
     }
 

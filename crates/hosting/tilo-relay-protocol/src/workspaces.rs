@@ -282,11 +282,10 @@ pub enum WorkspacesRequest {
         /// How the inviting person names themself; the invitation records
         /// it with their user root.
         inviter_name: Option<String>,
-        /// The wait-list entry ([`WaitListEntry::request_id`]) the invitation
-        /// answers: the entry shows it was invited, and leaves the list
-        /// once someone joins with the invitation.
+        /// Retired: a workspace keeps no wait list. Always `None`; it keeps the
+        /// fields after it at their encoded positions.
         #[serde(default)]
-        wait_list_entry: Option<[u8; 32]>,
+        retired_wait_list_entry: Option<[u8; 32]>,
         /// The one person the invitation names, by their user root, when the
         /// inviter knows who they are inviting: only a device of theirs
         /// redeems it, and a workspace taking people by invitation answers
@@ -383,36 +382,13 @@ pub enum WorkspacesRequest {
         /// (`workspace:<id>/app:<app>/…`).
         node: String,
     },
-    /// The addresses left at `workspace`'s door, oldest first: answered with
-    /// [`WorkspacesReply::WaitList`]. Whoever may invite.
-    WaitList {
-        #[serde(rename = "room")]
-        workspace: String,
-    },
-    /// Take an address left at `workspace`'s door off its wait list, when it
-    /// is not to be invited: answered with [`WorkspacesReply::WaitList`]. An entry
-    /// invited ([`WorkspacesRequest::Invite`]'s `wait_list_entry`) leaves the
-    /// list by itself once someone joins with that invitation.
-    Unlist {
-        #[serde(rename = "room")]
-        workspace: String,
-        /// The entry.
-        request_id: [u8; 32],
-    },
-    /// Mail the invitation `link` to the wait-list entry `wait_list_entry`
-    /// it was issued for ([`WorkspacesRequest::Invite`]'s `wait_list_entry`):
-    /// answered with [`WorkspacesReply::WaitList`], or refused where the workspace
-    /// sends no mail, when the page shares the link itself.
-    MailInvite {
-        #[serde(rename = "room")]
-        workspace: String,
-        /// The confirmed entry.
-        wait_list_entry: [u8; 32],
-        /// The invitation's web link: the site's short link,
-        /// `https://<site>/i/<handle>#<key>`, which keeps the invitation as
-        /// ciphertext the site cannot read.
-        link: String,
-    },
+    /// Retired: a workspace keeps no wait list. It keeps the requests after it
+    /// at their encoded positions.
+    RetiredWaitList {},
+    /// Retired with [`WorkspacesRequest::RetiredWaitList`].
+    RetiredUnlist {},
+    /// Retired with [`WorkspacesRequest::RetiredWaitList`].
+    RetiredMailInvite {},
     /// Share one record, or one item of it, with `workspace`'s members, as the
     /// calling device's person: answered with [`WorkspacesReply::Shared`], how
     /// many grants the share holds. The members below the owner get what
@@ -488,8 +464,9 @@ pub enum WorkspacesReply {
     Notices(Vec<WorkspaceNotice>),
     /// Whether the caller may, for [`WorkspacesRequest::Permits`].
     Permits(bool),
-    /// The requests left at the door, oldest first.
-    WaitList(Vec<WaitListEntry>),
+    /// Retired with [`WorkspacesRequest::RetiredWaitList`]; it keeps the
+    /// replies after it at their encoded positions.
+    RetiredWaitList,
     /// How many grants a [`WorkspacesRequest::Share`] holds, or a
     /// [`WorkspacesRequest::Unshare`] revoked.
     Shared(u32),
@@ -597,18 +574,11 @@ pub enum JoinReply {
     Refused(String),
 }
 
-// Requests left at the door. A workspace that takes people by invitation also
-// keeps the requests of people who asked at its door without one, each an
-// address to be invited at ([`WaitListEntry`]).
-
-/// The longest address a request left at the door gives ([`WaitListEntry`]):
-/// the longest an email address can be.
+/// The longest email address ([`contact_address`]).
 pub const MAX_CONTACT_CHARS: usize = 254;
 
-/// `text` as the address a request left at a workspace's door keeps
-/// ([`WaitListEntry`]): an email address, trimmed and otherwise as typed,
-/// since that is how its owner writes it. One address is one request
-/// however it was typed: requests are told apart by [`contact_key`].
+/// `text` as an email address: trimmed and otherwise as typed, since that is
+/// how its owner writes it.
 ///
 /// # Errors
 ///
@@ -637,89 +607,6 @@ pub fn contact_address(text: &str) -> Result<String, &'static str> {
     }
 }
 
-/// The longest invitation link a door mails: an invitation carries its
-/// signed certificate chain, a few KiB once encoded.
-pub const MAX_INVITATION_LINK: usize = 16 * 1024;
-
-/// Whether `link` is an invitation on the web entry `door` (a URL ending
-/// in `/`): under it, either as an `invite=` parameter or as the site's own
-/// short invitation (`i/<handle>#<key>`, the key in the fragment), no longer
-/// than [`MAX_INVITATION_LINK`] and without spaces or control characters.
-/// Only such a link is mailed to an address on a wait list for a member.
-#[must_use]
-pub fn invitation_on_door(door: &str, link: &str) -> bool {
-    door.ends_with('/')
-        && link.len() <= MAX_INVITATION_LINK
-        && link
-            .strip_prefix(door)
-            .is_some_and(|rest| rest.contains("invite=") || short_invitation(rest))
-        && !link.chars().any(|c| c.is_whitespace() || c.is_control())
-}
-
-/// Whether `rest`, a link minus its door, is the site's short invitation:
-/// `i/<handle>#<key>`, both in the site's own alphabet and nothing else.
-fn short_invitation(rest: &str) -> bool {
-    let Some((handle, key)) = rest
-        .strip_prefix("i/")
-        .and_then(|rest| rest.split_once('#'))
-    else {
-        return false;
-    };
-    let named = |part: &str, longest: usize| {
-        !part.is_empty()
-            && part.len() <= longest
-            && part
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    };
-    named(handle, 64) && named(key, 128)
-}
-
-/// What tells two addresses ([`contact_address`]) apart: lowercased, so
-/// `Ada@Example.org` and `ada@example.org` are one request.
-#[must_use]
-pub fn contact_key(address: &str) -> String {
-    address.trim().to_lowercase()
-}
-
-/// The language mails to an address left at the door are in, for the
-/// language tag its page was read in: `de` for German, otherwise `en`.
-#[must_use]
-pub fn mail_language(tag: &str) -> &'static str {
-    let primary = tag.split(['-', '_']).next().unwrap_or_default();
-    if primary.eq_ignore_ascii_case("de") {
-        "de"
-    } else {
-        "en"
-    }
-}
-
-/// The bytes of the secret that takes a request left at a workspace's door off
-/// its wait list again: random, handed only to whoever left it. The workspace
-/// keeps only its SHA-256.
-pub const WAIT_LIST_REMOVAL_BYTES: usize = 32;
-
-/// A request left at the door of a workspace that takes people by invitation:
-/// someone who has no invitation, and so no identity the workspace knows yet,
-/// left an address to be invited at. Someone who may invite sends an
-/// invitation of their own there ([`WorkspacesRequest::Invite`] naming the
-/// entry), and the entry leaves the list once someone joins with it; or
-/// they take it off the list ([`WorkspacesRequest::Unlist`]). Whoever left it
-/// takes it off themselves with the secret they were handed
-/// ([`WAIT_LIST_REMOVAL_BYTES`]). It names no person
-/// or device: it is not anyone to admit, only an address to invite.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WaitListEntry {
-    /// The entry, for [`WorkspacesRequest::Unlist`].
-    pub request_id: [u8; 32],
-    /// The address ([`contact_address`]).
-    pub contact: String,
-    /// When it was left.
-    pub added_at_ns: u64,
-    /// When it was last invited, so nobody invites it twice.
-    pub invited_at_ns: Option<u64>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -733,41 +620,10 @@ mod tests {
     }
 
     #[test]
-    fn a_mailed_invitation_is_on_the_door() {
-        let door = "https://tilo.example/";
-        assert!(invitation_on_door(
-            door,
-            "https://tilo.example/#/room?invite=signed-invitation"
-        ));
-        assert!(invitation_on_door(
-            door,
-            "https://tilo.example/i/AbCdEfGhIjKlMnOp#s3cr3tKeyS3cr3tKey"
-        ));
-        for elsewhere in [
-            "https://tilo.example/i/#",
-            "https://tilo.example/i/handle",
-            "https://tilo.example/i/handle#",
-            "https://tilo.example//i/handle#key",
-            "https://tilo.example/i/han dle#key",
-            "https://elsewhere.example/i/handle#key",
-        ] {
-            assert!(!invitation_on_door(door, elsewhere), "{elsewhere:?}");
-        }
-    }
-
-    #[test]
-    fn a_contact_is_one_email_address_however_it_was_typed() {
+    fn a_contact_is_one_email_address_as_typed() {
         assert_eq!(
             contact_address("  Ada@Example.ORG "),
             Ok("Ada@Example.ORG".to_owned())
-        );
-        assert_eq!(contact_key("Ada@Example.ORG"), "ada@example.org");
-        assert_eq!(mail_language("de-AT"), "de");
-        assert_eq!(mail_language("en-US"), "en");
-        assert_eq!(mail_language("fr"), "en");
-        assert_eq!(
-            contact_key(" ada@example.org"),
-            contact_key("ADA@example.org")
         );
         assert_eq!(
             contact_address("ada+tilo@mail.example.co.uk"),

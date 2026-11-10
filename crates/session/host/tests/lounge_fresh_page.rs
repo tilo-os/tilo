@@ -345,7 +345,7 @@ impl Lounge {
                 role: WorkspaceRole::Editor,
                 expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
                 inviter_name: Some("The Lounge".into()),
-                wait_list_entry: None,
+                retired_wait_list_entry: None,
                 recipient: Some(to.root.verifying_key().to_bytes()),
             },
             Box::new(move |result| {

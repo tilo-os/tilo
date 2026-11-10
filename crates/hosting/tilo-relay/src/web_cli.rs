@@ -1106,17 +1106,6 @@ async fn approve_admitted(
                     admissions.admit(pairing_code, tokio::time::Instant::now());
                 }
                 Some(Ok(OperatorCommand::Shutdown {})) | None => return Ok(()),
-                Some(Ok(
-                    OperatorCommand::WaitList { .. }
-                    | OperatorCommand::Unlist { .. }
-                    | OperatorCommand::Confirm { .. }
-                    | OperatorCommand::Standing { .. }
-                    | OperatorCommand::InviteMailQueued { .. },
-                )) => {
-                    // Not the command itself: a wait-list command carries an
-                    // email address, which no log keeps.
-                    anyhow::bail!("a short-lived workspace takes no command but admit and shutdown");
-                }
                 Some(Err(error)) => {
                     tracing::error!(%error, "unreadable workspace operator line");
                     anyhow::bail!("unreadable workspace operator line: {error}");

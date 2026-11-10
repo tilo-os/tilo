@@ -6,8 +6,6 @@ import {AdmissionError} from './admission.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 
 const USER = 'aa'.repeat(32);
-/** The short link the page's site keeps an invitation under. */
-const SEALED = 'https://web.example/i/AbCdEfGhIjKlMnOp#s3cr3tKeyS3cr3tKeyS3cr3tKeyS3cr3tKeyS3cr';
 const ORIGIN = 'https://node.example';
 const tick = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
 
@@ -47,9 +45,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
   const peer = {origin: ORIGIN, workspace: 'current', userPublicKey: USER,
     host: {hostCert: {user_public_key: Array(32).fill(170), device_public_key: Array(32).fill(0xcd)}},
     createInvitation: async () => { calls.push('invite'); return 'signed-secret'; },
-    // A member, not the owner, of a host that keeps its wait list to whoever
-    // it lets invite.
-    membership: {list: async () => ({name: 'Current', members: []}), waitList: async () => { throw new Error('only someone the room lets invite lists the wait list'); }},
+    membership: {list: async () => ({name: 'Current', members: []})},
     workspaces: {create: async name => ({room: 'created', name}), enter: async () => calls.push('enter')},
     dispose: async () => calls.push('dispose')};
   const page = {peer: own ? null : {...peer, ...member}, entry: {base: 'https://web.example/'},
@@ -61,10 +57,6 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     presenceColor: id => {
       calls.push(['colour', id]);
       return '#ffd166';
-    },
-    sealedInvitationLink: async (base, host, invitation) => {
-      calls.push(['sealed', base, host, invitation]);
-      return SEALED;
     },
     // The rules of the list are the runtime's (tilo-session-host's `entered`,
     // tested there); these keep only what the page's steps here rely on.
@@ -206,32 +198,6 @@ test('the invitation a link opens says who invited them, to what and as what, be
   assert.deepEqual(declined.role, ['Viewer', ' — you can view shared work, but not comment or edit it.']);
   assert.equal(notNow, false, 'Not now does not join');
   assert.equal(cards().length, 0, 'either answer closes the card');
-});
-
-test('a wait-list invitation is the short link its site keeps, not the invitation’s text', async () => {
-  const ed = {requestId: '05'.repeat(32), contact: 'ed@example.org', addedAtMs: 1_000};
-  const {calls, diagnostics} = await fixture({member: {
-    createInvitation: async () => 'SIGNED-invitation',
-    membership: {list: async () => ({name: 'Current', members: []}),
-      waitList: async () => [ed], unlist: async () => {}, mailInvite: async () => { throw new Error('this door sends no mail'); }},
-  }});
-  diagnostics.onHostAction('waiting-to-join');
-  await tick();
-  const waiting = document.body.children.find(form => form.dataset.card === 'waiting');
-  assert.ok(waiting, 'the wait list is shown');
-  // The listed section’s rows: one per address, each Invite then Remove.
-  const row = waiting.children[1].children[2].children[0];
-  assert.equal(row.children[1].textContent, 'Invite');
-  row.children[1].listeners.get('click')();
-  await tick();
-  assert.deepEqual(calls.filter(call => Array.isArray(call) && call[0] === 'sealed'),
-    [['sealed', 'https://web.example/', ORIGIN, 'SIGNED-invitation']],
-    'the invitation is sealed onto the page’s own site, naming the host it admits into');
-  const share = document.body.children.find(form => form.dataset.card === 'share');
-  assert.ok(share, 'a door that sends no mail shares the link instead');
-  assert.equal(share.children.find(child => child.name === 'link').value, SEALED,
-    'what the inviter sends is the short link, not the invitation’s text');
-  assert.match(share.children[1].textContent, /as an editor/);
 });
 
 test('workspaces another host held at the origin of the page host are no longer offered', async () => {

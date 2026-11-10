@@ -616,48 +616,6 @@ fn request_id(text: &str) -> Result<[u8; 32], JsError> {
         .map_err(|_| js_error("request id must be 32 bytes"))
 }
 
-/// The short link of `invitation` (its signed text, as the host made it) for
-/// the page at `base`: the invitation sealed under a key the link alone
-/// carries and left on that site's shelf. `host` is the origin of the host
-/// it admits into, which the link names so whoever follows it knows where the
-/// workspace is. Resolves to `https://<site>/i/<handle>#<key>`.
-///
-/// # Errors
-///
-/// `base` is not a web address, `invitation` does not verify, or the site
-/// could not be reached to keep it — the invitation's own text still works
-/// then, which the caller hands over instead.
-#[wasm_bindgen(js_name = sealedInvitationLink)]
-pub async fn sealed_invitation_link(
-    base: String,
-    host: String,
-    invitation: String,
-) -> Result<String, JsError> {
-    let origin = base.trim().trim_end_matches('/');
-    let site = tilo_workspace_directory::web_origin(&format!("{origin}/")).map_err(js_error)?;
-    let join = tilo_workspace_join::decode_and_verify_invitation_text(
-        &invitation,
-        None,
-        &RevocationList::new(),
-        ui::time::unix_now_ns(),
-    )
-    .map_err(js_error)?;
-    // The shelf this leaves it on lives as long as the invitation: the link
-    // is used, not kept, so no caller takes it back from here.
-    let store = tilo_workspace_directory::Store::default();
-    store
-        .shelve_soon(
-            &hex::encode(join.invite_id()),
-            join.signed_invitation().to_vec(),
-            join.grant().expires_at_ns,
-            &site,
-            Some(&host),
-        )
-        .await
-        .map(|shelved| shelved.link)
-        .map_err(js_error)
-}
-
 /// The invitation the link's `secret` names (its handle and the key in the
 /// link's fragment), as the page takes it: fetched from the shelf of `site`
 /// and opened with that key. An invitation's own text is answered as it came,

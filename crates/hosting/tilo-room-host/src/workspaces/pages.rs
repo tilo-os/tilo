@@ -7,10 +7,7 @@
 //! workspace's governance lets do what it asks. `/join` redeems an invitation for
 //! a device with no session yet: the invitation is the approval of whoever
 //! made it, so the page's verified redemption is admitted at once, as at every
-//! other door, or through the queue under the owner's pre-admission token. The
-//! addresses left at the door of a workspace that takes people by invitation
-//! are kept with the workspace ([`super::wait_list`]) and listed on their own
-//! ([`WorkspacesRequest::WaitList`]).
+//! other door, or through the queue under the owner's pre-admission token.
 
 use tilo_action_policy::roles::governance;
 use tilo_peer_state::join::{
@@ -19,8 +16,8 @@ use tilo_peer_state::join::{
 };
 use tilo_peer_state::join_answer::JoinAnswer;
 use tilo_relay_protocol::workspaces::{
-    Inviter, JoinReply, JoinStep, PendingInvite, PreAdmission, WaitListEntry, Workspace,
-    WorkspaceMember, WorkspaceNotice, WorkspaceRole, WorkspacesReply, WorkspacesRequest,
+    Inviter, JoinReply, JoinStep, PendingInvite, PreAdmission, Workspace, WorkspaceMember,
+    WorkspaceNotice, WorkspaceRole, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -142,12 +139,7 @@ impl Workspaces {
             }
             request @ (WorkspacesRequest::Invite { .. }
             | WorkspacesRequest::Cancel { .. }
-            | WorkspacesRequest::Pending { .. }
-            | WorkspacesRequest::WaitList { .. }
-            | WorkspacesRequest::Unlist { .. }
-            | WorkspacesRequest::MailInvite { .. }) => {
-                self.page_invitations(device, request, now).await?
-            }
+            | WorkspacesRequest::Pending { .. }) => self.page_invitations(device, request).await?,
             request @ (WorkspacesRequest::SetRole { .. }
             | WorkspacesRequest::Remove { .. }
             | WorkspacesRequest::Ban { .. }
@@ -184,16 +176,20 @@ impl Workspaces {
             | WorkspacesRequest::RetiredDecline {} => {
                 WorkspacesReply::Refused("an invitation admits by itself".into())
             }
+            // Retired: a workspace keeps no wait list.
+            WorkspacesRequest::RetiredWaitList {}
+            | WorkspacesRequest::RetiredUnlist {}
+            | WorkspacesRequest::RetiredMailInvite {} => {
+                WorkspacesReply::Refused("a workspace keeps no wait list".into())
+            }
         })
     }
 
-    /// A page's invitations to a workspace, its wait list, and what it does
-    /// with them.
+    /// A page's invitations to a workspace, and what it does with them.
     async fn page_invitations(
         &self,
         device: &DeviceCert,
         request: WorkspacesRequest,
-        now: u64,
     ) -> Result<WorkspacesReply, CollaborationError> {
         Ok(match request {
             WorkspacesRequest::Invite {
@@ -202,7 +198,7 @@ impl Workspaces {
                 role,
                 expires_at_ns,
                 inviter_name,
-                wait_list_entry,
+                retired_wait_list_entry: _,
                 recipient,
             } => {
                 let request = IssueInvitationRequest {
@@ -213,8 +209,11 @@ impl Workspaces {
                     expires_at_ns,
                     inviter_name,
                 };
-                self.page_invitation(&workspace, device, request, wait_list_entry)
-                    .await?
+                let issued = self.issue(&workspace, device, request).await?;
+                WorkspacesReply::Invitation {
+                    invite_id: issued.invite_id,
+                    signed_invitation: issued.signed_invitation,
+                }
             }
             WorkspacesRequest::Cancel {
                 workspace,
@@ -234,25 +233,6 @@ impl Workspaces {
             }
             WorkspacesRequest::Pending { workspace } => {
                 self.page_pending(&workspace, device).await?
-            }
-            WorkspacesRequest::WaitList { workspace } => {
-                WorkspacesReply::WaitList(self.wait_list(&workspace, device, now).await?)
-            }
-            WorkspacesRequest::Unlist {
-                workspace,
-                request_id,
-            } => {
-                self.unlist(&workspace, device, request_id, now).await?;
-                WorkspacesReply::WaitList(self.wait_list(&workspace, device, now).await?)
-            }
-            WorkspacesRequest::MailInvite {
-                workspace,
-                wait_list_entry,
-                link,
-            } => {
-                self.mail_invite(&workspace, device, wait_list_entry, link, now)
-                    .await?;
-                WorkspacesReply::WaitList(self.wait_list(&workspace, device, now).await?)
             }
             _ => return Err(CollaborationError::new("not an invitation")),
         })
@@ -628,52 +608,6 @@ impl Workspaces {
         Ok(WorkspacesReply::Workspaces(listed))
     }
 
-    /// Issue the invitation `request` asks; for the wait-list entry
-    /// `wait_list_entry`, noted on it, so it shows as invited and leaves the
-    /// list once someone joins with it.
-    async fn page_invitation(
-        &self,
-        workspace: &str,
-        device: &DeviceCert,
-        request: IssueInvitationRequest,
-        wait_list_entry: Option<[u8; 32]>,
-    ) -> Result<WorkspacesReply, CollaborationError> {
-        let Some(entry) = wait_list_entry else {
-            let issued = self.issue(workspace, device, request).await?;
-            return Ok(WorkspacesReply::Invitation {
-                invite_id: issued.invite_id,
-                signed_invitation: issued.signed_invitation,
-            });
-        };
-        let now = tilo_clock::unix_now_ns();
-        let issued = {
-            let governed = self.workspace(workspace).await?;
-            let mut governed = governed.lock().await;
-            self.authorize(
-                device,
-                Some(&governed),
-                WorkspaceOp::Invite(request.role.into()),
-                now,
-            )?;
-            if !governed.wait_list.has(entry, now) {
-                return Err(CollaborationError::new(
-                    "that address is no longer on the wait list",
-                ));
-            }
-            let issued = self.stage_issue(&mut governed, device, request, now)?;
-            governed
-                .wait_list
-                .invited(entry, issued.invite_id, now)
-                .map_err(CollaborationError::new)?;
-            issued
-        };
-        self.written(workspace, false).await?;
-        Ok(WorkspacesReply::Invitation {
-            invite_id: issued.invite_id,
-            signed_invitation: issued.signed_invitation,
-        })
-    }
-
     async fn page_room(&self, workspace: &str) -> Result<WorkspacesReply, CollaborationError> {
         let workspace = self.workspace(workspace).await?;
         Ok(WorkspacesReply::Workspace(page_room(
@@ -699,274 +633,6 @@ impl Workspaces {
                 })
                 .collect(),
         ))
-    }
-
-    /// The addresses left at `workspace`'s door, oldest first, for someone the
-    /// workspace lets invite.
-    async fn wait_list(
-        &self,
-        workspace: &str,
-        device: &DeviceCert,
-        now: u64,
-    ) -> Result<Vec<WaitListEntry>, CollaborationError> {
-        let governed = self.workspace(workspace).await?;
-        let mut governed = governed.lock().await;
-        self.authorize(
-            device,
-            Some(&governed),
-            WorkspaceOp::Govern(governance::INVITE),
-            now,
-        )?;
-        // Whoever joined by a way that did not take them off already.
-        governed.forget_joined_wait_list();
-        Ok(governed.wait_list.entries(now))
-    }
-
-    /// Take the address `request_id` off `workspace`'s wait list, for someone the
-    /// workspace lets invite.
-    async fn unlist(
-        &self,
-        workspace: &str,
-        device: &DeviceCert,
-        request_id: [u8; 32],
-        now: u64,
-    ) -> Result<(), CollaborationError> {
-        let governed = self.workspace(workspace).await?;
-        let mut governed = governed.lock().await;
-        self.authorize(
-            device,
-            Some(&governed),
-            WorkspaceOp::Govern(governance::INVITE),
-            now,
-        )?;
-        if !governed
-            .wait_list
-            .remove(request_id, now)
-            .map_err(CollaborationError::new)?
-        {
-            return Err(CollaborationError::new("no such address on the wait list"));
-        }
-        drop(governed);
-        tracing::info!(%workspace, "an address was taken off the wait list");
-        Ok(())
-    }
-
-    /// Mail the invitation `link` to the confirmed wait-list entry
-    /// `request_id` of `workspace`, for someone the workspace lets invite, once the
-    /// relay sends mail ([`Workspaces::mail_wait_list`]).
-    async fn mail_invite(
-        &self,
-        workspace: &str,
-        device: &DeviceCert,
-        request_id: [u8; 32],
-        link: String,
-        now: u64,
-    ) -> Result<(), CollaborationError> {
-        let Some((door, mail)) = self.inner.wait_list_mail.get() else {
-            return Err(CollaborationError::new("this door sends no mail"));
-        };
-        if !tilo_relay_protocol::workspaces::invitation_on_door(door, &link) {
-            return Err(CollaborationError::new(
-                "only an invitation on this door is mailed",
-            ));
-        }
-        let governed = self.workspace(workspace).await?;
-        let mut governed = governed.lock().await;
-        self.authorize(
-            device,
-            Some(&governed),
-            WorkspaceOp::Govern(governance::INVITE),
-            now,
-        )?;
-        let (to, removal) = governed
-            .wait_list
-            .mail_invite(request_id, now)
-            .map_err(CollaborationError::new)?
-            .map_err(CollaborationError::new)?;
-        drop(governed);
-        let (queued, accepted) = tokio::sync::oneshot::channel();
-        let sent = mail
-            .send(super::WaitListMail {
-                queued,
-                to,
-                link,
-                removal,
-            })
-            .is_ok();
-        let accepted = if sent {
-            match tokio::time::timeout(std::time::Duration::from_secs(10), accepted).await {
-                Ok(Ok(queued)) => Some(queued),
-                Ok(Err(_)) | Err(_) => None,
-            }
-        } else {
-            Some(false)
-        };
-        if accepted == Some(false) {
-            use sha2::Digest as _;
-            let mut governed = self.workspace(workspace).await?.lock_owned().await;
-            governed
-                .wait_list
-                .mail_failed(
-                    sha2::Sha256::digest(removal).into(),
-                    tilo_clock::unix_now_ns(),
-                )
-                .map_err(CollaborationError::new)?;
-            drop(governed);
-            return Err(CollaborationError::new(
-                "the door did not accept the invitation mail",
-            ));
-        }
-        if accepted.is_none() {
-            // Acceptance can precede a lost acknowledgement. Keep the
-            // reservation so an uncertain outcome cannot duplicate mail.
-            return Err(CollaborationError::new(
-                "invitation mail acceptance is uncertain; it may already be queued",
-            ));
-        }
-        tracing::info!(%workspace, "an invitation was queued for an address on the wait list");
-        Ok(())
-    }
-
-    /// Keep the request of someone who asked at `workspace`'s door without an
-    /// invitation, to be invited at `contact` (an address
-    /// [`tilo_relay_protocol::workspaces::contact_address`] accepts), while the
-    /// workspace keeps fewer than `max`. Whoever may invite sees it on the workspace's
-    /// wait list until it leaves it, once confirmed; whoever holds the
-    /// secret whose SHA-256 is `secrets.removal` takes it off
-    /// ([`Self::leave_wait_list`]), and the one whose SHA-256 is
-    /// `secrets.confirm` confirms it ([`Self::confirm_wait_list`]).
-    ///
-    /// # Errors
-    ///
-    /// Not an address, the workspace is unknown, or its wait list could not be
-    /// written.
-    pub async fn wait(
-        &self,
-        workspace: &str,
-        contact: &str,
-        secrets: super::WaitListSecrets,
-        language: &str,
-        max: usize,
-    ) -> Result<super::WaitListed, CollaborationError> {
-        let contact = tilo_relay_protocol::workspaces::contact_address(contact)
-            .map_err(CollaborationError::new)?;
-        let governed = self.workspace(workspace).await?;
-        let mut governed = governed.lock().await;
-        let kept = governed
-            .wait_list
-            .keep(&contact, secrets, language, tilo_clock::unix_now_ns(), max)
-            .map_err(CollaborationError::new)?;
-        drop(governed);
-        tracing::info!(%workspace, outcome = ?kept, "a request was left at the door");
-        Ok(kept)
-    }
-
-    /// Confirm the request whose confirmation secret has the SHA-256
-    /// `confirm` on `workspace`'s wait list: whether one had it.
-    ///
-    /// # Errors
-    ///
-    /// The workspace is unknown, or its wait list could not be written.
-    pub async fn confirm_wait_list(
-        &self,
-        workspace: &str,
-        confirm: [u8; 32],
-    ) -> Result<bool, CollaborationError> {
-        let governed = self.workspace(workspace).await?;
-        let mut governed = governed.lock().await;
-        let confirmed = governed
-            .wait_list
-            .confirm(confirm, tilo_clock::unix_now_ns())
-            .map_err(CollaborationError::new)?;
-        drop(governed);
-        if confirmed {
-            tracing::info!(%workspace, "an address on the wait list was confirmed");
-        }
-        Ok(confirmed)
-    }
-
-    /// Where the request whose removal secret has the SHA-256 `removal`
-    /// stands on `workspace`'s wait list, for whoever left it.
-    ///
-    /// # Errors
-    ///
-    /// The workspace is unknown.
-    pub async fn wait_list_standing(
-        &self,
-        workspace: &str,
-        removal: [u8; 32],
-    ) -> Result<tilo_relay_protocol::operator::WaitListStanding, CollaborationError> {
-        let governed = self.workspace(workspace).await?;
-        let mut governed = governed.lock().await;
-        governed.forget_joined_wait_list();
-        Ok(governed
-            .wait_list
-            .standing(removal, tilo_clock::unix_now_ns()))
-    }
-
-    /// Forget the addresses on `workspace`'s wait list that were not confirmed
-    /// in time.
-    ///
-    /// # Errors
-    ///
-    /// The workspace is unknown, or its wait list could not be written.
-    pub async fn expire_wait_list(&self, workspace: &str) -> Result<(), CollaborationError> {
-        let governed = self.workspace(workspace).await?;
-        let mut governed = governed.lock().await;
-        let expired = governed
-            .wait_list
-            .expire(tilo_clock::unix_now_ns())
-            .map_err(CollaborationError::new)?;
-        drop(governed);
-        if expired > 0 {
-            tracing::info!(%workspace, expired, "unconfirmed addresses left the wait list");
-        }
-        Ok(())
-    }
-
-    /// Take the request whose removal secret has the SHA-256 `removal` off
-    /// `workspace`'s wait list, for whoever left it. Answers alike whether or not
-    /// one had that secret, so the answer tells nobody what is listed; where
-    /// to tell the address it left comes back only to whoever runs the workspace,
-    /// once the address had been confirmed.
-    ///
-    /// # Errors
-    ///
-    /// The workspace is unknown, or its wait list could not be written.
-    pub async fn leave_wait_list(
-        &self,
-        workspace: &str,
-        removal: [u8; 32],
-    ) -> Result<Option<super::Mailbox>, CollaborationError> {
-        self.leave_wait_list_for_operator(workspace, removal)
-            .await
-            .map(|(told, _)| told)
-    }
-
-    /// Remove an entry for the private door operator, returning its stable
-    /// contact digest for cancelling mail even when it was not confirmed.
-    /// Neither this digest nor the mailbox belongs in a public response.
-    ///
-    /// # Errors
-    /// The workspace is unknown, or its wait list could not be written.
-    pub async fn leave_wait_list_for_operator(
-        &self,
-        workspace: &str,
-        removal: [u8; 32],
-    ) -> Result<(Option<super::Mailbox>, Option<[u8; 32]>), CollaborationError> {
-        let governed = self.workspace(workspace).await?;
-        let mut governed = governed.lock().await;
-        let now = tilo_clock::unix_now_ns();
-        let contact = governed.wait_list.removal_contact(removal, now);
-        let told = governed
-            .wait_list
-            .leave(removal, now)
-            .map_err(CollaborationError::new)?;
-        drop(governed);
-        if contact.is_some() {
-            tracing::info!(%workspace, "someone took their address off the wait list");
-        }
-        Ok((told, contact))
     }
 
     /// Answer one `/join` step of a device with no session.
