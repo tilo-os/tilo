@@ -13,8 +13,9 @@
 # BUNDLE is the web desktop bundle (tools/ci/publish/web-desktop-bundle.sh);
 # WORK is where it keeps what it found: each tab's snapshot and console, the
 # report, the site's and the Lounge's logs. Needs node, chromium, curl, and
-# TILO_RELAY_BIN, TILO_CLI_BIN and TILO_CRYPTO_BIN naming built programs (the
-# agent-setup check hands it the lounge-binaries and cli-x86_64 outputs).
+# TILO_RELAY_BIN, TILO_CLI_BIN and TILO_CRYPTO_BIN naming built programs, and
+# TILO_FONTS_DIR the product's font catalog (the agent-setup check hands it the
+# lounge-binaries, cli-x86_64 and image-lounge-context outputs).
 set -euo pipefail
 usage='usage: test-agent-setup.sh BUNDLE WORK'
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -53,7 +54,11 @@ volume=$work/volume
 mkdir -p "$volume/secrets" "$work/bin"
 printf 'a%.0s' $(seq 64) > "$volume/secrets/room-root"
 chmod 600 "$volume/secrets/room-root"
-ln -s "$relay_bin" "$work/bin/tilo-relay"
+# The relay as the image carries it: the product's font catalog beside the
+# program, which is where a Tilo binary finds it outside the image (its apps
+# lay text out, and a host that seeds them has no system fonts).
+cp "$relay_bin" "$work/bin/tilo-relay"
+cp -R "${TILO_FONTS_DIR:?$usage}" "$work/bin/fonts"
 
 # The image's entrypoint, with the environment the gate gives the image.
 env -i HOME="$work" PATH="$work/bin:/usr/bin:/bin" \

@@ -4573,15 +4573,15 @@ default = false
 
 # The gate's agent step on its own, in minutes: a person sets Tilo up through their agent, comes
 # back to their workspace on a reload, and signs in again on a fresh browser through the agent.
-# The Lounge's entrypoint runs the relay the image carries (lounge-binaries) directly, beside the
-# web entry and the tilo command a release publishes (cli-x86_64), with no image or micro-VM
+# The Lounge's entrypoint runs the relay the image carries (lounge-binaries, with the fonts its
+# context prepares) directly, beside the web entry and the tilo command a release publishes (cli-x86_64), with no image or micro-VM
 # around them. It builds nothing itself: a change to the page or the test reruns only the test,
 # and a change to the relay or the command rebuilds that one output, which the gate shares.
 [[check]]
 name = "agent-setup"
 run = "mkdir -p /target/agent-setup-cli\ntar -xzf /target/publish/cli/linux-x86_64/tilo-linux-x86_64.tar.gz -C /target/agent-setup-cli tilo\nbash os/containers/tilo-lounge/test-agent-setup.sh /target/publish/web-desktop/bundle /target/agent-setup"
-needs = ["lounge-binaries", "cli-x86_64", "lounge-gate-tools", "web-desktop-bundle"]
-env = { TILO_RELAY_BIN = "/target/publish/lounge/binaries/tilo-relay", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/agent-setup-cli/tilo" }
+needs = ["lounge-binaries", "image-lounge-context", "cli-x86_64", "lounge-gate-tools", "web-desktop-bundle"]
+env = { TILO_RELAY_BIN = "/target/publish/lounge/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/context/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/agent-setup-cli/tilo" }
 requires = ["arch=x86_64"]
 outputs = ["/target/agent-setup/**"]
 timeout_secs = 1800
