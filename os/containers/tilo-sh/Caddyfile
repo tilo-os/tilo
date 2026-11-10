@@ -1,0 +1,42 @@
+# The relay's TLS in front of the Lounge, as tilo.sh runs it: the same Caddy,
+# routing the relay's paths as production's tls container does
+# (tilo/infra apps/tilo-sh-relay/Caddyfile), on this machine's loopback.
+#
+# Production's names become loopback ports (stack.sh sets them):
+#   eu1.tilo.sh       https://127.0.0.1:{$TILO_SH_RELAY_PORT}
+#   live-eu1.tilo.sh  https://127.0.0.1:{$TILO_SH_LIVE_PORT}
+# and Cloudflare's certificate becomes Caddy's own local CA, whose root
+# stack.sh puts in the bundle the containers trust, as production's roots are.
+#
+# The front door and the web entry are not behind it: production
+# serves both as plain HTTP behind Cloudflare, and on loopback the product
+# takes them as plain HTTP on http://localhost (a development origin the
+# sign-in page, the door and the tilo command all accept), so no client needs
+# this CA to reach them.
+{
+	admin off
+	auto_https disable_redirects
+	skip_install_trust
+	http_port {$TILO_SH_CADDY_HTTP_PORT}
+	servers {
+		protocols h1 h2
+	}
+}
+
+https://127.0.0.1:{$TILO_SH_RELAY_PORT} {
+	tls internal
+	@host path /mode /avatars /avatars/* /discord/callback
+	handle @host {
+		reverse_proxy 127.0.0.1:{$TILO_SH_ROUTES_PORT}
+	}
+	handle {
+		reverse_proxy 127.0.0.1:{$TILO_SH_PLAIN_PORT}
+	}
+}
+
+# The relay's live plane: its packet relay, which pages reach over
+# websockets (TILO_ROOMS_LIVE) and the relay's own endpoint uses as its home.
+https://127.0.0.1:{$TILO_SH_LIVE_PORT} {
+	tls internal
+	reverse_proxy 127.0.0.1:{$TILO_SH_PACKET_PORT}
+}

@@ -4861,6 +4861,26 @@ outputs = ["/target/page-two-people/**"]
 timeout_secs = 1200
 default = false
 
+# tilo.sh, whole, on one machine, and used end to end (os/containers/tilo-sh/check.sh): the
+# Lounge, front door and web entry images of this commit run under podman with the environment
+# production's manifests give them, a fresh startup identity approves a server key on the local
+# site in a headless Chromium, the visa run makes workspaces, mints a one-workspace MCP, has the
+# agent fill the form, a reviewer join by invitation and approve, and revoked keys refused; then
+# fresh visitors' entry into the Lounge is timed. What it found (pages, logs, report.json with
+# the bring-up and entry times) stays in /target/tilo-sh-local. The VM host is not in it: it needs
+# a privileged host with KVM, which a micro-VM step is not.
+[[check]]
+name = "tilo-sh-local"
+run = "bash os/containers/tilo-sh/check-in-vm.sh /target/tilo-sh-local"
+setup = { run = "dnf install -y --setopt=install_weak_deps=False podman passt shadow-utils util-linux e2fsprogs python3-httpx && dnf clean all\nmkdir -p /etc/containers/containers.conf.d\nprintf '[engine]\\ncgroup_manager = \"cgroupfs\"\\nevents_logger = \"file\"\\n' > /etc/containers/containers.conf.d/tilo-sh-local.conf" }
+needs = ["image-lounge", "image-front-door", "image-web-entry", "cli-x86_64"]
+env = { TILO_SH_IMAGE_LOUNGE = "/target/publish/lounge/image.oci.tar", TILO_SH_IMAGE_DOOR = "/target/images/image-front-door/image.oci.tar", TILO_SH_IMAGE_WEB = "/target/publish/web-entry/image.oci.tar", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/tilo-sh-local-state", TILO_SH_FRESH = "1" }
+requires = ["arch=x86_64"]
+isolation = "vm"
+outputs = ["/target/tilo-sh-local/**"]
+timeout_secs = 3600
+default = false
+
 # Releasing the Lounge: t's own image-lounge build of the released commit (the same cached build
 # the gate runs), with the entrypoint and image tests its check runs, signed with the release key
 # and published as `sha-<commit>` for cloud-deploy, on stable and on a release tag. Published on
