@@ -24,6 +24,7 @@ use super::files::Served;
 use super::firecracker::{self, Api, FirecrackerError, Machine, VmFiles};
 use super::jail::{Jail, JailDirs};
 use super::meter::{Ledger, Meter, RunEnd, UsageRecord, VmIdentity};
+use super::network::Endpoint;
 use super::size::VmSize;
 use crate::lifecycle::{Action, Lifecycle, LifecycleError, Phase};
 use crate::virtiofs::SYSTEM_READ_ONLY;
@@ -182,6 +183,14 @@ impl HostedVm {
     #[must_use]
     pub fn is_browser(&self) -> bool {
         self.meter.identity.size == VmSize::Browser
+    }
+
+    /// The relay a browser environment's session joins its workspace
+    /// through: the one destination its VM reaches besides the internet.
+    /// `None` for a Linux VM, which is given none.
+    fn relay(&self) -> Option<Endpoint> {
+        let guest = self.settings.browser.as_ref()?;
+        self.is_browser().then_some(guest.relay)
     }
 
     /// The guest image this VM boots: its kind's.
@@ -414,6 +423,7 @@ impl HostedVm {
                     sockets,
                     guest: guest.as_ref(),
                 },
+                self.relay(),
             )
         } else {
             let argv = if self.restoring {
@@ -869,6 +879,8 @@ fn kill_stray(files: &VmFiles, jail: Option<&Jail>) {
 
 #[cfg(test)]
 mod tests {
+    use std::net::Ipv4Addr;
+
     use super::*;
 
     #[test]
@@ -893,7 +905,13 @@ mod tests {
             idle_suspend: Duration::from_secs(1),
             self_exe: dir.path().join("tilo-legacy"),
             jail: None,
-            browser: Some(BrowserGuest::new(machine)),
+            browser: Some(BrowserGuest::new(
+                machine,
+                Endpoint {
+                    address: Ipv4Addr::LOCALHOST,
+                    port: 7704,
+                },
+            )),
         };
         let identity = VmIdentity {
             vm: "ws1/browser".into(),

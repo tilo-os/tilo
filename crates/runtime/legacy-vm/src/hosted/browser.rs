@@ -41,12 +41,12 @@
 //!   somebody views the page. The host counts the idle limit from the last of
 //!   them, and hands the provider to the relay, which routes page actions to
 //!   that window.
-//! - **stdin, one line** at hand-off: the material the relay gives, opaque
-//!   here — the JSON that names the workspace, the record to open and the
-//!   device certificate the session joins with
-//!   ([`tilo_relay_protocol::hosted::Material`]). One line, and well under a
-//!   megabyte: the host relays it as the session's input, one line at a
-//!   time.
+//! - **stdin, one line** at hand-off: the material the relay gives
+//!   ([`tilo_relay_protocol::hosted::Material`]) — the JSON that names the
+//!   workspace, the record to open and the device certificate the session
+//!   joins with — with the relay's address replaced by the one this VM
+//!   dials ([`hand_off`]). One line, and well under a megabyte: the host
+//!   relays it as the session's input, one line at a time.
 //! - **stderr** is the environment's log, nothing else.
 //!
 //! A spare is booted with that session and no workspace: it waits after
@@ -65,13 +65,16 @@ use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use iroh_base::{EndpointAddr, TransportAddr};
 use legacy_agent_protocol::client::{self, LaunchIo, LaunchSignals};
 use legacy_agent_protocol::link::{AgentLink, AgentStream};
 use legacy_agent_protocol::{AGENT_PORT, Display, Launch, ProtocolError, Signal, Stdio};
 use thiserror::Error;
 use tilo_actions::remote::browser::{MARK, READY, Report, UP};
+use tilo_relay_protocol::hosted::Material;
 
 use super::firecracker::Machine;
+use super::network::Endpoint;
 
 /// The session a browser environment runs, as the guest image ships it: the
 /// script that sets the environment up and starts the session on it.
@@ -85,13 +88,71 @@ pub const READY_PATIENCE: Duration = Duration::from_secs(120);
 /// material was handed to it.
 pub const UP_PATIENCE: Duration = Duration::from_secs(60);
 
-/// The browser environments a host runs: what it boots them with, how many
-/// spares it keeps, and how long one lives.
+/// The line a session is handed at hand-off: `material`, the relay's, with
+/// the address its session joins the relay at replaced by `relay` — the
+/// endpoint's id stays, so the session joins the same relay, at the one
+/// address this VM dials. Nothing else of the material changes.
+///
+/// # Errors
+///
+/// The material is not the relay's, or names no endpoint: the words to
+/// refuse the hand-off with.
+pub fn hand_off(material: &str, relay: Endpoint) -> Result<String, String> {
+    let mut material: Material = serde_json::from_str(material.trim())
+        .map_err(|error| format!("the material is not the relay's: {error}"))?;
+    // An endpoint address is its id and where it is reached; the session
+    // dials the address written here, and no other.
+    material.relay = EndpointAddr::from_parts(material.relay.id, [TransportAddr::Ip(relay.socket())]);
+    serde_json::to_string(&material).map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+/// The material the relay writes a session, joining the workspace at
+/// `relay`: what the tests of a hand-off start from.
+pub fn test_material(relay: &str) -> String {
+    let cert = tilo_user_identity::DeviceCert {
+        user_public_key: [1; 32],
+        device_public_key: [2; 32],
+        device_label: "Browser".into(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: 1_000,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    let material = Material {
+        workspace: "ws1".into(),
+        workspace_id: 7,
+        record: "browser-1".into(),
+        device: cert,
+        secret: [2; 32],
+        relay: EndpointAddr::from_parts(test_relay_id(), [TransportAddr::Ip(relay.parse().unwrap())]),
+        user_public_key: [1; 32],
+        account: "acct-1".into(),
+    };
+    serde_json::to_string(&material).unwrap_or_default()
+}
+
+#[cfg(test)]
+/// The endpoint id of [`test_material`]'s relay.
+fn test_relay_id() -> iroh_base::EndpointId {
+    iroh_base::SecretKey::from_bytes(&[7; 32]).public()
+}
+
+/// The browser environments a host runs: what it boots them with, the relay
+/// their sessions join the workspace through, how many spares it keeps, and
+/// how long one lives.
 #[derive(Clone, Debug)]
 pub struct BrowserGuest {
     /// The browser guest image: its kernel and the disk every environment
     /// starts as a copy of.
     pub machine: Machine,
+    /// Where the relay is, as the host reaches it: the one destination an
+    /// environment's VM may reach besides the internet. A relay on the
+    /// host's own loopback (a local stack) is reached through
+    /// [`super::network::HOST_LOOPBACK`]; anywhere else (a cluster address),
+    /// the VM dials it as it is.
+    pub relay: Endpoint,
     /// Spares kept booted with a session waiting for a workspace.
     pub spares: usize,
     /// No page activity for this long ends an environment.
@@ -104,9 +165,10 @@ impl BrowserGuest {
     /// The defaults of a host that runs browser environments: two spares,
     /// ten minutes idle, two hours alive.
     #[must_use]
-    pub fn new(machine: Machine) -> Self {
+    pub fn new(machine: Machine, relay: Endpoint) -> Self {
         Self {
             machine,
+            relay,
             spares: 2,
             idle_stop: Duration::from_secs(600),
             lifetime: Duration::from_secs(2 * 60 * 60),
@@ -775,6 +837,45 @@ mod tests {
         Named {
             environment: name.to_owned(),
             browser: Arc::new(Browser::new(1_000_000)),
+        }
+    }
+
+    #[test]
+    fn the_line_handed_to_a_session_keeps_the_relays_id_and_its_dialable_address() {
+        let handed = hand_off(
+            &test_material("203.0.113.9:7704"),
+            Endpoint {
+                address: "10.0.2.4".parse().unwrap(),
+                port: 7704,
+            },
+        )
+        .unwrap();
+        let line: Material = serde_json::from_str(&handed).unwrap();
+        assert_eq!(line.relay.id, test_relay_id(), "the same relay");
+        assert_eq!(
+            line.relay.addrs,
+            [TransportAddr::Ip("10.0.2.4:7704".parse().unwrap())]
+                .into_iter()
+                .collect(),
+            "at the one address this VM dials"
+        );
+        assert_eq!(line.workspace, "ws1");
+        assert_eq!(line.record, "browser-1");
+        assert_eq!(line.device.device_label, "Browser");
+        assert_eq!(line.account, "acct-1");
+        // phase: a material that is not the relay's is refused, not handed on
+        for wrong in ["{}", r#"{"relay": "an address"}"#, "not json"] {
+            assert!(
+                hand_off(
+                    wrong,
+                    Endpoint {
+                        address: [10, 0, 2, 4].into(),
+                        port: 1
+                    }
+                )
+                .is_err(),
+                "{wrong}"
+            );
         }
     }
 

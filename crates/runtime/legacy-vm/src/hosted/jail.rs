@@ -10,8 +10,11 @@
 //!   Firecracker's `jailer`, which puts Firecracker in a chroot with only
 //!   `/dev/kvm`, `/dev/net/tun` and `/dev/urandom`, a cgroup bounding its
 //!   memory, CPU and processes, a mount namespace of its own, and finally
-//!   drops it to the VM's uid. The helper's process *becomes* Firecracker,
-//!   so the service still waits on its child.
+//!   drops it to the VM's uid. The service names the relay a browser
+//!   environment's session joins through ([`Endpoint`]), which the helper
+//!   gives that VM's network as its one non-public destination. The
+//!   helper's process *becomes* Firecracker, so the service still waits on
+//!   its child.
 //! - **stop**: kill everything in the VM's cgroups (its uid is not the
 //!   service's, so the service cannot signal it).
 //! - **release**: once the VM is gone, give its files back to the service
@@ -63,6 +66,7 @@ use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
+use super::network::Endpoint;
 use super::size::VmSize;
 
 /// Where a host's jail configuration is, unless the service is told
@@ -288,9 +292,18 @@ impl Helper {
 
     /// The command that becomes the slot's Firecracker: booting from
     /// `/vm/firecracker.json` when `boot`, else waiting for a snapshot to
-    /// load. The caller spawns it and owns the child.
+    /// load. `relay` is the one destination besides the internet the VM's
+    /// network allows, for a browser environment. The caller spawns it and
+    /// owns the child.
     #[must_use]
-    pub fn start(&self, slot: u32, size: VmSize, boot: bool, dirs: &JailDirs<'_>) -> Command {
+    pub fn start(
+        &self,
+        slot: u32,
+        size: VmSize,
+        boot: bool,
+        dirs: &JailDirs<'_>,
+        relay: Option<Endpoint>,
+    ) -> Command {
         let mut command = self.command("start", slot);
         command
             .arg("--vcpus")
@@ -298,6 +311,9 @@ impl Helper {
             .arg("--memory-mib")
             .arg(size.memory_mib().to_string())
             .arg(if boot { "--boot" } else { "--restore" });
+        if let Some(relay) = relay {
+            command.arg("--relay-endpoint").arg(relay.to_string());
+        }
         pass_dirs(&mut command, dirs);
         command
     }

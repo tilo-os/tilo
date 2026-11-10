@@ -463,8 +463,11 @@ impl Service {
             .browser
             .as_ref()
             .ok_or(BrowserError::NotOffered)?;
+        // Before anything boots: a material the session could not join with
+        // refuses the open, and no spare is spent on it.
+        let material = self.hand_off(&request.material)?;
         let named = self.browser_for(&request.workspace, &request.account)?;
-        match named.browser.open(&request.material, UP_PATIENCE) {
+        match named.browser.open(&material, UP_PATIENCE) {
             Ok(opened_ms) => {
                 lock(&self.waiting).remove(&browser::environment(&request.workspace));
                 let provider = named.browser.life().provider().ok_or_else(|| {
@@ -481,6 +484,19 @@ impl Service {
                 Err(BrowserError::Session(message))
             }
         }
+    }
+
+    /// The line a workspace's session is handed: the relay's material, with
+    /// the relay's address replaced by the one this VM dials
+    /// ([`browser::hand_off`]).
+    fn hand_off(&self, material: &str) -> Result<String, BrowserError> {
+        let guest = self
+            .config
+            .settings
+            .browser
+            .as_ref()
+            .ok_or(BrowserError::NotOffered)?;
+        browser::hand_off(material, guest.relay.guest()).map_err(BrowserError::Invalid)
     }
 
     /// The environment serving `workspace`: the one it has, a spare it takes,
@@ -1104,6 +1120,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_workspace_is_handed_the_address_its_session_dials_the_relay_at() {
+        use super::super::browser::{self, BrowserGuest};
+        use super::super::network::Endpoint;
+
+        let dir = tempfile::tempdir().unwrap();
+        let with_relay = |relay: &str| {
+            let mut config = config(dir.path());
+            let machine = config.settings.machine.clone();
+            config.settings.browser =
+                Some(BrowserGuest::new(machine, Endpoint::parse(relay).unwrap()));
+            Service::open(config, clock(0)).unwrap()
+        };
+        let dialled = |line: &str| -> std::net::SocketAddr {
+            let line: tilo_relay_protocol::hosted::Material = serde_json::from_str(line).unwrap();
+            line.relay
+                .addrs
+                .into_iter()
+                .find_map(|address| match address {
+                    iroh_base::TransportAddr::Ip(socket) => Some(socket),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        // phase: a relay on the host's own loopback is dialled at the address
+        // `pasta` maps there
+        let local = with_relay("127.0.0.1:7704");
+        let line = local.hand_off(&browser::test_material("127.0.0.1:7704")).unwrap();
+        assert_eq!(
+            dialled(&line),
+            "10.0.2.4:7704".parse().unwrap(),
+            "the VM dials the mapped loopback, not the host's own"
+        );
+        // phase: a relay at a cluster address (a hosted stack) is dialled as
+        // it is
+        let hosted = with_relay("10.0.0.9:7704");
+        let line = hosted
+            .hand_off(&browser::test_material("203.0.113.9:7704"))
+            .unwrap();
+        assert_eq!(dialled(&line), "10.0.0.9:7704".parse().unwrap());
+        // phase: a host that runs no browser environments hands nothing on
+        let none = Service::open(config(dir.path()), clock(0)).unwrap();
+        assert!(matches!(
+            none.hand_off(&browser::test_material("127.0.0.1:7704")),
+            Err(BrowserError::NotOffered)
+        ));
+        // and a material the session could not join with refuses the open
+        assert!(matches!(
+            local.hand_off("{}"),
+            Err(BrowserError::Invalid(_))
+        ));
+    }
     #[test]
     fn a_service_restarted_mid_life_deletes_a_browser_environment() {
         let dir = tempfile::tempdir().unwrap();

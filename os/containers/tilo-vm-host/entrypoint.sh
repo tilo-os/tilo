@@ -28,7 +28,10 @@
 #      node's memory) holds, and answers a placer's Status on
 #      TILO_VM_STATUS_LISTEN;
 #   5b. with TILO_VM_BROWSER, the browser guest image, which the service boots
-#      for each workspace's browser environment beside its Linux VM;
+#      for each workspace's browser environment beside its Linux VM; their
+#      sessions join their workspaces through the relay at
+#      TILO_VM_RELAY_ENDPOINT (ADDR:PORT), the one address besides the internet
+#      those VMs may reach;
 #   6. with TILO_TAKE_WORK_RELAY, the member: `tilo-runtime --daemon`, as the
 #      service, under the member identity, which takes the relay's runs for
 #      the workspaces whose VMs are here (restarted if it stops).
@@ -128,14 +131,20 @@ if [ -n "$memory_mib" ]; then set -- "$@" --memory-mib "$memory_mib"; fi
 if [ -n "${TILO_VM_STATUS_LISTEN:-}" ]; then set -- "$@" --status-listen "$TILO_VM_STATUS_LISTEN"; fi
 # A host that runs browser environments boots their own guest image: a
 # headless session with Browser and its engine. Two spares stay booted for the
-# next workspace unless TILO_VM_BROWSER_SPARES says how many.
+# next workspace unless TILO_VM_BROWSER_SPARES says how many. Their sessions
+# join their workspaces through the relay at TILO_VM_RELAY_ENDPOINT, an
+# address inside the host's network: it is the one destination besides the
+# internet a browser environment's VM may reach.
 if [ -n "${TILO_VM_BROWSER:-}" ]; then
+  [ -n "${TILO_VM_RELAY_ENDPOINT:-}" ] \
+    || { say 'TILO_VM_BROWSER is set, but no TILO_VM_RELAY_ENDPOINT: name the relay a browser session joins (ADDR:PORT)'; exit 1; }
   browser=$(as_service tilo-legacy hosted fetch-guest --images "$data/images" --browser) \
     || { say 'TILO_VM_BROWSER is set, but no browser guest has been published'; exit 1; }
   browser_kernel=$(printf '%s\n' "$browser" | sed -n 's/^kernel //p')
   browser_rootfs=$(printf '%s\n' "$browser" | sed -n 's/^rootfs //p')
   say "browser guest kernel $browser_kernel, root filesystem $browser_rootfs"
-  set -- "$@" --browser --browser-kernel "$browser_kernel" --browser-disk-image "$browser_rootfs"
+  set -- "$@" --browser --browser-kernel "$browser_kernel" --browser-disk-image "$browser_rootfs" \
+    --relay-endpoint "$TILO_VM_RELAY_ENDPOINT"
   if [ -n "${TILO_VM_BROWSER_SPARES:-}" ]; then
     set -- "$@" --browser-spares "$TILO_VM_BROWSER_SPARES"
   fi

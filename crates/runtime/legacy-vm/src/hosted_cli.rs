@@ -21,7 +21,8 @@ usage: tilo-legacy hosted <command>
         [--disk-image RAW] [--firecracker PATH] [--plans FILE] [--idle-suspend SECONDS]
         [--evict-notice FILE] [--memory-mib MIB] [--status-listen ADDR]
         [--browser --browser-kernel VMLINUX --browser-disk-image RAW
-         [--browser-spares N] [--browser-idle-stop SECONDS] [--browser-lifetime SECONDS]]
+         [--browser-spares N] [--browser-idle-stop SECONDS] [--browser-lifetime SECONDS]
+         --relay-endpoint ADDR:PORT]
         (--jail-helper PATH [--jail-config FILE] | --unjailed)
                          own this host's workspace VMs; listens on RUN/hosted.sock.
                          Each VM runs jailed, with a network, through the
@@ -40,7 +41,13 @@ usage: tilo-legacy hosted <command>
                          (default 2) boot with a session waiting for a
                          workspace, each environment ends after its idle limit
                          (default 600 s) or its lifetime (default 7200 s), and
-                         it keeps nothing when it stops.
+                         it keeps nothing when it stops. ADDR:PORT is where a
+                         browser environment's session reaches the relay, the
+                         one address besides the internet those VMs may reach:
+                         the relay's public address, or its cluster address
+                         when the relay is not reachable from outside, or a
+                         loopback address when the relay runs on the host
+                         itself.
   status --run DIR       every VM, its phase and its last wake
   place --listen ADDR --record FILE --statefulset NAMESPACE/NAME --max N
         --status-port PORT
@@ -295,8 +302,8 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The browser environments' settings: the browser guest image, the spares
-/// kept booted, and how long one lives.
+/// The browser environments' settings: the browser guest image, where their
+/// sessions reach the relay, the spares kept booted, and how long one lives.
 fn browser_guest(flags: &Flags) -> Result<legacy_vm::hosted::browser::BrowserGuest, String> {
     let seconds = |name: &str, default: u64| {
         flags
@@ -314,7 +321,11 @@ fn browser_guest(flags: &Flags) -> Result<legacy_vm::hosted::browser::BrowserGue
             .to_string(),
         base_disk: flags.get("--browser-disk-image").map(PathBuf::from),
     };
-    let mut guest = legacy_vm::hosted::browser::BrowserGuest::new(machine);
+    // A session in an environment joins its workspace through the relay, and
+    // the relay is inside the host's network: this is the one address besides
+    // the internet the environment's VM may reach.
+    let relay = legacy_vm::hosted::network::Endpoint::parse(flags.need("--relay-endpoint")?)?;
+    let mut guest = legacy_vm::hosted::browser::BrowserGuest::new(machine, relay);
     if let Some(spares) = flags.get("--browser-spares") {
         guest.spares = spares
             .parse()

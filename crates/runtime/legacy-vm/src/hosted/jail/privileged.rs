@@ -18,7 +18,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use super::{GUEST_DIR, GUEST_FD, JailConfig, SOCKETS_DIR, SOCKETS_FD, VMM_DIR, VMM_FD};
-use crate::hosted::network::{self, BRIDGE, TAP, UPLINK};
+use crate::hosted::network::{self, BRIDGE, Endpoint, TAP, UPLINK};
 
 /// What `start` needs besides the configuration.
 pub struct Start {
@@ -27,6 +27,10 @@ pub struct Start {
     pub memory_mib: u32,
     /// Boot from `/vm/firecracker.json`; else wait for a snapshot.
     pub boot: bool,
+    /// The one destination besides the internet the VM's network allows: the
+    /// relay a browser environment's session joins through, as the host
+    /// reaches it.
+    pub relay: Option<Endpoint>,
 }
 
 fn os(what: &str) -> io::Error {
@@ -233,7 +237,7 @@ fn prepare(config: &JailConfig, start: &Start) -> io::Result<std::process::Comma
     }
     cgroup_parent(config).step("making the VMs' cgroup")?;
     if let Some(net) = &config.network {
-        connect(config, net, slot)?;
+        connect(config, net, slot, start.relay)?;
     }
 
     // The jail's directories, in a mount namespace of this process's: the
@@ -358,9 +362,15 @@ fn bind(source: &File, target: &Path, read_only: bool) -> io::Result<()> {
 }
 
 /// The VM's network ([`network`]): a namespace owned by the slot's network
-/// uid, holding the VM's tap and `pasta`'s, bridged and filtered. Leaves
-/// this process in that namespace, so the jailer and Firecracker are.
-fn connect(config: &JailConfig, net: &super::NetworkConfig, slot: u32) -> io::Result<()> {
+/// uid, holding the VM's tap and `pasta`'s, bridged and filtered, with
+/// `relay` the one place besides the internet it may reach. Leaves this
+/// process in that namespace, so the jailer and Firecracker are.
+fn connect(
+    config: &JailConfig,
+    net: &super::NetworkConfig,
+    slot: u32,
+    relay: Option<Endpoint>,
+) -> io::Result<()> {
     let (vm, net_uid) = (config.vm_uid(slot), config.net_uid(slot));
     let net_dir = config.net_dir(slot);
     std::fs::DirBuilder::new()
@@ -408,7 +418,7 @@ fn connect(config: &JailConfig, net: &super::NetworkConfig, slot: u32) -> io::Re
     };
     let blocked = config.blocked().map_err(io::Error::other)?;
     tilo_egress::nft::Netfilter::new(netfilter)?
-        .install_guest(&network::guest_filter(&blocked))
+        .install_guest(&network::guest_filter(&blocked, relay))
         .map_err(|e| {
             io::Error::new(
                 e.kind(),
@@ -420,7 +430,15 @@ fn connect(config: &JailConfig, net: &super::NetworkConfig, slot: u32) -> io::Re
         })?;
 
     let pid_file = net_dir.join("pasta.pid");
-    let pasta = spawn_pasta(&net.pasta, &host, net_uid, holder, &pid_file, net.resolver)?;
+    let pasta = spawn_pasta(
+        &net.pasta,
+        &host,
+        net_uid,
+        holder,
+        &pid_file,
+        net.resolver,
+        relay,
+    )?;
     std::fs::write(cgroup.join("cgroup.procs"), pasta.to_string())
         .step("moving pasta into its cgroup")?;
     control.enslave(BRIDGE, UPLINK)?;
@@ -572,8 +590,9 @@ fn spawn_pasta(
     holder: u32,
     pid_file: &Path,
     resolver: Ipv4Addr,
+    relay: Option<Endpoint>,
 ) -> io::Result<u32> {
-    let args = network::pasta_args(holder, &pid_file.display().to_string(), resolver);
+    let args = network::pasta_args(holder, &pid_file.display().to_string(), resolver, relay);
     let host = host.as_raw_fd();
     let mut command = std::process::Command::new(binary);
     command

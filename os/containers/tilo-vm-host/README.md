@@ -36,6 +36,11 @@ microVM of its own when `TILO_VM_BROWSER` is set
   Two spares stay booted for the next workspace (`TILO_VM_BROWSER_SPARES`);
   each environment keeps nothing and ends after ten minutes without page
   activity, or two hours alive. It takes its share of the memory budget.
+  Their sessions join their workspaces through the relay at
+  `TILO_VM_RELAY_ENDPOINT` (`ADDR:PORT`, required with the browser): the
+  relay's address as a VM reaches it, and the only address besides the
+  internet an environment's VM may reach. A relay on the host's own loopback
+  (a local stack) is reached at `10.0.2.4`, which `pasta` maps there.
 
 | | |
 | --- | --- |

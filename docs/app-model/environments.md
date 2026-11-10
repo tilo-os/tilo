@@ -393,8 +393,13 @@ that workspace environment's own, never in a guest sharing the host's kernel
   every connection from a socket of the host's and forwards nothing inwards,
   so the host routes and translates nothing, and in Kubernetes the pod's
   network policy applies to VM traffic too. Every VM has the same address
-  (10.0.2.15, gateway .2, DNS .3), so a snapshot restores anywhere.
-  Firecracker's rate limiters bound each VM's bandwidth.
+  (10.0.2.15, gateway .2, DNS .3), so a snapshot restores anywhere. A
+  browser environment is allowed one destination besides the internet: the
+  relay its session joins the workspace through
+  (`--relay-endpoint`/`TILO_VM_RELAY_ENDPOINT`, a public address or the
+  stack's cluster address), and a relay on a local host's loopback is
+  reached at 10.0.2.4, which `pasta` maps there. A Linux VM has no such
+  destination. Firecracker's rate limiters bound each VM's bandwidth.
 - **Metering:** each run of the VM's process and each held snapshot is a
   usage record (VM, workspace, account, size, start, end, seconds) in the
   account's ledger, billed per second with the sub-second rest carried to

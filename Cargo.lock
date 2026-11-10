@@ -8710,6 +8710,7 @@ version = "0.1.0"
 dependencies = [
  "collab-types",
  "fnv",
+ "iroh-base",
  "legacy-agent-protocol",
  "libc",
  "rustix 1.1.4",
@@ -8725,7 +8726,9 @@ dependencies = [
  "tilo-files",
  "tilo-libvirt-domain",
  "tilo-paths",
+ "tilo-relay-protocol",
  "tilo-sandbox-core",
+ "tilo-user-identity",
  "wire-frame",
  "workspace-hack",
 ]

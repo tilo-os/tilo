@@ -93,12 +93,20 @@ was handed to, and it is never handed back to the pool.
   Browser record's changes, action answers, the page's display list for the
   members viewing it, and, for `capture-page`, a picture of the page. No
   cookie, stored value or request header leaves.
-- **Egress is the public internet only.** This is the hosted VM network
-  unchanged: pasta is the only route out, and a bridge filter drops private,
-  shared, link-local (including the metadata endpoint), loopback, multicast
-  and reserved networks, Azure's platform address, and anything the host
-  adds. No cluster-internal address is reachable, so the session reaches the
-  relay at its public address, like any member's device. IPv6 is off.
+- **Egress is the public internet and the relay.** This is the hosted VM
+  network unchanged: pasta is the only route out, and a bridge filter drops
+  private, shared, link-local (including the metadata endpoint), loopback,
+  multicast and reserved networks, Azure's platform address, and anything the
+  host adds. A browser environment's session has to join its workspace
+  through the relay, which on a hosted stack is a cluster-internal address,
+  so that VM is given exactly one more destination: the VM host is told the
+  relay's endpoint (`--relay-endpoint`, from `TILO_VM_RELAY_ENDPOINT`) and
+  allows that address and port, over UDP (the device plane's QUIC) and TCP.
+  Every other cluster-internal address stays dropped, and a Linux VM is given
+  none. A relay the VM can dial as it is (a public address, or the cluster
+  address of a stack that hosts it) is dialled as it is; a relay on the
+  host's own loopback, on a local stack, is reached at `10.0.2.4`, which
+  pasta maps to that loopback. IPv6 is off.
 - **Limits:** the jail's cgroup bounds CPU (2 vCPU), memory (2 GiB) and
   processes, Firecracker's rate limiters bound bandwidth (200 Mbit/s), and
   the idle and lifetime limits above bound time.
@@ -139,7 +147,7 @@ one line:
 | `workspace_id` | The same workspace as the relay carries it. |
 | `record` | The Browser record to open the window on. |
 | `device`, `secret` | Its device certificate and the signing key: the session's identity. |
-| `relay` | The relay's endpoint address, to join the workspace through. |
+| `relay` | The relay's endpoint: its id, at the one address the VM reaches it by. The VM host replaces the address the relay named with the one that VM dials (the relay's own, or `10.0.2.4` for a relay on the host's loopback), and changes nothing else of the material. |
 | `user_public_key` | The person the workspace belongs to. |
 | `account` | Who pays, as the relay counts it. |
 

@@ -3,6 +3,7 @@
 //!
 //! ```text
 //! tilo-hosted-jail [--config FILE] start --slot N --vcpus V --memory-mib M (--boot|--restore)
+//!                                   [--relay-endpoint ADDR:PORT]
 //!                                   (descriptors 3, 4, 5: the VM's state, sockets, guest)
 //! tilo-hosted-jail [--config FILE] stop --slot N
 //! tilo-hosted-jail [--config FILE] release --slot N   (descriptors 3, 4)
@@ -24,10 +25,12 @@ fn main() -> ExitCode {
 #[cfg(target_os = "linux")]
 fn run(args: Vec<String>) -> Result<(), String> {
     use legacy_vm::hosted::jail::{DEFAULT_CONFIG, JailConfig, privileged};
+    use legacy_vm::hosted::network::Endpoint;
 
     let mut config = PathBuf::from(DEFAULT_CONFIG);
     let mut verb = None;
     let (mut slot, mut vcpus, mut memory, mut boot) = (None, None, None, None);
+    let mut relay = None;
     let mut args = args.into_iter();
     let number = |value: Option<String>, flag: &str| -> Result<u32, String> {
         value
@@ -40,6 +43,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
             "--slot" => slot = Some(number(args.next(), "--slot")?),
             "--vcpus" => vcpus = Some(number(args.next(), "--vcpus")?),
             "--memory-mib" => memory = Some(number(args.next(), "--memory-mib")?),
+            "--relay-endpoint" => {
+                let text = args.next().ok_or("--relay-endpoint takes ADDR:PORT")?;
+                relay = Some(Endpoint::parse(&text)?);
+            }
             "--boot" => boot = Some(true),
             "--restore" => boot = Some(false),
             "start" | "stop" | "release" if verb.is_none() => verb = Some(arg),
@@ -64,6 +71,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     .ok_or("--memory-mib is required")?
                     .clamp(128, 256 * 1024),
                 boot: boot.ok_or("--boot or --restore is required")?,
+                relay,
             };
             Err(privileged::start(&config, &start).to_string())
         }

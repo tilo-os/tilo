@@ -686,9 +686,10 @@ fn element_message(
 /// tap, which re-makes every connection from a host socket). Frames from
 /// the uplink are answers (nothing is forwarded inwards) and pass. From the
 /// VM, ARP passes, and IPv4 does unless its destination is in a blocked
-/// network; the one exception is DNS to the uplink's forwarder. Everything
-/// else, IPv6 included, is dropped. Only destinations are matched, so no
-/// connection tracking is needed on the bridge.
+/// network; the two exceptions are DNS to the uplink's forwarder and the one
+/// [`GuestFilter::endpoint`] the VM is given. Everything else, IPv6
+/// included, is dropped. Only destinations are matched, so no connection
+/// tracking is needed on the bridge.
 pub const GUEST_TABLE: &str = "tilo_guest";
 pub const GUEST_CHAIN: &str = "forward";
 
@@ -701,6 +702,11 @@ pub struct GuestFilter {
     pub uplink: String,
     /// The uplink's DNS forwarder, reachable on port 53 though blocked.
     pub dns: std::net::Ipv4Addr,
+    /// The one destination the VM reaches although it is blocked, over TCP
+    /// and UDP: the relay a session in the VM joins its workspace through,
+    /// at the address that VM dials. `None` for a VM that reaches nothing
+    /// but the internet.
+    pub endpoint: Option<(std::net::Ipv4Addr, u16)>,
     /// Networks the VM never reaches: the host's, the cluster's, the cloud's
     /// metadata endpoints, other VMs'.
     pub blocked: Vec<(std::net::Ipv4Addr, u8)>,
@@ -779,6 +785,20 @@ impl GuestFilter {
                 ],
                 GuestVerdict::Accept,
             ));
+        }
+        if let Some((address, port)) = self.endpoint {
+            for proto in [Proto::Udp, Proto::Tcp] {
+                rules.push(rule(
+                    &[
+                        InIface(guest),
+                        Ipv4,
+                        DestNet(address, 32),
+                        P(proto),
+                        DestPort(port),
+                    ],
+                    GuestVerdict::Accept,
+                ));
+            }
         }
         for (address, prefix) in &self.blocked {
             rules.push(rule(
@@ -1265,12 +1285,76 @@ table inet tilo_egress {
             guest: "tap0".into(),
             uplink: "pt0".into(),
             dns: std::net::Ipv4Addr::new(10, 0, 2, 3),
+            endpoint: Some((std::net::Ipv4Addr::new(10, 0, 2, 4), 7704)),
             blocked: vec![
                 (std::net::Ipv4Addr::new(10, 0, 0, 0), 8),
                 (std::net::Ipv4Addr::new(169, 254, 169, 254), 16),
                 (std::net::Ipv4Addr::new(168, 63, 129, 16), 32),
+                (std::net::Ipv4Addr::new(127, 0, 0, 0), 8),
             ],
         }
+    }
+
+    /// Whether a frame from the VM to `address`:`port` over `proto` passes
+    /// `filter`, decided by the first rule that matches it.
+    fn passes(filter: &GuestFilter, address: std::net::Ipv4Addr, port: u16, proto: Proto) -> bool {
+        for rule in filter.rules() {
+            let matched = rule.matches.iter().all(|m| match *m {
+                GuestMatch::InIface(name) => name == ifname(&filter.guest),
+                GuestMatch::Ipv4 => true,
+                GuestMatch::DestNet(network, prefix) => {
+                    u32::from(address) & u32::from_be_bytes(mask4(prefix))
+                        == u32::from(network) & u32::from_be_bytes(mask4(prefix))
+                }
+                GuestMatch::Proto(p) => p == proto,
+                GuestMatch::DestPort(port_here) => port_here == port,
+                GuestMatch::Arp => false,
+            });
+            if matched {
+                return rule.verdict == GuestVerdict::Accept;
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn a_vm_reaches_the_one_endpoint_it_is_given_and_no_other_private_address() {
+        let filter = guest_filter();
+        let endpoint = std::net::Ipv4Addr::new(10, 0, 2, 4);
+        for proto in [Proto::Tcp, Proto::Udp] {
+            assert!(
+                passes(&filter, endpoint, 7704, proto),
+                "the relay's endpoint passes, {proto:?}"
+            );
+            assert!(
+                !passes(&filter, endpoint, 7705, proto),
+                "and no other port on it"
+            );
+        }
+        for address in ["10.0.2.5", "10.244.1.5", "169.254.169.254", "127.0.0.1"] {
+            let address: std::net::Ipv4Addr = address.parse().unwrap();
+            assert!(!passes(&filter, address, 7704, Proto::Udp), "{address}");
+        }
+        assert!(
+            passes(&filter, "1.1.1.1".parse().unwrap(), 443, Proto::Tcp),
+            "the internet still passes"
+        );
+        assert!(
+            passes(
+                &filter,
+                std::net::Ipv4Addr::new(10, 0, 2, 3),
+                53,
+                Proto::Udp
+            ),
+            "and so does DNS to the uplink's forwarder"
+        );
+        // A VM that is given no endpoint reaches no private address at all.
+        let linux = GuestFilter {
+            endpoint: None,
+            ..guest_filter()
+        };
+        assert!(!passes(&linux, endpoint, 7704, Proto::Udp));
+        assert!(!linux.render().contains("dport 7704"));
     }
 
     #[test]
@@ -1283,9 +1367,12 @@ table bridge tilo_guest {
 \t\tiifname \"tap0\" ether type arp accept
 \t\tiifname \"tap0\" ether type ip ip daddr 10.0.2.3 meta l4proto udp udp dport 53 accept
 \t\tiifname \"tap0\" ether type ip ip daddr 10.0.2.3 meta l4proto tcp tcp dport 53 accept
+\t\tiifname \"tap0\" ether type ip ip daddr 10.0.2.4 meta l4proto udp udp dport 7704 accept
+\t\tiifname \"tap0\" ether type ip ip daddr 10.0.2.4 meta l4proto tcp tcp dport 7704 accept
 \t\tiifname \"tap0\" ether type ip ip daddr 10.0.0.0/8 drop
 \t\tiifname \"tap0\" ether type ip ip daddr 169.254.0.0/16 drop
 \t\tiifname \"tap0\" ether type ip ip daddr 168.63.129.16 drop
+\t\tiifname \"tap0\" ether type ip ip daddr 127.0.0.0/8 drop
 \t\tiifname \"tap0\" ether type ip accept
 \t}
 }
