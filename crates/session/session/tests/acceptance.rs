@@ -371,10 +371,10 @@ fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
             .is_some_and(|desk| desk["here"] == json!("launcher"))
     });
 
-    // The top bar shows the focused window's own commands. The seeded note starts pinned, so its
-    // pin control toggles; unpinning it through the note's own published action leaves a note whose
+    // The top bar shows the focused window's own commands. The seed pins this note, so its pin
+    // control toggles; unpinning it through the note's own published action leaves a note whose
     // bar offers "Pin", as one it would pin does.
-    let note = seeded_note(&session, "Groceries");
+    let note = seeded_note(&session, "Q3 plan");
     let pin = offered(&session.resources(), &note, "Pin").expect("the note offers its pin");
     session
         .invoke(&note, &pin, &Map::new())

@@ -634,7 +634,7 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
     );
     assert!(!failed, "the program ran: {answer}");
     until(&mut session, "the note's text on the canvas", |session| {
-        session.shell_says("Oat milk, eggs, sourdough")
+        session.shell_says("Oat milk, eggs, two lemons.")
     });
 
     // A text naming a resource that many actions name too finds the resource: "Inbox" is the

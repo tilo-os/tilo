@@ -280,7 +280,8 @@ fn the_top_bar_lists_the_focused_windows_actions_and_runs_one() {
     let name = common::window_name_of(&session, &notes[0]);
 
     // The bar names the window in front on its own row, and pressing it lists the resource's
-    // actions: the note's unpin, retitle and tag, which no control of the desk's shows.
+    // actions: the note's unpin and rename, and the group its tags are changed under, which no
+    // control of the desk's shows.
     // The window in front is named twice: once by its frame on the desk, which stands where it
     // was placed, and once by the menu the top bar carries it as. The bar's stands on the bar's
     // row, above every frame.
@@ -298,7 +299,7 @@ fn the_top_bar_lists_the_focused_windows_actions_and_runs_one() {
     until(
         &mut session,
         "the note's actions in the bar's menu",
-        |session| session.shell_says("Retitle") && session.shell_says("Tag"),
+        |session| session.shell_says("Rename…") && session.shell_says("Tags"),
     );
     // The action the menu offers runs on the resource in front: "Unpin" pins the place.
     common::press(&mut session, "Unpin");
