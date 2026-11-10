@@ -729,6 +729,16 @@ async function planActions(agent, apps) {
         ]}});
         steps.push({label: 'writing the next paragraph', tool: 'tilo_do',
           args: {path: `${writeAt}#${write.name}`, args: {text: 'A second invocation, a moment later.'}}});
+        // The recording is of the agent writing on while the person follows: a few more lines,
+        // each its own invocation a moment apart, as an agent working through a list writes.
+        for (const [index, text] of [
+          'Ship the hosted page with the agent invite.',
+          'Check the phone layout once more.',
+          'Write the release note last.',
+        ].entries()) {
+          steps.push({label: `writing line ${index + 1} of the plan`, tool: 'tilo_do',
+            args: {path: `${writeAt}#${write.name}`, args: {text}}});
+        }
         steps.push({label: 'reading the note back', tool: 'tilo_read', args: {path: note}});
       } else {
         log('agent: the note publishes no action to write with', noteActions.map(row => row.name).join(' '));
@@ -986,6 +996,15 @@ async function openNote(tab) {
       if (opened) return `Notes did not open: ${opened}`;
     }
   }
+  // A window that just opened says "Loading" until the app has drawn: an empty Notes offers
+  // "New note" (in its title bar and as its empty state's action) once it has, which on a loaded
+  // machine is a few seconds after the window stands. The press waits for it rather than trying
+  // once while the app still loads.
+  const offered = await until(async () => {
+    const nodes = await semantics(tab);
+    return nodes.some(node => /^saved$/i.test(node.name)) || matching(nodes, /^new note$/i) ? true : undefined;
+  }, 30000, 400);
+  if (!offered) return `Notes offers no note to make 30 s after it opened: ${names(await semantics(tab))}`;
   if (!await withNote() && !await press(tab, /^new note$/i, {what: 'a new note'})) {
     return `Notes offers no note to make: ${names(await semantics(tab))}`;
   }
@@ -1483,8 +1502,16 @@ try {
         // 5. A few of the agent's actions, with the person following: the
         //    recording, and `following-mid-edit` from the first write.
         const steps = await planActions(agent, apps);
-        const pacing = async () => {
+        // The steps up to the first write and its shot are shot at the page's own scale; the
+        // recording is of the ones after it (the agent writing on, the person following), drawn at
+        // one pixel per CSS pixel. The builder renders the page in software, and at twice the
+        // pixels a frame took seconds: a recording of that was a handful of frames, and a still
+        // shot taken beside it held the page long enough for the agent's write to come back
+        // unfinished.
+        const recordFrom = Math.min(steps.length, steps.shootAt + 1);
+        const pacing = async (from, to) => {
           for (const [index, step] of steps.entries()) {
+            if (index < from || index >= to) continue;
             const sending = agent.call(step.tool, step.args);
             if (index === steps.shootAt) {
               // The edit is in flight. Following brings the note's window forward, and the frame
@@ -1515,7 +1542,14 @@ try {
             await sleep(1400);
           }
         };
-        const video = await record(browser, tab, combo, {width, height}, pacing);
+        await pacing(0, recordFrom);
+        const scaled = scale => tab.send('Emulation.setDeviceMetricsOverride',
+          {width, height, deviceScaleFactor: scale, mobile});
+        await scaled(1);
+        await sleep(1500);
+        const video = await record(browser, tab, combo, {width, height}, () => pacing(recordFrom, steps.length));
+        await scaled(2);
+        await sleep(1500);
         // The shots are of the agent working: an action it could not do is
         // the run's failure, not a note about the product.
         for (const step of steps) {
