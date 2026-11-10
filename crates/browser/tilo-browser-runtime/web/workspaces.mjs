@@ -15,10 +15,11 @@
  *
  * Joining through the host takes the person's identity from the caller,
  * which owns creating and keeping it: a person who already joined that host
- * reconnects; otherwise the door admits the person (`POST <admission>join`)
- * and the page joins with the invitation and one-time token at once, with no
- * pairing code. A workspace that is full answers `503` with `Retry-After`:
- * the page waits that long and asks again, until there is a seat.
+ * reconnects; otherwise the person goes through the door, by the entry every
+ * device takes (`enterThroughDoor` in wasm, `device::enter_through_door`),
+ * with no pairing code. A door that says no says why in its own code: a
+ * workspace that is full is waited out as long as it asked, until there is
+ * a seat.
  *
  * A host set up again (a new device key behind the same origin) is not the
  * one this browser kept the person's state for. Nothing kept is reused or
@@ -294,31 +295,19 @@ export function chooseDisplayName(userPublicKey, name, store = globalThis.localS
   return chosen;
 }
 
-const CODES = {400: 'invalid', 403: 'cooling-down', 429: 'too-many', 503: 'full'};
-
 function admissionDoor(workspace) {
   if (!workspace?.admission) throw new HostAdmissionError('invitation-only', `${workspace?.name ?? 'This workspace'} needs an invitation`);
   return workspace.admission;
 }
 
-async function ask({workspace, path, body, fetch}) {
-  const response = await fetch(new URL(path, admissionDoor(workspace)), {
-    method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body),
-  });
-  const reply = await response.json().catch(() => ({}));
-  if (response.ok) return reply;
-  const retry = Number(response.headers.get('retry-after'));
-  const hasRetry = response.headers.get('retry-after') != null && Number.isFinite(retry);
-  // A 503 without Retry-After is the host failing, not the workspace being full.
-  // A 403 naming the person (`removed`) rather than their address, or a
-  // workspace that takes people by invitation (`invitation-only`).
-  const code = response.status === 403 && ['removed', 'invitation-only'].includes(reply.code) ? reply.code
-    : response.status === 503 && !hasRetry ? 'unavailable' : (CODES[response.status] ?? 'unavailable');
-  // A workspace taking people by invitation may keep a wait list, and name where
-  // to ask to be taken off it.
-  const door = code === 'invitation-only' && reply.waitList === true
-    ? {waitList: true, contact: typeof reply.contact === 'string' && reply.contact ? reply.contact : null, mail: reply.mail === true} : null;
-  throw new HostAdmissionError(code, reply.error ?? `${path}: HTTP ${response.status}`, hasRetry && retry > 0 ? retry : null, door);
+/** A door's refusal as the shared entry read it (`HostRefusal`: the door's
+ * code and the wait it asked for), as this page's screens tell them apart: a
+ * ban and a removal alike are `removed`; a door not reached is `unavailable`.
+ * Anything else stands. */
+function doorRefused(error) {
+  if (error?.name !== 'HostRefusal') return error;
+  const code = {banned: 'removed', removed: 'removed', 'invitation-only': 'invitation-only', full: 'full', unanswered: 'unavailable'}[error.code] ?? 'refused';
+  return new HostAdmissionError(code, error.message, Number.isFinite(error.retryAfter) && error.retryAfter > 0 ? error.retryAfter : null);
 }
 
 /** Why the door kept no address, by its `code`: the cases a door page says. */
@@ -575,14 +564,12 @@ const browserCustody = profile => openDeviceCustody({profile, storage: idbStorag
  * devices, as on any new browser.
  */
 export async function joinViaHost({
-  workspace, identity, displayName = defaultDisplayName(identity?.userPublicKey), fetch = globalThis.fetch, memberships = globalThis.localStorage,
+  workspace, identity, displayName = defaultDisplayName(identity?.userPublicKey), memberships = globalThis.localStorage,
   join = joinWorkspace, connect = connectPeer, pair = pairDevice, openCustody = browserCustody, renew = renewDevice,
   wait = backOff, onProgress, ...connectOptions
 }) {
-  admissionDoor(workspace);
+  const door = admissionDoor(workspace);
   const known = keptMembership(workspace, memberships);
-  /** The host's door, for the person `userPublicKey`. */
-  const door = userPublicKey => ask({workspace, path: 'join', fetch, body: {userPublicKey, displayName: fitDisplayName(displayName)}});
   if (known?.paired) {
     // A device paired to a person kept elsewhere: only that person's
     // devices can let it in again, so a failure is the page's to show.
@@ -592,7 +579,7 @@ export async function joinViaHost({
     return withCustody(custody, () => (custody.created
       // A tab with a key of its own: a new device of that person, which
       // only their root can certify. It pairs as a new browser would.
-      ? pair({...common, admission: () => door(known.userPublicKey)})
+      ? pair({...common, door}).catch(error => { throw doorRefused(error); })
       : connect(common)), connectOptions.signal);
   }
   if (!identity?.userPublicKey) throw new TypeError("joining through a host needs the person's identity");
@@ -601,23 +588,9 @@ export async function joinViaHost({
    * door names the same host. `refused`: the host refused the membership
    * this browser kept. `fresh`: join as a new device of the person. */
   const throughDoor = async (custody, refused, fresh) => {
-    let admitted;
-    try {
-      admitted = await door(identity.userPublicKey);
-    } catch (error) {
-      // The host no longer has the person, and its door turns away the
-      // address they joined from because someone was removed: they were taken
-      // out of the workspace, not pruned after an absence. Only an invitation
-      // brings them back. A door that names the person removed says so
-      // whatever this browser kept.
-      if (error?.code === 'removed' || (refused && error?.code === 'cooling-down')) {
-        throw new AdmissionError('removed', removedFrom(workspace.name));
-      }
-      throw error;
-    }
-    // A door that names no origin is its workspace's own (`directory.rs`
-    // in the relay's protocol): that is the host this page asked.
-    const {invitation, admissionToken, origin = workspace.host.origin} = admitted;
+    // The door admits into its workspace's own host (`directory.rs` in the
+    // relay's protocol).
+    const origin = workspace.host.origin;
     const sameHost = custody && known && originOf(origin) === originOf(known.origin);
     if (custody && !sameHost) await custody.close();
     let device = sameHost ? custody : null;
@@ -627,10 +600,20 @@ export async function joinViaHost({
     }
     let admittedAt = null;
     const joining = () => join({
-      ...connectOptions, origin, invitation, admissionToken, identity, displayName, ...(device ? {custody: device} : {}),
+      ...connectOptions, origin, door, identity, displayName, ...(device ? {custody: device} : {}),
       onProgress: event => { if (event.phase === 'admitted') admittedAt = event.room; onProgress?.(event); },
     });
-    const peer = fresh ? await withCustody(device, joining, connectOptions.signal) : await joining();
+    let peer;
+    try {
+      peer = fresh ? await withCustody(device, joining, connectOptions.signal) : await joining();
+    } catch (error) {
+      const said = doorRefused(error);
+      // The workspace's people took the person out (a ban, or a removal
+      // within the day): only an invitation brings them back. A door that
+      // turns away a membership this browser kept says the same.
+      if (said?.code === 'removed') throw Object.assign(new AdmissionError('removed', removedFrom(workspace.name)), {reason: said.message});
+      throw said;
+    }
     keepMembership(memberships, workspace, {origin, room: admittedAt ?? peer.workspace, userPublicKey: identity.userPublicKey});
     return peer;
   };
@@ -656,10 +639,7 @@ export async function joinViaHost({
       try {
         return await throughDoor(held, refused, renewals > 0);
       } catch (error) {
-        if (error?.code === 'refused') {
-          if (/banned/.test(error.reason ?? '')) {
-            throw Object.assign(new AdmissionError('removed', removedFrom(workspace.name)), {reason: error.reason});
-          }
+        if (error?.name === 'AdmissionError' && error.code === 'refused') {
           // The first new device took this tab's key in place of the old one.
           if (renewals > 0) held = null;
           renewals += 1;
@@ -732,11 +712,9 @@ export async function pairViaHost({
   if (connectOptions.invite != null && !/^[0-9a-f]{32}$/.test(connectOptions.invite)) {
     throw new HostAdmissionError('invalid', 'This pairing link is damaged');
   }
-  const admission = workspace?.admission
-    ? () => ask({workspace, path: 'join', fetch, body: {userPublicKey, displayName: fitDisplayName(displayName)}})
-    : undefined;
-  const peer = await pair({...connectOptions, origin, workspace: room, userPublicKey, label, displayName, fetch, admission,
-    profile: identityProfile({userPublicKey}, origin)});
+  const door = workspace?.admission ?? undefined;
+  const peer = await pair({...connectOptions, origin, workspace: room, userPublicKey, label, displayName, fetch, door,
+    profile: identityProfile({userPublicKey}, origin)}).catch(error => { throw doorRefused(error); });
   keepMembership(memberships, {host: {origin}}, {origin, room: peer.workspace ?? room, userPublicKey, paired: true});
   return peer;
 }

@@ -62,6 +62,13 @@ pub(crate) fn refusal_error(refusal: &HostRefusal) -> JsValue {
     {
         let _ = Reflect::set(&error, &"refusal".into(), &typed);
     }
+    if let Some(wait) = refusal.retry_after_secs {
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a wait in seconds is far below what a JavaScript number holds exactly"
+        )]
+        let _ = Reflect::set(&error, &"retryAfter".into(), &(wait as f64).into());
+    }
     error.into()
 }
 
@@ -779,6 +786,65 @@ pub async fn accept_invitation(
             label: &options.label,
             name: &options.name,
             token: options.admission_token.as_deref().map(str::as_bytes),
+        },
+    )
+    .await
+    .map_err(|refusal| refusal_error(&refusal))?;
+    Ok(serde_json::json!({
+        "admission": admission,
+        "certificate": {"cert": cert, "hostCert": host_cert},
+    })
+    .to_string())
+}
+
+/// Go through a workspace's door as this page's device (`custody`), through the one entry every
+/// device takes ([`tilo_session_host::device::enter_through_door`]): `doorPost` reaches the door's
+/// origin and `doorPath` is its `join` below it; `post` reaches the host the door admits into.
+/// `root` and `options` as [`accept_invitation`] takes them. Resolves as it does.
+///
+/// # Errors
+///
+/// Rejects with an `Error` named `HostRefusal` whose `code` is the door's own (`banned`,
+/// `removed`, `invitation-only`, `full`, with `retry_after_secs` the wait it asked for) or the
+/// entry's (`not_admitted`, `no_certificate`, `unanswered`).
+#[wasm_bindgen(js_name = enterThroughDoor)]
+pub async fn enter_through_door(
+    door_post: Function,
+    door_path: String,
+    post: Function,
+    custody: JsValue,
+    root: JsValue,
+    options: String,
+) -> Result<String, JsValue> {
+    use tilo_session_host::device::{Entering, Held};
+    let options: Accepting = serde_json::from_str(&options).map_err(js_error)?;
+    let held: Option<Held> = options
+        .held
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(js_error)?;
+    let device = PageSigner::from_js(&custody)?;
+    let root = if root.is_undefined() || root.is_null() {
+        None
+    } else {
+        Some(PageSigner::from_js(&root)?)
+    };
+    let door_http = PageHttp(door_post);
+    let door = tilo_relay_client::login::Door {
+        client: &door_http,
+        path: door_path,
+    };
+    let (admission, cert, host_cert) = tilo_session_host::device::enter_through_door(
+        &PageHttp(post),
+        &door,
+        &device,
+        Entering {
+            held: held.as_ref(),
+            root: root.as_ref().map(|root| root as &dyn DeviceSigner),
+            label: &options.label,
+            name: &options.name,
+            token: None,
         },
     )
     .await

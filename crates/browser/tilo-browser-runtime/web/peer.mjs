@@ -1318,15 +1318,14 @@ export async function openInvitation(site, secret, {runtime} = {}) {
  * Become a new device of the person `userPublicKey` (hex) at the host at
  * `origin`, with no root on this page: the host relays the request, this
  * page shows `onPairingCode(code)`, and one of the person's devices that
- * holds their root approves it. Then, with `admission` (resolving to the
- * host's `{invitation, admissionToken, origin?}` for the person), the
- * device joins that workspace as a device of theirs; without, it connects
- * to `workspace`. Takes `connectPeer`'s other options; the device key is
+ * holds their root approves it. Then, with `door` (a workspace's door, its
+ * base URL), the device goes through it into that workspace as a device of
+ * theirs; without, it connects to `workspace`. Takes `connectPeer`'s other options; the device key is
  * `custody`, else a free one of `profile` (default the person's profile for
  * that host). Resolves to the `CertifiedPeer`.
  */
 export async function pairDevice(options) {
-  const {origin, userPublicKey, label = 'Browser', admission, signal} = options;
+  const {origin, userPublicKey, label = 'Browser', door, signal} = options;
   if (!origin || !userPublicKey) throw new TypeError('origin and userPublicKey are required');
   const profile = options.profile ?? identityProfile({userPublicKey}, origin);
   // A caller's device key (`options.custody`, of `profile`) stays the
@@ -1341,9 +1340,8 @@ export async function pairDevice(options) {
       options.invite ?? null, custodyForWasm, code => options.onPairingCode?.(code),
       JSON.stringify(info.address));
     const common = {...options, identity: undefined, label, profile, custody: own, runtime};
-    if (!admission) return connect({...common, deviceCertificate: certified});
-    const offer = await admission();
-    return join({...common, origin: offer.origin ?? origin, invitation: offer.invitation, admissionToken: offer.admissionToken, certified});
+    if (!door) return connect({...common, deviceCertificate: certified});
+    return join({...common, origin, door, certified});
   };
   return options.custody ? pairing() : withCustody(own, pairing, signal);
 }
@@ -1395,15 +1393,18 @@ async function keptDeviceCertificate({runtime, profile, slot = 0, store, desktop
   }
 }
 
+/** The codes a door refuses with (`DoorRefusalCode`), and its entry when not reached. */
+const DOOR_CODES = new Set(['banned', 'removed', 'invitation-only', 'full', 'refused', 'unanswered']);
+
 async function join({
-  origin, invitation, identity, displayName = '', label = 'Browser', signal, onProgress,
+  origin, invitation, door, identity, displayName = '', label = 'Browser', signal, onProgress,
   admissionToken, runtime, custody, profile, fetch: fetcher, certified, ...connectOptions
 }) {
   // A device certified elsewhere (`certified`, a paired device) asks as
   // itself; any other asks as the person whose root the page holds.
   if (!certified) identity ??= currentIdentity();
   if (!identity && !certified) throw new IdentityError('locked', 'Unlock the identity first');
-  if (!origin || !invitation) throw new TypeError('origin and invitation are required');
+  if (!origin || !(invitation || door)) throw new TypeError('origin and an invitation or a door are required');
   runtime ??= await pageRuntime(connectOptions.desktop);
   const person = identity ?? {userPublicKey: hexOf(JSON.parse(certified).cert.user_public_key)};
   profile ??= identityProfile(person, origin);
@@ -1416,12 +1417,24 @@ async function join({
   // The shared entry chooses the certificate (the one this very key holds
   // from this host, else one the root makes now) and has the workspace admit
   // this device under it.
+  const accepting = JSON.stringify({held, label: fitDisplayName(label), name: fitDisplayName(displayName || label),
+    ...(admissionToken ? {admissionToken} : {})});
   let accepted;
   try {
-    accepted = await runtime.acceptInvitation(httpsPost(origin, fetcher), invitationBytes(invitation), custodyForWasm,
-      identity ?? undefined, JSON.stringify({held, label: fitDisplayName(label), name: fitDisplayName(displayName || label),
-        ...(admissionToken ? {admissionToken} : {})}));
+    if (door) {
+      // Through a workspace's door (`door`, its base URL): the shared entry
+      // asks it to let the person in and redeems what it answers.
+      const at = new URL('join', door);
+      accepted = await runtime.enterThroughDoor(httpsPost(at.origin, fetcher), at.pathname, httpsPost(origin, fetcher),
+        custodyForWasm, identity ?? undefined, accepting);
+    } else {
+      accepted = await runtime.acceptInvitation(httpsPost(origin, fetcher), invitationBytes(invitation), custodyForWasm,
+        identity ?? undefined, accepting);
+    }
   } catch (error) {
+    // A door's own refusal (its code, and the wait it asked for) is the
+    // caller's to show: `workspaces.mjs` reads it.
+    if (door && DOOR_CODES.has(error?.code)) throw error;
     console.warn('join refused:', error?.code ?? error?.name, error?.message ?? error);
     throw Object.assign(new AdmissionError('refused', REFUSED_JOIN), {reason: error?.message ?? String(error), code: 'refused'});
   }
