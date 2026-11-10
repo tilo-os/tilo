@@ -425,7 +425,7 @@ fn group_first_rows(node: &InspectionNode, keys: &mut Vec<String>, out: &mut Vec
                     continue;
                 }
                 // A closed group's heading heads no row here: the next heading stands after it.
-                let Some(level) = rows.get(at + 1).and_then(|row| row.level) else {
+                let Some(level) = rows.get(at.saturating_add(1)).and_then(|row| row.level) else {
                     continue;
                 };
                 if level > base {
@@ -439,7 +439,7 @@ fn group_first_rows(node: &InspectionNode, keys: &mut Vec<String>, out: &mut Vec
                              its list starts at: a row indented stands under the row over it, and \
                              no row of its group stands there",
                             heading.name.as_deref().unwrap_or_default(),
-                            level - base
+                            level.saturating_sub(base)
                         ),
                     );
                 }
