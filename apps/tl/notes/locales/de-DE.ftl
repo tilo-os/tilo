@@ -14,7 +14,16 @@ d-dpj7scfe = Titel
 
 d-olsyp3aw = Text
 
+d-pmjerv63 = Bilder
+    .doc = Die Bilder, die die Notiz zeigt, nach der Adresse ihres Inhalts: der Name, unter dem jedes aufgenommen wurde.
+
 d-ssu2tbnf = Übergeordnet
+
+d-erijxfd3 = Quelle
+    .doc = Die Datei, aus der die Notiz importiert wurde, nach der Adresse ihres Inhalts: dieselbe Datei noch einmal zu importieren öffnet diese Notiz, statt eine zweite anzulegen.
+
+d-uquoltho = Herkunft
+    .doc = Der Name, den diese Datei hatte, samt Pfad in ihrem Archiv: ein Import, der die Verschachtelung eines Pakets behält, findet darüber die Notiz, unter der eine Seite steht.
 
 d-gfk6rqxp = Angeheftet
 
@@ -32,6 +41,9 @@ d-37dxigeq = Untergeordnete Notiz
 
 d-7jhaq3a5 = Verschieben nach
     .doc = Verschiebt eine Notiz an eine Stelle im Baum: unter das Ende von `parent` (oder ganz oben ohne), oder dorthin, wo `before` steht.
+
+d-ai4sxgvt = Danach verschieben
+    .doc = Verschiebt eine Notiz direkt hinter `n` und alle Notizen unter ihr: die Stelle, die ein Ablegen hinter einer Zeile verlangt, und die die Zeile nennt, hinter der sie landet, nicht die danach.
 
 d-c34rzynx = Duplizieren
     .doc = Kopiert eine Notiz mit allen Notizen unter ihr, direkt nach der kopierten.
@@ -54,9 +66,32 @@ d-7ow26bju = Verschlagworten
 d-3u3bevec = Schlagwort entfernen
     .doc = Nimmt ein Schlagwort von einer Notiz.
 
+d-4s5iqnfo = Bild einfügen
+    .doc = Setzt ein Bild in eine Notiz, dort wo ihre Worte enden: die Person wählt die Datei, und die Notiz behält die Adresse ihres Inhalts statt des Bildes, und den Namen, unter dem es aufgenommen wurde.
+    .did = fügte ein Bild hinzu
+
+d-xptsjaii = Markdown exportieren
+    .doc = Eine Notiz als Markdown: ihr Titel, dann ihr Text, jedes Bild, das sie zeigt, daneben als `<note>/images/<name>`, ein Pfad, dem ein anderer Leser der Datei folgt und den diese App wieder als Adresse der Bilddaten liest.
+
+d-2e5dloct = Notiz exportieren
+    .doc = Eine Notiz als Datei: ihr Markdown, und die Bilder, die sie zeigt, daneben.
+
+d-cdjz7d5y = Notizbuch exportieren
+    .doc = Das Notizbuch als Zip, eine Markdown-Datei für jede Notiz: die einer Notiz unter dem Ordner der Notiz, in der sie steht, und die Bilder, die sie zeigt, in ihrem eigenen Ordner `images` daneben.
+
+d-t4nxxtng = Markdown importieren
+    .doc = Importiert eine Markdown-Datei als Notiz oben im Baum oder öffnet die Notiz, die diese Datei schon angelegt hat: eine Notiz behält die Adresse der Datei, aus der sie kam, dieselbe Datei zweimal zu importieren ergibt also eine Notiz.
+    .did = importierte eine Notiz
+
+d-h3zczsen = Archiv importieren
+    .doc = Importiert ein Zip aus Markdown (ein Notizbuch, das diese App exportiert hat, oder einen Notion-Export) als Notizen unter dem Notizbuch, eine Seite unter der Seite, die sie hielt, in einer Änderung: Rückgängig nimmt den ganzen Import zurück.
+    .did = importierte ein Notizbuch
+
 d-m6rqg3kf = Angeheftet
 
 d-cn43mwee = Verschieben nach~present
+
+d-7in2x6ql = Danach verschieben~present
 
 d-ojfhuiuf = Untergeordnete hinzufügen
     .w-new-sub-note = Untergeordnete Notiz
@@ -77,6 +112,17 @@ d-tmqqtkeb = Notizen
 
 d-akcqjax3 = Notizbuch
 
+d-qrsfr4a5 = Notizbuchmenü
+    .w-file = Datei
+    .w-import-markdown = Markdown importieren…
+    .w-import-a-zip-of-markdown = Ein Zip aus Markdown importieren…
+    .w-export-the-notebook = Das Notizbuch exportieren…
+
 d-xqxkoqbj = Notizzeile
 
 d-6wqou47w = Notizeditor
+
+d-x7x7sbtj = Notizmenü
+    .w-file = Datei
+    .w-insert-an-image = Ein Bild einfügen…
+    .w-export = Exportieren…
