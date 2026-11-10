@@ -1967,6 +1967,7 @@ mod tests {
                 "Options:\n",
                 "  -w, --workspace <WORKSPACE>  A hosted workspace to act in, by name or id (key: TILO_API_KEY)\n",
                 "  -h, --help                   Print help\n",
+                "  -V, --version                Print version\n",
                 "\n",
                 "Examples:\n",
                 "  tilo open calculator                       Open Calculator\n",
