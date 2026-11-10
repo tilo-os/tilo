@@ -29,7 +29,9 @@ pkg=${2:?$usage}
 tool=$(cd "$(dirname "$0")" && pwd)
 cargo=${CARGO:-cargo}
 target_dir=${CARGO_TARGET_DIR:-$tool/../../../target}/wasm-split-tool
-splitter=$("$cargo" build --quiet --release --locked --manifest-path "$tool/Cargo.toml" \
+# Built from the tool's own directory, so a cargo that compiles in another
+# checkout gets a path it has: the tool is its own workspace.
+splitter=$(cd "$tool" && "$cargo" build --quiet --release --locked \
   --target-dir "$target_dir" --message-format=json-render-diagnostics |
   python3 -c 'import json, sys
 for line in sys.stdin:
