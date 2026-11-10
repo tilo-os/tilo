@@ -11,8 +11,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 #[cfg(target_os = "linux")]
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
 use iroh::{EndpointAddr, EndpointId};
 #[cfg(target_os = "linux")]
 use neighbour_wire::NeighbourMsg;
@@ -30,10 +32,9 @@ use tilo_session_client::client::Desk as GateDesk;
 use tilo_session_client::client::Host;
 #[cfg(target_os = "linux")]
 use tilo_session_client::gate::WorkspaceAction;
-use tilo_session_client::{
-    Client as SessionClient, Cmd, Device, Enrolled, Event, Outbox, OwnPresence, SayPresence, Topic,
-    Transport,
-};
+use tilo_session_client::{Client as SessionClient, Device, OwnPresence, Transport};
+#[cfg(target_os = "linux")]
+use tilo_session_client::{Cmd, Enrolled, Event, Outbox, SayPresence, Topic};
 
 #[cfg(target_os = "linux")]
 use super::{Enrolling, Entering};
@@ -1155,6 +1156,7 @@ impl Client {
             let (_host_events, host_arrived) = std::sync::mpsc::channel();
             Rc::new(Seat::bare(commands, host_arrived))
         };
+        #[cfg(target_os = "linux")]
         let outgoing = Rc::clone(&plane.outgoing);
         let inner = SessionClient::over(plane, device, own);
         let hosting = Rc::new(Hosting {

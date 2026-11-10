@@ -91,7 +91,7 @@ pub struct BrokerChannels {
     /// History pages this device asked its peers for, by artifact: the
     /// `before_seq` bound and when the request left. Answers are accepted
     /// only while a request is outstanding.
-    pub peer_history_requests: HashMap<ArtifactId, (u64, std::time::Instant)>,
+    pub peer_history_requests: HashMap<ArtifactId, (u64, tilo_clock::Instant)>,
     /// The route (app, workspace, record) each artifact's ops were validated on
     /// this session. A history page is only ever answered to that workspace.
     pub routes: HashMap<ArtifactId, crate::route::CrdtRoute>,
@@ -307,7 +307,7 @@ impl BrokerChannels {
         if self.history.is_none() {
             return false;
         }
-        let now = std::time::Instant::now();
+        let now = tilo_clock::Instant::now();
         if let Some((bound, at)) = self.peer_history_requests.get(&artifact)
             && *bound == before_seq
             && now.saturating_duration_since(*at) < PEER_HISTORY_RETRY
@@ -333,7 +333,7 @@ impl BrokerChannels {
         let Some((bound, at)) = self.peer_history_requests.get(&artifact).copied() else {
             return (0, Unsynced::default());
         };
-        if std::time::Instant::now().saturating_duration_since(at) > PEER_HISTORY_WINDOW {
+        if tilo_clock::Instant::now().saturating_duration_since(at) > PEER_HISTORY_WINDOW {
             self.peer_history_requests.remove(&artifact);
             return (0, Unsynced::default());
         }

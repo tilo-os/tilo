@@ -1269,29 +1269,13 @@ fn present_desktop(
     );
     // What the session asks the page for its windows, and the workspace's peer in it.
     let asks = session_asks::Asks::new(config.peer);
-    // The person's mentions: the session's role over what this page replicated, told through the
-    // host's notifications.
-    let mentions = mention_notices::role(
+    let mentions = mention_notices::over(
         mentions_store,
-        // A page with no workspace accepted yet follows no record: nothing is told.
-        asks.peer().unwrap_or_default(),
+        &asks,
         &config.author(),
-        {
-            let seen = Rc::clone(&here);
-            let known = Rc::clone(&people);
-            Rc::new(move |user: &str| {
-                seen.borrow()
-                    .person(user)
-                    .or_else(|| known.borrow().get(user).cloned())
-                    .map_or_else(tilo_desktop::here::guest_label, |(name, _)| name)
-            })
-        },
-        {
-            let woken = std::sync::Arc::clone(&shared.woken);
-            std::sync::Arc::new(move || {
-                woken.store(true, std::sync::atomic::Ordering::Release);
-            })
-        },
+        &people,
+        &here,
+        &shared.woken,
     );
     let search_wake = proxy()?;
     let search = crate::page_search::mount(

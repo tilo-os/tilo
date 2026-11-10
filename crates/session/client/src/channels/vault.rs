@@ -155,7 +155,13 @@ fn legacy_secret_tool_load(locator: &str) -> Result<Option<Zeroizing<Vec<u8>>>, 
     Ok(Some(decoded))
 }
 
+/// No key is kept by a store this platform has no `secret-tool` for: the answer is the one the
+/// Linux reader gives for a key that is not there.
 #[cfg(not(target_os = "linux"))]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "it answers as the Linux reader does, whose lookup can fail"
+)]
 fn legacy_secret_tool_load(_locator: &str) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
     Ok(None)
 }

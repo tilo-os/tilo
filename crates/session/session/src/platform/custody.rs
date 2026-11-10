@@ -5,8 +5,11 @@
 //! is the client's seam (`tilo_session_client::custody::Custody`); this desktop proves it over the
 //! collaboration plane.
 
+#[cfg(target_os = "linux")]
 use tilo_desktop_model::WorkspaceId;
+#[cfg(target_os = "linux")]
 use tilo_identity_host::custody::HostIdentity;
+#[cfg(target_os = "linux")]
 use tilo_peer_state::owner::NativeWorkspaceOwner;
 
 pub use tilo_session_client::custody::Custody;

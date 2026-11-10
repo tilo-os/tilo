@@ -381,6 +381,7 @@ mod window_warmth;
 mod workspace_branch;
 #[cfg(target_os = "linux")]
 mod workspace_delete;
+#[cfg(target_os = "linux")]
 mod workspace_nodes;
 #[cfg(target_os = "linux")]
 mod workspace_settings;

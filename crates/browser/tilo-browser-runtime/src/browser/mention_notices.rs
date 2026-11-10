@@ -7,7 +7,10 @@
 //! ([`tilo_session::platform::notice::Toolkit`]). Choosing one opens the place the mention is in,
 //! as any open goes: through the desktop's session, as this person.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use tilo_actions::remote::{ActionHost as _, InvokeArgument, InvokeRequest};
 use tilo_session::mentions::Mentions;
@@ -137,4 +140,49 @@ impl Desktop {
         drop(self.session.invoke(&self.caller(), request));
         self.shared.wake();
     }
+}
+
+/// What the person's mentions are told by, kept where their settings are
+/// ([`crate::browser`]'s mount hands them in): the session's role over what this page replicated,
+/// told through the host's notifications, drawing the frame `woken` asks for.
+pub(super) fn over(
+    store: Rc<dyn durable_store::DurableStore>,
+    asks: &crate::browser::session_asks::Asks,
+    person: &str,
+    people: &Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>>,
+    here: &tilo_desktop::here::Here,
+    woken: &Arc<std::sync::atomic::AtomicBool>,
+) -> Mentions {
+    role(
+        store,
+        asks.peer().unwrap_or_default(),
+        person,
+        name_of(here, people),
+        waking(woken),
+    )
+}
+
+/// The name the person's page knows `user` by: who is here, else who it has met, else a guest's.
+fn name_of(
+    here: &tilo_desktop::here::Here,
+    people: &Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>>,
+) -> Rc<dyn Fn(&str) -> String> {
+    let seen = Rc::clone(here);
+    let known = Rc::clone(people);
+    Rc::new(move |user: &str| {
+        seen.borrow()
+            .person(user)
+            .or_else(|| known.borrow().get(user).cloned())
+            .map_or_else(tilo_desktop::here::guest_label, |(name, _)| name)
+    })
+}
+
+/// What tells the page it has something to read.
+fn waking(
+    woken: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> std::sync::Arc<dyn Fn() + Send + Sync> {
+    let woken = std::sync::Arc::clone(woken);
+    std::sync::Arc::new(move || {
+        woken.store(true, std::sync::atomic::Ordering::Release);
+    })
 }

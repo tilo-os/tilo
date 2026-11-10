@@ -4,6 +4,14 @@
 //! A host brings the transport; the client says what a participant says on it. What only one host
 //! can do — a desktop's workspaces, channels, fabric and transfers — stays that host's.
 
+#![cfg_attr(
+    all(target_arch = "wasm32", target_os = "unknown"),
+    allow(
+        clippy::arc_with_non_send_sync,
+        reason = "a page runs on one thread, and what it keeps from JavaScript is never `Send` or `Sync`"
+    )
+)]
+
 pub mod channels;
 pub mod client;
 pub mod custody;

@@ -172,6 +172,9 @@ impl Transmit<'_> {
     /// again after GSO has been disabled because the last datagram in a GSO
     /// batch is allowed to be smaller than the segment size.
     #[cfg_attr(apple_fast, allow(dead_code))] // Used by prepare_msg, which is unused when apple_fast
+    // A page sends through the browser's own socket: neither the unix nor the windows backend,
+    // the two callers, is built for it.
+    #[cfg_attr(wasm_browser, allow(dead_code))]
     fn effective_segment_size(&self) -> Option<usize> {
         match self.segment_size? {
             size if size >= self.contents.len() => None,
