@@ -460,24 +460,23 @@ globalThis.__tiloPage ||= (() => {
   }
   // A field that is secret by its nature: a password field, one the page
   // says holds a card's number or security code, a password or a one-time
-  // code, and one the page draws as dots. A field that was one stays one: a
+  // code, and one the page draws as dots. A password field stays one: a
   // page that shows a password on request turns its field into plain text,
-  // and what it holds is no less a secret for that. What such a field holds
-  // is never read out, recorded or told, whatever wrote it.
+  // and what it holds is no less a secret for that. What the page says of
+  // a field by its autocomplete or its style holds for as long as the page
+  // says it. What a secret field holds is never read out, recorded or told,
+  // whatever wrote it.
   const SECRET_TOKENS = /(^|\s)(cc-[a-z-]+|one-time-code|current-password|new-password)(\s|$)/i;
-  const onceSecret = new WeakSet();
+  const wasPassword = new WeakSet();
   function secret(element) {
     if (!element || element.nodeType !== 1) return false;
-    if (onceSecret.has(element)) return true;
+    if (wasPassword.has(element)) return true;
     const tag = element.localName;
-    let is = (tag === 'input' && type(element) === 'password') ||
-      SECRET_TOKENS.test(element.getAttribute('autocomplete') || '');
-    if (!is && (tag === 'input' || tag === 'textarea')) {
-      const drawn = getComputedStyle(element).webkitTextSecurity;
-      is = !!drawn && drawn !== 'none';
-    }
-    if (is) onceSecret.add(element);
-    return is;
+    if (tag === 'input' && type(element) === 'password') { wasPassword.add(element); return true; }
+    if (SECRET_TOKENS.test(element.getAttribute('autocomplete') || '')) return true;
+    if (tag !== 'input' && tag !== 'textarea') return false;
+    const drawn = getComputedStyle(element).webkitTextSecurity;
+    return !!drawn && drawn !== 'none';
   }
   function checked(element) {
     const aria = element.getAttribute('aria-checked');
@@ -2505,7 +2504,7 @@ globalThis.__tiloPage ||= (() => {
         // A password field the page turns into plain text is still one.
         for (const record of records)
           if (record.type === 'attributes' && record.attributeName === 'type' &&
-              String(record.oldValue).toLowerCase() === 'password') onceSecret.add(record.target);
+              String(record.oldValue).toLowerCase() === 'password') wasPassword.add(record.target);
       }).observe(document, {subtree: true, childList: true, attributes: true, attributeOldValue: true});
       heldNow();
       shapesNow();

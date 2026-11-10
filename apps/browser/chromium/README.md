@@ -525,9 +525,11 @@ may act and passes the name of the invoker it admitted.
 - **No secret is in the record.** A field is secret by its nature: a password
   field, a field whose `autocomplete` says it holds a card detail (`cc-…`), a
   current or new password or a one-time code, and a field the page draws as
-  dots (`-webkit-text-security`). A field that was one stays one for as long
+  dots (`-webkit-text-security`). A password field stays secret for as long
   as its document lives, so a page that shows a password on request (its
-  field turned into plain text) is still read by length only. What is written
+  field turned into plain text) is still read by length only; what
+  `autocomplete` or the page's style says of a field holds while the page
+  says it. What is written
   into such a field is in the page and nowhere else. Its record entry carries
   `secret: true` and no `text`, whether or not the caller marked the fill
   `secret`. A `press` that writes a character there answers `Pressed a key in
