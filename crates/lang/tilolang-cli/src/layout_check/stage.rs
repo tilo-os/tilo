@@ -1058,6 +1058,54 @@ mod tests {
         );
     }
 
+    /// A window with nothing to act on offers no action: Mail with no account yet says where an
+    /// account comes from and stands no New message in its bar, at every width the bar has room
+    /// for the words or not, while a window with an account offers it as the primary button.
+    #[test]
+    fn a_mail_window_with_no_account_offers_no_new_message() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("mail");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let shown = |scenario: &str, (width, height): (u32, u32), text: f32| {
+            let theme = ui::Theme::light().with_text_scale(text);
+            let mut staged = Staged::over(
+                &app,
+                &packages,
+                scenario,
+                (width, height),
+                theme.clone(),
+                None,
+                &[],
+            )
+            .expect("the scenario stages");
+            staged
+                .lay_out(
+                    (width, height),
+                    theme,
+                    ui::interaction::InteractionEnvironment::TOUCH,
+                    1.0,
+                )
+                .expect("the window lies out");
+            let bar = staged.harness_mut().window_bar_layout(f64::from(width));
+            bar.controls
+                .into_iter()
+                .filter(|control| control.name == "New message")
+                .map(|control| (control.slot, control.primary))
+                .collect::<Vec<_>>()
+        };
+        for (size, text) in [((320, 568), 1.0_f32), ((390, 844), 1.5), ((1280, 800), 1.0)] {
+            assert!(
+                shown("no account yet", size, text).is_empty(),
+                "a window with no account offers nothing to press: {size:?} at text {text}"
+            );
+        }
+        assert_eq!(
+            shown("a busy inbox", (1280, 800), 1.0),
+            [("action", true)],
+            "an account's window offers New message as its primary button"
+        );
+    }
+
     /// The agent's mark on the control the tilolang Tasks app binds: an action the app
     /// published lands on the control that runs it and nowhere else, and the frame draws the
     /// agent there — the same pixels rule the app's own tests hold a marker to.

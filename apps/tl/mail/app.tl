@@ -171,16 +171,16 @@ action set_signature(a: Account, signature: Text) (icon: .pen_tool, label: "Sign
 /// Starts a message from the account.
 primary action new_message(a: Account) -> Draft (icon: .pencil, label: "New message") {
     let m = root Mail
-    let signature = signature_of(m, a.key)
-    m.drafts.insert(Draft(from: a.key, body: signature))
+    m.drafts.insert(Draft(from: a.key, body: signature_of(m, a.key)))
 }
 
-/// Starts a message from the first account.
+/// Starts a message from the first account, where there is one: a window with no account offers
+/// nothing to press and says where an account comes from, rather than a control that cannot run.
 primary action new_draft(m: Mail) -> Draft (icon: .pencil, label: "New message") {
     require not m.accounts.is_empty() "Add a mail account in Settings first"
+    applies not m.accounts.is_empty() "Add a mail account in Settings first"
     let from = m.accounts.first()?.key ?? ""
-    let signature = signature_of(m, from)
-    m.drafts.insert(Draft(from: from, body: signature))
+    m.drafts.insert(Draft(from: from, body: signature_of(m, from)))
 }
 
 /// The subject an answer to a conversation has.
