@@ -10,7 +10,11 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+// The page runs this too, where std's clock does not exist: time is read
+// through the toolkit's.
+use ui::time::Instant;
 
 use durable_store::{DurableStore, StorageKey, WriteOp};
 use serde_json::Value;
@@ -49,8 +53,8 @@ const VIEW_PACKAGE: &str = "so.tilo.session.activity";
 
 /// Seconds since the epoch, as a change of the desk names its time.
 pub(crate) fn now_seconds() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    ui::time::SystemTime::now()
+        .duration_since(ui::time::UNIX_EPOCH)
         .map_or(0, |since| {
             i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
         })
