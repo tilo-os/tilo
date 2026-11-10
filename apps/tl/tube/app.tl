@@ -466,9 +466,9 @@ view feed(yt: YouTube) {
                     } else {
                         // The videos under it are what was last fetched: the notice says why
                         // YouTube does not stand well, in YouTube's own words, and `Try again`
-                        // reads the feed again. The page's gutter holds the notice and the grid
-                        // on one column.
-                        stack(gap: .none) {
+                        // reads the feed again. The column's own gap holds the notice over the
+                        // grid, so the card keeps its distance above and below alike.
+                        stack(gap: .group) {
                             std.service_banner(
                                 "YouTube",
                                 yt.online,

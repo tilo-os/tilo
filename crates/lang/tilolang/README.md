@@ -386,7 +386,7 @@ for a period or time that passed while every device was off, and never by pollin
 **Effects.** An action whose body reads what a replay cannot compute again says so:
 `uses time` after its parameters, comma-separated when it reads more (`uses web, random`).
 Reading the clock or the person's zone anywhere in the body — `now`, `today`, a time of no
-zone, `t.day()`, `t.time_of_day()`, `Time.parse(...)`, `r.next_at(...)` — is an error until
+zone, `t.day()`, `t.time_of_day()`, `t.clock()`, `Time.parse(...)`, `r.next_at(...)` — is an error until
 it does (E121), and so is a `fn` or an action it calls that reads them. An
 invocation records what it read in its journal: the moment and the zone once per invocation,
 and each draw and fetch with its answer as the language grows into them. The journal is kept beside the change an action makes, so history
@@ -800,7 +800,9 @@ What a day and a moment are made of reads on them. On a `Date`: `d.weekday()` is
 week, matched as `.monday` … `.sunday`; `d.day()`, `d.month()` and `d.year()` are its parts;
 `d.start_of_week()` is the first day of the week it stands in, the day the person's region
 starts one on. On a `Time`: `t.day()` is the `Date` it falls on for the person, in their zone
-as `today` reads it, and `t.time_of_day()` the `Duration` since their midnight.
+as `today` reads it, `t.time_of_day()` the `Duration` since their midnight, and `t.clock()` the
+time of day as the person reads a clock — `14:05`, or `2:05 PM` in the style they chose in
+Settings, as every date and time a window shows reads.
 
 An action reads the moment it is invoked at, `now`, and the day that falls on for the person,
 `today`; nothing else does, because a moment is a fact of the invocation, recorded with the

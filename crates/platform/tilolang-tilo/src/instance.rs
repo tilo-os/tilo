@@ -186,6 +186,10 @@ impl crate::runtime::ShownHost for PlatformShown {
     fn shown(&self, kind: &str, value: &str) -> String {
         self.0.shown(kind, value)
     }
+
+    fn clock(&self, hour: u32, minute: u32) -> String {
+        self.0.clock(hour, minute)
+    }
 }
 
 /// One of the window's two views: a resource shown through a view.

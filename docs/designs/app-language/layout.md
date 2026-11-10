@@ -88,7 +88,9 @@ at one x, nesting indents by one gutter, a box's rows end at one right edge, one
 selected once, a list offers one add entry, a name a screen reader announces is words rather than a
 code identifier, a destructive control says "Delete", a surface holds no surface of its own kind,
 a narrow window keeps a 16 px gutter, and a surface whose corners round — a card, a notice — keeps
-a gutter from the edge of the column or window it stands in, where an edge would cut its shape.
+a gutter from the edge of the column or window it stands in, where an edge would cut its shape, and
+the gap of a sibling from what stands over and under it, so a list under a notice is not read as a
+row of it.
 
 It reads the words a window shows where their ink stands, the bar's own painted labels among
 them — the words of its tabs, its location, its pickers and its notices: two words drawn in one

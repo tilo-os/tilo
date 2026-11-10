@@ -1808,3 +1808,73 @@ fn a_rounded_surface_keeps_a_gutter_from_its_column_and_the_window() {
         on_window[0].detail
     );
 }
+
+/// A card keeps a sibling's gap from what stands over and under it: a notice glued to the list
+/// under it, or a card pressed against the one above it, is found — and the same card with the
+/// gap the toolkit's rhythm gives is no finding. A box beside it in a row is no neighbour.
+#[test]
+fn a_card_keeps_a_gap_from_its_neighbours() {
+    let column_with = |children: Vec<InspectionNode>| {
+        let mut column = node("Stack", "column", [280.0, 0.0, 620.0, 600.0], None);
+        column.children = children;
+        let mut root = node("TilolangWindow", "window", [0.0, 0.0, 900.0, 600.0], None);
+        root.children.push(column);
+        root
+    };
+    let found = |root: &InspectionNode| -> Vec<Problem> {
+        inspect(root, (900, 600), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::CrampedCard)
+            .collect()
+    };
+
+    // A notice standing on the list under it, with the page's gap above it.
+    let glued = found(&column_with(vec![
+        node_of("Banner", "notice", [304.0, 24.0, 572.0, 65.0]),
+        node_of("DescribedList", "list", [304.0, 89.0, 572.0, 400.0]),
+    ]));
+    assert_eq!(glued.len(), 1, "{glued:?}");
+    assert!(
+        glued[0].detail.contains("below") && glued[0].detail.contains("0 px"),
+        "it stands on the list under it: {}",
+        glued[0].detail
+    );
+    assert_eq!(
+        glued[0].id.as_deref(),
+        Some("notice"),
+        "the card is what the finding is about"
+    );
+
+    // The gap the toolkit gives cards and rows of a list: nothing to find.
+    assert!(
+        found(&column_with(vec![
+            node_of("Banner", "notice", [304.0, 24.0, 572.0, 65.0]),
+            node_of("DescribedList", "list", [304.0, 101.0, 572.0, 400.0]),
+        ]))
+        .is_empty(),
+        "a sibling's gap under the notice"
+    );
+
+    // A card pressed against the card above it is the same defect from the other side.
+    let stacked = found(&column_with(vec![
+        node_of("Card", "first", [304.0, 24.0, 572.0, 80.0]),
+        node_of("Card", "second", [304.0, 104.0, 572.0, 80.0]),
+    ]));
+    assert_eq!(stacked.len(), 2, "{stacked:?}");
+    assert!(
+        stacked
+            .iter()
+            .any(|problem| problem.detail.contains("above")),
+        "the card under it stands on the one over it: {stacked:?}"
+    );
+
+    // A card beside a box, in a row, has no neighbour over or under it.
+    let mut along = node("Row", "row", [280.0, 0.0, 620.0, 120.0], None);
+    along.children = vec![
+        node_of("Card", "card", [280.0, 0.0, 300.0, 120.0]),
+        node_of("Notice", "text", [300.0, 0.0, 600.0, 120.0]),
+    ];
+    let mut root = node("TilolangWindow", "window", [0.0, 0.0, 900.0, 600.0], None);
+    root.children.push(along);
+    assert!(found(&root).is_empty(), "nothing stands over or under it");
+}

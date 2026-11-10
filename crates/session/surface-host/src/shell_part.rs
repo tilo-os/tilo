@@ -1385,6 +1385,12 @@ impl Platform for ShellPlatform {
         tilo_ui_host::i18n::word(id, args, id)
     }
 
+    /// The time of day as the person reads a clock: the shell's views run in the session, which
+    /// holds their settings.
+    fn clock(&self, hour: u32, minute: u32) -> String {
+        ui::clock::hour_minute(hour, minute)
+    }
+
     fn add_words(&self, window: bool, catalogues: &[(String, String)]) {
         if window {
             tilo_ui_host::i18n::add_catalogues(catalogues);

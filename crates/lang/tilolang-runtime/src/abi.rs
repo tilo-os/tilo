@@ -257,6 +257,7 @@ imports! {
     (Today, "today", "", "i"),
     (TimeDay, "time_day", "i", "i"),
     (TimeOfDay, "time_of_day", "i", "l"),
+    (TimeClock, "time_clock", "i", "i"),
     (DayShift, "day_shift", "ili", "i"),
     (TimeSpan, "time_span", "ii", "l"),
     (DayPart, "day_part", "ii", "l"),

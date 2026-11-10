@@ -98,6 +98,14 @@ pub trait Platform {
         value.to_owned()
     }
 
+    /// The time of day `hour`:`minute` as the person reads a clock (`14:05`, `2:05 PM`), in the
+    /// style they chose in Settings: what a view says when it names the time of a moment
+    /// (`a.fetched.clock()`). A 24-hour clock unless the platform knows the person's style, which
+    /// a host with the toolkit does.
+    fn clock(&self, hour: u32, minute: u32) -> String {
+        format!("{hour:02}:{minute:02}")
+    }
+
     /// The answer to a `web.get` or `web.post` the instance's code makes: this device's
     /// network, which runs each request once, and the platform's limits for it. A platform that
     /// reaches no services answers [`WebReply::failed`], saying so; so does one whose device is

@@ -75,6 +75,13 @@ pub trait NameHost {
 pub trait ShownHost {
     /// `value` of the shown kind `kind` (`date` or `time`), as the person reads it.
     fn shown(&self, kind: &str, value: &str) -> String;
+
+    /// The time of day `hour`:`minute` as the person reads a clock (`14:05`, `2:05 PM`), in the
+    /// style they chose in Settings: what `t.clock()` says of a moment. A 24-hour clock until the
+    /// host says.
+    fn clock(&self, hour: u32, minute: u32) -> String {
+        format!("{hour:02}:{minute:02}")
+    }
 }
 
 /// The host's answer for the person's zone name, asked each time a rule is read.
@@ -366,6 +373,15 @@ impl Core {
             .as_ref()
             .map_or_else(|| EPOCH.to_owned(), |clock| clock())
     }
+
+    /// The time of day `hour`:`minute` as the person reads a clock: the host's style, or a
+    /// 24-hour clock where it names none (`ShownHost::clock`).
+    pub(crate) fn clock_text(&self, hour: u32, minute: u32) -> String {
+        self.shown.borrow().as_ref().map_or_else(
+            || format!("{hour:02}:{minute:02}"),
+            |host| host.clock(hour, minute),
+        )
+    }
 }
 
 impl Core {
@@ -396,13 +412,13 @@ impl Core {
             RichTime, RunChanges, SeenBy, SetAdd, SetRemove, Single, SomeF, SomeH, SomeI, SortLit,
             SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains,
             StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrReplace,
-            StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim, StrUpper, Suggest, Take, TimeDay,
-            TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke, TupleGetF, TupleGetH,
-            TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor,
-            UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic,
-            Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer, WallClock,
-            WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus, WebStatusText, WebText,
-            Withdraw, Word, WorkspaceMembers,
+            StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim, StrUpper, Suggest, Take,
+            TimeClock, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke,
+            TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction,
+            UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH,
+            UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions,
+            Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
+            WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | StrToInt | FloatToStr | StrCmp
@@ -430,8 +446,10 @@ impl Core {
             Query => self.ret_h(self.query_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?)?),
             Filters | FilterLit | SortLit => self.catalogue_import(imp, a),
             IdentPart => self.ret_h(self.ident_part(a.h(0)?, a.h(1)?)?),
-            Today | TimeDay | TimeOfDay | TimeSpan | DayShift | DayPart | DayWeekday
-            | DayStartOfWeek | DayParse | TimeParse | WallClock => self.time_import(imp, a),
+            Today | TimeDay | TimeOfDay | TimeClock | TimeSpan | DayShift | DayPart
+            | DayWeekday | DayStartOfWeek | DayParse | TimeParse | WallClock => {
+                self.time_import(imp, a)
+            }
             RandomInt | RandomFloat | RandomChoice | RandomShuffle | RandomId => {
                 self.random_import(imp, a)
             }

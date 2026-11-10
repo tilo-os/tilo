@@ -924,6 +924,20 @@ impl AppWindow {
             )
         });
         let composed = crate::shell::compose(&root_shell, detail_shell.as_ref());
+        // A page while it shows something other than the window itself: a view that shows the
+        // resource the window already is (`show(r)` of the app's own root, a scenario that
+        // stages it) stands where the window opens, with nothing to go back to.
+        let composed = match (&self.root, &self.detail) {
+            (Some(root), Some(detail)) if root.target == detail.target => {
+                let mut shell = composed;
+                shell.events.remove(crate::shell::BACK);
+                shell
+                    .props
+                    .insert("can_go_back".to_owned(), Value::Bool(false));
+                shell
+            }
+            _ => composed,
+        };
         let composed = crate::shell::header_rules(composed);
         let composed = match self.front {
             // A shell built anew opens on the screen a new window opens on: the window hands it

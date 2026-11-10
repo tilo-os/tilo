@@ -337,6 +337,10 @@ fn rounds_its_corners(widget: &str) -> bool {
     matches!(widget, "Banner" | "Card")
 }
 
+/// The least gap a card keeps from what stands over or under it: the toolkit's sibling gap, the
+/// rhythm cards and rows of a list stand by (`rhythm.sibling` on the stock theme).
+const CARD_GAP: f64 = 12.0;
+
 /// Whether a node is one control a person presses: its own role says so, or it is a box (a
 /// header action's frame) around exactly one.
 fn is_control(node: &InspectionNode) -> bool {
@@ -610,6 +614,7 @@ impl Walk<'_> {
             self.header_rows(node, keys);
             self.navigation(node, keys, own.intersect(inner_clip));
         }
+        self.cramped_card(node, keys);
         for child in &node.children {
             if floats(&child.widget) {
                 continue;
@@ -836,6 +841,65 @@ impl Walk<'_> {
         );
     }
 
+    /// A card or a notice standing closer to what stands over or under it than the gap siblings
+    /// keep: the two read as one block, and a list pressed against a notice says the notice is a
+    /// row of it. The gap is the layout's own — the column's rhythm, not a box a view puts between
+    /// them — so this reads the boxes only, whatever holds them.
+    fn cramped_card(&mut self, node: &InspectionNode, keys: &[String]) {
+        let standing: Vec<&InspectionNode> = node
+            .children
+            .iter()
+            .filter(|child| has_area(rect(child.rect)) && !floats(&child.widget))
+            .collect();
+        for (index, card) in standing.iter().enumerate() {
+            if !rounds_its_corners(&card.widget) {
+                continue;
+            }
+            let own = rect(card.rect);
+            let above = index.checked_sub(1).and_then(|before| standing.get(before));
+            let below = standing.get(index.saturating_add(1));
+            for (side, sibling) in [("above", above), ("below", below)] {
+                let Some(sibling) = sibling else {
+                    continue;
+                };
+                let other = rect(sibling.rect);
+                // A box beside it, in a row or a grid, is no neighbour over or under it; one
+                // reaching past its sides with words of its own is no column's sibling either.
+                if other.x1 <= own.x0 + EPSILON || other.x0 >= own.x1 - EPSILON {
+                    continue;
+                }
+                let gap = if side == "above" {
+                    if other.y1 > own.y0 + EPSILON {
+                        continue;
+                    }
+                    own.y0 - other.y1
+                } else {
+                    if other.y0 < own.y1 - EPSILON {
+                        continue;
+                    }
+                    other.y0 - own.y1
+                };
+                if gap >= CARD_GAP - EPSILON {
+                    continue;
+                }
+                let mut card_keys = keys.to_vec();
+                if let Some(id) = card.test_id.clone() {
+                    card_keys.push(id);
+                }
+                self.push(
+                    Kind::CrampedCard,
+                    card,
+                    &card_keys,
+                    format!(
+                        "it stands {gap:.0} px from the {} {side} it: a card keeps a sibling gap \
+                         ({CARD_GAP:.0} px)",
+                        sibling.widget
+                    ),
+                );
+            }
+        }
+    }
+
     /// A surface with rounded corners standing on the edge of the column it is in, or of the
     /// window where no column holds it: the edge cuts its curve, and the surface reads as part
     /// of the frame rather than as a card inside it. A rounded surface keeps a gutter on every
@@ -845,16 +909,21 @@ impl Walk<'_> {
             return;
         }
         let inside = self.column.unwrap_or(self.viewport);
+        // A card's sides are the layout's to keep clear of the column. Its top and bottom are
+        // where the scroll stands once the page scrolls them: a card the floor or ceiling cuts
+        // there is on its way past, not a card on the frame.
+        let scrolls = self.page.is_some();
         let edges = [
-            ("left", (own.x0 - inside.x0).abs()),
-            ("right", (own.x1 - inside.x1).abs()),
-            ("top", (own.y0 - inside.y0).abs()),
-            ("bottom", (own.y1 - inside.y1).abs()),
+            ("left", own.x0 - inside.x0, false),
+            ("right", own.x1 - inside.x1, false),
+            ("top", own.y0 - inside.y0, true),
+            ("bottom", own.y1 - inside.y1, true),
         ];
         let mut on: Vec<&str> = edges
             .into_iter()
-            .filter(|(_, gap)| *gap <= EPSILON)
-            .map(|(side, _)| side)
+            .filter(|(_, gap, vertical)| !(scrolls && *vertical) || *gap < 0.0)
+            .filter(|(_, gap, _)| gap.abs() <= EPSILON)
+            .map(|(side, _, _)| side)
             .collect();
         if on.is_empty() {
             return;

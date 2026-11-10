@@ -120,7 +120,7 @@ template view service_mark(name: Text, online: Bool, trouble: Text) {
 /// says is what the service cannot say of itself: the title is what the window cannot do (reach
 /// it, save what it fetched), and under it the service's own reason in its words, capitalised,
 /// and when the items under it were last read from it — `fetched`, as the clock a person reads
-/// ("10:41"), empty while the app knows no time to say.
+/// (`10:41`, `10:41 AM` in the style they chose), empty while the app knows no time to say.
 template view service_banner(
     name: Text,
     online: Bool,

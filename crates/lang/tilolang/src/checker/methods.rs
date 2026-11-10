@@ -108,8 +108,9 @@ const MAP: &[&str] = &["get", "keys"];
 /// the first day of the week it stands in.
 const DAY: &[&str] = &["weekday", "day", "month", "year", "start_of_week"];
 
-/// What a moment can be asked: the day it falls on and the time of day it is then.
-const MOMENT: &[&str] = &["day", "time_of_day"];
+/// What a moment can be asked: the day it falls on, the time of day it is then, and that time as
+/// the person reads a clock.
+const MOMENT: &[&str] = &["day", "time_of_day", "clock"];
 
 /// What a length of time can be asked: the seconds it is, which is how a record keeps one.
 const LENGTH: &[&str] = &["seconds"];

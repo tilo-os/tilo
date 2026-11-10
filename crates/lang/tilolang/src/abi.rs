@@ -271,11 +271,13 @@ imports! {
     Word = "word" ([H, H, H] -> [H]);
     EntryParts = "entry_parts" ([H, H] -> [H]);
     Today = "today" ([] -> [H]);
-    // The day a moment falls on and the time of day it is, both for the person; a day moved by
-    // days; how far two days or two moments are apart; a part of a day, its weekday and the
-    // day its week starts on; and a day or a moment a text names, read at a moment.
+    // The day a moment falls on and the time of day it is, both for the person, the time of day
+    // as a clock reads it in the style they chose; a day moved by days; how far two days or two
+    // moments are apart; a part of a day, its weekday and the day its week starts on; and a day
+    // or a moment a text names, read at a moment.
     TimeDay = "time_day" ([H] -> [H]);
     TimeOfDay = "time_of_day" ([H] -> [I64]);
+    TimeClock = "time_clock" ([H] -> [H]);
     DayShift = "day_shift" ([H, I64, I32] -> [H]);
     TimeSpan = "time_span" ([H, H] -> [I64]);
     DayPart = "day_part" ([H, I32] -> [I64]);

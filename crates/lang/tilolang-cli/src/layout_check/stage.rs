@@ -112,6 +112,11 @@ impl Platform for Packages {
         tilo_ui_host::date::shown_text(kind, value)
     }
 
+    /// The time of day as the person reads a clock, in the style they chose.
+    fn clock(&self, hour: u32, minute: u32) -> String {
+        ui::clock::hour_minute(hour, minute)
+    }
+
     fn waker(&self) -> tilolang_tilo::background::Waker {
         Arc::new(|| {})
     }
@@ -1120,6 +1125,104 @@ mod tests {
             shown("a busy inbox", (1280, 800), 1.0),
             [("action", true)],
             "an account's window offers New message as its primary button"
+        );
+    }
+
+    /// A window has a way back only when it went somewhere: the scenario that stages the feed of
+    /// the app's own root stands where the app opens, and its bar carries no Back, while a page
+    /// opened over the feed does.
+    #[test]
+    fn a_window_on_its_own_root_offers_no_way_back() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tube");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let back = |scenario: &str| -> bool {
+            let (width, height) = (1280, 800);
+            let theme = ui::Theme::light();
+            let mut staged = Staged::over(
+                &app,
+                &packages,
+                scenario,
+                (width, height),
+                theme.clone(),
+                None,
+                &[],
+            )
+            .expect("the scenario stages");
+            staged
+                .lay_out(
+                    (width, height),
+                    theme,
+                    ui::interaction::InteractionEnvironment::POINTER,
+                    1.0,
+                )
+                .expect("the window lies out");
+            let bar = staged.harness_mut().window_bar_layout(f64::from(width));
+            bar.controls.iter().any(|control| control.name == "Back")
+        };
+        assert!(
+            !back("YouTube cannot be reached"),
+            "a window standing where the app opens has nothing to go back to"
+        );
+        assert!(
+            back("a channel"),
+            "a channel's page went somewhere, and Back leaves it"
+        );
+    }
+
+    /// Every notice's message under `node`, its whole tree walked.
+    fn notice_said(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
+        if node.kind == "ui.Banner"
+            && let Some(Value::Text(said)) = node.props.get("message")
+        {
+            out.push(said.clone());
+        }
+        for child in &node.children {
+            notice_said(child, out);
+        }
+    }
+
+    /// The clock a window says a moment in is the person's own: the notice over a mail list says
+    /// when the server last answered in the style they chose in Settings, as the list beside it
+    /// reads the times of its messages.
+    #[test]
+    fn a_notice_says_the_time_in_the_clock_the_person_reads() {
+        tilo_ui_host::i18n::ensure();
+        ui::clock::freeze_for_capture();
+        let packages = app_packages("mail");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let notice = |style: ui::clock::TimeStyle| -> String {
+            ui::format::region::install(ui::format::region::RegionFormats {
+                time: style,
+                ..ui::format::region::RegionFormats::default()
+            });
+            let mut staged = Staged::over(
+                &app,
+                &packages,
+                "an account that cannot be reached",
+                (1280, 800),
+                ui::Theme::light(),
+                None,
+                &[],
+            )
+            .expect("the scenario stages");
+            let composed = staged.composed().expect("the window composes");
+            let mut said = Vec::new();
+            notice_said(&composed, &mut said);
+            said.pop().unwrap_or_else(|| {
+                panic!("the window says why it cannot reach the server: {composed:?}")
+            })
+        };
+        // 12-hour where the person chose it: the notice reads the clock the list beside it reads.
+        assert_eq!(
+            notice(ui::clock::TimeStyle::H12),
+            "Connection refused. Last fetched 10:41 AM",
+            "the notice says the time as the person reads clocks"
+        );
+        // 24-hour where they chose that: one clock for everything the window says.
+        assert_eq!(
+            notice(ui::clock::TimeStyle::H24),
+            "Connection refused. Last fetched 10:41"
         );
     }
 

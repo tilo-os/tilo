@@ -2555,6 +2555,12 @@ impl Checker<'_> {
                 self.reads(crate::effects::Effect::Time, span, "`time_of_day`");
                 Ex::host(Imp::TimeOfDay, vec![r], Ty::Duration)
             }
+            // The time of day it falls at, as the person reads a clock in the style they chose
+            // in Settings: `10:41` or `10:41 AM`.
+            (Ty::Time, "clock") if args.is_empty() => {
+                self.reads(crate::effects::Effect::Time, span, "`clock`");
+                Ex::host(Imp::TimeClock, vec![r], Ty::Text)
+            }
             // A length of time as the seconds it is, which is how a record keeps one.
             (Ty::Duration, "seconds") if args.is_empty() => r.typed(Ty::Int),
             (Ty::Principal, "name") if args.is_empty() => {

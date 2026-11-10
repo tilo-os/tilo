@@ -204,23 +204,16 @@ fn as_lines(body: Text) -> Text {
     body.replace("\r\n", "\n")
 }
 
-/// The clock time a moment falls at, as people read one: `10:41`, in the person's zone. What
-/// the window says when an account's mail was last read from its server; an account whose mail
-/// never came says nothing, its moment standing at the epoch.
+/// The clock time a moment falls at, as people read one: `10:41` or `10:41 AM`, in the clock the
+/// person chose in Settings, as every other time the window shows reads. What the window says
+/// when an account's mail was last read from its server; an account whose mail never came says
+/// nothing, its moment standing at the epoch.
 fn fetched_clock(a: Account) -> Text {
     let never = Time("1970-01-01T00:00:00Z")
     if a.fetched <= never {
         return ""
     }
-    let seconds = a.fetched.time_of_day().seconds()
-    let hour = seconds / 3600
-    let minute = seconds % 3600 / 60
-    "{two_digits(hour)}:{two_digits(minute)}"
-}
-
-/// `n` as two digits: the hour and the minute of a clock time.
-fn two_digits(n: Int) -> Text {
-    if n < 10 { "0{n}" } else { "{n}" }
+    a.fetched.clock()
 }
 
 /// Where the quotation in what a message says begins: the blank line above the line naming who
@@ -916,7 +909,9 @@ view message(m: Message) {
     let at = quote_begins(body)
     let said = if let i = at { body.slice(0, i) } else { body }
     let quoted_part = if let i = at { body.slice(i + 2, body.len()) } else { "" }
-    stack(gap: .related) {
+    // The card of what the message says stands a section's gap under the line naming who wrote
+    // it: close enough to belong to it, far enough to be a card of its own.
+    stack(gap: .section) {
         row(gap: .related, align: .center) {
             ui.Text(if m.from_name == "" { m.from } else { m.from_name }, role: .subheading)
             ui.Time(m.received, role: .caption, past: true, secondary: true)

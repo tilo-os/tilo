@@ -127,10 +127,14 @@ pub enum Kind {
     /// in: the curve is cut by the edge, or the surface reads as part of the frame rather than
     /// as a card inside it. A rounded surface keeps a gutter on every side.
     RoundedOnEdge,
+    /// A card or a notice standing closer to the sibling above or below it than the toolkit's
+    /// section gap: the two read as one block, and a list pressed against a notice says the
+    /// notice is a row of it.
+    CrampedCard,
 }
 
 impl Kind {
-    pub const ALL: [Self; 40] = [
+    pub const ALL: [Self; 41] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -171,6 +175,7 @@ impl Kind {
         Self::TextOnText,
         Self::DockedColumn,
         Self::RoundedOnEdge,
+        Self::CrampedCard,
     ];
 
     pub fn name(self) -> &'static str {
@@ -215,6 +220,7 @@ impl Kind {
             Self::TextOnText => "text-on-text",
             Self::DockedColumn => "docked-column",
             Self::RoundedOnEdge => "rounded-on-edge",
+            Self::CrampedCard => "cramped-card",
         }
     }
 }

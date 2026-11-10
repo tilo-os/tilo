@@ -108,6 +108,12 @@ view parts() {
     text("d {Date("2026-10-26").start_of_week()}")
 }
 
+view clocks() {
+    text("a {Time("2026-10-29T10:41:00Z").clock()}")
+    text("b {Time("2026-10-29T00:05:00Z").clock()}")
+    text("c {Time("2026-10-29T14:05:00Z").clock()}")
+}
+
 view read_back(b: Board) {
     for l in b.logs {
         text("{l.at} {l.stamp} {l.seconds}")
@@ -221,6 +227,43 @@ action fine(b: Board) uses time {
                 "n 2026-10-22",
                 "o 2026-10-29T12:30:00Z",
             ]
+        );
+    }
+
+    /// The clock a host keeps for the person, in a style of its own: 12-hour here, as a person
+    /// who chose it in Settings has.
+    struct TwelveHour;
+
+    impl tilolang_runtime::ShownHost for TwelveHour {
+        fn shown(&self, _kind: &str, value: &str) -> String {
+            value.to_owned()
+        }
+
+        fn clock(&self, hour: u32, minute: u32) -> String {
+            let half = if hour < 12 { "AM" } else { "PM" };
+            let hour = match hour % 12 {
+                0 => 12,
+                hour => hour,
+            };
+            format!("{hour}:{minute:02} {half}")
+        }
+    }
+
+    /// A moment says the time of day it falls at as the person reads a clock: the host's style
+    /// where it keeps one, and a 24-hour clock where it names none.
+    #[test]
+    fn a_moment_reads_the_clock_the_person_reads() {
+        let sheet = Sheet::in_zone(0, None);
+        assert_eq!(
+            sheet.bare("clocks"),
+            ["a 10:41", "b 00:05", "c 14:05"],
+            "no host keeps a style: a 24-hour clock"
+        );
+        sheet.rt.set_shown_host(TwelveHour);
+        assert_eq!(
+            sheet.bare("clocks"),
+            ["a 10:41 AM", "b 12:05 AM", "c 2:05 PM"],
+            "the clock the host keeps for the person"
         );
     }
 
