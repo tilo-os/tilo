@@ -364,11 +364,34 @@ impl Workspace {
             .expect("the window composed its shell")
     }
 
-    /// The tree of the row the window shows first: a task opens where it stands, so what a
-    /// person sees of it is drawn in the list itself.
+    /// The tree of the row the window shows first.
     fn first_row_tree(&mut self) -> Option<tilolang_tilo::runtime::UiNode> {
         let len = self.root_rows().borrow().len();
         self.show_rows(0..len);
+        self.row_tree()
+    }
+
+    /// The tree of the row the window shows first, standing open into its item where it stands
+    /// — the page a person reads under the row — as a press on the row opens it.
+    fn first_open_row(&mut self) -> Option<tilolang_tilo::runtime::UiNode> {
+        let len = self.root_rows().borrow().len();
+        self.show_rows(0..len);
+        let key = self.root_rows().borrow().key_at(0)?;
+        open_in_list(
+            self.window.shell_mut().expect("the window shows the shell"),
+            key,
+        );
+        // The list asks for the row standing open, the app builds its page, and the window
+        // mounts it under the row.
+        self.lay_out();
+        self.frame();
+        self.settle();
+        self.lay_out();
+        self.row_tree()
+    }
+
+    /// The tree of the first row the app rendered for the list it shows.
+    fn row_tree(&mut self) -> Option<tilolang_tilo::runtime::UiNode> {
         let list = self
             .window
             .view()
@@ -618,6 +641,22 @@ fn first_input(node: &UiNode) -> Option<&UiNode> {
 }
 
 /// The key of the first text input under the runtime's node `node`, as a row renders it.
+/// Open the row `key` where it stands in the list under `widget`, as a press on it does.
+fn open_in_list(widget: &mut dyn ui::widget::Widget, key: String) -> bool {
+    if let Some(list) = widget
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<DescribedList>())
+        && let Some(rows) = list.list_mut()
+    {
+        rows.set_open(Some(key));
+        return true;
+    }
+    widget
+        .children_mut()
+        .into_iter()
+        .any(|child| open_in_list(child, key.clone()))
+}
+
 fn first_input_key(node: &tilolang_tilo::runtime::UiNode) -> Option<String> {
     if node.kind == "ui.TextInput" {
         return Some(node.key.clone());
@@ -2525,8 +2564,10 @@ fn typing_into_a_shown_items_title_keeps_the_windows_tree() {
     // A task opens where it stands: the scenario's task is the row the window shows, and its
     // title is that row's field.
     let mut workspace = Workspace::seeded("tasks");
-    let row = workspace.first_row_tree().expect("the item's row renders");
-    let input = first_input_key(&row).expect("the item's title");
+    let row = workspace
+        .first_open_row()
+        .expect("the item's row stands open into its page");
+    let input = first_input_key(&row).expect("the page's title");
     // The list mounts the rows its laid-out height shows, measures them as they are laid out,
     // then holds them.
     workspace.lay_out();
@@ -2560,8 +2601,10 @@ fn a_keystroke_repaints_its_field_not_the_window() {
     let _settled = ui::motion::testing::settled();
     // The scenario's task is the row the window shows.
     let mut workspace = Workspace::seeded("tasks");
-    let row = workspace.first_row_tree().expect("the item's row renders");
-    let input = first_input_key(&row).expect("the item's title");
+    let row = workspace
+        .first_open_row()
+        .expect("the item's row stands open into its page");
+    let input = first_input_key(&row).expect("the page's title");
     workspace.lay_out();
     workspace.settle();
     workspace.lay_out();
