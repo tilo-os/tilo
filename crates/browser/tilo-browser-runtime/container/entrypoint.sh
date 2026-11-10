@@ -26,10 +26,14 @@
 # preview, if any (an embed reports its state to that site alone):
 #   TILO_WEB_EMBEDDER   that site's https:// origin (unset: none)
 # Where the site's shelf of sealed invitations is answered (the Caddyfile):
-# the host and port of the relay serving this site, which keeps an invitation
-# under the handle its link names. Unset, a link still opens the page, and the
-# page has no shelf to leave an invitation on or take one from.
-#   TILO_WEB_SHELF      a relay's host:port, as Caddy reaches it (unset: none)
+# the relay serving this site, which keeps an invitation under the handle its
+# link names. It is the relay the home workspace is hosted on, the one
+# `entry.json` names, unless the deployment reaches it by another name or port
+# and names that. With no home workspace and nothing named, a link still opens
+# the page, and the page has no shelf to leave an invitation on or take one
+# from.
+#   TILO_WEB_SHELF      a relay's address as Caddy reaches it, e.g.
+#                       https://eu1.example (unset: the home host)
 # Where the tilo command's releases are kept, which the site serves at
 # /releases/<latest|vX.Y.Z>/<file> for its installer (the Caddyfile): the base
 # URL the release tooling (tools/ci/publish/cli-release.sh) publishes under,
@@ -109,6 +113,30 @@ case "$releases" in
 esac
 case "$releases" in
   */ | *[!A-Za-z0-9._~:/%-]*) echo "TILO_RELEASES_ORIGIN must be a plain URL not ending in /: $releases" >&2; exit 2 ;;
+esac
+# An invitation's short link is the site's own — `/i/<handle>#<key>` opens the
+# page here, and the page's own request for the invitation is the relay's to
+# answer (the Caddyfile) — so the shelf is that relay: the one the home
+# workspace is hosted on, which `entry.json` names, unless the deployment
+# reaches it by another name or port and says so.
+shelf=${TILO_WEB_SHELF:-}
+if [ -z "$shelf" ] && [ -n "$host" ]; then
+  case "$host" in
+    localhost | localhost:* | 127.0.0.1 | 127.0.0.1:*) shelf="http://$host" ;;
+    *) shelf="https://$host" ;;
+  esac
+  export TILO_WEB_SHELF="$shelf"
+fi
+case "$shelf" in
+  '') ;;
+  https://*) ;;
+  http://localhost | http://localhost:* | http://127.0.0.1 | http://127.0.0.1:* | http://\[::1\]:*) ;;
+  *) echo "TILO_WEB_SHELF must be an https:// address, or http:// on this machine's loopback: $shelf" >&2; exit 2 ;;
+esac
+# An address Caddy proxies to, not a path on it: the request's own path is put
+# in front of what the relay serves.
+case "${shelf#*://}" in
+  */*) echo "TILO_WEB_SHELF names a host and port, not a path: $shelf" >&2; exit 2 ;;
 esac
 # Caddy proxies to a scheme and host, and puts the path in front of the request's.
 rest=${releases#*://}

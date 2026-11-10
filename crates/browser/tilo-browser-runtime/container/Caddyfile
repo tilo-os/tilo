@@ -122,9 +122,10 @@
 	# (/entry.json, /v/…); the page's own request for the invitation — and a
 	# build that takes the link without the page — is the deployment's relay's
 	# to answer, which keeps the invitation under the handle and was never
-	# given the key in the fragment. Without a relay behind the site
-	# (TILO_WEB_SHELF unset) the page still opens; an invitation left there is
-	# not one it can take.
+	# given the key in the fragment. That relay is the one the home workspace
+	# is hosted on, which the entrypoint names unless the deployment says
+	# otherwise; with no home workspace the page still opens, and an
+	# invitation left there is not one it can take.
 	handle /i/* {
 		@shelf not header Accept *text/html*
 		handle @shelf {

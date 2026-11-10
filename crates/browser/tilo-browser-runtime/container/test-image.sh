@@ -128,6 +128,8 @@ entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H TILO_WEB_HOME_DOOR=https
 entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H TILO_WEB_HOME_DOOR=http://rooms.example/ \
   && fail "a home door that is not https must refuse to start"
 entry TILO_WEB_ABOUT_COMMUNITY=javascript:x && fail "an About link that is not https must refuse to start"
+entry TILO_WEB_SHELF=http://shelf.example/i && fail "a shelf that is not an https address must refuse to start"
+entry TILO_WEB_SHELF=https://shelf.example/i && fail "a shelf that is not an address must refuse to start"
 for bad in http://site.example https://site.example/path "https://a b"; do
   entry "TILO_WEB_EMBEDDER=$bad" && fail "an embedder that is not an https:// origin must refuse to start: $bad"
 done
@@ -262,19 +264,96 @@ form_action=$(head_of /sign-in | grep '^content-security-policy:.*form-action' |
 # invitation: https://<site>/i/<handle>#<key>. A browser navigating there
 # gets the entry page, which reads the site's own configuration and files
 # (/entry.json, /v/…); the page's own request for the invitation — a caller
-# that asks for anything but the page — is the deployment's relay's to answer
-# (TILO_WEB_SHELF), never the page.
+# that asks for anything but the page — is the relay's to answer, the one the
+# site's home workspace is hosted on, which keeps the invitation under the
+# handle and is never given the key in the fragment. The relay here is a
+# stand-in on the loopback that keeps what it is given, as the relay's shelf
+# does; the site is started with a home host and nothing else, so the shelf it
+# leaves an invitation on is the one its entrypoint derives.
 handle=abcdefghijklmnop
 browser_accept='text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+shelf_store=$scratch/shelf
+rm -rf "$shelf_store" && mkdir -p "$shelf_store"
+python3 -I - "$shelf_store" 18082 <<'PY' &
+import http.server, json, pathlib, sys
+store, port = pathlib.Path(sys.argv[1]), int(sys.argv[2])
+
+class Shelf(http.server.BaseHTTPRequestHandler):
+    def asked(self):
+        with (store / "asked").open("a") as out:
+            out.write(f"{self.command} {self.path}\n")
+
+    def do_POST(self):
+        kept = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        (store / self.path.rsplit("/", 1)[-1]).write_bytes(kept)
+        self.asked()
+        self.send_response(204)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_GET(self):
+        self.asked()
+        path = store / self.path.rsplit("/", 1)[-1]
+        if not path.is_file():
+            self.send_response(410)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        held = json.loads(path.read_text())
+        # What a relay keeps and hands back: the sealed bytes, and the origin
+        # they admit into. Never the delete secret it was left with.
+        body = json.dumps({"sealed": held["sealed"], "host": held["host"]},
+                          separators=(",", ":")).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+http.server.ThreadingHTTPServer(("127.0.0.1", port), Shelf).serve_forever()
+PY
+shelf_pid=$!
+start TILO_WEB_HOME_HOST=127.0.0.1:18082 TILO_WEB_HOME_NAME=Lounge
+# An inviter's device leaves the invitation its link names, and says when it
+# lapses and with which secret it may be taken back.
+sealed=c2VhbGVkIGludml0YXRpb24
+delete=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+expires_at_ns=$(( ($(date +%s) + 600) * 1000000000 ))
+left=$(printf '{"sealed":"%s","expiresAtNs":%s,"delete":"%s","host":"https://relay.example"}' \
+  "$sealed" "$expires_at_ns" "$delete")
+status=$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  --data "$left" "http://127.0.0.1:8080/i/$handle")
+[[ $status == 204 ]] \
+  || fail "a site with a home workspace must keep an invitation under its link's handle: $status"
+# Whoever the link reaches fetches it back, and gets the invitation and where
+# it admits into, byte for byte, with no key and no delete secret.
+answered=$(get "/i/$handle" -H 'Accept: application/octet-stream')
+[[ $answered == "{\"sealed\":\"$sealed\",\"host\":\"https://relay.example\"}" ]] \
+  || fail "the site must answer a link's handle with its invitation: $answered"
+grep -q "$delete" <<<"$answered" && fail "the site hands back the delete secret"
+# A handle nothing is kept under is the relay's answer, not the page's.
+grep -q '^HTTP/[0-9.]* 410' <(head_of /i/ponmlkjihgfedcba -H 'Accept: application/octet-stream') \
+  || fail "a link whose invitation is gone must say so"
+# A browser opening the same link gets the page, which asks for the invitation
+# itself.
 cmp -s <(get "/i/$handle" -H "Accept: $browser_accept") <(get /) \
   || fail "a sealed link must open the entry page"
 grep -q '^content-type: text/html' <(head_of "/i/$handle" -H "Accept: $browser_accept") \
   || fail "a sealed link must be served as a page"
 grep -q '^cache-control: no-cache' <(head_of "/i/$handle" -H "Accept: $browser_accept") \
   || fail "a sealed link's page must revalidate"
-# With no relay named there is no shelf: a request for the invitation is not
-# answered with the page, which would hand a stranger the editor instead of
-# nothing.
+# Both ways round went to the shelf the entrypoint derived, at the path the
+# relay serves it under: an invitation left, and invitations fetched.
+grep -q '^POST /i/' "$shelf_store/asked" && grep -q '^GET /i/' "$shelf_store/asked" \
+  || fail "the shelf under /i/ was not the one the site derived: $(cat "$shelf_store/asked")"
+kill "$shelf_pid" 2>/dev/null || true
+# With no home workspace there is no relay behind the site to keep one: a
+# request for the invitation is not answered with the page, which would hand a
+# stranger the editor instead of nothing.
+start
 shelf_answer=$(head_of "/i/$handle" -H 'Accept: application/octet-stream' | head -1)
 [[ $shelf_answer != 'HTTP/1.1 200 OK' ]] \
   || fail "a request for the invitation itself must not answer with the page"
