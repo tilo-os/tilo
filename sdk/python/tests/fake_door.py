@@ -75,6 +75,12 @@ class FakeDoor:
         # A path mapped to "pending" answers pending until `finish` says so.
         self.polled: dict[str, int] = {}
         self.events: list[dict[str, Any]] = []
+        # How many calls the host refuses as busy with the person's changes
+        # before it answers them, typed (`busy`) or as an entry that failed
+        # (`busy_entering`), and the wait it says.
+        self.busy = 0
+        self.busy_entering = 0
+        self.busy_wait_ms = 5
 
     # -- what a test drives ----------------------------------------------
 
@@ -157,6 +163,22 @@ class FakeDoor:
             return httpx.Response(204)
         body = json.loads(request.content or b"{}")
         method = body.get("method")
+        if method == "initialize" and workspace is not None and self.busy_entering > 0:
+            # A workspace's session enters it as it opens: a busy host fails
+            # the open, and nothing ran.
+            self.busy_entering -= 1
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": body.get("id"),
+                    "error": {
+                        "code": -32000,
+                        "message": "the host takes your changes more slowly",
+                        "data": {"code": "rate_limited", "retry_after_ms": self.busy_wait_ms},
+                    },
+                },
+            )
         if method == "initialize":
             self.opened += 1
             session = f"session-{self.opened}"
@@ -186,6 +208,21 @@ class FakeDoor:
             )
         params = body.get("params") or {}
         surface = (params.get("_meta") or {}).get(SURFACE) or {}
+        if self.busy > 0:
+            self.busy -= 1
+            busy = self.failed(
+                (params.get("arguments") or {}).get("path", ""),
+                "rate_limited",
+                "the host takes your changes more slowly; nothing ran",
+                "wait and retry the same call",
+            )
+            busy["error"]["retry_after_ms"] = self.busy_wait_ms
+            result = {
+                "content": [{"type": "text", "text": json.dumps(busy)}],
+                "structuredContent": busy,
+                "isError": True,
+            }
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body.get("id"), "result": result})
         self.calls.append(
             {
                 "tool": params.get("name"),

@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "bun:test";
 
-import { ProtocolError, Tilo } from "../src/index.ts";
+import { ProtocolError, RateLimited, Refused, Tilo } from "../src/index.ts";
 import { FakeDoor, WORKSPACE_ID } from "./fakeDoor.ts";
 
 function client(door: FakeDoor, key = door.key): Tilo {
@@ -10,6 +10,50 @@ function client(door: FakeDoor, key = door.key): Tilo {
 }
 
 describe("the wire", () => {
+  it("asks a busy host again until it answers", async () => {
+    const door = new FakeDoor();
+    door.busy = 2;
+    const tilo = client(door);
+
+    const created = await tilo.workspaces.create("Applicant: Jane Doe");
+
+    expect(created.name).toBe("Applicant: Jane Doe");
+    expect(door.busy).toBe(0);
+    // The refused calls ran nothing: the door saw the create once.
+    expect(door.calls.filter((call) => call.tool === "tilo_do").length).toBe(1);
+  });
+
+  it("asks a busy workspace entry again", async () => {
+    const door = new FakeDoor();
+    door.busyEntering = 2;
+    const tilo = client(door);
+
+    await tilo.workspace("jane-doe").ls();
+
+    expect(door.busyEntering).toBe(0);
+    expect(door.calls.filter((call) => call.tool === "tilo_ls").length).toBe(1);
+  });
+
+  it("throws RateLimited once the host stays busy past the deadline", async () => {
+    const door = new FakeDoor();
+    door.busy = 1000;
+    door.busyWaitMs = 20;
+    const tilo = new Tilo({
+      key: door.key,
+      door: "https://door.test",
+      fetch: door.fetch,
+      retryDeadlineMs: 100,
+    });
+
+    const refused = await tilo.workspaces.create("Applicant: Jane Doe").catch((error) => error);
+
+    expect(refused).toBeInstanceOf(RateLimited);
+    expect(refused).toBeInstanceOf(Refused);
+    expect(refused.code).toBe("rate_limited");
+    expect(refused.retryAfterMs).toBe(20);
+    expect(door.busy).toBeLessThan(1000);
+  });
+
   it("opens a session and asks for typed answers", async () => {
     const door = new FakeDoor();
     const tilo = client(door);

@@ -5,8 +5,42 @@
 //! the workspace's. The author's device keeps that text for its log and shows
 //! the person [`plain_reason`] of it instead.
 
+use std::time::Duration;
+
 /// The member change budget's refusal ([`crate::config::MemberLimitsConfig`]).
 pub const TOO_MANY_CHANGES: &str = "too many changes; slow down";
+/// The token that leads the reason of an action a relay is too busy to take
+/// ([`crate::transport::Envelope::RemoteActionUndeliverable`]): nothing ran,
+/// and the same call works once the wait it says is over.
+pub const BACKPRESSURE: &str = "backpressure";
+/// The wait a busy refusal stands for when it says none (a relay from before
+/// they said one).
+pub const BUSY_WAIT_UNSAID: Duration = Duration::from_secs(1);
+const RETRY_IN: &str = "; retry in ";
+
+/// What a relay says after [`BACKPRESSURE`] when it refuses an action because
+/// the change budget is spent: why, and when the budget admits the next
+/// change.
+#[must_use]
+pub fn too_many_changes(wait: Duration) -> String {
+    let ms = wait.as_millis().max(1);
+    format!("{TOO_MANY_CHANGES}{RETRY_IN}{ms} ms")
+}
+
+/// How long to wait before asking again when `message` carries a relay's busy
+/// refusal of an action anywhere in it (an error's text wraps the reason): the
+/// wait it says, else [`BUSY_WAIT_UNSAID`]. `None` for anything else, which
+/// says nothing about whether the call ran.
+#[must_use]
+pub fn busy_wait(message: &str) -> Option<Duration> {
+    let (_, refused) = message.split_once(&format!("{BACKPRESSURE}: "))?;
+    let said = refused
+        .split_once(RETRY_IN)
+        .and_then(|(_, rest)| rest.split_once(" ms"))
+        .and_then(|(ms, _)| ms.trim().parse::<u64>().ok())
+        .map(Duration::from_millis);
+    Some(said.unwrap_or(BUSY_WAIT_UNSAID))
+}
 /// The member content budget's refusal.
 pub const TOO_MUCH_CONTENT: &str = "too much content this hour";
 /// Sending too fast: the change budget refused it.
@@ -89,6 +123,26 @@ pub fn plain_reason(raw: &str) -> &'static str {
 mod tests {
     use super::*;
     use collab_types::ReceiptRefusal;
+
+    #[test]
+    fn a_busy_refusal_says_its_wait_through_any_wrapping() {
+        let reason = format!(
+            "{BACKPRESSURE}: {}",
+            too_many_changes(Duration::from_millis(480))
+        );
+        assert_eq!(busy_wait(&reason), Some(Duration::from_millis(480)));
+        assert_eq!(
+            busy_wait(&format!("remote actions are unavailable: {reason}")),
+            Some(Duration::from_millis(480))
+        );
+        // A relay that says no wait: a second.
+        assert_eq!(
+            busy_wait("remote actions are unavailable: backpressure: too many changes; slow down"),
+            Some(BUSY_WAIT_UNSAID)
+        );
+        assert_eq!(busy_wait(TOO_MANY_CHANGES), None);
+        assert_eq!(busy_wait("offline: the device left"), None);
+    }
 
     #[test]
     fn budgets_read_as_what_to_do() {

@@ -64,6 +64,9 @@ pub enum RelayError {
     Refused(String),
     /// The relay or the site could not be reached.
     Unavailable(String),
+    /// The relay is busy with this person's changes: nothing ran, and the
+    /// same call works once `retry_after_ms` passed.
+    RateLimited { retry_after_ms: u64 },
 }
 
 impl std::fmt::Display for RelayError {
@@ -72,6 +75,10 @@ impl std::fmt::Display for RelayError {
             Self::NotFound => f.write_str("no such workspace"),
             Self::Refused(reason) => write!(f, "the host refused: {reason}"),
             Self::Unavailable(reason) => write!(f, "unavailable: {reason}"),
+            Self::RateLimited { retry_after_ms } => write!(
+                f,
+                "the host takes your changes more slowly; retry in {retry_after_ms} ms"
+            ),
         }
     }
 }
@@ -80,6 +87,7 @@ impl From<CertifyError> for RelayError {
     fn from(error: CertifyError) -> Self {
         match error {
             CertifyError::Denied(reason) => Self::Refused(reason),
+            CertifyError::RateLimited { retry_after_ms } => Self::RateLimited { retry_after_ms },
             other => Self::Unavailable(other.to_string()),
         }
     }

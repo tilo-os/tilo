@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tilo import AsyncTilo, ProtocolError, WorkspaceList
+from tilo import AsyncTilo, ProtocolError, RateLimited, Refused, WorkspaceList
 
 from fake_door import WORKSPACE_ID, FakeDoor
 
@@ -36,6 +36,44 @@ async def test_a_call_opens_a_session_and_asks_for_typed_answers(tilo, door):
     assert call["arguments"]["path"] == "account/workspaces#list"
     assert call["structured"] is True
     assert call["workspace"] is None
+
+
+async def test_a_busy_host_is_asked_again_until_it_answers(tilo, door):
+    door.busy = 2
+
+    created = await tilo.workspaces.create("Applicant: Jane Doe")
+
+    assert created.name == "Applicant: Jane Doe"
+    assert door.busy == 0
+    # The refused calls ran nothing: the door saw the create once.
+    assert len(door.asked("tilo_do")) == 1
+
+
+async def test_a_busy_workspace_entry_is_asked_again(tilo, door):
+    door.busy_entering = 2
+
+    await tilo.workspace("jane-doe").ls()
+
+    assert door.busy_entering == 0
+    assert len(door.asked("tilo_ls")) == 1
+
+
+async def test_a_host_busy_past_the_deadline_raises_rate_limited(door):
+    door.busy = 1000
+    door.busy_wait_ms = 20
+    client = AsyncTilo(
+        key=door.key, door="https://door.test", http=door.client(), retry_deadline=0.1
+    )
+    try:
+        with pytest.raises(RateLimited) as raised:
+            await client.workspaces.create("Applicant: Jane Doe")
+    finally:
+        await client.aclose()
+
+    assert isinstance(raised.value, Refused)
+    assert raised.value.code == "rate_limited"
+    assert raised.value.retry_after_ms == 20
+    assert door.busy < 1000
 
 
 async def test_a_workspace_call_goes_to_its_own_session(tilo, door):

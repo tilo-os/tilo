@@ -50,6 +50,13 @@ pub enum CertifyError {
     /// An approver declined, or the host refused.
     #[error("certification denied: {0}")]
     Denied(String),
+    /// The host is busy with this person's changes: nothing ran, and the
+    /// same request works once `retry_after_ms` passed.
+    #[error("the host takes this person's changes more slowly; retry in {retry_after_ms} ms")]
+    RateLimited {
+        /// How long the host asks to wait, in milliseconds.
+        retry_after_ms: u64,
+    },
     /// No approver answered in time.
     #[error("no approver answered the certification request")]
     Expired,

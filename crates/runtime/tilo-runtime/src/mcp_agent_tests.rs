@@ -1158,6 +1158,27 @@ fn the_apps_are_listed_by_name_running_first() {
     });
 }
 
+/// A host busy with the person's changes ran nothing: a typed call is told
+/// `rate_limited` with the wait the host said, so the caller asks again then.
+#[test]
+fn a_busy_host_answers_rate_limited_with_its_wait() {
+    run(async {
+        let busy = Notes::new(true);
+        *busy.unreachable.lock().unwrap() = Some(format!(
+            "backpressure: {}",
+            tilo_relay_protocol::refusal::too_many_changes(std::time::Duration::from_millis(480))
+        ));
+        let (typed, failed) = answer(&agent(&busy), "tilo_find", json!({"query": "notes"})).await;
+        assert!(failed, "{typed}");
+        assert_eq!(typed["error"]["code"], "rate_limited", "{typed}");
+        assert_eq!(typed["error"]["retry_after_ms"], 480, "{typed}");
+        // Anything else the host is short of stays a plain failure.
+        *busy.unreachable.lock().unwrap() = Some("offline: the device left".into());
+        let (typed, _) = answer(&agent(&busy), "tilo_find", json!({"query": "notes"})).await;
+        assert_eq!(typed["error"]["code"], "failed", "{typed}");
+    });
+}
+
 /// An empty list and one that could not be read are different answers: the
 /// first says there are no apps, the second says why the agent cannot know.
 #[test]

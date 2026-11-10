@@ -992,3 +992,29 @@ async fn health_says_when_the_site_serves_no_sign_in_page() {
         "served"
     );
 }
+
+/// A relay busy with the person's changes ran nothing: the door answers it
+/// typed as `rate_limited`, with the wait the relay said, never as a refusal
+/// the caller must act on.
+#[test]
+fn a_busy_relay_answers_rate_limited_with_its_wait() {
+    let busy = tilo_actions::remote::ActionHostError::Unavailable {
+        reason: format!(
+            "{}: {}",
+            tilo_relay_protocol::refusal::BACKPRESSURE,
+            tilo_relay_protocol::refusal::too_many_changes(std::time::Duration::from_millis(480))
+        ),
+    };
+    let relay = relay::RelayError::from(tilo_session_host::device::HostRefusal::of(&busy));
+    assert_eq!(
+        relay,
+        relay::RelayError::RateLimited {
+            retry_after_ms: 480
+        }
+    );
+    let answered = account::answer(true, "account/workspaces#create", account::refused(&relay));
+    let error = &answered["structuredContent"]["error"];
+    assert_eq!(error["code"], "rate_limited", "{answered}");
+    assert_eq!(error["retry_after_ms"], 480, "{answered}");
+    assert_eq!(answered["isError"], true);
+}

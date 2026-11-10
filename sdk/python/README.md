@@ -52,6 +52,11 @@ The sync client has the same surface without `await`: `from tilo import Tilo`.
   what the host said and which calls would work; a call that waits for the
   person raises `AskPending(url, invocation_id)` and `await ask.wait()`
   answers once they decide.
+- **A busy host is waited for.** A call the host refuses because the person
+  sends changes faster than it takes them ran nothing, so the client asks
+  again after the wait the host says (`retry_after_ms`), with jitter, for up
+  to `retry_deadline` seconds (`AsyncTilo(retry_deadline=60)`); past it,
+  `RateLimited`, a `Refused`, says when to try again.
 - **Runs group calls.** `async with ws.run("Fill Jane's application"):` puts
   every call inside into one run: one undo step per app, named in history.
 - **Usage.** `await tilo.usage()` reads the person's account on the host

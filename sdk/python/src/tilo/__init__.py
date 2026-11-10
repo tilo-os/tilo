@@ -13,7 +13,7 @@ async with AsyncTilo() as tilo:
 """
 
 from ._client import AccountKeys, AsyncTilo, SignIn, Tilo, Workspaces
-from ._errors import AskPending, ProtocolError, Refused
+from ._errors import AskPending, ProtocolError, RateLimited, Refused
 from ._link import RunGroup
 from ._models import (
     Event,
@@ -56,6 +56,7 @@ __all__ = [
     "Person",
     "ProgramAnswer",
     "ProtocolError",
+    "RateLimited",
     "Refused",
     "Resource",
     "Row",

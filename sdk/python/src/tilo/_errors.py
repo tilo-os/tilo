@@ -29,6 +29,27 @@ class Refused(Exception):
         return text
 
 
+class RateLimited(Refused):
+    """The host is busy with the person's changes and ran nothing.
+
+    The client asks again by itself, waiting what the host says
+    (`retry_after_ms`), until its retry deadline; this is raised only once
+    the deadline passed.
+    """
+
+    def __init__(
+        self,
+        message: str = "",
+        next_steps: list[str] | None = None,
+        retry_after_ms: int | None = None,
+    ) -> None:
+        super().__init__(RATE_LIMITED, message, next_steps)
+        self.retry_after_ms = retry_after_ms
+
+
+RATE_LIMITED = "rate_limited"
+
+
 class AskPending(Exception):
     """The call waits for the person to allow it.
 

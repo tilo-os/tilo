@@ -152,10 +152,13 @@ impl Door {
             .map_err(|why| unavailable(&format!("the workspace could not be opened: {why}")))?,
         );
         let initialize = json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":params});
-        opened
-            .initialize(&initialize)
-            .await
-            .map_err(|why| unavailable(&format!("the workspace could not be opened: {why}")))?;
+        opened.initialize(&initialize).await.map_err(|refused| {
+            let why = refused
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("the workspace refused");
+            unavailable(&format!("the workspace could not be opened: {why}"))
+        })?;
         lock(&self.sessions).insert(id, Arc::clone(&opened));
         Ok(opened)
     }

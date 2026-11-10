@@ -1920,7 +1920,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             },
             _ => Err("Unknown tool".to_owned()),
         };
-        text_result(result, structured)
+        // A program may have run steps before the one refused: running it
+        // again would run them twice.
+        text_result(result, structured, name != "tilo")
     }
 
     /// Note the record a call resolved `in`: the one its provider names when

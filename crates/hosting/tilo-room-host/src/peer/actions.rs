@@ -76,13 +76,19 @@ pub(super) async fn handle_remote_action(
         return refuse(U::NotAuthorised, "sender may not act in the workspace");
     }
     if to == *session.own_device_public_key {
+        let standing = super::change_standing(peer, &wr);
         // Never hold the workspace across the plane: it may take its time.
         drop(wr);
         let Some(plane) = session.app_serving else {
             return refuse(U::UnsupportedPeer, "this host does not serve apps");
         };
-        return serve_locally(peer, session, plane.as_ref(), workspace_id, &frame)
-            .unwrap_or_else(|(reason, detail)| refuse(reason, detail));
+        let local = Local {
+            plane: plane.as_ref(),
+            workspace_id,
+            standing,
+        };
+        return serve_locally(peer, session, &local, &frame)
+            .unwrap_or_else(|(reason, detail)| refuse(reason, &detail));
     }
     // Every production subscription registers its authenticated peer beside
     // its subscriber, so the addressee is re-authorised from it.
@@ -237,6 +243,14 @@ fn answer_later(
     });
 }
 
+/// Where [`serve_locally`] answers: the relay's app-serving plane, in one
+/// workspace, for a caller of the standing the change budget sees there.
+struct Local<'a> {
+    plane: &'a dyn crate::app_serving::AppServingPlane,
+    workspace_id: u64,
+    standing: crate::member_limits::Standing,
+}
+
 /// Answer a frame addressed to this relay through its app-serving plane,
 /// with the caller the connection authenticated. The answer is written to
 /// the connection whenever the plane has it, so a request that needs an
@@ -246,35 +260,42 @@ fn answer_later(
 fn serve_locally(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    plane: &dyn crate::app_serving::AppServingPlane,
-    workspace_id: u64,
+    local: &Local<'_>,
     frame: &[u8],
-) -> Result<Option<Envelope>, (UnavailableReason, &'static str)> {
+) -> Result<Option<Envelope>, (UnavailableReason, String)> {
     use tilo_actions::remote::RemoteActionFrame;
+    let Local {
+        plane,
+        workspace_id,
+        standing,
+    } = *local;
     let request = RemoteActionFrame::decode(frame).map_err(|_| {
         (
             UnavailableReason::InvalidRequest,
-            "malformed remote action frame",
+            "malformed remote action frame".to_owned(),
         )
     })?;
-    let caller = session_caller(peer, session)?;
+    let caller =
+        session_caller(peer, session).map_err(|(reason, detail)| (reason, detail.to_owned()))?;
     if !plane.answers(&caller, &request.message) {
         return Err((
             UnavailableReason::UnsupportedPeer,
-            "this host does not serve apps",
+            "this host does not serve apps".to_owned(),
         ));
     }
     // An action the host runs for a member (a comment, linking their own
     // account) changes a record as theirs: it spends their change budget,
-    // as a change they send does.
+    // as a change they send does. It is refused before it runs, saying when
+    // the budget admits the next one, so the asker may simply ask again.
     if matches!(
         request.message,
         tilo_actions::remote::RemoteActionMessage::Invoke(_)
-    ) && super::over_change_limit(peer, session).is_some()
+    ) && let Some(crate::member_limits::Limited::Changes { retry_after }) =
+        super::over_change_limit(peer, session, standing)
     {
         return Err((
             UnavailableReason::Backpressure,
-            tilo_relay_protocol::refusal::TOO_MANY_CHANGES,
+            tilo_relay_protocol::refusal::too_many_changes(retry_after),
         ));
     }
     let abandoned = tilo_actions::remote::refuse(
@@ -290,7 +311,7 @@ fn serve_locally(
         return if abandoned.is_some() {
             Err((
                 UnavailableReason::UnsupportedPeer,
-                "this host does not answer that request",
+                "this host does not answer that request".to_owned(),
             ))
         } else {
             Ok(None)

@@ -8,21 +8,27 @@ another (`/w/<workspace>/mcp`).
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import inspect
 import json
 import os
+import random
+import time
 from typing import Any, Mapping
 
 import httpx
 
-from ._errors import AskPending, ProtocolError, Refused
+from ._errors import RATE_LIMITED, AskPending, ProtocolError, RateLimited, Refused
 
 DEFAULT_DOOR = "https://mcp.tilo.sh"
 PROTOCOL_VERSION = "2025-06-18"
 SURFACE = "so.tilo.mcp"
 SESSION_HEADER = "mcp-session-id"
 VERSION = "0.1.0"
+# How long a call keeps asking again while the host is busy with the
+# person's changes, in seconds.
+RETRY_DEADLINE = 60.0
 
 
 def door_from(door: str | None) -> str:
@@ -99,7 +105,9 @@ class Session:
             raise ProtocolError(
                 self.transport.refusal(response), status=response.status_code
             )
-        reply_in(messages_in(response), payload["id"])
+        error = reply_in(messages_in(response), payload["id"]).get("error")
+        if isinstance(error, Mapping):
+            raise refusal_of(error)
         session = response.headers.get(SESSION_HEADER)
         if not session:
             raise ProtocolError("the door answered initialize without a session id")
@@ -120,7 +128,33 @@ class Session:
     async def call(
         self, tool: str, arguments: Mapping[str, Any], run: Mapping[str, Any] | None = None
     ) -> dict[str, Any]:
-        """One `tools/call`, answered typed."""
+        """One `tools/call`, answered typed.
+
+        A call the host refused because it is busy with the person's changes
+        ran nothing, so it is asked again after the wait the host said, with
+        jitter, until the transport's retry deadline; then `RateLimited`.
+        """
+        deadline = time.monotonic() + self.transport.retry_deadline
+        attempt = 0
+        while True:
+            try:
+                answer = await self._call(tool, arguments, run)
+                busy = rate_limited(answer)
+                if busy is None:
+                    return answer
+            except RateLimited as refused:
+                busy = refused
+            delay = max(
+                (busy.retry_after_ms or 0) / 1000.0, min(0.05 * 2**attempt, 2.0)
+            ) * random.uniform(1.0, 1.5)
+            if time.monotonic() + delay > deadline:
+                raise busy
+            attempt += 1
+            await asyncio.sleep(delay)
+
+    async def _call(
+        self, tool: str, arguments: Mapping[str, Any], run: Mapping[str, Any] | None
+    ) -> dict[str, Any]:
         if self.id is None:
             await self.open()
         payload = {
@@ -145,10 +179,7 @@ class Session:
         reply = reply_in(messages_in(response), payload["id"])
         error = reply.get("error")
         if isinstance(error, Mapping):
-            raise ProtocolError(
-                str(error.get("message") or "the door refused the call"),
-                code=error.get("code"),
-            )
+            raise refusal_of(error)
         result = reply.get("result")
         if not isinstance(result, Mapping):
             raise ProtocolError("the door answered a call without a result")
@@ -166,9 +197,11 @@ class Transport:
         door: str | None = None,
         key: str | None = None,
         http: httpx.AsyncClient | None = None,
+        retry_deadline: float | None = None,
     ) -> None:
         self.door = door_from(door)
         self.key = key_from(key)
+        self.retry_deadline = RETRY_DEADLINE if retry_deadline is None else retry_deadline
         self._http = http
         self._owned: httpx.AsyncClient | None = None
         self._sessions: dict[str | None, Session] = {}
@@ -279,6 +312,35 @@ class Transport:
             raise ProtocolError(f"could not reach the door at {self.door}: {error}") from error
 
 
+def refusal_of(error: Mapping[str, Any]) -> Exception:
+    """A JSON-RPC error as the SDK raises it: `RateLimited` when its data
+    says the host is busy, else a `ProtocolError`."""
+    message = str(error.get("message") or "the door refused the call")
+    data = error.get("data")
+    if isinstance(data, Mapping) and data.get("code") == RATE_LIMITED:
+        return RateLimited(message, retry_after_ms=_wait_of(data))
+    return ProtocolError(message, code=error.get("code"))
+
+
+def _wait_of(fields: Mapping[str, Any]) -> int | None:
+    wait = fields.get("retry_after_ms")
+    return int(wait) if isinstance(wait, (int, float)) and wait >= 0 else None
+
+
+def rate_limited(answer: Mapping[str, Any]) -> RateLimited | None:
+    """The `RateLimited` a typed answer is, if it is one."""
+    error = answer.get("error")
+    if answer.get("status") != "failed" or not isinstance(error, Mapping):
+        return None
+    if error.get("code") != RATE_LIMITED:
+        return None
+    return RateLimited(
+        str(error.get("message") or ""),
+        [str(step) for step in error.get("next_steps") or []],
+        _wait_of(error),
+    )
+
+
 def answer_of(answer: Mapping[str, Any]) -> Mapping[str, Any]:
     """The typed answer, or the refusal it is."""
     status = answer.get("status")
@@ -286,6 +348,9 @@ def answer_of(answer: Mapping[str, Any]) -> Mapping[str, Any]:
         error = answer.get("error")
         if not isinstance(error, Mapping):
             raise Refused("failed", "" if error is None else str(error))
+        busy = rate_limited(answer)
+        if busy is not None:
+            raise busy
         raise Refused(
             str(error.get("code") or "failed"),
             str(error.get("message") or ""),

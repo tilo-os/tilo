@@ -253,7 +253,26 @@ async fn a_members_actions_served_by_the_host_spend_their_change_budget() {
         Some(UnavailableReason::Backpressure),
         "{reason}"
     );
+    // One change per hour: the refusal says the next comes in about an hour.
+    let wait = tilo_relay_protocol::refusal::busy_wait(&reason).unwrap();
+    assert!(
+        (3500..=3600).contains(&wait.as_secs()),
+        "the refusal says when to ask again: {reason}"
+    );
     assert_eq!(served(), 2, "a refused action never reaches the host");
+    // The same person's server key (its certificate says so) spends the
+    // owner budget, which the guest budget never paces.
+    let mut server_key = a.clone();
+    server_key.cert.capabilities = tilo_user_identity::DeviceCapabilities::server_key_grant();
+    assert_eq!(
+        handle_remote_action(&server_key, &session, &[id], route(), invoke()).await,
+        None
+    );
+    assert_eq!(
+        served(),
+        3,
+        "a server key's action runs past a guest's budget"
+    );
     let catalogue = encode(
         tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
             correlation: 1,
@@ -264,7 +283,7 @@ async fn a_members_actions_served_by_the_host_spend_their_change_budget() {
         handle_remote_action(&a, &session, &[id], route(), catalogue).await,
         None
     );
-    assert_eq!(served(), 3, "reading spends no change budget");
+    assert_eq!(served(), 4, "reading spends no change budget");
 }
 
 /// A plane that leaves every request unanswered (`None`), or answers each

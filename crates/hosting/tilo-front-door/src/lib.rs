@@ -954,10 +954,7 @@ impl Door {
         };
         let answer = match session.initialize(request).await {
             Ok(answer) => answer,
-            Err(message) => {
-                let id = request.get("id").cloned().unwrap_or(Value::Null);
-                return json_reply(StatusCode::OK, &session::error(&id, -32000, &message));
-            }
+            Err(refused) => return json_reply(StatusCode::OK, &refused),
         };
         let id = uuid::Uuid::new_v4().to_string();
         lock(&self.sessions).insert(id.clone(), session);

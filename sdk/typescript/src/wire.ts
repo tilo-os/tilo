@@ -7,9 +7,11 @@
  * is another (`/w/<workspace>/mcp`).
  */
 
-import { AskPending, ProtocolError, Refused } from "./errors.ts";
+import { AskPending, ProtocolError, RATE_LIMITED, RateLimited, Refused } from "./errors.ts";
 
 export const DEFAULT_DOOR = "https://mcp.tilo.sh";
+/** How long a call keeps asking again while the host is busy, in ms. */
+export const RETRY_DEADLINE_MS = 60_000;
 export const SURFACE = "so.tilo.mcp";
 export const SESSION_HEADER = "mcp-session-id";
 export const VERSION = "0.1.0";
@@ -106,7 +108,10 @@ export class Session {
     if (response.status >= 400) {
       throw new ProtocolError(await this.transport.refusal(response), response.status);
     }
-    replyIn(await messagesIn(response), id);
+    const opened = replyIn(await messagesIn(response), id);
+    if (opened.error) {
+      throw refusalOf(opened.error);
+    }
     const session = response.headers.get(SESSION_HEADER);
     if (session === null) {
       throw new ProtocolError("the door answered initialize without a session id");
@@ -132,11 +137,47 @@ export class Session {
     }
   }
 
-  /** One `tools/call`, answered typed. */
+  /**
+   * One `tools/call`, answered typed. A call the host refused because it is
+   * busy with the person's changes ran nothing, so it is asked again after
+   * the wait the host said, with jitter, until the transport's retry
+   * deadline; then `RateLimited`.
+   */
   async call(
     tool: string,
     args: Record<string, unknown> = {},
     run: Record<string, unknown> | null = null,
+  ): Promise<Answer> {
+    const deadline = Date.now() + this.transport.retryDeadlineMs;
+    for (let attempt = 0; ; attempt += 1) {
+      let busy: RateLimited;
+      try {
+        const answer = await this.#call(tool, args, run);
+        const refused = rateLimited(answer);
+        if (refused === null) {
+          return answer;
+        }
+        busy = refused;
+      } catch (error) {
+        if (!(error instanceof RateLimited)) {
+          throw error;
+        }
+        busy = error;
+      }
+      const delay =
+        Math.max(busy.retryAfterMs ?? 0, Math.min(50 * 2 ** attempt, 2000)) *
+        (1 + Math.random() * 0.5);
+      if (Date.now() + delay > deadline) {
+        throw busy;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+
+  async #call(
+    tool: string,
+    args: Record<string, unknown>,
+    run: Record<string, unknown> | null,
   ): Promise<Answer> {
     if (this.id === null) {
       await this.open();
@@ -165,11 +206,7 @@ export class Session {
     }
     const reply = replyIn(await messagesIn(response), id);
     if (reply.error) {
-      throw new ProtocolError(
-        String(reply.error.message ?? "the door refused the call"),
-        null,
-        reply.error.code ?? null,
-      );
+      throw refusalOf(reply.error);
     }
     const result = reply.result;
     if (!result || typeof result !== "object") {
@@ -191,12 +228,21 @@ export class Transport {
   readonly door: string;
   readonly key: string | null;
   readonly fetch: FetchLike;
+  readonly retryDeadlineMs: number;
   #sessions = new Map<string | null, Session>();
 
-  constructor(options: { door?: string | null; key?: string | null; fetch?: FetchLike } = {}) {
+  constructor(
+    options: {
+      door?: string | null;
+      key?: string | null;
+      fetch?: FetchLike;
+      retryDeadlineMs?: number;
+    } = {},
+  ) {
     this.door = doorFrom(options.door);
     this.key = keyFrom(options.key);
     this.fetch = options.fetch ?? fetch;
+    this.retryDeadlineMs = options.retryDeadlineMs ?? RETRY_DEADLINE_MS;
   }
 
   /** The session for the account (`null`) or one workspace. */
@@ -290,9 +336,47 @@ export class Transport {
   }
 }
 
+/**
+ * A JSON-RPC error as the SDK throws it: `RateLimited` when its data says
+ * the host is busy, else a `ProtocolError`.
+ */
+function refusalOf(error: Record<string, unknown>): Error {
+  const message = String(error.message ?? "the door refused the call");
+  const data = error.data as Record<string, unknown> | undefined;
+  if (data && typeof data === "object" && data.code === RATE_LIMITED) {
+    return new RateLimited(message, [], waitOf(data));
+  }
+  return new ProtocolError(message, null, (error.code as number | string | undefined) ?? null);
+}
+
+function waitOf(fields: Record<string, unknown>): number | null {
+  const wait = fields.retry_after_ms;
+  return typeof wait === "number" && wait >= 0 ? wait : null;
+}
+
+/** The `RateLimited` a typed answer is, if it is one. */
+export function rateLimited(answer: Answer): RateLimited | null {
+  const error = answer.error as Record<string, unknown> | undefined;
+  if (answer.status !== "failed" || !error || typeof error !== "object") {
+    return null;
+  }
+  if (error.code !== RATE_LIMITED) {
+    return null;
+  }
+  return new RateLimited(
+    String(error.message ?? ""),
+    Array.isArray(error.next_steps) ? error.next_steps.map(String) : [],
+    waitOf(error),
+  );
+}
+
 /** The typed answer, or the refusal it is. */
 export function answerOf(answer: Answer): Answer {
   if (answer.status === "failed") {
+    const busy = rateLimited(answer);
+    if (busy !== null) {
+      throw busy;
+    }
     const error = answer.error;
     if (error && typeof error === "object") {
       const detail = error as Record<string, unknown>;

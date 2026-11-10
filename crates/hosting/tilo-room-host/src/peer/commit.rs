@@ -6,22 +6,47 @@ use super::{
     desktop_refusal, enqueue_state_inner, file_refusal_of, governor_notice, resume_record,
     unix_now_ns, unpublished,
 };
+use crate::member_limits::Standing;
 use crate::workspace_access::WorkspaceOperation;
 
-/// Spends `peer`'s budget for one change, unless the relay's own user sent
-/// it: the host device and the bots a host-held root delegated must never
-/// turn a burst into refusals.
+/// Spends `peer`'s budget for one change as its `standing` is, unless the
+/// relay's own user sent it: the host device and the bots a host-held root
+/// delegated must never turn a burst into refusals.
 pub(super) fn over_change_limit(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
+    standing: Standing,
 ) -> Option<crate::member_limits::Limited> {
     let limits = session.member_limits?;
     if peer.user_public_key == *session.own_user_public_key {
         return None;
     }
     limits
-        .admit_change(&peer.user_public_key, std::time::Instant::now())
+        .admit_change(&peer.user_public_key, standing, std::time::Instant::now())
         .err()
+}
+
+/// How the change budget sees `peer` in `runtime`'s workspace: as an owner
+/// when it is their person's server key (its certificate says so, signed by
+/// their root), or when the workspace is their person's own; as a guest
+/// everywhere else.
+pub(super) fn change_standing(
+    peer: &AuthenticatedPeer,
+    runtime: &crate::workspace::WorkspaceRuntime,
+) -> Standing {
+    let own = peer.cert.capabilities.server_key
+        || runtime
+            .workspace_authority
+            .as_ref()
+            .and_then(|authority| Some((authority.workspaces()?, authority.workspace())))
+            .is_some_and(|(workspaces, workspace)| {
+                workspaces.owns(&peer.user_public_key, workspace)
+            });
+    if own {
+        Standing::Owner
+    } else {
+        Standing::Guest
+    }
 }
 
 /// Why `ws` keeps no more of `peer`'s writes: it is a person's own workspace
@@ -177,7 +202,8 @@ async fn admit_commit(
     {
         return refused("author does not match authenticated device");
     }
-    if let Some(limited) = over_change_limit(peer, session) {
+    let standing = change_standing(peer, &*ws.lock().await);
+    if let Some(limited) = over_change_limit(peer, session, standing) {
         return refused(&limited.to_string());
     }
     if let Some(full) = over_storage(peer, session, &ws).await {

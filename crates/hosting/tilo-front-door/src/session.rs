@@ -107,6 +107,17 @@ pub fn error(id: &Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
 }
 
+/// The JSON-RPC error of a call the relay ran nothing for because it is busy
+/// with the person's changes: `data` says so typed, with the wait, so a
+/// client retries the same call then.
+fn rate_limited(id: &Value, retry_after_ms: u64) -> Value {
+    json!({"jsonrpc":"2.0","id":id,"error":{
+        "code": -32000,
+        "message": RelayError::RateLimited { retry_after_ms }.to_string(),
+        "data": {"code": crate::account::RATE_LIMITED, "retry_after_ms": retry_after_ms},
+    }})
+}
+
 fn result(id: &Value, value: &Value) -> Value {
     json!({"jsonrpc":"2.0","id":id,"result":value})
 }
@@ -240,6 +251,9 @@ impl Session {
             Err(RelayError::NotFound) => {
                 return Reply::one(error(&id, -32602, "no such workspace"));
             }
+            Err(RelayError::RateLimited { retry_after_ms }) => {
+                return Reply::one(rate_limited(&id, retry_after_ms));
+            }
             Err(other) => return Reply::one(error(&id, -32000, &other.to_string())),
         };
         let call = (request.get("method").and_then(Value::as_str) == Some("tools/call"))
@@ -259,8 +273,8 @@ impl Session {
 
     /// Answer the client's `initialize`. A pinned session enters its one
     /// workspace now, so a workspace that cannot be reached fails the
-    /// connect.
-    pub(crate) async fn initialize(&self, request: &Value) -> Result<Value, String> {
+    /// connect, with the JSON-RPC error it failed with.
+    pub(crate) async fn initialize(&self, request: &Value) -> Result<Value, Value> {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
         if let Some(workspace) = self.pinned().map(str::to_owned) {
             let reply = self.serve(&workspace, request.clone()).await;
@@ -268,13 +282,9 @@ impl Session {
                 .messages
                 .into_iter()
                 .last()
-                .ok_or("the workspace answered nothing")?;
-            if let Some(error) = answer.get("error") {
-                return Err(error
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("the workspace refused")
-                    .to_owned());
+                .ok_or_else(|| error(&id, -32000, "the workspace answered nothing"))?;
+            if answer.get("error").is_some() {
+                return Err(answer);
             }
             return Ok(answer);
         }

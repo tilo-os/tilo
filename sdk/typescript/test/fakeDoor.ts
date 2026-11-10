@@ -72,6 +72,14 @@ export class FakeDoor {
   finished: Record<string, unknown> = {};
   newKeyAsked: Answer | null = null;
   polledKey: Answer | null = null;
+  /**
+   * How many calls the host refuses as busy with the person's changes
+   * before it answers them, typed (`busy`) or as a workspace entry that
+   * failed (`busyEntering`), and the wait it says.
+   */
+  busy = 0;
+  busyEntering = 0;
+  busyWaitMs = 5;
 
   /** The `fetch` this fake answers: hand it to the client. */
   get fetch(): typeof fetch {
@@ -147,6 +155,20 @@ export class FakeDoor {
       return new Response("", { status: 204 });
     }
     const body = JSON.parse(String(init?.body ?? "{}")) as Answer;
+    if (body.method === "initialize" && workspace !== null && this.busyEntering > 0) {
+      // A workspace's session enters it as it opens: a busy host fails the
+      // open, and nothing ran.
+      this.busyEntering -= 1;
+      return json({
+        jsonrpc: "2.0",
+        id: body.id,
+        error: {
+          code: -32000,
+          message: "the host takes your changes more slowly",
+          data: { code: "rate_limited", retry_after_ms: this.busyWaitMs },
+        },
+      });
+    }
     if (body.method === "initialize") {
       this.opened += 1;
       const session = `session-${this.opened}`;
@@ -178,6 +200,25 @@ export class FakeDoor {
     const surface = ((params._meta ?? {})[SURFACE] ?? {}) as Answer;
     const name = String(params.name ?? "");
     const args = (params.arguments ?? {}) as Answer;
+    if (this.busy > 0) {
+      this.busy -= 1;
+      const busy = this.failed(
+        String(args.path ?? ""),
+        "rate_limited",
+        "the host takes your changes more slowly; nothing ran",
+        "wait and retry the same call",
+      );
+      (busy.error as Answer).retry_after_ms = this.busyWaitMs;
+      return json({
+        jsonrpc: "2.0",
+        id: body.id,
+        result: {
+          content: [{ type: "text", text: JSON.stringify(busy) }],
+          structuredContent: busy,
+          isError: true,
+        },
+      });
+    }
     this.calls.push({
       tool: name,
       arguments: args,

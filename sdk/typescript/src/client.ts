@@ -19,6 +19,12 @@ export interface TiloOptions {
   key?: string | null;
   door?: string | null;
   fetch?: FetchLike;
+  /**
+   * How long a call keeps asking again while the host is busy with the
+   * person's changes, in ms (60 000 by default; 0 throws `RateLimited` at
+   * once).
+   */
+  retryDeadlineMs?: number;
 }
 
 /** A key being approved: the link to show, and the wait for it. */

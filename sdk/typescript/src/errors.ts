@@ -16,6 +16,24 @@ export class Refused extends Error {
   }
 }
 
+/** The code of an answer that ran nothing because the host is busy. */
+export const RATE_LIMITED = "rate_limited";
+
+/**
+ * The host is busy with the person's changes and ran nothing. The client
+ * asks again by itself, waiting what the host says (`retryAfterMs`), until
+ * its retry deadline; this is thrown only once the deadline passed.
+ */
+export class RateLimited extends Refused {
+  readonly retryAfterMs: number | null;
+
+  constructor(message = "", nextSteps: string[] = [], retryAfterMs: number | null = null) {
+    super(RATE_LIMITED, message, nextSteps);
+    this.name = "RateLimited";
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
 /**
  * The call waits for the person to allow it. `url` is where they answer it
  * when the door names one; `wait()` follows the invocation until they

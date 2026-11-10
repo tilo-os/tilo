@@ -402,6 +402,12 @@ impl Workspaces {
                 .is_none_or(|scope| scope.reaches(workspace))
     }
 
+    /// Whether `workspace` is one of `person`'s own here.
+    #[must_use]
+    pub fn owns(&self, person: &[u8; 32], workspace: &str) -> bool {
+        self.own().is_some_and(|own| own.is_of(person, workspace))
+    }
+
     /// The first workspace of `person`'s own here, if they have one: the one
     /// a plain ask for "my workspace" answers.
     #[must_use]

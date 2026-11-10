@@ -47,6 +47,11 @@ for await (const event of ws.watch("pdf-viewer/visa-form.pdf")) {
   said and which calls would work; a call that waits for the person throws
   `AskPending(url, invocationId)` and `await ask.wait()` answers once they
   decide.
+- **A busy host is waited for.** A call the host refuses because the person
+  sends changes faster than it takes them ran nothing, so the client asks
+  again after the wait the host says (`retry_after_ms`), with jitter, for up
+  to `retryDeadlineMs` (`new Tilo({ retryDeadlineMs: 60_000 })`); past it,
+  `RateLimited`, a `Refused`, says when to try again.
 - **Runs group calls.** `await ws.run("Fill Jane's application", async () =>
   …)` puts every call inside into one run: one undo step per app, named in
   history.

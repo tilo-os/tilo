@@ -70,7 +70,10 @@ use access::{
 use actions::{RemoteActionRoute, handle_host_action, handle_remote_action};
 use admin::handle_workspaces;
 use agent_run::handle_agent_run;
-use commit::{commit_run_key, handle_commit, handle_commit_run, over_change_limit, over_storage};
+use commit::{
+    change_standing, commit_run_key, handle_commit, handle_commit_run, over_change_limit,
+    over_storage,
+};
 use compaction::handle_compaction;
 #[cfg(test)]
 use dispatch::handle_inbound_frame;

@@ -56,6 +56,9 @@ pub struct Options {
     /// Serve the web routes as plain HTTP on loopback too, as a client that
     /// trusts no development certificate reaches them.
     pub plain: bool,
+    /// The per-person change and content budgets of a host whose workspaces
+    /// admit the public; `None` limits nobody.
+    pub member_limits: Option<tilo_relay::member_limits::MemberLimitsConfig>,
 }
 
 impl Default for Options {
@@ -68,6 +71,7 @@ impl Default for Options {
             feedback_reviewer: None,
             shell: None,
             plain: false,
+            member_limits: None,
         }
     }
 }
@@ -98,6 +102,7 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
     let cfg = tilo_relay::RelayConfig {
         state_root: state.join("relay"),
         web_entry: options.web_entry,
+        member_limits: options.member_limits,
         ..Default::default()
     };
     let (relay, agents) = tilo_relay::agents::start(

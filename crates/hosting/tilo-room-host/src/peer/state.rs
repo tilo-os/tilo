@@ -415,7 +415,8 @@ pub(super) async fn handle_delta(
             "author does not match authenticated device".into(),
         ));
     }
-    if let Some(limited) = over_change_limit(peer, session) {
+    let standing = super::change_standing(peer, &*ws.lock().await);
+    if let Some(limited) = over_change_limit(peer, session, standing) {
         // Neither kept nor forwarded, and the session stays, as for a
         // refused change below.
         tracing::warn!(%limited, device = %hex::encode(peer.device_public_key), "refused a change over the member limit");

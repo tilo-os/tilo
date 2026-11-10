@@ -512,7 +512,7 @@ pub async fn entering_certificate(
                       to certify it with."
                 .to_owned(),
             refusal: None,
-            retry_after_secs: None,
+            retry_after_ms: None,
         });
     };
     tilo_relay_client::invite::guest_certificate(root, device.device_public_key(), label, now_ns)
@@ -521,7 +521,7 @@ pub async fn entering_certificate(
             code: HostRefusal::NO_CERTIFICATE.to_owned(),
             message: error.to_string(),
             refusal: None,
-            retry_after_secs: None,
+            retry_after_ms: None,
         })
 }
 
@@ -633,9 +633,9 @@ pub struct HostRefusal {
     pub message: String,
     /// The host's typed refusal, when it gave one: its reason and the ways through it.
     pub refusal: Option<Refusal>,
-    /// How long the host asks to wait before the next try, in seconds, when it asked.
+    /// How long the host asks to wait before the next try, in milliseconds, when it asked.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub retry_after_secs: Option<u64>,
+    pub retry_after_ms: Option<u64>,
 }
 
 impl HostRefusal {
@@ -649,18 +649,44 @@ impl HostRefusal {
     pub const NOT_ADMITTED: &'static str = "not_admitted";
     /// The device holds no certificate it could enter with, and no root to certify it.
     pub const NO_CERTIFICATE: &'static str = "no_certificate";
+    /// The host is busy with this person's changes: nothing ran, and the same request works
+    /// once [`Self::retry_after_ms`] passed.
+    pub const RATE_LIMITED: &'static str = "rate_limited";
 
-    /// The host's refusal `error`, its typed refusal read off it where it carries one.
+    /// The host's refusal `error`, its typed refusal read off it where it carries one. A host
+    /// too busy to take the action reads as [`Self::RATE_LIMITED`], with the wait it said.
     #[must_use]
     pub fn of(error: &ActionHostError) -> Self {
         match error {
             ActionHostError::Refused { reason } => Self::said(error.code(), reason),
-            other => Self {
-                code: other.code().to_owned(),
-                message: other.to_string(),
-                refusal: None,
-                retry_after_secs: None,
-            },
+            ActionHostError::Unavailable { reason } => {
+                tilo_relay_protocol::refusal::busy_wait(reason).map_or_else(
+                    || Self::plain(error),
+                    |wait| Self::rate_limited(u64::try_from(wait.as_millis()).unwrap_or(u64::MAX)),
+                )
+            }
+            other => Self::plain(other),
+        }
+    }
+
+    fn plain(error: &ActionHostError) -> Self {
+        Self {
+            code: error.code().to_owned(),
+            message: error.to_string(),
+            refusal: None,
+            retry_after_ms: None,
+        }
+    }
+
+    /// The host is busy with this person's changes; the same request works in `retry_after_ms`.
+    #[must_use]
+    pub fn rate_limited(retry_after_ms: u64) -> Self {
+        Self {
+            code: Self::RATE_LIMITED.to_owned(),
+            message: "the host takes this person's changes more slowly; wait and try again"
+                .to_owned(),
+            refusal: None,
+            retry_after_ms: Some(retry_after_ms),
         }
     }
 
@@ -677,7 +703,7 @@ impl HostRefusal {
             code: Self::UNANSWERED.to_owned(),
             message: why.to_owned(),
             refusal: None,
-            retry_after_secs: None,
+            retry_after_ms: None,
         }
     }
 
@@ -688,7 +714,7 @@ impl HostRefusal {
             code: Self::MALFORMED.to_owned(),
             message: why,
             refusal: None,
-            retry_after_secs: None,
+            retry_after_ms: None,
         }
     }
 
@@ -701,7 +727,7 @@ impl HostRefusal {
                 .as_ref()
                 .map_or_else(|| reason.to_owned(), |refusal| refusal.message.clone()),
             refusal,
-            retry_after_secs: None,
+            retry_after_ms: None,
         }
     }
 }
@@ -723,8 +749,9 @@ impl From<CertifyError> for HostRefusal {
                 code: Self::NOT_ADMITTED.to_owned(),
                 message: why,
                 refusal: None,
-                retry_after_secs: None,
+                retry_after_ms: None,
             },
+            CertifyError::RateLimited { retry_after_ms } => Self::rate_limited(retry_after_ms),
             other => Self::unanswered(&other.to_string()),
         }
     }
@@ -745,7 +772,7 @@ impl From<tilo_relay_client::login::DoorError> for HostRefusal {
                     .unwrap_or_else(|| "refused".to_owned()),
                 message: refused.error,
                 refusal: None,
-                retry_after_secs,
+                retry_after_ms: retry_after_secs.map(|secs| secs.saturating_mul(1000)),
             },
             tilo_relay_client::login::DoorError::Entry(error) => error.into(),
         }
@@ -757,6 +784,10 @@ impl From<HostRefusal> for CertifyError {
     fn from(refusal: HostRefusal) -> Self {
         if refusal.code == HostRefusal::UNANSWERED {
             Self::Request(refusal.message)
+        } else if refusal.code == HostRefusal::RATE_LIMITED {
+            Self::RateLimited {
+                retry_after_ms: refusal.retry_after_ms.unwrap_or(1000),
+            }
         } else {
             Self::Denied(refusal.message)
         }
@@ -818,6 +849,39 @@ mod tests {
         let failed = HostRefusal::failed(&too_many().to_reason());
         assert_eq!(failed.code, HostRefusal::FAILED);
         assert_eq!(failed.refusal, Some(too_many()));
+    }
+
+    #[test]
+    fn a_busy_host_reads_as_rate_limited_with_its_wait_through_any_entry() {
+        let busy = ActionHostError::Unavailable {
+            reason: format!(
+                "backpressure: {}",
+                tilo_relay_protocol::refusal::too_many_changes(std::time::Duration::from_millis(
+                    480
+                ))
+            ),
+        };
+        let refused = HostRefusal::of(&busy);
+        assert_eq!(refused.code, HostRefusal::RATE_LIMITED);
+        assert_eq!(refused.retry_after_ms, Some(480));
+        // Through an entry's certification error and back, it stays what it is.
+        let entry = CertifyError::from(refused.clone());
+        assert!(
+            matches!(
+                entry,
+                CertifyError::RateLimited {
+                    retry_after_ms: 480
+                }
+            ),
+            "{entry}"
+        );
+        assert_eq!(HostRefusal::from(entry), refused);
+        // Any other unavailability stays as it was.
+        let offline = HostRefusal::of(&ActionHostError::Unavailable {
+            reason: "offline: the device left".into(),
+        });
+        assert_eq!(offline.code, "remote_actions_unavailable");
+        assert_eq!(offline.retry_after_ms, None);
     }
 
     #[test]

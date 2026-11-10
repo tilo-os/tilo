@@ -25,6 +25,9 @@ pub const DOOR_ENV: &str = "TILO_DOOR";
 pub const KEY_ENV: &str = "TILO_API_KEY";
 const SESSION_HEADER: &str = "mcp-session-id";
 const MAX_ANSWER: usize = 64 * 1024 * 1024;
+/// How long a call keeps asking again while the host is busy with the
+/// person's changes.
+const RETRY_DEADLINE: Duration = Duration::from_secs(60);
 
 #[derive(Subcommand)]
 pub enum KeysCmd {
@@ -173,7 +176,7 @@ impl Client {
     async fn session(&self, path: &str) -> Result<Session<'_>> {
         let url = format!("{}{path}", self.door);
         let (status, headers, answer) = self
-            .post(
+            .post_patiently(
                 &url,
                 None,
                 &json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{
@@ -209,6 +212,38 @@ impl Client {
             .notify(&json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
             .await;
         Ok(session)
+    }
+
+    /// [`Self::post`], asked again while the door answers that the host is
+    /// busy with the person's changes (it ran nothing): after the wait it
+    /// says, with jitter, for at most [`RETRY_DEADLINE`]. Past it, the busy
+    /// answer stands.
+    async fn post_patiently(
+        &self,
+        url: &str,
+        session: Option<&str>,
+        body: &Value,
+    ) -> Result<(u16, tilo_net::HeaderMap, Value)> {
+        let deadline = std::time::Instant::now().checked_add(RETRY_DEADLINE);
+        let mut attempt = 0_u32;
+        loop {
+            let answered = self.post(url, session, body).await?;
+            let Some(wait) = busy_wait(&answered.2) else {
+                return Ok(answered);
+            };
+            let floor = Duration::from_millis(50 << attempt.min(5)).min(Duration::from_secs(2));
+            let delay = wait.max(floor).mul_f64(1.0 + jitter() / 2.0);
+            let late = deadline.is_none_or(|deadline| {
+                std::time::Instant::now()
+                    .checked_add(delay)
+                    .is_none_or(|ready| ready > deadline)
+            });
+            if late {
+                return Ok(answered);
+            }
+            attempt = attempt.saturating_add(1);
+            tokio::time::sleep(delay).await;
+        }
     }
 
     async fn post(
@@ -311,7 +346,7 @@ impl Session<'_> {
     async fn call(&self, tool: &str, arguments: Value) -> Result<Value> {
         let (status, _, answer) = self
             .client
-            .post(
+            .post_patiently(
                 &self.url,
                 Some(&self.id),
                 &json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
@@ -341,6 +376,30 @@ impl Session<'_> {
             .send()
             .await;
     }
+}
+
+/// How long the door asks to wait before the same call works, when `answer`
+/// says the host was busy with the person's changes and ran nothing: a
+/// JSON-RPC error's `data`, or a tool's typed failure.
+fn busy_wait(answer: &Value) -> Option<Duration> {
+    let said = [
+        answer.pointer("/error/data"),
+        answer.pointer("/result/structuredContent/error"),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|fields| fields["code"] == "rate_limited")?;
+    Some(Duration::from_millis(
+        said["retry_after_ms"].as_u64().unwrap_or(1000),
+    ))
+}
+
+/// A fraction in `[0, 1)` that differs between callers asking at once.
+fn jitter() -> f64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.subsec_nanos());
+    f64::from(nanos % 1000) / 1000.0
 }
 
 /// The JSON-RPC message an answer carries: the body, or an event stream's
@@ -768,6 +827,19 @@ async fn create_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_busy_host_is_read_off_either_answer() {
+        let typed = json!({"result": {"structuredContent": {"status": "failed",
+            "error": {"code": "rate_limited", "retry_after_ms": 480}}}});
+        assert_eq!(busy_wait(&typed), Some(Duration::from_millis(480)));
+        let entering = json!({"error": {"code": -32000, "message": "busy",
+            "data": {"code": "rate_limited", "retry_after_ms": 20}}});
+        assert_eq!(busy_wait(&entering), Some(Duration::from_millis(20)));
+        let other = json!({"result": {"structuredContent": {"status": "failed",
+            "error": {"code": "refused"}}}});
+        assert_eq!(busy_wait(&other), None);
+    }
 
     #[test]
     fn options_are_json_where_they_parse() {

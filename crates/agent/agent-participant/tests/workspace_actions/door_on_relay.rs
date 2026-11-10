@@ -63,6 +63,15 @@ pub struct OnRelay {
 
 /// The door at `issuer` before a relay serving its app workers.
 pub async fn door_on_relay(issuer: &str) -> OnRelay {
+    door_on_relay_limiting(issuer, None).await
+}
+
+/// [`door_on_relay`], its relay keeping each person to `member_limits`, as a
+/// relay whose workspaces admit the public does.
+pub async fn door_on_relay_limiting(
+    issuer: &str,
+    member_limits: Option<tilo_relay::member_limits::MemberLimitsConfig>,
+) -> OnRelay {
     // The relay, as its operator runs it.
     let (operator, _) = tilo_user_identity::UserIdentity::generate("Relay operator", 1);
     let host = enrol(
@@ -77,6 +86,7 @@ pub async fn door_on_relay(issuer: &str) -> OnRelay {
         state.path(),
         Options {
             plain: true,
+            member_limits,
             ..Options::offering(common::catalogue, ModelChoice::Scripted)
         },
     )

@@ -62,12 +62,13 @@ pub(crate) fn refusal_error(refusal: &HostRefusal) -> JsValue {
     {
         let _ = Reflect::set(&error, &"refusal".into(), &typed);
     }
-    if let Some(wait) = refusal.retry_after_secs {
+    if let Some(wait) = refusal.retry_after_ms {
         #[allow(
             clippy::cast_precision_loss,
-            reason = "a wait in seconds is far below what a JavaScript number holds exactly"
+            reason = "a wait is far below what a JavaScript number holds exactly"
         )]
-        let _ = Reflect::set(&error, &"retryAfter".into(), &(wait as f64).into());
+        let seconds = wait as f64 / 1000.0;
+        let _ = Reflect::set(&error, &"retryAfter".into(), &seconds.into());
     }
     error.into()
 }

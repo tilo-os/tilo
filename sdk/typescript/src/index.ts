@@ -18,7 +18,7 @@ export { resourceProxy, kebab, segments } from "./resource.ts";
 export type { Resource, Step } from "./resource.ts";
 export { Run } from "./run.ts";
 export { RunGroup, Link, withinRun } from "./link.ts";
-export { Refused, AskPending, ProtocolError } from "./errors.ts";
+export { Refused, RateLimited, AskPending, ProtocolError } from "./errors.ts";
 export {
   type Event,
   type Hit,

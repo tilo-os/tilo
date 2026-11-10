@@ -156,8 +156,12 @@ class AsyncTilo:
         door: str | None = None,
         *,
         http: Any = None,
+        retry_deadline: float | None = None,
     ) -> None:
-        self.transport = Transport(door, key, http)
+        """`retry_deadline` is how long, in seconds, a call keeps asking again
+        while the host is busy with the person's changes (60 by default; 0
+        raises `RateLimited` at once)."""
+        self.transport = Transport(door, key, http, retry_deadline)
         self.catalog: WorkspaceList | None = None
         self.workspaces = Workspaces(self)
         self.keys = AccountKeys(self)
@@ -354,8 +358,9 @@ class Tilo(AsyncTilo):
         door: str | None = None,
         *,
         http: Any = None,
+        retry_deadline: float | None = None,
     ) -> None:
-        super().__init__(key, door, http=http)
+        super().__init__(key, door, http=http, retry_deadline=retry_deadline)
         self.transport.sync = True
         self.transport.loop = LoopThread()
 

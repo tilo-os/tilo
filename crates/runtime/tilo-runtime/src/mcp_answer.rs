@@ -5,8 +5,14 @@ use crate::mcp::UNTRUSTED;
 
 /// The MCP result of an agent tool: its text alone, or the structured copy
 /// the caller asked for (its typed answer) as JSON, which is the text then: a
-/// second rendering would be read twice.
-pub(super) fn text_result(result: Result<Reply, String>, structured: bool) -> Value {
+/// second rendering would be read twice. A call that ran nothing more than
+/// what is safe to run again (`retry_safe`) and was refused by a host busy
+/// with the person's changes answers `rate_limited`, with the wait.
+pub(super) fn text_result(
+    result: Result<Reply, String>,
+    structured: bool,
+    retry_safe: bool,
+) -> Value {
     match result {
         Ok(Reply {
             structured: Some(answer),
@@ -31,7 +37,7 @@ pub(super) fn text_result(result: Result<Reply, String>, structured: bool) -> Va
         }
         Ok(reply) => json!({"content":[{"type":"text","text":reply.text}],"isError":reply.failed}),
         Err(message) if structured => {
-            let answer = refused(&message);
+            let answer = refused(&message, retry_safe);
             json!({
                 "content":[{"type":"text","text":answer.to_string()}],
                 "structuredContent":answer,
@@ -44,7 +50,16 @@ pub(super) fn text_result(result: Result<Reply, String>, structured: bool) -> Va
 
 /// The typed answer of a call that did not run: what it was, and what would
 /// work instead.
-pub(super) fn refused(message: &str) -> Value {
+fn refused(message: &str, retry_safe: bool) -> Value {
+    if retry_safe && let Some(wait) = tilo_relay_protocol::refusal::busy_wait(message) {
+        let wait = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX);
+        return json!({"status":"failed","error":{
+            "code": "rate_limited",
+            "message": message,
+            "retry_after_ms": wait,
+            "next_steps": [format!("wait {wait} ms and retry the same call")],
+        }});
+    }
     json!({"status":"failed","error":{"code":"failed","message":message}})
 }
 
