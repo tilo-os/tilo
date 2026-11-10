@@ -537,8 +537,8 @@ pub(crate) struct Mount {
     cursor: winit::window::CursorIcon,
 }
 
-struct Desktop {
-    handle: tilo_desktop_surface::DesktopHandle,
+pub(crate) struct Desktop {
+    pub(crate) handle: tilo_desktop_surface::DesktopHandle,
     shared: crate::desktop::Shared,
     persistence: Rc<crate::desktop::Persistence>,
     /// The person's arrangement of this desk: what the palette, a script and an
@@ -547,7 +547,7 @@ struct Desktop {
     /// Navigation commands name the mount generation they were issued for.
     generation: String,
     /// What the desktop asked of the page since its last status.
-    requests: crate::shell::HostRequests,
+    pub(crate) requests: crate::shell::HostRequests,
     /// Who is here and what they are doing, as the page reports it.
     here: tilo_desktop::here::Here,
     /// Who this page writes as, to find their own steps.
@@ -559,6 +559,9 @@ struct Desktop {
     /// The session the desktop serves its windows: where a window's "open
     /// another app" goes, and what it reads of the workspace's activity.
     session: std::sync::Arc<tilo_desktop_surface::session::DesktopSession>,
+    /// The workspace's history, as the session serves it: what a window asks of it, and what the
+    /// person opened from it.
+    pub(crate) activity: tilo_session::activity::Activity,
     /// The desktop's end of that session.
     openings: tilo_desktop_surface::session::Openings,
     /// The agent grants the person took back at their door since the last
@@ -1209,7 +1212,7 @@ fn present_desktop(
     let persistence = Rc::new(persistence);
     let here = tilo_desktop::here::Here::default();
     let people: Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>> = Rc::default();
-    serve_history(
+    let activity = serve_history(
         &mut surface,
         config,
         dyn_history_store,
@@ -1270,6 +1273,7 @@ fn present_desktop(
             handle,
             shared,
             persistence,
+            activity,
             generation,
             requests,
             here,
@@ -2309,6 +2313,7 @@ impl Mount {
             desktop.announce_agents_finished();
             desktop.follow_notice_choices();
             desktop.tell_mentions();
+            desktop.serve_activity();
             desktop.follow_search();
             desktop.refresh_holders(self.peer.is_some())
         });

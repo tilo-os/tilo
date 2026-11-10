@@ -1406,20 +1406,6 @@ impl Persistence {
         Ok(())
     }
 
-    /// Write what `write` decides into the desk's document — a description of
-    /// a change, a name over a run of them — as this page's own change, and
-    /// keep it. Whether anything was written.
-    ///
-    /// Only where this page's copy is the desk: in a workspace the desk is
-    /// the workspace's document, and its history metadata reaches everyone
-    /// from the device that writes it there.
-    pub fn write_metadata(&self, write: impl FnOnce(&mut AutoCommit) -> bool) -> bool {
-        if self.peer.is_some() {
-            return false;
-        }
-        self.desk.write_metadata(write) && self.profile.refused().is_none()
-    }
-
     /// Take the workspace's desk document into the profile's copy, once the page's
     /// desk is the workspace's: a reload opens the desk as the workspace has it, and
     /// what the workspace changed reaches the file as the desk's own history.

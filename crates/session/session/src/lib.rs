@@ -55,9 +55,7 @@ pub mod workspace_gate;
 mod a11y;
 #[cfg(target_os = "linux")]
 mod a11y_settings;
-#[cfg(target_os = "linux")]
-mod activity;
-#[cfg(target_os = "linux")]
+pub mod activity;
 mod activity_models;
 #[cfg(target_os = "linux")]
 pub mod agent_door;
@@ -135,8 +133,7 @@ mod controls;
 mod conversations;
 #[cfg(target_os = "linux")]
 mod desk;
-#[cfg(target_os = "linux")]
-mod desk_doc;
+pub mod desk_doc;
 #[cfg(target_os = "linux")]
 mod desk_migration;
 #[cfg(target_os = "linux")]

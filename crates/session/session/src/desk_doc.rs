@@ -9,29 +9,44 @@
 //! A desk this build cannot read is never written over: the session starts on an empty one, keeps
 //! nothing, and the person is told where their own desk still is ([`StateNotice`]).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use automerge::AutoCommit;
-use tilo_desktop_model::{DesktopTree, STATE_SCHEMA_VERSION};
-use tilo_session_core::desk::{Desk, Loaded, Store};
+use tilo_desktop_model::DesktopTree;
+#[cfg(target_os = "linux")]
+use tilo_desktop_model::STATE_SCHEMA_VERSION;
+use tilo_session_core::desk::Desk;
 
-use crate::desk_migration::Adopted;
-use crate::desk_migration::shell;
+#[cfg(target_os = "linux")]
 use crate::i18n::{t, t_args};
 
+#[cfg(target_os = "linux")]
+use std::path::Path;
+
+#[cfg(target_os = "linux")]
+use tilo_session_core::desk::{Loaded, Store};
+
+#[cfg(target_os = "linux")]
+use crate::desk_migration::Adopted;
+#[cfg(target_os = "linux")]
+use crate::desk_migration::shell;
+
+#[cfg(target_os = "linux")]
 pub(crate) use tilo_session_core::desk::{actor_of_person, relaunchable, stamp_schema};
 
 /// The document beside the rest of this device's state.
+#[cfg(target_os = "linux")]
 pub(crate) const FILE: &str = "desk.automerge";
 
 /// Where the document lives under `state` , this device's state directory.
+#[cfg(target_os = "linux")]
 pub(crate) fn path(state: &Path) -> PathBuf {
     state.join("tilo").join(FILE)
 }
 
 /// What became of the desk this device kept.
-pub(crate) enum Kept {
+pub enum Kept {
     /// The desk as it was left, ready to be put back. Boxed: the whole desk is many times the size
     /// of the other two answers, and every call that returns one pays for the largest.
     Desk(Box<DesktopTree>),
@@ -45,7 +60,7 @@ pub(crate) enum Kept {
 /// empty desk instead, and the person has to be told, because a desk that is not theirs looks
 /// exactly like theirs.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum StateNotice {
+pub enum StateNotice {
     /// The file was written by a newer Tilo than this build understands.
     NewerSchema {
         path: PathBuf,
@@ -67,6 +82,7 @@ pub(crate) enum StateNotice {
 
 impl StateNotice {
     /// What happened, in one line.
+    #[cfg(target_os = "linux")]
     pub(crate) fn title(&self) -> String {
         match self {
             Self::NewerSchema { .. } => t("desk-not-opened-newer-title"),
@@ -81,6 +97,7 @@ impl StateNotice {
     /// The layout versions go in as text: they are names of on-disk shapes,
     /// not quantities, and a group separator in the middle of one reads as a
     /// different number.
+    #[cfg(target_os = "linux")]
     pub(crate) fn explains(&self) -> String {
         match self {
             Self::NewerSchema {
@@ -125,6 +142,7 @@ impl StateNotice {
     }
 
     /// Both lines of it, as the person reads them.
+    #[cfg(target_os = "linux")]
     fn whole(&self) -> String {
         format!("{}\n\n{}", self.title(), self.explains())
     }
@@ -132,6 +150,7 @@ impl StateNotice {
 
 /// Leave `notice` with the desk file it is about, for anyone not looking at the screen when it
 /// happened: repair mode, support, the next login.
+#[cfg(target_os = "linux")]
 pub(crate) fn refuse(notice: &StateNotice) {
     let path = match notice {
         StateNotice::NewerSchema { path, .. }
@@ -157,7 +176,7 @@ pub(crate) fn refuse(notice: &StateNotice) {
 }
 
 /// The desk's document, and what this device made of the one it kept.
-pub(crate) struct DeskDoc {
+pub struct DeskDoc {
     /// Shared with the arrangement, which reads and writes the same desk.
     desk: Rc<Desk>,
     /// The desk on disk this build did not open, if any.
@@ -168,11 +187,21 @@ pub(crate) struct DeskDoc {
 }
 
 impl DeskDoc {
+    /// The desk `desk` holds, as the host that keeps it built it.
+    pub fn over(desk: Rc<Desk>) -> Self {
+        Self {
+            desk,
+            refused: None,
+            notice: None,
+        }
+    }
+
     /// The document kept under `state` , read into from what older Tilos kept there
     /// ([`crate::desk_migration`]) when it holds no desk yet, and empty on a device that has no
     /// desk yet. `old_desk` is the desk file the shell this session replaced kept, for a device
     /// that upgraded and has no desk of its own here. Its changes are written by `person` , so the
     /// activity names them as this person's own.
+    #[cfg(target_os = "linux")]
     pub(crate) fn load(state: Option<&Path>, old_desk: Option<&Path>, person: &str) -> Self {
         let actor = actor_of_person(person);
         let Some(state) = state else {
@@ -213,6 +242,7 @@ impl DeskDoc {
     }
 
     /// A document this session writes, kept at `path` when it has one.
+    #[cfg(target_os = "linux")]
     fn keeping(
         doc: AutoCommit,
         path: Option<PathBuf>,
@@ -228,6 +258,7 @@ impl DeskDoc {
     }
 
     /// An empty desk that keeps nothing: the desk on disk is this build's to leave alone.
+    #[cfg(target_os = "linux")]
     fn refusing(notice: StateNotice, person: &str) -> Self {
         refuse(&notice);
         Self {
@@ -306,14 +337,17 @@ impl DeskDoc {
 
 /// Keep the desk where this device keeps it: the file, written by the writer that never waits on a
 /// frame.
+#[cfg(target_os = "linux")]
 struct FileAt(PathBuf);
 
+#[cfg(target_os = "linux")]
 impl Store for FileAt {
     fn keep(&self, bytes: Vec<u8>) {
         tilo_durable_writer::keep(self.0.clone(), bytes);
     }
 }
 
+#[cfg(target_os = "linux")]
 impl crate::Shared {
     /// Record this device's desk as it stands: its workspaces, the windows in them and the strips
     /// and displays they are laid out on, so the next session starts here. The change of the desk's
@@ -339,6 +373,7 @@ impl crate::Shared {
 }
 
 /// What the file at `path` holds.
+#[cfg(target_os = "linux")]
 enum Read {
     /// The document the desk is kept as.
     Document(Box<AutoCommit>),
@@ -349,6 +384,7 @@ enum Read {
 }
 
 /// The document kept at `path` , if it is one this build opens.
+#[cfg(target_os = "linux")]
 fn read(path: &Path) -> Read {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,

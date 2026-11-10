@@ -177,9 +177,9 @@ mod fixed_chords;
 #[cfg(target_arch = "wasm32")]
 mod frame_metrics;
 #[cfg(target_arch = "wasm32")]
-mod history;
+mod page_activity;
 #[cfg(target_arch = "wasm32")]
-pub use history::{LoadActivity, defer_activity_pane};
+pub use page_activity::{LoadActivity, defer_activity_pane};
 #[cfg(target_arch = "wasm32")]
 mod host_services;
 #[cfg(target_arch = "wasm32")]
@@ -193,6 +193,7 @@ mod link;
 mod mount_service_custody;
 #[cfg(target_arch = "wasm32")]
 mod page_authors;
+mod page_doing;
 #[cfg(target_arch = "wasm32")]
 mod qr_code;
 // The page's user root: the envelope it is kept in, and what it signs.

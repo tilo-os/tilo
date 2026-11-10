@@ -39,7 +39,7 @@ use ui::models::{
 /// not a provider credential. The service enforces its audience and grants.
 /// A mount the host supplies none to is lent the page's own model service
 /// ([`page_models`]).
-#[derive(serde::Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ModelConfig {
     endpoint: String,

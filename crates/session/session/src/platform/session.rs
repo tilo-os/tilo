@@ -222,12 +222,12 @@ impl Session {
             options.state.as_deref(),
             options.old_desk.as_deref(),
             options.person.clone(),
-            options
-                .search
-                .records
-                .as_ref()
-                .map(crate::records::Records::root),
-            options.lists.clone(),
+            options.search.records.as_ref().map(|records| {
+                std::sync::Arc::new(app_state::FsStore::new(records.root()))
+                    as crate::platform::Store
+            }),
+            Some(std::sync::Arc::new(options.lists.clone())
+                as std::sync::Arc<dyn crate::platform::apps::Apps>),
             Some(options.wake.handle()),
         );
         tilo_startup_metrics::mark("session-activity-done");

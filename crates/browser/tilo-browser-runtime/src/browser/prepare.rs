@@ -62,11 +62,13 @@ pub(super) fn host_offers(config: &Config) -> crate::shell::HostOffers {
     }
 }
 
-/// What the page's desk asks its history: the workspace's own records, the model this page may ask,
-/// and who the people its places name are.
+/// What the page's desk asks its history: the session's activity over this page's store, its apps
+/// and the people presence knows, and the model this page may ask.
 ///
 /// The model is the host's, else a provider the person set up here: without one nothing is asked
-/// and the history keeps its deterministic digest.
+/// and the history keeps its deterministic digest. Only where this page's copy is the desk: in a
+/// workspace the desk is the workspace's document, and its metadata reaches everyone from the
+/// device that writes it there.
 pub(super) fn serve_history(
     surface: &mut tilo_desktop_surface::DesktopSurface,
     config: &Config,
@@ -75,20 +77,43 @@ pub(super) fn serve_history(
     persistence: &Rc<crate::desktop::Persistence>,
     here: &tilo_desktop::here::Here,
     people: &Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>>,
-) {
-    let models = (config.models.is_some() || crate::host_services::page_models_set_up())
-        .then(|| config.models().ok())
-        .flatten();
-    surface.set_history_source(Box::new(crate::history::PageHistory::new(
-        &config.workspace,
-        config.peer,
-        config.author(),
-        store,
-        shared.clone(),
-        crate::history::person_of(here, people, config.author()),
-        Rc::clone(persistence),
+) -> tilo_session::activity::Activity {
+    let describes = config.peer.is_none()
+        && (config.models.is_some() || crate::host_services::page_models_set_up());
+    let models = describes.then(|| {
+        Arc::new(PageModels(config.models.clone())) as Arc<dyn tilo_session::platform::Models>
+    });
+    let people = crate::page_activity::person_of(here, people, config.author());
+    let activity = tilo_session::activity::Activity::over(tilo_session::activity::Given {
+        desk: tilo_session::desk_doc::DeskDoc::over(persistence.desk()),
+        person: config.author(),
+        store: Some(store),
+        state: None,
+        apps: Some(Arc::new(crate::page_apps::PageApps)),
+        writers: crate::page_activity::writers(people.clone(), &config.author()),
+        people,
+        pane: Rc::new(crate::page_activity::PagePane {
+            desktop: shared.clone(),
+        }),
         models,
-    )));
+        stamp: Some(crate::page_activity::records_moved(shared)),
+        wake: None,
+    });
+    surface.set_history_source(Box::new(activity.clone()));
+    activity
+}
+
+/// The page's model service, as the session's own questions ask it: its models hold the page's own
+/// handles, so each question builds the capability where it is asked.
+struct PageModels(Option<crate::host_services::ModelConfig>);
+
+impl tilo_session::platform::Models for PageModels {
+    fn models(&self) -> Option<ui::models::Models> {
+        match &self.0 {
+            Some(config) => config.connect().ok(),
+            None => Some(crate::host_services::page_models()),
+        }
+    }
 }
 
 /// The session that serves this desktop's windows, what it opens, its agent door, and the

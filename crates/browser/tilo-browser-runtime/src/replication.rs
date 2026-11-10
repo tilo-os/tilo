@@ -336,15 +336,6 @@ pub(crate) fn workspace_name(id: u32) -> Option<String> {
         .and_then(tilo_desktop_surface::history_log::workspace_name)
 }
 
-/// The workspace's desktop document with every peer's changes, for Activity.
-/// `None` until the workspace delivered or published one.
-pub(crate) fn desktop_history(id: u32) -> Option<AutoCommit> {
-    let joined = replica_of(id)?;
-    let joined = joined.borrow();
-    let doc = joined.desktop.document();
-    (!doc.base_heads().is_empty()).then(|| doc.clone())
-}
-
 /// The workspace's desk document, for the profile's copy of it: what the person's
 /// desk is once the workspace has answered.
 pub(crate) fn desk_bytes(id: u32) -> Option<Vec<u8>> {
