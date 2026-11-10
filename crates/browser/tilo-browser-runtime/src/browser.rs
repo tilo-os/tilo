@@ -1252,12 +1252,14 @@ fn present_desktop(
             }),
         },
     );
+    // What the session asks the page for its windows, and the workspace's peer in it.
+    let asks = session_asks::Asks::new(config.peer);
     // The person's mentions: the session's role over what this page replicated, told through the
     // host's notifications.
     let mentions = mention_notices::role(
         mentions_store,
         // A page with no workspace accepted yet follows no record: nothing is told.
-        config.peer.unwrap_or_default(),
+        asks.peer().unwrap_or_default(),
         &config.author(),
         {
             let seen = Rc::clone(&here);
@@ -1308,7 +1310,7 @@ fn present_desktop(
             session,
             openings,
             revoked,
-            asks: session_asks::Asks::new(config.peer),
+            asks,
             search,
             search_seen: Cell::default(),
             mentions: RefCell::new(mentions),
