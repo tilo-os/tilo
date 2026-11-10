@@ -311,7 +311,9 @@ export async function launch({args = []} = {}) {
       if (message.sessionId !== sessionId) return;
       if (message.method === 'Runtime.exceptionThrown') {
         const details = message.params.exceptionDetails;
-        log.push(`EXC ${(details.exception?.description ?? details.text).slice(0, 600)}`);
+        // The whole stack: a Wasm trap's first frames are the panic or
+        // allocation machinery, and the frame that caused it comes later.
+        log.push(`EXC ${(details.exception?.description ?? details.text).slice(0, 8000)}`);
       }
       if (message.method === 'Runtime.consoleAPICalled' && ['error', 'warning'].includes(message.params.type)) {
         log.push(`${message.params.type.toUpperCase()} ${message.params.args.map(a => a.value ?? a.description ?? '').join(' ').slice(0, 2000)}`);
@@ -341,17 +343,26 @@ export async function launch({args = []} = {}) {
         await sleep(interval);
       }
     };
+    // One capture at a time: Chromium answers two overlapping
+    // `Page.captureScreenshot`s (a recording's frame and a shot) with frames
+    // of each other's size, so a shot came back as the page tiled 2x2.
+    let capturing = Promise.resolve();
+    const capture = params => {
+      const taking = capturing.then(() => send('Page.captureScreenshot', params, sessionId));
+      capturing = taking.catch(() => undefined);
+      return taking;
+    };
     return {
       targetId,
       sessionId,
       log,
-      send: (method, params) => send(method, params, sessionId),
+      send: (method, params) => method === 'Page.captureScreenshot' ? capture(params) : send(method, params, sessionId),
       evaluate,
       waitFor,
       navigate: url => send('Page.navigate', {url}, sessionId),
       reload: () => send('Page.reload', {ignoreCache: true}, sessionId),
       screenshot: async () => {
-        const shot = await send('Page.captureScreenshot', {format: 'png'}, sessionId);
+        const shot = await capture({format: 'png'});
         return shot.result?.data ? Buffer.from(shot.result.data, 'base64') : null;
       },
       close: async () => {

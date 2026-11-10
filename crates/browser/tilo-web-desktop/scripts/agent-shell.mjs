@@ -121,8 +121,11 @@ if (!bundle && flag('--build')) {
   // `quick` (the wasm-dev profile): a debug module of the whole desktop is
   // past wasm-bindgen's function limit, and nothing here measures speed. A
   // bundle an earlier run built is brought up to date step by step rather
-  // than made again: only what changed is compiled, bound and split.
-  const kept = existsSync(join(bundle, 'pkg/tilo_browser_runtime.js'));
+  // than made again: only what changed is compiled, bound and split. What a
+  // run stopped part way through building (no `build.json` yet) is this
+  // script's own directory, and is built again from empty.
+  const kept = existsSync(join(bundle, 'build.json'));
+  if (!kept) rmSync(bundle, {recursive: true, force: true});
   const result = spawnSync('bash', [join(here, '../../tilo-browser-runtime/scripts/build.sh'), bundle,
     '--profile', 'quick', '--bundle', 'desktop', ...(kept ? ['--update'] : [])],
     {cwd: repo, stdio: 'inherit'});
@@ -857,7 +860,21 @@ async function pinOverlay(tab) {
   if (!pressed) return `no "Keep on screen" control: ${names(await semantics(tab))}`;
   await sleep(1200);
   if (!await until(pinned, 4000, 150)) {
-    return `"Keep on screen" did not keep it: ${names(await semantics(tab))}`;
+    // Whether the press was lost or only not drawn: a pointer move asks for the frame the press
+    // itself should have drawn.
+    await nudge(tab);
+    if (await until(pinned, 4000, 150)) {
+      return '"Keep on screen" kept it only once the pointer moved: the press drew no frame of its own';
+    }
+    // Pressed as a reader presses it, through the page's accessible mirror rather than the pointer.
+    const mirrored = await tab.evaluate(`(() => {
+      for (const element of document.querySelectorAll('[aria-label]')) {
+        if (/^keep on screen$/i.test(element.getAttribute('aria-label'))) { element.click(); return true; }
+      }
+      return false;
+    })()`).catch(() => false);
+    const read = mirrored && await until(pinned, 4000, 150);
+    return `"Keep on screen" did not keep it from the pointer${read ? ', but did from its accessible button' : mirrored ? ' nor from its accessible button' : ' (no accessible button to press)'}: ${names(await semantics(tab))}`;
   }
   return null;
 }
@@ -962,14 +979,17 @@ const RECORDING_TAB = `(() => {
   const track = stream.getVideoTracks()[0];
   let recorder = null;
   let frames = 0;
+  let size = null;
   globalThis.feed = frame => new Promise(resolve => {
     const image = new Image();
     image.onload = () => {
-      if (canvas.width !== image.width || canvas.height !== image.height) {
-        canvas.width = image.width;
-        canvas.height = image.height;
+      const width = size?.[0] ?? image.width;
+      const height = size?.[1] ?? image.height;
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
       }
-      context.drawImage(image, 0, 0);
+      context.drawImage(image, 0, 0, width, height);
       track.requestFrame();
       frames += 1;
       resolve(true);
@@ -977,7 +997,8 @@ const RECORDING_TAB = `(() => {
     image.onerror = () => resolve(false);
     image.src = frame;
   });
-  globalThis.begin = bits => {
+  globalThis.begin = (bits, width, height) => {
+    size = width && height ? [width, height] : null;
     recorder = new MediaRecorder(stream, {mimeType: 'video/webm;codecs=vp8', videoBitsPerSecond: bits});
     globalThis.chunks = [];
     recorder.ondataavailable = event => { if (event.data.size) globalThis.chunks.push(event.data); };
@@ -1005,7 +1026,7 @@ async function record(browser, tab, name, {width, height}, body) {
     recorder = await browser.tab();
     await recorder.navigate('about:blank');
     await recorder.evaluate(RECORDING_TAB);
-    await recorder.evaluate(`begin(4000000)`);
+    await recorder.evaluate(`begin(4000000, ${width}, ${height})`);
   } catch (error) {
     log(`${name}: this browser cannot record (${error.message ?? error}); the shots are what it keeps`);
     recorder = null;
@@ -1018,10 +1039,12 @@ async function record(browser, tab, name, {width, height}, body) {
   const tick = async () => {
     while (!stop) {
       try {
-        // The page's own pixels, one CSS pixel per pixel: a recording is
-        // watched, not read, so a JPEG of the viewport is what is drawn.
+        // The page's pixels at its own scale: a clip with another scale makes
+        // Chromium re-emulate the page for the capture, which a shot taken
+        // alongside saw as a frame of the wrong size. The recording tab draws
+        // it down to one pixel per CSS pixel; a recording is watched, not read.
         const shot = await tab.send('Page.captureScreenshot', {format: 'jpeg', quality: 82,
-          captureBeyondViewport: false, clip: {x: 0, y: 0, width, height, scale: 1}});
+          captureBeyondViewport: false});
         const jpeg = shot.result?.data;
         if (jpeg && recorder) {
           frames.push(Date.now());
