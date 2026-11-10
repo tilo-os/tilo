@@ -190,6 +190,7 @@ fn messages_the_host_kept_reach_a_device_that_was_away() {
     // and his phone the same when it comes back.
     studio.bob_laptop.start();
     studio.bob_laptop.wait_holding(&studio.site.workspace);
+    studio.bob_laptop.wait_showing(&studio.site.workspace);
     studio.bob_laptop.open("so.tilo.chat");
     studio.bob_laptop.wait_for_window("so.tilo.chat");
     studio
@@ -198,6 +199,7 @@ fn messages_the_host_kept_reach_a_device_that_was_away() {
         .wait_for_texts(&ada_key, &["one", "two", "three"]);
     studio.bob_phone.start();
     studio.bob_phone.wait_holding(&studio.site.workspace);
+    studio.bob_phone.wait_showing(&studio.site.workspace);
     studio.bob_phone.open("so.tilo.chat");
     studio.bob_phone.wait_for_window("so.tilo.chat");
     studio
@@ -252,6 +254,7 @@ fn both_people_writing_offline_converge_without_duplicates() {
     for device in [&mut studio.ada_phone, &mut studio.bob_phone] {
         device.start();
         device.wait_holding(&studio.site.workspace);
+        device.wait_showing(&studio.site.workspace);
         device.open("so.tilo.chat");
         device.wait_for_window("so.tilo.chat");
     }

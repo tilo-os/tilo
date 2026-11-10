@@ -3132,7 +3132,7 @@ impl AppBrokerState {
     /// after [`CHANGE_SAFETY_INTERVAL`] without one — the
     /// [`ActionHost::next_change`](tilo_actions::remote::ActionHost::next_change)
     /// of the broker's hosts. `None` for an invocation `caller` did not
-    /// admit, or off a runtime, where the waiter polls on its own schedule.
+    /// admit.
     pub(super) fn action_next_change(
         &self,
         caller: &Caller,
@@ -3140,9 +3140,8 @@ impl AppBrokerState {
         mut seen: tokio::sync::watch::Receiver<u64>,
     ) -> Option<Pending<()>> {
         self.remote_job(caller, id)?;
-        let runtime = tokio::runtime::Handle::try_current().ok()?;
         let (changed, change) = pending();
-        runtime.spawn(async move {
+        let wait = async move {
             tokio::select! {
                 _ = seen.changed() => {}
                 () = tilo_rt::sleep(CHANGE_SAFETY_INTERVAL) => {}
@@ -3151,7 +3150,14 @@ impl AppBrokerState {
                 () = changed.abandoned() => return,
             }
             changed.complete(());
-        });
+        };
+        // A waiter on a thread of its own (the control door's connections) waits on the app
+        // runtime: without one it would hear no change and ask again at once.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            drop(runtime.spawn(wait));
+        } else {
+            drop(tilo_rt::try_app().ok()?.spawn(wait));
+        }
         Some(change)
     }
 

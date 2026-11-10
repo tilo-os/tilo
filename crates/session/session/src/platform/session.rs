@@ -1644,7 +1644,6 @@ impl Session {
         if let Some(door) = self.shared.agent_door.get_mut() {
             door.wake_on(&mut self.compositor)?;
         }
-        self.control.wake_on(&mut self.compositor)?;
         if let Some(import) = self.shared.folder_import.get_mut().as_mut() {
             import.wake_on(&mut self.compositor)?;
         }

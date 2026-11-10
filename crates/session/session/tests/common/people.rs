@@ -1732,41 +1732,31 @@ pub struct Chat<'a> {
 }
 
 impl Chat<'_> {
-    /// The row the device's session publishes for the app's `operation` .
-    fn row(&self, operation: &str) -> Value {
-        let answer = self.device.actions();
-        answer["answer"]["actions"]
-            .as_array()
-            .and_then(|rows| {
-                rows.iter()
-                    .find(|row| {
-                        row["application"] == "so.tilo.chat" && row["operation"] == operation
-                    })
-                    .cloned()
-            })
-            .unwrap_or_else(|| panic!("{} publishes Chat's {operation}", self.device.label))
-    }
-
     /// The provider and id the session publishes for the app's `operation`,
     /// once the app published it: the app names its own actions, so a caller
     /// asks rather than writing them down.
     fn action(&self, operation: &str) -> (String, String) {
+        let mut named = None;
         tilo_test_env::wait_until(
             format!("{} publishes Chat's {operation}", self.device.label),
             || {
                 let answer = self.device.actions();
-                answer["answer"]["actions"].as_array().is_some_and(|rows| {
-                    rows.iter().any(|row| {
-                        row["application"] == "so.tilo.chat" && row["operation"] == operation
-                    })
-                })
+                named = answer["answer"]["actions"].as_array().and_then(|rows| {
+                    rows.iter()
+                        .find(|row| {
+                            row["application"] == "so.tilo.chat" && row["operation"] == operation
+                        })
+                        .map(|row| {
+                            (
+                                row["provider"].as_str().expect("a provider").to_owned(),
+                                row["id"].as_str().expect("an action's id").to_owned(),
+                            )
+                        })
+                });
+                named.is_some()
             },
         );
-        let row = self.row(operation);
-        (
-            row["provider"].as_str().expect("a provider").to_owned(),
-            row["id"].as_str().expect("an action's id").to_owned(),
-        )
+        named.expect("the action the session published")
     }
 
     /// Invoke the app's `operation` with `args` and wait for what it answered: the value it
@@ -1835,13 +1825,39 @@ impl Chat<'_> {
     /// The conversation with `peer` as Chat reads it now: its messages in the order the app shows
     /// them, and how many of them its person has not read.
     pub fn conversation(&self, peer: &str) -> Conversation {
-        let answer = self.invoke(
+        self.read(peer).unwrap_or_else(|refusal| {
+            panic!(
+                "{} Chat's read of {peer} failed: {refusal}\n{}",
+                self.device.label,
+                self.device.diagnostic()
+            )
+        })
+    }
+
+    /// The conversation with `peer` as Chat answers a read of it, or why it refused: a person who
+    /// is in no workspace with this device's person has no conversation here, and until the
+    /// workspace's people are in its shared record nobody has one.
+    fn read(&self, peer: &str) -> Result<Conversation, String> {
+        let answer = self.settled(
             "read-direct-conversation",
             &json!({"public_key": Self::conversation_key(peer)}),
         );
-        Conversation {
-            messages: answer["messages"].as_array().cloned().unwrap_or_default(),
-            unread: answer["unread"].as_u64().unwrap_or_default(),
+        if let Some(refusal) = answer.get("err") {
+            return Err(refusal["message"].as_str().unwrap_or_default().to_owned());
+        }
+        let update = &answer["answer"]["receipt"]["update"];
+        match update["state"].as_str() {
+            Some("succeeded") => {
+                let value = &update["output"]["value"];
+                Ok(Conversation {
+                    messages: value["messages"].as_array().cloned().unwrap_or_default(),
+                    unread: value["unread"].as_u64().unwrap_or_default(),
+                })
+            }
+            Some("failed") => Err(update["output"]["error"]
+                .as_str()
+                .map_or_else(|| update.to_string(), str::to_owned)),
+            other => Err(format!("the read ended as {other:?}: {answer}")),
         }
     }
 
@@ -1861,30 +1877,9 @@ impl Chat<'_> {
     }
 
     /// What Chat answers when asked for the conversation with `peer` : `None` when it can read it,
-    /// and why not when it refuses — a person who is in no workspace with this device's person has
-    /// no conversation here.
+    /// and why not when it refuses.
     pub fn refusal(&self, peer: &str) -> Option<String> {
-        let answer = self.settled(
-            "read-direct-conversation",
-            &json!({"public_key": Self::conversation_key(peer)}),
-        );
-        if let Some(refusal) = answer.get("err") {
-            return Some(refusal["message"].as_str().unwrap_or_default().to_owned());
-        }
-        let update = &answer["answer"]["receipt"]["update"];
-        match update["state"].as_str() {
-            Some("succeeded") => None,
-            Some("failed") => Some(
-                update["output"]["error"]
-                    .as_str()
-                    .map_or_else(|| update.to_string(), str::to_owned),
-            ),
-            other => panic!(
-                "{} Chat's read of {peer} ended as {other:?}: {answer}\n{}",
-                self.device.label,
-                self.device.diagnostic()
-            ),
-        }
+        self.read(peer).err()
     }
 
     /// Wait until Chat offers `peer` as someone to talk to: until the workspace's people are in its
@@ -1924,18 +1919,17 @@ impl Chat<'_> {
         }
         let deadline = tilo_test_env::hang_deadline();
         loop {
-            let held = if self.reads(peer) {
-                let shown = self.texts(peer);
-                Some(if in_order {
-                    shown
-                } else {
-                    let mut shown: Vec<String> = shown;
+            let held = self.read(peer).ok().map(|conversation| {
+                let mut shown: Vec<String> = conversation
+                    .messages
+                    .iter()
+                    .filter_map(|message| message["text"].as_str().map(str::to_owned))
+                    .collect();
+                if !in_order {
                     shown.sort_unstable();
-                    shown
-                })
-            } else {
-                None
-            };
+                }
+                shown
+            });
             let matches = held.as_ref().is_some_and(|shown| {
                 shown.len() == wanted.len()
                     && shown.iter().map(String::as_str).eq(wanted.iter().copied())
@@ -1973,12 +1967,6 @@ impl Chat<'_> {
             );
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-    }
-
-    /// Whether the app answered a read of the conversation with `peer` : it refuses one with
-    /// someone it does not know in the workspace.
-    fn reads(&self, peer: &str) -> bool {
-        self.refusal(peer).is_none()
     }
 }
 

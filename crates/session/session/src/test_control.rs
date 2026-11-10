@@ -237,7 +237,8 @@ struct Asked {
 
 /// The sockets the session serves, and what they answer from.
 pub(crate) struct Control {
-    sockets: Vec<Socket>,
+    /// Accepting connections for as long as the session serves them: dropped, they stop.
+    _sockets: Vec<Socket>,
     /// What every connection asks the actions and the change signal through.
     door: Arc<Door>,
     asked: Receiver<Asked>,
@@ -254,12 +255,9 @@ pub(crate) struct Control {
 
 /// One socket: where it listens, whose it is, and what its connections answer from.
 struct Socket {
-    listener: UnixListener,
-    /// What ends the loop's wait while a client connects.
-    watch: Option<tilo_compositor::ReadableWatch>,
     path: PathBuf,
-    gate: Gate,
-    door: Arc<Door>,
+    /// Tells the thread accepting its connections to stop at the next one.
+    stopped: Arc<AtomicBool>,
 }
 
 /// Who a socket serves.
@@ -587,7 +585,7 @@ impl Control {
             }
         }
         Self {
-            sockets,
+            _sockets: sockets,
             door,
             asked,
             held: RefCell::new(BTreeSet::new()),
@@ -600,18 +598,6 @@ impl Control {
     /// The door a program inside an app this session started is served at.
     pub(crate) fn door(&self) -> Arc<Door> {
         Arc::clone(&self.door)
-    }
-
-    /// End the loop's wait when a client connects on any of its sockets, so what it asks is
-    /// answered on the pass that follows.
-    ///
-    /// # Errors
-    /// The loop took no more sources.
-    pub(crate) fn wake_on(&mut self, compositor: &mut Compositor) -> std::io::Result<()> {
-        for socket in &mut self.sockets {
-            socket.watch = Some(crate::sockets::watch(compositor, &socket.listener)?);
-        }
-        Ok(())
     }
 
     /// What a tool handed the desk's input since the last pass, answered where a device's input
@@ -658,9 +644,6 @@ impl Control {
                 .map(|workspace| workspace.id().to_string())
         }));
         self.door.actions.set_locked(desk.locked);
-        for socket in &self.sockets {
-            socket.accept();
-        }
         self.take();
         let ready: Vec<Asked> = self.waiting.borrow_mut().drain(..).collect();
         for Asked {
@@ -707,52 +690,68 @@ impl Control {
 }
 
 impl Socket {
-    /// Listen at `path` for this account alone; `gate` is who is served there.
+    /// Listen at `path` for this account alone; `gate` is who is served there. Connections are
+    /// accepted on a thread of the socket's own as they arrive, each read on a thread of its own:
+    /// what a program asks of the actions is answered there, never after a pass of the loop, and
+    /// what it asks of the loop wakes the loop itself.
     fn open(path: &Path, gate: Gate, door: Arc<Door>) -> io::Result<Self> {
         let listener = agent_door::bind_private(path)?;
-        listener.set_nonblocking(true)?;
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&stopped);
+        let at = path.to_path_buf();
+        std::thread::Builder::new()
+            .name("tilo-control-accept".into())
+            .spawn(move || accept(&listener, &at, gate, &door, &stop))?;
         Ok(Self {
-            listener,
-            watch: None,
             path: path.to_path_buf(),
-            gate,
-            door,
+            stopped,
         })
     }
+}
 
-    /// Accept every waiting connection, each read on a thread of its own.
-    fn accept(&self) {
-        loop {
-            let stream = match self.listener.accept() {
-                Ok((stream, _)) => stream,
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return,
-                Err(error) => {
-                    tracing::warn!(%error, "control: accepting a connection failed");
-                    return;
-                }
-            };
-            if self.gate == Gate::Owner
-                && let Err(refusal) = agent_door::identify(&stream)
-                    .and_then(|(_, peer)| agent_door::peer_decision(&peer))
-            {
-                tracing::info!(?refusal, path = %self.path.display(), "control: a connection is refused");
-                refuse_owner(stream, &refusal);
+/// Accept the connections of `listener` until `stopped`, each read on a thread of its own.
+fn accept(
+    listener: &UnixListener,
+    path: &Path,
+    gate: Gate,
+    door: &Arc<Door>,
+    stopped: &AtomicBool,
+) {
+    for stream in listener.incoming() {
+        if stopped.load(Ordering::Acquire) {
+            return;
+        }
+        let stream = match stream {
+            Ok(stream) => stream,
+            Err(error) => {
+                tracing::warn!(%error, "control: accepting a connection failed");
                 continue;
             }
-            let door = Arc::clone(&self.door);
-            let ctx = Context::at(self.gate);
-            let spawned = std::thread::Builder::new()
-                .name("tilo-control".into())
-                .spawn(move || serve_connection(stream, &ctx, &door, None));
-            if let Err(error) = spawned {
-                tracing::warn!(%error, "control: a connection could not be served");
-            }
+        };
+        if gate == Gate::Owner
+            && let Err(refusal) =
+                agent_door::identify(&stream).and_then(|(_, peer)| agent_door::peer_decision(&peer))
+        {
+            tracing::info!(?refusal, path = %path.display(), "control: a connection is refused");
+            refuse_owner(stream, &refusal);
+            continue;
+        }
+        let door = Arc::clone(door);
+        let ctx = Context::at(gate);
+        let spawned = std::thread::Builder::new()
+            .name("tilo-control".into())
+            .spawn(move || serve_connection(stream, &ctx, &door, None));
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "control: a connection could not be served");
         }
     }
 }
 
 impl Drop for Socket {
     fn drop(&mut self) {
+        // The accepting thread ends at the next connection, which this one is.
+        self.stopped.store(true, Ordering::Release);
+        let _ = UnixStream::connect(&self.path);
         // Nothing answers there once the session is gone.
         let _ = std::fs::remove_file(&self.path);
     }
