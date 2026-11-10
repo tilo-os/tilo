@@ -17,7 +17,9 @@ context_files=(dist/ci/install-build-deps.sh os/external-assets/github-assets.ts
   tools/ci/native-mold-linker.sh tools/ci/verify-native-mold.sh tools/ci/windows/wine-prefix.sh
   tools/ci/install-wine.sh os/external-assets/wine/*.patch
   tools/ci/install-cargo.sh os/external-assets/cargo/*.patch
-  tools/ci/shstk-mark.py os/scripts/verify-elf-hardening.sh)
+  tools/ci/shstk-mark.py os/scripts/verify-elf-hardening.sh
+  tools/font-catalog.py crates/sdk/ui-core/assets/fonts/manifest.toml
+  crates/sdk/ui-core/assets/fonts/artifacts.json)
 
 case ${1:-} in
   build)
@@ -38,6 +40,8 @@ case ${1:-} in
       "mold-2.40.4-$arch-linux.tar.gz" "$pdfium" \
       "$(bash tools/ci/install-cargo.sh --asset-name)" \
       "${extra[@]}")
+    # Every pinned font, laid out by the font-seed check, which the calling check needs.
+    font_seed=/target/font-seed
     context=$scratch/ci-builder-context
     rm -rf "$context"
     for file in "${context_files[@]}"; do
@@ -45,12 +49,13 @@ case ${1:-} in
     done
     bash tools/ci/publish/oci-build.sh "$context" os/Containerfile.builder "$out" \
       --platform "$platform" --build-context "github-assets=$assets" \
+      --build-context "font-seed=$font_seed" \
       --build-arg "RUST_CHANNEL=$channel"
     ;;
   inputs)
     # What the image is built from, beside oci-build.sh and build-lib.sh: this script, the
     # Containerfile, the toolchain's channel, what the build copies and its patch directories
-    # whole, and the pinned assets' manifest, which names (and cache-github-assets.sh fetches into
+    # whole, the pinned fonts' manifests (in the context files), and the pinned assets' manifest, which names (and cache-github-assets.sh fetches into
     # os-assets) every external asset the build takes. A file the build starts reading belongs
     # here too, or a change to it would leave the image's date where it was.
     printf '%s\n' tools/ci/publish/ci-builder.sh os/Containerfile.builder rust-toolchain.toml \

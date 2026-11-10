@@ -1960,7 +1960,7 @@ id_token = ["registry.tilo.so"]
 [[check]]
 name = "image-ci-builder-{arch}"
 run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/ci-builder)\nexport SOURCE_DATE_EPOCH\nbash tools/ci/publish/ci-builder.sh build {arch} /target/publish/ci-builder/{arch}\n"
-needs = ["os-assets", "source-date-ci-builder"]
+needs = ["os-assets", "font-seed", "source-date-ci-builder"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch={arch}"]
 isolation = "vm"
@@ -3893,6 +3893,14 @@ board = ["lenovo-83ed", "orangepi-3b-v2-1"]
 name = "os-assets"
 run = "bash os/dev/cache-github-assets.sh"
 outputs = ["os/external-assets/cache/**"]
+default = false
+
+# Every pinned font (crates/sdk/ui-core/assets/fonts/artifacts.json) by digest, for the builder
+# image to carry (os/Containerfile.builder), so the checks that build with fonts fetch none.
+[[check]]
+name = "font-seed"
+run = "python3 tools/font-catalog.py seed crates/sdk/ui-core/assets/fonts /target/font-seed"
+outputs = ["/target/font-seed/**"]
 default = false
 
 [[check]]

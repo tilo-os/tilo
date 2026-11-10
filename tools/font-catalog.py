@@ -176,7 +176,17 @@ def verify_artifact(path, entry):
             raise ValueError(f"SHA-256 mismatch: {path}")
 
 
+# The CI builder image's read-only copy of every pinned font (os/Containerfile.builder), laid
+# out as an artifact cache by `seed`. A job in that image reads its fonts here instead of
+# fetching 56 MB from the release store, so it sends nothing over the network for them.
+IMAGE_SEED = Path("/usr/share/tilo/font-artifacts")
+
+
 def cached_font(entry, cache, offline):
+    seeded = IMAGE_SEED / entry["sha256"] / entry["file"]
+    if seeded.exists() or seeded.is_symlink():
+        verify_artifact(seeded, entry)
+        return seeded
     cache = Path(cache)
     path = cache / entry["sha256"] / entry["file"]
     if path.exists() or path.is_symlink():
@@ -234,6 +244,28 @@ def prepare(source, dest, scope, cache, offline):
             shutil.copyfile(checked_path(source, name), target)
         verify(root, scope)
         root.rename(dest)
+
+
+def seed(source, dest, offline):
+    """Lay out every pinned font of `source` at dest/<sha256>/<file>, verified and nothing else:
+    the copy the builder image carries at IMAGE_SEED. Fonts already in a seed or the cache are
+    copied rather than fetched again."""
+    _, entries = artifact_entries(Path(source))
+    dest = Path(dest)
+    expected = set()
+    for entry in entries.values():
+        target = dest / entry["sha256"] / entry["file"]
+        expected.add(target.relative_to(dest))
+        found = cached_font(entry, dest, offline)
+        if found != target:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(found, target)
+            verify_artifact(target, entry)
+    extra = sorted(str(path.relative_to(dest)) for path in dest.rglob("*")
+                   if not path.is_dir() and path.relative_to(dest) not in expected)
+    if extra:
+        raise ValueError(f"font seed holds files no pin names: {', '.join(extra)}")
+    return len(expected)
 
 
 def verify_prepared(root, source, scope):
@@ -334,6 +366,10 @@ def main():
     prepared.add_argument("--scope", choices=list(SCOPES), required=True)
     prepared.add_argument("--cache", type=Path, default=default_cache())
     prepared.add_argument("--offline", action="store_true", default=os.environ.get("TILO_FONT_ASSETS_OFFLINE") == "1")
+    seeded = commands.add_parser("seed", help="lay out every pinned font by digest, as the builder image carries them")
+    seeded.add_argument("source", type=Path)
+    seeded.add_argument("dest", type=Path)
+    seeded.add_argument("--offline", action="store_true", default=os.environ.get("TILO_FONT_ASSETS_OFFLINE") == "1")
     locate = commands.add_parser("root", help="print a verified catalog root for build consumers")
     locate.add_argument("source", type=Path)
     locate.add_argument("--scope", choices=list(SCOPES), required=True)
@@ -349,6 +385,8 @@ def main():
             link(args.source, args.dest, args.scope, args.extra)
         elif args.command == "prepare":
             prepare(args.source, args.dest, args.scope, args.cache, args.offline)
+        elif args.command == "seed":
+            print(seed(args.source, args.dest, args.offline))
         else:
             print(prepared_root(args.source, args.scope, args.cache, args.offline))
     except (ValueError, OSError) as error:

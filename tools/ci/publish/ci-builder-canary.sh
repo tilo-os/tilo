@@ -43,6 +43,9 @@ case $mode in
       channel=$(awk -F'"' '/^channel/{print $2}' rust-toolchain.toml)
       tilo-check-build-env
       rustc --version | grep -F " $channel " >/dev/null || die "the builder's rustc is not $channel"
+      # The image carries every font this tree pins, verified, so no job fetches them.
+      TILO_FONT_ASSETS_OFFLINE=1 python3 tools/font-catalog.py seed crates/sdk/ui-core/assets/fonts \
+        /usr/share/tilo/font-artifacts >/dev/null || die "the builder's font seed is not this tree's pins"
       # A nonce nobody used, so the cold compile can't hit and the warm one hits only what this
       # one stored.
       mkdir -p "$dir"

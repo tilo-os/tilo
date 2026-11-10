@@ -2,6 +2,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import shutil
@@ -18,6 +19,12 @@ REVIEWED = fc.prepared_root(SOURCE, "fixtures")
 
 
 class FontArtifactsTest(unittest.TestCase):
+    def setUp(self):
+        # The builder image's seed would answer every lookup first; each test names its own.
+        seed = patch.object(fc, "IMAGE_SEED", Path("/nonexistent/tilo-font-seed"))
+        seed.start()
+        self.addCleanup(seed.stop)
+
     def metadata_source(self, destination):
         shutil.copytree(SOURCE / "LICENSES", destination / "LICENSES")
         for name in ("manifest.toml", "PROVENANCE.md", "artifacts.json"):
@@ -212,6 +219,53 @@ class FontArtifactsTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "already exists"):
                     fc.prepare(SOURCE, cache, "product", cache, True)
                 self.assertEqual(path.read_bytes(), data)
+
+    def test_the_image_seed_is_read_first_verified_and_never_written(self):
+        _, rows = fc.artifact_entries(SOURCE)
+        row, missing = sorted(rows.values(), key=lambda item: item["bytes"])[:2]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.warm_cache(root / "cache", rows)
+            self.warm_cache(root / "seed", rows)
+            with patch.object(fc.urllib.request, "urlopen", side_effect=AssertionError("offline network")):
+                self.assertEqual(fc.seed(SOURCE, root / "seed", True), 37)
+                with patch.object(fc, "IMAGE_SEED", root / "seed"):
+                    fresh = root / "fresh"
+                    found = fc.prepared_root(SOURCE, "fixtures", fresh, True)
+                    self.assertEqual(fc.verify(found, "fixtures"), (37, 55771564))
+                    # Every font came from the seed: the cache holds the catalog alone.
+                    self.assertEqual([path.name for path in fresh.iterdir()], ["catalogs"])
+                    self.assertEqual(fc.cached_font(row, fresh, True), root / "seed" / row["sha256"] / row["file"])
+
+                    # A font the seed lacks falls through to the cache, or fails by name offline.
+                    shutil.rmtree(root / "seed" / missing["sha256"])
+                    with self.assertRaisesRegex(ValueError, "unavailable offline: " + re.escape(missing["file"])):
+                        fc.cached_font(missing, fresh, True)
+                    self.assertEqual(fc.cached_font(missing, root / "cache", True),
+                                     root / "cache" / missing["sha256"] / missing["file"])
+
+                    # A seeded font that is not the pinned one fails rather than being passed over.
+                    target = root / "seed" / row["sha256"] / row["file"]
+                    data = bytearray(target.read_bytes())
+                    data[-1] ^= 1
+                    target.write_bytes(data)
+                    with self.assertRaisesRegex(ValueError, "SHA-256"):
+                        fc.cached_font(row, root / "cache", True)
+
+    def test_a_seed_holds_every_pinned_font_and_nothing_else(self):
+        _, rows = fc.artifact_entries(SOURCE)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.warm_cache(root / "seed", rows)
+            with patch.object(fc.urllib.request, "urlopen", side_effect=AssertionError("offline network")):
+                self.assertEqual(fc.seed(SOURCE, root / "seed", True), 37)
+                row = next(iter(rows.values()))
+                (root / "seed" / row["sha256"] / "stray.ttf").write_bytes(b"x")
+                with self.assertRaisesRegex(ValueError, "no pin names: " + re.escape(row["sha256"])):
+                    fc.seed(SOURCE, root / "seed", True)
+                shutil.rmtree(root / "seed" / row["sha256"])
+                with self.assertRaisesRegex(ValueError, "unavailable offline: " + re.escape(row["file"])):
+                    fc.seed(SOURCE, root / "seed", True)
 
 
 if __name__ == "__main__":
