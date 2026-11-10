@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::platform::surfaces::{Heard, Layer, Placement, Surfaces};
-use tilo_desktop_model::{Tab, Workspace};
+use tilo_desktop_model::{Collaborator, DesktopTree, Tab, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_desktop_surface::{DesktopSurface, TileSource};
 use ui::widget::{TileContent, TileHost};
 
@@ -97,8 +97,21 @@ fn keep_on_screen_and_put_back_take_the_pointer_at_twice_the_scale() {
     env.set("XDG_CONFIG_HOME", home.path().join("config"))
         .set("XDG_STATE_HOME", home.path().join("state"));
 
+    // Someone else is here: kept on screen with nobody to show, the roster waits away from the
+    // desk, and there is no panel of it whose Put back in the bar a pointer could press.
+    let here = WorkspaceId::new();
+    let mut desk = Workspace::in_workspace(WorkspaceSlot::of_workspace(here), here, "Desk");
+    desk.collaborators.push(Collaborator {
+        id: "ada".to_owned(),
+        name: "Ada".to_owned(),
+        ..Collaborator::default()
+    });
     let (_desk, handle) = DesktopSurface::new(
-        tilo_desktop_model::DesktopTree::default(),
+        DesktopTree {
+            active: desk.slot,
+            workspaces: vec![desk],
+            ..DesktopTree::default()
+        },
         7,
         Box::new(Blank),
     );
