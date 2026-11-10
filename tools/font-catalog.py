@@ -293,7 +293,11 @@ def locked(cache):
     try:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX)
-        except OSError:
+        except OSError as error:
+            # Said, not swallowed: a cache whose lock is unavailable is one every job fetches
+            # into at once, which is what the lock exists to prevent.
+            print(f"Tilo font catalog: cannot lock {cache} ({error}); "
+                  "fetching without the other jobs' turn", file=sys.stderr)
             yield
             return
         try:

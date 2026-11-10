@@ -243,6 +243,29 @@ class CacheLockTest(unittest.TestCase):
                 # The lock is held on the directory, so it names nothing of its own.
                 self.assertEqual(list(cache.iterdir()), [])
 
+    def test_the_cache_s_lock_excludes_another_process(self):
+        """The jobs that share a cache are processes, so the lock must exclude theirs too: a
+        file system or sandbox that lets a second holder in turns every job back into a fetch."""
+        probe = (
+            "import fcntl, os, sys\n"
+            "descriptor = os.open(sys.argv[1], os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))\n"
+            "try:\n"
+            "    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+            "except OSError:\n"
+            "    print('held')\n"
+            "else:\n"
+            "    print('free')\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "cache"
+            with fc.locked(cache):
+                held = [subprocess.run([sys.executable, "-c", probe, str(cache)],
+                                       capture_output=True, text=True, check=True).stdout.strip()
+                        for _ in range(2)]
+            free = subprocess.run([sys.executable, "-c", probe, str(cache)],
+                                  capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(held, ["held", "held"], "another process entered a held cache")
+        self.assertEqual(free, "free", "the lock outlived the job that held it")
+
 
 class CatalogTest(unittest.TestCase):
     def test_reviewed_payload_is_staged_and_corruption_is_never_substituted(self):
