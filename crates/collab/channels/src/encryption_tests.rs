@@ -2482,3 +2482,114 @@ fn a_waiting_request_is_asked_again_when_the_policy_moves() {
     asked += requests(&listener);
     assert_eq!(asked, 2, "a moved policy asks again at once");
 }
+
+/// Two groups of one channel: the members of the one whose genesis lost
+/// start over and join the winner, and every member reads what the others
+/// seal from then on, and what was sealed on either side before.
+#[test]
+fn every_member_of_a_channel_that_forked_reads_the_winners_records() {
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    let channel = ChannelId::new();
+    let artifact = collab_types::ArtifactId::new();
+    let policy = Policy::readers([21, 22, 23]);
+    let dirs: Vec<_> = (0..3).map(|_| tempfile::tempdir().unwrap()).collect();
+    let mut now = Instant::now();
+    let mut alone = device(&workspace, workspace_id, 0, 21, &policy, dirs[0].path());
+    let mut founder = device(&workspace, workspace_id, 1, 22, &policy, dirs[1].path());
+    let mut joiner = device(&workspace, workspace_id, 2, 23, &policy, dirs[2].path());
+    // One device founds a group it publishes to no one yet; two others found
+    // and join another, and seal under it.
+    let ChannelAccess::Ready(early) = create(&mut alone, workspace_id, channel, now) else {
+        panic!("a founder holds its group's keys");
+    };
+    let before_alone = early
+        .seal_content(artifact, ContentRetention::Delta, b"sealed alone")
+        .unwrap();
+    create(&mut founder, workspace_id, channel, now);
+    joiner.service.access(workspace_id, channel, now);
+    run(&mut [&mut founder, &mut joiner], &mut now, 10);
+    let ChannelAccess::Ready(pair) = joiner.service.access(workspace_id, channel, now) else {
+        panic!("the joiner is in the founder's group");
+    };
+    let before_pair = pair
+        .seal_content(artifact, ContentRetention::Delta, b"sealed by the pair")
+        .unwrap();
+
+    // The two groups meet.
+    let started = now;
+    let mut devices = [alone, founder, joiner];
+    let mut converged = None;
+    for _ in 0..240 {
+        {
+            let [a, b, c] = &mut devices;
+            run(&mut [a, b, c], &mut now, 1);
+        }
+        let epochs: Vec<_> = devices
+            .iter_mut()
+            .map(|device| ready_epoch(&device.service.access(workspace_id, channel, now)))
+            .collect();
+        let members: Vec<_> = devices
+            .iter()
+            .map(|device| device.service.peers[&channel].peer.members())
+            .collect();
+        if epochs.iter().all(Option::is_some)
+            && epochs.windows(2).all(|pair| pair[0] == pair[1])
+            && members.windows(2).all(|pair| pair[0] == pair[1])
+            && members[0].len() == 3
+        {
+            converged = Some(now.duration_since(started));
+            break;
+        }
+    }
+    let converged = converged.expect("every member ends up in one group");
+    eprintln!("a forked channel converged in {converged:?} of simulated time");
+
+    let keys: Vec<ChannelContentKeys> = devices
+        .iter_mut()
+        .map(
+            |device| match device.service.access(workspace_id, channel, now) {
+                ChannelAccess::Ready(keys) => keys,
+                other => panic!("every member reads the channel: {other:?}"),
+            },
+        )
+        .collect();
+    for (at, writer) in keys.iter().enumerate() {
+        let sealed = writer
+            .seal_content(artifact, ContentRetention::Delta, b"after the fork")
+            .unwrap();
+        for reader in &keys {
+            assert_eq!(
+                reader
+                    .open_content(artifact, &sealed.0, &sealed.1)
+                    .unwrap()
+                    .as_slice(),
+                b"after the fork",
+                "member {at}'s write reads at every member"
+            );
+        }
+    }
+    // A commit hands the keys a member kept from the branch it left; give the
+    // last one time to land, then every member reads both sides' history.
+    {
+        let [a, b, c] = &mut devices;
+        run(&mut [a, b, c], &mut now, 10);
+    }
+    for device in &mut devices {
+        let ChannelAccess::Ready(keys) = device.service.access(workspace_id, channel, now) else {
+            panic!("every member still reads the channel");
+        };
+        for (sealed, text) in [
+            (&before_alone, b"sealed alone".as_slice()),
+            (&before_pair, b"sealed by the pair".as_slice()),
+        ] {
+            assert_eq!(
+                keys.open_content(artifact, &sealed.0, &sealed.1)
+                    .unwrap()
+                    .as_slice(),
+                text,
+                "what either side sealed before the groups met reads everywhere"
+            );
+        }
+    }
+}
