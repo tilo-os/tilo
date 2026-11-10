@@ -1111,6 +1111,7 @@ impl Workspaces {
             if let Err(error) = this.name_own_host(&mut workspace).await {
                 tracing::error!(workspace = %workspace.workspace(), %error, "the host's address is not named in the workspace's governance");
             }
+            this.keep_link_history(&workspace).await;
             this.recall(&mut workspace)
                 .await
                 .map_err(|e| format!("recall: {e}"))?;

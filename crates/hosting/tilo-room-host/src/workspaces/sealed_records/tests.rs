@@ -2239,3 +2239,196 @@ async fn readers_that_fell_behind_read_every_write_once() {
     desk.pairing.abort();
     lounge.relay.shutdown().await;
 }
+
+/// A page wrote parts of a chained record through its relay session, and the
+/// host wrote a record and a part of its own, before the workspace's link kept
+/// any of it: the relay retains them, the link's history does not. A relay
+/// session replays a joining page only a chain's head and sends an older part
+/// once asked; a desktop decides on its link's replay alone, and a record it
+/// holds nothing of after that replay is one its app makes anew. The relay's
+/// start hands the link what it retains before it serves anyone
+/// ([`Workspaces::recall`]): a desk that links holds every one of them once it
+/// caught up, the parts behind the head included, and reads them rather than
+/// making them again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_desk_linking_later_holds_every_part_a_page_wrote_before_the_link_kept_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
+    // The host after the restart holds the channel keys the one before it took part with.
+    let keys = std::sync::Arc::<crate::workspaces::fixtures::TestChannelKeys>::default();
+    let relay = crate::workspaces::fixtures::test_host_holding(
+        dir.path(),
+        &key,
+        &cert,
+        std::sync::Arc::clone(&keys),
+    )
+    .await;
+    let workspaces = relay.workspaces().clone();
+    let created = workspaces.create("Lounge").await.unwrap();
+    let (workspace, workspace_id) = (created.workspace, created.workspace_id);
+    let (member_key, member_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
+    workspaces
+        .author_room_record(&workspace, &cert, (APP, RECORD), |doc| {
+            doc.put(ROOT, "title", "Welcome").map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+    let member =
+        SealingMember::join(&workspaces, &workspace, (APP, RECORD), member_key.clone()).await;
+    let page = Box::pin(subscribed_member(
+        &relay,
+        &member_key,
+        member_cert.clone(),
+        workspace_id,
+    ))
+    .await;
+    // The page's parts: two behind the chain's head, and the head.
+    let mut written = Vec::new();
+    for index in [0, 1, 3] {
+        let record = neighbour_wire::record_part(RECORD, index);
+        let part = member.part(&workspaces, &workspace, &record).await;
+        let ((), message) = part.seal(&workspace, |doc| {
+            doc.put(ROOT, "title", format!("part {index}")).unwrap();
+            doc.commit_edit("fixture", "title");
+        });
+        send_sealed(&page, workspace_id, &member_key, &message);
+        written.push(record);
+    }
+    // The host's own: a part behind the head, as a host seeds or repairs one.
+    let host_part = neighbour_wire::record_part(RECORD, 2);
+    workspaces
+        .author_room_record(&workspace, &cert, (APP, &host_part), |doc| {
+            doc.put(ROOT, "title", "the host's part")
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+    written.extend([host_part, RECORD.to_owned()]);
+    tilo_test_env::within("the relay retains the page's parts", async {
+        for record in written.iter().filter(|record| record.as_str() != RECORD) {
+            while retained_writes(&relay, workspace_id, record)
+                .await
+                .is_empty()
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+    })
+    .await;
+    drop(page);
+    drop(workspaces);
+    relay.shutdown().await;
+
+    // The link's history as it stood before the relay carried session writes to it.
+    std::fs::remove_dir_all(dir.path().join("store")).unwrap();
+    let relay = crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &cert, keys).await;
+    let workspaces = relay.workspaces().clone();
+    let lounge = Lounge {
+        _dir: dir,
+        relay,
+        workspaces,
+        workspace,
+        workspace_id,
+        governor: cert,
+        governor_key: key,
+        member_key,
+        member_cert,
+        member,
+    };
+    let desk = Desk::link(&lounge, 5).await;
+    for record in &written {
+        assert!(
+            desk.link.read(|peer| peer.document(APP, record).is_some()),
+            "a desk that caught up holds {record}: its app reads it, and does not make it again"
+        );
+    }
+    drop(desk);
+    let Lounge {
+        workspaces, relay, ..
+    } = lounge;
+    drop(workspaces);
+    relay.shutdown().await;
+}
+
+/// A desktop wrote a part over the workspace's link that the relay's own
+/// retained history lacks (the link kept it before the relay carried each
+/// link write to its sessions). A page decides a part is absent when the relay
+/// answers its ask with nothing, and its app then makes the part anew: so the
+/// relay's history takes what the link keeps, and a page that opens the part
+/// is sent it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_page_opening_a_part_only_the_link_kept_is_sent_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
+    let keys = std::sync::Arc::<crate::workspaces::fixtures::TestChannelKeys>::default();
+    let relay = crate::workspaces::fixtures::test_host_holding(
+        dir.path(),
+        &key,
+        &cert,
+        std::sync::Arc::clone(&keys),
+    )
+    .await;
+    let workspaces = relay.workspaces().clone();
+    let created = workspaces.create("Lounge").await.unwrap();
+    let (workspace, workspace_id) = (created.workspace, created.workspace_id);
+    let (member_key, member_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
+    workspaces
+        .author_room_record(&workspace, &cert, (APP, RECORD), |doc| {
+            doc.put(ROOT, "title", "Welcome").map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+    let member =
+        SealingMember::join(&workspaces, &workspace, (APP, RECORD), member_key.clone()).await;
+    // A desktop's part behind the chain's head, kept by the link alone.
+    let (desk_key, _) = member_device(&workspaces, &workspace, (&key, &cert), 5).await;
+    let older = neighbour_wire::record_part(RECORD, 0);
+    let desk = SealingMember::join(&workspaces, &workspace, (APP, RECORD), desk_key)
+        .await
+        .part(&workspaces, &workspace, &older)
+        .await;
+    let ((), message) = desk.seal(&workspace, |doc| {
+        doc.put(ROOT, "title", "the desk's older part").unwrap();
+        doc.commit_edit("fixture", "title");
+    });
+    let frame = tilo_peer_state::store::Frame::of(&message).unwrap();
+    workspaces.inner.store.retain(workspace_id, &frame).unwrap();
+    drop(workspaces);
+    relay.shutdown().await;
+
+    let relay = crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &cert, keys).await;
+    let page = Box::pin(subscribed_member(
+        &relay,
+        &member_key,
+        member_cert,
+        workspace_id,
+    ))
+    .await;
+    let channel = neighbour_wire::app_document_channel(APP, &older);
+    page.send(crate::Envelope::OpenRecord {
+        workspace_id,
+        channel,
+    })
+    .unwrap();
+    let frames = tilo_test_env::within("the relay answers the page's ask", async {
+        loop {
+            if let Some(crate::Envelope::RecordOpened {
+                channel: opened,
+                frames,
+                ..
+            }) = page.recv().await
+                && opened == channel
+            {
+                return frames;
+            }
+        }
+    })
+    .await;
+    assert!(
+        frames > 0,
+        "the relay sends the page the part the link kept: it reads it, and does not make it again"
+    );
+    drop(member);
+    drop(page);
+    relay.shutdown().await;
+}

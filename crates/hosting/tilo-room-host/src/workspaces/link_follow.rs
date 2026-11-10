@@ -107,6 +107,78 @@ impl Workspaces {
         }
     }
 
+    /// Carry to the relay's sessions every record write `workspace`'s link
+    /// keeps that the relay's own history lacks, in its author's name, as the
+    /// link's first copy of a write is carried ([`Self::carry_to_sessions`]):
+    /// writes the link kept before the relay carried each one, or that did
+    /// not reach the relay as they came.
+    ///
+    /// A page that opens a record, a part behind its chain's head or an
+    /// on-demand one, is sent what the relay's history holds of it, and a
+    /// record that history lacks is one the page's app makes anew. The
+    /// relay's history answers for the workspace only once it holds what the
+    /// link holds, as the link's holds what the relay retains
+    /// ([`Self::recall`]). Returns how many writes it carried.
+    pub(super) async fn keep_link_history(&self, workspace: &GovernedWorkspace) -> usize {
+        let workspace_id = workspace.workspace_id();
+        let retained = match self.inner.host.records.retained(workspace_id).await {
+            Ok(retained) => retained,
+            Err(error) => {
+                tracing::warn!(workspace = %workspace.workspace(), %error, "the relay's history was not read; what only the link kept stays there");
+                return 0;
+            }
+        };
+        let held: std::collections::HashSet<(tilo_peer_state::store::Lineage, u64)> = retained
+            .iter()
+            .filter_map(|retained| {
+                // ignored-failure: a retained body that does not decode is one recall reports, and holds no write the link could match
+                postcard::from_bytes::<NeighbourMsg>(&retained.body).ok()
+            })
+            .filter_map(|message| {
+                // ignored-failure: only sealed record writes are what the link keeps; anything else matches none of them
+                tilo_peer_state::store::Frame::of(&message).ok()
+            })
+            .map(|frame| (frame.lineage, frame.seq))
+            .collect();
+        let mut cursors = Vec::new();
+        let mut carried = 0_usize;
+        loop {
+            let replay = match self.inner.store.replay(
+                workspace_id,
+                &cursors,
+                tilo_peer_state::store::Budget::default(),
+            ) {
+                Ok(replay) => replay,
+                Err(error) => {
+                    tracing::warn!(workspace = %workspace.workspace(), %error, "the link's history was not read; the relay's lacks what only the link kept");
+                    return carried;
+                }
+            };
+            for message in &replay.frames {
+                let (Ok(frame), Some(author)) = (
+                    tilo_peer_state::store::Frame::of(message),
+                    tilo_peer_state::store::author_of(message),
+                ) else {
+                    continue;
+                };
+                if held.contains(&(frame.lineage, frame.seq)) {
+                    continue;
+                }
+                self.carry_to_sessions(workspace.workspace(), author, message)
+                    .await;
+                carried = carried.saturating_add(1);
+            }
+            tilo_peer_state::store::advance(&mut cursors, &replay.frames);
+            if !replay.more || replay.frames.is_empty() {
+                break;
+            }
+        }
+        if carried > 0 {
+            tracing::info!(workspace = %workspace.workspace(), carried, "the relay's history took what only the link kept");
+        }
+        carried
+    }
+
     /// Take in what `workspace`'s link admits and answer what its members ask
     /// there: a frame the link admitted is what a member's write through a
     /// relay session was, so it is followed as one ([`Self::absorb`]) and
