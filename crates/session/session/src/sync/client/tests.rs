@@ -1193,3 +1193,149 @@ fn a_host_that_names_its_workspaces_says_and_pumps_each_of_them() {
     );
 }
 
+/// A page and a native desk in one workspace, with an MCP agent of the desk's person acting there:
+/// each publishes its own presence on the workspace's live plane and reads everyone else's from
+/// it, and both list the agent as the same one row, in its colour, with what it is doing, and
+/// each other's lines as their devices said them.
+#[test]
+fn a_page_and_a_desk_see_the_same_rows_and_lines_of_everyone_here() {
+    use tilo_desktop::collaborators::LineSource::{Observed, Written};
+
+    let (page_device, desk_device, agent_device) = (0xa0, 0xd0, 0xc0);
+    let (page, _page_said) = Client::offline(device(page_device), saying("Ada", 2, None));
+    let (native, _desk_said) = Client::offline(device(desk_device), saying("Quinten", 1, None));
+    for client in [&page, &native] {
+        client.follow_desktop(&desk(WORKSPACE));
+        client.take_said();
+    }
+    // Ada says what she is doing in her own words; Quinten's desk reads his line off his steps.
+    page.set_own(saying("Ada", 2, Some(("Reviewing the launch plan", false))));
+    native.set_own(saying(
+        "Quinten",
+        1,
+        Some(("Editing ‘Plan’ in Notes", true)),
+    ));
+
+    // Every device's certificate, then every frame, reaches the others over the plane.
+    page.hear(hello(desk_device, 1, "Framework"));
+    page.hear(hello(agent_device, 1, "build-box"));
+    native.hear(hello(page_device, 2, "Browser"));
+    native.hear(hello(agent_device, 1, "build-box"));
+    for frame in page.take_said() {
+        native.heard_presence(WORKSPACE, device(page_device), &frame);
+    }
+    for frame in native.take_said() {
+        page.heard_presence(WORKSPACE, device(desk_device), &frame);
+    }
+    for frame in &mcp_agent_frames(agent_device) {
+        page.heard_presence(WORKSPACE, device(agent_device), frame);
+        native.heard_presence(WORKSPACE, device(agent_device), frame);
+    }
+
+    let (on_page, on_desk) = (roster_rows(&page), roster_rows(&native));
+    let agents = |rows: &[RosterRow]| -> Vec<RosterRow> {
+        rows.iter().filter(|row| row.1).cloned().collect()
+    };
+    assert_eq!(
+        agents(&on_page),
+        vec![(
+            "Claude Code".to_owned(),
+            true,
+            Some(("Looking at the apps".to_owned(), Written)),
+            ui::presence::identity_rgb(ui::tokens::PresenceHue::Orange),
+        )],
+        "one row for the agent, in its client's colour, with its activity line: {on_page:?}"
+    );
+    assert_eq!(
+        agents(&on_page),
+        agents(&on_desk),
+        "the same row everywhere"
+    );
+    let line_of = |rows: &[RosterRow], name: &str| rows.iter().find(|row| row.0 == name)?.2.clone();
+    assert_eq!(
+        line_of(&on_page, "Quinten"),
+        Some(("Editing ‘Plan’ in Notes".to_owned(), Observed)),
+        "the page reads the desk's line as read off his steps: {on_page:?}"
+    );
+    assert_eq!(
+        line_of(&on_desk, "Ada"),
+        Some(("Reviewing the launch plan".to_owned(), Written)),
+        "the desk reads the page's line as her own words: {on_desk:?}"
+    );
+    assert_eq!(
+        on_page.len(),
+        2,
+        "Quinten and his agent, never Ada: {on_page:?}"
+    );
+    assert_eq!(
+        on_desk.len(),
+        2,
+        "Ada and Quinten's agent, its own row and never one of his devices: {on_desk:?}"
+    );
+}
+
+/// What person `user`, called `label`, says of themselves: `status` their line and whether their
+/// device read it off their steps.
+fn saying(label: &str, user: u8, status: Option<(&str, bool)>) -> OwnPresence {
+    OwnPresence {
+        label: label.to_owned(),
+        user: Some(person(user)),
+        status: status.map(|(text, automatic)| tilo_live::presence::Status {
+            text: text.to_owned(),
+            automatic,
+        }),
+        ..OwnPresence::default()
+    }
+}
+
+/// One row of who is here as a roster lists it: name, whether an agent, its line and who wrote
+/// it, and its colour.
+type RosterRow = (
+    String,
+    bool,
+    Option<(String, tilo_desktop::collaborators::LineSource)>,
+    (u8, u8, u8),
+);
+
+/// Who is here, as `client`'s roster lists them.
+fn roster_rows(client: &Client) -> Vec<RosterRow> {
+    client
+        .people(&desk(WORKSPACE), &no_records(), &|_: &str| None)
+        .into_iter()
+        .map(|person| {
+            let line = person.status.map(|line| (line.text, line.source));
+            (person.label, person.agent, line, person.rgb)
+        })
+        .collect()
+}
+
+/// What the agent `tilo mcp` serves for person 1 says of itself on the plane, from `device`, the
+/// way every agent does: a shell that is an agent, with the line it works on.
+fn mcp_agent_frames(device_seed: u8) -> Vec<Presence> {
+    let mut agent =
+        tilo_live::presence::Board::new(WORKSPACE.to_owned(), *device(device_seed).as_bytes());
+    agent.say(&tilo_live::presence::Own {
+        label: "Claude Code".to_owned(),
+        user: Some(person(1)),
+        shell: Some(Box::new(collab_types::presence::ShellPresence {
+            seq: 1,
+            sent_at_ms: 0,
+            label: "Claude Code".to_owned(),
+            agent: true,
+            colour: "#d97757".to_owned(),
+            activity: Some("Looking at the apps".to_owned()),
+            place: None,
+            size: [0, 0],
+            windows: Vec::new(),
+            selection: None,
+            chat: None,
+            reaction: None,
+        })),
+        ..tilo_live::presence::Own::default()
+    });
+    agent
+        .flush(0.0)
+        .into_iter()
+        .map(|(_, frame)| frame)
+        .collect()
+}
