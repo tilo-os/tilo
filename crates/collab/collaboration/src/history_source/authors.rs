@@ -164,9 +164,10 @@ pub fn rgb_to_hue(rgb: [u8; 3]) -> f32 {
 /// disambiguation when two authors share a name.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistoryAuthor {
-    /// The name it goes by: a person's, an agent's own, the reader's as "You".
-    /// A name, never a sentence: a row that says whom software acted for
-    /// words that line once, from the facts beside it.
+    /// The name it goes by: a person's, an agent's own — the reader's account
+    /// name too, since the line that names the author words the reader as
+    /// "You" from [`Self::relation`]. A name, never a sentence: a row that says
+    /// whom software acted for words that line once, from the facts beside it.
     pub name: String,
     /// Degrees `[0, 360)`. Kept for fixtures and any surface that still
     /// reads hue; paint uses [`HistoryAuthor::rgb`].

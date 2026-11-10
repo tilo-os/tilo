@@ -1329,8 +1329,13 @@ mod tests {
             "and who did it: the person here"
         );
         assert_eq!(
-            feed.entries[0].author.name, "You",
-            "a row names the person reading it, not by their account's name"
+            feed.entries[0].author.name, "ada",
+            "the row carries the account's name, what its face and the search read"
+        );
+        assert_eq!(
+            ui::wire_author_line(&feed.entries[0].author),
+            "You",
+            "and the line words the person reading it as such, never by their account's name"
         );
         assert!(
             feed.mutations,

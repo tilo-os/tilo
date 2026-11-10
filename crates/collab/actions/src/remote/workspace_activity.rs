@@ -164,9 +164,10 @@ pub enum Relation {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Author {
-    /// The name it goes by: a person's, an agent's own, "You" for the reader.
-    /// A name, never a sentence: a row that says whom software acted for
-    /// words that line once, from the facts beside it.
+    /// The name it goes by: a person's, an agent's own — the reader's account
+    /// name too, since the line that names the author words the reader as
+    /// "You" from [`Relation`]. A name, never a sentence: a row that says whom
+    /// software acted for words that line once, from the facts beside it.
     pub name: String,
     /// The colour presence paints them in, `[r, g, b]`.
     pub rgb: [u8; 3],
