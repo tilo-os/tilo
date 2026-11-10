@@ -329,6 +329,10 @@ fn every_mutable_entry_point_invalidates_local_state() {
             "drains the text renderer's shaping counters",
         ),
         (
+            "follow_view",
+            "judged when it moves the view: `relayout` invalidates when it scrolled the control into view and `open_view_of` runs the view's own action, so a frame that finds nothing to follow, or has already gone to this action, reads nothing anew",
+        ),
+        (
             "send",
             "judged once dispatched, as the live App judges input: all but a wheel that only panned and inert input that moved nothing",
         ),
