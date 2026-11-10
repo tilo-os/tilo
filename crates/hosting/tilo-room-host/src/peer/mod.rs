@@ -83,7 +83,7 @@ use live::{
 };
 use records::handle_open_record;
 pub use subscribe::get_or_autobind_workspace;
-use subscribe::{Subscription, handle_subscribe, handle_unsubscribe};
+use subscribe::{Subscribed, Subscription, handle_subscribe, handle_unsubscribe, subscribe};
 use sync::handle_sync_request;
 
 use crate::store::bounded::Invariant;

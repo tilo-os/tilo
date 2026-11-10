@@ -788,6 +788,7 @@ impl PeerHandle {
             dial: Dial::for_page(&vault),
             shared: shared.clone(),
             workspaces: BTreeSet::new(),
+            planes_due: BTreeSet::new(),
             placing: BTreeMap::new(),
             planes: plane::Planes::default(),
             outbox: record.outbox.iter().cloned().collect(),
@@ -1294,6 +1295,12 @@ struct Task {
     dial: Dial,
     shared: Arc<Mutex<Shared>>,
     workspaces: BTreeSet<u64>,
+    /// The joined workspaces whose live plane may have to be joined, followed
+    /// or left ([`Self::settle_planes`]): those whose governance, channel
+    /// keys or plane changed since it last looked, and every one on each
+    /// channel tick. A page in many workspaces pays for the ones that
+    /// changed, not for all of them on every frame it reads.
+    planes_due: BTreeSet<u64>,
     /// Workspaces of this device's person joined once the host governs them:
     /// each one's UUID and name, until the host answered its placement.
     placing: BTreeMap<u64, (String, String)>,
@@ -1846,6 +1853,8 @@ impl Task {
             return Exit::Lost("host session saturated during resume".into());
         }
         self.connected();
+        // Each joined workspace's plane is joined again on this connection.
+        self.planes_due.extend(self.workspaces.iter().copied());
         let mut ping = n0_future::time::interval(PING_INTERVAL);
         let mut channel_tick = n0_future::time::interval(CHANNEL_TICK);
         let mut heartbeat = n0_future::time::interval(tilo_relay_protocol::voice::HEARTBEAT);
@@ -1933,6 +1942,8 @@ impl Task {
                 _ = channel_tick.tick() => {
                     let changes = self.channels.tick(tilo_clock::unix_now_ms());
                     self.absorb(changes);
+                    // A plane that ended or is due to be asked again.
+                    self.planes_due.extend(self.workspaces.iter().copied());
                 }
                 _ = heartbeat.tick() => {
                     for beat in self.voice.heartbeats() {
@@ -2137,6 +2148,7 @@ impl Task {
     /// Subscribe to `workspace_id`, now or once connected.
     fn join(&mut self, workspace_id: u64, client: Option<&RelayClient>) -> bool {
         self.workspaces.insert(workspace_id);
+        self.planes_due.insert(workspace_id);
         self.update(|status| {
             status.workspaces.entry(workspace_id).or_insert(false);
         });
@@ -2791,6 +2803,7 @@ impl Task {
     /// Follow what `workspace_id`'s governance says now: who its members are,
     /// and the channel commits that waited for a participant it now admits.
     fn follow_governance(&mut self, workspace_id: u64) {
+        self.planes_due.insert(workspace_id);
         if let Some((workspace, members)) = self.replicas.members(workspace_id)
             && self.status().room_members.get(&workspace) != members.as_ref()
         {
@@ -3313,6 +3326,9 @@ impl Task {
             }
             let held_before = self.held_outbound.len();
             for (route, keys) in changes.keys {
+                if let Ok(workspace_id) = route.workspace_id() {
+                    self.planes_due.insert(workspace_id);
+                }
                 self.ciphers.insert(
                     route.clone(),
                     Box::new(tilo_peer_state::document_frame::KeysCipher(keys)),

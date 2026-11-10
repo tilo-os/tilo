@@ -22,7 +22,7 @@
 //!
 //! [`HostOperation::CreateOwnWorkspace`]: crate::host_authority::HostOperation::CreateOwnWorkspace
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -76,6 +76,10 @@ pub(super) struct OwnWorkspaces {
     /// The person (hex root) whose own each workspace (its UUID) is: the
     /// workspaces they made, in that order.
     by_person: std::sync::Mutex<BTreeMap<String, Vec<String>>>,
+    /// Whose own each workspace is, by its UUID: the same index read the
+    /// other way, so a change to a workspace finds its person without
+    /// looking through every person's workspaces.
+    owners: std::sync::Mutex<HashMap<String, String>>,
     /// The plan each person is on here, by their hex root, when the host's
     /// account knows theirs: what they may keep rather than what the offer
     /// gives everyone.
@@ -103,10 +107,12 @@ impl OwnWorkspaces {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
             Err(error) => return Err(error.to_string()),
         };
+        let owners = owners_of(&by_person);
         Ok(Self {
             offer,
             path,
             by_person: std::sync::Mutex::new(by_person),
+            owners: std::sync::Mutex::new(owners),
             plans: std::sync::Mutex::default(),
             measured: std::sync::Mutex::default(),
             making: tokio::sync::Mutex::new(()),
@@ -136,12 +142,7 @@ impl OwnWorkspaces {
 
     /// Whose own `workspace` is, if anyone's.
     pub(super) fn owner_of(&self, workspace: &str) -> Option<[u8; 32]> {
-        let person = self
-            .by_person
-            .lock_recover()
-            .iter()
-            .find(|(_, mine)| mine.iter().any(|own| own == workspace))
-            .map(|(person, _)| person.clone())?;
+        let person = self.owners.lock_recover().get(workspace)?.clone();
         let mut key = [0; 32];
         hex::decode_to_slice(person, &mut key).ok()?;
         Some(key)
@@ -161,6 +162,9 @@ impl OwnWorkspaces {
         // never race to the file.
         tilo_files::native::atomic::write(&self.path, &bytes).map_err(|error| error.to_string())?;
         *index = next;
+        self.owners
+            .lock_recover()
+            .insert(workspace.to_owned(), hex::encode(person));
         drop(index);
         Ok(())
     }
@@ -228,7 +232,10 @@ impl OwnWorkspaces {
             .filter_map(|(workspace, cached)| cached.is_none().then_some(workspace))
             .collect();
         if !stale.is_empty() {
-            let beside = beside_bytes(dir);
+            let beside = beside_bytes(
+                dir,
+                &stale.iter().map(|workspace| workspace.as_str()).collect(),
+            );
             let host_state = dir.parent();
             let measured_now: Vec<u64> = stale
                 .iter()
@@ -264,10 +271,23 @@ impl OwnWorkspaces {
     }
 }
 
-/// Every file beside the workspaces' records in `dir`, by the workspace whose
-/// record it belongs to (`<workspace>.<what>`): read once, however many
-/// workspaces are measured.
-fn beside_bytes(dir: &Path) -> HashMap<String, u64> {
+/// Whose own each workspace in `by_person` is.
+fn owners_of(by_person: &BTreeMap<String, Vec<String>>) -> HashMap<String, String> {
+    by_person
+        .iter()
+        .flat_map(|(person, mine)| {
+            mine.iter()
+                .map(move |workspace| (workspace.clone(), person.clone()))
+        })
+        .collect()
+}
+
+/// Every file beside the workspaces' records in `dir` that belongs to one of
+/// `wanted`, by the workspace whose record it belongs to
+/// (`<workspace>.<what>`): the directory is listed once, however many
+/// workspaces are measured, and only theirs are walked, however many other
+/// workspaces the host keeps.
+fn beside_bytes(dir: &Path, wanted: &HashSet<&str>) -> HashMap<String, u64> {
     let mut beside: HashMap<String, u64> = HashMap::new();
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
@@ -276,6 +296,9 @@ fn beside_bytes(dir: &Path) -> HashMap<String, u64> {
         let workspace = name
             .split_once('.')
             .map_or(name.as_str(), |(workspace, _)| workspace);
+        if !wanted.contains(workspace) {
+            continue;
+        }
         let bytes = tree_bytes(&entry.path());
         let total = beside.entry(workspace.to_owned()).or_default();
         *total = total.saturating_add(bytes);

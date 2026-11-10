@@ -391,6 +391,17 @@ impl Job {
             Self::ContentGet { .. } => "content-get",
         }
     }
+
+    /// The workspace whose records the job reads or changes.
+    const fn workspace(&self) -> Option<u64> {
+        match self {
+            Self::Catalogue { workspace_id, .. }
+            | Self::Invoke { workspace_id, .. }
+            | Self::Content { workspace_id, .. }
+            | Self::ContentGet { workspace_id, .. } => Some(*workspace_id),
+            Self::Feedback { .. } | Self::Ran(_) => None,
+        }
+    }
 }
 
 /// A request that waited for the worker, or ran, at least this long is
@@ -402,6 +413,14 @@ struct Shared {
     ledger: Mutex<Ledger>,
     link: OnceLock<Arc<dyn WorkspaceRecordsLink>>,
     jobs: Mutex<Option<mpsc::Sender<(Instant, Job)>>>,
+    /// How the service joins workspaces, once its thread runs.
+    member: OnceLock<WorkspaceMember>,
+    /// Every workspace a request named, by id: joined as the request
+    /// arrives, while the service's one thread still answers others, so the
+    /// first requests of many fresh workspaces join side by side instead of
+    /// each waiting for the joins before it. `Some` until the thread takes
+    /// the membership over.
+    joins: Mutex<HashMap<u64, Option<Workspace>>>,
     /// Each workspace's content store, once found.
     stores: content::Stores,
     /// The uploads callers have open.
@@ -427,6 +446,8 @@ impl WorkspaceActions {
                 ledger: Mutex::new(Ledger::default()),
                 link: OnceLock::new(),
                 jobs: Mutex::new(None),
+                member: OnceLock::new(),
+                joins: Mutex::default(),
                 stores: Mutex::default(),
                 puts: tilo_actions::remote::HostedContentPuts::default(),
                 witnesses: bounded::Witnesses::default(),
@@ -481,6 +502,30 @@ impl WorkspaceActions {
         link_request || member_request || self.authorized(caller)
     }
 
+    /// Start joining `workspace_id` unless the service has: the thread
+    /// waits only for what is still missing when it reaches the request.
+    /// Joining sends the subscription and returns; the session runs on the
+    /// member's runtime.
+    fn join_ahead(&self, workspace_id: u64) {
+        let Some(member) = self.shared.member.get() else {
+            return;
+        };
+        let mut joins = self.shared.joins.lock_recover();
+        if joins.contains_key(&workspace_id) {
+            return;
+        }
+        match Workspace::join(member, workspace_id) {
+            Ok(workspace) => {
+                joins.insert(workspace_id, Some(workspace));
+                drop(joins);
+            }
+            Err(error) => {
+                drop(joins);
+                tracing::debug!(%error, workspace_id, "workspace actions: a workspace was not joined ahead");
+            }
+        }
+    }
+
     /// Whether `caller` started invocation `id` here.
     #[must_use]
     pub fn owns(&self, caller: &Caller, id: &InvocationId) -> bool {
@@ -496,6 +541,9 @@ impl WorkspaceActions {
         reason = "a job the worker cannot take goes back to its sender whole"
     )]
     fn submit(&self, job: Job) -> Result<(), Job> {
+        if let Some(workspace_id) = job.workspace() {
+            self.join_ahead(workspace_id);
+        }
         let jobs = self.shared.jobs.lock_recover();
         match jobs.as_ref() {
             Some(sender) => sender
@@ -1229,9 +1277,11 @@ fn take_all(
 
 impl Worker {
     fn new(link: &dyn WorkspaceRecordsLink, catalogue: AppCatalogue, shared: Arc<Shared>) -> Self {
+        let member = link.member();
+        let _ = shared.member.set(member.clone());
         Self {
             participant: hex::encode(link.user_public_key()),
-            member: link.member(),
+            member,
             catalogue,
             shared,
             workspaces: HashMap::new(),
@@ -1335,8 +1385,17 @@ impl Worker {
         needs: Needs<'_>,
     ) -> Result<WorkspaceState, ActionHostError> {
         if !self.workspaces.contains_key(&workspace_id) {
-            let workspace = Workspace::join(&self.member, workspace_id)
-                .map_err(|reason| ActionHostError::Unavailable { reason })?;
+            let ahead = self
+                .shared
+                .joins
+                .lock_recover()
+                .insert(workspace_id, None)
+                .flatten();
+            let workspace = match ahead {
+                Some(workspace) => workspace,
+                None => Workspace::join(&self.member, workspace_id)
+                    .map_err(|reason| ActionHostError::Unavailable { reason })?,
+            };
             self.workspaces.insert(workspace_id, workspace);
         }
         let workspace =

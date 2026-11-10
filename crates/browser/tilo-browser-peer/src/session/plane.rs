@@ -431,8 +431,11 @@ impl Task {
         };
         self.planes.keep_only(&self.workspaces);
         let now = tilo_clock::unix_now_ms();
-        let workspaces: Vec<u64> = self.workspaces.iter().copied().collect();
-        for workspace_id in workspaces {
+        let due: Vec<u64> = std::mem::take(&mut self.planes_due)
+            .into_iter()
+            .filter(|workspace_id| self.workspaces.contains(workspace_id))
+            .collect();
+        for workspace_id in due {
             let Some((workspace, _)) = self.replicas.members(workspace_id) else {
                 continue;
             };
@@ -513,6 +516,7 @@ impl Task {
 
     /// The answer to this page's ask for `workspace_id`'s plane.
     pub(super) fn plane_joined(&mut self, workspace_id: u64, joined: Result<Arc<Plane>, Failed>) {
+        self.planes_due.insert(workspace_id);
         let Some(Waiting::Joining { epoch, members, .. }) = self.planes.answered(workspace_id)
         else {
             return;
@@ -790,6 +794,7 @@ impl Task {
     /// or the keys moved under it) or the carrier went away. It is joined
     /// again, until the workspace refuses this page.
     pub(super) fn plane_ended(&mut self, workspace_id: u64) {
+        self.planes_due.insert(workspace_id);
         if self.planes.leave(workspace_id).is_some() {
             self.planes.later(
                 workspace_id,

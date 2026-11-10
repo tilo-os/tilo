@@ -640,29 +640,19 @@ async fn one_key_makes_and_works_in_hundreds_of_workspaces_at_once() {
                 token,
                 session: None,
             };
+            let began = Instant::now();
             let (status, init) = session.initialize().await;
             assert_eq!(status, 200, "{workspace}: {init}");
-            // A workspace entered for the first time starts its app workers
-            // on the relay; with many starting at once its first catalogue
-            // may outlast the runtime's wait, which a session asks again.
-            // Being cut off would not pass on a second ask.
-            let mut slow = 0;
-            loop {
-                let (status, listed) = session
-                    .post(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-                                 "params": {"name": "tilo_ls", "arguments": {}}}))
-                    .await;
-                assert_eq!(status, 200, "{workspace}: {listed}");
-                if listed["result"]["isError"] == false {
-                    break;
-                }
-                assert!(
-                    slow < 3 && listed.to_string().contains("did not answer within"),
-                    "{workspace}: {listed}"
-                );
-                slow += 1;
-            }
-            (workspace, session.session, slow)
+            let entered = began.elapsed();
+            // Its first catalogue: the host joins the fresh workspace beside
+            // every other one entered at once, and answers in time.
+            let (status, listed) = session
+                .post(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                             "params": {"name": "tilo_ls", "arguments": {}}}))
+                .await;
+            assert_eq!(status, 200, "{workspace}: {listed}");
+            assert_eq!(listed["result"]["isError"], false, "{workspace}: {listed}");
+            (workspace, session.session, entered, began.elapsed())
         });
     }
     let uploader = Mcp {
@@ -677,15 +667,26 @@ async fn one_key_makes_and_works_in_hundreds_of_workspaces_at_once() {
         "a file goes in beside the open sessions: {put}"
     );
     let mut open = Vec::with_capacity(AT_ONCE);
-    let mut asked_again = 0;
+    let (mut entering, mut answering) = (Vec::new(), Vec::new());
     while let Some(worked) = working.join_next().await {
-        let (workspace, id, slow) = worked.expect("a session worked");
-        asked_again += slow;
+        let (workspace, id, entered, answered) = worked.expect("a session worked");
+        entering.push(entered);
+        answering.push(answered);
         open.push((workspace, id));
     }
+    let at_once = began.elapsed();
     eprintln!(
-        "{AT_ONCE} sessions opened and answered at once in {:?} ({asked_again} first catalogues asked again)",
-        began.elapsed()
+        "{AT_ONCE} sessions opened and answered at once in {at_once:?}: entered p50 {:?}, max {:?}; first catalogue answered p50 {:?}, max {:?}",
+        quantile(&entering, 0.5),
+        quantile(&entering, 1.0),
+        quantile(&answering, 0.5),
+        quantile(&answering, 1.0),
+    );
+    // About 3 s unloaded and up to 7 s on a busy builder; entering them one
+    // after another took 13 s.
+    assert!(
+        at_once < Duration::from_secs(9),
+        "working in {AT_ONCE} fresh workspaces at once does not wait for one after another: {at_once:?}"
     );
 
     // Every one of them, and the account's own, still answers.

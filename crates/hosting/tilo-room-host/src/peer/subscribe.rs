@@ -111,21 +111,57 @@ enum SubscribeAdmission {
     Refused(Envelope),
 }
 
+/// A subscription's replay, ready for the writer: the workspace, its ticket,
+/// its captured replay and what commits while it is written.
+pub(super) type ReplaySlot = (u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>);
+
+/// How [`subscribe`] answered a `Subscribe`.
+pub(super) enum Subscribed {
+    /// Admitted and captured: the replay to write, then `Ready`.
+    Replaying(ReplaySlot),
+    /// Refused without ending the session; the reply to send.
+    Refused(Envelope),
+}
+
 /// Handle `Subscribe`: gate on membership (or admit, for a
 /// same-owner autobind), replay retained baselines + this device's
 /// pending queue, then register the live subscriber.
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the ticket and replay handle move into the connection's replay slot; the lint does not see the move"
-)]
 pub(super) async fn handle_subscribe(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     subscribed: &mut Vec<u64>,
-    replay: &mut Option<(u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>)>,
+    replay: &mut Option<ReplaySlot>,
     workspace_id: u64,
     resume: Subscription,
 ) -> Result<Option<Envelope>, PeerError> {
+    let subscribed_now = subscribe(peer, session, subscribed, workspace_id, resume).await?;
+    match subscribed_now {
+        Subscribed::Refused(refusal) => Ok(Some(refusal)),
+        Subscribed::Replaying(slot) => {
+            *replay = Some(slot);
+            if !subscribed.contains(&workspace_id) {
+                subscribed.push(workspace_id);
+            }
+            Ok(None)
+        }
+    }
+}
+
+/// The work of a `Subscribe` for `workspace_id`, which reads the
+/// connection's subscriptions but leaves adding it to them to the caller:
+/// subscriptions to different workspaces run side by side
+/// ([`super::session`]'s subscribe runs).
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the ticket and replay handle move into the returned replay slot; the lint does not see the move"
+)]
+pub(super) async fn subscribe(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    workspace_id: u64,
+    resume: Subscription,
+) -> Result<Subscribed, PeerError> {
     let AdmittedSubscription {
         workspace: ws,
         expected,
@@ -135,7 +171,7 @@ pub(super) async fn handle_subscribe(
         let admission = admit_subscription(peer, session, subscribed, workspace_id).await?;
         match admission {
             SubscribeAdmission::Admitted(admitted) => admitted,
-            SubscribeAdmission::Refused(refusal) => return Ok(Some(refusal)),
+            SubscribeAdmission::Refused(refusal) => return Ok(Subscribed::Refused(refusal)),
         }
     };
     super::test_hooks::test_point!(signal(store.root(), "subscribe-admitted"));
@@ -202,12 +238,13 @@ pub(super) async fn handle_subscribe(
         SubscribeReplayCompletion::Ready(handle) => handle,
         SubscribeReplayCompletion::Superseded => return Err(PeerError::Superseded),
     };
-    *replay = Some((workspace_id, ticket, handle, catchup));
     session.metrics.inc_subscribes();
-    if !subscribed.contains(&workspace_id) {
-        subscribed.push(workspace_id);
-    }
-    Ok(None)
+    Ok(Subscribed::Replaying((
+        workspace_id,
+        ticket,
+        handle,
+        catchup,
+    )))
 }
 
 /// The admission half of [`handle_subscribe`]: the agent's delegation, the
