@@ -221,7 +221,7 @@ pub(super) fn run(
                     continue;
                 }
                 Cmd::Enter(request) => {
-                    asking.ask(Ask::Entry(Box::new(request)));
+                    asking.ask(Ask::Entry(request));
                     continue;
                 }
                 command => command,

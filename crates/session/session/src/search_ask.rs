@@ -225,6 +225,10 @@ fn chosen() -> Option<(String, String)> {
 }
 
 /// Ask `question` through this host's model gateway, sending what comes as it is written.
+#[expect(
+    clippy::future_not_send,
+    reason = "the model capability is not Send on the web; natively the ask runs on its own thread"
+)]
 async fn answer(
     question: String,
     deltas: &Sender<Chunk>,
@@ -253,6 +257,10 @@ fn land(deltas: &Sender<Chunk>, wake: Option<&tilo_service::Wake>, chunk: Chunk)
 }
 
 /// [`answer`] against a model capability, wherever it comes from.
+#[expect(
+    clippy::future_not_send,
+    reason = "the model capability is not Send on the web; natively the ask runs on its own thread"
+)]
 async fn answer_with(
     models: &ui::models::Models,
     question: String,

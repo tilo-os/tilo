@@ -584,7 +584,7 @@ impl Client {
             return Err("this session keeps no workspaces to take in".into());
         }
         self.outgoing
-            .send(Cmd::Enter(request))
+            .send(Cmd::Enter(Box::new(request)))
             .map_err(|_| "the collaboration plane is gone".to_owned())
     }
 

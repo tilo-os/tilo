@@ -768,22 +768,9 @@ impl EvictionQueue {
         if !matches!(request.state, EvictionRequestState::AwaitingBackendGc) {
             return Err(EvictionQueueError::RequestNotPending(id).into());
         }
-        let fresh_plan = match request.mode {
-            EvictionMode::Safe => plan_destructive_eviction(
-                registry,
-                catalog,
-                request.record_id,
-                now_ms,
-                requirements,
-            )?,
-            EvictionMode::DestructiveOverride => plan_destructive_eviction(
-                registry,
-                catalog,
-                request.record_id,
-                now_ms,
-                requirements,
-            )?,
-        };
+        // Either mode releases only what the person explicitly gave up.
+        let fresh_plan =
+            plan_destructive_eviction(registry, catalog, request.record_id, now_ms, requirements)?;
         Ok(self.revalidate_for_backend_gc(id, &fresh_plan)?)
     }
 

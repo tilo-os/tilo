@@ -182,7 +182,7 @@ pub enum Cmd {
     Enroll(crate::sync::Enrolling),
     /// Take one of the person's workspaces in as their further device, at the host the list names.
     #[cfg(target_os = "linux")]
-    Enter(crate::sync::Entering),
+    Enter(Box<crate::sync::Entering>),
     /// Send this device's fabric to the person's other devices, or to the one at `target`.
     #[cfg(target_os = "linux")]
     Fabric {
