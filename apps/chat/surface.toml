@@ -635,6 +635,7 @@ fields = [
   { path = "messages.*.edited", type = "bool", readonly = true },
   { path = "messages.*.history", type = { list = { named = "Revision" } }, readonly = true },
   { path = "messages.*.parent", type = { option = "text" }, readonly = true },
+  { path = "messages.*.quoted", type = { option = { named = "Quote" } }, readonly = true },
   { path = "messages.*.reactions", type = "reactions", readonly = true },
   { path = "messages.*.mentions", type = { list = { named = "Mention" } }, readonly = true },
   { path = "messages.*.attachments", type = { list = { named = "Attached" } }, readonly = true },
@@ -937,6 +938,7 @@ fields = [
   { name = "edited", type = "bool" },
   { name = "history", type = { list = { named = "Revision" } } },
   { name = "parent", type = { option = "text" } },
+  { name = "quoted", type = { option = { named = "Quote" } } },
   { name = "reactions", type = "reactions" },
   { name = "mentions", type = { list = { named = "Mention" } } },
   { name = "attachments", type = { list = { named = "Attached" } } },
@@ -956,6 +958,14 @@ fields = [
   { name = "progress", type = "text" },
   { name = "finish", type = { option = { named = "AgentFinish" } } },
   { name = "detail", type = "text" },
+]
+
+[[resources.types]]
+name = "Quote"
+fields = [
+  { name = "text", type = "text", label = true },
+  { name = "start", type = "int" },
+  { name = "end", type = "int" },
 ]
 
 [[resources.types]]

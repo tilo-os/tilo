@@ -868,6 +868,7 @@ mod tests {
             edited: false,
             history: Vec::new(),
             parent: None,
+            quoted: None,
             reactions: Vec::new(),
             mentions: Vec::new(),
             attachments: Vec::new(),

@@ -915,6 +915,7 @@ async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
                     channel: Id::from_raw(&bridge.general),
                     text: "the notes".into(),
                     parent: None,
+                    quoted: None,
                     body: None,
                     attachments: vec![tilo_reference::Attached::File {
                         name: "notes.txt".into(),
@@ -973,6 +974,7 @@ async fn a_deleted_webhook_is_replaced_and_the_message_still_arrives() {
                     channel: Id::from_raw(&bridge.general),
                     text: "after".into(),
                     parent: None,
+                    quoted: None,
                     body: None,
                     attachments: vec![tilo_reference::Attached::File {
                         name: "notes.txt".into(),

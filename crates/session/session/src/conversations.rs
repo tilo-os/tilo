@@ -552,6 +552,30 @@ impl Conversations {
     /// # Errors
     /// No open workspace holds the channel, or Chat refused the post.
     pub fn post(&self, channel: &str, text: &str) -> Result<(), String> {
+        self.post_span(channel, text, None, None)
+    }
+
+    /// Post `text` in `channel` as the person seated here, answering the message `parent` and —
+    /// when `span` names a run of it — quoting that run. The words of the run are read from the
+    /// answered message here, where it is held, so the reply's quote carries exactly what the
+    /// person chose; its offsets are kept, so pressing the quote opens on them.
+    ///
+    /// Chat's own `post` writes the message, so a reply from a place and one from Chat's window
+    /// land in one record, and a span reply is an ordinary reply that carries a quote.
+    ///
+    /// A resource the person attached to the draft by dropping it on the composer rides with
+    /// the message, as Chat's own composer gives it; the draft lets go of it once sent.
+    ///
+    /// # Errors
+    /// No open workspace holds the channel, the run is not one of the answered message, or Chat
+    /// refused the post.
+    pub fn post_span(
+        &self,
+        channel: &str,
+        text: &str,
+        parent: Option<&str>,
+        span: Option<(usize, usize)>,
+    ) -> Result<(), String> {
         let attached = self.drafts.borrow_mut().remove(channel);
         let open = self.open.borrow();
         for opened in open.values() {
@@ -566,13 +590,39 @@ impl Conversations {
                 continue;
             };
             let channel = Id::from_raw(channel);
+            let quoted = match (parent, span) {
+                (Some(parent), Some((start, end))) => {
+                    let answered = part
+                        .get()
+                        .messages
+                        .get(&Id::from_raw(parent))
+                        .map(|message| message.text.clone())
+                        .ok_or_else(|| {
+                            format!("the message {parent} being answered is not here")
+                        })?;
+                    let words = answered
+                        .get(start..end)
+                        .filter(|words| !words.trim().is_empty())
+                        .ok_or_else(|| {
+                            format!("{start}..{end} is no run of the message {parent}")
+                        })?;
+                    Some(chat::record::Quote {
+                        text: words.to_owned(),
+                        start: u64::try_from(start)
+                            .map_err(|_| "an offset too large".to_owned())?,
+                        end: u64::try_from(end).map_err(|_| "an offset too large".to_owned())?,
+                    })
+                }
+                _ => None,
+            };
             return part
                 .invoke(
                     &chat::parts::ChatPart::POST.with(chat::messages::chat_part::Post {
                         message: chat::messages::NewMessage {
                             channel,
                             text: text.to_owned(),
-                            parent: None,
+                            parent: parent.filter(|parent| !parent.is_empty()).map(Id::from_raw),
+                            quoted,
                             body: None,
                             attachments: attached
                                 .as_deref()
@@ -788,6 +838,7 @@ impl Conversations {
                     channel: id.clone(),
                     text: text.to_owned(),
                     parent: None,
+                    quoted: None,
                     body: None,
                     attachments: Vec::new(),
                     mentions: None,
@@ -1197,6 +1248,16 @@ pub(crate) fn post_action() -> tilo_actions::ActionSpec {
         vec![
             tilo_actions::ActionParam::required("channel", ParamType::Text, "The channel"),
             tilo_actions::ActionParam::required("text", ParamType::Text, "What it says"),
+            tilo_actions::ActionParam::optional(
+                "parent",
+                ParamType::Text,
+                "The message it answers, when it answers one",
+            ),
+            tilo_actions::ActionParam::optional(
+                "span",
+                ParamType::Text,
+                "The run of the answered message it quotes, as start:end bytes",
+            ),
         ],
         |_: &ActionArgs| EncodedAction::written("chat.post".to_owned(), Vec::new()),
     )
@@ -1287,8 +1348,24 @@ impl tilo_service::Service for ChatViewService {
                     "a message says something".to_owned(),
                 ));
             }
+            let parent = arguments
+                .get("parent")
+                .and_then(serde_json::Value::as_str)
+                .filter(|parent| !parent.is_empty());
+            // A span the reply answers: `<start>:<end>`, UTF-8 bytes of the answered message, as
+            // the selectable message body reports them. Its words are read from that message
+            // where the reply is written, so the quote carries what was chosen.
+            let span = arguments
+                .get("span")
+                .and_then(serde_json::Value::as_str)
+                .and_then(span_of);
+            if span.is_some() && parent.is_none() {
+                return Err(tilo_actions::DoorError::InvalidArguments(
+                    "a quoted span answers a message".to_owned(),
+                ));
+            }
             self.conversations
-                .post(channel, text)
+                .post_span(channel, text, parent, span)
                 .map_err(tilo_actions::DoorError::Failed)?;
             return Ok(tilo_service::Started::Done(
                 tilo_actions::ActionOutput::default(),
@@ -1387,6 +1464,14 @@ impl tilo_service::Service for ChatViewService {
         }
         self.invoke(resource, action, arguments)
     }
+}
+
+/// The run `start:end` names, in UTF-8 bytes: how a message's selection reports the words a
+/// reply answers. `None` when it is not two ordered numbers.
+fn span_of(text: &str) -> Option<(usize, usize)> {
+    let (start, end) = text.split_once(':')?;
+    let (start, end) = (start.parse::<usize>().ok()?, end.parse::<usize>().ok()?);
+    (start < end).then_some((start, end))
 }
 
 /// The message `resource` names when it is a message's item or its id: `chat.workspace/messages/
@@ -1511,13 +1596,25 @@ fn summons_item(id: &Id) -> tilo_actions::ResourceSpec {
     spec
 }
 
-/// What a turn's agent is asked: the person's words, and — under them, each on its own line —
-/// the resources the message carries. A message that attaches something says what it attached
-/// as a resource reference, the same address its attachment chip opens, so an agent taking the
-/// turn knows what the person handed it without reading the record a second way. A message with
-/// no attachment is its words alone, exactly.
+/// What a turn's agent is asked: the person's words and, above them when the message answers a
+/// run of another, the words it quotes; under them, each on its own line, the resources the
+/// message carries.
+///
+/// The reply's own quote is the conversation's record of what it means; this puts it where the
+/// agent reads its turn, so an answer to "yes, that one" names what "that one" is without
+/// making the agent open the record it is acting in. An attachment says what was attached as a
+/// resource reference, the same address its attachment chip opens, so an agent taking the turn
+/// knows what the person handed it without reading the record a second way. A message that
+/// answers no span and attaches nothing is its words alone, exactly.
 pub fn instruction_of(message: &chat::record::Message) -> String {
-    let mut instruction = message.text.clone();
+    let mut instruction = message
+        .quoted
+        .as_ref()
+        .filter(|quoted| !quoted.text.trim().is_empty())
+        .map_or_else(
+            || message.text.clone(),
+            |quoted| format!("> {}\n\n{}", quoted.text.trim(), message.text),
+        );
     for attached in &message.attachments {
         let tilo_reference::Attached::Resource { at, label, .. } = attached else {
             continue;
@@ -1643,6 +1740,9 @@ fn turns(
                 run: TrackerRun {
                     issue: format!("{address}/messages/{message_id}"),
                     title: chat.display_names(id, Some(person)),
+                    // What the agent is asked: the person's words and, when the message answers
+                    // a run of another, the words it quotes — the turn's message includes its
+                    // quote, so an answer to "yes, that" names what "that" is.
                     instruction: instruction_of(message),
                     agent: agent.clone(),
                     epoch: 1,
@@ -2034,6 +2134,51 @@ mod tests {
         assert!(
             facts(Vec::new()).differs_from(&waiting),
             "a turn that ended is a change too: its run stops"
+        );
+    }
+
+    #[test]
+    fn a_reply_to_a_span_reaches_its_agents_turn_with_the_span() {
+        // The person answered a run of what the agent wrote ("yes, that one"): the turn's message
+        // carries the words they chose, so the agent's instruction names what "that one" is — the
+        // reply's own words and the run it quotes, never a bare "yes".
+        let chat = workspace();
+        let answered = "The curve is flat from April to June, then climbs.";
+        let chosen = "flat from April to June";
+        let start = answered.find(chosen).expect("the words are in the message");
+        let end = start + chosen.len();
+        let mut reply = message(ME, "yes, that stretch", 20);
+        reply.parent = Some(Id::from_raw("m1"));
+        reply.quoted = Some(chat::record::Quote {
+            text: chosen.to_owned(),
+            start: u64::try_from(start).expect("an offset"),
+            end: u64::try_from(end).expect("an offset"),
+        });
+        let head = part(vec![
+            ("m1", message(AGENT_ACTOR, answered, 10)),
+            ("m2", reply),
+        ]);
+        let entries = read(&chat, &head);
+        let [entry] = entries.as_slice() else {
+            panic!("one turn, not {entries:?}");
+        };
+        assert!(
+            entry.run.instruction.contains(chosen),
+            "the turn's message carries the quoted run: {:?}",
+            entry.run.instruction
+        );
+        assert!(
+            entry.run.instruction.contains("yes, that stretch"),
+            "and the person's own words: {:?}",
+            entry.run.instruction
+        );
+        // A message that answers no span is its own words, exactly as before.
+        let plain = part(vec![("m1", message(ME, "add the revenue curve", 10))]);
+        assert_eq!(
+            read(&chat, &plain)
+                .first()
+                .map(|entry| entry.run.instruction.clone()),
+            Some("add the revenue curve".to_owned())
         );
     }
 }

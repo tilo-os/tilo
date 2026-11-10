@@ -523,6 +523,65 @@ fn a_message_part_of_version_three_keeps_the_words_of_a_record_it_cannot_address
     );
 }
 
+/// A part of the chat's messages from before a reply could quote a run of another: every message
+/// keeps its id, its words and everything else it held, and reads with no quoted run, because
+/// none was written. A reply's `parent` alone still says what it answers.
+#[test]
+fn a_message_part_from_before_a_quoted_run_keeps_its_messages_and_reads_no_run() {
+    let mut replica = Replica::<ChatPart>::new();
+    let doc = replica.doc_mut();
+    evolution::fixture(
+        doc,
+        &ROOT,
+        &json!({
+            "messages": {
+                "m1": {
+                    "k": "a",
+                    "v": {
+                        "channel": "c_chat",
+                        "author": "ada",
+                        "ts": 10,
+                        "text": {"$text": "The curve is flat, then climbs."},
+                    },
+                },
+                "m2": {
+                    "k": "b",
+                    "v": {
+                        "channel": "c_chat",
+                        "author": "bo",
+                        "ts": 20,
+                        "text": {"$text": "so the summer is the flat one"},
+                        "parent": "m1",
+                    },
+                },
+            },
+        }),
+    )
+    .unwrap();
+    at_version(doc, 4);
+    doc.commit();
+    let old = doc.fork();
+    // A message that quotes no run adds a field a part already reads as absent: nothing stored
+    // changes, so no migration runs and the part opens as it stands.
+    assert!(
+        !evolution::needs_migrate::<ChatPart>(&old),
+        "a field a part reads when absent needs no migration"
+    );
+    let part = evolution::read_checked::<ChatPart>(&old).unwrap();
+    let ids: Vec<String> = part.messages.iter().map(|(id, _)| id.to_string()).collect();
+    assert_eq!(ids, ["m1", "m2"], "every message keeps its own id");
+    let reply = part
+        .messages
+        .get(&ui::tilo_resource::Id::from_raw("m2"))
+        .expect("the reply is held");
+    assert_eq!(reply.parent, Some(ui::tilo_resource::Id::from_raw("m1")));
+    assert_eq!(
+        reply.quoted, None,
+        "a part written before a reply could quote a run reads no run, never one it made up"
+    );
+    assert_eq!(reply.text, "so the summer is the flat one");
+}
+
 /// Each kept message: its id, author, time and text.
 fn kept(doc: &ui::tilo_resource::Doc) -> Vec<(String, String, i64, String)> {
     crate::record::kept_messages(doc)

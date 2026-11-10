@@ -397,6 +397,109 @@ fn typing_in_the_composer_and_pressing_send_posts_to_the_channel() {
 }
 
 #[test]
+fn a_reply_to_a_run_of_a_message_is_stored_quoted_where_the_page_shows_it() {
+    let _settled = ui::motion::testing::settled();
+    let root = common::private_home();
+    let mut session = session(root.path());
+    place(&mut session, CHANNEL);
+    common::until(&mut session, "the channel's page", |session| {
+        session.shell_says(MESSAGE)
+    });
+    // The message the person will answer, as the channel's reading holds it.
+    let (answered, answered_text) = {
+        let reading = session
+            .read(CHANNEL)
+            .unwrap_or_else(|| panic!("the session serves {CHANNEL}"));
+        let message = reading["messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|message| {
+                message["text"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with(MESSAGE))
+            })
+            .expect("the demo message is in the channel");
+        (
+            message["id"].as_str().expect("its id").to_owned(),
+            message["text"].as_str().expect("its text").to_owned(),
+        )
+    };
+    // The run the reply answers: bytes chosen in the answered message, a slice of it rather than
+    // the whole.
+    let chosen = "Pushed the new call";
+    let start = answered_text
+        .find(chosen)
+        .expect("the words are in the message");
+    let end = start + chosen.len();
+    // Post the reply through the channel's own `post`, the verb a place's composer runs and a
+    // press sends, carrying the message it answers and the run it quotes (`start:end` bytes).
+    let item = session
+        .service_resources()
+        .into_iter()
+        .find(|spec| {
+            spec.id.as_str().ends_with(&format!(":{CHANNEL_ID}"))
+                || spec
+                    .id
+                    .as_str()
+                    .ends_with(&format!("/channels/{CHANNEL_ID}"))
+        })
+        .filter(|spec| spec.actions.iter().any(|action| action.id == "post"))
+        .map(|spec| spec.id.as_str().to_owned())
+        .unwrap_or_else(|| {
+            panic!(
+                "the channel offers post, which its composer runs: {:?}",
+                session
+                    .service_resources()
+                    .into_iter()
+                    .map(|spec| spec.id.as_str().to_owned())
+                    .collect::<Vec<_>>()
+            )
+        });
+    let mut arguments = Map::new();
+    arguments.insert("channel".to_owned(), json!(CHANNEL_ID));
+    arguments.insert("text".to_owned(), json!(TYPED));
+    arguments.insert("parent".to_owned(), json!(answered));
+    arguments.insert("span".to_owned(), json!(format!("{start}:{end}")));
+    session
+        .invoke(&item, "post", &arguments)
+        .unwrap_or_else(|error| panic!("the reply posts: {error:?}"));
+    // The channel's live reading now holds a reply answering the message, whose quote is the
+    // run: its words are those of the answered message between the offsets it kept, so pressing
+    // the quote opens on exactly what it shows.
+    let mut found: Option<Value> = None;
+    common::until(&mut session, "the quoted reply in the channel", |session| {
+        let Some(reading) = session.read(CHANNEL) else {
+            return false;
+        };
+        found = reading["messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|message| message["text"].as_str() == Some(TYPED))
+            .and_then(|message| {
+                let reply_to = message.get("reply_to")?.clone();
+                (!reply_to.is_null()).then_some(reply_to)
+            });
+        found.is_some()
+    });
+    let quoted = found.expect("the reply carries the run it quotes");
+    assert_eq!(
+        quoted["excerpt"].as_str(),
+        Some(chosen),
+        "the quote draws the words the person chose"
+    );
+    // And the page the place draws carries the quote over the reply: the run, drawn where the
+    // reply stands, so the person reads the words their answer was about.
+    assert!(
+        session.shell_says(chosen),
+        "the page draws the quoted run over the reply: {:?}",
+        session.accessible_labels()
+    );
+    shot(&mut session, root.path(), "span-reply.png");
+}
+
+#[test]
 fn pressing_an_attachment_places_the_resource_it_holds() {
     let _settled = ui::motion::testing::settled();
     let root = common::private_home();

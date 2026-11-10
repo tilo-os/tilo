@@ -759,6 +759,7 @@ async fn live(token: String, guild_id: String) -> usize {
                     channel: Id::from_raw(&general),
                     text: "notes from Tilo".into(),
                     parent: None,
+                    quoted: None,
                     body: None,
                     attachments: vec![tilo_reference::Attached::File {
                         name: "notes.txt".into(),

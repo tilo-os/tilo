@@ -36,6 +36,7 @@ fn a_mention_in_a_message_tells_the_person_named_once_and_opens_the_message() {
             channel: id("c_chat"),
             text: "@Bo the deploy is green".into(),
             parent: None,
+            quoted: None,
             body: Some(body),
             attachments: Vec::new(),
             mentions: None,

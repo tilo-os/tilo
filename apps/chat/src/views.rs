@@ -204,9 +204,26 @@ pub struct Quote {
     /// Who wrote it.
     #[serde(default)]
     pub author: String,
-    /// The start of what it said.
+    /// The start of what it said, or — when the reply answers a span of it — the selected
+    /// words themselves.
     #[serde(default)]
     pub excerpt: String,
+    /// The span of the answered message the reply quotes, in UTF-8 bytes of its text, when the
+    /// reply answers a run of it rather than the whole message: what pressing the quote
+    /// reveals. None for a quote of the whole message, whose excerpt is its start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<Span>,
+}
+
+/// A run of an answered message a reply quotes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct Span {
+    /// Where the run starts, in UTF-8 bytes of the answered message's text.
+    #[serde(default)]
+    pub start: usize,
+    /// Where it ends, exclusive.
+    #[serde(default)]
+    pub end: usize,
 }
 
 /// Who reacted to a message with one emoji.
@@ -315,22 +332,37 @@ impl Channel {
                 edited: row.edited,
                 attempts: row.attempts,
                 reply_to: row.parent.as_deref().and_then(|parent| {
+                    // A reply that quotes a span of the message it answers shows those words,
+                    // never the whole message's start: the person chose them, and the reply
+                    // answers them. Its span is what pressing the quote reveals.
                     // A reply that answers the message right above it needs no quote: the person
                     // reads what is answered just over the answer. A reply to anything else
                     // keeps its quote.
-                    if index
-                        .checked_sub(1)
-                        .and_then(|before| rows.get(before))
-                        .is_some_and(|before| before.id == parent)
+                    let quoted = row
+                        .quoted
+                        .as_ref()
+                        .filter(|quoted| !quoted.text.trim().is_empty());
+                    if quoted.is_none()
+                        && index
+                            .checked_sub(1)
+                            .and_then(|before| rows.get(before))
+                            .is_some_and(|before| before.id == parent)
                     {
                         return None;
                     }
                     rows.iter()
                         .find(|held| held.id == parent)
-                        .map(|quoted| Quote {
-                            id: quoted.id.clone(),
-                            author: quoted.author.clone(),
-                            excerpt: excerpt(&quoted.text),
+                        .map(|answered| Quote {
+                            id: answered.id.clone(),
+                            author: answered.author.clone(),
+                            excerpt: quoted.map_or_else(
+                                || excerpt(&answered.text),
+                                |quoted| excerpt(&quoted.text),
+                            ),
+                            span: quoted.map(|quoted| Span {
+                                start: usize::try_from(quoted.start).unwrap_or_default(),
+                                end: usize::try_from(quoted.end).unwrap_or_default(),
+                            }),
                         })
                 }),
                 reactions: row
@@ -844,6 +876,29 @@ fn message_row(c: &Channel, message: &Message, continues: bool, cx: &ViewCx) -> 
     }
 }
 
+/// What a message says, as the toolkit's selectable text: a read-only field the person may
+/// select a run of and answer on just those words.
+///
+/// The field holds the message's words, and what the person selects in it settles into the
+/// view's own [`SELECTED`] slot as `<start>:<end>` bytes (or nothing on a collapse). The
+/// composer reads that slot when it posts a reply, so answering a message quotes the run the
+/// person chose — never the whole message's start.
+fn message_words(message: &Message, cx: &ViewCx) -> Node {
+    let field: Node = ui::TextInputBuilder::new(&cx.key(format!("text-{}", message.id)))
+        .lines(1_i64)
+        .into();
+    let field = ui::put(field, "text", Value::Text(message.text.trim().to_owned()));
+    // What the person selected settles in the view's own slot, where the composer reads it.
+    let selected = cx.set(&field, "select", SELECTED);
+    node::on(field, "select", selected)
+}
+
+/// The name the run selected in the message the composer answers is held under: a message's
+/// words settle it as `<start>:<end>` bytes, and the composer hands it to `post` as the run the
+/// reply quotes. Empty when nothing is selected, so a reply with no run answers the whole
+/// message, as it always has.
+const SELECTED: &str = "Selected";
+
 /// What a message says and carries, in the order a conversation reads it: the message it answers
 /// (a quote), that it is pinned, its words, its attachments, that it was edited, and the
 /// reactions on it — one column under the byline.
@@ -873,11 +928,7 @@ fn message_said(c: &Channel, message: &Message, cx: &ViewCx) -> Node {
         );
     }
     if !message.text.trim().is_empty() {
-        body.push(
-            ui::TextBuilder::new(&cx.key(format!("text-{}", message.id)), message.text.trim())
-                .role(ui::TextRole::Body)
-                .into(),
-        );
+        body.push(message_words(message, cx));
     }
     for (index, attachment) in message.attachments.iter().enumerate() {
         body.push(attachment_row(
@@ -1006,9 +1057,11 @@ fn failed_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
 /// edge: answer it.
 ///
 /// The reply is the view's own state ([`REPLYING`]): a press names the message the composer
-/// answers, which the box at the foot reads, and the next message posted is its reply. The
-/// message's other verbs (pin, react) are what its type offers on its own row, which a place of
-/// the message draws; the page does not repeat them here.
+/// answers, which the box at the foot reads, and the next message posted is its reply. A run of
+/// the message selected in its words ([`select_state`]) is what the reply answers: the composer
+/// carries the run, so the reply's quote shows the chosen words and opens on them.
+/// The message's other verbs (pin, react) are what its type offers on its own row, which a place
+/// of the message draws; the page does not repeat them here.
 fn hover_actions(_c: &Channel, message: &Message, cx: &ViewCx) -> Node {
     let reply: Node = ui::ButtonBuilder::new(&cx.key(format!("reply-{}", message.id)), "Reply")
         .icon("reply")
@@ -1024,9 +1077,14 @@ fn hover_actions(_c: &Channel, message: &Message, cx: &ViewCx) -> Node {
 }
 
 /// What a reply answers: who wrote it and the start of what it said, as the designed quote over
-/// the reply (`ui.Quote`), naming who it answers and what they said. The message the reply is in
-/// opens on activation, as every message does.
-fn reply_quote(c: &Channel, quote: &Quote, key: &str, _cx: &ViewCx) -> Node {
+/// the reply (`ui.Quote`), naming who it answers and what they said. A reply to a span quotes
+/// the words the person chose, not the answered message's start.
+///
+/// Pressing the quote brings the answered message into view: it is the same press a message row
+/// takes, the system's own open of the message's resource (`shell.md` §3), so a quote and the
+/// row it names land the reader in the same place. The run the reply quotes is kept in the
+/// view's `span`, which is where a window that reveals a range says where the words stand.
+fn reply_quote(c: &Channel, quote: &Quote, key: &str, cx: &ViewCx) -> Node {
     let author = c.person(&quote.author);
     let excerpt = if quote.excerpt.trim().is_empty() {
         // A message the page does not hold (one from an earlier part of the chat) still says
@@ -1035,10 +1093,19 @@ fn reply_quote(c: &Channel, quote: &Quote, key: &str, _cx: &ViewCx) -> Node {
     } else {
         quote.excerpt.trim().to_owned()
     };
-    ui::QuoteBuilder::new(key, &excerpt)
+    let shown: Node = ui::QuoteBuilder::new(key, &excerpt)
         .caption("In reply to")
         .author(principal(author, &quote.author))
-        .into()
+        .into();
+    // A quote of a message the page holds names it: pressing the quote shows the message. A
+    // quote of one the page does not hold (an earlier part of the chat) is read, not pressed.
+    match Channel::message_resource(&quote.id) {
+        Some(target) => {
+            let opened = cx.open(&shown, "activate", target, None);
+            node::on(shown, "activate", opened)
+        }
+        None => shown,
+    }
 }
 
 /// One thing a message carries: a record it was shared from (a row that places it), the words
@@ -1209,8 +1276,23 @@ const REPLYING: &str = "Replying";
 
 /// `node` with its event `event` running the chat's `post` of channel `channel`, with the text
 /// `text`: what the composer's field and its button both do.
+///
+/// It answers the message the person is replying to ([`REPLYING`]) and quotes the run selected
+/// in it ([`SELECTED`]), both read at the press. Neither is set for a plain message, and a
+/// reply with nothing selected answers the whole message: a `post` given nothing for either is
+/// the message it always was.
 fn post(cx: &ViewCx, node: Node, event: &str, channel: &str, text: Arg) -> Node {
-    let fired = cx.action_with(&node, event, "post", vec![Arg::text(channel), text]);
+    let fired = cx.action_with(
+        &node,
+        event,
+        "post",
+        vec![
+            Arg::text(channel),
+            text,
+            Arg::state(REPLYING),
+            Arg::state(SELECTED),
+        ],
+    );
     node::on(node, event, fired)
 }
 
@@ -1384,6 +1466,7 @@ mod tests {
             edited: false,
             history: Vec::new(),
             parent: None,
+            quoted: None,
             reactions: Vec::new(),
             mentions: Vec::new(),
             attachments: Vec::new(),
@@ -1692,6 +1775,38 @@ mod tests {
     }
 
     #[test]
+    fn a_messages_words_are_selectable_and_keep_what_is_selected() {
+        // A message's words are the toolkit's selectable text: a read-only field holding them,
+        // which reports the run someone settles on as the view's own state, so the composer
+        // can answer on exactly those words.
+        let channel = demo_channel();
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let said = channel
+            .messages
+            .iter()
+            .find(|message| !message.text.trim().is_empty())
+            .expect("a message says something");
+        let words = keyed(&tree, "ui.TextInput", &format!("@text-{}", said.id))
+            .into_iter()
+            .next()
+            .expect("the message's words are a selectable field");
+        assert_eq!(
+            words.props.get("text"),
+            Some(&Value::Text(said.text.trim().to_owned())),
+            "the field holds the message's words"
+        );
+        assert_eq!(
+            cx.effect(&words.key, "select"),
+            Some(tilo_view::Effect::State {
+                name: "Selected".to_owned(),
+            }),
+            "what is selected settles where the composer reads it"
+        );
+    }
+
+    #[test]
     fn a_dropped_resource_becomes_a_draft_attachment() {
         // The composer is a drop target, and what a drop on it runs is the channel's `attach`
         // with the resource the drag carried. The chip that shows the draft's attachment stands
@@ -1847,15 +1962,21 @@ mod tests {
         passes(&tree);
         let field = walk(&tree)
             .into_iter()
-            .find(|node| node.kind == "ui.TextInput")
+            .find(|node| node.kind == "ui.TextInput" && node.key.contains("draft"))
             .expect("the composer's field");
         assert_eq!(
             cx.effect(&field.key, "submit"),
             Some(tilo_view::Effect::Action {
                 action: "post".to_owned(),
-                args: vec![tilo_view::Arg::text("c_crit"), tilo_view::Arg::Event],
+                args: vec![
+                    tilo_view::Arg::text("c_crit"),
+                    tilo_view::Arg::Event,
+                    tilo_view::Arg::state("Replying"),
+                    tilo_view::Arg::state("Selected"),
+                ],
             }),
-            "the field posts what is typed to the channel"
+            "the field posts what is typed to the channel, answering the message it answers \
+             and quoting the run chosen in it"
         );
         let send = walk(&tree)
             .into_iter()
@@ -1871,6 +1992,8 @@ mod tests {
                 args: vec![
                     tilo_view::Arg::text("c_crit"),
                     tilo_view::Arg::state("Composer"),
+                    tilo_view::Arg::state("Replying"),
+                    tilo_view::Arg::state("Selected"),
                 ],
             }),
             "the send button posts the draft the field holds"
@@ -2003,6 +2126,97 @@ mod tests {
             keyed(&tree, "ui.Quote", "@quote-m_four").len(),
             1,
             "the reply to a message further up carries its quote"
+        );
+    }
+
+    #[test]
+    fn a_reply_carrying_a_span_draws_that_span_in_its_quote() {
+        // A reply that answers a run of a message quotes the words the person chose, never the
+        // whole message's start: the quote over it draws exactly the selected words, and the
+        // run it names is kept so the quote opens on them.
+        let answered = "The revenue curve is flat from April to June. \
+                        The cost line keeps climbing all year.";
+        let chosen = "flat from April to June";
+        let start = answered.find(chosen).expect("the words are in the message");
+        let end = start + chosen.len();
+        let mut rows = vec![
+            row(
+                "c_crit",
+                "m_asked",
+                crate::model::ME,
+                1_782_470_400,
+                answered,
+            ),
+            row(
+                "c_crit",
+                "m_other",
+                crate::model::ME,
+                1_782_470_410,
+                "and the cost line?",
+            ),
+        ];
+        let mut reply = row(
+            "c_crit",
+            "m_reply",
+            "agent:tide",
+            1_782_470_420,
+            "Yes: that stretch flattens",
+        );
+        reply.parent = Some("m_asked".to_owned());
+        reply.quoted = Some(crate::record::Quote {
+            text: chosen.to_owned(),
+            start: u64::try_from(start).expect("an offset"),
+            end: u64::try_from(end).expect("an offset"),
+        });
+        rows.push(reply);
+        let channel = Channel::read(
+            &crate::record::Chat::default(),
+            &rows,
+            "c_crit",
+            crate::model::ME,
+            &Names::default(),
+        );
+        let quoted = channel
+            .messages
+            .iter()
+            .find(|message| message.id == "m_reply")
+            .and_then(|message| message.reply_to.clone())
+            .expect("the reply carries a quote");
+        assert_eq!(quoted.excerpt, chosen, "the quote shows the selected words");
+        assert_eq!(
+            quoted.span,
+            Some(Span { start, end }),
+            "the run it names is the one that was chosen"
+        );
+        // And the page draws exactly those words in the quote, not the answered message's start.
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let quote = keyed(&tree, "ui.Quote", "@quote-m_reply")
+            .into_iter()
+            .next()
+            .expect("the reply's quote");
+        assert_eq!(
+            quote.props.get("excerpt"),
+            Some(&Value::Text(chosen.to_owned())),
+            "the quote draws the span the person answered"
+        );
+        assert!(
+            !texts(&tree)
+                .iter()
+                .any(|text| text == "The revenue curve is flat from April to June."),
+            "the whole answered message is not what the quote shows"
+        );
+        // Pressing the quote brings the answered message into view: the same press a message row
+        // takes, the system's own open of that message's resource, so a quote and the row it
+        // names land the reader on one message.
+        assert_eq!(
+            cx.effect(&quote.key, "activate"),
+            Some(tilo_view::Effect::Open {
+                target: Channel::message_resource("m_asked").expect("a message has a resource"),
+                view: None,
+            }),
+            "pressing the quote shows the message it quotes"
         );
     }
 
@@ -2206,6 +2420,7 @@ mod tests {
                 id: "m_asked".to_owned(),
                 author: crate::model::ME.to_owned(),
                 excerpt: "Add the revenue curve".to_owned(),
+                span: None,
             }),
             work: Some(Work {
                 state: state.to_owned(),
@@ -2399,6 +2614,7 @@ mod tests {
                 id: "m_asked".to_owned(),
                 author: crate::model::ME.to_owned(),
                 excerpt: "Add the revenue curve".to_owned(),
+                span: None,
             }),
             work: Some(Work {
                 state: "provider_complete".to_owned(),
@@ -2443,6 +2659,7 @@ mod tests {
             edited: false,
             history: Vec::new(),
             parent: Some(summons),
+            quoted: None,
             work: Some(crate::model::AgentWork {
                 stream: Some(crate::agent_stream::AgentStream {
                     run: "7:0".to_owned(),

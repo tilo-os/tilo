@@ -251,6 +251,28 @@ impl Service for RustApps {
                     .map(|resource| vec![crate::conversations::attached_resource(resource)])
                     .unwrap_or_default();
                 let channel_id = tilo_resource::Id::from_raw(channel);
+                // The message the reply answers, and the run of it it quotes: what a place's
+                // composer sends, read from the answered message here as the session's own
+                // `post_span` reads it, so the fixture and a person's session quote alike.
+                let parent = arguments
+                    .get("parent")
+                    .and_then(Json::as_str)
+                    .filter(|parent| !parent.is_empty())
+                    .map(tilo_resource::Id::from_raw);
+                let quoted = arguments
+                    .get("span")
+                    .and_then(Json::as_str)
+                    .and_then(quoted_span)
+                    .zip(parent.clone())
+                    .and_then(|((start, end), parent)| {
+                        let answered = self.chat.messages().get(&parent)?.text.clone();
+                        let words = answered.get(start..end)?;
+                        Some(chat::record::Quote {
+                            text: words.to_owned(),
+                            start: u64::try_from(start).ok()?,
+                            end: u64::try_from(end).ok()?,
+                        })
+                    });
                 self.chat
                     .apply_part_as(
                         chat::model::ME,
@@ -258,7 +280,8 @@ impl Service for RustApps {
                             message: chat::messages::NewMessage {
                                 channel: channel_id,
                                 text: text.to_owned(),
-                                parent: None,
+                                parent,
+                                quoted,
                                 body: None,
                                 attachments,
                                 mentions: None,
@@ -298,6 +321,14 @@ impl Service for RustApps {
         }
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
     }
+}
+
+/// The run `<start>:<end>` names, in UTF-8 bytes: how a message's selection reports the words a
+/// reply answers. `None` when it is not two ordered numbers.
+fn quoted_span(text: &str) -> Option<(usize, usize)> {
+    let (start, end) = text.split_once(':')?;
+    let (start, end) = (start.parse::<usize>().ok()?, end.parse::<usize>().ok()?);
+    (start < end).then_some((start, end))
 }
 
 #[cfg(test)]

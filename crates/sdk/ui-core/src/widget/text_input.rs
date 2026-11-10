@@ -636,6 +636,9 @@ pub struct TextInput {
     /// text inset instead of the zero inset of a plain app field.
     document_inset: bool,
     on_submit: Option<TextChangeCallback>,
+    /// The selection settled ([`Self::with_selection_event`]): what a read-only field's reader
+    /// gets of the run someone chose, as `<start>:<end>` bytes, or nothing on a collapse.
+    selection_event: Option<crate::component::Event>,
     /// Route a submitting Enter through an exported resource action.
     submit_action: Option<ActionEmitter<String>>,
     /// Enter's submit, published as the field's view action `submit`
@@ -962,6 +965,7 @@ impl TextInput {
             prompt_fit: None,
             document_inset: false,
             on_submit: None,
+            selection_event: None,
             submit_action: None,
             submit_view: None,
             change_verb: None,
@@ -3960,6 +3964,36 @@ impl TextInput {
         self.enter_submits = true;
         self.submit_action = Some(ActionEmitter::new_replace_one(binding));
         self
+    }
+
+    /// Report the selection each time it settles — a drag let go, a double or triple click, a
+    /// touch release, a select all — as `<start>:<end>` byte offsets into the text, or nothing
+    /// when the selection collapsed. A read-only field reports it so what reads it can act on
+    /// the run someone chose (a message answered on just those words); a field being typed in
+    /// keeps its selection private unless it is given one too.
+    #[must_use]
+    pub fn with_selection_event(mut self, event: crate::component::Event) -> Self {
+        self.selection_event = Some(event);
+        self
+    }
+
+    pub fn set_selection_event(&mut self, event: crate::component::Event) {
+        self.selection_event = Some(event);
+    }
+
+    /// Tell the reader the selection settled, as [`Self::with_selection_event`] describes it.
+    fn report_selection(&mut self) {
+        let Some(event) = self.selection_event.clone() else {
+            return;
+        };
+        let value = self
+            .selection_range_public()
+            .map(|(start, end)| {
+                let (start, end) = (start.min(end), start.max(end));
+                crate::component::Value::Text(format!("{start}:{end}"))
+            })
+            .unwrap_or_else(|| crate::component::Value::Text(String::new()));
+        event.fire(Some(value));
     }
 
     /// Run `callback` with the text on a submitting Enter, the field as control
