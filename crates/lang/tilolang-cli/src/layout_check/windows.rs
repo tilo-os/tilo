@@ -170,7 +170,7 @@ fn the_catch_up_names_each_item_it_changed(window: &tilo_ui_host::UiNode) {
 /// What the audit finds wrong with `staged`'s window as it stands at `viewport`.
 fn wrong_in(staged: &stage::Staged, viewport: (u32, u32)) -> Vec<String> {
     let inspection = staged.harness().inspection();
-    super::audit::inspect(&inspection.root, viewport, None, 1.0)
+    let mut wrong: Vec<String> = super::audit::inspect(&inspection.root, viewport, None, 1.0)
         .into_iter()
         .map(|problem| {
             format!(
@@ -180,7 +180,14 @@ fn wrong_in(staged: &stage::Staged, viewport: (u32, u32)) -> Vec<String> {
                 problem.widget
             )
         })
-        .collect()
+        .collect();
+    // And what only the frame says: a divider a person reads as a band sits in pixels, whatever
+    // the widgets that built it say they drew.
+    wrong.extend(unruled_dividers(
+        staged,
+        (viewport.0 as usize, viewport.1 as usize),
+    ));
+    wrong
 }
 
 /// Every place the widget `name` (`ui.ChangeMark`, `Popover`) is laid out, in tree order.
@@ -303,6 +310,87 @@ fn painted(staged: &stage::Staged, rect: Rect, viewport: (usize, usize)) -> usiz
         }
     }
     inked
+}
+
+/// The frame `staged` painted at `viewport`, and how many device pixels one point covers.
+fn frame(staged: &stage::Staged, viewport: (usize, usize)) -> (Vec<u8>, usize) {
+    let rgba = staged.harness().render_rgba();
+    let (wide, tall) = viewport;
+    assert!(!rgba.is_empty(), "the frame renders");
+    let device = rgba.len() / 4;
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "frame sizes are small counts, far inside usize and f64"
+    )]
+    let scale = ((device / (wide * tall)) as f64).sqrt().round().max(1.0) as usize;
+    (rgba, scale)
+}
+
+/// Where a divider's rule falls short: for every divider of `staged`'s window, the rule that
+/// runs from its words out to each of the column's edges, as the frame paints it.
+///
+/// A divider is a band ruled out to both sides of its label, never a caption afloat in the
+/// column. A rule derived against the wrong surface — an edge of the ink itself painted over
+/// the conversation's ground — is a pixel the ground's own colour, so nothing but the frame
+/// tells it from a divider drawn as bare text; a step's geometry, or a scene the tests built,
+/// says everything is there.
+fn unruled_dividers(staged: &stage::Staged, viewport: (usize, usize)) -> Vec<String> {
+    let (wide, _) = viewport;
+    let (rgba, scale) = frame(staged, viewport);
+    let pixel = |x: usize, y: usize| {
+        let at = (y * wide * scale + x) * 4;
+        [rgba[at], rgba[at + 1], rgba[at + 2]]
+    };
+    let moved = |painted: [u8; 3], beneath: [u8; 3]| {
+        painted
+            .iter()
+            .zip(beneath)
+            .any(|(painted, beneath)| painted.abs_diff(beneath) > 12)
+    };
+    let mut wrong = Vec::new();
+    for (words, divider) in dividers_of(staged) {
+        // A band too narrow to rule moves no column a person reads, and its label may take the
+        // whole of it: only a band with room on either side of its words is held to its rules.
+        if divider.width() < 200.0 {
+            continue;
+        }
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::arithmetic_side_effects,
+            reason = "band and rule sizes are small counts, far inside usize and f64"
+        )]
+        let (row, scale) = (
+            (divider.center().y.round() as usize).saturating_mul(scale),
+            scale,
+        );
+        let (left, right) = (
+            divider.x0.round() as usize * scale,
+            divider.x1.round() as usize * scale,
+        );
+        // The ground the band is painted on: the column beside it, outside the band itself.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let ground = pixel((divider.x0.round() as usize).saturating_sub(2) * scale, row);
+        // The rule runs from the column's edge in to its words: the first 16 points on either
+        // side stand clear of any label a band this wide centres.
+        let span = 16 * scale;
+        for (side, from, to) in [
+            ("leading", left, left + span),
+            ("trailing", right - span, right),
+        ] {
+            let ruled = (from..to.min(wide * scale)).any(|x| moved(pixel(x, row), ground));
+            if !ruled {
+                wrong.push(format!(
+                    "the divider {words:?} at {divider:?} has no {side} rule: bare text, not a \
+                     band ruled out to the column's edges"
+                ));
+            }
+        }
+    }
+    wrong
 }
 
 /// The rows the window of `staged` laid out, as the person has them: a list keeps the row of an
@@ -1507,17 +1595,24 @@ fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own() {
         unseen.is_some(),
         "the conversation says where its unseen part starts: {lists:?}"
     );
-    // The toolkit draws the conversation's one divider there, over the row where that part
-    // begins: the day's dividers and this one are one component, told apart by the ink it is
-    // drawn in.
+    // The toolkit draws the conversation's one band there, over the row where that part
+    // begins: where that row also opens a day, the day and the place reading starts again are
+    // one band saying both, in the accent, never a day's band stacked over the unread one.
     let dividers = dividers_of(&channels);
-    let unseen = dividers
+    let merged = ui::widget::conversation::band::day_with_unread("");
+    let unseen: Vec<&(String, Rect)> = dividers
         .iter()
-        .filter(|(words, _)| words == "New messages")
-        .count();
+        .filter(|(words, _)| words.ends_with(&merged))
+        .collect();
     assert_eq!(
-        unseen, 1,
-        "one divider, over the row where the unseen part starts: {dividers:?}"
+        unseen.len(),
+        1,
+        "one band, over the row where the unseen part starts, saying the day and that reading \
+         starts there ({merged:?}): {dividers:?}"
+    );
+    assert!(
+        !unseen[0].0.trim_end_matches(&merged).is_empty(),
+        "the merged band names the day it opens: {dividers:?}"
     );
     assert!(
         dividers.len() > 1,
@@ -1553,6 +1648,14 @@ fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own() {
         said.is_empty(),
         "the rows carry no mark of their own: {said:?}"
     );
+    // And every band of the conversation stands in the frame as a band: a rule on each side of
+    // its words, painted in ink the ground it lands on shows. The accent's rule derived as the
+    // edge of the accent itself is nothing on this ground, and the divider reads as bare text.
+    let wrong = wrong_in(&channels, (1280, 800));
+    assert!(
+        wrong.is_empty(),
+        "the conversation's bands read as bands: {wrong:?}"
+    );
 }
 
 #[test]
@@ -1585,8 +1688,9 @@ fn a_channels_header_says_what_the_person_has_not_seen_of_it_by_whom() {
     let mark = window_mark(&tree).expect("the channel's header says what is new");
     assert_eq!(
         mark.props.get("count"),
-        Some(&tilo_render_protocol::patch::Value::Int(7)),
-        "seven items wait, not one change: {mark:?}"
+        Some(&tilo_render_protocol::patch::Value::Int(6)),
+        "six messages wait in the transcript's column, not one change and not the thread the \
+         transcript does not list: {mark:?}"
     );
     assert_eq!(
         mark.props.get("added"),
