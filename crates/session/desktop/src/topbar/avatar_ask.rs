@@ -87,14 +87,21 @@ impl TopBarChrome {
         // Beside the clock where its words fit there; a question the bar cannot hold beside the
         // lane takes the lane's free room up to the clock, and, with no room there either, the
         // clock too, rather than waiting where it cannot be read or answered.
+        // While this view follows someone the lane is the banner's, which says whose view it is
+        // and offers Stop: the ask never takes it (it stood behind "Following Claude Code", its
+        // words cut off), and opens under the band where it does not fit beside it.
         let gap = f64::from(theme.tokens.spacing.s4);
-        let limits = [
-            self.center_lane.x1 + gap,
-            self.center_rect.x1 + gap,
-            self.center_lane.x0 + gap,
-        ];
+        let limits: &[f64] = if self.following {
+            &[self.center_lane.x1 + gap]
+        } else {
+            &[
+                self.center_lane.x1 + gap,
+                self.center_rect.x1 + gap,
+                self.center_lane.x0 + gap,
+            ]
+        };
         let mut words = None;
-        for limit in limits {
+        for &limit in limits {
             words = AskWords::fit(&ask, right_x - limit, theme, text_renderer);
             if words.is_some() {
                 break;
@@ -740,6 +747,32 @@ mod tests {
                         "{viewport:?}: the ask's {part:?} stands over the {name} {rect:?}"
                     );
                 }
+            }
+        }
+    }
+
+    /// While this view follows someone, the middle lane is the banner's: the ask stands beside it
+    /// or opens under the band, and never in it, at every width.
+    #[test]
+    fn the_open_ask_never_stands_in_the_following_banner() {
+        let mut followed = tree();
+        let mut agent = tilo_desktop_model::Collaborator::new("agent", "Claude Code");
+        agent.following = true;
+        followed.workspaces[0].collaborators = vec![agent];
+        for viewport in [(1280, 800), (1024, 768), (390, 844)] {
+            let (frame, _) = asking_desktop_over(viewport, &followed);
+            let bar = frame.bar();
+            assert!(bar.following, "{viewport:?}: the bar follows");
+            let lane = bar.center_lane;
+            assert!(
+                !lane.is_zero_area(),
+                "{viewport:?}: the banner keeps its lane"
+            );
+            for part in [bar.ask.pill, bar.ask.answer, bar.ask.later] {
+                assert!(
+                    part.is_zero_area() || part.intersect(lane).is_zero_area(),
+                    "{viewport:?}: the ask's {part:?} stands in the banner's lane {lane:?}"
+                );
             }
         }
     }
