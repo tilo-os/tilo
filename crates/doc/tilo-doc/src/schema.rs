@@ -165,6 +165,11 @@ pub const DOC_PROP_KEYS: [&str; 7] = [
 pub const MARK_BOOKMARK: &str = "bookmark"; // Str — the bookmark name
 /// The inline `link` mark (external hyperlinks *and* internal cross-references): a value starting with `#` is internal, anything else an external URL. Shared with the `.md`/`.html` codecs.
 pub const MARK_LINK: &str = "link"; // Str — an href (external URL) or `#target` (internal ref)
+/// A mark over a whole paragraph projecting another resource live: the run says the title the
+/// resource had when it was written, the value names it — a host's own page (`#page-<id>`) or a
+/// catalogue reference (`tilo_reference::embed`). What the editor draws as a card, and what a
+/// card shows of what it projects, one level deep.
+pub const MARK_PROJECTION: &str = "transclusion"; // Str — what it projects
 /// The leading character of an internal cross-reference `link` value (`#bookmarkName`).
 pub const CROSS_REF_PREFIX: char = '#';
 /// The prefix of a heading's auto/derived reference id (`_heading_<block_id>`), letting a cross-reference target a heading with no explicit bookmark; never used as a user bookmark name.

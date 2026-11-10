@@ -390,6 +390,7 @@ fn rich_of(text: &str, marks: &[MarkSpan], views: &HashMap<String, InlineView>) 
                 embeds.push(Embed {
                     reference: reference.clone(),
                     view: view.clone(),
+                    preview: None,
                 });
             }
         }

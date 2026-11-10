@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use tilo_ui_graph::rich::{InlineView, RichText};
+use tilo_ui_graph::rich::{InlineView, RichText, Run};
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -99,6 +99,9 @@ pub struct BlockEditorProps {
 pub(super) struct References {
     /// How each reference reads for the person reading, by the `mention` mark's value.
     views: Rc<HashMap<String, InlineView>>,
+    /// What each reference the text projects (an embed) shows of its own content, by the
+    /// reference: one level deep, as its reader reads it.
+    previews: Rc<HashMap<String, Vec<Run>>>,
     /// The theme the chips were last painted for.
     painted_for: Option<u64>,
     /// How the owner paints people's mentions (their colours).
@@ -110,7 +113,7 @@ pub(super) struct References {
     /// Where each reference was painted in the last draw.
     hits: Vec<(Rect, String)>,
     /// What activating a reference does.
-    on_open: Option<Box<dyn FnMut(&str)>>,
+    pub(super) on_open: Option<Box<dyn FnMut(&str)>>,
     /// What the view does with the document's headings.
     headings: Event,
     /// The headings last reported to it: it is told again only when they change.
@@ -127,21 +130,39 @@ pub(super) struct References {
 impl BlockEditor {
     /// Show `rich` read-only, each reference as it reads for the person reading.
     pub fn show_rich_text(&mut self, rich: &RichText) -> bool {
+        let changed_references = self.show_references(rich);
+        if self.references.shown.as_ref() != Some(rich) {
+            self.references.shown = Some(rich.clone());
+        }
+        let changed = self.present_shown();
+        changed || changed_references
+    }
+
+    /// How each reference in `rich` reads here, and what each the text projects shows: the
+    /// chips' titles and the cards' previews. `true` when either moved.
+    pub(crate) fn show_references(&mut self, rich: &RichText) -> bool {
         let views: HashMap<String, InlineView> = rich
             .embeds
             .iter()
             .map(|embed| (embed.reference.clone(), embed.view.clone()))
             .collect();
+        let previews: HashMap<String, Vec<Run>> = rich
+            .embeds
+            .iter()
+            .filter_map(|embed| Some((embed.reference.clone(), embed.preview.clone()?)))
+            .collect();
+        let changed_previews = *self.references.previews != previews;
+        if changed_previews {
+            self.references.previews = Rc::new(previews);
+            self.dirty = true;
+            self.structure_dirty = true;
+        }
         let changed_views = *self.references.views != views;
         if changed_views {
             self.references.views = Rc::new(views);
             self.references.painted_for = None;
         }
-        if self.references.shown.as_ref() != Some(rich) {
-            self.references.shown = Some(rich.clone());
-        }
-        let changed = self.present_shown();
-        changed || changed_views
+        changed_previews || changed_views
     }
 
     /// Show the text last given again, as it reads now: its times move on.
@@ -181,6 +202,36 @@ impl BlockEditor {
             .iter()
             .find(|(rect, _)| rect.contains(point))
             .map(|(_, reference)| reference.as_str())
+    }
+
+    /// The links inside the cards painted in the last draw, with where each was painted: what a
+    /// click on one opens, and where to point to open it.
+    #[must_use]
+    pub fn card_link_hits(&self) -> &[(Rect, String)] {
+        &self.card_links
+    }
+
+    /// How the record `reference` reads now, as a card of it is titled: its title for the
+    /// person reading, `written` for one this reader has no reading of, and how a record they
+    /// cannot read reads.
+    pub(super) fn reference_title(&self, reference: &str, written: &str) -> String {
+        match self.references.views.get(reference) {
+            Some(InlineView::Resource { title, .. }) if !title.is_empty() => title.clone(),
+            Some(InlineView::Person { name, .. }) if !name.is_empty() => name.clone(),
+            Some(InlineView::Unreadable) => crate::widget::rich_doc::unreadable_phrase(),
+            // A record with no reading here, or one of another app's, reads as it was written.
+            Some(InlineView::Elsewhere | InlineView::Resource { .. } | InlineView::Person { .. })
+            | None => written.to_owned(),
+        }
+    }
+
+    /// What the record `reference` shows of its own content where the text projects it, as its
+    /// reader reads it: one level deep, a link inside it never opened out.
+    pub(super) fn reference_preview(&self, reference: &str) -> Option<&[Run]> {
+        self.references
+            .previews
+            .get(reference)
+            .map(std::vec::Vec::as_slice)
     }
 
     /// Paint people's mentions as the owner says (`paint`, their colours), and references to
@@ -338,9 +389,7 @@ impl Described for BlockEditor {
             &commands,
             command,
             headings,
-            // A shown text opens the reference itself; an edited one's host opens it, so an
-            // editor that binds a field offers no event of its own there.
-            (!editing).then_some(open_reference),
+            Some(open_reference),
         );
         editor.set_image_store(Some(crate::pictures::Pictures::window().store().clone()));
         if editing {
@@ -382,7 +431,7 @@ impl Described for BlockEditor {
             &commands,
             command,
             headings,
-            showing.then_some(open_reference),
+            Some(open_reference),
         );
         self.set_find_replace_enabled(!showing);
         let rebound = if showing {
@@ -534,6 +583,7 @@ mod tests {
                 .map(|(reference, view)| Embed {
                     reference: reference.into(),
                     view,
+                    preview: None,
                 })
                 .collect(),
         }
@@ -835,6 +885,368 @@ mod tests {
                 value: Some(Value::Bool(false)),
             }],
             "the picker closing reaches the view"
+        );
+    }
+
+    /// `text` projecting the record `Groceries` as a card of its own, its start painted under
+    /// its title: plain words, a note it names, and a note that projects this one back.
+    fn embedding(views: Vec<(&str, InlineView)>) -> RichText {
+        RichText {
+            blocks: vec![
+                Block {
+                    kind: "paragraph".into(),
+                    text: "Groceries".into(),
+                    marks: vec![RichMark {
+                        start: 0,
+                        end: 9,
+                        name: crate::widget::rich_doc::EMBED_MARK.into(),
+                        value: Attr::Text(GROCERIES.into()),
+                    }],
+                    attrs: std::collections::BTreeMap::new(),
+                },
+                Block {
+                    kind: "paragraph".into(),
+                    text: "and later".into(),
+                    marks: Vec::new(),
+                    attrs: std::collections::BTreeMap::new(),
+                },
+            ],
+            embeds: views
+                .into_iter()
+                .map(|(reference, view)| Embed {
+                    reference: reference.into(),
+                    view,
+                    preview: (reference == GROCERIES).then(|| {
+                        vec![
+                            tilo_ui_graph::rich::Run {
+                                text: "Oat milk".into(),
+                                reference: None,
+                            },
+                            tilo_ui_graph::rich::Run {
+                                text: " Plan".into(),
+                                reference: Some(PLAN.into()),
+                            },
+                            tilo_ui_graph::rich::Run {
+                                text: " Groceries".into(),
+                                reference: Some(GROCERIES.into()),
+                            },
+                        ]
+                    }),
+                })
+                .collect(),
+        }
+    }
+
+    const GROCERIES: &str = "tl:so.tilo.lang.notes:tl.so.tilo.lang.notes.d/f:g1";
+    const PLAN: &str = "tl:so.tilo.lang.notes:tl.so.tilo.lang.notes.d/f:p1";
+
+    #[test]
+    fn an_embed_of_a_record_shows_its_start_and_opens_what_it_names() {
+        let queue = crate::Intents::<Fired>::default();
+        let mut editor = BlockEditor::from_props(
+            "n",
+            BlockEditorProps {
+                value: Some(embedding(vec![
+                    (
+                        GROCERIES,
+                        InlineView::Resource {
+                            title: "Shopping".into(),
+                            icon: None,
+                            detail: None,
+                        },
+                    ),
+                    (
+                        PLAN,
+                        InlineView::Resource {
+                            title: "Plan".into(),
+                            icon: None,
+                            detail: None,
+                        },
+                    ),
+                ])),
+                open_reference: Event::View(Intent::new(&queue, "n", OPEN_REFERENCE)),
+                ..BlockEditorProps::default()
+            },
+        );
+        assert_eq!(
+            editor.blocks()[0].text(),
+            "Shopping",
+            "the card reads as the record's title now, not the one its run kept"
+        );
+        assert_eq!(editor.blocks().len(), 2, "an embed opens nothing out");
+
+        let mut renderer = TextRenderer::new();
+        laid_out(&mut editor, &mut renderer);
+        let card = {
+            let document = crate::widget::Widget::accessibility(&editor).expect("semantics");
+            document
+                .children
+                .iter()
+                .flat_map(|row| &row.children)
+                .find(|node| {
+                    node.action_target.as_deref() == Some(&*format!("notes.reference:{GROCERIES}"))
+                })
+                .cloned()
+                .expect("the card is a control a reader opens")
+        };
+        assert!(
+            card.name
+                .as_deref()
+                .is_some_and(|name| name.contains("Shopping")),
+            "named by what it projects: {:?}",
+            card.name
+        );
+        // What it projects is painted under it: a link for the note inside it, and one for the
+        // note that projects this one back — a loop ends in a link, never in another card.
+        let links: Vec<String> = editor
+            .card_link_hits()
+            .iter()
+            .map(|(_, reference)| reference.clone())
+            .collect();
+        assert_eq!(
+            links,
+            vec![PLAN.to_owned(), GROCERIES.to_owned()],
+            "{links:?}"
+        );
+
+        // A click on a link inside the card opens what it names.
+        let plan = editor
+            .card_link_hits()
+            .iter()
+            .find(|(_, reference)| reference == PLAN)
+            .map(|(rect, _)| rect.center())
+            .expect("the note it names, painted");
+        crate::testing::dispatch(
+            &mut editor,
+            &crate::synthetic_input::cursor_moved(plan.x, plan.y),
+        );
+        assert!(crate::testing::dispatch(
+            &mut editor,
+            &crate::synthetic_input::mouse_release()
+        ));
+        assert_eq!(
+            queue.take(),
+            vec![Fired {
+                key: "n".into(),
+                event: OPEN_REFERENCE.into(),
+                value: Some(Value::Text(PLAN.into())),
+            }],
+        );
+
+        // A click on the card itself opens the record it projects.
+        let card = card.bounds.expect("where the card is").to_rect();
+        let at = Point::new(card.x0 + 4.0, card.y0 + 3.0);
+        assert!(
+            !editor
+                .card_link_hits()
+                .iter()
+                .any(|(rect, _)| rect.contains(at)),
+            "a spot on the card that is not one of its links"
+        );
+        crate::testing::dispatch(
+            &mut editor,
+            &crate::synthetic_input::cursor_moved(at.x, at.y),
+        );
+        assert!(crate::testing::dispatch(
+            &mut editor,
+            &crate::synthetic_input::mouse_release()
+        ));
+        assert_eq!(
+            queue.take(),
+            vec![Fired {
+                key: "n".into(),
+                event: OPEN_REFERENCE.into(),
+                value: Some(Value::Text(GROCERIES.into())),
+            }],
+            "the card opens the record it projects"
+        );
+    }
+
+    #[test]
+    fn a_document_being_edited_shows_an_embed_of_a_record_as_it_reads_and_opens_it() {
+        let fired = crate::Intents::<Fired>::default();
+        let body = crate::LocalState::new(embedding(vec![
+            (
+                GROCERIES,
+                InlineView::Resource {
+                    title: "Shopping".into(),
+                    icon: None,
+                    detail: None,
+                },
+            ),
+            (
+                PLAN,
+                InlineView::Resource {
+                    title: "Plan".into(),
+                    icon: None,
+                    detail: None,
+                },
+            ),
+        ]));
+        let mut editor = BlockEditor::from_props(
+            "b",
+            BlockEditorProps {
+                rich: bound(&fired, body.clone()),
+                open_reference: Event::View(Intent::new(&fired, "b", OPEN_REFERENCE)),
+                ..BlockEditorProps::default()
+            },
+        );
+        let mut renderer = TextRenderer::new();
+        laid_out(&mut editor, &mut renderer);
+        let card = {
+            let document = crate::widget::Widget::accessibility(&editor).expect("semantics");
+            document
+                .children
+                .iter()
+                .flat_map(|row| &row.children)
+                .find(|node| {
+                    node.action_target.as_deref() == Some(&*format!("notes.reference:{GROCERIES}"))
+                })
+                .cloned()
+                .expect("the card is a control a reader opens")
+        };
+        assert!(
+            card.name
+                .as_deref()
+                .is_some_and(|name| name.contains("Shopping")),
+            "a bound document's card reads the record's title now: {:?}",
+            card.name
+        );
+        assert_eq!(
+            editor
+                .card_link_hits()
+                .iter()
+                .map(|(_, reference)| reference.as_str())
+                .collect::<Vec<_>>(),
+            vec![PLAN, GROCERIES],
+            "and shows the start of what it says, its references as links"
+        );
+
+        // A click on the card opens the record, in the document being edited too.
+        let card = card.bounds.expect("where the card is").to_rect();
+        let at = Point::new(card.x0 + 4.0, card.y0 + 3.0);
+        crate::testing::dispatch(
+            &mut editor,
+            &crate::synthetic_input::cursor_moved(at.x, at.y),
+        );
+        assert!(crate::testing::dispatch(
+            &mut editor,
+            &crate::synthetic_input::mouse_release()
+        ));
+        assert_eq!(
+            fired.take(),
+            vec![Fired {
+                key: "b".into(),
+                event: OPEN_REFERENCE.into(),
+                value: Some(Value::Text(GROCERIES.into())),
+            }],
+        );
+
+        // The note it shows says something else elsewhere: the editor shows it as it reads now.
+        let mut moved = embedding(vec![
+            (
+                GROCERIES,
+                InlineView::Resource {
+                    title: "Groceries".into(),
+                    icon: None,
+                    detail: None,
+                },
+            ),
+            (
+                PLAN,
+                InlineView::Resource {
+                    title: "Plan".into(),
+                    icon: None,
+                    detail: None,
+                },
+            ),
+        ]);
+        if let Some(embed) = moved.embeds.first_mut() {
+            embed.preview = Some(vec![tilo_ui_graph::rich::Run {
+                text: "Bread and cheese".into(),
+                reference: None,
+            }]);
+        }
+        body.set(moved);
+        assert!(editor.follow_body(), "the field changed elsewhere");
+        laid_out(&mut editor, &mut renderer);
+        assert_eq!(
+            editor
+                .card_link_hits()
+                .iter()
+                .map(|(_, reference)| reference.as_str())
+                .collect::<Vec<_>>(),
+            Vec::<&str>::new(),
+            "the card shows what it says now, a line with no link in it"
+        );
+    }
+
+    #[test]
+    fn typing_an_embed_or_choosing_it_writes_a_projection_of_the_record() {
+        use crate::widget::CursorPlacement;
+        use crate::widget::marks::Mark;
+        use winit::keyboard::{Key, NamedKey};
+
+        let fired = crate::Intents::<Fired>::default();
+        let reference = "tl:so.tilo.notes:tl.so.tilo.notes.d/f:t1";
+        let editor_of = || {
+            BlockEditor::from_props(
+                "b",
+                BlockEditorProps {
+                    rich: bound(&fired, crate::LocalState::new(RichText::default())),
+                    links: vec![Link {
+                        reference: reference.into(),
+                        title: "Plan".into(),
+                    }],
+                    ..BlockEditorProps::default()
+                },
+            )
+        };
+        let mut editor = editor_of();
+        editor.focus_block(0, CursorPlacement::End);
+        // `![[` offers the same records `[[` does, and writes a projection of the one chosen.
+        type_keys(&mut editor, "![[pl");
+        assert!(editor.link_popover().is_visible());
+        crate::testing::dispatch(
+            &mut editor,
+            &crate::synthetic_input::key_press(Key::Named(NamedKey::Enter), None),
+        );
+        assert_eq!(editor.blocks()[0].text(), "Plan");
+        assert!(
+            matches!(
+                editor.blocks()[0].line.marks().first().map(|span| &span.mark),
+                Some(Mark::Embed(named)) if named == reference
+            ),
+            "the paragraph projects the record, and says which: {:?}",
+            editor.blocks()[0].line.marks()
+        );
+
+        // The slash menu's own row does the same: choosing "Embed note" picks from the records
+        // the view offers, and the block becomes a projection of one.
+        let mut editor = editor_of();
+        editor.focus_block(0, CursorPlacement::End);
+        type_keys(&mut editor, " /embed");
+        crate::testing::dispatch(
+            &mut editor,
+            &crate::synthetic_input::key_press(Key::Named(NamedKey::Enter), None),
+        );
+        assert!(
+            editor.link_popover().is_visible(),
+            "the picker offers the records"
+        );
+        crate::testing::dispatch(
+            &mut editor,
+            &crate::synthetic_input::key_press(Key::Named(NamedKey::Enter), None),
+        );
+        assert_eq!(editor.blocks()[0].text(), "Plan");
+        assert!(
+            editor.blocks()[0]
+                .line
+                .marks()
+                .iter()
+                .any(|span| matches!(&span.mark, Mark::Embed(named) if named == reference)),
+            "{:?}",
+            editor.blocks()[0].line.marks()
         );
     }
 

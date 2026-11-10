@@ -878,10 +878,12 @@ mod tests {
                             icon: None,
                             detail: None,
                         },
+                        preview: None,
                     },
                     rich::Embed {
                         reference: "u-ada".to_owned(),
                         view: rich::InlineView::Unreadable,
+                        preview: None,
                     },
                 ],
             ),

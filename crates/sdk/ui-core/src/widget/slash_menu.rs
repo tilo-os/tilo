@@ -19,6 +19,9 @@ pub enum SlashCommand {
     Block(BlockKind),
     /// Link another page, through the editor's link picker.
     LinkPage,
+    /// Embed another record: the editor's picker chooses one, and the block is nothing but a
+    /// live projection of it.
+    EmbedPage,
     /// A command the editor's host answers; see
     /// [`BlockEditor::take_slash_request`](crate::widget::block_editor::BlockEditor::take_slash_request).
     Host(SlashHostCommand),
@@ -169,6 +172,13 @@ fn entries(link_pages: bool, host: &[SlashHostCommand]) -> Vec<MenuEntry<SlashCo
             Icon::Link,
             Some("[["),
             SlashCommand::LinkPage,
+        ));
+        rows.push(row(
+            "slash-embed-page",
+            &["embed", "transclusion", "preview", "note", "page"],
+            Icon::FileText,
+            Some("![["),
+            SlashCommand::EmbedPage,
         ));
     }
     if host.contains(&SlashHostCommand::Image) {

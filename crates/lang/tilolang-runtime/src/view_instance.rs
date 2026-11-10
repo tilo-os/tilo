@@ -191,6 +191,15 @@ impl ViewInstance {
         self.spaces.get(boundary).copied()
     }
 
+    /// Take `(resource, field)` reads the host took converting what the view shows, beside what
+    /// the view read: a card of a record inside the text it holds. A change to one of them runs
+    /// the root boundary, so the host converts what the window shows again. A host calls it
+    /// after converting; the boundary's own run replaces the reads with what it read then, and
+    /// the host registers its own again.
+    pub fn shows(&mut self, reads: impl IntoIterator<Item = (String, String)>) {
+        self.live.shows(reads);
+    }
+
     /// Run the view again at the next poll although nothing it read changed: what it shows
     /// without reading it (the names of principals) has changed.
     pub fn refresh(&self) {

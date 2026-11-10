@@ -16,7 +16,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
@@ -731,8 +731,10 @@ pub struct BlockEditor {
     /// How the references in the text read, and where each was painted.
     references: references::References,
     transclusion_previews: HashMap<PageId, TransclusionPreview>,
-    transclusion_rects: Vec<Option<(Rect, PageId)>>,
+    transclusion_rects: Vec<Option<(Rect, Card)>>,
     pending_transclusion_opens: Vec<PageId>,
+    /// Where the links inside the cards painted last were painted, and what each names.
+    card_links: Vec<(Rect, String)>,
     pending_resource_link_opens: Vec<String>,
     pending_external_link_opens: Vec<String>,
     /// Images pasted into the editor, for its host to store and place after
@@ -982,6 +984,7 @@ impl BlockEditor {
             transclusion_previews: HashMap::new(),
             transclusion_rects: Vec::new(),
             pending_transclusion_opens: Vec::new(),
+            card_links: Vec::new(),
             pending_resource_link_opens: Vec::new(),
             pending_external_link_opens: Vec::new(),
             pasted_images: Vec::new(),
@@ -2699,6 +2702,7 @@ impl BlockEditor {
         match command {
             SlashCommand::Block(kind) => self.slash_make_block(focused_idx, trigger, kind),
             SlashCommand::LinkPage => self.slash_link_page(focused_idx, trigger),
+            SlashCommand::EmbedPage => self.slash_embed_page(focused_idx, trigger),
             // A command of the view that placed the editor runs there, by its label.
             SlashCommand::Host(SlashHostCommand::Named(label)) => {
                 if let Some(run) = self.view_command.as_mut() {
@@ -2763,17 +2767,29 @@ impl BlockEditor {
     /// The link picker, opened where the slash was, as if `[[` were typed
     /// there.
     fn slash_link_page(&mut self, idx: usize, trigger: Option<usize>) {
+        self.slash_pick_page(idx, trigger, "[[");
+    }
+
+    /// The same picker, choosing a record the block becomes a live projection of: what typing
+    /// `![[` there does.
+    fn slash_embed_page(&mut self, idx: usize, trigger: Option<usize>) {
+        self.slash_pick_page(idx, trigger, "![[");
+    }
+
+    fn slash_pick_page(&mut self, idx: usize, trigger: Option<usize>, opener: &str) {
         let Some(block) = self.blocks.get_mut(idx) else {
             return;
         };
         let at = trigger.unwrap_or_else(|| block.line.cursor_pos());
-        Self::insert_line_text(&mut block.line, at, "[[");
+        Self::insert_line_text(&mut block.line, at, opener);
         let caret = block.line.cursor_pos();
         self.link_popover
             .set_anchor(self.fallback_popover_anchor(idx));
         self.link_popover.set_filter("");
         self.link_popover.set_visible(true);
-        self.link_open_at = Some(at);
+        // Where the `[[` stands: the picker reads whether a `!` precedes it, which makes the
+        // block a projection of what it chooses.
+        self.link_open_at = Some(at.saturating_add(opener.len().saturating_sub(2)));
         self.link_anchor_caret = Some((idx, caret));
         self.dirty = true;
     }
@@ -3591,20 +3607,23 @@ impl BlockEditor {
             );
         }
         if let Some(target) = transclusion_target(block) {
-            let name = self
-                .transclusion_previews
-                .get(&target)
-                .map_or("embedded note", |preview| preview.title.as_str());
+            let name = match &target {
+                Card::Page(page) => self.transclusion_previews.get(page).map_or_else(
+                    || "embedded note".to_owned(),
+                    |preview| preview.title.clone(),
+                ),
+                Card::Record(reference) => self.reference_title(reference, block.text()),
+            };
             let card_bounds = self
                 .transclusion_rects
                 .get(index)
-                .and_then(|entry| *entry)
-                .map_or(line, |(rect, _)| rect);
+                .and_then(|entry| entry.as_ref().map(|(rect, _)| *rect))
+                .map_or(line, |rect| rect);
             block_children.push(
                 AccessNode::new(Role::Button)
-                    .with_name(crate::i18n!("block-a11y-open-embed", "title" => name.to_string()))
+                    .with_name(crate::i18n!("block-a11y-open-embed", "title" => name))
                     .with_description(crate::i18n!("block-a11y-embed-description"))
-                    .with_action_target(transclusion_action_target(target))
+                    .with_action_target(target.action_target())
                     .with_bounds(card_bounds)
                     .with_state(AccessState::new().focusable(true)),
             );
@@ -4176,7 +4195,7 @@ impl BlockEditor {
             event,
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Released,
-                button: winit::event::MouseButton::Left,
+                button: MouseButton::Left,
                 ..
             }
         );
@@ -4358,7 +4377,7 @@ impl BlockEditor {
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
-                button: MouseButton::Left,
+                button: winit::event::MouseButton::Left,
                 ..
             } => {
                 let Some(index) = (0..self.blocks.len()).find(|&index| {
@@ -4719,17 +4738,69 @@ impl BlockEditor {
     /// A stale layout intentionally refuses rather than approximating with a
     /// different theme or font.
     pub fn link_at_point(&self, point: Point) -> Option<LinkTarget> {
-        if let Some(id) = self
+        if let Some(page) = self
             .transclusion_rects
             .iter()
             .flatten()
-            .find_map(|(rect, id)| rect.contains(point).then_some(*id))
+            .find_map(|(rect, card)| match card {
+                Card::Page(id) if rect.contains(point) => Some(*id),
+                Card::Page(_) | Card::Record(_) => None,
+            })
         {
-            return Some(LinkTarget::Page(id));
+            return Some(LinkTarget::Page(page));
         }
         self.live_link_hits
             .iter()
             .find_map(|(rect, target)| rect.contains(point).then(|| target.clone()))
+    }
+
+    /// Open what the card a click landed on projects, or what a link inside it names. A page
+    /// the host keeps is left to it ([`Self::link_at_point`]); a record any app keeps is
+    /// activated as the reference it is, so the host opens it wherever it lives. `true` when a
+    /// card was.
+    /// Open what `reference` names, as activating it does.
+    fn open_reference(&mut self, reference: &str) {
+        if let Some(open) = self.references.on_open.as_mut() {
+            open(reference);
+        }
+    }
+
+    fn activate_card(&mut self, event: &WindowEvent) -> bool {
+        let WindowEvent::MouseInput {
+            state: ElementState::Released,
+            button: MouseButton::Left,
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let point = self.last_mouse_pos;
+        // A link inside a card stands in front of the card it is painted on.
+        if let Some(reference) = self
+            .card_links
+            .iter()
+            .find(|(rect, _)| rect.contains(point))
+            .map(|(_, reference)| reference.clone())
+        {
+            self.open_reference(&reference);
+            return true;
+        }
+        let Some(card) = self
+            .transclusion_rects
+            .iter()
+            .flatten()
+            .find(|(rect, _)| rect.contains(point))
+            .map(|(_, card)| card.clone())
+        else {
+            return false;
+        };
+        match card {
+            Card::Record(reference) => {
+                self.open_reference(&reference);
+                true
+            }
+            Card::Page(_) => false,
+        }
     }
 
     pub fn set_transclusion_previews(&mut self, previews: HashMap<PageId, TransclusionPreview>) {
@@ -5014,15 +5085,19 @@ impl BlockEditor {
         let (Some(head), Some(tail)) = (text.get(..head_end), text.get(cursor..)) else {
             return;
         };
-        // A record a view offers is written as a reference to it (a `mention`), which every
-        // reader reads as it reads now; a page is written as the link its id names.
-        let mark = match (&page.reference, embedded, page.id) {
-            (Some(reference), _, _) => Mark::Mention(reference.clone()),
-            (None, true, Some(id)) => Mark::Transclusion(id),
-            (None, false, Some(id)) => Mark::Link(id),
-            (None, _, None) => return,
+        // A record a view offers is written as a reference to it, which every reader reads as
+        // it reads now: projected where the paragraph is nothing but it (`![[`, "Embed note"),
+        // and mentioned in the prose otherwise. A page is written as the link its id names.
+        let projection = embedded && head.trim().is_empty() && tail.trim().is_empty();
+        let (head, tail) = if projection { ("", "") } else { (head, tail) };
+        let mark = match (&page.reference, embedded, projection, page.id) {
+            (Some(reference), _, true, _) => Mark::Embed(reference.clone()),
+            (Some(reference), _, false, _) => Mark::Mention(reference.clone()),
+            (None, true, _, Some(id)) => Mark::Transclusion(id),
+            (None, false, _, Some(id)) => Mark::Link(id),
+            (None, _, _, None) => return,
         };
-        let mark_start = head_end;
+        let mark_start = head.len();
         let title_end = mark_start.saturating_add(page.title.len());
         let mut new_text = String::with_capacity(text.len().saturating_add(page.title.len()));
         new_text.push_str(head);
@@ -5997,43 +6072,6 @@ pub(super) fn measure_table_preview_height(
     theme: &Theme,
 ) -> f32 {
     markdown_table_layout(source, width, renderer, theme).height() as f32
-}
-
-/// A block that is only a Markdown picture: its description and where its
-/// bytes are. A width the person sized it to (`![alt|480](…)`, as Obsidian
-/// writes it) is not part of the description; [`markdown_image_parts`]
-/// reads it.
-fn standalone_markdown_image(source: &str) -> Option<(&str, &str)> {
-    let (alt, destination, _) = markdown_image_parts(source)?;
-    Some((alt, destination))
-}
-
-/// The narrowest and widest a person can size a picture to.
-const IMAGE_WIDTH_RANGE: std::ops::RangeInclusive<u32> = 48..=4096;
-
-fn markdown_image_parts(source: &str) -> Option<(&str, &str, Option<u32>)> {
-    let source = source.trim();
-    let body = source.strip_prefix("![")?;
-    let (alt, destination) = body.split_once("](")?;
-    let destination = destination.strip_suffix(')')?.trim();
-    if destination.is_empty() || destination.contains(['\n', '\r']) {
-        return None;
-    }
-    let (alt, width) = match alt.rsplit_once('|') {
-        Some((text, width)) => match width.trim().parse::<u32>() {
-            Ok(width) if IMAGE_WIDTH_RANGE.contains(&width) => (text, Some(width)),
-            _ => (alt, None),
-        },
-        None => (alt, None),
-    };
-    Some((alt.trim(), destination, width))
-}
-
-/// `source` with its picture sized to `width` logical pixels.
-fn with_markdown_image_width(source: &str, width: u32) -> Option<String> {
-    let (alt, destination, _) = markdown_image_parts(source)?;
-    let width = width.clamp(*IMAGE_WIDTH_RANGE.start(), *IMAGE_WIDTH_RANGE.end());
-    Some(format!("![{alt}|{width}]({destination})"))
 }
 
 fn formula_run_end(blocks: &[Block], start: usize) -> usize {
@@ -8022,22 +8060,6 @@ fn damages_where_it_paints(kind: &BlockKind) -> bool {
     }
 }
 
-fn transclusion_target(block: &Block) -> Option<PageId> {
-    let text_len = block.text().len();
-    block.line.marks().iter().find_map(|span| match &span.mark {
-        Mark::Transclusion(id)
-            if !id.is_nil() && span.range.start == 0 && span.range.end == text_len =>
-        {
-            Some(*id)
-        }
-        _ => None,
-    })
-}
-
-fn transclusion_action_target(id: PageId) -> String {
-    format!("notes.transclusion:{id}")
-}
-
 fn page_link_action_target(id: PageId) -> String {
     format!("notes.page-link:{id}")
 }
@@ -8048,98 +8070,6 @@ fn external_link_action_target(url: &str) -> String {
 
 fn resource_link_action_target(href: &str) -> String {
     format!("notes.resource-link:{href}")
-}
-
-fn draw_transclusion_card(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    preview: Option<&TransclusionPreview>,
-) {
-    let tokens = &theme.tokens;
-    let card = vello::kurbo::RoundedRect::from_rect(
-        rect.inflate(-1.0, -1.0),
-        f64::from(tokens.radii.control),
-    );
-    scene.fill(
-        vello::peniko::Fill::NonZero,
-        transform,
-        tokens.colors.surfaces.raised,
-        None,
-        &card,
-    );
-    scene.stroke(
-        &vello::kurbo::Stroke::new(1.0),
-        transform,
-        crate::surface::edge_on(tokens.colors.surfaces.raised),
-        None,
-        &card,
-    );
-    let (title, excerpt) = preview.map_or(
-        (
-            crate::i18n!("block-embed-missing-title"),
-            crate::i18n!("block-embed-missing"),
-        ),
-        |p| (p.title.clone(), p.excerpt.clone()),
-    );
-    // An embedded note is an object you open: a note glyph and its title on
-    // the first line with a trailing chevron (the whole card opens it), its
-    // excerpt as the secondary line. No "Embedded note · Open" chain.
-    let pad = f64::from(tokens.spacing.s4);
-    let gap = f64::from(tokens.spacing.s2);
-    let icon_side = f64::from(tokens.metrics.icon_sm * theme.text_scale);
-    let title_style = theme.text(crate::tokens::TextRole::Subheading);
-    let excerpt_style = theme.text(crate::tokens::TextRole::Body);
-    let ink = tokens.colors.on_surface(tokens.colors.surfaces.raised);
-    let (_, title_h) = text_renderer.measure_style("Ag", None, &title_style);
-    let title_h = f64::from(title_h);
-    let title_y = rect.y0 + pad;
-    let chevron_x = rect.x1 - pad - icon_side;
-    let icon_rect = Rect::new(
-        rect.x0 + pad,
-        title_y + (title_h - icon_side) / 2.0,
-        rect.x0 + pad + icon_side,
-        title_y + (title_h + icon_side) / 2.0,
-    );
-    crate::icons::draw_icon(
-        scene,
-        transform,
-        icon_rect,
-        crate::icons::Icon::FileText,
-        ink.ink_dim,
-        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-    );
-    crate::icons::draw_icon(
-        scene,
-        transform,
-        Rect::new(chevron_x, icon_rect.y0, chevron_x + icon_side, icon_rect.y1),
-        crate::icons::Icon::ChevronRight,
-        ink.ink_dim,
-        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-    );
-    let title_x = icon_rect.x1 + gap;
-    let title_w = (chevron_x - gap - title_x).max(1.0);
-    let title = text_renderer.elide_to_width_style(&title, title_w as f32, &title_style);
-    text_renderer.draw_style(
-        scene,
-        &title,
-        ink.ink,
-        transform.pre_translate((title_x, title_y).into()),
-        None,
-        &title_style,
-    );
-    let excerpt_w = (rect.x1 - pad - title_x).max(1.0);
-    let excerpt = text_renderer.elide_to_width_style(&excerpt, excerpt_w as f32, &excerpt_style);
-    text_renderer.draw_style(
-        scene,
-        &excerpt,
-        ink.ink_dim,
-        transform.pre_translate((title_x, title_y + title_h + f64::from(tokens.spacing.s1)).into()),
-        None,
-        &excerpt_style,
-    );
 }
 
 fn draw_checklist_prefix(done: bool, box_rect: Rect, ctx: &mut BlockDrawCtx<'_>) {
@@ -9536,6 +9466,42 @@ impl Widget for BlockEditor {
             .retained_block_selection
             .as_ref()
             .and_then(|_| self.selected_block_range());
+        // What each card shows, read before the blocks are painted: how what it projects reads
+        // now, and the start of its own content, are the editor's, not the block's.
+        let cards: Vec<Option<(String, Vec<tilo_ui_graph::rich::Run>)>> = self
+            .blocks
+            .iter()
+            .map(|block| {
+                Some(match transclusion_target(block)? {
+                    Card::Page(id) => self.transclusion_previews.get(&id).map_or_else(
+                        || {
+                            (
+                                crate::i18n!("block-embed-missing-title"),
+                                vec![tilo_ui_graph::rich::Run {
+                                    text: crate::i18n!("block-embed-missing"),
+                                    reference: None,
+                                }],
+                            )
+                        },
+                        |preview| {
+                            (
+                                preview.title.clone(),
+                                vec![tilo_ui_graph::rich::Run {
+                                    text: preview.excerpt.clone(),
+                                    reference: None,
+                                }],
+                            )
+                        },
+                    ),
+                    Card::Record(reference) => (
+                        self.reference_title(&reference, block.text()),
+                        self.reference_preview(&reference)
+                            .unwrap_or_default()
+                            .to_vec(),
+                    ),
+                })
+            })
+            .collect();
         let x_height_em = list_marker::x_height_em(&mut self.marker_x_height, text_renderer, theme);
         let mut ctx = BlockDrawCtx {
             scene,
@@ -9566,6 +9532,9 @@ impl Widget for BlockEditor {
 
         let outside_prefix = track_paragraphs.then(|| std::mem::take(ctx.scene));
         let mut dragged_scene: Option<(Scene, Rect)> = None;
+        // Where the links inside the cards painted this frame land: they open what they name,
+        // the card under them opening the thing that projects.
+        let mut card_links: Vec<(Rect, String)> = Vec::new();
         #[cfg(test)]
         drop(setup_probe);
         #[cfg(test)]
@@ -9613,14 +9582,19 @@ impl Widget for BlockEditor {
             b.line.inner_mut().suppress_caret_paint(
                 preceding.is_some() || self.caret_paint_suppressed || caret_apart,
             );
-            if let Some(Some((rect, id))) = self.transclusion_rects.get(idx) {
-                draw_transclusion_card(
-                    ctx.scene,
-                    ctx.transform,
-                    ctx.text_renderer,
-                    ctx.theme,
+            if let Some(Some((rect, _))) = self.transclusion_rects.get(idx) {
+                let (title, body) = cards.get(idx).cloned().flatten().unwrap_or_default();
+                draw_embed_card(
+                    &mut cards::CardPaint {
+                        scene: &mut *ctx.scene,
+                        transform: ctx.transform,
+                        text_renderer: &mut *ctx.text_renderer,
+                        theme: ctx.theme,
+                    },
                     *rect,
-                    self.transclusion_previews.get(id),
+                    &title,
+                    &body,
+                    &mut card_links,
                 );
             } else {
                 // A table's cells become parts of their own.
@@ -9946,6 +9920,7 @@ impl Widget for BlockEditor {
                 }
             }
         }
+        self.card_links = card_links;
         #[cfg(test)]
         drop(blocks_probe);
         #[cfg(test)]
@@ -10180,6 +10155,10 @@ impl Widget for BlockEditor {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if self.activate_card(event) {
+            *ctx.handled = true;
+            return;
+        }
         if self.read_only {
             self.handle_cursor_moved(event, ctx.scale_factor);
             if self.activate_reference(event) {
@@ -10858,6 +10837,10 @@ impl Widget for BlockEditor {
         {
             self.pending_transclusion_opens.push(id);
             self.dirty = true;
+            return true;
+        }
+        if let Some(reference) = target.strip_prefix("notes.reference:") {
+            self.open_reference(reference);
             return true;
         }
         if let Some(id) = target
@@ -12047,6 +12030,16 @@ pub mod references;
 #[path = "block_editor_text_menu.rs"]
 mod text_menu;
 pub use present::{BlockContent, EditScope, PresenceKeyFn};
+
+#[path = "block_editor_cards.rs"]
+mod cards;
+use cards::{Card, draw_embed_card, transclusion_target};
+
+#[path = "block_editor_picture_markdown.rs"]
+mod picture_markdown;
+use picture_markdown::{
+    IMAGE_WIDTH_RANGE, markdown_image_parts, standalone_markdown_image, with_markdown_image_width,
+};
 
 #[path = "block_editor_callout.rs"]
 mod callout;

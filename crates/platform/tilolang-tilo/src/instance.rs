@@ -21,6 +21,7 @@
 //! resource are what presence reports; a destructive action a person runs offers Undo; a
 //! primary action a person runs shows what it made.
 
+mod convert;
 pub mod form;
 mod person_state;
 #[cfg(feature = "record")]
@@ -28,6 +29,11 @@ pub mod record;
 pub mod rows;
 mod shown;
 mod views;
+
+pub use convert::{
+    PREVIEW_CHARS, inline_title, inline_view, link_of, preview, shown_values, window_tree,
+};
+pub(crate) use convert::{bound_values, convert_with, referenced_resource, rows_message};
 pub mod wire;
 
 use std::cell::{Cell, RefCell};
@@ -2289,12 +2295,7 @@ impl Instance {
         let Some(view) = self.lane_mut(lane) else {
             return;
         };
-        let tree = {
-            let instance = view.view.borrow();
-            convert_with(&host, &*names, &instance, |convert| {
-                convert.node(instance.tree())
-            })
-        };
+        let tree = window_tree(&host, &*names, &view.view);
         let mut patches = Vec::new();
         if let Some(sent) = &view.sent {
             wire::diff(sent, &tree, &mut patches);
@@ -2383,200 +2384,6 @@ pub fn spliced(current: &str, at: usize, delete: usize, insert: &str) -> String 
     text.push_str(insert);
     text.push_str(current.get(end..).unwrap_or_default());
     text
-}
-
-/// Run `run` with the converter of `view`'s trees over `host`, naming people by `names`.
-fn convert_with<T>(
-    host: &Host,
-    names: &dyn NameHost,
-    view: &ViewInstance,
-    run: impl FnOnce(&Convert<'_>) -> T,
-) -> T {
-    let field_name = |binding: &Binding| Instance::field_name(host, binding);
-    let cases = |id: &str| cases(host, id);
-    let toggles = |key: &str, event: &str| toggles(host, view, key, event);
-    let invokes = |key: &str, event: &str| invokes(view, key, event);
-    let embeds = |reference: &crate::runtime::rich::Reference| inline_view(host, names, reference);
-    let link = |target: &ResourceRef| link_of(host, target);
-    run(&Convert {
-        names,
-        field_name: &field_name,
-        cases: &cases,
-        toggles: &toggles,
-        invokes: &invokes,
-        embeds: &embeds,
-        link: &link,
-    })
-}
-
-/// The tilolang resource a reference in rich text names, when it names one of a package this
-/// host has loaded: by its id, of no type yet.
-fn referenced_resource(
-    host: &Host,
-    reference: &crate::runtime::rich::Reference,
-) -> Option<ResourceRef> {
-    let at = reference.as_resource()?;
-    host.package(&at.app)?;
-    let id = crate::runtime::rich::resource_id(reference)?;
-    ResourceRef::parse_id(id, String::new())
-}
-
-/// The catalogue's reference to the record `target` and how it reads for the viewer now: what a
-/// component offering it as a link is given (`ui.BlockEditor`'s `links`). A type no package here
-/// declares is named by its own id, as the record is found again by that.
-#[must_use]
-pub fn link_of(host: &Host, target: &ResourceRef) -> (String, String) {
-    use crate::runtime::Store as _;
-    let mut target = target.clone();
-    if let Ok(ty) = host.store().type_of(&target) {
-        target.ty = ty;
-    }
-    let title = host.label_at(&target);
-    let reference = host
-        .find_in_packages(|package| {
-            package
-                .meta
-                .types
-                .iter()
-                .find(|declared| declared.id == target.ty)
-                .map(|declared| {
-                    crate::runtime::rich::resource_reference(
-                        &package.meta.app,
-                        &declared.name,
-                        &target,
-                    )
-                    .mark_value()
-                })
-        })
-        .unwrap_or_default();
-    (reference, title)
-}
-
-/// How a reference in rich text reads for the viewer: a person by what the workspace calls them; a
-/// resource of a package here by its title now, when the viewer holds it, and as only existing
-/// when they do not (a reference never grants a read); a resource of another app as its run.
-#[must_use]
-pub fn inline_view(
-    host: &Host,
-    names: &dyn NameHost,
-    reference: &crate::runtime::rich::Reference,
-) -> tilo_render_protocol::patch::rich::InlineView {
-    use crate::runtime::Store as _;
-    use tilo_render_protocol::patch::rich::InlineView;
-    if let Some(person) = reference.as_person() {
-        return InlineView::Person {
-            identity: person.to_owned(),
-            name: names.name(&Principal::new(person)),
-        };
-    }
-    let Some(mut target) = referenced_resource(host, reference) else {
-        return InlineView::Elsewhere;
-    };
-    match host.store().type_of(&target) {
-        Ok(ty) => {
-            target.ty = ty;
-            InlineView::Resource {
-                title: host.label_at(&target),
-                icon: None,
-                detail: None,
-            }
-        }
-        Err(_) => InlineView::Unreadable,
-    }
-}
-
-/// No names: what a bound value converts with (it holds none).
-struct NoNames;
-
-impl NameHost for NoNames {
-    fn name(&self, who: &Principal) -> String {
-        // A principal the view named carries its name; one from a record carries only its id.
-        who.shown()
-    }
-}
-
-/// A converter that reads nothing beside the values it converts.
-fn plain(names: &NoNames) -> Convert<'_> {
-    Convert {
-        names,
-        field_name: &|_| String::new(),
-        cases: &|_| Vec::new(),
-        toggles: &|_, _| None,
-        invokes: &|_, _| None,
-        embeds: &|_| tilo_render_protocol::patch::rich::InlineView::Elsewhere,
-        link: &|_| (String::new(), String::new()),
-    }
-}
-
-/// The values the bound controls under `node` (a node of `view`) hold now.
-fn bound_values(node: &UiNode, view: &ViewInstance, out: &mut Vec<(String, ui::Value)>) {
-    if node.binding.is_some()
-        && let Some(value) = view.bound_value(&node.key)
-    {
-        let names = NoNames;
-        out.push((node.key.clone(), plain(&names).value(&value)));
-    }
-    for child in &node.children {
-        if !ui::is_virtual_list(&node.kind) || child.kind == wire::SLOT {
-            bound_values(child, view, out);
-        }
-    }
-}
-
-/// The resource and field the event `event` of the node `key` of `view` toggles, when the
-/// action it applies toggles one (`pin` toggles `pinned`).
-fn toggles(
-    host: &Host,
-    view: &ViewInstance,
-    key: &str,
-    event: &str,
-) -> Option<(ResourceRef, String)> {
-    let aref = view.event_action(key, event)?;
-    let field = host.find_in_packages(|package| {
-        package
-            .meta
-            .actions
-            .iter()
-            .find(|action| action.id == aref.action)
-            .map(|action| action.toggles.clone())
-    })??;
-    match aref.args.first() {
-        Some(Value::Ref(subject)) => Some((ResourceRef::clone(&subject.target), field)),
-        _ => None,
-    }
-}
-
-/// The resource and the action the event `event` of the node `key` of `view` runs, when it
-/// runs an action on a resource: what a menu tells a placed command by.
-fn invokes(view: &ViewInstance, key: &str, event: &str) -> Option<(ResourceRef, String)> {
-    let aref = view.event_action(key, event)?;
-    match aref.args.first() {
-        Some(Value::Ref(subject)) => Some((ResourceRef::clone(&subject.target), aref.action)),
-        _ => None,
-    }
-}
-
-/// The window's message of rows `requested` of the list `list` of the view `view` of `lane`.
-fn rows_message(
-    host: &Host,
-    names: &dyn NameHost,
-    view: &Rc<RefCell<ViewInstance>>,
-    lane: Lane,
-    list: &str,
-    requested: rows::Requested,
-) -> ToUi {
-    let instance = view.borrow();
-    let rows = convert_with(host, names, &instance, |convert| {
-        requested.rows.iter().map(|row| convert.node(row)).collect()
-    });
-    ToUi::Rows {
-        lane,
-        list: list.to_owned(),
-        len: u32::try_from(requested.len).unwrap_or(u32::MAX),
-        start: u32::try_from(requested.start).unwrap_or(u32::MAX),
-        keys: requested.keys,
-        rows,
-    }
 }
 
 /// The virtual lists of a view's tree, by key.

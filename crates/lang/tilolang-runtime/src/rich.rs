@@ -31,6 +31,10 @@ use tilo_doc::snapshot::BlockView;
 /// ui-core's `mention`).
 pub const MENTION: &str = tilo_reference::embed::MARK;
 
+/// The mark a paragraph projecting another resource carries: one level deep, what a card of it
+/// shows of its own content (`tilo_doc`'s and ui-core's `Mark::Transclusion`).
+pub const PROJECTION: &str = tilo_doc::schema::MARK_PROJECTION;
+
 /// What a `mention` mark refers to: a person, or a resource by the catalogue's reference
 /// (`tilo_reference::embed`), the one form native apps write too.
 pub use tilo_reference::Embed as Reference;
@@ -100,7 +104,9 @@ fn read_block(
     unshared: &str,
 ) -> String {
     let runs = b.marks.iter().filter_map(|m| match &m.value {
-        MarkValue::Str(value) if m.name == MENTION => Some((m.start, m.end, value.as_str())),
+        MarkValue::Str(value) if m.name == MENTION || m.name == PROJECTION => {
+            Some((m.start, m.end, value.as_str()))
+        }
         _ => None,
     });
     tilo_reference::embed::read_text(&b.text, runs, read, unshared)
@@ -183,12 +189,17 @@ impl RichValue {
         })
     }
 
-    /// Every reference it holds, in the order the text says them, each once.
+    /// Every reference it holds, in the order the text says them, each once: a run mentioning
+    /// one, and a paragraph projecting one (an embed), which links it here as a mention does.
     #[must_use]
     pub fn references(&self) -> Vec<Reference> {
         let mut out: Vec<Reference> = Vec::new();
         for b in &self.blocks {
-            let mut marks: Vec<&MarkSpan> = b.marks.iter().filter(|m| m.name == MENTION).collect();
+            let mut marks: Vec<&MarkSpan> = b
+                .marks
+                .iter()
+                .filter(|m| m.name == MENTION || m.name == PROJECTION)
+                .collect();
             marks.sort_by_key(|m| m.start);
             for m in marks {
                 if let MarkValue::Str(v) = &m.value
@@ -196,6 +207,27 @@ impl RichValue {
                     && !out.contains(&r)
                 {
                     out.push(r);
+                }
+            }
+        }
+        out
+    }
+
+    /// The references the text projects (an embed): what a card of it shows of itself, one
+    /// level deep. Empty for text that only mentions and links.
+    #[must_use]
+    pub fn projections(&self) -> Vec<Reference> {
+        let mut out: Vec<Reference> = Vec::new();
+        for block in &self.blocks {
+            for mark in &block.marks {
+                if mark.name != PROJECTION {
+                    continue;
+                }
+                if let MarkValue::Str(value) = &mark.value
+                    && let Some(reference) = Reference::of_mark(value)
+                    && !out.contains(&reference)
+                {
+                    out.push(reference);
                 }
             }
         }

@@ -478,6 +478,30 @@ impl Live {
         self.bounds.get(id).and_then(Option::as_ref)
     }
 
+    /// Take `reads` into what the root boundary read, after it ran: a host converting what the
+    /// view shows reads more of the workspace than the view did (a record whose content a card
+    /// of it shows), and tells the view, so a change to it runs the root again and the host
+    /// converts again. The reads are the root's until it runs again, which replaces them with
+    /// what it read then; the host registers its own again after converting.
+    pub fn shows(&mut self, reads: impl IntoIterator<Item = (String, String)>) {
+        let Some(mut b) = self.bounds.get_mut(ROOT).and_then(Option::take) else {
+            return;
+        };
+        let mut added = false;
+        for read in reads {
+            if !b.reads.contains(&read) {
+                b.reads.push(read);
+                added = true;
+            }
+        }
+        if added {
+            self.index.add(ROOT, &b);
+        }
+        if let Some(slot) = self.bounds.get_mut(ROOT) {
+            *slot = Some(b);
+        }
+    }
+
     /// Plant a boundary by hand, as a boundary whose branch has left the tree stands: rendered,
     /// with the cached trail `path` of a call that is no longer placed. `target` is a call that
     /// renders, so a run of it has content to write: without the guard that refuses a boundary

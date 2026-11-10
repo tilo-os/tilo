@@ -2279,6 +2279,7 @@ mod tests {
                 embeds: vec![Embed {
                     reference: TASK.into(),
                     view,
+                    preview: None,
                 }],
             })
         };

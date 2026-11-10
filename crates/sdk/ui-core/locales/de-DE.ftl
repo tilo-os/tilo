@@ -684,6 +684,7 @@ slash-numbered = Nummerierte Liste
 slash-checklist = Checkliste
 slash-page = Unternotiz
 slash-link-page = Notiz verlinken
+slash-embed-page = Notiz einbetten
 slash-image = Bild
 slash-quote = Zitat
 slash-code = Codeblock

@@ -436,6 +436,9 @@ impl InlineMarkSpan {
             Mark::Transclusion(page) => InlineMark::Transclusion {
                 page: page.to_string(),
             },
+            Mark::Embed(reference) => InlineMark::Mention {
+                id: reference.clone(),
+            },
             Mark::ExternalLink(url) => InlineMark::ExternalLink { url: url.clone() },
             Mark::ResourceLink(href) => InlineMark::ResourceLink { href: href.clone() },
             Mark::Mention(id) => InlineMark::Mention { id: id.clone() },

@@ -325,6 +325,9 @@ pub mod resources;
 pub mod retained_present;
 pub mod retained_raster;
 pub mod richtext;
+/// Rich text as a component shows it: paragraphs with their marks, and how each reference in
+/// them reads (`ui.BlockEditor`'s value), the one model the runtime sends and the window draws.
+pub use tilo_ui_graph::rich;
 pub mod save_status;
 pub mod scale;
 pub mod scene_parts;

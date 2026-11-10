@@ -203,9 +203,20 @@ impl BodyBinding {
         if held == self.shown {
             return false;
         }
+        held.show_references(editor);
         editor.set_blocks(blocks_of(&held));
         self.shown = held;
         true
+    }
+}
+
+impl Held {
+    /// [`BlockEditor::show_references`] of what it holds: a bound document's chips and cards
+    /// read as they read for the person now, whichever way the field keeps it.
+    fn show_references(&self, editor: &mut BlockEditor) {
+        if let Held::Rich(rich) = self {
+            editor.show_references(rich);
+        }
     }
 }
 
@@ -226,6 +237,7 @@ impl BlockEditor {
     /// Show the document the body is bound to, its blocks keyed for presence where the field
     /// lives: a collaborator's caret in the same body shows here.
     pub(super) fn show_body(&mut self, body: &BodyBinding) {
+        body.shown.show_references(self);
         self.set_blocks(blocks_of(&body.shown));
         if let Some(presence) = presence_of(body.presence_path()) {
             self.set_presence_key(presence);

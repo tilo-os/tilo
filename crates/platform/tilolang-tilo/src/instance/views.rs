@@ -14,8 +14,8 @@ use tilolang_runtime::store::StoreError;
 use super::rows::{FIRST_ROWS, ListRows};
 use super::wire;
 use super::{
-    HistoryAsk, Instance, NoNames, Shown, bound_values, convert_with, patch_in_place, plain,
-    referenced_resource, rows_message, show_content_rows, sort, virtual_list_paths, virtual_lists,
+    HistoryAsk, Instance, Shown, bound_values, convert_with, patch_in_place, referenced_resource,
+    rows_message, show_content_rows, sort, virtual_list_paths, virtual_lists, window_tree,
 };
 use crate::host::Host;
 use crate::runtime::Store as _;
@@ -175,12 +175,7 @@ impl Instance {
         };
         view.lists.clear();
         view.bound.clear();
-        let tree = {
-            let instance = view.view.borrow();
-            convert_with(&host, &*names, &instance, |convert| {
-                convert.node(instance.tree())
-            })
-        };
+        let tree = window_tree(&host, &*names, &view.view);
         view.sent = Some(tree.clone());
         let target = wire::resource(&view.target);
         self.out.push(ToUi::Open {
@@ -288,8 +283,7 @@ impl Instance {
                 } else {
                     let mut structural = rows.apply(&changes.structure);
                     let changed = rows.changed(&changes.rows);
-                    let instance = handle.borrow();
-                    convert_with(&host, &*names, &instance, |convert| {
+                    convert_with(&host, &*names, &handle, |convert, _| {
                         structural.extend(changed.iter().map(|row| ui::RowChange::Changed {
                             row: convert.node(row),
                         }));
@@ -314,20 +308,14 @@ impl Instance {
                 // the clock's text, not the window.
                 let in_place = match (&mut view.sent, &sorted.changed) {
                     (Some(sent), Some(changed)) => {
-                        let instance = view.view.borrow();
-                        convert_with(&host, &*names, &instance, |convert| {
+                        convert_with(&host, &*names, &view.view, |convert, instance| {
                             patch_in_place(sent, instance.tree(), changed, convert)
                         })
                     }
                     _ => None,
                 };
                 let patches = in_place.unwrap_or_else(|| {
-                    let tree = {
-                        let instance = view.view.borrow();
-                        convert_with(&host, &*names, &instance, |convert| {
-                            convert.node(instance.tree())
-                        })
-                    };
+                    let tree = window_tree(&host, &*names, &view.view);
                     let mut patches = Vec::new();
                     match &view.sent {
                         Some(sent) => wire::diff(sent, &tree, &mut patches),
@@ -422,20 +410,25 @@ impl Instance {
     /// Send the window what each bound control of the view of `lane` (and of the rows it
     /// shows) holds now, where that changed.
     pub(super) fn send_bound(&mut self, lane: Lane) {
+        let Some(host) = self.host() else {
+            return;
+        };
+        let names = Rc::clone(&self.names);
         let Some(view) = self.lane_mut(lane) else {
             return;
         };
-        let instance = Rc::clone(&view.view);
-        let instance = instance.borrow();
+        let handle = Rc::clone(&view.view);
         let mut now: Vec<(String, ui::Value)> = Vec::new();
-        bound_values(instance.tree(), &instance, &mut now);
-        for rows in view.lists.values() {
-            for key in rows.shown() {
-                if let Some(row) = instance.find(key) {
-                    bound_values(row, &instance, &mut now);
+        convert_with(&host, &*names, &handle, |convert, instance| {
+            bound_values(instance.tree(), instance, convert, &mut now);
+            for rows in view.lists.values() {
+                for key in rows.shown() {
+                    if let Some(row) = instance.find(key) {
+                        bound_values(row, instance, convert, &mut now);
+                    }
                 }
             }
-        }
+        });
         let mut sent = Vec::new();
         for (key, value) in now {
             if view.bound.get(&key) == Some(&value) {
@@ -450,7 +443,6 @@ impl Instance {
                 acked,
             });
         }
-        drop(instance);
         self.out.extend(sent);
     }
 
@@ -480,13 +472,23 @@ impl Instance {
     /// is applied: the value the app holds is what its next frame draws, and the control shows
     /// it until then only as the person's own touch, which a frame from the app replaces.
     pub(super) fn shown_by_window(&mut self, lane: Lane, key: &str) {
-        let Some(value) = self
-            .view(lane)
-            .and_then(|view| view.borrow().bound_value(key))
-        else {
+        let Some(host) = self.host() else {
             return;
         };
-        let shown = plain(&NoNames).value(&value);
+        let names = Rc::clone(&self.names);
+        let Some(handle) = self.lane(lane).map(|view| Rc::clone(&view.view)) else {
+            return;
+        };
+        let Some(value) = handle.borrow().bound_value(key) else {
+            return;
+        };
+        let mut converted = None;
+        convert_with(&host, &*names, &handle, |convert, _| {
+            converted = Some(convert.value(&value));
+        });
+        let Some(shown) = converted else {
+            return;
+        };
         let Some(view) = self.lane_mut(lane) else {
             return;
         };

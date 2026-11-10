@@ -120,7 +120,12 @@ pub fn editor_mark(name: &str, value: &MarkValue) -> Option<Mark> {
                     Mark::Link,
                 ),
         ),
-        ("transclusion", MarkValue::Str(page)) => page.parse().ok().map(Mark::Transclusion),
+        // A live projection: of a host's own page when it names one by id, and of
+        // whatever a record's reference names (`tilo_reference::embed`) otherwise.
+        ("transclusion", MarkValue::Str(what)) => what.parse().ok().map_or_else(
+            || (!what.is_empty()).then(|| Mark::Embed(what.clone())),
+            |page| Some(Mark::Transclusion(page)),
+        ),
         ("mention", MarkValue::Str(id)) if !id.is_empty() => Some(Mark::Mention(id.clone())),
         _ => None,
     }
@@ -177,6 +182,10 @@ pub fn content_of(view: &BlockView) -> BlockContent {
 /// The mark a reference's run carries (`tilo_reference::embed::MARK`).
 pub const REFERENCE_MARK: &str = tilo_reference::embed::MARK;
 
+/// The stored mark of a paragraph projecting a reference (`Mark::Transclusion`,
+/// `Mark::Embed`): what the paragraph is, rather than how its text is drawn.
+pub const EMBED_MARK: &str = tilo_doc::schema::MARK_PROJECTION;
+
 /// A paragraph a component is given, as tilo-doc reads it.
 #[must_use]
 pub fn view_of(block: &tilo_ui_graph::rich::Block, id: String) -> BlockView {
@@ -232,6 +241,7 @@ fn stored_mark(mark: &Mark) -> Option<(&'static str, MarkValue)> {
         Mark::Code => ("fontFamily", MarkValue::Str("mono".to_owned())),
         Mark::Link(page) => ("link", MarkValue::Str(format!("{PAGE_LINK_PREFIX}{page}"))),
         Mark::Transclusion(page) => ("transclusion", MarkValue::Str(page.to_string())),
+        Mark::Embed(reference) => ("transclusion", MarkValue::Str(reference.clone())),
         Mark::ExternalLink(target) | Mark::ResourceLink(target) => {
             ("link", MarkValue::Str(target.clone()))
         }
@@ -429,13 +439,17 @@ pub fn reference_label(view: &tilo_ui_graph::rich::InlineView, run: &str) -> Str
             Some(detail) if !detail.is_empty() => format!("{detail} {title}"),
             _ => title.clone(),
         },
-        InlineView::Unreadable => {
-            crate::i18n::I18nManager::lookup("rich-text-reference-unreadable", None)
-        }
+        InlineView::Unreadable => unreadable_phrase(),
         InlineView::Person { .. } | InlineView::Resource { .. } | InlineView::Elsewhere => {
             run.to_owned()
         }
     }
+}
+
+/// How a reference the reader cannot read reads: as being there, without anything of it.
+#[must_use]
+pub fn unreadable_phrase() -> String {
+    crate::i18n::I18nManager::lookup("rich-text-reference-unreadable", None)
 }
 
 /// The mark a time's run carries (`tilo_doc::inline_time`).
@@ -574,7 +588,7 @@ fn read_view<Tz: chrono::TimeZone>(
 ) -> BlockView {
     let mut view = view_of(block, format!("p{index}"));
     relabel(&mut view, |name, value, run| match name {
-        REFERENCE_MARK => rich.embed(value).map(|embed| reference_label(embed, run)),
+        REFERENCE_MARK | EMBED_MARK => rich.embed(value).map(|embed| reference_label(embed, run)),
         TIME_MARK => InlineTime::of_mark(value)
             .map(|time| time_label(&time, reading.now, &reading.zone, reading.formats)),
         _ => None,
@@ -968,6 +982,7 @@ mod tests {
             embeds: vec![Embed {
                 reference: TASK.into(),
                 view,
+                preview: None,
             }],
         };
         let holder = read_as(InlineView::Resource {

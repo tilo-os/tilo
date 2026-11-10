@@ -202,7 +202,10 @@ fn rendered(replica: &Replica, view: &ViewInstance) -> tilo_ui_host::UiNode {
         cases: &|_| Vec::new(),
         toggles: &|_, _| None,
         invokes: &|_, _| None,
-        embeds: &|_| tilo_render_protocol::patch::rich::InlineView::Elsewhere,
+        embeds: &|reference| tilolang_tilo::instance::inline_view(&replica.host, &names, reference),
+        preview: &|reference| {
+            tilolang_tilo::instance::preview(&replica.host, &names, reference, &mut Vec::new())
+        },
         link: &|at| tilolang_tilo::instance::link_of(&replica.host, at),
     };
     convert.node(view.tree())
@@ -314,5 +317,166 @@ fn a_reference_written_into_a_note_is_a_mention_that_linked_reports() {
             .iter()
             .any(|link| link.how == LinkHow::Mention && link.of.id_string() == plan_id),
         "the note that mentions it, and how: {mentioned:?}"
+    );
+}
+
+/// The window's view of the note `note`, and the tree the window receives of it: what
+/// converting it read of the records its cards show is kept by the view, which runs again when
+/// one changes.
+fn live(
+    replica: &Replica,
+    note: &str,
+) -> (
+    std::rc::Rc<std::cell::RefCell<ViewInstance>>,
+    tilo_ui_host::UiNode,
+) {
+    let package = replica.host.package(APP).unwrap();
+    let ty = package
+        .meta
+        .types
+        .iter()
+        .find(|ty| ty.name == "Note")
+        .unwrap()
+        .id
+        .clone();
+    let target = ResourceRef {
+        ty,
+        ..ResourceRef::parse_id(note, String::new()).unwrap()
+    };
+    let view = replica.host.open_resource(&target, None).unwrap();
+    let view = std::rc::Rc::new(std::cell::RefCell::new(view));
+    let names = Names;
+    let tree = tilolang_tilo::instance::window_tree(&replica.host, &names, &view);
+    (view, tree)
+}
+
+/// What the editor of the note `note` shows of the record `reference`: its title and the start
+/// of its content, as the window received them.
+fn embed_of(
+    replica: &Replica,
+    view: &std::rc::Rc<std::cell::RefCell<ViewInstance>>,
+    reference: &str,
+) -> Option<(String, String)> {
+    let values = tilolang_tilo::instance::shown_values(&replica.host, &Names, view);
+    let rich = values.iter().find_map(|(_, value)| match value {
+        tilo_ui_host::Value::Rich(rich) => Some(rich),
+        _ => None,
+    })?;
+    let embed = rich
+        .embeds
+        .iter()
+        .find(|embed| embed.reference == reference)?;
+    let title = match &embed.view {
+        tilo_render_protocol::patch::rich::InlineView::Resource { title, .. } => title.clone(),
+        other => panic!("a record, not {other:?}"),
+    };
+    let start = embed
+        .preview
+        .as_ref()?
+        .iter()
+        .map(|run| run.text.as_str())
+        .collect::<Vec<_>>()
+        .join("");
+    Some((title, start))
+}
+
+#[test]
+fn an_embedded_note_shows_its_start_links_back_and_follows_the_note() {
+    let Workspace {
+        mut ada,
+        plan,
+        groceries,
+    } = workspace();
+    let package = ada.host.package(APP).unwrap();
+    // The note that is embedded says something of its own.
+    let (groceries_view, tree) = live(&ada, &groceries);
+    let key = find(&tree, "ui.BlockEditor")
+        .expect("its body is the editor")
+        .key
+        .clone();
+    groceries_view
+        .borrow_mut()
+        .edit(&key, &Value::Rich(RichValue::from_text("Oat milk, eggs")))
+        .expect("the body writes");
+    let meta = package.meta.clone();
+    drop(package);
+
+    // The note that embeds it: a paragraph that is nothing but a projection of it.
+    let (view, tree) = live(&ada, &plan);
+    let key = find(&tree, "ui.BlockEditor")
+        .expect("the body is the editor")
+        .key
+        .clone();
+    // The records a view offers are the ones its picker is open to show: the note chosen here
+    // is the one its text then projects.
+    let (_, picked) = picking(&ada, &plan, "Groceries");
+    let (reference, _) = offered(find(&picked, "ui.BlockEditor").unwrap())
+        .into_iter()
+        .find(|(_, title)| title == "Groceries")
+        .expect("the note it offers");
+    let mut body = RichValue::from_text("Groceries");
+    body.blocks[0].marks.push(tilo_doc::document::MarkSpan {
+        start: 0,
+        end: 9,
+        name: tilolang_runtime::rich::PROJECTION.into(),
+        value: tilo_doc::document::MarkValue::Str(reference.clone()),
+    });
+    view.borrow_mut()
+        .edit(&key, &Value::Rich(body))
+        .expect("the body writes");
+
+    assert_eq!(
+        embed_of(&ada, &view, &reference),
+        Some(("Groceries".to_owned(), "Oat milk, eggs".to_owned())),
+        "the card is titled by the note and shows the start of what it says"
+    );
+
+    // What links to it says so: the note that embeds it mentions it.
+    let mentioned = ada
+        .host
+        .store()
+        .linked(&ResourceRef::parse_id(&groceries, String::new()).unwrap())
+        .unwrap();
+    let plan_id = ResourceRef::parse_id(&plan, String::new())
+        .unwrap()
+        .id_string();
+    assert!(
+        mentioned
+            .iter()
+            .any(|link| link.how == LinkHow::Mention && link.of.id_string() == plan_id),
+        "the note that embeds it, and how: {mentioned:?}"
+    );
+
+    // The embedded note says something else: the view showing the card runs again, and the
+    // window is sent the card as it reads now.
+    groceries_view
+        .borrow_mut()
+        .edit(&key, &Value::Rich(RichValue::from_text("Bread and cheese")))
+        .expect("the body writes");
+    let patches = view.borrow_mut().poll_patches().expect("the view runs");
+    assert!(
+        !patches.is_empty(),
+        "the note it shows changed: the view runs again"
+    );
+    assert_eq!(
+        embed_of(&ada, &view, &reference),
+        Some(("Groceries".to_owned(), "Bread and cheese".to_owned())),
+        "the card follows the note it shows"
+    );
+
+    // Renamed, the note keeps the card: the reference names it, not the title it had.
+    call(
+        &mut ada,
+        &meta,
+        "Note",
+        &groceries,
+        "retitle",
+        json!({ "title": "Shopping" }),
+    );
+    assert!(view.borrow_mut().poll_patches().is_ok());
+    assert_eq!(
+        embed_of(&ada, &view, &reference),
+        Some(("Shopping".to_owned(), "Bread and cheese".to_owned())),
+        "the card reads the note's title now, and is still the same card"
     );
 }

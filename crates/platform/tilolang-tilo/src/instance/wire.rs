@@ -42,6 +42,9 @@ pub struct Convert<'a> {
     pub invokes: &'a dyn Fn(&str, &str) -> Toggled,
     /// How a reference in rich text reads for the person reading.
     pub embeds: &'a dyn Fn(&Reference) -> InlineView,
+    /// What a reference the text projects shows of its own content, one level deep: asked for
+    /// the references the text projects, and no other.
+    pub preview: &'a dyn Fn(&Reference) -> Option<Vec<rich_wire::Run>>,
     /// The catalogue's reference to a record, and how it reads for the person reading: what a
     /// component offered it as a link shows.
     pub link: &'a dyn Fn(&ResourceRef) -> (String, String),
@@ -249,12 +252,17 @@ impl Convert<'_> {
         for block in &rich.blocks {
             push(block, &mut blocks);
         }
+        let projections = rich.projections();
         let embeds = rich
             .references()
             .iter()
             .map(|reference| rich_wire::Embed {
                 reference: reference.mark_value(),
                 view: (self.embeds)(reference),
+                preview: projections
+                    .contains(reference)
+                    .then(|| (self.preview)(reference))
+                    .flatten(),
             })
             .collect();
         rich_wire::RichText { blocks, embeds }

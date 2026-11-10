@@ -294,6 +294,116 @@ view tinted_row(item: Item, tint: Text) {
         view.fire(&place, "select").unwrap();
     }
 
+    /// An app whose one view reads a card's title and nothing of its body.
+    const CARDS: &str = r#"app so.tilo.cards "Cards"
+
+type Card {
+    title: Text
+    body: RichText
+}
+
+type Deck {
+    cards: Collection<Card>
+}
+
+action add(d: Deck) -> Card {
+    return d.cards.insert(Card(title: "Card"))
+}
+
+action write(c: Card, body: RichText) {
+    c.body = body
+}
+
+root Deck
+
+default view card for Card
+
+default view deck for Deck
+
+view card(c: Card) {
+    section(c.title) {
+        text(c.title)
+    }
+}
+
+view deck(d: Deck) {
+    for c in d.cards {
+        card(c)
+    }
+}
+"#;
+
+    #[test]
+    fn what_a_host_shows_beside_what_the_view_read_runs_it_again() {
+        let app = App::compile(CARDS, &[]);
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        app.load(&rt);
+        let deck = rt.create("Deck").unwrap();
+        let card = match rt
+            .invoke_action(
+                &me(),
+                (app.action("add").as_str(), vec![Value::resource(&deck)]),
+            )
+            .unwrap()
+        {
+            InvokeOutcome::Done(Value::Ref(target)) => target.target,
+            other => panic!("{other:?}"),
+        };
+        let mut view = rt
+            .open_view(&me(), &app.view("card"), vec![Value::resource(&card)])
+            .unwrap_or_else(|error| panic!("{error}"));
+        let _ = view.poll_patches().unwrap();
+
+        // The card's body is not what this view read: a change to it alone does not run it.
+        let write = |body: &str| {
+            rt.invoke_action(
+                &me(),
+                (
+                    app.action("write").as_str(),
+                    vec![
+                        Value::resource(&card),
+                        Value::Rich(tilolang_runtime::rich::RichValue::from_text(body)),
+                    ],
+                ),
+            )
+            .unwrap()
+        };
+        let opened = view.stats();
+        write("two");
+        let _ = view.poll_patches().unwrap();
+        assert_eq!(
+            view.stats().root_runs,
+            opened.root_runs,
+            "a field the view read nothing of runs nothing it shows"
+        );
+
+        // What the host converted it reads: the view runs again when it changes, and the host
+        // converts the card again.
+        let body = app
+            .meta()
+            .types
+            .iter()
+            .find(|ty| ty.name == "Card")
+            .and_then(|ty| ty.fields.iter().find(|field| field.name == "body"))
+            .map(|field| field.id.clone())
+            .expect("the card's body");
+        view.shows([
+            (card.id_string(), body),
+            (
+                card.id_string(),
+                tilolang_runtime::store::ANY_FIELD.to_owned(),
+            ),
+        ]);
+        let shown = view.stats();
+        write("three");
+        let _ = view.poll_patches().unwrap();
+        assert_eq!(
+            view.stats().root_runs,
+            shown.root_runs.saturating_add(1),
+            "what it shows changed: the view runs again, so the host converts it again"
+        );
+    }
+
     #[test]
     fn one_items_change_re_runs_only_its_row() {
         let rows = Rows::new(50);

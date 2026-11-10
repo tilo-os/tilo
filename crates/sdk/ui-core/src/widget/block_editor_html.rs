@@ -180,7 +180,7 @@ fn mark_tags(mark: &Mark) -> Option<(String, &'static str)> {
             format!("<span data-mention=\"{}\">", escape_attr(id)),
             "</span>",
         ),
-        Mark::Transclusion(_) => return None,
+        Mark::Transclusion(_) | Mark::Embed(_) => return None,
     })
 }
 
