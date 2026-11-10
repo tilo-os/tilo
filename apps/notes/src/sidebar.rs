@@ -496,6 +496,7 @@ impl ListModel for PageList {
     fn tree_at(&self, index: usize) -> Option<TreeRow<PageId>> {
         Some(TreeRow {
             parent: self.row(index)?.parent,
+            depth: None,
         })
     }
 
