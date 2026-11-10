@@ -419,15 +419,22 @@ fn a_state_the_run_stages_lays_the_window_out_there() {
 
 /// A window held in the hand shows its list; the row a person taps opens what it holds in
 /// front of the list. The run stages every such screen, named after what it shows — for an app
-/// whose rows open a page over the list (a board's cards) as for one whose window pushes it.
+/// whose rows open a page over the list (a board's cards) as for one whose window pushes it,
+/// and for one whose list stands over what it shows as a drawer its sidebar toggle brings
+/// forward.
 #[test]
 fn a_phone_layout_shows_what_a_tapped_row_opens() {
     use tilo_test_env::SpawnUnderEnvLock as _;
 
     for (app, shows) in [
-        ("notes", " in front at 390×844"),
-        // The list stands behind what the app opened, and comes back by its Back chip.
-        ("notes", ", then Back pressed at 390×844"),
+        // Notes holds its tree over the note's page as a drawer at this width: the window's
+        // sidebar toggle brings the tree forward, and a row of it opens its note with the
+        // drawer behind.
+        ("notes", ", then the sidebar at 390×844"),
+        (
+            "notes",
+            ", then the sidebar, then the row tapped at 390×844",
+        ),
         // A board keeps no detail of its own: the card a finger taps is the page that shows.
         ("board", "then a card_page in front at 390×844"),
     ] {

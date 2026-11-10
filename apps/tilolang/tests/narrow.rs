@@ -219,6 +219,47 @@ fn row_node(harness: &FrameHarness, name: &str) -> ui::accesskit::NodeId {
         .map_or_else(|| panic!("no row named {name}"), |(id, _)| id)
 }
 
+/// The accessibility node of the tree row whose name contains `name`.
+fn tree_row_node(harness: &FrameHarness, name: &str) -> ui::accesskit::NodeId {
+    harness
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| {
+            node.role() == ui::accesskit::Role::TreeItem
+                && node.label().is_some_and(|label| label.contains(name))
+        })
+        .map_or_else(|| panic!("no tree row named {name}"), |(id, _)| id)
+}
+
+#[test]
+fn the_sidebar_toggle_brings_the_tree_forward_and_a_row_of_it_opens_its_note() {
+    let mut app = staged();
+    // The window stands in the desktop's bar, where its sidebar toggle is.
+    app.harness().present_in_window_bar();
+    app.harness().relayout();
+    assert!(
+        named_control(app.harness(), "Groceries").is_none(),
+        "the tree stands behind the note's page"
+    );
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+    app.harness().relayout();
+    assert!(
+        named_control(app.harness(), "Groceries").is_some(),
+        "the toggle brought the tree forward"
+    );
+    // The person opens a note of the tree, which comes forward in front of the page.
+    let row = tree_row_node(app.harness(), "Groceries");
+    app.harness()
+        .perform_a11y_action(row, &ui::a11y::Action::Activate)
+        .expect("the row opens what it names");
+    app.harness().relayout();
+    assert!(
+        named_control(app.harness(), "Groceries").is_none(),
+        "the tree went behind the note its row opened"
+    );
+}
+
 #[test]
 fn moving_through_the_list_with_the_keyboard_selects_and_enter_opens_at_once() {
     let mut app = mail_driven();

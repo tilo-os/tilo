@@ -1379,11 +1379,42 @@ fn back_chip(staged: &mut stage::Staged, viewport: (u32, u32)) -> bool {
     })
 }
 
+/// Whether the window's bar carries its sidebar toggle where a finger reaches it: how a person
+/// holding a window whose list stands over what it shows as a drawer brings that list forward.
+fn sidebar_toggle(staged: &mut stage::Staged, viewport: (u32, u32)) -> bool {
+    let bar = staged
+        .harness_mut()
+        .window_bar_layout(f64::from(viewport.0));
+    bar.controls
+        .iter()
+        .any(|control| control.slot == "sidebar" && control.rect[2] > 0.0 && control.rect[3] > 0.0)
+}
+
 /// Where a finger taps to open a row of the list the window shows now: the row it keeps
 /// chosen, or else the first of the list.
 fn tappable_row(staged: &stage::Staged, viewport: (u32, u32)) -> Option<(f64, f64)> {
     let root = &staged.harness().inspection().root;
     row_opened(root, viewport).or_else(|| first_row(root, viewport))
+}
+
+/// Where a finger taps to open a row of the list standing in front of what the window shows:
+/// the first row the list does not keep chosen, which opens what the window is not already
+/// showing, or else the chosen one.
+fn unchosen_row(staged: &stage::Staged, viewport: (u32, u32)) -> Option<(f64, f64)> {
+    fn unchosen(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> Option<(f64, f64)> {
+        let selected = node
+            .semantics
+            .as_ref()
+            .is_some_and(|access| access.state.selected);
+        if !selected && is_row(node) && reachable(node, viewport) {
+            return Some(row_centre(node));
+        }
+        node.children
+            .iter()
+            .find_map(|child| unchosen(child, viewport))
+    }
+    unchosen(&staged.harness().inspection().root, viewport)
+        .or_else(|| tappable_row(staged, viewport))
 }
 
 /// One app's check under way.
@@ -1571,9 +1602,10 @@ impl AppCheck<'_> {
     }
     /// What a person holding the window comes to after choosing what to read: at every size it
     /// is held in the hand, a row of the list the window shows tapped as a finger taps it,
-    /// which pushes what the row opens in front of that list, and the list itself brought back
-    /// by its Back chip where the state the app opened stands in front of it. A scene whose
-    /// window opened nothing has no such state, and no list to come back to.
+    /// which pushes what the row opens in front of that list. The list itself comes forward by
+    /// the window's Back chip where the state the app opened stands pressed over it, and by its
+    /// sidebar toggle where it stands over the page as a drawer. A scene whose window opened
+    /// nothing has no such state, and no list to come back to.
     fn push(&mut self, packages: &Rc<stage::Packages>, unit: &Unit) -> Result<(), String> {
         let all = layouts();
         for size in SIZES.iter().filter(|size| size.touch) {
@@ -1608,25 +1640,42 @@ impl AppCheck<'_> {
                 tappable_row(&staged, viewport)
             };
             if tapped.is_none() {
-                if !back_chip(&mut staged, viewport) {
-                    continue;
-                }
-                let shown = staged.front_target();
-                staged.press_bar_slot(ui::widget::WINDOW_BACK)?;
-                layer = format!("{layer}, then Back pressed");
-                for layout in of_size.iter().copied() {
-                    staged.lay_out(
-                        (layout.size.width, layout.size.height),
-                        layout.theme(),
-                        layout.input(),
-                        layout.display_scale,
-                    )?;
-                    self.audit(&mut staged, layout, &layer)?;
-                }
-                // A window that kept what it showed has no list behind it to tap.
-                page_in_front = page_in_front && staged.front_target() == shown;
-                if !page_in_front {
-                    tapped = tappable_row(&staged, viewport);
+                // A window whose list stands over what it shows as a drawer brings it forward
+                // by its sidebar toggle, which the app's page never covers: the list is a screen
+                // of the window's, not a page pressed over the page it opened.
+                if sidebar_toggle(&mut staged, viewport) {
+                    staged.press_sidebar_toggle()?;
+                    layer = format!("{layer}, then the sidebar");
+                    for layout in of_size.iter().copied() {
+                        staged.lay_out(
+                            (layout.size.width, layout.size.height),
+                            layout.theme(),
+                            layout.input(),
+                            layout.display_scale,
+                        )?;
+                        self.audit(&mut staged, layout, &layer)?;
+                    }
+                    // A row of the list arrives in front of what the window showed, which goes
+                    // behind it: the tap that opens the row brings that page back.
+                    tapped = unchosen_row(&staged, viewport);
+                } else if back_chip(&mut staged, viewport) {
+                    let shown = staged.front_target();
+                    staged.press_bar_slot(ui::widget::WINDOW_BACK)?;
+                    layer = format!("{layer}, then Back pressed");
+                    for layout in of_size.iter().copied() {
+                        staged.lay_out(
+                            (layout.size.width, layout.size.height),
+                            layout.theme(),
+                            layout.input(),
+                            layout.display_scale,
+                        )?;
+                        self.audit(&mut staged, layout, &layer)?;
+                    }
+                    // A window that kept what it showed has no list behind it to tap.
+                    page_in_front = page_in_front && staged.front_target() == shown;
+                    if !page_in_front {
+                        tapped = tappable_row(&staged, viewport);
+                    }
                 }
             }
             // The row the window keeps chosen, or else the first of the list: what a person

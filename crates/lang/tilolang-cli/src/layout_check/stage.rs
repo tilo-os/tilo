@@ -613,6 +613,16 @@ impl Staged {
         self.settle()
     }
 
+    /// Press the window's sidebar toggle in its bar, as a person holding a window whose list
+    /// stands over what it shows brings that list forward: the shell's own slot, which the bar
+    /// hands the app through the window.
+    pub fn press_sidebar_toggle(&mut self) -> Result<(), String> {
+        self.harness
+            .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+        self.exchange();
+        self.settle()
+    }
+
     /// Press `x`, `y` as a person presses them, and let the window and its instance answer: what
     /// reaches a row a menu paints, which has no node of its own to name.
     pub fn press_at(&mut self, x: f64, y: f64) -> Result<(), String> {
