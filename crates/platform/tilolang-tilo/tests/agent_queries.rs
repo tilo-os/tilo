@@ -142,11 +142,11 @@ fn grep_counts_matches_per_resource_in_an_app_the_host_does_not_hold() {
 #[test]
 fn grep_reads_several_apps_and_each_match_says_where_it_is() {
     let w = world();
-    let out = printed(&w.run(r"grep(/\bthe\b/, in: notes + board)"));
+    let out = printed(&w.run(r"grep(/(?i)importer/, in: notes + board)"));
     assert!(out.contains("(notes 8, board "), "{out}");
     assert!(
         out.lines().any(|l| l.starts_with("@notes.Note:")
-            && l.contains(" ¶1: The importer handles tables now.")),
+            && l.contains("body ¶1: The importer handles tables now.")),
         "a match is its resource, its paragraph and the text: {out}"
     );
     assert!(out.lines().any(|l| l.starts_with("@board.")), "{out}");
@@ -207,7 +207,7 @@ fn a_grep_result_feeds_actions_in_the_same_program() {
 #[test]
 fn find_takes_the_palettes_words_or_a_type_and_its_filters() {
     let w = world();
-    let words = printed(&w.run(r#"find("lemon soup")"#));
+    let words = printed(&w.run(r#"find("lemon")"#));
     assert_eq!(words.lines().count(), 2, "{words}");
     assert!(
         words.lines().all(|l| l.starts_with("@notes.Note:")),
@@ -272,11 +272,11 @@ fn read_states_the_size_first_and_shows_what_matches_with_anchors() {
     // A resource of an app this host does not hold reads through its own host.
     let foreign = printed(&w.run(r"read(grep(/sync bug/, in: notes).single().doc)"));
     assert!(
-        foreign.contains("\"Monday\"  Note: 1 paragraph"),
+        foreign.contains("\"Monday\"  Note: 2 paragraphs"),
         "{foreign}"
     );
     assert!(
-        foreign.contains(" ¶1  Ada is on the sync bug."),
+        foreign.contains("body ¶1  Ada is on the sync bug."),
         "{foreign}"
     );
     assert!(foreign.contains(" .pinned  false"), "{foreign}");
@@ -375,9 +375,9 @@ fn a_session_of_the_agents_doc_examples() {
         r"grep(/Tide/, in: journal, mentions: me).len()",
         r"grep(/^- \[ \] (.*launch.*)/i, in: journal, changed: -14d).each(t -> tasks.new_task(tasks.tasks, title: t.group(1)))",
         "print(tasks.tasks.items, fields: [.title, .done])",
-        r#"find("lemon soup")"#,
-        r#"find("lemon soup").take(2)"#,
-        r#"find("lemon soup").single()"#,
+        r#"find("lemon")"#,
+        r#"find("lemon").take(2)"#,
+        r#"find("lemon").single()"#,
         r#"find("groceries").single()"#,
         "find(Task, done: false).sort_by(.title).map(.title)",
         r"read(grep(/sync bug/, in: notes).single().doc, matching: /sync/)",

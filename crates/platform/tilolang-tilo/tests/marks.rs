@@ -266,7 +266,7 @@ fn removed_rows(tree: &UiNode) -> Vec<(String, UiNode)> {
 
 #[test]
 fn a_task_the_run_removed_stays_a_struck_row_until_its_removal_is_seen() {
-    let Tidied { ada, .. } = a_run_in_notes_and_tasks();
+    let Tidied { ada, old, .. } = a_run_in_notes_and_tasks();
     let mut inbox = ada.view(crate::legibility::TASKS_APP);
     crate::tasks::go_to(&mut inbox, "Inbox");
     inbox.poll_patches().unwrap();
@@ -276,10 +276,19 @@ fn a_task_the_run_removed_stays_a_struck_row_until_its_removal_is_seen() {
     assert_eq!(title, "Stale", "the row says what was removed");
     assert_eq!(mark.props.get("kind"), Some(&Value::text("removed")));
     assert_eq!(principal(mark, "by").as_deref(), Some(AGENT));
-    // The notebook's list shows the note it removed too; nothing else lists either.
+    // The notebook's tree holds the notes it has: a note that left it stands nowhere, and the
+    // run's removal is read on the window's mark and the note's own history.
     let mut notebook = ada.view(NOTES_APP);
+    notebook.set_lazy_rows(false).unwrap();
     notebook.poll_patches().unwrap();
-    assert_eq!(removed_rows(notebook.tree()).len(), 1);
+    let listed: Vec<String> = tree_marks(&mut notebook)
+        .into_iter()
+        .map(|(of, _)| of)
+        .collect();
+    assert!(
+        !listed.iter().any(|of| *of == old.id_string()),
+        "the note the run removed stands in the notebook no more: {listed:?}"
+    );
     // Seen, the row goes.
     assert!(ada.host.runtime().mark_run_seen("ada", RUN));
     inbox.poll_patches().unwrap();
