@@ -17,7 +17,7 @@
 //! stands — a row says itself ([`TreeViewNodeProps::branch`], [`TreeViewNodeProps::depth`]), so
 //! the window it shows needs no row outside it.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::rc::Rc;
@@ -28,6 +28,7 @@ use crate::component::{
 use crate::icons::Icon;
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::selection::KeySelection;
+use crate::widget::nav_list::NavigationSource;
 use crate::widget::{
     Button, ButtonProps, ChangeMarkProps, Decorator, Element, HoverToolbar, ListModel, ListRow,
     MenuItem, MenuItemProps, Press, TreeMarks, TreeRow, VirtualList, Widget,
@@ -347,6 +348,9 @@ pub struct DescribedTreeView {
     /// What the person had folded before the view said where the tree is (`expanded`), while it
     /// says it: the folding their own, which comes back when the view stops saying it.
     own_folds: Option<Vec<String>>,
+    /// The person opened a row of the tree since the window hosting it last asked: what a window
+    /// showing one column at a time moves on from, as a list of places tells it.
+    navigated: Rc<Cell<bool>>,
 }
 
 /// The key of the top level: the row of the tree's own name, over the nodes without a parent.
@@ -1441,8 +1445,10 @@ impl DescribedTreeView {
         self.nodes().resource_of(key)
     }
 
-    /// The tree of `props`: its rows, and what it reports of them.
-    fn build(key: &str, props: TreeViewProps) -> Self {
+    /// The tree of `props`: its rows, and what it reports of them. `navigated` is what it tells
+    /// the window hosting it of the row the person opened, kept across the builds of a tree its
+    /// view changed.
+    fn build(key: &str, props: TreeViewProps, navigated: Rc<Cell<bool>>) -> Self {
         let TreeViewProps {
             name,
             fill,
@@ -1511,31 +1517,33 @@ impl DescribedTreeView {
         if single_click {
             list = list.open_on_press();
         }
-        // Each event carries the resource its row shows.
-        if !select.is_none() || !activate.is_none() {
-            let reporting = rows.clone();
-            let picking = rows.clone();
-            let select_single = single_click;
-            let selected = select.clone();
-            list = list
-                .on_select(move |key, chosen| {
-                    if !chosen {
-                        return;
-                    }
-                    if let Some(value) = reporting.value_of(&key) {
-                        selected.fire(Some(value));
-                    }
-                })
-                .on_activate(move |key| {
-                    let value = picking.value_of(&key);
-                    // Opening a row is one act: the selection it moved there on the way is
-                    // reported as the choice it is, as a press on a navigator's row is.
-                    if select_single && by_hand() {
-                        select.fire(value.clone());
-                    }
-                    activate.fire(value);
-                });
-        }
+        // Each event carries the resource its row shows. A row opened is the person moving on to
+        // it, whether the view reports what it opened or nothing: a window showing one column at
+        // a time closes the drawer its tree stood in, as it does over a list of places.
+        let reporting = rows.clone();
+        let picking = rows.clone();
+        let select_single = single_click;
+        let selected = select.clone();
+        let opening = Rc::clone(&navigated);
+        list = list
+            .on_select(move |key, chosen| {
+                if !chosen {
+                    return;
+                }
+                if let Some(value) = reporting.value_of(&key) {
+                    selected.fire(Some(value));
+                }
+            })
+            .on_activate(move |key| {
+                opening.set(true);
+                let value = picking.value_of(&key);
+                // Opening a row is one act: the selection it moved there on the way is
+                // reported as the choice it is, as a press on a navigator's row is.
+                if select_single && by_hand() {
+                    select.fire(value.clone());
+                }
+                activate.fire(value);
+            });
         if rows.has_menu() {
             let menus = rows.clone();
             list = list.with_context_menu(
@@ -1574,6 +1582,7 @@ impl DescribedTreeView {
             rows,
             marks,
             own_folds: None,
+            navigated,
         }
     }
 }
@@ -1582,7 +1591,7 @@ impl Described for DescribedTreeView {
     type Props = TreeViewProps;
 
     fn from_props(key: &str, props: TreeViewProps) -> Self {
-        Self::build(key, props)
+        Self::build(key, props, Rc::new(Cell::new(false)))
     }
 
     /// The rows are built again with what the person kept: a branch they folded stays folded,
@@ -1606,7 +1615,8 @@ impl Described for DescribedTreeView {
         let kept = self.own_folds.take();
         let keep_selected = props.selection.is_none();
         let key = self.key.clone();
-        *self = Self::build(&key, props);
+        let navigated = Rc::clone(&self.navigated);
+        *self = Self::build(&key, props, navigated);
         match (said, kept) {
             (true, kept) => self.own_folds = Some(kept.unwrap_or(folded)),
             (false, Some(kept)) => self.marks.restore_folded(kept),
@@ -1655,6 +1665,30 @@ impl Decorator for DescribedTreeView {
     /// The list's change is the described tree's: it adds no structure of its own.
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
         self.list.take_structure_change()
+    }
+
+    /// The tree tells the window hosting it that the person opened a row of it, as a list of
+    /// places does: what a narrow window's drawer closes on.
+    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+        if request.wants::<dyn NavigationSource>() {
+            request.provide::<dyn NavigationSource>(self);
+            return;
+        }
+        self.list.provide(request);
+    }
+
+    fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
+        if request.wants::<dyn NavigationSource>() {
+            request.provide::<dyn NavigationSource>(self);
+            return;
+        }
+        self.list.provide_mut(request);
+    }
+}
+
+impl NavigationSource for DescribedTreeView {
+    fn take_navigation(&mut self) -> bool {
+        self.navigated.replace(false)
     }
 }
 
