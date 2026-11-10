@@ -13,16 +13,22 @@
  * (`follow()`, about once a second), showing each step the computer reports
  * as it happens.
  *
- * - **Set up with your agent** copies `setupPrompt`. The code names a
+ * The page makes its codes as soon as it can (`offerSetup`,
+ * `offerAgentSignIn`), before anyone asks, and keeps a fresh one ready,
+ * renewed shortly before it expires. So what a button copies is already on
+ * the screen: the click writes exactly that text, inside the click, and the
+ * screen says it copied only once the clipboard took it. A code the page has
+ * not made yet is never promised: the button says what it waits for, and a
+ * wait that runs too long says why, with a way to try again.
+ *
+ * - **Copy prompt** copies `setupPrompt`, shown above it. The code names a
  *   pairing link to this tab, which holds the person's new root: the
  *   agent's `tilo` command becomes a device of the person with a key of its
- *   own, certified here (the root never leaves). The copy happens inside
- *   the click, as the clipboard asks, even while the page is still loading:
- *   the clipboard takes the prompt as a promise and writes it once the page
- *   made the code. Once the agent is in the person's workspace the screen
- *   says so and leaves (`whenDone` opens that workspace).
+ *   own, certified here (the root never leaves). Once the agent is in the
+ *   person's workspace the screen says so and leaves (`whenDone` opens that
+ *   workspace).
  * - **Set up manually** shows the MCP server's address and the commands to
- *   run by hand, with a fresh code this tab follows the same way.
+ *   run by hand, with the same code, which this tab follows the same way.
  * - **Skip for now** opens the person's own workspace (`whenDone`): the
  *   page joined the site's home workspace behind the screen, so they are in
  *   it, but it is not what they see first.
@@ -30,7 +36,8 @@
  *   your agent** copies `signInPrompt`, whose code names nothing; a
  *   computer that is already a device of the person claims it, and the page
  *   asks to be certified as that person (`signIn(claimed)`). **Use a
- *   passkey** asks for one, once the page can (a click before then waits).
+ *   passkey** asks for one, once the page can (a click before then waits,
+ *   for a while).
  */
 
 /** Where this browser remembers that it saw the first screen. */
@@ -39,6 +46,14 @@ export const SEEN = 'tilo-first-run';
 export const CONNECTED_MS = 1600;
 /** How often the tab asks where its code is. */
 export const FOLLOW_MS = 1000;
+/** How long the host gets to make a code before the screen says it did not. */
+export const MAKE_MS = 15_000;
+/** How long the page gets to offer codes at all (its runtime loading) before the screen says so. */
+export const OFFER_MS = 30_000;
+/** How long before a ready code expires a fresh one replaces it. */
+export const RENEW_MS = 60_000;
+/** How long a passkey sign-in waits for the page to be able to ask. */
+export const PASSKEY_WAIT_MS = 30_000;
 /** The site whose commands need no `--site`. */
 export const HOME_SITE = 'https://tilo.sh';
 /** Tilo's MCP server, for an agent added by hand. */
@@ -106,34 +121,62 @@ export function stepLines(polled, mode = 'setup') {
   return [...lines, {text: `${agent} is entering your workspace…`}];
 }
 
-/** What the screen says when the page could not make a code, from `error`. */
-export function setupFailure(error) {
+/** The host a site's codes come from, as people read it: `tilo.sh`. */
+const hostOf = site => { try { return new URL(site).host || 'tilo.sh'; } catch { return 'tilo.sh'; } };
+
+/** What the screen says when the page could not make or use a code, from
+ * `error`, on `site`. */
+export function setupFailure(error, {site = HOME_SITE} = {}) {
   const code = error?.code;
   if (code === 'no-workspace' || code === 'refused') return 'Tilo could not open a workspace for you here yet. Skip for now to see why.';
-  if (code === 'copy-failed') return 'Your browser did not let Tilo copy the prompt. Select it below and copy it yourself.';
+  if (code === 'copy-failed') return 'Your browser did not let Tilo copy the prompt. Select it and copy it yourself.';
   if (code === 'not-a-device') return 'That computer is not signed in to Tilo as you. Try your agent on one that is, or use a passkey.';
-  return 'Something went wrong preparing the prompt. Try again, or skip for now.';
+  if (code === 'not-let-in') return 'This tab isn’t let in yet. Try again in a moment.';
+  if (code === 'not-loaded') return 'Tilo has not finished loading in this tab. Reload the page to try again.';
+  if (code === 'timeout' || code === 'unreachable' || error?.name === 'TypeError') return `Couldn’t reach ${hostOf(site)}. Check your connection, then try again.`;
+  return `${hostOf(site)} did not make a code. Try again, or skip for now.`;
+}
+
+/** What a button that has no code yet says it waits for. */
+export function codeWait(site = HOME_SITE) {
+  return `Getting your code from ${hostOf(site)}…`;
+}
+
+/** `promise`, or a rejection with code `timeout` once `ms` passed, timed by `later`/`clear`. */
+function bounded(promise, ms, later, clear) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = later(() => reject(Object.assign(new Error('no answer in time'), {code: 'timeout'})), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clear(timer));
 }
 
 /**
  * The screen's behaviour, over a `view` that draws it (`domView` below, a
- * fake in tests): which state shows, what each button does, the code's
- * steps and its time running out. `clipboard.copy(promiseOfText)` copies
- * inside the click; `storage` remembers that the screen was seen;
- * `every(run, ms)` ticks; `site` is the origin the commands name.
+ * fake in tests): which state shows, what each button does, the codes made
+ * ahead and renewed, a code's steps and its time running out.
+ * `clipboard.copy(text)` writes `text` inside the click and resolves once
+ * the clipboard took it; `storage` remembers that the screen was seen;
+ * `every(run, ms)` ticks; `later(run, ms)` and `clear(timer)` time one
+ * thing; `site` is the origin the commands name; `reload()` loads the page
+ * again.
  */
 export function createFirstRun({view, clipboard, storage = null, now = () => Date.now(), site = HOME_SITE,
   every = (run, ms) => { const timer = setInterval(run, ms); return () => clearInterval(timer); },
-  later = (run, ms) => setTimeout(run, ms)}) {
-  // What the page offers, once it can: `setup` and `signIn` make codes,
-  // `passkey` signs in. A click before then waits for it, unless the page
-  // already said it cannot (`gone`).
-  const offers = {setup: null, signIn: null, passkey: null};
-  const waiting = {setup: [], signIn: [], passkey: []};
+  later = (run, ms) => setTimeout(run, ms), clear = timer => clearTimeout(timer),
+  reload = () => globalThis.location?.reload()}) {
+  // The codes the page makes ahead, per kind: `setup` and `signIn`. `made`
+  // is the one a click copies now; `error` says why there is none.
+  const prompts = {setup: setupPrompt, signIn: signInPrompt};
+  const codes = {};
+  for (const kind of ['setup', 'signIn']) codes[kind] = {make: null, made: null, making: false, error: null, renew: null, round: 0};
+  let passkeyRun = null;
+  const passkeyWaiting = [];
   let gone = null;
   let closed = false;
   let stop = () => {};
   let attempt = 0;
+  let manualShown = false;
   // What leaving the screen opens (the person's own workspace), once the
   // page can: `null` until then, when leaving only closes it.
   let onDone = null;
@@ -143,6 +186,8 @@ export function createFirstRun({view, clipboard, storage = null, now = () => Dat
     if (closed) return;
     closed = true;
     stop();
+    for (const kind of Object.keys(codes)) clear(codes[kind].renew);
+    clear(offerTimer);
     remember();
     view.close();
   };
@@ -151,15 +196,49 @@ export function createFirstRun({view, clipboard, storage = null, now = () => Dat
     onDone?.();
     close();
   };
-  const ready = kind => {
-    if (offers[kind]) return Promise.resolve(offers[kind]);
-    if (gone) return Promise.reject(gone);
-    return new Promise((resolve, reject) => waiting[kind].push({resolve, reject}));
+  // What the screen shows of `kind`'s code now: its text, or why there is none.
+  const show = kind => {
+    const at = codes[kind];
+    const text = at.made ? prompts[kind](at.made.code, {site}) : null;
+    view.offer(kind, at.made ? {text, code: at.made.code}
+      : at.error ? {problem: setupFailure(at.error, {site})} : {note: codeWait(site)});
+    if (kind === 'setup' && manualShown) showManual();
   };
-  const offer = (kind, run) => {
-    offers[kind] = run;
-    for (const {resolve} of waiting[kind].splice(0)) resolve(run);
+  // Make `kind`'s next code, within `MAKE_MS`, and renew it shortly before it
+  // expires. A failure is said, and stays until the person tries again.
+  const prepare = kind => {
+    const at = codes[kind];
+    if (closed || !at.make || at.making) return Promise.resolve();
+    at.making = true;
+    at.error = null;
+    clear(at.renew);
+    const round = ++at.round;
+    if (!at.made) show(kind);
+    return bounded(Promise.resolve().then(() => at.make()), MAKE_MS, later, clear).then(made => {
+      if (closed || round !== at.round) return;
+      at.made = made;
+      // The prompt on screen stays until its replacement is in.
+      at.renew = later(() => { void prepare(kind); },
+        Math.max(0, made.expiresAt - now() - RENEW_MS));
+    }, error => {
+      if (closed || round !== at.round) return;
+      console.warn('first run: making a code', error);
+      at.made = null;
+      at.error = error;
+    }).finally(() => {
+      if (round !== at.round) return;
+      at.making = false;
+      if (!closed) show(kind);
+    });
   };
+  // The page offered no codes in time: its runtime did not load, or it
+  // failed in a way it did not say. Said instead of waiting on.
+  const offerTimer = later(() => {
+    for (const kind of Object.keys(codes)) {
+      const at = codes[kind];
+      if (!at.make && !at.error) { at.error = gone ?? {code: 'not-loaded'}; show(kind); }
+    }
+  }, OFFER_MS);
   // Follow `made` (`{code, expiresAt, follow()}`): count its time down
   // until a computer resolves it, then show each step it reports.
   const follow = (made, mode, mine) => {
@@ -197,7 +276,7 @@ export function createFirstRun({view, clipboard, storage = null, now = () => Dat
           console.warn('first run: sign-in', error);
           finished = true;
           stop();
-          view.failed(setupFailure(error), mode);
+          view.failed(setupFailure(error, {site}), mode);
         });
       }
       if (mode === 'setup' && steps.includes('entered')) {
@@ -210,59 +289,95 @@ export function createFirstRun({view, clipboard, storage = null, now = () => Dat
     void tick();
     stop = every(() => { void tick(); }, FOLLOW_MS);
   };
-  // Copy a prompt for a fresh code, made by the page's `kind` offer.
-  const start = (kind, mode, prompt) => {
-    if (closed) return;
+  // The code `kind` shows, taken into use: the screen shows the paste
+  // instructions beside its prompt and follows it, and the page makes the
+  // next one for another try.
+  const use = (kind, mode, made, text, copied) => {
     const mine = ++attempt;
-    stop();
-    view.waiting(mode);
-    const made = ready(kind).then(make => make());
-    const text = made.then(({code}) => prompt(code, {site}));
-    const copied = Promise.resolve().then(() => clipboard.copy(text)).then(() => true, () => false);
-    return Promise.all([made, text, copied]).then(([code, shown, ok]) => {
-      if (mine !== attempt || closed) return;
-      view.prompt(shown, {copied: ok});
-      if (!ok) view.problem(setupFailure({code: 'copy-failed'}));
-      view.steps(stepLines(null, mode));
-      follow(code, mode, mine);
-    }, error => {
-      if (mine !== attempt || closed) return;
-      console.warn('first run:', error);
-      view.failed(setupFailure(error), mode);
+    manualShown = false;
+    view.waiting(mode, {text, copied});
+    if (!copied) view.problem(setupFailure({code: 'copy-failed'}, {site}));
+    view.steps(stepLines(null, mode));
+    follow(made, mode, mine);
+    codes[kind].made = null;
+    void prepare(kind);
+  };
+  // Copy what `kind` shows, inside the click. Without a code the button
+  // stays and says what it waits for (or why there is none, trying again).
+  const copy = (kind, mode) => {
+    if (closed) return Promise.resolve(false);
+    const at = codes[kind];
+    if (!at.made) {
+      if (at.error && at.make) void prepare(kind);
+      view.notReady(kind, at.error && !at.make ? setupFailure(at.error, {site}) : codeWait(site));
+      return Promise.resolve(false);
+    }
+    const made = at.made;
+    const text = prompts[kind](made.code, {site});
+    let writing;
+    try { writing = Promise.resolve(clipboard.copy(text)); } catch (error) { writing = Promise.reject(error); }
+    return writing.then(() => true, error => { console.warn('first run: copy', error); return false; }).then(copied => {
+      if (closed) return copied;
+      use(kind, mode, made, text, copied);
+      return copied;
     });
   };
-  let manualShown = false;
+  const showManual = () => {
+    const at = codes.setup;
+    if (!at.made) {
+      view.commands(null, MCP_URL, at.error ? setupFailure(at.error, {site}) : codeWait(site));
+      return;
+    }
+    view.commands(manualCommands(at.made.code, {site}), MCP_URL);
+    // Once a computer resolves it, the screen follows its steps.
+    const made = at.made;
+    const mine = ++attempt;
+    follow({...made, follow: async () => {
+      const polled = await made.follow();
+      if (polled.resolved && manualShown && mine === attempt) {
+        manualShown = false;
+        view.manual(false);
+        view.waiting('setup', {manual: true});
+        codes.setup.made = null;
+        void prepare('setup');
+      }
+      return polled;
+    }}, 'setup', mine);
+  };
   const controller = {
-    /** The person asked their agent to set Tilo up: copy now, code later. */
-    copy() { return start('setup', 'setup', setupPrompt); },
-    /** The person asked their agent to sign this tab in. */
-    signInWithAgent() { return start('signIn', 'sign-in', signInPrompt); },
-    /** Show (or hide) the manual setup, with a fresh code it follows. */
+    /** Copy the setup prompt the screen shows. */
+    copy() { return copy('setup', 'setup'); },
+    /** Copy the prompt that has the person's agent sign this tab in. */
+    signInWithAgent() { return copy('signIn', 'sign-in'); },
+    /** The person copied the shown setup prompt by hand. */
+    copiedByHand() {
+      const at = codes.setup;
+      if (closed || !at.made) return;
+      use('setup', 'setup', at.made, prompts.setup(at.made.code, {site}), true);
+    },
+    /** Make the code that could not be made, or copy a fresh one after one
+     * expired or failed (a click of its own). */
+    retry(mode = 'setup') {
+      const kind = mode === 'sign-in' ? 'signIn' : 'setup';
+      if (closed) return Promise.resolve(false);
+      if (!codes[kind].make && codes[kind].error) { reload(); return Promise.resolve(false); }
+      if (!codes[kind].made && codes[kind].error) return prepare(kind).then(() => false);
+      return copy(kind, mode);
+    },
+    /** Show (or hide) the manual setup, with the setup code, followed. */
     manual() {
       if (closed) return;
       manualShown = !manualShown;
       view.manual(manualShown);
       if (!manualShown) { ++attempt; stop(); return; }
-      const mine = ++attempt;
-      return ready('setup').then(make => make()).then(made => {
-        if (mine !== attempt || closed) return;
-        view.commands(manualCommands(made.code, {site}), MCP_URL);
-        // Once a computer resolves it, the screen follows its steps.
-        const followed = {...made, follow: async () => {
-          const polled = await made.follow();
-          if (polled.resolved && manualShown) { manualShown = false; view.manual(false); view.waiting('setup', {manual: true}); }
-          return polled;
-        }};
-        follow(followed, 'setup', mine);
-      }, error => {
-        if (mine !== attempt || closed) return;
-        view.commands(null, MCP_URL, setupFailure(error));
-      });
+      showManual();
     },
     /** Copy what the screen shows once more (a click of its own). */
     again(text, which = 'prompt') {
-      return Promise.resolve().then(() => clipboard.copy(Promise.resolve(text))).then(() => true, () => false)
-        .then(ok => { view.copied(ok, which); if (!ok) view.problem(setupFailure({code: 'copy-failed'})); });
+      let writing;
+      try { writing = Promise.resolve(clipboard.copy(text)); } catch (error) { writing = Promise.reject(error); }
+      return writing.then(() => true, () => false)
+        .then(ok => { view.copied(ok, which); if (!ok) view.problem(setupFailure({code: 'copy-failed'}, {site})); });
     },
     /** Back to the start, forgetting the code under way. */
     back() {
@@ -271,6 +386,7 @@ export function createFirstRun({view, clipboard, storage = null, now = () => Dat
       stop();
       manualShown = false;
       view.start();
+      show('setup');
     },
     skip() {
       if (!closed) leave();
@@ -281,33 +397,43 @@ export function createFirstRun({view, clipboard, storage = null, now = () => Dat
       if (leaving) open();
       else if (!closed) onDone = open;
     },
-    /** Sign in with a passkey: at once once the page offers it, else once it does. */
+    /** Sign in with a passkey: at once once the page offers it, else once it
+     * does, for `PASSKEY_WAIT_MS`. */
     async passkey() {
       if (closed) return;
       view.signingIn(true);
       try {
-        const run = await ready('passkey');
+        const run = passkeyRun ?? await bounded(new Promise((resolve, reject) => {
+          if (gone) reject(gone); else passkeyWaiting.push({resolve, reject});
+        }), PASSKEY_WAIT_MS, later, clear);
         await run();
       } catch (error) { console.warn('first run: sign-in', error); view.signInFailed(); } finally { view.signingIn(false); }
     },
     /** The page can make setup codes: `make()` resolves to `{code, expiresAt, follow()}`. */
-    offerSetup(make) { offer('setup', make); },
+    offerSetup(make) { codes.setup.make = make; void prepare('setup'); },
     /** The page can make sign-in codes: `make()` resolves to `{code,
      * expiresAt, follow(), signIn(claimed)}`. */
-    offerAgentSignIn(make) { offer('signIn', make); },
+    offerAgentSignIn(make) { codes.signIn.make = make; void prepare('signIn'); },
     /** The page cannot make codes (it was not let in): `error` says why. */
     unavailable(error) {
       gone = error;
-      for (const kind of ['setup', 'signIn', 'passkey']) {
-        if (offers[kind]) continue;
-        for (const {reject} of waiting[kind].splice(0)) reject(error);
+      for (const kind of Object.keys(codes)) {
+        const at = codes[kind];
+        if (at.make) continue;
+        at.error = error;
+        show(kind);
       }
+      if (!passkeyRun) for (const {reject} of passkeyWaiting.splice(0)) reject(error);
     },
     /** The page can sign in with a passkey now. */
-    offerSignIn(run) { offer('passkey', run); },
+    offerSignIn(run) {
+      passkeyRun = run;
+      for (const {resolve} of passkeyWaiting.splice(0)) resolve(run);
+    },
     close,
     get closed() { return closed; },
   };
+  show('setup');
   return controller;
 }
 
@@ -323,23 +449,42 @@ export function domView(document) {
     target.textContent = ok ? 'Copied' : 'Copy';
     if (ok) setTimeout(() => { target.textContent = 'Copy'; }, 1500);
   };
+  const notes = {setup: 'first-run-offer-note', signIn: 'first-run-sign-in-note'};
   return {
     start() { state(''); this.manual(false); $('first-run-heading').focus({preventScroll: true}); },
-    waiting(mode, {manual = false} = {}) {
+    offer(kind, {text = null, note = null, problem = null}) {
+      // Whether a code is ready, for tests and tools driving the page.
+      $('first-run').dataset[kind === 'setup' ? 'setup' : 'signIn'] = text ? 'ready' : problem ? 'failed' : 'waiting';
+      if (kind === 'setup') {
+        $('first-run-offer').textContent = text ?? '';
+        $('first-run-offer-retry').hidden = !problem;
+      }
+      const line = $(notes[kind]);
+      line.textContent = problem ?? (kind === 'setup' ? note ?? '' : '');
+      line.dataset.problem = String(Boolean(problem));
+      if (problem && kind === 'setup') say(problem);
+    },
+    notReady(kind, text) {
+      // Said beside the button that was pressed: on the start, under it;
+      // after a prompt expired or failed, where its problem shows.
+      $(root.dataset.firstRun ? 'first-run-problem' : notes[kind]).textContent = text;
+      say(text);
+    },
+    waiting(mode, {text = null, copied = false, manual = false} = {}) {
       state('waiting', mode);
-      if (!manual) $('first-run-prompt').textContent = '';
+      if (text !== null) $('first-run-prompt').textContent = text;
       for (const id of ['first-run-problem', 'first-run-left']) $(id).textContent = '';
       $('first-run-steps').replaceChildren();
       $('first-run').dataset.manual = String(manual);
-      say(manual ? 'Your computer is setting Tilo up…' : 'Preparing your prompt…');
-    },
-    prompt(text, {copied}) {
-      $('first-run-prompt').textContent = text;
-      this.copied(copied);
-      if (copied) say('Prompt copied. Paste it into your agent.');
+      $('first-run').dataset.copied = String(copied);
+      this.copied(false);
+      say(manual ? 'Your computer is setting Tilo up…' : copied ? 'Prompt copied. Paste it into your agent.' : 'Copy the prompt, then paste it into your agent.');
       $('first-run-heading-wait').focus({preventScroll: true});
     },
-    copied(ok, which = 'prompt') { button(which === 'prompt' ? 'first-run-again' : `first-run-copy-${which}`, ok); },
+    copied(ok, which = 'prompt') {
+      if (which === 'prompt' && ok) $('first-run').dataset.copied = 'true';
+      button(which === 'prompt' ? 'first-run-again' : `first-run-copy-${which}`, ok);
+    },
     left(text) { $('first-run-left').textContent = text ? `Works once, for ${text} more, only in this tab.` : ''; },
     steps(lines) {
       $('first-run-steps').replaceChildren(...lines.map(({text, done, act}) => {
@@ -363,12 +508,12 @@ export function domView(document) {
     manual(shown) {
       $('first-run').dataset.open = shown ? 'manual' : '';
       $('first-run-manual-toggle').setAttribute('aria-expanded', String(shown));
-      if (shown) { $('first-run-commands').textContent = ''; $('first-run-manual-left').textContent = ''; }
     },
-    commands(text, mcp, problem) {
+    commands(text, mcp, note) {
       $('first-run-mcp').textContent = mcp;
       $('first-run-commands').textContent = text ?? '';
-      $('first-run-manual-left').textContent = problem ?? 'The code works once, for 10 minutes, only for this tab.';
+      $('first-run-commands').closest('.fr-well').hidden = !text;
+      $('first-run-manual-left').textContent = note ?? 'The code works once, for 10 minutes, only for this tab.';
     },
     signingIn(busy) { $('first-run-passkey').setAttribute('aria-busy', String(busy)); },
     signInFailed() { say('That passkey did not sign you in. Try another, or sign in with your agent.'); },
@@ -382,22 +527,29 @@ export function domView(document) {
   };
 }
 
-/** The clipboard as the screen uses it: `text` is a promise, written inside
- * the click (`ClipboardItem` takes it as one where the browser can), else
- * written once it resolves. */
-export function pageClipboard(navigator = globalThis.navigator, Item = globalThis.ClipboardItem) {
+/** The clipboard as the screen uses it: `copy(text)` writes `text` at once,
+ * inside the click that asked, and resolves once the clipboard took it. A
+ * browser without the clipboard API copies a selection of it instead. */
+export function pageClipboard(navigator = globalThis.navigator, document = globalThis.document) {
   return {
     copy(text) {
       const clipboard = navigator?.clipboard;
-      if (clipboard?.write && typeof Item === 'function') {
-        try {
-          return clipboard.write([new Item({'text/plain': Promise.resolve(text).then(value => new Blob([value], {type: 'text/plain'}))})]);
-        } catch { /* An older ClipboardItem without promises: write the text once it is made. */ }
-      }
-      if (!clipboard?.writeText) return Promise.reject(new Error('no clipboard'));
-      return Promise.resolve(text).then(value => clipboard.writeText(value));
+      if (typeof clipboard?.writeText === 'function') return clipboard.writeText(text);
+      return copyBySelection(text, document) ? Promise.resolve() : Promise.reject(new Error('no clipboard'));
     },
   };
+}
+
+/** Copy `text` the old way, through a selection in `document`: whether the browser did. */
+function copyBySelection(text, document) {
+  if (!document?.body || typeof document.execCommand !== 'function') return false;
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.setAttribute('readonly', '');
+  area.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
+  document.body.append(area);
+  area.select();
+  try { return document.execCommand('copy'); } catch { return false; } finally { area.remove(); }
 }
 
 /** The screen of this page, when it shows one: `null` otherwise. Its
@@ -411,7 +563,8 @@ export function startFirstRun(document = globalThis.document, {storage} = {}) {
   const text = id => document.getElementById(id).textContent;
   on('first-run-agent', () => run.copy());
   on('first-run-agent-sign-in', () => run.signInWithAgent());
-  on('first-run-retry', () => (document.getElementById('first-run').dataset.mode === 'sign-in' ? run.signInWithAgent() : run.copy()));
+  on('first-run-offer-retry', () => run.retry('setup'));
+  on('first-run-retry', () => run.retry(document.getElementById('first-run').dataset.mode));
   on('first-run-again', () => run.again(text('first-run-prompt')));
   on('first-run-copy-mcp', () => run.again(text('first-run-mcp'), 'mcp'));
   on('first-run-copy-commands', () => run.again(text('first-run-commands'), 'commands'));
@@ -419,6 +572,12 @@ export function startFirstRun(document = globalThis.document, {storage} = {}) {
   on('first-run-back', () => run.back());
   for (const id of ['first-run-skip', 'first-run-skip-wait']) on(id, () => run.skip());
   on('first-run-passkey', () => run.passkey());
+  // A prompt selected and copied by hand is copied all the same.
+  document.addEventListener('copy', () => {
+    const offer = document.getElementById('first-run-offer');
+    const selection = document.getSelection?.();
+    if (offer?.textContent && selection && !selection.isCollapsed && offer.contains(selection.anchorNode)) run.copiedByHand();
+  });
   pressEarly(document);
   return run;
 }

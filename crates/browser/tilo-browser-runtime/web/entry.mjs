@@ -320,8 +320,9 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   const {damaged = null, ...named} = route;
   route = named;
   const workspaces = listedWorkspaces({home: entry.home, stored: deps.storedWorkspaces?.() ?? []});
-  // The page hears which workspace it is getting into, under which entry, before admission.
-  deps.onScope?.({scope: route.target.scope, entry});
+  // The page hears which workspace it is getting into, under which entry,
+  // and how its links read once the runtime is in, before admission.
+  deps.onScope?.({scope: route.target.scope, entry, link: linked});
   const {peer, idle} = await admit({
     scope: route.target.scope, secrets, tickets: entry.tickets, runtime: await loaded,
     home: entry.home ? workspaceAt(workspaces, entry.home.host?.origin) ?? entry.home : null,

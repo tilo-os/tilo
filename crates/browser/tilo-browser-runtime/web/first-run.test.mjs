@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
-import {CONNECTED_MS, createFirstRun, FOLLOW_MS, manualCommands, MCP_URL, SEEN, setupFailure, setupPrompt, signInPrompt,
-  stepLines, timeLeft} from './first-run.mjs';
+import {codeWait, CONNECTED_MS, createFirstRun, FOLLOW_MS, MAKE_MS, manualCommands, MCP_URL, OFFER_MS, PASSKEY_WAIT_MS, RENEW_MS,
+  SEEN, setupFailure, setupPrompt, signInPrompt, stepLines, timeLeft} from './first-run.mjs';
 
 const here = name => new URL(name, import.meta.url);
 const CODE = 'K7Q-MX2P';
+const NEXT = 'R3T-WX9Z';
 
 /** A view that records what it was told, in order. */
 function fakeView() {
@@ -16,25 +17,46 @@ function fakeView() {
 }
 
 /** A code the host made, whose `follow()` answers what `polled` holds now. */
-function fakeCode({expiresAt = 600_000} = {}) {
-  const code = {code: CODE, expiresAt, polled: {resolved: false, expired: false, steps: []}, asked: 0, signedIn: []};
-  code.follow = async () => { code.asked += 1; return structuredClone(code.polled); };
-  code.signIn = async claimed => { code.signedIn.push(claimed); };
-  return code;
+function fakeCode({code = CODE, expiresAt = 600_000} = {}) {
+  const made = {code, expiresAt, polled: {resolved: false, expired: false, steps: []}, asked: 0, signedIn: []};
+  made.follow = async () => { made.asked += 1; return structuredClone(made.polled); };
+  made.signIn = async claimed => { made.signedIn.push(claimed); };
+  return made;
+}
+
+/** The host's codes, one after another: `next()` makes the next of `codes`
+ * (fresh ones after), and counts how often it was asked. */
+function maker(...codes) {
+  const made = [];
+  const make = async () => {
+    const next = codes[made.length] ?? fakeCode({code: `Z${made.length}Z-AAAA`});
+    made.push(next);
+    return next;
+  };
+  return {make, made};
 }
 
 function fixture({copy, site} = {}) {
   const {view, said, names, last} = fakeView();
   const stored = new Map();
   const copied = [];
-  const state = {clock: 0, ticks: null, every: null, laters: []};
-  const run = createFirstRun({view, site, clipboard: {copy: copy ?? (async text => { copied.push(await text); })},
+  const state = {clock: 0, ticks: null, every: null, timers: new Map(), id: 0, reloads: 0};
+  const run = createFirstRun({view, site,
+    // The clipboard takes the text at once, as `writeText` does inside the click.
+    clipboard: {copy: copy ?? (text => { copied.push(text); return Promise.resolve(); })},
     storage: {setItem: (key, value) => stored.set(key, value)},
     now: () => state.clock, every: (tick, ms) => { state.ticks = tick; state.every = ms; return () => { state.ticks = null; }; },
-    later: (run, ms) => state.laters.push([run, ms])});
+    later: (run, ms) => { const id = ++state.id; state.timers.set(id, {run, ms}); return id; },
+    clear: id => state.timers.delete(id),
+    reload: () => { state.reloads += 1; }});
   // One follow round: the tick, and the host's answer.
   const tick = async () => { state.ticks?.(); await settle(); };
-  return {run, said, names, last, stored, state, copied, tick};
+  // Run the timers set for `ms`.
+  const fire = async ms => {
+    for (const [id, timer] of [...state.timers]) if (timer.ms === ms) { state.timers.delete(id); timer.run(); }
+    await settle();
+  };
+  return {run, said, names, last, stored, state, copied, tick, fire};
 }
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
@@ -73,47 +95,161 @@ test('each step reads in plain words: done ones checked, the one under way last'
     ['Claude Code on build-box vouched for you', 'Signing this tab in…']);
 });
 
-test('a click before the page can make codes copies once it can, then counts down and follows the code', async () => {
-  const {run, names, last, state, copied, tick} = fixture();
+test('the prompt is on the screen before any click: the page makes its code ahead', async () => {
+  const {run, last, copied} = fixture();
+  assert.deepEqual(last('offer'), ['offer', 'setup', {note: codeWait()}], 'until then the screen says what it waits for');
+  run.offerSetup(maker(fakeCode()).make);
+  await settle();
+  assert.deepEqual(last('offer'), ['offer', 'setup', {text: setupPrompt(CODE), code: CODE}]);
+  assert.deepEqual(copied, [], 'nothing is copied before the person asks');
+});
+
+test('the click copies exactly the prompt shown, inside the click, and only then says it copied', async () => {
+  const {run, last, names, copied, state} = fixture();
+  const codes = maker(fakeCode(), fakeCode({code: NEXT}));
+  run.offerSetup(codes.make);
+  await settle();
+  const [, , {text: shown}] = last('offer');
   const done = run.copy();
-  assert.deepEqual(names(), ['waiting'], 'the wait shows at once');
-  await settle();
-  assert.deepEqual(copied, [], 'nothing is copied before there is a code');
-  const code = fakeCode();
-  run.offerSetup(async () => code);
+  assert.deepEqual(copied, [shown], 'written at once, in the click, with nothing awaited first');
+  assert.equal(names().includes('waiting'), false, 'no claim before the clipboard answered');
   await done;
-  await settle();
-  assert.deepEqual(copied, [setupPrompt(CODE)]);
-  assert.deepEqual(last('prompt'), ['prompt', setupPrompt(CODE), {copied: true}]);
+  assert.deepEqual(last('waiting'), ['waiting', 'setup', {text: shown, copied: true}]);
   assert.deepEqual(last('steps')[1], [{text: 'Your agent is installing Tilo…'}]);
   assert.deepEqual(last('left'), ['left', '10:00']);
-  assert.equal(state.every, 1000, 'followed about once a second');
-  assert.equal(FOLLOW_MS, 1000);
-  assert.ok(code.asked >= 1, 'the host is asked where the code is');
+  assert.equal(state.every, FOLLOW_MS, 'followed about once a second');
+  assert.ok(codes.made[0].asked >= 1, 'the host is asked where the copied code is');
+  await settle();
+  assert.equal(codes.made.length, 2, 'a fresh code is made for another try');
+  assert.deepEqual(last('offer')[2].code, NEXT);
+});
+
+test('a click before the page has a code copies nothing and says what it waits for', async () => {
+  const {run, last, names, copied} = fixture({site: 'https://tilo.sh'});
+  assert.equal(await run.copy(), false);
+  assert.deepEqual(copied, []);
+  assert.deepEqual(last('notReady'), ['notReady', 'setup', 'Getting your code from tilo.sh…']);
+  assert.equal(names().includes('waiting'), false, 'the button stays where it is');
+  await run.signInWithAgent();
+  assert.deepEqual(last('notReady'), ['notReady', 'signIn', 'Getting your code from tilo.sh…']);
+});
+
+test('a code the host never makes ends in a stated reason with a retry, not a hang', async () => {
+  const {run, last, fire, copied} = fixture({site: 'https://tilo.sh'});
+  let asked = 0;
+  run.offerSetup(() => { asked += 1; return new Promise(() => {}); });
+  await settle();
+  assert.deepEqual(last('offer'), ['offer', 'setup', {note: 'Getting your code from tilo.sh…'}]);
+  await fire(MAKE_MS);
+  assert.deepEqual(last('offer'), ['offer', 'setup', {problem: 'Couldn’t reach tilo.sh. Check your connection, then try again.'}]);
+  assert.equal(await run.copy(), false, 'a click copies nothing');
+  assert.deepEqual(copied, []);
+  assert.equal(asked, 2, 'and asks the host again');
+  await run.retry();
+  assert.equal(asked, 2, 'one ask at a time');
+  await fire(MAKE_MS);
+  void run.retry();
+  await settle();
+  assert.equal(asked, 3, 'retry asks again');
+});
+
+test('a host that refuses, or a page that never offers codes, is said, not waited on', async () => {
+  const refused = fixture();
+  refused.run.offerSetup(async () => { throw Object.assign(new Error('refused'), {code: 'refused'}); });
+  await settle();
+  await settle();
+  assert.deepEqual(refused.last('offer'), ['offer', 'setup', {problem: setupFailure({code: 'refused'})}]);
+  const silent = fixture();
+  await silent.fire(OFFER_MS);
+  const offered = kind => silent.said.findLast(([name, of]) => name === 'offer' && of === kind);
+  assert.deepEqual(offered('setup'), ['offer', 'setup', {problem: setupFailure({code: 'not-loaded'})}]);
+  assert.deepEqual(offered('signIn'), ['offer', 'signIn', {problem: setupFailure({code: 'not-loaded'})}]);
+  assert.match(setupFailure({code: 'not-loaded'}), /Reload/);
+  await silent.run.retry();
+  assert.equal(silent.state.reloads, 1, 'trying again loads the page again');
+  const gone = fixture();
+  gone.run.unavailable({code: 'refused'});
+  assert.deepEqual(gone.last('offer'), ['offer', 'signIn', {problem: setupFailure({code: 'refused'})}]);
+  await gone.run.signInWithAgent();
+  assert.deepEqual(gone.last('notReady'), ['notReady', 'signIn', setupFailure({code: 'refused'})]);
+  assert.equal(setupFailure({code: 'not-let-in'}), 'This tab isn’t let in yet. Try again in a moment.');
+});
+
+test('a clipboard that refuses claims no copy: the prompt stays, to copy by hand', async () => {
+  const {run, last, names} = fixture({copy: async () => { throw new Error('denied'); }});
+  run.offerSetup(maker(fakeCode()).make);
+  await settle();
+  assert.equal(await run.copy(), false);
+  assert.deepEqual(last('waiting'), ['waiting', 'setup', {text: setupPrompt(CODE), copied: false}]);
+  assert.deepEqual(last('problem'), ['problem', setupFailure({code: 'copy-failed'})]);
+  assert.equal(names().includes('copied'), false, 'nothing says it copied');
+  const thrown = fixture({copy: () => { throw new Error('no clipboard'); }});
+  thrown.run.offerSetup(maker(fakeCode()).make);
+  await settle();
+  assert.equal(await thrown.run.copy(), false);
+  assert.deepEqual(thrown.last('waiting')[2], {text: setupPrompt(CODE), copied: false});
+  await thrown.run.again('text');
+  assert.deepEqual(thrown.last('copied'), ['copied', false, 'prompt']);
+});
+
+test('a prompt copied by hand is followed like one copied with the button', async () => {
+  const {run, last, copied} = fixture();
+  run.copiedByHand();
+  assert.equal(last('waiting'), undefined, 'nothing shown, nothing copied');
+  run.offerSetup(maker(fakeCode()).make);
+  await settle();
+  run.copiedByHand();
+  assert.deepEqual(last('waiting'), ['waiting', 'setup', {text: setupPrompt(CODE), copied: true}]);
+  assert.deepEqual(copied, []);
+});
+
+test('a ready code is renewed shortly before it expires, the old one shown until then', async () => {
+  const {run, last, fire, names} = fixture();
+  const codes = maker(fakeCode(), fakeCode({code: NEXT, expiresAt: 1_200_000}));
+  run.offerSetup(codes.make);
+  await settle();
+  const offers = names().filter(name => name === 'offer').length;
+  await fire(600_000 - RENEW_MS);
+  assert.equal(codes.made.length, 2);
+  assert.equal(names().filter(name => name === 'offer').length, offers + 1, 'no wait shown in between');
+  assert.deepEqual(last('offer'), ['offer', 'setup', {text: setupPrompt(NEXT), code: NEXT}]);
+});
+
+test('a copied code that expires says so, and the retry copies the fresh one at once', async () => {
+  const {run, names, last, state, tick, copied} = fixture();
+  run.offerSetup(maker(fakeCode(), fakeCode({code: NEXT, expiresAt: 1_200_000})).make);
+  await settle();
+  await run.copy();
+  await settle();
   state.clock = 18_500;
   await tick();
   assert.deepEqual(last('left'), ['left', '9:42']);
   state.clock = 600_000;
   await tick();
-  assert.deepEqual(names().at(-1), 'expired');
+  assert.equal(names().at(-1), 'expired');
   assert.equal(state.ticks, null, 'an expired code is no longer followed');
+  await run.retry('setup');
+  assert.deepEqual(copied, [setupPrompt(CODE), setupPrompt(NEXT)]);
+  assert.deepEqual(last('waiting')[2], {text: setupPrompt(NEXT), copied: true});
 });
 
 test('the host saying the code expired shows it expired too', async () => {
   const {run, names, state, tick} = fixture();
   const code = fakeCode();
-  run.offerSetup(async () => code);
+  run.offerSetup(maker(code).make);
+  await settle();
   await run.copy();
   code.polled.expired = true;
   await tick();
-  assert.equal(names().at(-1), 'expired');
+  assert.deepEqual(names().filter(name => ['expired', 'steps', 'left', 'connected'].includes(name)).at(-1), 'expired');
   assert.equal(state.ticks, null);
 });
 
 test('each step the agent reports shows live, then the screen leaves for the workspace, remembered', async () => {
   const {run, names, last, stored, state, tick} = fixture();
   const code = fakeCode();
-  run.offerSetup(async () => code);
+  run.offerSetup(maker(code).make);
+  await settle();
   let opened = 0;
   run.whenDone(() => { opened += 1; });
   await run.copy();
@@ -131,19 +267,20 @@ test('each step the agent reports shows live, then the screen leaves for the wor
   await tick();
   assert.deepEqual(last('connected'), ['connected', {mode: 'setup', agent: 'Claude Code'}]);
   assert.equal(state.ticks, null);
-  const [[leave, ms]] = state.laters;
-  assert.equal(ms, CONNECTED_MS);
-  leave();
+  const leave = [...state.timers.values()].find(timer => timer.ms === CONNECTED_MS);
+  leave.run();
   assert.equal(names().at(-1), 'close');
   assert.equal(opened, 1, 'the person’s own workspace opens');
   assert.equal(stored.get(SEEN), '1', 'the first screen is not shown again in this browser');
   assert.ok(run.closed);
+  assert.equal([...state.timers.values()].some(timer => timer.ms !== CONNECTED_MS), false, 'no renewal outlives the screen');
 });
 
 test('a failure the computer reports is said, and the tab keeps following', async () => {
   const {run, last, state, tick} = fixture();
   const code = fakeCode();
-  run.offerSetup(async () => code);
+  run.offerSetup(maker(code).make);
+  await settle();
   await run.copy();
   Object.assign(code.polled, {resolved: true, steps: ['resolved', 'failed'], detail: 'Claude Code is not on this computer.'});
   await tick();
@@ -151,31 +288,14 @@ test('a failure the computer reports is said, and the tab keeps following', asyn
   assert.ok(state.ticks, 'still followed: the agent may try again');
 });
 
-test('a clipboard that refuses still shows the prompt, to copy by hand', async () => {
-  const {run, last} = fixture({copy: async () => { throw new Error('denied'); }});
-  run.offerSetup(async () => fakeCode());
-  await run.copy();
-  assert.deepEqual(last('prompt'), ['prompt', setupPrompt(CODE), {copied: false}]);
-  assert.deepEqual(last('problem'), ['problem', setupFailure({code: 'copy-failed'})]);
-});
-
-test('a page that cannot make codes says so instead of waiting', async () => {
-  const {run, said} = fixture({copy: async text => { await text; }});
-  const done = run.copy();
-  run.unavailable({code: 'refused'});
-  await done;
-  assert.deepEqual(said.at(-1), ['failed', setupFailure({code: 'refused'}), 'setup']);
-  await run.signInWithAgent();
-  assert.deepEqual(said.at(-1), ['failed', setupFailure({code: 'refused'}), 'sign-in']);
-});
-
 test('returning: the agent claims the code, the tab asks to be that person, and opens their workspaces', async () => {
   const {run, last, names, copied, state, tick} = fixture();
   const code = fakeCode();
-  run.offerAgentSignIn(async () => code);
+  run.offerAgentSignIn(maker(code).make);
+  await settle();
   await run.signInWithAgent();
   assert.deepEqual(copied, [signInPrompt(CODE)]);
-  assert.deepEqual(last('waiting'), ['waiting', 'sign-in']);
+  assert.deepEqual(last('waiting'), ['waiting', 'sign-in', {text: signInPrompt(CODE), copied: true}]);
   const claimed = {user: 'ab'.repeat(32), invite: 'cd'.repeat(16), by: 'Claude Code on build-box'};
   Object.assign(code.polled, {resolved: true, steps: ['resolved'], claimed});
   await tick();
@@ -186,28 +306,30 @@ test('returning: the agent claims the code, the tab asks to be that person, and 
   assert.equal(code.signedIn.length, 1);
   let opened = 0;
   run.whenDone(() => { opened += 1; });
-  state.laters[0][0]();
+  [...state.timers.values()].find(timer => timer.ms === CONNECTED_MS).run();
   assert.equal(opened, 1);
   assert.equal(names().at(-1), 'close');
 });
 
-test('returning: a sign-in the page could not finish says so', async () => {
-  const {run, said, tick} = fixture();
+test('returning: a sign-in the page could not finish says why', async () => {
+  const {run, last, tick} = fixture();
   const code = fakeCode();
-  code.signIn = async () => { throw Object.assign(new Error('no'), {code: 'not-a-device'}); };
-  run.offerAgentSignIn(async () => code);
+  code.signIn = async () => { throw Object.assign(new Error('no'), {code: 'not-let-in'}); };
+  run.offerAgentSignIn(maker(code).make);
+  await settle();
   await run.signInWithAgent();
   Object.assign(code.polled, {resolved: true, claimed: {user: 'ab', invite: 'cd', by: 'x'}});
   await tick();
   await settle();
-  assert.deepEqual(said.at(-1), ['failed', setupFailure({code: 'not-a-device'}), 'sign-in']);
+  assert.deepEqual(last('failed'), ['failed', 'This tab isn’t let in yet. Try again in a moment.', 'sign-in']);
 });
 
-test('set up manually shows the MCP server and the commands with a fresh code, and follows it', async () => {
+test('set up manually shows the MCP server and the commands with the code shown, and follows it', async () => {
   const {run, last, names, copied, tick} = fixture();
   const code = fakeCode();
-  run.offerSetup(async () => code);
-  await run.manual();
+  run.offerSetup(maker(code).make);
+  await settle();
+  run.manual();
   assert.deepEqual(last('manual'), ['manual', true]);
   assert.deepEqual(last('commands'), ['commands', manualCommands(CODE), MCP_URL]);
   assert.deepEqual(copied, [], 'nothing is copied until asked');
@@ -220,38 +342,50 @@ test('set up manually shows the MCP server and the commands with a fresh code, a
   assert.equal(names().includes('steps'), true);
   // Closing the panel stops following its code.
   const other = fixture();
-  other.run.offerSetup(async () => fakeCode());
-  await other.run.manual();
+  other.run.offerSetup(maker(fakeCode()).make);
+  await settle();
+  other.run.manual();
   other.run.manual();
   assert.deepEqual(other.last('manual'), ['manual', false]);
   assert.equal(other.state.ticks, null);
+  // Without a code yet the panel says what it waits for.
+  const early = fixture({site: 'https://tilo.sh'});
+  early.run.manual();
+  assert.deepEqual(early.last('commands'), ['commands', null, MCP_URL, 'Getting your code from tilo.sh…']);
 });
 
-test('back returns to the start and forgets the code under way', async () => {
-  const {run, names, state} = fixture();
-  run.offerSetup(async () => fakeCode());
+test('back returns to the start, with the next prompt shown, and forgets the code under way', async () => {
+  const {run, names, last, state} = fixture();
+  run.offerSetup(maker(fakeCode(), fakeCode({code: NEXT})).make);
+  await settle();
   await run.copy();
+  await settle();
   run.back();
-  assert.equal(names().at(-1), 'start');
+  assert.deepEqual(names().slice(-2), ['start', 'offer']);
+  assert.deepEqual(last('offer')[2].code, NEXT);
   assert.equal(state.ticks, null);
 });
 
-test('a passkey clicked before the page can ask waits for it, busy, then asks', async () => {
+test('a passkey clicked before the page can ask waits for it, busy, then asks; a page that never can says so', async () => {
   const {run, names, stored} = fixture();
   let asked = 0;
   const pressed = run.passkey();
-  assert.deepEqual(names(), ['signingIn'], 'busy at once, not dead');
+  assert.deepEqual(names().slice(-1), ['signingIn'], 'busy at once, not dead');
   await settle();
   assert.equal(asked, 0);
   run.offerSignIn(async () => { asked += 1; });
   await pressed;
   assert.equal(asked, 1);
-  assert.deepEqual(names(), ['signingIn', 'signingIn']);
   await run.passkey();
   assert.equal(asked, 2);
   run.skip();
   assert.equal(names().at(-1), 'close');
   assert.equal(stored.get(SEEN), '1');
+  const never = fixture();
+  const waiting = never.run.passkey();
+  await never.fire(PASSKEY_WAIT_MS);
+  await waiting;
+  assert.deepEqual(never.names().slice(-2), ['signInFailed', 'signingIn'], 'the wait ends, said');
 });
 
 /** first-run.inline.js against a page at `href`, with `stored` keys and the
@@ -290,7 +424,7 @@ test('the desktop entry page inlines the first screen’s script unchanged, afte
   const at = html.indexOf(`<script>\n${script}</script>`);
   assert.ok(at > 0, 'index.html must inline first-run.inline.js unchanged');
   assert.ok(html.indexOf('__tiloLinkSecrets') < at, 'after the scrubber, whose secrets it reads');
-  for (const id of ['first-run', 'first-run-agent', 'first-run-skip', 'first-run-passkey', 'first-run-agent-sign-in', 'first-run-manual-toggle', 'first-run-mcp', 'first-run-commands', 'first-run-steps', 'first-run-prompt', 'first-run-status']) {
+  for (const id of ['first-run', 'first-run-agent', 'first-run-offer', 'first-run-offer-note', 'first-run-offer-retry', 'first-run-sign-in-note', 'first-run-skip', 'first-run-passkey', 'first-run-agent-sign-in', 'first-run-manual-toggle', 'first-run-mcp', 'first-run-commands', 'first-run-steps', 'first-run-prompt', 'first-run-status']) {
     assert.ok(html.includes(`id="${id}"`), `index.html has #${id}`);
   }
   assert.ok(html.includes('<script type="module" async src="./first-run.mjs"></script>'));

@@ -210,9 +210,17 @@ const person = tab => tab.evaluate(`JSON.stringify({
 
 // 1. Set up through the agent.
 const first = await visit('setup');
+// The prompt is on the screen before the click, made without waiting for the
+// workspace to let the tab in; the click copies exactly that text.
+const visited = Date.now();
+await until(first, `document.getElementById('first-run')?.dataset.setup === 'ready'`, 'the setup prompt shown on the first screen');
+report.promptShownMs = Date.now() - visited;
+report.promptBeforeAdmission = await first.evaluate(`document.documentElement.dataset.entry !== 'open'`);
+const shown = await first.evaluate(`document.getElementById('first-run-offer').textContent`);
 await click(first, 'first-run-agent');
-await until(first, `!!document.documentElement.dataset.firstRun`, 'the first screen answering the click on Set up');
+await until(first, `document.documentElement.dataset.firstRun === 'waiting'`, 'the first screen answering the click on Set up');
 const prompt = await copied(first, 'the setup prompt');
+if (prompt !== shown) await fail(`the click copied something else than the prompt shown: ${prompt} / ${shown}`);
 report.prompt = prompt;
 const setup = commandOf(prompt);
 if (!setup) await fail(`the prompt names no tilo login code: ${prompt}`);
@@ -289,8 +297,9 @@ if (/lounge/i.test(reloaded.title) || reloaded.title !== signedUp.title) {
 
 // 2. Back on a browser that keeps nothing: signed in through the agent.
 const second = await visit('returning');
+await until(second, `document.getElementById('first-run')?.dataset.signIn === 'ready'`, 'the sign-in prompt made');
 await click(second, 'first-run-agent-sign-in');
-await until(second, `!!document.documentElement.dataset.firstRun`, 'the first screen answering the click on Sign in with your agent');
+await until(second, `document.documentElement.dataset.firstRun === 'waiting'`, 'the first screen answering the click on Sign in with your agent');
 const again = await copied(second, 'the sign-in prompt');
 report.signInPrompt = again;
 const signIn = commandOf(again);

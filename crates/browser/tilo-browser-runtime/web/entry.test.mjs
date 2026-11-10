@@ -577,7 +577,8 @@ test('a returning person’s bare entry opens the chosen workspace through their
   };
   const shown = await boot({mode: 'desktop', window: page.window, deps});
   assert.deepEqual(connected.map(({origin, room}) => [origin, room]), [['https://acme.example', 'A']]);
-  assert.deepEqual(page.calls.scopes, [{scope: {kind: 'room', host: 'https://acme.example', room: 'A'}, entry: {base: 'https://tilo.example/', home}}]);
+  assert.deepEqual(page.calls.scopes.map(({link, ...seen}) => seen), [{scope: {kind: 'room', host: 'https://acme.example', room: 'A'}, entry: {base: 'https://tilo.example/', home}}]);
+  assert.equal(typeof (await page.calls.scopes[0].link).format, 'function', 'and how its links read, once the runtime is in');
   assert.deepEqual(shown.router.route.target.scope, {kind: 'room', host: 'https://acme.example', room: 'A'});
   shown.router.stop();
 });

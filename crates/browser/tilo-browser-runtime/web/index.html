@@ -354,7 +354,22 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     [data-mode=setup] .fr-for-sign-in, [data-mode=sign-in] .fr-for-setup { display: none; }
     .fr-well { display: flex; align-items: flex-start; box-sizing: border-box; width: 100%; margin: 0 0 24px; border: 1px solid var(--fr-line); border-radius: 12px; background: var(--fr-well); }
     .fr-well pre { flex: 1; min-width: 0; box-sizing: border-box; max-height: 168px; margin: 0; padding: 12px 4px 12px 16px; overflow: auto; font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--fr-ink); white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
-    .fr-well pre:empty::before { content: 'Preparing…'; color: var(--fr-faint); }
+    #first-run [hidden] { display: none !important; }
+    /* The prompt the primary button copies, there before the click; until
+       the page has its code, the well says what it waits for, or why there
+       is none, with a way to try again. */
+    .fr-start { align-self: stretch; }
+    .fr-offer { min-height: 66px; max-width: 520px; margin-bottom: 16px; }
+    #first-run-offer:empty, .fr-offer-note:empty { display: none; }
+    .fr-offer-note { flex: 1; margin: 0; padding: 12px 16px; font-size: 14px; color: var(--fr-faint); }
+    .fr-offer-note[data-problem=true] { color: var(--fr-problem); }
+    .fr-offer .fr-copy { margin: 6px; }
+    #first-run-sign-in-note { margin: 8px 0 0; font-size: 13px; color: var(--fr-muted); }
+    #first-run-sign-in-note:empty { display: none; }
+    #first-run-sign-in-note[data-problem=true] { color: var(--fr-problem); }
+    .fr-copied { display: none; margin: -12px 0 12px; font-size: 13px; color: var(--fr-on); }
+    #first-run[data-copied=true] .fr-copied { display: block; }
+    html[data-first-run=expired] #first-run .fr-copied, html[data-first-run=failed] #first-run .fr-copied { display: none; }
     .fr-well-bar { flex: none; padding: 6px; }
     [data-manual=true] .fr-wait .fr-well, [data-manual=true] .fr-wait .fr-lead { display: none; }
     #first-run-steps { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; font-size: 15px; }
@@ -401,9 +416,10 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
       <svg class="fr-mark" aria-hidden="true" viewBox="0 0 100 100" width="40" height="40"><path class="side" d="M10.98 31.85Q10.98 27.97 14.4 26.12L20.26 22.97Q24.84 20.51 24.84 25.71L24.84 74.29Q24.84 79.49 20.26 77.03L14.4 73.88Q10.98 72.03 10.98 68.15Z"/><path class="side" d="M89.02 31.85Q89.02 27.97 85.6 26.12L79.74 22.97Q75.16 20.51 75.16 25.71L75.16 74.29Q75.16 79.49 79.74 77.03L85.6 73.88Q89.02 72.03 89.02 68.15Z"/><rect class="core" x="29" y="16" width="42" height="68" rx="6"/></svg>
       <div class="fr-start">
         <h1 id="first-run-heading" tabindex="-1">Let your agent set up Tilo</h1>
-        <p class="fr-lead">Paste one line into Claude Code, Codex or any agent. It installs Tilo and signs in as you, and this tab becomes your workspace, with your agent in it.</p>
-        <button id="first-run-agent" class="fr-primary" type="button"><svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>Set up with your agent</button>
-        <p class="fr-caption">Copies the prompt. Its code works once, only for this tab.</p>
+        <p class="fr-lead">Paste this line into Claude Code, Codex or any agent. It installs Tilo and signs in as you, and this tab becomes your workspace, with your agent in it.</p>
+        <div class="fr-well fr-offer"><pre id="first-run-offer" aria-label="The prompt"></pre><p id="first-run-offer-note" class="fr-offer-note" data-problem="false">Getting your code…</p><button id="first-run-offer-retry" class="fr-copy" type="button" hidden>Try again</button></div>
+        <button id="first-run-agent" class="fr-primary" type="button"><svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>Copy prompt</button>
+        <p class="fr-caption">Its code works once, for 10 minutes, only for this tab.</p>
         <div class="fr-links"><button id="first-run-manual-toggle" class="fr-quiet" type="button" aria-expanded="false" aria-controls="first-run-manual">Set up manually</button><button id="first-run-skip" class="fr-quiet" type="button">Skip for now</button></div>
         <div id="first-run-manual" class="fr-manual">
           <p class="fr-label">Tilo’s MCP server, for any agent</p>
@@ -415,9 +431,10 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
       </div>
       <div class="fr-wait">
         <h1 id="first-run-heading-wait" tabindex="-1">Paste it into your agent</h1>
-        <p class="fr-lead fr-for-setup">The prompt is on your clipboard. Paste it into Claude Code, Codex or any agent; this tab follows along.</p>
-        <p class="fr-lead fr-for-sign-in">The prompt is on your clipboard. Paste it into your agent on a computer where you use Tilo, and it signs this tab in as you.</p>
+        <p class="fr-lead fr-for-setup">Paste the prompt into Claude Code, Codex or any agent; this tab follows along.</p>
+        <p class="fr-lead fr-for-sign-in">Paste the prompt into your agent on a computer where you use Tilo, and it signs this tab in as you.</p>
         <div class="fr-well"><pre id="first-run-prompt" aria-label="The prompt"></pre><div class="fr-well-bar"><button id="first-run-again" class="fr-copy" type="button">Copy</button></div></div>
+        <p class="fr-copied">Copied to your clipboard.</p>
         <p id="first-run-problem"></p>
         <ol id="first-run-steps" aria-label="What your agent did"></ol>
         <p id="first-run-left"></p>
@@ -431,6 +448,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
       <p class="fr-eyebrow">Returning?</p>
       <h2 id="first-run-sign-in">Sign in</h2>
       <button id="first-run-agent-sign-in" class="fr-secondary" type="button">Sign in with your agent</button>
+      <p id="first-run-sign-in-note" data-problem="false"></p>
       <button id="first-run-passkey" class="fr-secondary" type="button" aria-busy="false"><span class="fr-spinner fr-busy" aria-hidden="true"></span>Use a passkey</button>
       <p class="fr-note">Or open a pairing link from a device where you’re signed in.</p>
     </aside>

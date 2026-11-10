@@ -1,9 +1,10 @@
 // The entry page's first screen (web/first-run.mjs) in headless Chrome, at a
 // phone's width and a laptop's, light and dark: it shows at the first paint
 // with no runtime loaded, fits without sideways scrolling, its primary
-// button is in view and copies inside the click, the agent's steps show
-// live as a fake host reports them, and the returning and manual flows
-// read. Screenshots of each state go to SHOTS_DIR.
+// button is in view, the prompt shows before the click and the click copies
+// exactly that text, a code the host does not make is said with a way to try
+// again, the agent's steps show live as a fake host reports them, and the
+// returning and manual flows read. Screenshots of each state go to SHOTS_DIR.
 //
 // usage: node first-screen.mjs [WEB_DIR]
 //   WEB_DIR  the page's sources (default: ../web); no bundle is needed, since
@@ -53,12 +54,19 @@ for (const [width, height, mobile] of [[390, 844, true], [1280, 800, false]]) {
     await sleep(300);
     if (shots) writeFileSync(`${shots}/first-screen-${name}.png`, await tab.screenshot());
 
-    // The page offers setup as it would once it is in; the click is a real
-    // one, so the clipboard takes the prompt inside it.
+    // The page offers setup as it would once it has its person; the prompt
+    // shows before any click, and the click is a real one, so the clipboard
+    // takes the prompt inside it.
     await tab.evaluate(`import('./first-run.mjs').then(({firstRun}) => {
       firstRun.offerSetup(async () => ${FAKE_CODE});
       firstRun.offerAgentSignIn(async () => ${FAKE_CODE});
     })`);
+    await tab.waitFor(`document.getElementById('first-run').dataset.setup === 'ready'`, {timeout: 10000});
+    const shown = await tab.evaluate(`document.getElementById('first-run-offer').textContent`);
+    check(shown.includes('tilo login K7Q-MX2P'), `${name}: the prompt shows before the click`);
+    check(!(await tab.evaluate(`document.getElementById('first-run').scrollWidth > innerWidth`)), `${name}: the shown prompt wraps rather than scrolling sideways`);
+    await sleep(300);
+    if (shots) writeFileSync(`${shots}/first-screen-${name}-prompt.png`, await tab.screenshot());
     const click = async id => {
       const at = await tab.evaluate(`(() => { const r = document.getElementById('${id}').getBoundingClientRect(); return {x: r.x + r.width / 2, y: r.y + r.height / 2}; })()`);
       for (const type of ['mousePressed', 'mouseReleased']) {
@@ -78,9 +86,13 @@ for (const [width, height, mobile] of [[390, 844, true], [1280, 800, false]]) {
     await click('first-run-manual-toggle');
 
     await click('first-run-agent');
-    await tab.waitFor(`document.getElementById('first-run-prompt').textContent.includes('tilo login')`, {timeout: 10000});
+    await tab.waitFor(`document.documentElement.dataset.firstRun === 'waiting'`, {timeout: 10000});
     const copied = await tab.evaluate(`Promise.race([navigator.clipboard.readText().catch(() => null), new Promise(r => setTimeout(() => r(null), 3000))])`);
-    check(copied === null || copied.includes('tilo login K7Q-MX2P'), `${name}: the click copied the prompt with the code${copied === null ? ' (clipboard not readable here)' : ''}`);
+    check(copied === null || copied === shown, `${name}: the click copied exactly the prompt shown${copied === null ? ' (clipboard not readable here)' : ''}`);
+    check(await tab.evaluate(`document.getElementById('first-run-prompt').textContent`) === shown, `${name}: the prompt stays on the screen`);
+    if (copied !== null) {
+      check(await tab.evaluate(`getComputedStyle(document.querySelector('.fr-copied')).display !== 'none'`), `${name}: the screen says it copied`);
+    }
     const waiting = await tab.evaluate(`({state: document.documentElement.dataset.firstRun, sideways: document.getElementById('first-run').scrollWidth > innerWidth,
       left: document.getElementById('first-run-left').textContent, step: document.getElementById('first-run-steps').textContent})`);
     check(waiting.state === 'waiting', `${name}: the screen waits for the agent`);
@@ -111,6 +123,7 @@ for (const [width, height, mobile] of [[390, 844, true], [1280, 800, false]]) {
     await again.navigate(`${server.url}/`);
     await again.waitFor(`getComputedStyle(document.getElementById('first-run')).display !== 'none'`, {timeout: 20000});
     await again.evaluate(`import('./first-run.mjs').then(({firstRun}) => { firstRun.offerAgentSignIn(async () => ${FAKE_CODE}); })`);
+    await again.waitFor(`document.getElementById('first-run').dataset.signIn === 'ready'`, {timeout: 10000});
     const button = await again.evaluate(`(() => { const r = document.getElementById('first-run-agent-sign-in').getBoundingClientRect(); return {x: r.x + r.width / 2, y: r.y + r.height / 2}; })()`);
     for (const type of ['mousePressed', 'mouseReleased']) {
       await again.send('Input.dispatchMouseEvent', {type, x: button.x, y: button.y, button: 'left', clickCount: 1});
@@ -123,6 +136,27 @@ for (const [width, height, mobile] of [[390, 844, true], [1280, 800, false]]) {
     await sleep(300);
     if (shots) writeFileSync(`${shots}/first-screen-${name}-returning.png`, await again.screenshot());
     await again.close();
+
+    // A host that does not answer: the screen says so, with a way to try
+    // again, and the button copies nothing.
+    const silent = await browser.context();
+    const stuck = await browser.tab({context: silent, firstRun: true});
+    await stuck.send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 2, mobile});
+    await stuck.send('Emulation.setEmulatedMedia', {features: [{name: 'prefers-color-scheme', value: scheme}]});
+    await stuck.navigate(`${server.url}/`);
+    await stuck.waitFor(`getComputedStyle(document.getElementById('first-run')).display !== 'none'`, {timeout: 20000});
+    await stuck.evaluate(`import('./first-run.mjs').then(({firstRun}) => {
+      firstRun.offerSetup(async () => { throw Object.assign(new TypeError('Failed to fetch'), {code: 'unreachable'}); });
+    })`);
+    await stuck.waitFor(`document.getElementById('first-run').dataset.setup === 'failed'`, {timeout: 10000});
+    const said = await stuck.evaluate(`({note: document.getElementById('first-run-offer-note').textContent,
+      retry: !document.getElementById('first-run-offer-retry').hidden})`);
+    check(/^Couldn’t reach /.test(said.note), `${name}: a host that does not answer is said (${said.note})`);
+    check(said.retry, `${name}: with a way to try again`);
+    check(!(await stuck.evaluate(`document.body.textContent.includes('Preparing')`)), `${name}: no placeholder stands in for a reason`);
+    await sleep(300);
+    if (shots) writeFileSync(`${shots}/first-screen-${name}-unreachable.png`, await stuck.screenshot());
+    await stuck.close();
   }
 }
 
