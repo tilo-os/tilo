@@ -95,7 +95,10 @@ fn group_close_fade() -> Duration {
 mod frame_spring;
 #[path = "window_group_held_bar.rs"]
 mod held_bar;
+#[path = "window_group_held_controls.rs"]
+mod held_controls;
 use frame_spring::FrameSpring;
+use held_controls::HeldControl;
 
 impl WindowGroup {
     /// Whether the slot width is still moving — the window is opening, or a
@@ -117,6 +120,7 @@ impl WindowGroup {
         self.rect = self.rect + shift;
         self.bar.offset_layout(dx);
         self.search.offset_layout(dx);
+        self.offset_held_controls(dx);
         for (_, host) in &mut self.hosts {
             host.offset_layout(dx);
         }
@@ -174,6 +178,10 @@ pub struct WindowGroup {
     /// The window's furniture in that row: its close/restore controls, its search and its
     /// new-tab door at the row's trailing end, as the bar shows them.
     held: crate::widget::window_header::RowFurniture,
+    /// The furniture of that row as the window's own controls, where the keyboard reaches them in
+    /// the window's Tab order after the app's own header controls, and assistive technology reads
+    /// them. Only while a row holds the bar.
+    held_controls: [HeldControl; crate::widget::window_header::ROW_CONTROLS.len()],
     /// Which control of the held row's furniture the pointer is on and has pressed.
     held_hover: Option<WindowControl>,
     held_pressed: Option<WindowControl>,
@@ -436,6 +444,7 @@ impl WindowGroup {
             bar,
             held_bar: None,
             held: crate::widget::window_header::RowFurniture::default(),
+            held_controls: crate::widget::window_header::ROW_CONTROLS.map(HeldControl::new),
             held_hover: None,
             held_pressed: None,
             held_new_tab_hover: false,
@@ -552,8 +561,13 @@ impl WindowGroup {
     fn sync_host_keyboard(&mut self) {
         let active = self.bar.active_id();
         let focused = self.focused || self.search_active;
+        // Tab travels the window's own content, and its furniture while the app's own header row is
+        // the window's bar: the window's row and the app's are one bar then, and both are what the
+        // keyboard walks.
+        let held = self.held_bar.is_some();
         for (id, host) in &mut self.hosts {
             host.set_focused(focused && *id == active);
+            host.set_row_holds_bar(held);
         }
     }
 
@@ -1825,26 +1839,6 @@ impl WindowGroup {
         self.hosts.len()
     }
 
-    /// The bar's row: the band the window draws above its content, or the row its app draws at
-    /// the window's top while it holds the bar. A person moves the window by either.
-    pub fn bar_rect(&self) -> Rect {
-        self.held_bar
-            .map_or_else(|| self.bar.bar_rect(), |slot| slot.row)
-    }
-
-    /// Whether `p` is in the part of the row that holds the bar which the window keeps for its own
-    /// furniture: a press there is the window's controls', never the window's to move by.
-    fn held_furniture_hit(&self, p: Point) -> bool {
-        self.held_bar.is_some() && self.held.trailing.contains(p)
-    }
-
-    /// Where the app's own header row stands while it holds the window's bar, and where the
-    /// window's controls go; `None` while the window draws its own bar.
-    #[cfg(test)]
-    pub fn held_bar_for_tests(&self) -> Option<crate::widget::WindowBarSlot> {
-        self.held_bar
-    }
-
     /// Whether the window draws a bar of its own above its content.
     #[cfg(test)]
     pub fn draws_its_bar_for_tests(&self) -> bool {
@@ -3086,16 +3080,12 @@ impl Widget for WindowGroup {
         (!self.is_closing()).then(|| self.active_tab_id())
     }
 
-    /// While the app's own header row holds the bar, the window's furniture in that row: its
-    /// new-tab door and its close/restore controls, after the row's own controls, as the bar's
-    /// are after its tabs. A window that draws its bar of its own publishes them there.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        self.held_bar?;
-        Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
-                .with_semantic_key(format!("window-furniture:{}", self.id))
-                .with_children(self.held.accessibility(self.maximized)),
-        )
+    /// While the app's own header row holds the bar, that row is the window's: Tab travels the
+    /// window, so the keyboard reaches the app's own row and the window's furniture in it, and never
+    /// the desktop's chrome around the window. A window that draws its own bar leaves travel to the
+    /// app, as it always has.
+    fn scopes_keyboard_focus(&self) -> bool {
+        self.focused && self.held_bar.is_some()
     }
 
     /// A node of the bar's, activated: a tab's pill switches to that tab, a
@@ -3213,6 +3203,7 @@ impl Widget for WindowGroup {
             host.set_panic_scope(*id);
             children.push(&**host);
         }
+        self.held_control_children(&mut children);
         // The window's search reads after what the window shows, as its other own functions do:
         // assistive technology reaches it once it has read the app, and its own row's controls.
         if self.shows_its_bar() {
@@ -3249,6 +3240,7 @@ impl Widget for WindowGroup {
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let active = self.bar.active_id();
         let band = self.navigation_bar_visible();
+        let held = self.held_bar.is_some();
         let shows = self.shows_its_bar();
         let mut children: Vec<&mut dyn Widget> = Vec::new();
         if band {
@@ -3257,6 +3249,11 @@ impl Widget for WindowGroup {
         if let Some((id, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) {
             host.set_panic_scope(*id);
             children.push(&mut **host);
+        }
+        if held {
+            for control in &mut self.held_controls {
+                children.push(control);
+            }
         }
         if shows {
             children.push(&mut self.search);
@@ -3298,8 +3295,10 @@ impl Widget for WindowGroup {
     }
     fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
         // A chip pressed from assistive technology arrives outside
-        // `handle_event`: run it here, before the frame lays out.
+        // `handle_event`: run it here, before the frame lays out. So does a
+        // press on the window's own furniture in the row its app draws.
         let pressed = self.drain_chip_presses();
+        let furniture = self.drain_held_controls();
         // The search follows the active tab, and the content under it: a
         // match count that follows edits, a list that follows its rows.
         self.follow_search_tab();
@@ -3324,7 +3323,7 @@ impl Widget for WindowGroup {
                 detached = true;
             }
         }
-        focused || detached || pressed || searched || bar
+        focused || detached || pressed || furniture || searched || bar
     }
     fn build_layout(
         &mut self,
@@ -3368,11 +3367,14 @@ impl Widget for WindowGroup {
         } else {
             taffy.leaf_node(Style::default())
         };
-        let nodes = bar_node.map_or_else(|| vec![tile_node], |bar| vec![bar, tile_node]);
+        let mut nodes = bar_node.map_or_else(|| vec![tile_node], |bar| vec![bar, tile_node]);
+        // The bar and the tile take the row's width ([`Self::style_children`]); the window's own
+        // furniture, which the window places, is no part of that.
         self.child_styles = nodes
             .iter()
             .map(|&node| (node, taffy.style(node).cloned().unwrap_or_default()))
             .collect();
+        self.build_held_controls(taffy, theme, node_map, &mut nodes);
         self.style_children(taffy);
         let style = self.own_style();
         let node = taffy.widget_node(style, &nodes, node_map, self);
@@ -3409,7 +3411,11 @@ impl Widget for WindowGroup {
             crate::widget::window_header::RowFurniture::default,
             crate::widget::window_header::RowFurniture::of,
         );
+        self.place_held_controls();
         self.place_search();
+        // Where Tab travels follows the bar the app's row may just have taken or given back, and the
+        // host reads it before any event reaches the window (see [`Self::scopes_keyboard_focus`]).
+        self.sync_host_keyboard();
     }
     fn draw(
         &mut self,
@@ -3602,6 +3608,11 @@ impl Widget for WindowGroup {
             *ctx.handled = true;
             return;
         }
+        // What is typed goes to whoever has the keyboard: on the window's own furniture in the row
+        // its app draws, Enter and Space activate the control it is on, as on any control.
+        if self.held_control_takes_keys(event) {
+            return;
+        }
         // The window's furniture in its app's row is the window's, not the app's under it.
         if self.held_row_input(event, ctx.scale_factor) {
             *ctx.handled = true;
@@ -3755,6 +3766,7 @@ impl Widget for WindowGroup {
         self.grip_dirty
             || self.held_dirty
             || edge_due
+            || self.held_control_needs_repaint()
             || (self.navigation_bar_visible()
                 && (self.bar.needs_redraw() || self.bar.needs_animation_frame()))
             || (self.shows_its_bar()
@@ -3766,6 +3778,7 @@ impl Widget for WindowGroup {
         self.grip_dirty = false;
         self.held_dirty = false;
         self.next_frame();
+        self.mark_held_controls_painted();
         // The bar, its search and the active host: what the group draws. A
         // host drawing a card over the desk draws that card here too, so what
         // it recorded is this frame's.

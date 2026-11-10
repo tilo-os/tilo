@@ -333,47 +333,22 @@ impl RowFurniture {
         }
     }
 
-    /// The furniture as assistive technology and automation reach it: the new-tab door, then the
-    /// window's maximize (or restore) and close, in the bar's order, each where the row draws it,
-    /// named and targeted as the bar's own — a window shows the same functions whether its row
-    /// holds the bar or stands as its slots. `maximized` says which way the maximize control acts.
-    pub(crate) fn accessibility(&self, maximized: bool) -> Vec<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
-        use crate::widget::tabs::{
-            NEW_TAB, NEW_TAB_TARGET, WINDOW_CLOSE_TARGET, WINDOW_MAXIMIZE_TARGET,
-        };
-        use crate::widget::window_controls::WindowControl;
-        let button = |name: String, target: &str, rect: Rect| {
-            AccessNode::new(Role::Button)
-                .with_name(name)
-                .with_action_target(target)
-                .with_bounds(rect)
-                .with_state(AccessState::new().focusable(true))
-        };
-        let mut out = Vec::new();
-        if self.new_tab.area() > 0.0 {
-            out.push(button(NEW_TAB.to_owned(), NEW_TAB_TARGET, self.new_tab));
-        }
-        for (control, rect) in self.controls.iter() {
-            let target = match control {
-                WindowControl::Maximize => WINDOW_MAXIMIZE_TARGET,
-                WindowControl::Close => WINDOW_CLOSE_TARGET,
-                // A Tilo window is a tab its group puts away: it has no minimized state, so the
-                // row's furniture never places one
-                // ([`WindowControls::lay_out`](crate::widget::window_controls::WindowControls::lay_out)).
-                WindowControl::Minimize => continue,
-            };
-            out.push(button(
-                crate::i18n::I18nManager::lookup_plain(control.name_key(maximized)),
-                target,
-                rect,
-            ));
-        }
-        out
+    /// Move the furniture `dx` across, as the window does while a retained strip draws it.
+    pub(crate) fn shift(&mut self, dx: f64) {
+        let shift = vello::kurbo::Vec2::new(dx, 0.0);
+        self.row = self.row + shift;
+        self.trailing = self.trailing + shift;
+        self.controls.pill = self.controls.pill + shift;
+        self.controls.minimize = self.controls.minimize + shift;
+        self.controls.maximize = self.controls.maximize + shift;
+        self.controls.close = self.controls.close + shift;
+        self.search = self.search + shift;
+        self.new_tab = self.new_tab + shift;
     }
 
     /// Paint the furniture over the app's own drawing: the window's controls and its new-tab door
-    /// in `state`, and the window's search on the row's ground.
+    /// in `state`, and the window's search on the row's ground. The control the keyboard is on
+    /// wears the toolkit's focus ring, so the row says where typing would go.
     pub(crate) fn paint(
         &self,
         scene: &mut Scene,
@@ -397,15 +372,80 @@ impl RowFurniture {
         }
         search.set_ground(theme.tokens.colors.surfaces.content);
         search.draw(scene, transform, text, theme, presence);
+        if let Some(control) = state.keyboard {
+            let rect = control.rect(self);
+            if rect.area() > 0.0 {
+                // The window's own controls stand on a pill, whose faces are round; the new-tab
+                // door is one control beside them, rounded as the toolkit rounds a control.
+                let radius = match control {
+                    RowControl::NewTab => f64::from(theme.tokens.radii.control),
+                    RowControl::Maximize | RowControl::Close => rect.height() / 2.0,
+                };
+                crate::widget::activation::paint_focus_ring(scene, transform, rect, radius, theme);
+            }
+        }
     }
 }
 
 /// What the pointer leaves of the window's furniture in a held row: which of its controls it is
-/// on or pressing, and whether it rests on the new-tab door.
+/// on or pressing, whether it rests on the new-tab door, and which control the keyboard is on.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct RowFurnitureState {
     pub controls: crate::widget::window_controls::ControlsState,
     pub new_tab_hovered: bool,
+    /// The control of the furniture with the keyboard.
+    pub keyboard: Option<RowControl>,
+}
+
+/// One control of the window's furniture in a header row that holds the bar: the window's new-tab
+/// door, its maximize (or restore) and its close, in the bar's order. Each is a widget of the
+/// window where the row draws it, so the keyboard reaches it in the window's Tab order after the
+/// row's own controls, and a screen reader reads it there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RowControl {
+    /// The window's own door: the shell decides what a new place holds.
+    NewTab,
+    Maximize,
+    Close,
+}
+
+/// The furniture in the order a person reaches it, as the bar's own controls.
+pub(crate) const ROW_CONTROLS: [RowControl; 3] =
+    [RowControl::NewTab, RowControl::Maximize, RowControl::Close];
+
+impl RowControl {
+    /// Where the row draws this control, or nothing where it had no room for it.
+    pub(crate) fn rect(self, furniture: &RowFurniture) -> Rect {
+        match self {
+            RowControl::NewTab => furniture.new_tab,
+            RowControl::Maximize => furniture.controls.maximize,
+            RowControl::Close => furniture.controls.close,
+        }
+    }
+
+    /// The target assistive technology and automation act on it by: the bar's own.
+    pub(crate) fn target(self) -> &'static str {
+        match self {
+            RowControl::NewTab => crate::widget::tabs::NEW_TAB_TARGET,
+            RowControl::Maximize => crate::widget::tabs::WINDOW_MAXIMIZE_TARGET,
+            RowControl::Close => crate::widget::tabs::WINDOW_CLOSE_TARGET,
+        }
+    }
+
+    /// What a person reads for it, named as the bar names the same function. `maximized` says which
+    /// way the maximize control acts.
+    pub(crate) fn name(self, maximized: bool) -> String {
+        use crate::widget::window_controls::WindowControl;
+        match self {
+            RowControl::NewTab => crate::widget::tabs::NEW_TAB.to_owned(),
+            RowControl::Maximize => {
+                crate::i18n::I18nManager::lookup_plain(WindowControl::Maximize.name_key(maximized))
+            }
+            RowControl::Close => {
+                crate::i18n::I18nManager::lookup_plain(WindowControl::Close.name_key(maximized))
+            }
+        }
+    }
 }
 
 /// The room a header row keeps at its trailing end for the window's furniture

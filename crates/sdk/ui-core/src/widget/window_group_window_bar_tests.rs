@@ -1403,6 +1403,201 @@ fn a_folded_leading_menu_lists_its_items_in_the_overflow_menu() {
     );
 }
 
+/// The stop the keyboard is on, as a screen reader names it.
+fn focused_stop(frame: &crate::headless::FrameHarness) -> Option<String> {
+    frame.focused_access_node().and_then(|node| node.name)
+}
+
+/// The pixels of the frame that wear the toolkit's focus ring inside `rect`, as a renderer draws
+/// the frame the layout encoded.
+#[cfg(not(target_arch = "wasm32"))]
+fn ring_pixels(frame: &crate::headless::FrameHarness, rect: Rect) -> usize {
+    let ring = Theme::dark().border_focus;
+    let wanted = [0, 1, 2]
+        .map(|channel| crate::num::i32_of_f64(f64::from(ring.components[channel]) * 255.0));
+    let width = u32_of(W);
+    let rgba = frame.render_rgba();
+    let area = rect.inflate(3.0, 3.0);
+    let mut found = 0;
+    for y in u32_of(area.y0)..u32_of(area.y1) {
+        for x in u32_of(area.x0)..u32_of(area.x1) {
+            let at = crate::num::usize_of_f64(f64::from(y * width + x) * 4.0);
+            let near = rgba.get(at..at + 3).is_some_and(|pixel: &[u8]| {
+                pixel
+                    .iter()
+                    .zip(wanted)
+                    .all(|(found, want)| (i32::from(*found) - want).abs() < 70)
+            });
+            found += usize::from(near);
+        }
+    }
+    found
+}
+
+/// The window's own furniture in a row holding the bar is part of the window's Tab order, after the
+/// app's own header controls: the keyboard reaches the new-tab door, then restore/maximize, then
+/// close, Shift+Tab goes back the same way, the control it is on wears the toolkit's focus ring, and
+/// Enter there does what a pointer press does.
+#[test]
+fn a_row_that_holds_the_bar_puts_the_furniture_in_the_windows_tab_order() {
+    let _settled = crate::motion::testing::settled();
+    let (mut frame, _window) = shell_window(holding_row_shell());
+    let names = [
+        crate::widget::tabs::NEW_TAB.to_owned(),
+        window_control_name("host-window-maximize"),
+        window_control_name("host-window-close"),
+    ];
+    // The order the keyboard walks: the app's own header controls, then the window's furniture.
+    let stops: Vec<Option<String>> = frame
+        .focus_access_nodes()
+        .into_iter()
+        .map(|node| node.name)
+        .collect();
+    let at = |name: &str| {
+        stops
+            .iter()
+            .position(|stop| stop.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("{name:?} is a stop of the window's Tab order: {stops:?}"))
+    };
+    let (new_tab, maximize, close) = (at(&names[0]), at(&names[1]), at(&names[2]));
+    assert_eq!(
+        (new_tab + 1, new_tab + 2),
+        (maximize, close),
+        "the new-tab door, then restore/maximize, then close: {stops:?}"
+    );
+    let own = stops
+        .get(new_tab.saturating_sub(1))
+        .and_then(Clone::clone)
+        .unwrap_or_else(|| panic!("a control of the app's own precedes the window's: {stops:?}"));
+    assert!(
+        new_tab >= 2,
+        "the app's own header controls come before the window's furniture: {stops:?}"
+    );
+    let close_rect = {
+        let mut g = frame.root_mut::<WindowGroup>();
+        let slot = g
+            .held_bar_for_tests()
+            .expect("the app's row is the window's bar");
+        // Tab travels the window then, not the app alone: the row it holds is the window's bar, and
+        // the window's furniture stands in it. The app's own tile leaves travel to the window.
+        g.set_focused(true);
+        assert!(
+            g.active_host().is_some_and(|host| host.focused),
+            "the app's own tile has the window's focus"
+        );
+        assert!(
+            g.active_host()
+                .is_some_and(|host| !Widget::scopes_keyboard_focus(host)),
+            "and lets the window carry the keyboard"
+        );
+        assert!(
+            Widget::scopes_keyboard_focus(&*g),
+            "the focused window whose row holds the bar carries the keyboard"
+        );
+        crate::widget::window_controls::WindowControls::lay_out(slot.controls).close
+    };
+
+    // Tab from the app's own last header control reaches them one by one.
+    let mut reached = false;
+    for _ in 0..stops.len() {
+        frame.key("Tab");
+        if focused_stop(&frame) == Some(own.clone()) {
+            reached = true;
+            break;
+        }
+    }
+    assert!(
+        reached,
+        "the app's own last header control takes the keyboard"
+    );
+    assert_eq!(
+        ring_pixels(&frame, close_rect),
+        0,
+        "the window's close wears no ring while the app's control has the keyboard"
+    );
+    for name in &names {
+        frame.key("Tab");
+        assert_eq!(
+            focused_stop(&frame).as_deref(),
+            Some(name.as_str()),
+            "Tab lands on {name:?}"
+        );
+    }
+    assert!(
+        ring_pixels(&frame, close_rect) > 0,
+        "the control the keyboard is on wears the toolkit's focus ring"
+    );
+    // Shift+Tab walks back the same way.
+    frame.set_modifiers(&["shift".into()]);
+    frame.key("Tab");
+    frame.set_modifiers(&[]);
+    assert_eq!(
+        focused_stop(&frame).as_deref(),
+        Some(names[1].as_str()),
+        "Shift+Tab goes back to restore/maximize"
+    );
+    frame.key("Tab");
+    assert_eq!(
+        focused_stop(&frame),
+        Some(names[2].clone()),
+        "and forward again to close"
+    );
+
+    // Enter does on the close what a pointer press there does.
+    frame.key("Enter");
+    assert!(
+        frame.root_mut::<WindowGroup>().has_closing_host(1),
+        "Enter on the focused close ends the window"
+    );
+}
+
+/// A window that draws its own bar keeps one stop for it: the bar's controls there are its own, not
+/// stops of the window's for each of them.
+#[test]
+fn a_window_with_its_own_band_keeps_one_bar_stop() {
+    let _settled = crate::motion::testing::settled();
+    let (mut frame, _window) = shell_window(
+        crate::widget::NavShell::new()
+            .content(Box::new(crate::widget::Text::new("Body")))
+            .content_header(
+                "Design",
+                vec![Box::new(
+                    crate::widget::Button::new("plain", "Plain").on_effect(|| {}),
+                )],
+            ),
+    );
+    {
+        let mut g = frame.root_mut::<WindowGroup>();
+        assert!(g.draws_its_bar_for_tests());
+        g.set_focused(true);
+        // Tab travels the app's own tile there: the bar is the window's, and the desktop's chrome is
+        // no part of what the person tabs around in the app.
+        assert!(
+            g.active_host().is_some_and(|host| host.focused),
+            "the app's own tile has the window's focus"
+        );
+        assert!(
+            g.active_host().is_some_and(Widget::scopes_keyboard_focus),
+            "and carries the keyboard"
+        );
+        assert!(
+            !Widget::scopes_keyboard_focus(&*g),
+            "the window does not: its bar is its own"
+        );
+    }
+    let stops: Vec<Option<String>> = frame
+        .focus_access_nodes()
+        .into_iter()
+        .map(|node| node.name)
+        .collect();
+    assert!(
+        !stops
+            .iter()
+            .any(|stop| stop.as_deref() == Some(crate::widget::tabs::NEW_TAB)),
+        "the band bar's door is no stop of its own: {stops:?}"
+    );
+}
+
 /// `v` as a logical pixel count: the fixtures' sizes are small.
 fn u32_of(v: f64) -> u32 {
     #[allow(

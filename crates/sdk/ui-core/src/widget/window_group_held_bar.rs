@@ -20,6 +20,26 @@ use vello::kurbo::{Affine, Point};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 impl WindowGroup {
+    /// The bar's row: the band the window draws above its content, or the row its app draws at
+    /// the window's top while it holds the bar. A person moves the window by either.
+    pub fn bar_rect(&self) -> vello::kurbo::Rect {
+        self.held_bar
+            .map_or_else(|| self.bar.bar_rect(), |slot| slot.row)
+    }
+
+    /// Whether `p` is in the part of the row that holds the bar which the window keeps for its own
+    /// furniture: a press there is the window's controls', never the window's to move by.
+    pub(super) fn held_furniture_hit(&self, p: Point) -> bool {
+        self.held_bar.is_some() && self.held.trailing.contains(p)
+    }
+
+    /// Where the app's own header row stands while it holds the window's bar, and where the
+    /// window's controls go; `None` while the window draws its own bar.
+    #[cfg(test)]
+    pub fn held_bar_for_tests(&self) -> Option<crate::widget::WindowBarSlot> {
+        self.held_bar
+    }
+
     /// Offer the window's bar to the active app's own header row, and read whether that row is the
     /// window's bar: a row that cannot stand as the bar's slots (it holds a catch-up, a popover)
     /// draws itself at the window's top, and the window keeps its furniture at the row's trailing
@@ -97,6 +117,10 @@ impl WindowGroup {
                 lifts,
             },
             new_tab_hovered: self.held_new_tab_hover,
+            keyboard: self
+                .held_controls
+                .iter()
+                .find_map(super::held_controls::HeldControl::keyboard),
         };
         self.held.paint(
             scene,
