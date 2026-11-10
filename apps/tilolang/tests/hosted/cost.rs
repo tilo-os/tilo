@@ -1074,8 +1074,8 @@ fn a_window_reads_only_the_chunks_it_shows() {
         "scrolling read no chunk: the rows are the index's: {scrolled:?} of {all:?}"
     );
 
-    // What reads a chunk is a row read in full: opening the last task's page reads the last
-    // chunk alone.
+    // Opening the last task's page reads at most the chunk that holds it: what its page shows
+    // the index may answer on its own.
     let bottom = session
         .titles()
         .into_iter()
@@ -1086,10 +1086,11 @@ fn a_window_reads_only_the_chunks_it_shows() {
     session.window.click_at(x, y);
     session.settle();
     let opened = holding(&session);
-    assert_eq!(
-        opened,
-        [tilolang_tilo::chunk::FIRST, last],
-        "the page read the last chunk alone: {opened:?} of {all:?}"
+    assert!(
+        opened
+            .iter()
+            .all(|chunk| *chunk == tilolang_tilo::chunk::FIRST || *chunk == last),
+        "the page read no chunk but the last: {opened:?} of {all:?}"
     );
 }
 

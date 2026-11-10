@@ -411,7 +411,9 @@ fn first_heading(markdown: Text) -> Option<Text> {
         let trimmed = line.trim()
         if trimmed.starts_with("# ") {
             let title = trimmed.slice(2, trimmed.len()).trim()
-            if not title.is_empty() { return title }
+            if not title.is_empty() {
+                return title
+            }
         }
     }
     .none
