@@ -1,4 +1,4 @@
-//! A narrow window shows one column at a time: the note a scenario opens is in front at rest, a
+//! A narrow window shows one column at a time: the thing a scenario opens is in front at rest, a
 //! row a person opens is pushed in, and the push settles within its motion and leaves the
 //! window asking for no frames.
 
@@ -24,6 +24,13 @@ fn staged() -> TestApp<TlApp> {
 fn driven() -> TestApp<TlApp> {
     crate::support::installed("notes");
     TestApp::<TlApp>::drive_at("a week of notes", NARROW).expect("the scenario stages")
+}
+
+/// Mail at a phone's width with its inbox staged, in a window a person drives: the scenario's
+/// conversation opens beside the list, which at this width stands in front of it.
+fn mail_driven() -> TestApp<TlApp> {
+    crate::support::installed("mail");
+    TestApp::<TlApp>::drive_at("a busy inbox", NARROW).expect("the scenario stages")
 }
 
 /// Whether the live window would take a frame: for an animation, queued work (a component's
@@ -92,7 +99,7 @@ fn assert_settles(app: &mut TestApp<TlApp>, within: ui::time::Duration, what: &s
 }
 
 /// The test id of the first control whose accessible name contains `name`.
-fn control_named(harness: &FrameHarness, name: &str) -> String {
+fn named_control(harness: &FrameHarness, name: &str) -> Option<String> {
     fn find(node: &ui::headless::InspectionNode, name: &str) -> Option<String> {
         let named = node
             .semantics
@@ -104,7 +111,7 @@ fn control_named(harness: &FrameHarness, name: &str) -> String {
         }
         node.children.iter().find_map(|child| find(child, name))
     }
-    find(&harness.inspection().root, name).unwrap_or_else(|| panic!("no control named {name}"))
+    find(&harness.inspection().root, name)
 }
 
 /// How long a push from rest takes to settle at the window's motion setting.
@@ -119,7 +126,7 @@ fn push_motion(harness: &FrameHarness) -> ui::time::Duration {
 #[test]
 fn the_note_a_scenario_opens_in_a_narrow_window_is_in_front_at_rest() {
     // Staged at one instant, as fast as a machine could stage it: the frame the capture takes
-    // is the one staging laid out, however little time passed since the note was opened.
+    // is the one staging laid out, however little time passed since the notebook opened.
     let at = now();
     let mut app = with_monotonic_time(at, staged);
     with_monotonic_time(at, || {
@@ -129,45 +136,60 @@ fn the_note_a_scenario_opens_in_a_narrow_window_is_in_front_at_rest() {
             asking(app.harness())
         );
     });
+    // The note's page is the column in front. The notebook's tree is the window's own screen,
+    // brought forward by its sidebar toggle rather than pushed over the page: there is no Back.
     let targets = app.harness().targets();
     assert!(
-        targets.contains_key("nav-shell-back"),
-        "the note is in front, with Back to the list"
+        targets.keys().any(|key| key.ends_with("/BlockEditor")),
+        "the note's page is in front"
     );
-    if let Some(list) = targets.get("tilolang.list") {
-        assert!(
-            list.x1 <= 0.0,
-            "no sliver of the list shows beside the note: {list:?}"
-        );
-    }
+    assert!(
+        !targets.contains_key("nav-shell-back"),
+        "the tree is a screen of the window's, not a page pressed over it"
+    );
     let motion = push_motion(app.harness());
     assert_settles(&mut app, motion, "the staged note");
 }
 
 #[test]
 fn a_push_in_a_narrow_window_settles_within_its_motion_and_then_asks_for_no_frames() {
-    let mut app = driven();
+    // A conversation opens beside the list, which at this width stands in front of it.
+    let mut app = mail_driven();
     let motion = push_motion(app.harness());
     assert!(!motion.is_zero(), "a push moves at this motion setting");
-    assert_settles(&mut app, motion, "the staged note");
-    // Back to the list, which settles too.
+    assert_settles(&mut app, motion, "the staged conversation");
     app.harness()
         .click_named("nav-shell-back")
         .expect("Back is shown");
     assert_settles(&mut app, motion, "back at the list");
-    // A person opens another note: one click on its row pushes it in, as selecting an entry of
-    // an overview does at this width.
-    let row = control_named(app.harness(), "Groceries");
-    app.harness().click_named(&row).expect("the row is shown");
     assert!(
-        app.harness().frame_schedule().needs_animation_frame,
-        "one click on the row slides the note in: {}",
+        named_control(app.harness(), "Reply").is_none(),
+        "the list stands in front"
+    );
+    // A person opens a conversation, which stands in front of the list.
+    let row = row_node(app.harness(), "Mill Lane Lettings");
+    app.harness()
+        .perform_a11y_action(row, &ui::a11y::Action::Activate)
+        .expect("the row opens what it names");
+    app.frame();
+    assert!(
+        !app.harness().frame_schedule().needs_animation_frame,
+        "a row activated from the keyboard lands at once: {}",
         asking(app.harness())
     );
-    assert_settles(&mut app, motion, "the pushed note");
+    assert_settles(&mut app, motion, "the opened conversation");
     assert!(
-        app.harness().targets().contains_key("nav-shell-back"),
-        "the opened note is in front"
+        named_control(app.harness(), "Reply").is_some(),
+        "the conversation stands in front of the list"
+    );
+    // And back once more, which settles too: the list stands in front again.
+    app.harness()
+        .click_named("nav-shell-back")
+        .expect("Back is shown");
+    assert_settles(&mut app, motion, "back at the list");
+    assert!(
+        named_control(app.harness(), "Reply").is_none(),
+        "the list is back in front"
     );
 }
 
@@ -199,22 +221,28 @@ fn row_node(harness: &FrameHarness, name: &str) -> ui::accesskit::NodeId {
 
 #[test]
 fn moving_through_the_list_with_the_keyboard_selects_and_enter_opens_at_once() {
-    let mut app = at_the_list();
-    let groceries = row_node(app.harness(), "Groceries");
+    let mut app = mail_driven();
+    let motion = push_motion(app.harness());
+    assert_settles(&mut app, motion, "the staged conversation");
     app.harness()
-        .perform_a11y_action(groceries, &ui::a11y::Action::Focus)
+        .click_named("nav-shell-back")
+        .expect("Back is shown");
+    assert_settles(&mut app, motion, "back at the list");
+    let row = row_node(app.harness(), "Mill Lane Lettings");
+    app.harness()
+        .perform_a11y_action(row, &ui::a11y::Action::Focus)
         .expect("the row takes focus");
     app.harness().key("ArrowDown");
     app.frame();
     assert!(
-        !app.harness().targets().contains_key("nav-shell-back"),
+        named_control(app.harness(), "Reply").is_none(),
         "moving through the list keeps it in front"
     );
     app.harness().key("Enter");
     app.frame();
     assert!(
-        app.harness().targets().contains_key("nav-shell-back"),
-        "Enter opens the note in front"
+        named_control(app.harness(), "Reply").is_some(),
+        "Enter opens the conversation in front"
     );
     assert!(
         !app.harness().frame_schedule().needs_animation_frame,

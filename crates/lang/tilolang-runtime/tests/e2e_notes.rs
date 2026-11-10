@@ -133,18 +133,6 @@ mod cases {
             .unwrap();
     }
 
-    /// The notes the sidebar's shelf over the tree draws: the pinned ones.
-    fn shelf(view: &ViewInstance) -> Vec<String> {
-        let trees = of_kind(view.tree(), "ui.TreeView");
-        if trees.len() < 2 {
-            return Vec::new();
-        }
-        of_kind(trees[0], "ui.TreeViewNode")
-            .iter()
-            .map(|node| text_prop(node, "label"))
-            .collect()
-    }
-
     #[test]
     fn a_new_note_is_untitled() {
         let n = Notes::new();
@@ -334,32 +322,25 @@ mod cases {
     /// The pinned notes stand in a shelf over the tree, and the shelf is there only while one
     /// is pinned: choosing one opens it beside the tree.
     #[test]
-    fn the_pinned_notes_stand_in_a_shelf_over_the_tree() {
+    fn a_pinned_note_says_so_in_its_row() {
         let n = Notes::new();
         let plan = n.titled("Q3 plan");
         let mut view = n.window();
-        assert!(
-            of_kind(view.tree(), "ui.TreeView").len() == 1,
-            "nothing is pinned: the sidebar is the tree"
-        );
+        let icon = |view: &ViewInstance| {
+            of_kind(the_tree(view), "ui.TreeViewRow")
+                .first()
+                .and_then(|row| row.props.get("icon").cloned())
+        };
+        assert_eq!(icon(&view), Some(Value::text("file-text")));
         n.call("pin", vec![Value::resource(&plan)]);
         view.poll_patches().unwrap();
         assert_eq!(
-            of_kind(view.tree(), "ui.TreeView").len(),
-            2,
-            "a pinned note stands in a shelf over the tree"
+            icon(&view),
+            Some(Value::text("pin")),
+            "a pinned note shows a pin in its row"
         );
-        assert_eq!(shelf(&view), ["Q3 plan"]);
-        assert!(
-            of_kind(view.tree(), "ui.Text")
-                .iter()
-                .any(|text| text_prop(text, "value") == "Pinned"),
-            "the shelf says what it holds, in the filter's own words"
-        );
-
-        n.call("pin", vec![Value::resource(&plan)]);
-        view.poll_patches().unwrap();
-        assert_eq!(of_kind(view.tree(), "ui.TreeView").len(), 1);
+        // One row per note: a window shows an item once, so its actions have one address.
+        assert_eq!(labels(&view), ["Q3 plan"]);
     }
 
     #[test]

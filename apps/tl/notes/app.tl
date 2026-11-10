@@ -295,7 +295,6 @@ view notebook(nb: Notebook) {
         place: (moved, parent, before) -> move_to(nb, moved, parent, before),
         add: add_child,
         path: n -> trail(nb.notes, n),
-        above: [Note.pinned],
         doc: note_page,
     ) { n ->
         // A note with no title yet is called what its type calls it, as in every list of it.
@@ -332,9 +331,9 @@ view add_child(n: Note) {
     }
 }
 
-/// A note's row in the tree.
+/// A note's row in the tree: a pin when the person pinned it.
 view note_node(n: Note) {
-    ui.TreeViewRow(icon: .file_text, tone: .secondary)
+    ui.TreeViewRow(icon: if n.pinned { .pin } else { .file_text }, tone: .secondary)
 }
 
 /// One note in a list: its title, the start of its body, and a pin when it is pinned.

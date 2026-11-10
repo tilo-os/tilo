@@ -28,8 +28,8 @@ fn a_notes_history_shows_who_changed_it_and_when_and_reads_anew_as_time_passes()
     app.invoke(None, None, &notebook, &new_note, &Map::new(), false)
         .unwrap();
     settle(&mut app);
-    let note = published_with(&mut app, &notebook, "Retitle…");
-    let retitle = action_id(&mut app, &note, "Retitle…");
+    let note = published_with(&mut app, &notebook, "Rename…");
+    let retitle = action_id(&mut app, &note, "Rename…");
     let titled = |title: &str| {
         let mut args = Map::new();
         args.insert("title".to_owned(), title.into());
@@ -56,7 +56,7 @@ fn a_notes_history_shows_who_changed_it_and_when_and_reads_anew_as_time_passes()
     // Opened, a moment after: the note's history, newest first, each entry saying when.
     let soon = after(done, 1);
     let shown = with_wall(soon, || {
-        let row = named(&mut app, "SwipeRow", "Weekly shop");
+        let row = named(&mut app, "ListRow", "Weekly shop");
         app.harness()
             .click_at(row[0] + row[2] / 4.0, row[1] + row[3] / 2.0);
         settle(&mut app);
