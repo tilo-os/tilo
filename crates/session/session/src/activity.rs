@@ -1077,6 +1077,92 @@ impl Activity {
     }
 }
 
+/// The most bytes of the line a device says of what its person is doing: what a presence status
+/// carries.
+const MAX_DOING_BYTES: usize = collab_types::presence::MAX_ACTIVITY_BYTES;
+
+/// What someone is doing now, read off the newest of their own steps (`actions`, oldest first, as
+/// [`Activity::own_actions`] gives them): "Writing in #general", "Editing ‘Launch plan’ in Notes".
+/// The verb comes from the step's title (an app's past-tense history sentence, "Posted a message",
+/// "Edited the text") where it says plainly what kind of work it was, else it is "Working on". A
+/// record named like its app (a chat's one record, "Chat") is said once: "Working in Chat", never
+/// "Working on Chat in Chat". `None` while they took no step lately.
+#[must_use]
+pub fn doing_now(actions: &[OwnAction]) -> Option<String> {
+    let action = actions.last()?;
+    let title = action.action.trim();
+    let verb = doing(title);
+    let resource = action.resource.trim();
+    let app = action.app.trim();
+    let line = if resource.is_empty() && app.is_empty() {
+        title.to_owned()
+    } else if resource.is_empty() || resource.eq_ignore_ascii_case(app) || resource.starts_with('#')
+    {
+        // In the app as a whole, or in a channel, named as the app shows it.
+        let place = if resource.starts_with('#') {
+            resource
+        } else {
+            app
+        };
+        format!("{} in {place}", verb.unwrap_or("Working"))
+    } else {
+        let verb = verb.unwrap_or("Working on");
+        if app.is_empty() {
+            format!("{verb} ‘{resource}’")
+        } else {
+            format!("{verb} ‘{resource}’ in {app}")
+        }
+    };
+    let line = clipped(&line, ui::MAX_STATUS_CHARS, MAX_DOING_BYTES);
+    (!line.is_empty()).then_some(line)
+}
+
+/// The present-tense verb for a step's title, where its first word says what kind of work it was:
+/// writing, editing, drawing, reviewing.
+fn doing(title: &str) -> Option<&'static str> {
+    let first = title
+        .split_whitespace()
+        .next()?
+        .trim_matches(|c: char| !c.is_alphanumeric())
+        .to_lowercase();
+    Some(match first.as_str() {
+        "post" | "posted" | "send" | "sent" | "reply" | "replied" | "write" | "wrote"
+        | "answer" | "answered" | "message" | "messaged" => "Writing",
+        "edit" | "edited" | "change" | "changed" | "type" | "typed" | "rename" | "renamed"
+        | "format" | "formatted" | "rewrite" | "rewrote" => "Editing",
+        "draw" | "drew" | "sketch" | "sketched" | "paint" | "painted" => "Drawing",
+        "comment" | "commented" | "review" | "reviewed" | "resolve" | "resolved" | "suggest"
+        | "suggested" => "Reviewing",
+        "add" | "added" | "create" | "created" | "make" | "made" | "insert" | "inserted" => {
+            "Adding to"
+        }
+        _ => return None,
+    })
+}
+
+/// At most `chars` characters and `bytes` bytes of `text`, an ellipsis marking a cut.
+fn clipped(text: &str, chars: usize, bytes: usize) -> String {
+    if text.chars().count() <= chars && text.len() <= bytes {
+        return text.to_owned();
+    }
+    let mut kept = String::new();
+    for (index, c) in text.chars().enumerate() {
+        if index.saturating_add(1) >= chars
+            || kept
+                .len()
+                .saturating_add(c.len_utf8())
+                .saturating_add('…'.len_utf8())
+                > bytes
+        {
+            break;
+        }
+        kept.push(c);
+    }
+    let mut kept = kept.trim_end().to_owned();
+    kept.push('…');
+    kept
+}
+
 /// `text` as a title a person is shown: one line, bounded.
 fn bounded_title(text: &str) -> String {
     text.chars()
@@ -1240,6 +1326,51 @@ mod tests {
     //! command is the workspace's own changes, and what they restore from it reaches the desk.
 
     use super::*;
+
+    fn step(action: &str, resource: &str, app: &str) -> super::OwnAction {
+        super::OwnAction {
+            id: String::new(),
+            action: action.into(),
+            resource: resource.into(),
+            app: app.into(),
+            at_ms: 0,
+        }
+    }
+
+    #[test]
+    fn the_line_says_what_kind_of_work_and_where_from_the_newest_step() {
+        use super::doing_now;
+        assert_eq!(doing_now(&[]), None, "no step lately, nothing to say");
+        let older = step("Opened", "Plan", "Notes");
+        assert_eq!(
+            doing_now(&[older.clone(), step("Posted a message", "#general", "Chat")]).as_deref(),
+            Some("Writing in #general")
+        );
+        assert_eq!(
+            doing_now(&[step("Post", "Chat", "Chat")]).as_deref(),
+            Some("Writing in Chat"),
+            "a bare verb reads the same"
+        );
+        assert_eq!(
+            doing_now(&[step("Opened", "chat", "Chat")]).as_deref(),
+            Some("Working in Chat"),
+            "a record named like its app is said once, whatever the case"
+        );
+        assert_eq!(
+            doing_now(&[step("Edited the text", "Launch plan", "Notes")]).as_deref(),
+            Some("Editing ‘Launch plan’ in Notes")
+        );
+        assert_eq!(
+            doing_now(&[older]).as_deref(),
+            Some("Working on ‘Plan’ in Notes")
+        );
+        let long = doing_now(&[step("Edited", &"é".repeat(200), "Notes")]).expect("a line");
+        assert!(
+            long.len() <= collab_types::presence::MAX_ACTIVITY_BYTES,
+            "{long}"
+        );
+        assert!(long.ends_with('…'));
+    }
 
     use tilo_actions::InvocationId;
     use tilo_actions::remote::workspace_activity as wire;

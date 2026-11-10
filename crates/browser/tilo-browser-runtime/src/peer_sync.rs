@@ -23,14 +23,15 @@ use wasm_bindgen::prelude::*;
 
 use crate::peer::{JsRecord, js_error, workspace_number};
 
-/// `{kind: 'person' | 'agent', label, color: '#rrggbb', activity}`.
+/// `{kind: 'person' | 'agent', label, color: '#rrggbb', profile_ms}`: `profile_ms` when the
+/// person last changed their profile, as this page knows it (`0` for unknown).
 #[derive(Clone, Serialize, Deserialize)]
 struct JsParticipant {
     kind: String,
     label: String,
     color: String,
     #[serde(default)]
-    activity: Option<String>,
+    profile_ms: u64,
 }
 
 /// Where this page's pointer is: over the tile of a tab of the workspace, in
@@ -150,7 +151,8 @@ fn shell_from_js(value: &JsPresence) -> Result<Option<Box<ShellPresence>>, JsErr
         label: participant.label.clone(),
         agent: participant.kind == "agent",
         colour,
-        activity: participant.activity.clone(),
+        // What a person is doing travels as their status (`set_status`), never as their shell's.
+        activity: None,
         place: value.place.clone(),
         size,
         windows,
@@ -373,6 +375,9 @@ pub(crate) fn say(peer: u32, workspace: &str, value: &JsPresence) -> Result<f64,
             .set_where(pointer_of(value)?, shell_from_js(value)?);
         let mut own = page.client.own();
         own.following.clone_from(&value.following);
+        if let Some(participant) = &value.participant {
+            own.profile_ms = own.profile_ms.max(participant.profile_ms);
+        }
         page.client.set_own(own);
         page.client.follow();
         Ok(page.client.next_due_in(workspace).unwrap_or(0.0))

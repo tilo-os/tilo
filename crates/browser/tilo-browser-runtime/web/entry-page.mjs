@@ -1271,10 +1271,10 @@ export async function startEntryPage({mode}) {
     // A drawn name someone else here already goes by is drawn again; a
     // name the person chose stays theirs. A page with no host to join has
     // no peer and nobody to share a name with.
-    page.peer?.setNameDrawer?.((current, lines) => {
+    page.peer?.setNameDrawer?.((current, people) => {
       const key = page.peer.userPublicKey;
       if (chosenDisplayName(key)) return null;
-      const redrawn = redrawnDisplayName(key, current, lines);
+      const redrawn = redrawnDisplayName(key, current, people);
       if (redrawn) displayName = redrawn;
       return redrawn;
     });
@@ -1846,6 +1846,7 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming, photos}) 
     lookups: () => [...membershipOrigins(), ...listedWorkspaces({home}).map(workspace => workspace.host.origin)],
     pause: inputPause(), searchChord: mac ? '⌘K' : 'Ctrl+K', showPairLink: pairLinkSheet, askPairing: pairingAsk,
     standIn: standInOf({peer, identity, runtime}), standInStore: globalThis.localStorage,
+    profiled: at => peer?.setProfileChanged?.(at),
   });
   void actions.attach(mount);
   if (peer?.authoredChanges) {

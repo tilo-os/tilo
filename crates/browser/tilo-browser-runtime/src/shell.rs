@@ -404,7 +404,25 @@ pub(crate) fn here_people(
         })
         .collect();
     let app_name = |app: &str| crate::desktop::known_application(app).map(str::to_owned);
-    here.borrow().people(tree, &records, &app_name, now_ms())
+    here.borrow().people(tree, &records, &app_name)
+}
+
+/// What this page's person is doing, said on their live presence as everyone here reads it: their
+/// own words, or what this page read off their steps while they share it. Said again only when it
+/// changed.
+pub(crate) fn say_doing(here: &tilo_desktop::here::Here, sync: &tilo_session::sync::Client) {
+    let status = here
+        .borrow()
+        .own_doing()
+        .map(|line| tilo_live::presence::Status {
+            automatic: line.automatic(),
+            text: line.text,
+        });
+    let mut own = sync.own();
+    if own.status != status {
+        own.status = status;
+        sync.set_own(own);
+    }
 }
 
 /// Unix milliseconds.
@@ -796,10 +814,7 @@ impl BrowserShell {
             .borrow_mut()
             .set_own_words(Some(words.to_owned()));
         if let Some(sync) = &self.sync {
-            let words = words.trim();
-            let mut own = sync.own();
-            own.status = (!words.is_empty()).then(|| words.to_owned());
-            sync.set_own(own);
+            say_doing(&self.chrome.here, sync);
         }
         self.keep_own_status();
     }
@@ -1352,11 +1367,17 @@ impl BrowserShell {
             ProfileChoice::Decline(app) => return self.chrome.shared.linked.decline(&app),
             ProfileChoice::Sharing(mode) => {
                 self.chrome.here.borrow_mut().set_sharing(mode);
+                if let Some(sync) = &self.sync {
+                    say_doing(&self.chrome.here, sync);
+                }
                 self.keep_own_status();
                 return;
             }
             ProfileChoice::Status(words) => {
                 self.chrome.here.borrow_mut().set_own_words(Some(words));
+                if let Some(sync) = &self.sync {
+                    say_doing(&self.chrome.here, sync);
+                }
                 self.keep_own_status();
                 return;
             }

@@ -1025,35 +1025,6 @@ pub fn encode_live_preview_end(record_json: &str) -> Result<Vec<u8>, JsError> {
         .map_err(js_error)
 }
 
-/// One of [`WasmPeer::here`]'s actions as the page sends it.
-#[derive(serde::Deserialize)]
-struct JsHereAction {
-    id: String,
-    action: String,
-    #[serde(default)]
-    resource: String,
-    #[serde(default)]
-    app: String,
-    #[serde(default)]
-    at_ms: u64,
-}
-
-/// One person of [`WasmPeer::here`]'s answer as the page reads it.
-#[derive(serde::Serialize)]
-struct JsHerePerson {
-    device: String,
-    user: String,
-    label: String,
-    agent: bool,
-    window: Option<String>,
-    status: String,
-    recent: String,
-    sources: Vec<String>,
-    generated: bool,
-    updated_ms: u64,
-    profile_ms: u64,
-}
-
 fn hex32(text: &str, what: &str) -> Result<[u8; 32], JsError> {
     hex::decode(text)
         .ok()
@@ -2245,84 +2216,6 @@ impl WasmPeer {
         self.handle
             .restart_call_picture(workspace_number(workspace)?, device, source)
             .map_err(js_error)
-    }
-
-    /// Post this person's display name, the window they focus (`window`:
-    /// tab id in hex) and own recent semantic actions in `workspace` (`actions`:
-    /// JSON array of `{id: 32 hex, action, resource, app, at_ms}`, titles
-    /// only) and resolve to who is here there: a JSON array of `{device,
-    /// user, label, window, status, recent, sources, generated, updated_ms}` with keys and
-    /// ids in hex. An empty array only fetches.
-    #[wasm_bindgen(js_name = here)]
-    pub async fn here(
-        &self,
-        workspace: String,
-        label: String,
-        window: Option<String>,
-        actions: String,
-    ) -> Result<String, JsError> {
-        let actions: Vec<JsHereAction> = serde_json::from_str(&actions).map_err(js_error)?;
-        let request = tilo_relay_protocol::web::HereRequest {
-            workspace_id: workspace_number(&workspace)?,
-            label: label
-                .chars()
-                .filter(|c| !c.is_control())
-                .take(tilo_relay_protocol::web::MAX_HERE_LABEL_CHARS)
-                .collect(),
-            window: window
-                .map(|window| u64::from_str_radix(&window, 16))
-                .transpose()
-                .map_err(js_error)?,
-            actions: actions
-                .into_iter()
-                .map(|action| {
-                    let id: [u8; 16] = hex::decode(&action.id)
-                        .ok()
-                        .and_then(|id| id.try_into().ok())
-                        .ok_or_else(|| js_error("action id is not 32 hex"))?;
-                    Ok(tilo_relay_protocol::web::HereAction {
-                        id,
-                        action: action.action,
-                        resource: action.resource,
-                        app: action.app,
-                        at_ms: action.at_ms,
-                    })
-                })
-                .collect::<Result<_, JsError>>()?,
-            agent: false,
-        };
-        request.validate().map_err(js_error)?;
-        let (reply, receipt) = tokio::sync::oneshot::channel();
-        self.handle
-            .here_then(
-                request,
-                Box::new(move |here| {
-                    let _ = reply.send(here);
-                }),
-            )
-            .map_err(js_error)?;
-        let here = receipt
-            .await
-            .map_err(|_| js_error("peer session closed"))?
-            .map_err(js_error)?;
-        let people: Vec<JsHerePerson> = here
-            .people
-            .into_iter()
-            .map(|person| JsHerePerson {
-                device: hex::encode(person.device),
-                user: hex::encode(person.user),
-                label: person.label,
-                agent: person.agent,
-                window: person.window.map(|window| format!("{window:x}")),
-                status: person.status,
-                recent: person.recent,
-                sources: person.sources.iter().map(hex::encode).collect(),
-                generated: person.generated,
-                updated_ms: person.updated_ms,
-                profile_ms: person.profile_ms,
-            })
-            .collect();
-        serde_json::to_string(&people).map_err(js_error)
     }
 
     /// This page's device key, hex: how the workspace names it in presence

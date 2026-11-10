@@ -86,12 +86,20 @@ pub struct Shown {
     pub agent: bool,
     /// The name everyone here calls them.
     pub label: String,
-    /// What they are doing, as their shell says it.
+    /// What they are doing: an agent's own line, or a person's status.
     pub activity: Option<String>,
+    /// Their device read [`Self::activity`] off the steps they took, rather
+    /// than anyone saying it.
+    #[serde(default)]
+    pub automatic: bool,
     /// The colour their face wears, `#rrggbb`.
     pub colour: String,
     /// The person behind the device (user root, hex), once certified.
     pub user: Option<String>,
+    /// When the person last changed their profile, as their device says it (Unix milliseconds,
+    /// `0` for unsaid).
+    #[serde(default)]
+    pub profile_ms: u64,
     /// What their device calls itself, from its certificate.
     pub device: String,
     /// The window they work in and the record it shows.

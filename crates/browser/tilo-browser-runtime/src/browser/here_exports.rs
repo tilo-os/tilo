@@ -1,6 +1,6 @@
 //! The desktop's calls about who is here: the people of its live layer and
-//! their photos, what the host and each person say they are doing, who
-//! watches, and the colour a person is drawn in. Each finds its mount and
+//! their photos, what this page's person is doing, who watches, and the
+//! colour a person is drawn in. Each finds its mount and
 //! hands the call to the desktop's here state.
 
 use wasm_bindgen::prelude::*;
@@ -151,32 +151,6 @@ pub fn desktop_set_person_links(id: u64, user: &str, linked: &str) -> Result<(),
     })
 }
 
-/// The host's answer to `/here` (`peer.here`): each person's line.
-///
-/// # Errors
-///
-/// Rejects malformed JSON or a mount without a desktop.
-#[wasm_bindgen]
-pub fn desktop_set_here(id: u64, lines: &str) -> Result<(), JsValue> {
-    let lines: Vec<tilo_desktop::here::HostLine> = serde_json::from_str(lines).map_err(error)?;
-    with_mount(id, |m| {
-        let desktop = m
-            .desktop
-            .as_ref()
-            .ok_or_else(|| error("Desktop unavailable"))?;
-        if desktop
-            .here
-            .borrow_mut()
-            .set_lines(lines, crate::shell::now_ms())
-        {
-            // A line can name someone whose presence arrived nameless.
-            desktop.announce_arrivals();
-            m.apply_here();
-        }
-        Ok(())
-    })
-}
-
 /// What the person's profile says they are doing (`status`, empty for
 /// nothing) and how they share it (`automatic`, `manual` or `off`; anything
 /// else leaves it as it is): what they set on another of their devices.
@@ -197,67 +171,64 @@ pub fn desktop_set_own_status(id: u64, status: &str, sharing: &str) -> Result<()
         if let Some(sharing) = ui::StatusSharing::from_word(sharing) {
             here.set_sharing(sharing);
         }
-        if here.revision() != before {
+        let changed = here.revision() != before;
+        drop(here);
+        if changed {
             m.pending = true;
             m.window.request_redraw();
+            if let Some(sync) = m.peer.and_then(crate::peer_sync::client) {
+                crate::shell::say_doing(&desktop.here, &sync);
+            }
         }
         Ok(())
     })
 }
 
-/// What this page's person is doing, for the page to post to `/here`:
-/// `{window: hex | null, share, actions: [{id, action, resource, app,
-/// at_ms}], status}`: the focused window's tab id, their own steps in the active workspace since
-/// `since_ms` (titles only; none unless they share an automatic status) and their own words for
-/// their live presence (`null` while they said nothing or share nothing).
+/// How far back a person's own steps count as what they are doing.
+const RECENT_MS: u64 = 10 * 60_000;
+
+/// What this page's person is doing now, said on their live presence: their own words, or, while
+/// they share an automatic status, what their own steps in the active workspace since `now_ms` less
+/// ten minutes read as (titles only, never content). Called every few seconds while the desktop is
+/// shown; says something only when it changed.
 ///
 /// # Errors
 ///
 /// Rejects a mount without a desktop.
 #[wasm_bindgen]
-pub fn desktop_here_tick(id: u64, since_ms: f64) -> Result<String, JsValue> {
+pub fn desktop_say_doing(id: u64, now_ms: f64) -> Result<(), JsValue> {
     with_mount(id, |m| {
         let desktop = m
             .desktop
             .as_ref()
             .ok_or_else(|| error("Desktop unavailable"))?;
-        let tree = desktop.handle.read(Clone::clone);
-        let focused = tree.active_workspace().and_then(|workspace| {
-            // A person who has not moved yet is shown the first strip, as
-            // the composition draws it.
-            let strip = tree
-                .active_strip
-                .get(&workspace.slot)
-                .and_then(|id| workspace.strips.iter().find(|s| s.id == *id))
-                .or_else(|| workspace.strips.first())?;
-            let group = tree
-                .active_group_for(strip.id)
-                .and_then(|g| strip.window_groups.iter().find(|w| w.id == g))
-                .or_else(|| strip.window_groups.first())?;
-            group.tabs.iter().find(|tab| tab.id == group.active_tab)
-        });
-        let window = focused.map(|tab| format!("{:x}", tab.id));
         let share = desktop.here.borrow().sharing() == ui::StatusSharing::Automatic;
-        let actions = if share {
+        let reading = if share {
             #[allow(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
                 reason = "a page clock in milliseconds; negative clamps to zero"
             )]
-            let since = since_ms.max(0.0) as u64;
-            desktop
-                .activity
-                .own_actions(&tree, tree.active, &desktop.author, since)
+            let now = now_ms.max(0.0) as u64;
+            let tree = desktop.handle.read(Clone::clone);
+            let actions = desktop.activity.own_actions(
+                &tree,
+                tree.active,
+                &desktop.author,
+                now.saturating_sub(RECENT_MS),
+            );
+            tilo_session::activity::doing_now(&actions)
         } else {
-            Vec::new()
+            None
         };
-        serde_json::to_string(&serde_json::json!({
-            "window": window,
-            "share": share,
-            "actions": actions,
-            "status": desktop.here.borrow().shared_words(),
-        }))
-        .map_err(error)
+        if desktop.here.borrow_mut().set_own_reading(reading) {
+            m.pending = true;
+            m.window.request_redraw();
+        }
+        if let Some(sync) = m.peer.and_then(crate::peer_sync::client) {
+            crate::shell::say_doing(&desktop.here, &sync);
+        }
+        Ok(())
     })
 }
 

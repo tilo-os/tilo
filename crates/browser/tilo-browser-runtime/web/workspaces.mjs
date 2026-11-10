@@ -260,13 +260,14 @@ export function defaultDisplayName(userPublicKey, random = Math.random, taken = 
 
 /**
  * The name the person `userPublicKey`, who has not chosen one, takes when the
- * workspace's `lines` (from `/here`: `[{user, label}]`) show someone else already
- * going by `current`; `null` when they keep it. Of two people who drew the
- * same name the one with the greater key draws again, so both never do.
+ * people here (`[{user, label}]`, as their live presence names them) show
+ * someone else already going by `current`; `null` when they keep it. Of two
+ * people who drew the same name the one with the greater key draws again, so
+ * both never do.
  */
-export function redrawnDisplayName(userPublicKey, current, lines) {
-  if (!userPublicKey || !current || !Array.isArray(lines)) return null;
-  const others = lines.filter(line => line?.user && line.user !== userPublicKey && typeof line.label === 'string');
+export function redrawnDisplayName(userPublicKey, current, people) {
+  if (!userPublicKey || !current || !Array.isArray(people)) return null;
+  const others = people.filter(line => line?.user && line.user !== userPublicKey && typeof line.label === 'string');
   const same = others.filter(line => line.label.toLowerCase() === current.toLowerCase());
   if (!same.length || same.every(line => line.user > userPublicKey)) return null;
   const name = defaultDisplayName(userPublicKey, Math.random, others.map(line => line.label));

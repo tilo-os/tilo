@@ -186,7 +186,7 @@ export function createIdentityActions({
   pause = () => true, later = (run, ms) => setTimeout(run, ms), session = globalThis.sessionStorage,
   searchChord = 'Ctrl+K', showPairLink = () => ({close() {}}), askPairing = () => ({close() {}}),
   invites = openInvites({now}), passkeys = passkeysUsable, onAgent = () => {},
-  standIn = null, standInStore = null,
+  standIn = null, standInStore = null, profiled = () => {},
 }) {
   const standInKey = `tilo-stand-in:${identity.userPublicKey}`;
   const remembered = () => { try { return standInStore?.getItem(standInKey) ?? null; } catch { return null; } };
@@ -217,11 +217,14 @@ export function createIdentityActions({
   let links = {photoFrom: null, linked: [], known: false};
   let waitingAccounts = null;
   const keepProfile = async (displayName, photo, what) => {
+    const at = now();
     const results = await Promise.allSettled(hosts().map(origin => profile({origin, identity, displayName, photo, ...said,
-      photoFrom: photo ? links.photoFrom : null, linked: links.linked})));
+      photoFrom: photo ? links.photoFrom : null, linked: links.linked, now: at})));
     const refused = results.find(result => result.status === 'rejected' && result.reason?.code === 'publish-refused');
     for (const result of results) if (result.status === 'rejected' && result !== refused) onError(result.reason);
     if (refused) throw new IdentityError(`${what}-refused`, `This ${what} was not kept: ${refused.reason.message}`);
+    // Kept: everyone here fetches it again when this device says it changed.
+    if (results.some(result => result.status === 'fulfilled')) profiled(at);
   };
   // The workspace's host said which accounts are linked (`[{service, handle,
   // picture?}]`): the profile names them, and wears an account's picture

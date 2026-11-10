@@ -254,26 +254,28 @@ impl Envelopes {
     }
 
     /// The kept envelope of the root named by `body` (hex), as JSON text.
+    #[cfg(test)]
     fn fetch(&self, body: &[u8]) -> Option<String> {
         let root = root_of(std::str::from_utf8(body).ok()?.trim())?;
         Self::kept(&self.path(&root)).map(|kept| kept.envelope)
     }
 
-    /// When the record kept for `root` was signed, Unix milliseconds.
-    pub(super) fn issued_at(&self, root: &[u8; 32]) -> Option<u64> {
-        Self::kept(&self.path(root)).map(|kept| kept.issued_at_ms)
-    }
-
     /// The answer to a fetch of the root `body` names (hex): `{"<kind>":
-    /// record}`, or `{"<kind>": null}` when nothing is kept for it (a new
-    /// person, the usual case). `None` when `body` names no root.
+    /// record, "issued_at_ms": when its root signed it}`, or `{"<kind>":
+    /// null}` when nothing is kept for it (a new person, the usual case).
+    /// `None` when `body` names no root.
     pub(super) fn answer(&self, body: &[u8]) -> Option<Vec<u8>> {
-        root_of(std::str::from_utf8(body).ok()?.trim())?;
-        let kept = self
-            .fetch(body)
-            .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+        let root = root_of(std::str::from_utf8(body).ok()?.trim())?;
+        let Some(kept) = Self::kept(&self.path(&root)) else {
+            return serde_json::to_vec(&serde_json::json!({ self.kind.name(): null })).ok();
+        };
+        let record = serde_json::from_str::<serde_json::Value>(&kept.envelope)
             .unwrap_or(serde_json::Value::Null);
-        serde_json::to_vec(&serde_json::json!({ self.kind.name(): kept })).ok()
+        serde_json::to_vec(&serde_json::json!({
+            self.kind.name(): record,
+            "issued_at_ms": kept.issued_at_ms,
+        }))
+        .ok()
     }
 
     /// Keep the envelope `body` publishes, when its root signed it, is
@@ -443,7 +445,11 @@ mod tests {
                 .expect("json");
         assert_eq!(
             answered,
-            serde_json::json!({"profile": serde_json::from_str::<serde_json::Value>(&ada).expect("json")})
+            serde_json::json!({
+                "profile": serde_json::from_str::<serde_json::Value>(&ada).expect("json"),
+                "issued_at_ms": 1_000,
+            }),
+            "the answer says when the profile was kept, so a page fetches it again when that moves"
         );
         // Nothing kept for a root is an answer too, not a failure.
         let stranger = hex::encode(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes());
@@ -487,10 +493,8 @@ mod tests {
             .await
             .expect("kept with a picture");
         assert_eq!(profiles.fetch(hex_root.as_bytes()), Some(pictured));
-        assert_eq!(
-            profiles.issued_at(&root.verifying_key().to_bytes()),
-            Some(4_000)
-        );
+        let answer = profiles.answer(hex_root.as_bytes()).expect("a root");
+        assert!(String::from_utf8_lossy(&answer).contains(r#""issued_at_ms":4000"#));
         // Only a bounded image, never a link elsewhere or a script.
         let huge = format!("data:image/png;base64,{}", "A".repeat(MAX_PHOTO_CHARS));
         for bad in [

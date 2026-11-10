@@ -258,7 +258,10 @@ impl Shared {
         };
         let mut own = sync.own();
         let status = status.trim();
-        own.status = (!status.is_empty()).then(|| status.to_owned());
+        own.status = (!status.is_empty()).then(|| tilo_live::presence::Status {
+            text: status.to_owned(),
+            automatic: false,
+        });
         sync.set_own(own);
     }
 

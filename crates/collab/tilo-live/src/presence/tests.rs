@@ -53,7 +53,14 @@ fn a_members_parts_merge_into_one_row_and_one_call() {
     board.certify([1; 32], "aa".repeat(32), "Framework");
     let member = board.member([1; 32]).expect("they are here");
     assert_eq!(member.label(), "Ada");
-    assert_eq!(member.status.as_deref(), Some("Wiring the plane"));
+    assert_eq!(
+        member.status,
+        Some(Status {
+            text: "Wiring the plane".into(),
+            automatic: true,
+        }),
+        "what the device read off their steps stays told apart from their own words"
+    );
     assert_eq!(member.availability, Availability::Focusing);
     assert_eq!(member.device, "Framework");
     let calls = board.calls();
@@ -127,7 +134,10 @@ fn this_device_says_its_whole_self_at_once_and_nothing_unchanged() {
     let mut board = board();
     let own = Own {
         label: "Quinten".into(),
-        status: Some("Wiring the plane".into()),
+        status: Some(Status {
+            text: "Wiring the plane".into(),
+            automatic: false,
+        }),
         ..Own::default()
     };
     board.say(&own);
@@ -375,4 +385,44 @@ fn this_seats_own_row_is_what_this_device_said_here() {
     assert_eq!(shown.device, "Framework");
     assert_eq!(shown.availability, "focusing");
     assert!(shown.pointer.is_none());
+}
+
+#[test]
+fn a_status_taken_back_is_said_and_its_reader_forgets_it() {
+    let mut speaker = board();
+    let doing = Own {
+        label: "Ada".into(),
+        status: Some(Status {
+            text: "Editing ‘Plan’ in Notes".into(),
+            automatic: true,
+        }),
+        ..Own::default()
+    };
+    speaker.say(&doing);
+    let mut reader = board();
+    for (_, frame) in speaker.flush(0.0) {
+        reader.hear([1; 32], &frame, 1.0);
+    }
+    assert_eq!(
+        reader.member([1; 32]).and_then(|member| member.activity()),
+        Some(("Editing ‘Plan’ in Notes", true))
+    );
+    speaker.say(&Own {
+        status: None,
+        ..doing
+    });
+    let burst = speaker.flush(2.0);
+    assert!(
+        burst.iter().any(
+            |(_, frame)| matches!(&frame.payload, Payload::Status { text, .. } if text.is_empty())
+        ),
+        "clearing is a frame of its own"
+    );
+    for (_, frame) in burst {
+        reader.hear([1; 32], &frame, 3.0);
+    }
+    assert_eq!(
+        reader.member([1; 32]).and_then(|member| member.activity()),
+        None
+    );
 }

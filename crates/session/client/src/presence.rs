@@ -20,8 +20,11 @@ pub struct OwnPresence {
     pub label: String,
     /// The person (user root, hex) this device is certified as.
     pub user: Option<String>,
-    /// What they say they are doing, in their own words.
-    pub status: Option<String>,
+    /// When the person last changed their profile, as this device knows it (Unix milliseconds, `0`
+    /// while it knows none).
+    pub profile_ms: u64,
+    /// What they are doing: their own words, or what this device read off their steps.
+    pub status: Option<presence::Status>,
     /// How available they say they are.
     pub availability: Availability,
     /// The voice channel they are in here, if any: what everyone else's roster says beside their
@@ -39,6 +42,7 @@ impl OwnPresence {
             label: self.label.clone(),
             device: device.to_owned(),
             user: self.user.clone(),
+            profile_ms: self.profile_ms,
             status: self.status.clone(),
             availability: self.availability,
             call: self.call.clone(),

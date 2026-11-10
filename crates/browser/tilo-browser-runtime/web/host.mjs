@@ -320,6 +320,9 @@ export async function mountDesktop(target,options={}) {
   // What the person says they are doing and how they share it, as their
   // profile keeps it: set on another of their devices, it shows here too.
   function ownStatus(profile){
+    // How new the profile this page read is: its presence says so, and a
+    // device of theirs with an older one fetches it again.
+    options.peer?.setProfileChanged?.(profile.issued_at_ms);
     const status=typeof profile.status==='string'?profile.status:'';
     const sharing=typeof profile.sharing==='string'?profile.sharing:'';
     options.onHostAction?.('set-status',{status,sharing,keep:false});
@@ -384,7 +387,7 @@ export async function mountDesktop(target,options={}) {
     lastState=retainStatus(lastState,state);report(state);
     if(state.phase==='suspended'){surface.inert=true;editor.disabled=true;}
 
-    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;const layer=liveLayer();if(!livePointer&&layer){livePointer=followOwnPointer(layer,()=>id,surface,active);if(livePlace)layer.publishPresence({focus:livePlace.focus,place:livePlace.place,layout:livePlace.layout??null});}if(!here&&!config.app&&options.peer&&runtime.desktop_here_tick)here=createHere({runtime,mountId:()=>id,active,layer:liveLayer,peer:options.peer,photos:options.peer.origin?photos:null,onError:error=>report({hereError:String(error)})});}
+    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;const layer=liveLayer();if(!livePointer&&layer){livePointer=followOwnPointer(layer,()=>id,surface,active);if(livePlace)layer.publishPresence({focus:livePlace.focus,place:livePlace.place,layout:livePlace.layout??null});}if(!here&&!config.app&&options.peer&&runtime.desktop_say_doing)here=createHere({runtime,mountId:()=>id,active,layer:liveLayer,peer:options.peer,photos:options.peer.origin?photos:null,onError:error=>report({hereError:String(error)})});}
     surface.dataset.phase=state.phase;surface.dataset.frames=String(state.frames??0);
     if(state.phase==='failed'){readyReject(Error(state.error));for(const waiter of presentationWaiters)waiter.reject(Error(state.error));presentationWaiters.clear();}
     if(state.phase==='presented'){for(const waiter of [...presentationWaiters])if((state.frames??0)>waiter.after){presentationWaiters.delete(waiter);waiter.resolve();}}

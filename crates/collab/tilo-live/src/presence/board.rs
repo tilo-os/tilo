@@ -58,6 +58,16 @@ pub struct Call {
     pub screen: bool,
 }
 
+/// What someone is doing, as their device says it: their own words, or the
+/// line the device read off the steps they took.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Status {
+    /// One line, e.g. "Editing ‘Launch plan’ in Notes".
+    pub text: String,
+    /// The device read it off what they did; `false` for their own words.
+    pub automatic: bool,
+}
+
 /// What one device says of itself here.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Own {
@@ -67,8 +77,12 @@ pub struct Own {
     pub device: String,
     /// The person this device belongs to, their root key as hex.
     pub user: Option<String>,
-    /// What they say they are doing, in their own words.
-    pub status: Option<String>,
+    /// When the person last changed their profile, as this device knows it (Unix milliseconds,
+    /// `0` while it knows none).
+    pub profile_ms: u64,
+    /// What they are doing: their own words, or what this device read off
+    /// their steps.
+    pub status: Option<Status>,
     /// How available they say they are.
     pub availability: Availability,
     /// The call this device is in here, if any.
@@ -142,8 +156,11 @@ pub struct Member {
     /// The name everyone here calls them, as their presence says it: the
     /// person's, never the device's.
     pub label: String,
-    /// What they say they are doing, in their own words.
-    pub status: Option<String>,
+    /// When the person last changed their profile, as their device says it (Unix milliseconds,
+    /// `0` while it said none).
+    pub profile_ms: u64,
+    /// What they are doing, as their device says it.
+    pub status: Option<Status>,
     /// How available they say they are.
     pub availability: Availability,
     /// Whose view they follow, by that member's publisher.
@@ -172,6 +189,7 @@ impl Member {
             user: None,
             device: String::new(),
             label: String::new(),
+            profile_ms: 0,
             status: None,
             availability: Availability::Available,
             following: None,
@@ -214,14 +232,22 @@ impl Member {
         }
     }
 
-    /// What they are doing: what their shell says, else their own word.
+    /// What they are doing: what their shell says (an agent's line), else
+    /// their status, and whether their device read it off their steps rather
+    /// than anyone saying it.
     #[must_use]
-    pub fn activity(&self) -> Option<&str> {
+    pub fn activity(&self) -> Option<(&str, bool)> {
         self.shell
             .as_deref()
             .and_then(|shell| shell.activity.as_deref())
-            .or(self.status.as_deref())
             .filter(|activity| !activity.trim().is_empty())
+            .map(|activity| (activity, false))
+            .or_else(|| {
+                self.status
+                    .as_ref()
+                    .map(|status| (status.text.as_str(), status.automatic))
+            })
+            .filter(|(activity, _)| !activity.trim().is_empty())
     }
 
     /// Where within its focus the member works, as its shell says.
@@ -342,6 +368,14 @@ impl Board {
             self.schedule
                 .push(Presence::desktop(workspace.clone(), Payload::Arrived));
         }
+        if own.profile_ms != 0 && (first || said.profile_ms != own.profile_ms) {
+            self.schedule.push(Presence::desktop(
+                workspace.clone(),
+                Payload::Profile {
+                    changed_ms: own.profile_ms,
+                },
+            ));
+        }
         // How available a device is rides with its arrival: someone who came
         // in after the last change still hears it.
         if first || said.availability != own.availability || said.call != own.call {
@@ -355,14 +389,17 @@ impl Board {
                 },
             ));
         }
-        if said.status != own.status
-            && let Some(status) = &own.status
-        {
+        // A status taken back is said as an empty one, or everyone keeps
+        // showing the last.
+        if said.status != own.status {
             self.schedule.push(Presence::desktop(
                 workspace.clone(),
                 Payload::Status {
-                    text: status.clone(),
-                    automatic: false,
+                    text: own
+                        .status
+                        .as_ref()
+                        .map_or_else(String::new, |status| status.text.clone()),
+                    automatic: own.status.as_ref().is_some_and(|status| status.automatic),
                 },
             ));
         }
@@ -504,8 +541,16 @@ impl Board {
                 Payload::Left => {
                     self.touch(from, |member| std::mem::replace(&mut member.here, false))
                 }
-                Payload::Status { text, .. } => self.touch(from, |member| {
-                    let status = Some(text.trim().to_owned()).filter(|text| !text.is_empty());
+                Payload::Profile { changed_ms } => self.touch(from, |member| {
+                    std::mem::replace(&mut member.profile_ms, *changed_ms) != member.profile_ms
+                }),
+                Payload::Status { text, automatic } => self.touch(from, |member| {
+                    let status = Some(text.trim())
+                        .filter(|text| !text.is_empty())
+                        .map(|text| Status {
+                            text: text.to_owned(),
+                            automatic: *automatic,
+                        });
                     std::mem::replace(&mut member.status, status) != member.status
                 }),
                 Payload::Availability {

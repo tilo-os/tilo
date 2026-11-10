@@ -72,6 +72,7 @@ mod tests {
             device: String::new(),
             focus: None,
             activity: None,
+            automatic: false,
             place: None,
             user: None,
             wave: None,
@@ -94,7 +95,6 @@ mod tests {
             focus_app: None,
             place: None,
             status: None,
-            recent: None,
             availability: ui::Availability::Available,
             call: None,
         }

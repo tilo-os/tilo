@@ -759,7 +759,13 @@ impl Panel {
             ask_name: own.label.trim().is_empty(),
             actions: Self::own_actions(),
             availability: own.availability,
-            status: own.status.clone().unwrap_or_default(),
+            // Their own words: what this device read off their steps is not theirs to edit.
+            status: own
+                .status
+                .as_ref()
+                .filter(|status| !status.automatic)
+                .map(|status| status.text.clone())
+                .unwrap_or_default(),
             offers_presence: true,
             key,
             devices,

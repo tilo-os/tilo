@@ -778,7 +778,6 @@ impl Roster {
             tree,
             &crate::sync::layout::bindings(tree, records),
             app_name,
-            ui::time::unix_now_ms(),
         )
     }
 

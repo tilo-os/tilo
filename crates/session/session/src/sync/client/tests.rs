@@ -968,7 +968,10 @@ fn changing_what_this_person_says_is_said_again() {
 
     let stated = OwnPresence {
         label: "Quinten".to_owned(),
-        status: Some("Wiring the plane".to_owned()),
+        status: Some(tilo_live::presence::Status {
+            text: "Wiring the plane".to_owned(),
+            automatic: false,
+        }),
         ..OwnPresence::default()
     };
     assert!(sync.set_own(stated.clone()));
@@ -1189,3 +1192,4 @@ fn a_host_that_names_its_workspaces_says_and_pumps_each_of_them() {
         "the workspace this host stopped showing hears it leave: {left:?}"
     );
 }
+

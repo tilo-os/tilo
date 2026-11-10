@@ -28,6 +28,7 @@ pub const KEEPALIVE_MS: f64 = 3_000.0;
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Part {
     Person,
+    Profile,
     Arrived,
     Availability,
     Status,
@@ -44,6 +45,7 @@ impl Part {
     fn of(frame: &Presence) -> Self {
         match &frame.payload {
             collab_types::presence::Payload::Person { .. } => Self::Person,
+            collab_types::presence::Payload::Profile { .. } => Self::Profile,
             collab_types::presence::Payload::Arrived => Self::Arrived,
             collab_types::presence::Payload::Availability { .. } => Self::Availability,
             collab_types::presence::Payload::Status { .. } => Self::Status,

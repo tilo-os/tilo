@@ -48,8 +48,10 @@ pub fn shown(member: &Member, now_ms: f64) -> Shown {
         epoch: member.epoch,
         agent: member.agent(),
         label: member.label().to_owned(),
-        activity: member.activity().map(str::to_owned),
+        activity: member.activity().map(|(activity, _)| activity.to_owned()),
+        automatic: member.activity().is_some_and(|(_, automatic)| automatic),
         user: member.user.clone(),
+        profile_ms: member.profile_ms,
         device: member.device.clone(),
         following: member.following.clone(),
         wave: member.wave.clone(),
@@ -73,17 +75,23 @@ pub fn shown(member: &Member, now_ms: f64) -> Shown {
 /// everyone but itself).
 #[must_use]
 pub fn own_shown(own: &Own, publisher: Device) -> Shown {
+    let shell_activity = own
+        .shell
+        .as_deref()
+        .and_then(|shell| shell.activity.clone())
+        .filter(|activity| !activity.trim().is_empty());
+    let status = own
+        .status
+        .as_ref()
+        .filter(|status| shell_activity.is_none() && !status.text.trim().is_empty());
     let mut shown = Shown {
         publisher: hex::encode(publisher),
         agent: own.shell.as_deref().is_some_and(|shell| shell.agent),
         label: own.label.clone(),
-        activity: own
-            .shell
-            .as_deref()
-            .and_then(|shell| shell.activity.clone())
-            .or_else(|| own.status.clone())
-            .filter(|activity| !activity.trim().is_empty()),
+        automatic: status.is_some_and(|status| status.automatic),
+        activity: shell_activity.or_else(|| status.map(|status| status.text.clone())),
         user: own.user.clone(),
+        profile_ms: own.profile_ms,
         device: own.device.clone(),
         following: own.following.clone(),
         wave: own.wave.clone(),

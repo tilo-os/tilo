@@ -302,7 +302,7 @@ export function createLiveLayer(peer, runtime, workspace, {
   function start() {
     if (stopped) return;
     publisherId = peer.deviceKey?.() ?? publisherId;
-    if (participant) value.participant = {kind: 'person', activity: null, ...participant};
+    if (participant) value.participant = {kind: 'person', profile_ms: 0, ...participant};
     say();
     setState('live');
   }
@@ -522,11 +522,11 @@ async function connect({
   let voice;
   let disposed = false;
   let drawName = null;
-  // What the person says they are doing, in their own words: their
-  // presence carries it as their participant's activity.
-  let activity = null;
+  // When the person last changed their profile, as this page knows it: their
+  // presence says it, so everyone here fetches it again when it moves.
+  let profileMs = 0;
   const publishParticipant = () => live?.publishPresence({participant: {kind: 'person',
-    label: (displayName || label).slice(0, 32), color: ownColor(), activity}});
+    label: (displayName || label).slice(0, 32), color: ownColor(), profile_ms: profileMs}});
   // The person's name, as history and presence show it from now on.
   const rename = name => {
     displayName = fitDisplayName(name);
@@ -737,7 +737,7 @@ async function connect({
       peer.joinWorkspace(workspace, workspaceName);
       if (liveEnabled) {
         live = createLiveLayer(peer, runtime, workspace, {ready, participant: {
-          kind: 'person', label: (displayName || label).slice(0, 32), color: ownColor(), activity,
+          kind: 'person', label: (displayName || label).slice(0, 32), color: ownColor(), profile_ms: profileMs,
         }});
       }
       actions?.dispose();
@@ -1052,38 +1052,32 @@ async function connect({
     /** The live layer of the joined workspace, or `undefined` without a workspace. */
     get live() { return live; },
     /** Why this page cannot join the workspace's live plane at all, in the
-     * words shown in the members' place (`here.mjs`), or `null` while it can
-     * (or did): a browser without WebTransport, which has no fallback. */
+     * words shown in the members' place, or `null` while it can
+     * (or did): a plane that could not be reached. */
     liveNote: () => { try { return peer?.liveNote?.() ?? null; } catch { return null; } },
     /** This person as their presence names them: `{label, color}`. */
     get participant() {
       return {label: (displayName || label).slice(0, 32), color: ownColor()};
     },
-    /** Say what this person is doing in their own words (`null` clears
-     * it): everyone here reads it on their presence, before anything
-     * the host words for them. */
-    setStatus(text) {
-      const said = typeof text === 'string' && text.trim() ? text.trim() : null;
-      if (said === activity) return;
-      activity = said;
+    /** The person's profile was kept (or read) as of `at` (Unix ms): their
+     * presence says so, and everyone here fetches it again. */
+    setProfileChanged(at) {
+      const stamp = Number(at) || 0;
+      if (stamp <= profileMs) return;
+      profileMs = stamp;
       publishParticipant();
     },
-    /** Post this person's name, the window they focus (tab id, hex, or
-     * null) and their own recent steps (`[{id, action, resource, app,
-     * at_ms}]`, titles only) to the host; resolves to who is here:
-     * `[{device, user, label, window, status, recent, sources, generated,
-     * updated_ms}]`. */
-    async here(window, actions = []) {
-      if (!workspace || !peer) return [];
-      const lines = JSON.parse(await peer.here(workspace, (displayName || label).slice(0, 32), window ?? undefined, JSON.stringify(actions)));
-      // Someone else here already goes by this person's drawn name: they
-      // take another, so the workspace and what it is bridged with tell them apart.
-      const redrawn = drawName?.(displayName, lines);
+    /** The people here as their live presence names them (`[{user,
+     * label}]`): someone else already going by this person's drawn name
+     * makes them take another, so the workspace and what it is bridged with
+     * tell them apart. */
+    membersSeen(people) {
+      if (!workspace || !Array.isArray(people)) return;
+      const redrawn = drawName?.(displayName, people);
       if (redrawn && redrawn !== displayName) rename(redrawn);
-      return lines;
     },
     /** Who draws this person's name again when it collides in the workspace:
-     * `(current, lines) => name | null`, or `null` once they chose one. */
+     * `(current, people) => name | null`, or `null` once they chose one. */
     setNameDrawer(draw) { drawName = typeof draw === 'function' ? draw : null; },
     /** The host's fetch proxy for this page's apps (`fetch-proxy.mjs`):
      * `{endpoint, session}` while the host serves one over the current
