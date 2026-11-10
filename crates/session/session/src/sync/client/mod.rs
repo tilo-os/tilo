@@ -8,7 +8,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tilo_clock::Instant;
 
 use collab_types::presence::{Presence, ShellPresence, Shown};
 use iroh::{EndpointAddr, EndpointId};

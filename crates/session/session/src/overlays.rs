@@ -10,7 +10,8 @@
 //! names the one up either way, so a shell's views and the chrome agree.
 
 use std::cell::{Cell, RefCell};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tilo_clock::Instant;
 
 /// How long Alt has to stay down after Tab before the switcher's panel shows: shorter than a
 /// deliberate look, longer than a practised Alt+Tab, so the common "back to the last window"

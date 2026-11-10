@@ -26,7 +26,8 @@ pub trait HttpClient: crate::MaybeSendSync {
     fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_>;
 }
 
-/// The longest body read from a host or a site.
+/// The longest body read from a host or a site; a page's fetch reads its own.
+#[cfg(not(target_family = "wasm"))]
 const MAX_BODY: usize = 4 * 1024 * 1024;
 
 /// HTTPS to one host's or site's origin, as its routes take it: what a native peer posts through,

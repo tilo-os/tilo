@@ -546,7 +546,7 @@ impl DirBackend {
             .append(true)
             .open(path)
             .and_then(|file| {
-                file.set_modified(SystemTime::now())?;
+                file.set_modified(tilo_clock::to_std(tilo_clock::wall()))?;
                 file.metadata()
             });
         match touched {

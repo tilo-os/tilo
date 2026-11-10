@@ -137,7 +137,7 @@ pub struct PersistentAudioPolicy {
     /// Consecutive echo-cancellation client exits, used to back off restarts
     /// of a client that dies on start.
     echo_failures: u32,
-    echo_retry_at: Option<std::time::Instant>,
+    echo_retry_at: Option<tilo_clock::Instant>,
 }
 
 impl PersistentAudioPolicy {
@@ -191,7 +191,7 @@ impl PersistentAudioPolicy {
             self.echo_failures = self.echo_failures.saturating_add(1);
             let backoff = ECHO_CANCEL_RESTART_BACKOFF
                 .saturating_mul(self.echo_failures.min(ECHO_CANCEL_MAX_BACKOFF_STEPS));
-            self.echo_retry_at = std::time::Instant::now().checked_add(backoff);
+            self.echo_retry_at = tilo_clock::now().checked_add(backoff);
         }
         if !enabled || !self.capabilities.echo_cancellation || graph.sources.is_empty() {
             self.echo_session = None;
@@ -200,9 +200,7 @@ impl PersistentAudioPolicy {
             return Ok(());
         }
         if self.echo_session.is_some()
-            || self
-                .echo_retry_at
-                .is_some_and(|at| std::time::Instant::now() < at)
+            || self.echo_retry_at.is_some_and(|at| tilo_clock::now() < at)
         {
             return Ok(());
         }
@@ -217,7 +215,7 @@ impl PersistentAudioPolicy {
     /// When a backed-off echo-cancellation restart falls due. Nothing in the
     /// graph changes at that moment, so an event-driven owner must reconcile
     /// again by then on its own.
-    pub fn next_retry(&self) -> Option<std::time::Instant> {
+    pub fn next_retry(&self) -> Option<tilo_clock::Instant> {
         self.echo_retry_at
     }
 

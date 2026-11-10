@@ -12,7 +12,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use std::task::{Context, Poll, Waker};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tilo_clock::Instant;
 use tilo_lock::MutexRecover as _;
 
 type Continuation<T> = Box<dyn FnOnce(Option<T>) + Send>;

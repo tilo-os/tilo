@@ -283,7 +283,7 @@ pub struct StopWatch<'a> {
     /// shortcut's output binding.
     pub path: &'a StepPath,
     /// When the run reached this step.
-    pub since: std::time::Instant,
+    pub since: tilo_clock::Instant,
 }
 
 impl StopWatch<'_> {
@@ -990,7 +990,7 @@ where
     let mut stopped_done = false;
     let mut left = left;
     loop {
-        let mut clock = std::pin::pin!(WaitUntil(std::time::Instant::now().checked_add(left)));
+        let mut clock = std::pin::pin!(WaitUntil(tilo_clock::Instant::now().checked_add(left)));
         let outcome = std::future::poll_fn(|waker| {
             if !moved_done && let Poll::Ready(outcome) = moved.as_mut().poll(waker) {
                 return Poll::Ready(match outcome {
@@ -1033,14 +1033,14 @@ where
 /// Resolve once `at` has passed, on the waker that looks at it: the timer
 /// belongs to whoever waits, so the interpreter needs none of its own.
 /// `None` is a deadline already gone.
-struct WaitUntil(Option<std::time::Instant>);
+struct WaitUntil(Option<tilo_clock::Instant>);
 
 impl Future for WaitUntil {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<()> {
         match self.0 {
-            Some(at) if std::time::Instant::now() >= at => std::task::Poll::Ready(()),
+            Some(at) if tilo_clock::Instant::now() >= at => std::task::Poll::Ready(()),
             _ => std::task::Poll::Pending,
         }
     }
@@ -1292,7 +1292,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         // needs none of its own.
         let stopped = self.hooks.stopped(StopWatch {
             path,
-            since: std::time::Instant::now(),
+            since: tilo_clock::Instant::now(),
         });
         matches!(
             wait_for(
@@ -2057,7 +2057,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         request: InvokeRequest,
         path: &StepPath,
     ) -> Result<ActionOutput, StepFailure> {
-        let deadline = std::time::Instant::now().checked_add(self.timeout);
+        let deadline = tilo_clock::Instant::now().checked_add(self.timeout);
         let id = request.invocation;
         let mut status = match self.host.observe(&self.caller, &id) {
             Some(state) => state.receipt().status,
@@ -2090,7 +2090,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 }
                 ReceiptStatus::Accepted => {
                     let left = deadline.and_then(|deadline| {
-                        deadline.checked_duration_since(std::time::Instant::now())
+                        deadline.checked_duration_since(tilo_clock::Instant::now())
                     });
                     let Some(left) = left else {
                         return Err(self.timed_out());
@@ -2109,7 +2109,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                     };
                     let stopped = self.hooks.stopped(StopWatch {
                         path,
-                        since: std::time::Instant::now(),
+                        since: tilo_clock::Instant::now(),
                     });
                     match wait_for(moved, stopped, left, refreshing).await {
                         Wait::Moved(Ok(())) => {}
@@ -2141,7 +2141,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         self.hooks
             .stopped(StopWatch {
                 path,
-                since: std::time::Instant::now(),
+                since: tilo_clock::Instant::now(),
             })
             .await
             .unwrap_or(Ok(()))

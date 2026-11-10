@@ -8,8 +8,10 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
+
+use tilo_clock::Instant;
 
 const CAPACITY: usize = 8;
 const LIFETIME: Duration = Duration::from_secs(120);

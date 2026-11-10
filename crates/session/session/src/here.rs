@@ -21,9 +21,7 @@ impl Shared {
             .map(|sync| sync.calls())
             .unwrap_or_default();
         let joined = self.calls_this_person_is_in();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_secs());
+        let now = tilo_clock::unix_now();
         self.handle.read(|tree| {
             let mut workspaces: Vec<WorkspaceHere> = tree
                 .workspaces

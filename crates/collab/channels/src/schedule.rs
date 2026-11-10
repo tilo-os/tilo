@@ -20,7 +20,8 @@
 //! records itself as clocked, and the next runs [`RECHECK_INTERVAL`] later,
 //! as before.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tilo_clock::Instant;
 
 /// The longest a change waits for its re-check, and the period of a clocked
 /// one.
