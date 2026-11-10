@@ -2763,7 +2763,7 @@ default = false
 [[check]]
 name = "image-hosted-browser-guest"
 run = "bash tools/ci/publish/hosted-guest.sh browser-build /target/publish/hosted-browser-guest/session /target/os/x86_64/compiled /target/os/x86_64/chromium /target/publish/hosted-guest/kernel /target/publish/hosted-guest/agent /target/font-seed /target/publish/hosted-browser-guest/image"
-needs = ["hosted-browser-guest-session", "os-compile-x86_64", "os-chromium-x86_64", "hosted-guest-kernel", "hosted-guest-agent"]
+needs = ["hosted-browser-guest-session", "os-compile-x86_64", "os-chromium-x86_64", "hosted-guest-kernel", "hosted-guest-agent", "font-seed"]
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
 git = true
