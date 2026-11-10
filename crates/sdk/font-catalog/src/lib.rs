@@ -201,14 +201,64 @@ pub struct Face {
     pub tilo_families: Vec<String>,
 }
 
-/// The compiled-in manifest, built once (the build reads `manifest.toml`).
+/// One face as the build writes it: index, family, PostScript name, style
+/// and Tilo's families.
+type FaceRow = (
+    u32,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static [&'static str],
+);
+/// One font as the build writes it: scope, startup, file, bytes, SHA-256,
+/// reserved aliases and faces.
+type FontRow = (
+    Scope,
+    bool,
+    &'static str,
+    u64,
+    &'static str,
+    &'static [&'static str],
+    &'static [FaceRow],
+);
+
+/// `manifest.toml`'s fonts, as the build read them.
 #[allow(
     clippy::unreadable_literal,
     reason = "the sizes are written by the build as manifest.toml states them"
 )]
+const FONTS: &[FontRow] = include!(concat!(env!("OUT_DIR"), "/manifest.rs"));
+
+/// The compiled-in manifest, built once.
 pub fn manifest() -> Result<&'static Manifest, Error> {
     static BUILT: OnceLock<Manifest> = OnceLock::new();
-    Ok(BUILT.get_or_init(|| include!(concat!(env!("OUT_DIR"), "/manifest.rs"))))
+    let strings = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect();
+    Ok(BUILT.get_or_init(|| Manifest {
+        schema: 1,
+        font: FONTS
+            .iter()
+            .map(
+                |&(scope, browser_startup, file, bytes, sha256, aliases, faces)| Asset {
+                    scope,
+                    browser_startup,
+                    file: file.to_owned(),
+                    bytes,
+                    sha256: sha256.to_owned(),
+                    reserved_aliases: strings(aliases),
+                    faces: faces
+                        .iter()
+                        .map(|&(index, family, post_script_name, style, families)| Face {
+                            index,
+                            family: family.to_owned(),
+                            post_script_name: post_script_name.to_owned(),
+                            style: style.to_owned(),
+                            tilo_families: strings(families),
+                        })
+                        .collect(),
+                },
+            )
+            .collect(),
+    }))
 }
 
 /// SHA-256 of the compiled-in manifest, which identifies the catalog.

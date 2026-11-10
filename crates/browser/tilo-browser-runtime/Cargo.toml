@@ -114,8 +114,8 @@ default = []
 # `defer_activity_pane`, which the browser desktop fetches as its own module
 # the first time someone opens Activity. Without it the pane is linked in.
 deferred-activity = []
-# The bundling crate supplies the model service's clients through
-# `defer_model_clients`, which the browser desktop fetches as their own module
+# The bundling crate supplies the model service's clients (`MODEL_CLIENTS`),
+# which the browser desktop fetches as their own module
 # the first time a window asks a model or opens provider settings. Without it
 # they are linked in.
 deferred-model-clients = []
@@ -131,6 +131,10 @@ deferred-feedback = []
 # (`DOM_CODE`), which the browser desktop fetches as its own module the
 # first time a page asks for `dom: true`. Without it the code is linked in.
 deferred-dom-presenter = []
+# The bundling crate supplies the directory and invite sheets' code
+# (`SHEETS`), which the browser desktop fetches as its own module the first
+# time the person opens one. Without it they are linked in.
+deferred-sheets = []
 
 [dependencies]
 # The host's endpoint address, as the page receives and dials it.

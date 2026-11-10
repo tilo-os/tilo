@@ -21822,6 +21822,7 @@ dependencies = [
  "encoding_rs",
  "spellbook",
  "tempfile",
+ "tilo-lock",
  "tilo-paths",
  "workspace-hack",
 ]

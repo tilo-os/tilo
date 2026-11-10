@@ -284,7 +284,7 @@ pub mod desk_widgets {
     };
 }
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
-pub mod deferred;
+pub use tilo_lock::{deferred, lazy_code};
 pub mod lazy_code;
 pub mod personal_dictionary;
 pub mod text_assistance;
@@ -473,9 +473,7 @@ pub use search::{
 pub use selection::{KeySelection, SelectionModel};
 pub use state::{DocumentFrontier, State, UndoEntry, UndoLog};
 pub use text_break::discretionary_hyphen_breaks;
-pub use text_break::{Hyphenate, MakeHyphenation, builtin_hyphenation, hyphenation_generation};
-#[cfg(feature = "lazy-hyphenation")]
-pub use text_break::{defer_hyphenation, hyphenation_load_failed, install_hyphenation};
+pub use text_break::{HYPHENATION, Hyphenate, builtin_hyphenation, hyphenation_generation};
 pub use theme::{
     AppearanceIntent, ContentSurface, SurfaceShape, Theme, WindowAppearance, resolve_theme_layers,
     workspace_hue,

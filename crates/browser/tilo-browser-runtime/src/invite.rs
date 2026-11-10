@@ -23,7 +23,7 @@ use tilo_workspace_directory::Store;
 
 use ui::LocalState;
 
-use crate::over_page::OverSheet;
+use crate::over_page::{OverSheet, PageSheet};
 use crate::shell::{HostRequest, HostRequests};
 
 /// How long a link the sheet makes works, as the session's desk makes one.
@@ -56,7 +56,20 @@ type Reply = Result<WorkspacesReply, String>;
 type Then = Box<dyn FnOnce(Reply)>;
 
 /// The sheet over the page, while it is up.
-pub(crate) struct PageInvite {
+/// The page's invite sheet, as the sheets' code makes it
+/// (`crate::over_page::SHEETS`).
+pub(crate) fn make(
+    requests: HostRequests,
+    config: Option<&PageInviteConfig>,
+    shared: crate::desktop::Shared,
+    here: Here,
+    peer: Option<u32>,
+    wake: &Arc<dyn Fn() + Send + Sync>,
+) -> Box<dyn PageSheet> {
+    Box::new(PageInvite::new(requests, config, shared, here, peer, wake))
+}
+
+struct PageInvite {
     invite: Invite,
     workspace: Rc<PageWorkspace>,
     /// Where an invitation is left for the link that names it.
@@ -72,7 +85,7 @@ pub(crate) struct PageInvite {
 }
 
 impl PageInvite {
-    pub(crate) fn new(
+    fn new(
         requests: HostRequests,
         config: Option<&PageInviteConfig>,
         shared: crate::desktop::Shared,
@@ -113,18 +126,6 @@ impl PageInvite {
             link: LocalState::new(String::new()),
             built: None,
         }
-    }
-
-    /// Put the sheet up on the workspace this page is in.
-    pub(crate) fn open(&self) {
-        self.choosing.set(Choosing::default());
-        self.link.set(String::new());
-        self.invite.opening();
-        self.presentation.open(false);
-    }
-
-    pub(crate) fn is_open(&self) -> bool {
-        self.presentation.is_open()
     }
 
     /// Take what the host and the shelf answered, show the sheet as the
@@ -490,6 +491,20 @@ fn refused(reply: Result<WorkspacesReply, String>) -> String {
         Ok(WorkspacesReply::Refused(reason)) => reason,
         Ok(_) => "the workspace answered something else than what was asked".to_owned(),
         Err(error) => error,
+    }
+}
+
+impl PageSheet for PageInvite {
+    /// Put the sheet up on the workspace this page is in.
+    fn open(&self) {
+        self.choosing.set(Choosing::default());
+        self.link.set(String::new());
+        self.invite.opening();
+        self.presentation.open(false);
+    }
+
+    fn is_open(&self) -> bool {
+        self.presentation.is_open()
     }
 }
 

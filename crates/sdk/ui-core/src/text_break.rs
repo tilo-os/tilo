@@ -76,9 +76,6 @@ pub fn discretionary_hyphen_breaks(text: &str, language: &str) -> Vec<usize> {
 /// but the last, by `lang`'s patterns.
 pub type Hyphenate = fn(word: &str, lang: hypher::Lang, out: &mut dyn FnMut(usize));
 
-/// Hands over the patterns' [`Hyphenate`], for `install_hyphenation`.
-pub type MakeHyphenation = fn() -> Hyphenate;
-
 /// TeX/Liang hyphenation by the patterns hypher embeds.
 #[must_use]
 pub fn builtin_hyphenation() -> Hyphenate {
@@ -98,77 +95,25 @@ pub fn builtin_hyphenation() -> Hyphenate {
 /// [`Hyphenate`] with the patterns in reach; no breaks while their code is
 /// still to come.
 fn hyphenate(word: &str, lang: hypher::Lang, out: &mut dyn FnMut(usize)) {
-    if let Some(hyphenate) = hyphenation::patterns() {
+    if let Some(hyphenate) = HYPHENATION.get() {
         hyphenate(word, lang, out);
     }
 }
 
-#[cfg(not(feature = "lazy-hyphenation"))]
-mod hyphenation {
-    use super::Hyphenate;
-
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "the lazy-hyphenation build has none until they are fetched"
-    )]
-    pub(super) fn patterns() -> Option<Hyphenate> {
-        Some(super::builtin_hyphenation())
-    }
-
-    /// How many times the patterns arrived: never, as they were always
-    /// there.
-    #[must_use]
-    pub fn hyphenation_generation() -> u64 {
-        0
-    }
+crate::lazy_code! {
+    /// The hyphenation patterns. A program built with `lazy-hyphenation`
+    /// fetches their code the first time text is hyphenated; until then text
+    /// breaks between words only, and layouts are made again once
+    /// [`hyphenation_generation`] moved.
+    pub static HYPHENATION: Hyphenate = builtin_hyphenation, feature = "lazy-hyphenation";
 }
 
-/// The patterns are fetched the first time text is hyphenated: the program
-/// hands over a loader ([`defer_hyphenation`]) that fetches their code and
-/// passes back [`builtin_hyphenation`](super::builtin_hyphenation)
-/// ([`install_hyphenation`]). Until then text breaks between words only;
-/// layouts are made again once [`hyphenation_generation`] moved.
-#[cfg(feature = "lazy-hyphenation")]
-mod hyphenation {
-    use super::{Hyphenate, MakeHyphenation};
-    use crate::deferred::Deferred;
-
-    static PATTERNS: Deferred<Hyphenate> = Deferred::new();
-
-    /// The patterns, or `None` while their code is still to come (and then
-    /// fetched).
-    pub(super) fn patterns() -> Option<Hyphenate> {
-        PATTERNS.get()
-    }
-
-    /// Bumped when the patterns arrive: hyphenated layouts are made again
-    /// once this moved.
-    #[must_use]
-    pub fn hyphenation_generation() -> u64 {
-        PATTERNS.generation()
-    }
-
-    /// How the program fetches the patterns' code: `load` starts the fetch
-    /// and, once the code is in, calls [`install_hyphenation`] (or
-    /// [`hyphenation_load_failed`]).
-    pub fn defer_hyphenation(load: fn()) {
-        PATTERNS.defer(load);
-    }
-
-    /// The patterns' code is in: text is hyphenated from now on.
-    pub fn install_hyphenation(make: MakeHyphenation) {
-        PATTERNS.install(make());
-    }
-
-    /// The fetch failed: the next layout that hyphenates fetches again.
-    pub fn hyphenation_load_failed() {
-        PATTERNS.load_failed();
-    }
+/// Bumped when the patterns arrive: hyphenated layouts are made again once
+/// this moved.
+#[must_use]
+pub fn hyphenation_generation() -> u64 {
+    HYPHENATION.generation()
 }
-
-pub use hyphenation::hyphenation_generation;
-#[cfg(feature = "lazy-hyphenation")]
-pub use hyphenation::{defer_hyphenation, hyphenation_load_failed, install_hyphenation};
 
 pub(crate) const VIRTUAL_BREAK: char = '\u{200b}';
 

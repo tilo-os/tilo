@@ -216,6 +216,9 @@ struct Page {
     /// The doors this page asks the host's actions through, one per workspace: one session path,
     /// shared by the page's Rust and its JavaScript.
     doors: RefCell<HashMap<u64, tilo_session_host::session_actions::SessionActions>>,
+    /// How a door is made: named where the page starts, with the peer's code, so
+    /// a mount that asks for one carries none of it.
+    open_door: fn(&PeerHandle, u64, [u8; 32]) -> SessionActions,
 }
 
 thread_local! {
@@ -282,6 +285,7 @@ pub(crate) fn register(
                 waved: None,
                 interactions: HashMap::new(),
                 doors: RefCell::default(),
+                open_door: |handle, workspace, host| SessionActions::new(handle, workspace, host),
             },
         );
     });
@@ -308,7 +312,7 @@ pub(crate) fn actions_of(id: u32, workspace: u64) -> Option<SessionActions> {
         Some(
             doors
                 .entry(workspace)
-                .or_insert_with(|| SessionActions::new(&page.handle, workspace, page.host))
+                .or_insert_with(|| (page.open_door)(&page.handle, workspace, page.host))
                 .clone(),
         )
     })
@@ -525,11 +529,11 @@ fn with_persons(
     mut members: Vec<Shown>,
     devices: &std::collections::BTreeMap<String, String>,
 ) -> (Vec<Shown>, u64) {
-    let mut named = 0;
+    let mut named: u64 = 0;
     for member in &mut members {
         if let Some(person) = devices.get(&member.publisher) {
             member.user.get_or_insert_with(|| person.clone());
-            named += 1;
+            named = named.saturating_add(1);
         }
     }
     (members, named)

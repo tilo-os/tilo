@@ -124,8 +124,9 @@ mod desktop;
 mod directory;
 #[cfg(target_arch = "wasm32")]
 mod dom_code;
-#[cfg(target_arch = "wasm32")]
 pub use dom_code::{DOM_CODE, DomCode, builtin_dom};
+#[cfg(target_arch = "wasm32")]
+pub use over_page::{SHEETS, SheetsCode, builtin_sheets};
 #[cfg(target_arch = "wasm32")]
 mod feedback_code;
 #[cfg(target_arch = "wasm32")]
@@ -185,9 +186,7 @@ pub use page_activity::{LoadActivity, defer_activity_pane};
 #[cfg(target_arch = "wasm32")]
 mod host_services;
 #[cfg(target_arch = "wasm32")]
-pub use host_services::{MakeModelClients, ModelClients, builtin_model_clients};
-#[cfg(all(target_arch = "wasm32", feature = "deferred-model-clients"))]
-pub use host_services::{defer_model_clients, install_model_clients, model_clients_load_failed};
+pub use host_services::{MODEL_CLIENTS, ModelClients, builtin_model_clients};
 #[cfg(target_arch = "wasm32")]
 mod link;
 // A pairing link drawn as the code a phone reads.

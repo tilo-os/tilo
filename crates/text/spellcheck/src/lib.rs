@@ -204,7 +204,7 @@ fn english_dictionary_name(language: &str) -> &str {
 /// is flagged either while the dictionaries' code is still to come (the
 /// `lazy-dictionaries` feature).
 pub fn spans_for_language(language: &str, text: &str) -> Vec<(usize, usize)> {
-    loading::dictionaries().map_or_else(Vec::new, |dictionaries| {
+    DICTIONARIES.get().map_or_else(Vec::new, |dictionaries| {
         (dictionaries.spans)(language, text)
     })
 }
@@ -252,7 +252,7 @@ pub fn suggestions_for_language(language: &str, word: &str, max: usize) -> Vec<S
     if word.is_empty() || max == 0 {
         return Vec::new();
     }
-    loading::dictionaries().map_or_else(Vec::new, |dictionaries| {
+    DICTIONARIES.get().map_or_else(Vec::new, |dictionaries| {
         (dictionaries.suggestions)(language, word, max)
     })
 }
@@ -342,7 +342,7 @@ pub fn probable_correction(language: &str, word: &str) -> Option<String> {
     if let Some(candidate) = known {
         return Some(match_word_case(word, candidate));
     }
-    (loading::dictionaries()?.correction)(language, word, &lower)
+    (DICTIONARIES.get()?.correction)(language, word, &lower)
 }
 
 /// A correction sure enough to apply although the word list holds the
@@ -471,9 +471,6 @@ pub struct Dictionaries {
     prepare: fn(&mut dyn FnMut() -> bool) -> bool,
 }
 
-/// Hands over [`Dictionaries`], for `install_dictionaries`.
-pub type MakeDictionaries = fn() -> Dictionaries;
-
 /// The dictionaries this crate checks with.
 #[must_use]
 pub fn builtin_dictionaries() -> Dictionaries {
@@ -485,89 +482,22 @@ pub fn builtin_dictionaries() -> Dictionaries {
     }
 }
 
-#[cfg(not(feature = "lazy-dictionaries"))]
-mod loading {
-    use super::Dictionaries;
-
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "the lazy-dictionaries build has none until they are fetched"
-    )]
-    pub(crate) fn dictionaries() -> Option<Dictionaries> {
-        Some(super::builtin_dictionaries())
-    }
-
-    /// How many times the dictionaries arrived: never, as they were always
-    /// there.
-    pub(crate) fn loaded_generation() -> u64 {
-        0
-    }
+tilo_lock::lazy_code! {
+    /// The dictionaries. A program built with `lazy-dictionaries` fetches
+    /// their code the first time something checks spelling; until then
+    /// nothing is flagged or suggested, and a field checks again once
+    /// [`dictionaries_generation`] moved.
+    pub static DICTIONARIES: Dictionaries = builtin_dictionaries, feature = "lazy-dictionaries";
 }
-
-/// The dictionaries are fetched the first time something checks spelling:
-/// the program hands over a loader ([`defer_dictionaries`]) that fetches
-/// their code and passes back [`builtin_dictionaries`]
-/// ([`install_dictionaries`]). Until then nothing is flagged or suggested;
-/// a field checks again once [`dictionaries_generation`] moved.
-#[cfg(feature = "lazy-dictionaries")]
-mod loading {
-    use std::sync::OnceLock;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-
-    use super::{Dictionaries, MakeDictionaries};
-
-    static DICTIONARIES: OnceLock<Dictionaries> = OnceLock::new();
-    static LOAD: OnceLock<fn()> = OnceLock::new();
-    static REQUESTED: AtomicBool = AtomicBool::new(false);
-    static GENERATION: AtomicU64 = AtomicU64::new(0);
-
-    /// The dictionaries, or `None` while their code is still to come (and
-    /// then fetched).
-    pub(crate) fn dictionaries() -> Option<Dictionaries> {
-        let dictionaries = DICTIONARIES.get().copied();
-        if dictionaries.is_none() && !REQUESTED.swap(true, Ordering::AcqRel) {
-            match LOAD.get() {
-                Some(load) => load(),
-                None => REQUESTED.store(false, Ordering::Release),
-            }
-        }
-        dictionaries
-    }
-
-    /// Bumped when the dictionaries arrive.
-    pub(crate) fn loaded_generation() -> u64 {
-        GENERATION.load(Ordering::Acquire)
-    }
-
-    /// How the program fetches the dictionaries' code: `load` starts the
-    /// fetch and, once the code is in, calls [`install_dictionaries`] (or
-    /// [`dictionaries_load_failed`]).
-    pub fn defer_dictionaries(load: fn()) {
-        let _ = LOAD.set(load);
-    }
-
-    /// The dictionaries' code is in: spelling is checked from now on.
-    pub fn install_dictionaries(make: MakeDictionaries) {
-        if DICTIONARIES.set(make()).is_ok() {
-            GENERATION.fetch_add(1, Ordering::AcqRel);
-        }
-    }
-
-    /// The fetch failed: the next check fetches again.
-    pub fn dictionaries_load_failed() {
-        REQUESTED.store(false, Ordering::Release);
-    }
-}
-
-#[cfg(feature = "lazy-dictionaries")]
-pub use loading::{defer_dictionaries, dictionaries_load_failed, install_dictionaries};
 
 /// Bumped when the dictionaries arrive, or the English one is built in steps
 /// ([`prepare_dictionaries`]): a field that checked before checks again once
 /// this moved.
 #[must_use]
 pub fn dictionaries_generation() -> u64 {
-    loading::loaded_generation().wrapping_add(ENGLISH_GENERATION.load(Ordering::Acquire))
+    DICTIONARIES
+        .generation()
+        .wrapping_add(ENGLISH_GENERATION.load(Ordering::Acquire))
 }
 
 static ENGLISH: OnceLock<Dictionary> = OnceLock::new();
@@ -589,7 +519,9 @@ pub fn build_dictionaries_in_steps() {
 /// dictionaries' code first when it is still to come (`None` until it is
 /// in); then true once the dictionary is built.
 pub fn prepare_dictionaries(more: &mut dyn FnMut() -> bool) -> Option<bool> {
-    loading::dictionaries().map(|dictionaries| (dictionaries.prepare)(more))
+    DICTIONARIES
+        .get()
+        .map(|dictionaries| (dictionaries.prepare)(more))
 }
 
 fn prepare_english(more: &mut dyn FnMut() -> bool) -> bool {

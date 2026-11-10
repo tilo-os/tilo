@@ -193,8 +193,8 @@ impl ProviderKeys for PageKeys {
 /// administration client, with the request and response codecs they carry.
 ///
 /// They are linked in, unless the `deferred-model-clients` feature leaves
-/// them to the bundling crate: the browser desktop hands over a loader
-/// ([`defer_model_clients`]) that fetches them as their own module when a
+/// them to the bundling crate: the browser desktop fetches them
+/// ([`MODEL_CLIENTS`]) as their own module when a
 /// window first asks a model or opens provider settings, so the start module
 /// does not carry them.
 #[derive(Clone, Copy)]
@@ -219,9 +219,6 @@ type MakeModels =
 
 /// Opens the provider administration client for a base URL and a token.
 type MakeAdministration = fn(&str, String) -> Result<Arc<dyn ProviderAdmin>, String>;
-
-/// Hands over [`ModelClients`], for [`install_model_clients`].
-pub type MakeModelClients = fn() -> ModelClients;
 
 /// The model service's clients over the page's `fetch`.
 #[must_use]
@@ -266,46 +263,17 @@ pub fn builtin_model_clients() -> ModelClients {
     }
 }
 
-#[cfg(feature = "deferred-model-clients")]
-static MODEL_CLIENTS: ui::deferred::Deferred<ModelClients> = ui::deferred::Deferred::new();
-
-/// Fetch the model service's clients with `load` the first time a window
-/// uses them, instead of linking them in (the `deferred-model-clients`
-/// feature). `load` starts the fetch and then calls [`install_model_clients`]
-/// or [`model_clients_load_failed`].
-#[cfg(feature = "deferred-model-clients")]
-pub fn defer_model_clients(load: fn()) {
-    MODEL_CLIENTS.defer(load);
+ui::lazy_code! {
+    /// The model service's clients, fetched the first time a window uses
+    /// them where the bundle defers them (`deferred-model-clients`).
+    pub static MODEL_CLIENTS: ModelClients = builtin_model_clients, feature = "deferred-model-clients";
 }
 
-/// The model service's clients arrived.
-#[cfg(feature = "deferred-model-clients")]
-pub fn install_model_clients(make: MakeModelClients) {
-    MODEL_CLIENTS.install(make());
-}
-
-/// Fetching the model service's clients failed: the requests waiting for
-/// them fail, and the next one fetches again.
-#[cfg(feature = "deferred-model-clients")]
-pub fn model_clients_load_failed() {
-    MODEL_CLIENTS.load_failed();
-}
-
-#[cfg(feature = "deferred-model-clients")]
 async fn model_clients() -> Result<ModelClients, ModelError> {
     MODEL_CLIENTS
         .wait()
         .await
         .ok_or_else(|| ModelError::new(ErrorKind::Unavailable))
-}
-
-#[cfg(not(feature = "deferred-model-clients"))]
-#[expect(
-    clippy::unused_async,
-    reason = "the deferred-model-clients build waits for the clients here"
-)]
-async fn model_clients() -> Result<ModelClients, ModelError> {
-    Ok(builtin_model_clients())
 }
 
 /// A mount's models, connected on the first request.

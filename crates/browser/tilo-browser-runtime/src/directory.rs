@@ -11,7 +11,7 @@ use tilo_sheets::Seat as _;
 use tilo_sheets::directory::{Directory, DirectorySeat, Status};
 use tilo_workspace_directory::{Held, Joined, Person, Store};
 
-use crate::over_page::OverSheet;
+use crate::over_page::{OverSheet, PageSheet};
 use crate::shell::{HostRequest, HostRequests};
 
 /// What the page tells its desktop about the workspace directory
@@ -88,7 +88,19 @@ impl tilo_session::directory::Host for PageHost {
 }
 
 /// The sheet over the page, while it is up.
-pub(crate) struct PageDirectory {
+type Wake = Arc<dyn Fn() + Send + Sync>;
+
+/// The page's directory sheet, as the sheets' code makes it
+/// (`crate::over_page::SHEETS`).
+pub(crate) fn make(
+    requests: HostRequests,
+    config: Option<&PageDirectoryConfig>,
+    wake: &Wake,
+) -> Box<dyn PageSheet> {
+    Box::new(PageDirectory::new(requests, config, wake))
+}
+
+struct PageDirectory {
     host: PageHost,
     store: Store,
     seat: DirectorySeat,
@@ -98,11 +110,7 @@ pub(crate) struct PageDirectory {
 }
 
 impl PageDirectory {
-    pub(crate) fn new(
-        requests: HostRequests,
-        config: Option<&PageDirectoryConfig>,
-        wake: &Arc<dyn Fn() + Send + Sync>,
-    ) -> Self {
+    fn new(requests: HostRequests, config: Option<&PageDirectoryConfig>, wake: &Wake) -> Self {
         let community = config
             .map(|config| config.site.trim())
             .filter(|site| !site.is_empty())
@@ -130,13 +138,15 @@ impl PageDirectory {
             built: (Directory::default(), u64::MAX),
         }
     }
+}
 
+impl PageSheet for PageDirectory {
     /// Put the sheet up, as the session's shell does.
-    pub(crate) fn open(&self) {
+    fn open(&self) {
         tilo_session::directory::open(Some(&self.seat), &self.store, &self.host);
     }
 
-    pub(crate) fn is_open(&self) -> bool {
+    fn is_open(&self) -> bool {
         self.seat.presentation().is_open()
     }
 }

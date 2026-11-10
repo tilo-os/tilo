@@ -489,10 +489,10 @@ pub(crate) struct BrowserShell {
     follow: RefCell<tilo_session_core::presence::Follow>,
     /// The workspace directory, over the page while it is up: the session's
     /// own sheet, with this page's site, person and workspaces.
-    directory: crate::over_page::OverPage<crate::directory::PageDirectory>,
+    directory: crate::over_page::OverPage<crate::over_page::LazySheet>,
     /// The invite sheet, over the page while it is up: the session's own,
     /// made and listed through the workspace's host.
-    invite: crate::over_page::OverPage<crate::invite::PageInvite>,
+    invite: crate::over_page::OverPage<crate::over_page::LazySheet>,
     /// The shortcut guide, over the page while it is up: the session's own,
     /// explaining and changing the table this page's desk answers.
     guide: crate::over_page::OverPage<PageGuide>,
@@ -646,14 +646,14 @@ impl BrowserShell {
         top.set_switcher(walk.panel());
         // The page's directory: over the desk, from this page's own site,
         // person and workspaces (`mountDesktop({directory})`).
-        let directory = crate::over_page::OverPage::new(crate::directory::PageDirectory::new(
+        let directory = crate::over_page::OverPage::new(crate::over_page::LazySheet::directory(
             Rc::clone(&requests),
             offers.directory.as_ref(),
             &chrome.wake,
         ));
         // The page's invite sheet, over everything: the session's own, made
         // through the peer's workspace host (`mountDesktop({invite})`).
-        let invite = crate::over_page::OverPage::new(crate::invite::PageInvite::new(
+        let invite = crate::over_page::OverPage::new(crate::over_page::LazySheet::invite(
             Rc::clone(&requests),
             offers.invite.as_ref(),
             shared,

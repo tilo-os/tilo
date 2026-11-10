@@ -7,8 +7,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use spellcheck::{
-    builtin_dictionaries, defer_dictionaries, dictionaries_generation, install_dictionaries,
-    spans_for_language, suggestions_for_language,
+    DICTIONARIES, builtin_dictionaries, dictionaries_generation, spans_for_language,
+    suggestions_for_language,
 };
 
 static FETCHES: AtomicUsize = AtomicUsize::new(0);
@@ -19,14 +19,14 @@ fn fetch() {
 
 #[test]
 fn checks_flag_words_once_the_dictionaries_are_in() {
-    defer_dictionaries(fetch);
+    DICTIONARIES.defer(fetch);
     let text = "the quikc fox";
     assert!(spans_for_language("en-US", text).is_empty());
     assert!(spans_for_language("en-US", text).is_empty());
     assert_eq!(FETCHES.load(Ordering::SeqCst), 1, "one fetch at a time");
 
     let generation = dictionaries_generation();
-    install_dictionaries(builtin_dictionaries);
+    DICTIONARIES.install(builtin_dictionaries());
     assert_eq!(dictionaries_generation(), generation + 1);
     assert_eq!(spans_for_language("en-US", text), vec![(4, 9)]);
     assert!(

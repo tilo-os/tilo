@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::task::{Poll, Waker};
 
-use tilo_lock::MutexRecover as _;
+use crate::MutexRecover as _;
 
 /// One piece of code a program fetches on first use; see the module
 /// documentation.
@@ -105,6 +105,11 @@ impl<T: Copy> Deferred<T> {
             }
         }
         value
+    }
+
+    /// Whether a fetch of the code is on its way.
+    pub fn fetching(&self) -> bool {
+        self.value.get().is_none() && self.requested.load(Ordering::Acquire)
     }
 
     /// Bumped when the code arrives: what was made without it is made again

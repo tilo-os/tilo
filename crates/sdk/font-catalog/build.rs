@@ -84,7 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// The manifest as Rust (`OUT_DIR/manifest.rs`, which `manifest()` builds), so
+/// The manifest as a Rust table (`OUT_DIR/manifest.rs`, which `manifest()` reads), so
 /// no program parses TOML for it: a browser's start module carried a TOML
 /// parser for this alone. A manifest of another schema, or missing a field,
 /// fails the build.
@@ -100,7 +100,7 @@ fn write_manifest() -> Result<(), Box<dyn std::error::Error>> {
     // A string as a Rust literal, a number as itself.
     let field = |of: &Value, key: &str| -> Result<String, String> {
         match of.get(key) {
-            Some(Value::String(text)) => Ok(format!("{text:?}.to_owned()")),
+            Some(Value::String(text)) => Ok(format!("{text:?}")),
             Some(Value::Integer(number)) => Ok(number.to_string()),
             _ => Err(format!("manifest.toml: a font has no `{key}`")),
         }
@@ -113,11 +113,11 @@ fn write_manifest() -> Result<(), Box<dyn std::error::Error>> {
         let names: Vec<String> = names
             .iter()
             .filter_map(Value::as_str)
-            .map(|name| format!("{name:?}.to_owned()"))
+            .map(|name| format!("{name:?}"))
             .collect();
-        format!("vec![{}]", names.join(", "))
+        format!("&[{}]", names.join(", "))
     };
-    let mut out = String::from("Manifest { schema: 1, font: vec![\n");
+    let mut out = String::from("&[\n");
     for font in table
         .get("font")
         .and_then(Value::as_array)
@@ -136,7 +136,7 @@ fn write_manifest() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("manifest.toml: no faces")?
         {
             faces.push(format!(
-                "Face {{ index: {}, family: {}, post_script_name: {}, style: {}, tilo_families: {} }}",
+                "({}, {}, {}, {}, {})",
                 field(face, "index")?,
                 field(face, "family")?,
                 field(face, "post_script_name")?,
@@ -146,7 +146,7 @@ fn write_manifest() -> Result<(), Box<dyn std::error::Error>> {
         }
         writeln!(
             out,
-            "Asset {{ scope: Scope::{scope}, browser_startup: {}, file: {}, bytes: {}, sha256: {}, reserved_aliases: {}, faces: vec![{}] }},",
+            "(Scope::{scope}, {}, {}, {}, {}, {}, &[{}]),",
             font.get("browser_startup")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
@@ -157,7 +157,7 @@ fn write_manifest() -> Result<(), Box<dyn std::error::Error>> {
             faces.join(", "),
         )?;
     }
-    out += "] }\n";
+    out += "]\n";
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").ok_or("cargo sets OUT_DIR")?);
     std::fs::write(out_dir.join("manifest.rs"), out)?;
     Ok(())
