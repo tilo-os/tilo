@@ -252,11 +252,13 @@ fn opening_an_app_lays_out_the_row_in_place() {
     for (others, opened) in [(1, &one), (6, &six)] {
         // The window joins the row and its slot springs open beside the
         // others: every frame of the motion restyles nodes the tree keeps.
-        // What still rebuilds is the window joining the row and the app's
+        // What still rebuilds is the window joining the row, the app's
         // component arriving in its window (its bound callbacks name the
-        // tile's nodes): a count that no longer grows with the frames.
+        // tile's nodes), and the app declaring what its bar holds, which
+        // decides whether that bar is the window's own or the row of the
+        // app's: a count that no longer grows with the frames.
         assert!(
-            opened.opening.rebuilt <= 2 && opened.arrived.rebuilt <= 1,
+            opened.opening.rebuilt <= 2 && opened.arrived.rebuilt <= 2,
             "opening Notes beside {others} others rebuilt the desktop's layout tree {} times over {} frames: opening {:?}, arriving {:?}",
             opened.rebuilt(),
             opened.opening_frames,

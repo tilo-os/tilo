@@ -282,6 +282,11 @@ pub struct WindowGroup {
     /// `TileHost`'s shape stable. Swept once `elapsed > CLOSE_FADE_MS`.
     closing_hosts: HashMap<u64, Instant>,
     style_dirty: bool,
+    /// The active tab's app declared slots for the window's bar, or stopped declaring them, since
+    /// the last layout. Which row is the window's bar turns on that ([`Self::offer_bar_to_app`]:
+    /// a window hands its bar to the app's own row only while the app declares none), so the
+    /// window lays itself out whole again rather than restyling the nodes it has.
+    bar_offer_dirty: bool,
     /// The tab id the current taffy tile-node was built for. `build_layout` builds only the
     /// *active* tab's host, so on an active-tab switch the cached node still belongs to the old
     /// one, and without a rebuild the new tab inherits a childless leaf and renders at a stale
@@ -490,6 +495,7 @@ impl WindowGroup {
             reduce_motion: false,
             motion_source: crate::tokens::MotionSource::default(),
             style_dirty: false,
+            bar_offer_dirty: false,
             built_active: Some(active_id),
             node: None,
             laid_shape: None,
@@ -2013,11 +2019,21 @@ impl WindowGroup {
         id: u64,
         toolbar: Option<crate::window_toolbar::WindowToolbar>,
     ) -> bool {
+        let active = self.bar.active_id();
+        let declared_before = self.bar.toolbar(active).is_some();
         let changed = self.bar.set_toolbar(id, toolbar);
         if changed {
             // The bar may change its height, and its row its content.
             self.style_dirty = true;
             self.grip_dirty = true;
+            // Whether the window draws that bar or its app's own row does turns on the app
+            // declaring nothing ([`Self::offer_bar_to_app`]), so an app that declares its slots
+            // (or gives them up) while its window is up is asked again by a layout built whole:
+            // a restyle keeps the row the window holds now, and the app's slots would never
+            // reach the bar.
+            if id == active && declared_before != self.bar.toolbar(active).is_some() {
+                self.bar_offer_dirty = true;
+            }
         }
         changed
     }
@@ -3728,6 +3744,8 @@ impl Widget for WindowGroup {
             }
         }
         let style = std::mem::take(&mut self.style_dirty);
+        // An app declaring its bar's slots moves the bar between the window and the app's own row.
+        let offered = std::mem::take(&mut self.bar_offer_dirty);
         let active_switched = self.built_active != Some(active);
         let closing = self.is_closing()
             && !self.close_complete()
@@ -3735,8 +3753,9 @@ impl Widget for WindowGroup {
         // A new width, slide or maximized state moves nodes the window
         // keeps; a bar that came or went, or another tab, builds it again.
         let reshaped = self.node.is_some() && self.laid_shape != Some(self.layout_shape());
-        let own = if bar || active_switched || closing || reshaped || self.node.is_none() {
-            StructureChange::of(bar || style || active_switched || closing || reshaped)
+        let own = if bar || offered || active_switched || closing || reshaped || self.node.is_none()
+        {
+            StructureChange::of(bar || offered || style || active_switched || closing || reshaped)
         } else if style {
             StructureChange::Children
         } else {

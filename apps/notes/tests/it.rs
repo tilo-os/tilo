@@ -109,6 +109,8 @@ mod canonical_views;
 #[path = "sidebar_selection.rs"]
 mod sidebar_selection;
 
+#[path = "empty_desk_new_note.rs"]
+mod empty_desk_new_note;
 #[path = "hosted_header_controls.rs"]
 mod hosted_header_controls;
 #[path = "note_context_menu.rs"]
