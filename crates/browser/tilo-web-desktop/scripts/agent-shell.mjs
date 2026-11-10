@@ -687,20 +687,30 @@ async function planActions(agent, apps) {
       note = pages.length ? `${path}/${pages[0]}` : path;
     }
     if (note) {
-      const noteActions = await actionsOf(note);
-      // The action's path as the app publishes it: the write goes where the
-      // app says it lives, not where a guess would.
-      const write = writing(noteActions);
+      // The text lives in the note's body, a part of the note rather than the
+      // note: the write action is asked for at the part the note publishes,
+      // which is where its own listing says the text goes.
+      let writeAt = note;
+      let noteActions = await actionsOf(note);
+      let write = writing(noteActions);
+      if (!write) {
+        for (const part of resourceNames((await ask('tilo_ls', {path: note})).text).slice(0, 4)) {
+          const at = `${note}/${part}`;
+          const rows = await actionsOf(at);
+          const found = writing(rows);
+          if (found) { writeAt = at; noteActions = rows; write = found; break; }
+        }
+      }
       if (write) {
         // One invocation writing three paragraphs: the person following sees
         // the text land line by line, which is what `following-mid-edit` catches.
         steps.push({label: 'writing in the note', tool: 'tilo_do', args: {calls: [
-          {path: `${note}#${write.name}`, args: {text: 'Launch notes, from Claude Code.'}},
-          {path: `${note}#${write.name}`, args: {text: 'Each line lands in the workspace as I write it.'}},
-          {path: `${note}#${write.name}`, args: {text: 'Following me puts this window in front of you.'}},
+          {path: `${writeAt}#${write.name}`, args: {text: 'Launch notes, from Claude Code.'}},
+          {path: `${writeAt}#${write.name}`, args: {text: 'Each line lands in the workspace as I write it.'}},
+          {path: `${writeAt}#${write.name}`, args: {text: 'Following me puts this window in front of you.'}},
         ]}});
         steps.push({label: 'writing the next paragraph', tool: 'tilo_do',
-          args: {path: `${note}#${write.name}`, args: {text: 'A second invocation, a moment later.'}}});
+          args: {path: `${writeAt}#${write.name}`, args: {text: 'A second invocation, a moment later.'}}});
         steps.push({label: 'reading the note back', tool: 'tilo_read', args: {path: note}});
       } else {
         log('agent: the note publishes no action to write with', noteActions.map(row => row.name).join(' '));
