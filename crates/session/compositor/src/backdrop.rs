@@ -232,8 +232,9 @@ fn read_back(
 }
 
 impl dyn crate::Backend {
-    /// Hand every hosted surface that draws translucent material the backdrops that changed.
-    pub(crate) fn serve_backdrops(&mut self, state: &mut State) {
+    /// Hand every hosted surface that draws translucent material the backdrops that changed, and
+    /// answer the hosts that were handed one: those draw their material in the frame being built.
+    pub(crate) fn serve_backdrops(&mut self, state: &mut State) -> Vec<usize> {
         let requests: Vec<(usize, Vec<BackdropRequest>)> = state
             .hosts
             .iter()
@@ -248,6 +249,7 @@ impl dyn crate::Backend {
             .backdrops
             .watches
             .retain(|watch| live.contains(&watch.key));
+        let mut fed = Vec::new();
         for (host, list) in requests {
             if list.is_empty() {
                 continue;
@@ -269,8 +271,10 @@ impl dyn crate::Backend {
                 && let Some(surface) = state.hosts.get_mut(host)
             {
                 surface.set_backdrops(images);
+                fed.push(host);
             }
         }
+        fed
     }
 }
 

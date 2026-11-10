@@ -102,14 +102,26 @@ pub(crate) fn own_face(own: &crate::sync::OwnPresence, seated: &str) -> (String,
 /// [`Shown::card_open`] while it stands there.
 const SELF_CARD: &str = "";
 
+/// How the roster kept on screen stands at its edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Rest {
+    /// It waits at its edge, drawn where it waits.
+    Here,
+    /// The next frame shows it coming in.
+    Arriving,
+    /// It keeps its pin but waits away from the desk: nobody else is here to show.
+    Waiting,
+    /// It is on its way back into the bar; once it has gone, the pin goes with it.
+    Leaving,
+}
+
 /// The roster kept on screen: where it waits, how it arrived, and how it is dragged to another
 /// edge of the desk. What it shows is the roster's own painting, at an edge.
 struct Pinned {
     /// The edge it waits at, as the person's settings keep it.
     edge: DockEdge,
-    /// It comes in when it is first placed, and leaves once it is put back in the bar.
-    arriving: bool,
-    gone: bool,
+    /// Whether it stands, comes in, waits away or leaves.
+    rest: Rest,
     shown: Presence,
     /// The panel as drawn this frame.
     panel: Rect,
@@ -136,8 +148,7 @@ impl Pinned {
         }
         Self {
             edge,
-            arriving: !resting,
-            gone: false,
+            rest: if resting { Rest::Here } else { Rest::Arriving },
             shown,
             panel: Rect::ZERO,
             drag: None,
@@ -152,8 +163,7 @@ impl Pinned {
     /// Whether anything of it is moving: arriving, leaving, sprung to its slot, or dragged.
     fn is_moving(&self, now: ui::time::Instant) -> bool {
         self.remeasured
-            || self.arriving
-            || self.gone
+            || matches!(self.rest, Rest::Arriving | Rest::Leaving)
             || self.drag.is_some_and(|drag| drag.dragging)
             || self.shown.is_moving(now)
             || self.settle.is_moving(now)
@@ -207,6 +217,14 @@ impl Shown {
         self.own_card = false;
         self.card_open = None;
     }
+
+    /// Whether the roster stands kept at an edge of the desk, drawn and pressed where it waits: a
+    /// pin waiting away with nobody else here does not.
+    fn standing(&self) -> bool {
+        self.pinned
+            .as_ref()
+            .is_some_and(|pin| pin.rest != Rest::Waiting)
+    }
 }
 
 /// The People panel and the other people's pointers: one surface above the chrome, so the desk
@@ -254,9 +272,9 @@ fn keep_pinned(pinned: bool, edge: DockEdge) {
 impl People {
     /// Open the roster, or close it again: what the bar's faces do.
     pub fn toggle(&self) {
-        // Kept on screen, the roster is already where the faces would open it: they have nothing
-        // to do, and the panel's own button puts it back in the bar.
-        if self.shown.borrow().pinned.is_some() {
+        // Kept on screen and standing, the roster is already where the faces would open it: they
+        // have nothing to do, and the panel's own button puts it back in the bar.
+        if self.shown.borrow().standing() {
             return;
         }
         // Their press closed it a moment ago: this is that press, not another.
@@ -322,11 +340,6 @@ impl People {
         self.open.get()
     }
 
-    /// Whether the roster is kept on screen at an edge now.
-    pub fn is_pinned(&self) -> bool {
-        self.shown.borrow().pinned.is_some()
-    }
-
     /// Close the roster: the person pressed elsewhere.
     pub fn dismiss(&self) {
         if !self.open.replace(false) {
@@ -387,7 +400,7 @@ impl Published for People {
     }
 
     fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
-        if !self.open.get() && !self.is_pinned() {
+        if !self.open.get() && !self.shown.borrow().standing() {
             return None;
         }
         self.layer().and_then(|layer| layer.a11y_tree())
@@ -398,7 +411,7 @@ impl Published for People {
     }
 
     fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
-        (self.open.get() || self.is_pinned())
+        (self.open.get() || self.shown.borrow().standing())
             && self
                 .layer()
                 .is_some_and(|layer| layer.a11y_action(target, action))
@@ -412,14 +425,14 @@ impl Published for People {
     /// the host drew.
     fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
         match self.layer() {
-            Some(layer) if self.open.get() || self.is_pinned() => layer.controls(),
+            Some(layer) if self.open.get() || self.shown.borrow().standing() => layer.controls(),
             _ => Vec::new(),
         }
     }
 
     fn press(&mut self, name: &str) -> Result<(), String> {
         match self.layer() {
-            Some(layer) if self.open.get() || self.is_pinned() => layer.press(name),
+            Some(layer) if self.open.get() || self.shown.borrow().standing() => layer.press(name),
             _ => Err(format!("no control named {name}")),
         }
     }
@@ -428,7 +441,7 @@ impl Published for People {
     /// where they are. While a person's card stands in the roster's place, there are no rows to
     /// read: the card is what is read, and what is read is what the host drew of it.
     fn accessible_labels(&mut self) -> Vec<String> {
-        if !self.open.get() && !self.is_pinned() {
+        if !self.open.get() && !self.shown.borrow().standing() {
             return Vec::new();
         }
         if self.shown.borrow().card_open.is_some() {
@@ -448,7 +461,7 @@ impl Published for People {
                 pending.extend(node.children);
             }
         }
-        if shown.pinned.is_some() {
+        if shown.standing() {
             for row in &shown.rows {
                 if row.invited || row.own_device {
                     continue;
@@ -1012,7 +1025,7 @@ impl Panel {
                         .as_ref()
                         .map_or(DockEdge::Right, |pin| pin.edge);
                     if let Some(pin) = shown.pinned.as_mut() {
-                        pin.gone = true;
+                        pin.rest = Rest::Leaving;
                     }
                     keep_pinned(false, edge);
                 } else {
@@ -1213,24 +1226,41 @@ impl Panel {
         if shown.pinned.is_none() && !self.open.get() {
             return;
         }
-        if shown.pinned.is_none() {
+        // The bar's faces open the roster where they stand, kept on screen or not.
+        if self.open.get() {
             self.draw_one_roster(scene, transform, text, theme, presence, shown, None);
             return;
         }
         if let Some(pin) = shown.pinned.as_mut() {
-            if pin.arriving {
-                pin.arriving = false;
-                pin.shown
-                    .show(true, Appear::SPEC, motion, ui::motion::input_source(), now);
+            match pin.rest {
+                Rest::Leaving => {
+                    pin.shown
+                        .show(false, Appear::SPEC, motion, ui::motion::input_source(), now);
+                    if !pin.shown.is_visible(now) {
+                        shown.pinned = None;
+                    }
+                }
+                // Kept at an edge with nobody else here, the roster has nothing to say but that:
+                // it waits away from the desk, its pin kept, and comes in when someone arrives.
+                _ if shown.rows.is_empty() => {
+                    if pin.rest != Rest::Waiting {
+                        pin.rest = Rest::Waiting;
+                        pin.shown.snap(false);
+                    }
+                }
+                Rest::Arriving | Rest::Waiting => {
+                    pin.rest = Rest::Here;
+                    pin.shown
+                        .show(true, Appear::SPEC, motion, ui::motion::input_source(), now);
+                }
+                Rest::Here => {}
             }
-            if pin.gone {
-                pin.shown
-                    .show(false, Appear::SPEC, motion, ui::motion::input_source(), now);
-            }
-            if !pin.shown.is_visible(now) {
-                shown.pinned = None;
-            }
-        } else if !self.open.get() {
+        }
+        let Some(pin) = shown.pinned.as_ref() else {
+            return;
+        };
+        if !pin.shown.is_visible(now) {
+            // Waiting away with nothing to show, or on its way back into the bar.
             return;
         }
         let area = shown.area;
@@ -1417,6 +1447,10 @@ impl Panel {
             let Some(pin) = shown.pinned.as_mut() else {
                 return false;
             };
+            if pin.rest == Rest::Waiting {
+                // Waiting away with nobody else here: there is no panel of it to press.
+                return false;
+            }
             match event {
                 WindowEvent::CursorMoved { position, .. } => {
                     pin.pointer = logical(*position, ctx.scale_factor);
@@ -1540,7 +1574,7 @@ impl Widget for Panel {
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         let shown = self.shown.borrow();
-        if (self.open.get() || shown.pinned.is_some()) && !self.profile.is_open() {
+        if (self.open.get() || shown.standing()) && !self.profile.is_open() {
             // Each control says where it stands and carries what pressing it does, so a reader
             // presses the roster's own buttons as the person does.
             return Some(shown.overlay.accessibility_with_targets());
@@ -1638,7 +1672,7 @@ impl Widget for Panel {
         }
         // Kept on screen, the roster is pressed by the person's own pointer: it draws and answers
         // where it stands, and never takes the keyboard.
-        let kept = self.shown.borrow().pinned.is_some();
+        let kept = self.shown.borrow().standing();
         if !self.open.get() && !kept {
             self.handle_pinned(event, ctx);
             return;
@@ -1688,7 +1722,7 @@ impl Widget for Panel {
         }
         // Kept on screen, a press on its header drags it to another edge: a card's own press is
         // the card's.
-        let drags = shown.pinned.is_some()
+        let drags = shown.standing()
             && shown
                 .cursor
                 .is_some_and(|point| shown.overlay.header_rect().contains(point));

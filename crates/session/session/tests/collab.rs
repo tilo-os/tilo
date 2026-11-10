@@ -1230,3 +1230,108 @@ fn the_roster_kept_on_screen_shows_who_is_here_and_follows_them() {
         "the panel is gone from the desk"
     );
 }
+
+/// What the desk shows now.
+fn frame(session: &mut Session) -> tilo_compositor::Screenshot {
+    session
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .expect("a frame of the session")
+}
+
+/// How many pixels of the desk differ between two frames of it.
+fn differing(before: &tilo_compositor::Screenshot, after: &tilo_compositor::Screenshot) -> usize {
+    before
+        .rgba
+        .chunks_exact(4)
+        .zip(after.rgba.chunks_exact(4))
+        .filter(|(a, b)| a != b)
+        .count()
+}
+
+/// Kept on screen with nobody else here, the roster waits off the desk with its pin kept: the desk
+/// is the person's work, not a card saying there is no one to show. Someone arriving brings it in.
+#[test]
+fn a_pinned_roster_waits_off_the_desk_while_the_person_is_alone() {
+    let _settled = ui::motion::testing::settled();
+    let (_home, _settings) = settings_home();
+    let own = OwnPresence {
+        label: "Quinten".to_owned(),
+        ..OwnPresence::default()
+    };
+    let sync = Rc::new(Client::untethered(device(0xf0), own));
+    let mut session = session(&sync);
+
+    // Alone, the bar's faces open the roster, and its own button keeps it on screen.
+    press_faces(&mut session);
+    let keep = holding(&people(&session), "Keep on screen");
+    press(&mut session, keep);
+    for _ in 0..8 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    let named: Vec<String> = session
+        .a11y_windows()
+        .into_iter()
+        .map(|(_, window, _)| window)
+        .collect::<Vec<String>>();
+    assert!(
+        !named.iter().any(|window| window == "People"),
+        "nothing of the roster stands over the desk: {named:?}"
+    );
+    let said = session.accessible_labels();
+    assert!(
+        !said
+            .iter()
+            .any(|name| name == "Nobody else is here right now"),
+        "the desk holds no card saying nobody is here: {said:?}"
+    );
+    capture(&mut session, "roster-waiting-alone");
+
+    // Ada arrives, and the roster kept on screen comes in with what she is doing, its pin kept:
+    // nothing is pressed again.
+    sync.hear(hello(0xaa, "Framework 16"));
+    arrived_as(&sync, 0xaa, "Ada");
+    for _ in 0..8 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    let said = said_by(&people(&session));
+    assert!(said.iter().any(|name| name == "Ada"), "{said:?}");
+    assert!(
+        said.iter().any(|name| name == "Put back in the bar"),
+        "the roster is kept on screen without being pinned again: {said:?}"
+    );
+    capture(&mut session, "roster-back-for-ada");
+}
+
+/// The roster's first frame on the desk is its last: the material it is made of is blurred before
+/// the frame is shown, so a still desk does not keep a flat card and repaint it a frame later.
+#[test]
+fn the_rosters_first_frame_on_the_desk_is_final() {
+    let _settled = ui::motion::testing::settled();
+    let (_home, _settings) = settings_home();
+    let own = OwnPresence {
+        label: "Quinten".to_owned(),
+        ..OwnPresence::default()
+    };
+    let sync = Rc::new(Client::untethered(device(0xf0), own));
+    let mut session = session(&sync);
+    for _ in 0..4 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+
+    // The faces open the roster, and the frame that draws it is the one the person sees: the next
+    // turn of the session draws nothing new.
+    session
+        .invoke(CHROME_RESOURCE, "toggle-collaborators", &Arguments::new())
+        .expect("the bar's faces open who is here");
+    session.step(Duration::from_millis(1)).expect("step");
+    let first = frame(&mut session);
+    session.step(Duration::from_millis(1)).expect("step");
+    let second = frame(&mut session);
+    assert_eq!(
+        differing(&first, &second),
+        0,
+        "the roster's material is drawn in its first frame"
+    );
+    capture(&mut session, "roster-first-frame");
+}

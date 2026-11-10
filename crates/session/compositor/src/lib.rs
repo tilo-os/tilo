@@ -1860,6 +1860,16 @@ impl Compositor {
             host.set_frame_interval(interval);
             drew |= host.prepare_frame();
         }
+        // A surface drawing the translucent material fills it with the opaque stand-in of what lies
+        // below it, and gets the blurred pixels in place of them: the pass draws and blurs that
+        // backdrop before the frame is shown, and the surfaces just handed one draw their material
+        // in this same turn. Presenting the stand-in would flash a flat card over the desk, which a
+        // still desk would keep until the next input.
+        for index in self.data.backend.serve_backdrops(&mut self.data.state) {
+            if let Some(host) = self.data.state.hosts.get_mut(index) {
+                drew |= host.prepare_frame();
+            }
+        }
         if drew {
             self.data.state.mark_redraw_all();
         }
@@ -1898,12 +1908,11 @@ impl Compositor {
             self.recorder.settle_unpainted_input();
         }
         // The frame is on the output now, so the clients that drew it hear about it before anything
-        // the frame itself asked for is served: a capture to read back, a blur of what lies below a
-        // window. Those go with the frame but are not what answers it, so they run behind it and
-        // the client starts its next frame while they are made.
+        // the frame itself asked for is served: a capture to read back. Those go with the frame but
+        // are not what answers it, so they run behind it and the client starts its next frame while
+        // they are made.
         self.display.flush_clients()?;
         self.data.backend.serve_captures(&mut self.data.state);
-        self.data.backend.serve_backdrops(&mut self.data.state);
         // Answers read back after the frame's own pictures, and whatever is still queued for
         // clients, reach them here.
         self.data.state.confirm_lock();
