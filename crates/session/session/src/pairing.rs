@@ -22,9 +22,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
+use crate::platform::fabric::SharedLink;
 use tilo_actions::remote::{Pending, pending};
 use tilo_actions::{ActionArgs, ActionParam, ParamType};
-use tilo_device_fabric::link::SharedLink;
 use tilo_identity_host::device_admin::{
     Approval, Candidate, ENROLL, KeyHolding, PairRole, PersonPaths, approval_args, command_error,
     node_id,

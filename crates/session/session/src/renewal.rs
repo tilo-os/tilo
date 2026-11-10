@@ -27,7 +27,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tilo_device_fabric::link::SharedLink;
+use crate::platform::fabric::SharedLink;
 use tilo_identity_host::provisioning::RENEWAL_CAUSES;
 use tilo_user_identity::IdentityPaths;
 

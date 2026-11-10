@@ -206,6 +206,7 @@ members = [
     "crates/collab/collab-fixtures",
     "crates/collab/collab-types",
     "crates/collab/collaboration",
+    "crates/collab/fabric-core",
     "crates/collab/neighbour-wire",
     "crates/collab/reference",
     "crates/collab/feedback-review",

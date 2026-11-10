@@ -146,7 +146,7 @@ pub(crate) struct Shared {
     pub(crate) hosted: bool,
     /// The person's device fabric, while this session runs on one.
     #[cfg(target_os = "linux")]
-    pub(crate) fabric: Option<tilo_device_fabric::link::SharedLink>,
+    pub(crate) fabric: Option<crate::platform::fabric::SharedLink>,
     /// The device VPN, while this session runs on a machine with the helper:
     /// its profiles' kill switches, and the route through another of the
     /// person's devices, which follows the pass.

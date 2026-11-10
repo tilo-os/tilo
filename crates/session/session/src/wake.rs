@@ -2,7 +2,7 @@
 //!
 //! A device that went to sleep off the network still answers a magic packet,
 //! and whichever of the person's devices shares its LAN sends it: this one
-//! when it does, one of its siblings otherwise ([`tilo_device_fabric::wake`]).
+//! when it does, one of its siblings otherwise ([`crate::platform::fabric::wake`]).
 //! This mount is the session's side of that — which interfaces this machine
 //! offers to be woken on, the packets it sends, the probes it answers, and
 //! what the person is told once the device comes back or does not.
@@ -21,11 +21,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tilo_device_fabric::link::SharedLink;
-use tilo_device_fabric::wake::{
+use crate::platform::fabric::SharedLink;
+use crate::platform::fabric::wake::{
     self, MagicPackets, ROUTE_SCAN_INTERVAL, UdpMagicPackets, WakeEvent, WakePlan, Waker, WatchStep,
 };
-use tilo_device_fabric::{
+use crate::platform::fabric::{
     DeviceId, Ipv4Subnet, MAX_WAKE_ROUTES, PersonalFabricAction, PersonalFabricActionEnvelope,
     WakeInterfaceKind, WakeOutcome, WakeRoute,
 };

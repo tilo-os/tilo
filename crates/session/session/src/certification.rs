@@ -13,8 +13,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use tilo_device_fabric::link::{FabricLink, SharedLink};
-use tilo_device_fabric::{DeviceId, PersonalFabricAction, PersonalFabricActionEnvelope};
+use crate::platform::fabric::{DeviceId, PersonalFabricAction, PersonalFabricActionEnvelope};
+use crate::platform::fabric::{FabricLink, SharedLink};
 use tilo_identity_host::certification_ceremony::{
     self as ceremony, Answer, Ask, Gathering, IdentityKey, Progress, Reply, Signer, Step,
 };
@@ -167,7 +167,10 @@ fn send(
     to: &DeviceId,
     action: PersonalFabricAction,
 ) -> Result<(), String> {
-    fabric.send_personal_fabric_action(to, action).map(drop)
+    fabric
+        .try_send_personal_fabric_action(to, action)
+        .map(drop)
+        .map_err(|error| error.to_string())
 }
 
 fn ask_action(ask: &Ask) -> Result<PersonalFabricAction, String> {
@@ -693,12 +696,12 @@ pub(crate) fn asking_step(fabric: Option<&SharedLink>) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::fabric::FabricRuntime;
+    use crate::platform::fabric::PersonalFabricSendError;
+    use crate::platform::fabric::{DeviceFabric, DeviceId};
     use iroh::EndpointId;
     use std::collections::{BTreeSet, HashMap};
     use threshold_identity::{SigningRound1Commitment, SigningRound2Partial, SigningSessionNonces};
-    use tilo_device_fabric::link::PersonalFabricSendError;
-    use tilo_device_fabric::runtime::FabricRuntime;
-    use tilo_device_fabric::{DeviceFabric, DeviceId};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason};
 
     /// The person's identity as first boot provisions it, in files.
@@ -822,18 +825,20 @@ mod tests {
             Some((self.device.clone(), self.label.into()))
         }
 
-        fn send_personal_fabric_action(
+        fn try_send_personal_fabric_action(
             &self,
             target: &DeviceId,
             action: PersonalFabricAction,
-        ) -> Result<[u8; 16], String> {
+        ) -> Result<[u8; 16], PersonalFabricSendError> {
             let peer = self
                 .wire
                 .links
                 .lock_recover()
                 .get(target.as_str())
                 .cloned()
-                .ok_or("that device is not reachable")?;
+                .ok_or_else(|| {
+                    PersonalFabricSendError::Rejected("that device is not reachable".into())
+                })?;
             let envelope = PersonalFabricActionEnvelope {
                 request_id: [7; 16],
                 source: self.device.clone(),
@@ -842,18 +847,11 @@ mod tests {
                 action,
             };
             if !handle_action(&peer, &envelope) {
-                return Err("not a certification action".into());
+                return Err(PersonalFabricSendError::Rejected(
+                    "not a certification action".into(),
+                ));
             }
             Ok([7; 16])
-        }
-
-        fn try_send_personal_fabric_action(
-            &self,
-            target: &DeviceId,
-            action: PersonalFabricAction,
-        ) -> Result<[u8; 16], PersonalFabricSendError> {
-            self.send_personal_fabric_action(target, action)
-                .map_err(PersonalFabricSendError::Rejected)
         }
 
         fn require_media(&self) -> Result<(), String> {

@@ -39,7 +39,7 @@ pub(crate) use triggers::{
 
 /// The person's certified devices as this session's fabric sees them: which of them this one is,
 /// and which are online to run a schedule's fire time.
-fn devices_of(fabric: Option<&tilo_device_fabric::link::SharedLink>) -> PersonalDevices {
+fn devices_of(fabric: Option<&crate::platform::fabric::SharedLink>) -> PersonalDevices {
     let Some(fabric) = fabric else {
         return PersonalDevices::default();
     };
@@ -78,7 +78,7 @@ pub struct Automation {
     /// and each waits its turn for the others.
     devices: Arc<triggers::FixedDevices>,
     /// This session's device fabric, while the person certified its device.
-    fabric: Option<tilo_device_fabric::link::SharedLink>,
+    fabric: Option<crate::platform::fabric::SharedLink>,
     /// The apps this session started, which an application-opened trigger follows.
     launches: Arc<crate::launches::Launches>,
     /// The folders file-changed triggers watch, and what changed in them.
@@ -114,7 +114,7 @@ pub struct Automation {
 /// notification policy, what each of its workspaces revokes, and which of the person's devices are
 /// online to run a schedule.
 pub struct Feeds {
-    pub fabric: Option<tilo_device_fabric::link::SharedLink>,
+    pub fabric: Option<crate::platform::fabric::SharedLink>,
     pub launches: Arc<crate::launches::Launches>,
     pub policy: Arc<std::sync::Mutex<NotificationPolicy>>,
     pub revocations: crate::engine::Revocations,

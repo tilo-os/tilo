@@ -18607,6 +18607,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-clock",
  "tilo-desktop-surface",
+ "tilo-fabric-core",
  "tilo-media",
  "tilo-nearby-service",
  "tilo-network-actor",
@@ -18894,6 +18895,16 @@ dependencies = [
  "tilo-test-env",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-fabric-core"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "serde",
+ "thiserror 2.0.21",
  "workspace-hack",
 ]
 
@@ -20009,6 +20020,7 @@ dependencies = [
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-endpoint-reachability",
+ "tilo-fabric-core",
  "tilo-files",
  "tilo-identity-host",
  "tilo-lock",
@@ -21464,6 +21476,7 @@ dependencies = [
  "tilo-documents",
  "tilo-durable-writer",
  "tilo-endpoint-reachability",
+ "tilo-fabric-core",
  "tilo-feedback",
  "tilo-files",
  "tilo-frame-metrics",

@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::platform::fabric::SharedLink;
 use device_vpn::controller::{self, AfterEnd, Want};
 use device_vpn::net::{CLIENT_INTERFACE, EXIT_INTERFACE, Ipv4Net, is_relay_address};
 use device_vpn::profile_block::{self, Sources, Vpns};
@@ -44,7 +45,6 @@ use settings_store::device_vpn::{
     ProfileBlockStatus, StopRequest, Through,
 };
 use settings_store::live::LiveSettings;
-use tilo_device_fabric::link::SharedLink;
 use tilo_lock::MutexRecover as _;
 use tokio::sync::watch;
 
@@ -373,7 +373,7 @@ struct Inputs {
 }
 
 /// The key a device is dialled by, from the id its fabric knows it by.
-fn key_of(device: &tilo_device_fabric::DeviceId) -> Option<[u8; 32]> {
+fn key_of(device: &crate::platform::fabric::DeviceId) -> Option<[u8; 32]> {
     let mut key = [0_u8; 32];
     hex::decode_to_slice(device.as_str().trim(), &mut key).ok()?;
     Some(key)

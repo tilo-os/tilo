@@ -184,8 +184,6 @@ mod engine;
 #[cfg(target_os = "linux")]
 mod env;
 #[cfg(target_os = "linux")]
-pub mod fabric;
-#[cfg(target_os = "linux")]
 mod feedback;
 #[cfg(target_os = "linux")]
 mod feeds;

@@ -1,5 +1,5 @@
 //! This session's way onto the person's certified devices: the fabric state it holds
-//! ([`tilo_device_fabric::runtime::FabricRuntime`]), the commands that carry it to their other
+//! ([`FabricRuntime`](super::FabricRuntime)), the commands that carry it to their other
 //! devices, and what a service on the fabric can ask of them.
 //! A session that took part as nobody — no certificate of the person's — keeps no fabric and is
 //! handed to nothing: there would be no device to name as the author of what it copies.
@@ -10,14 +10,17 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use iroh::EndpointId;
-use tilo_device_fabric::link::{FabricLink, PersonalFabricSendError};
-use tilo_device_fabric::runtime::FabricRuntime;
-use tilo_device_fabric::{
-    ClipboardEntry, DeviceFabric, DeviceId, PersonalFabricAction, PersonalFabricActionEnvelope,
-};
+use settings_store::continuity_privacy::ContinuityCapability;
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::PersonalFabricPayload;
 
+use super::{
+    ClipboardEntry, ContinuityNotificationProjection, DeviceFabric, FabricLink, FabricRuntime,
+    MediaSourceLocator, NearbySpoolOffer, OwnerSession, PersonalFabricAction,
+    PersonalFabricActionEnvelope, PersonalFabricSendError, SharedLink, UnlockFabricState,
+    WakeRoute, clock, open_wifi_credential,
+};
+use crate::platform::fabric::{DeviceId, nonzero};
 use crate::platform::plane::Cmd;
 
 /// What the person lets of this device continue on their other devices: each
@@ -46,13 +49,14 @@ impl Continuity {
             Some(_) => false,
         };
         let enabled = on("enabled");
-        self.media.store(enabled && on("media"), Ordering::Relaxed);
-        self.wifi_settings
-            .store(enabled && on("wifi_settings"), Ordering::Relaxed);
-        self.file_transfer
-            .store(enabled && on("file_transfer"), Ordering::Relaxed);
-        self.notifications
-            .store(enabled && on("notifications"), Ordering::Relaxed);
+        for (switch, facet) in [
+            (&self.media, ContinuityCapability::Media),
+            (&self.wifi_settings, ContinuityCapability::WifiSettings),
+            (&self.file_transfer, ContinuityCapability::FileTransfer),
+            (&self.notifications, ContinuityCapability::Notifications),
+        ] {
+            switch.store(enabled && on(facet.key()), Ordering::Relaxed);
+        }
     }
 
     fn media_permitted(&self) -> bool {
@@ -131,7 +135,7 @@ impl SessionFabric {
         self.runtime
             .lock_recover()
             .sibling(peer, certs, revocations);
-        self.announce();
+        self.announce(false);
     }
 
     /// The session with one of the person's devices ended: it is no longer here, and what it said
@@ -165,7 +169,7 @@ impl SessionFabric {
                         // worth only the timestamps it carries.
                         let device = self.runtime.lock_recover().device_behind(peer);
                         if let Some(device) = device
-                            && tilo_device_fabric::clock::arrived(self, &device, &action, received)
+                            && clock::arrived(self, &device, &action, received)
                         {
                             return;
                         }
@@ -179,7 +183,7 @@ impl SessionFabric {
             }
             // The other side has none of this device's fabric yet: it gets what this device says of
             // itself, whether or not anything changed since the last announcement.
-            PersonalFabricPayload::Request => self.announce(),
+            PersonalFabricPayload::Request => self.announce(false),
             // Where one of the person's devices says its outputs stand, and what their hardware
             // says: the fabric admits both for the exact revision the device's own record carries,
             // and the shared arrangement reads them from there.
@@ -223,13 +227,13 @@ impl SessionFabric {
     }
 
     /// Tell the person's other devices what this device says of itself, when its record moved since
-    /// the last announcement: a copy it made that its clipboard now shares, or a restarted session.
-    /// Nothing is announced while nothing moved.
-    pub(crate) fn announce_if_changed(&self) {
+    /// the last announcement or because another device asked for it.
+    pub(crate) fn announce(&self, if_changed: bool) {
         let mut runtime = self.runtime.lock_recover();
-        if !runtime.changed() {
+        if if_changed && !runtime.changed() {
             return;
         }
+        let _ = runtime.changed();
         if let Ok(snapshot) = runtime.own_snapshot() {
             self.publish(None, PersonalFabricPayload::Snapshot(snapshot));
         }
@@ -257,17 +261,6 @@ impl SessionFabric {
         );
     }
 
-    /// Announce this device's record now, clearing that it has news.
-    fn announce(&self) {
-        let mut runtime = self.runtime.lock_recover();
-        let _ = runtime.changed();
-        if let Ok(snapshot) = runtime.own_snapshot() {
-            self.publish(None, PersonalFabricPayload::Snapshot(snapshot));
-        }
-        drop(runtime);
-        self.announce_display();
-    }
-
     /// The actions addressed to this device since the last call, for the session's pass to route.
     pub(crate) fn take_actions(&self) -> Vec<PersonalFabricActionEnvelope> {
         self.runtime.lock_recover().take_actions()
@@ -276,7 +269,7 @@ impl SessionFabric {
     /// Probe the clock of every peer something here holds in sync, and forget every estimate while
     /// Media continuity is off: the session's loop calls this every pass.
     pub(crate) fn pump_clock(&self) {
-        tilo_device_fabric::clock::pump(self, self.continuity.media_permitted());
+        clock::pump(self, self.continuity.media_permitted());
     }
 
     fn publish(&self, target: Option<EndpointId>, payload: PersonalFabricPayload) {
@@ -305,15 +298,6 @@ impl FabricLink for SessionFabric {
         self.runtime.lock_recover().device_behind(endpoint)
     }
 
-    fn send_personal_fabric_action(
-        &self,
-        target: &DeviceId,
-        action: PersonalFabricAction,
-    ) -> Result<[u8; 16], String> {
-        self.try_send_personal_fabric_action(target, action)
-            .map_err(|error| error.to_string())
-    }
-
     fn try_send_personal_fabric_action(
         &self,
         target: &DeviceId,
@@ -336,7 +320,7 @@ impl FabricLink for SessionFabric {
                     "that device has no session with this one".into(),
                 ));
             };
-            let request_id = tilo_device_fabric::random::nonzero::<16>();
+            let request_id = nonzero::<16>();
             let envelope = PersonalFabricActionEnvelope {
                 request_id,
                 source: local.clone(),
@@ -369,7 +353,7 @@ impl FabricLink for SessionFabric {
     fn share_nearby_spool(
         &self,
         target: &DeviceId,
-        offer: tilo_device_fabric::link::NearbySpoolOffer,
+        offer: NearbySpoolOffer,
     ) -> Result<(), PersonalFabricSendError> {
         let endpoint = self
             .runtime
@@ -410,13 +394,7 @@ impl FabricLink for SessionFabric {
             .merged_wifi()
             .into_values()
             .filter(|credential| credential.ssid == ssid && credential.security == security)
-            .find_map(|credential| {
-                tilo_device_fabric::secrets::open_wifi_credential(
-                    &credential,
-                    &self.device_signing_key,
-                )
-                .ok()
-            })
+            .find_map(|credential| open_wifi_credential(&credential, &self.device_signing_key).ok())
     }
 
     fn share_wifi_password(
@@ -437,7 +415,7 @@ impl FabricLink for SessionFabric {
         Ok(())
     }
 
-    fn share_wake_routes(&self, routes: Vec<tilo_device_fabric::WakeRoute>) {
+    fn share_wake_routes(&self, routes: Vec<WakeRoute>) {
         let taken = self.runtime.lock_recover().set_wake_routes(routes);
         if let Err(error) = taken {
             tracing::warn!(%error, "this device's wake routes are not shared");
@@ -451,7 +429,7 @@ impl FabricLink for SessionFabric {
         }
     }
 
-    fn publish_owner_session(&self, session: tilo_device_fabric::OwnerSession) {
+    fn publish_owner_session(&self, session: OwnerSession) {
         let taken = self.runtime.lock_recover().set_owner_session(session);
         if let Err(error) = taken {
             tracing::warn!(%error, "this device's session is not said to the others");
@@ -482,7 +460,7 @@ impl FabricLink for SessionFabric {
         self.runtime.lock_recover().person_devices()
     }
 
-    fn share_unlock(&self, unlock: tilo_device_fabric::unlock::UnlockFabricState) {
+    fn share_unlock(&self, unlock: UnlockFabricState) {
         let taken = self.runtime.lock_recover().set_unlock(unlock);
         if let Err(error) = taken {
             tracing::warn!(%error, "this device's disk unlock is not shared");
@@ -498,10 +476,9 @@ impl crate::Session {
     /// this device continues from.
     pub(crate) fn route_fabric_action(
         &self,
-        fabric: &tilo_device_fabric::link::SharedLink,
-        envelope: &tilo_device_fabric::PersonalFabricActionEnvelope,
+        fabric: &SharedLink,
+        envelope: &PersonalFabricActionEnvelope,
     ) {
-        use tilo_device_fabric::PersonalFabricAction;
         if self.service_took(fabric, envelope) {
             return;
         }
@@ -614,11 +591,7 @@ impl crate::Session {
     /// Whether one of this session's services took `envelope` 's action: a Bluetooth accessory's
     /// move, a device to wake, a certification, a speaker service's. What they did not take is the
     /// session's own.
-    fn service_took(
-        &self,
-        fabric: &tilo_device_fabric::link::SharedLink,
-        envelope: &tilo_device_fabric::PersonalFabricActionEnvelope,
-    ) -> bool {
+    fn service_took(&self, fabric: &SharedLink, envelope: &PersonalFabricActionEnvelope) -> bool {
         self.shared
             .bluetooth
             .arrived(&self.shared, fabric, envelope)
@@ -635,9 +608,9 @@ impl crate::Session {
     /// named after that device.
     fn show_remote_notification(
         &self,
-        fabric: &tilo_device_fabric::link::SharedLink,
-        envelope: &tilo_device_fabric::PersonalFabricActionEnvelope,
-        notification: &tilo_device_fabric::notification::ContinuityNotificationProjection,
+        fabric: &SharedLink,
+        envelope: &PersonalFabricActionEnvelope,
+        notification: &ContinuityNotificationProjection,
     ) {
         let label = fabric
             .device_fabric()
@@ -655,11 +628,7 @@ impl crate::Session {
 
     /// Offer what another device was playing as the now-playing card, so the person can pick it up
     /// here.
-    fn offer_media(
-        &self,
-        fabric: &tilo_device_fabric::link::SharedLink,
-        envelope: &tilo_device_fabric::PersonalFabricActionEnvelope,
-    ) {
+    fn offer_media(&self, fabric: &SharedLink, envelope: &PersonalFabricActionEnvelope) {
         // What continues on this device follows the same media switch as what leaves it: with media
         // continuity off here, the offer is not made.
         if fabric.require_media().is_err() {
@@ -677,20 +646,18 @@ impl crate::Session {
             return;
         };
         let source = match locator {
-            tilo_device_fabric::MediaSourceLocator::Workspace { path } => {
-                media::handoff::HandoffSource::Workspace {
-                    path: std::path::PathBuf::from(path),
-                }
-            }
-            tilo_device_fabric::MediaSourceLocator::RemoteStream { url } => {
+            MediaSourceLocator::Workspace { path } => media::handoff::HandoffSource::Workspace {
+                path: std::path::PathBuf::from(path),
+            },
+            MediaSourceLocator::RemoteStream { url } => {
                 media::handoff::HandoffSource::RemoteStream { url: url.clone() }
             }
-            tilo_device_fabric::MediaSourceLocator::AppResource { uri } => {
+            MediaSourceLocator::AppResource { uri } => {
                 media::handoff::HandoffSource::AppResource { uri: uri.clone() }
             }
             // What arrives that way is held in the receiving shell's verified transfer store, which
             // this session has none of, so there is nothing here the card could resume.
-            tilo_device_fabric::MediaSourceLocator::PersonalTransfer { .. } => return,
+            MediaSourceLocator::PersonalTransfer { .. } => return,
         };
         let label = fabric
             .device_fabric()

@@ -235,7 +235,7 @@ fn attach_remote_use(actions: &crate::device_actions::DeviceActions, options: &O
 fn acting_fabric(
     options: &Options,
     sync: Option<&crate::sync::Client>,
-) -> Option<tilo_device_fabric::link::SharedLink> {
+) -> Option<crate::platform::fabric::SharedLink> {
     options
         .fabric
         .clone()

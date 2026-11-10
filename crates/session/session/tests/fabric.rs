@@ -20,14 +20,16 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tilo_device_fabric::clock::{ClockSyncState, fabric_monotonic_us, hold_fabric_clock_sync};
-use tilo_device_fabric::link::{FabricLink as _, SharedLink};
-use tilo_device_fabric::{
+use tilo_network_actor::HostIdentity;
+use tilo_session::platform::fabric::Continuity;
+use tilo_session::platform::fabric::clock::{
+    ClockSyncState, fabric_monotonic_us, hold_fabric_clock_sync,
+};
+use tilo_session::platform::fabric::{
     ClipboardEntry, ClipboardPayload, DeviceId, FabricStamp, PersonalFabricAction,
     PersonalFabricActionEnvelope,
 };
-use tilo_network_actor::HostIdentity;
-use tilo_session::fabric::Continuity;
+use tilo_session::platform::fabric::{FabricLink as _, SharedLink};
 use tilo_session::sync::{Client, Entry, OwnPresence};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
@@ -229,7 +231,7 @@ fn a_wake_reaches_the_other_session() {
 
     let request = laptop
         .fabric()
-        .send_personal_fabric_action(
+        .try_send_personal_fabric_action(
             &desk.id,
             PersonalFabricAction::WakeDevice {
                 target: pod.id.clone(),
@@ -275,7 +277,7 @@ fn an_action_addressed_to_a_third_device_is_not_delivered() {
 
     let request = laptop
         .fabric()
-        .send_personal_fabric_action(
+        .try_send_personal_fabric_action(
             &pod.id,
             PersonalFabricAction::WakeDevice {
                 target: desk.id.clone(),

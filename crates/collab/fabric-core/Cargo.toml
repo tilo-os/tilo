@@ -1,0 +1,27 @@
+[package]
+name = "tilo-fabric-core"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Who a device is, the revision a fact carries, and fresh ids: the fabric's portable vocabulary."
+
+[lib]
+name = "tilo_fabric_core"
+path = "src/lib.rs"
+
+[dependencies]
+getrandom.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Browser entropy for the ids the page issues.
+getrandom = { workspace = true, features = ["wasm_js"] }
+
+[lints]
+workspace = true

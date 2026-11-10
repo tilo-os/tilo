@@ -266,7 +266,7 @@ impl PublishedResources for Link {
 /// Settings route commands them: Settings asks for a snapshot, creates,
 /// edits and calibrates a group, and follows their changes, and the speaker
 /// service answers from the fabric the loop pumps.
-struct FabricSpeakers(tilo_device_fabric::link::SharedLink);
+struct FabricSpeakers(crate::platform::fabric::SharedLink);
 
 impl SpeakerServices for FabricSpeakers {
     fn command(&self, command: runtime_collab::SpeakerCommand) -> runtime_collab::SpeakerReply {
@@ -412,7 +412,7 @@ pub fn serve(
     socket: PathBuf,
     link: std::sync::Arc<Link>,
     launches: std::sync::Arc<Launches>,
-    fabric: Option<tilo_device_fabric::link::SharedLink>,
+    fabric: Option<crate::platform::fabric::SharedLink>,
     hosted: Hosted,
 ) -> std::io::Result<BrokerHandle> {
     let membership: WorkspaceAuthorityHandle = std::sync::Arc::clone(&hosted.desk) as _;
@@ -713,7 +713,7 @@ impl WorkspaceMemberships for SessionMemberships {
 fn host_services(
     link: std::sync::Arc<Link>,
     launches: std::sync::Arc<Launches>,
-    fabric: Option<tilo_device_fabric::link::SharedLink>,
+    fabric: Option<crate::platform::fabric::SharedLink>,
     hosted: Hosted,
     certificates: Option<std::sync::Arc<tilo_identity_authority::NativeCertificates>>,
     memberships: Option<std::sync::Arc<dyn WorkspaceMemberships>>,
@@ -740,7 +740,7 @@ fn host_services(
 fn seams(
     link: std::sync::Arc<Link>,
     launches: std::sync::Arc<Launches>,
-    fabric: Option<tilo_device_fabric::link::SharedLink>,
+    fabric: Option<crate::platform::fabric::SharedLink>,
     hosted: Hosted,
     certificates: Option<std::sync::Arc<tilo_identity_authority::NativeCertificates>>,
     memberships: Option<std::sync::Arc<dyn WorkspaceMemberships>>,
@@ -1188,14 +1188,14 @@ fn test_session_actions() -> std::sync::Arc<crate::session_actions::SessionActio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_device_fabric::link::{FabricLink, PersonalFabricSendError};
-    use tilo_device_fabric::speaker_group::{
+    use crate::platform::fabric::{
         AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerFabricState,
     };
-    use tilo_device_fabric::{
+    use crate::platform::fabric::{
         DeviceFabric, DeviceFabricSnapshot, DeviceId, DeviceKind, DevicePresence,
         FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricStamp, OwnerSession, PersonalFabricAction,
     };
+    use crate::platform::fabric::{FabricLink, PersonalFabricSendError};
 
     /// This laptop's device fabric, with the one output it publishes.
     struct Fabric {
@@ -1243,7 +1243,7 @@ mod tests {
                         }],
                         ..SpeakerFabricState::default()
                     },
-                    unlock: tilo_device_fabric::unlock::UnlockFabricState::default(),
+                    unlock: crate::platform::fabric::UnlockFabricState::default(),
                 })
                 .expect("the snapshot is valid");
             Self { local, converged }
@@ -1261,14 +1261,6 @@ mod tests {
 
         fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
             Some((self.local.clone(), "This laptop".into()))
-        }
-
-        fn send_personal_fabric_action(
-            &self,
-            _: &DeviceId,
-            _: PersonalFabricAction,
-        ) -> Result<[u8; 16], String> {
-            Err("no transport in a test".into())
         }
 
         fn try_send_personal_fabric_action(
@@ -1291,7 +1283,7 @@ mod tests {
         ))
     }
 
-    fn services(fabric: Option<tilo_device_fabric::link::SharedLink>) -> HostServices {
+    fn services(fabric: Option<crate::platform::fabric::SharedLink>) -> HostServices {
         let wake: Wake = std::sync::Arc::new(|| ());
         let link = Link::new(wake);
         host_services(

@@ -15,10 +15,10 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+use crate::platform::fabric::FabricLink;
+use crate::platform::fabric::{DeviceFabric, DeviceId, FabricStamp, RoamingSetting};
 use serde_json::{Map, Value};
 use settings_store::placement::Holder;
-use tilo_device_fabric::link::FabricLink;
-use tilo_device_fabric::{DeviceFabric, DeviceId, FabricStamp, RoamingSetting};
 
 /// How often the fabric is read when the settings here did not change: the fabric is a whole
 /// snapshot of every device, so it is read a few times a second rather than on every turn of the

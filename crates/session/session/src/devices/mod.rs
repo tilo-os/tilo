@@ -24,10 +24,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::platform::fabric::DeviceId;
+use crate::platform::fabric::SharedLink;
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
-use tilo_device_fabric::DeviceId;
-use tilo_device_fabric::link::SharedLink;
 use tilo_quick_settings::hosted::{
     DevicesReading, PersonalDevice, SendableSound, SoundAsk, SoundRoute,
 };

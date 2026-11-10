@@ -780,7 +780,8 @@ fn timed_source(
                 .upgrade()
                 .ok_or_else(|| crate::i18n::t("speaker-error-network-unavailable"))?;
             network
-                .send_personal_fabric_action(target, action)
+                .try_send_personal_fabric_action(target, action)
+                .map_err(|error| error.to_string())
                 .map(|_| ())
         }),
         peers,

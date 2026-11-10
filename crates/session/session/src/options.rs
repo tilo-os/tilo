@@ -11,9 +11,7 @@ use crate::BeforeDesk;
 use crate::displays::Backlights;
 use crate::rotation::Accelerometer;
 use crate::{AppActions, Launches, SearchOptions, Service, SessionAction, SessionConfig, Vpn};
-use crate::{
-    capture, controllers, desktop_services, engine, fabric, portal_link, surfaces, sync, unlock,
-};
+use crate::{capture, controllers, desktop_services, engine, portal_link, surfaces, sync, unlock};
 use tilo_desktop_surface::DesktopHandle;
 
 /// What a session starts with.
@@ -136,7 +134,7 @@ pub struct Options {
     pub sync: Option<Rc<sync::Client>>,
     /// The person's device fabric, when this session runs on one: what was copied here is shared
     /// with their other devices through it, and what they copied there joins the clipboard here.
-    pub fabric: Option<tilo_device_fabric::link::SharedLink>,
+    pub fabric: Option<crate::platform::fabric::SharedLink>,
     pub wake_seams: crate::wake::Seams,
     /// The device VPN, when this session runs on a machine with the helper: a VPN profile set to
     /// connect and not connected blocks traffic while its kill switch is on, and this device routes
@@ -242,7 +240,7 @@ pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
 /// devices the person's own store holds, and dialing theirs from it ([`crate::remote_door`]).
 pub(crate) fn start_collaboration(
     options: &Options,
-    continuity: fabric::Continuity,
+    continuity: crate::platform::fabric::Continuity,
     engine: Option<std::sync::Arc<engine::Engine>>,
     (beside, remote): (
         tilo_network_actor::local_host::Protocols,

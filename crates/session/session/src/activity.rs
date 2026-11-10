@@ -39,9 +39,9 @@ use crate::platform::watched::Watched;
 use tilo_actions::remote::workspace_activity as wire;
 
 #[cfg(target_os = "linux")]
-use crate::unlock_history::UnlockHistory;
+use crate::platform::fabric::SharedLink;
 #[cfg(target_os = "linux")]
-use tilo_device_fabric::link::SharedLink;
+use crate::unlock_history::UnlockHistory;
 
 /// The file this device's view was kept in before it was a record.
 const VIEW_FILE: &str = "activity-history.json";

@@ -1,7 +1,7 @@
 //! The person's own record of what their devices answered when one of them asked to
 //! be unlocked after a reboot.
 //! An answer is a fact the answering device signs and publishes in its own part of
-//! the person's device fabric ([`tilo_device_fabric::unlock`]); every one of their
+//! the person's device fabric ([`crate::platform::fabric::unlock`]); every one of their
 //! devices carries it. What the person reads is `member:<person>:device.unlock`,
 //! one document whose changes are those answers, so the activity history lists them
 //! beside everything else that happened.
@@ -15,13 +15,13 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use crate::platform::fabric::DeviceFabric;
+use crate::platform::fabric::{DecisionOutcome, UnlockDecisionRecord};
+use crate::platform::fabric::{FabricLink as _, SharedLink};
 use automerge::transaction::{CommitOptions, Transactable as _};
 use automerge::{ActorId, AutoCommit, ChangeHash, ObjType, OnPartialLoad, ROOT, ReadDoc as _};
 use tilo_actions::{ActionApp, ActionContext, ActionFacet, ActionItem, ActionKey, Did, Scalar};
 use tilo_desktop_surface::activity::DetachedRecordHistory;
-use tilo_device_fabric::DeviceFabric;
-use tilo_device_fabric::link::{FabricLink as _, SharedLink};
-use tilo_device_fabric::unlock::{DecisionOutcome, UnlockDecisionRecord};
 use ui::record::{RecordCheckout, RecordId, RecordKind};
 
 use crate::i18n::t;
@@ -36,7 +36,7 @@ const FILE: &str = "device-unlock.automerge";
 const APP: &str = "so.tilo.unlock";
 
 /// The kind of the person's own record of those answers.
-const KIND: &str = tilo_device_fabric::unlock::DEVICE_UNLOCK_ACTION;
+const KIND: &str = crate::platform::fabric::DEVICE_UNLOCK_ACTION;
 
 /// Where the document lives under `state` , this device's state directory.
 fn path(state: &Path) -> PathBuf {

@@ -26,6 +26,10 @@ pub mod apps;
 /// Whether this device still holds custody of a workspace, as its host checks it.
 pub mod custody;
 
+/// The person's certified devices, as a role reaches them.
+#[cfg(target_os = "linux")]
+pub mod fabric;
+
 /// The identity this device signs with, as its host keeps it.
 #[cfg(target_os = "linux")]
 pub mod identity;

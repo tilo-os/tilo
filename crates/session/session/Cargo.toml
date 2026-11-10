@@ -235,6 +235,8 @@ tilo-automerge = { path = "../../doc/tilo-automerge" }
 # The person's other devices: what was copied here is shared through
 # the same fabric as everything else that follows them.
 tilo-device-fabric = { path = "../device-fabric" }
+# The fabric's portable vocabulary: who a device is, the stamp a fact carries, fresh ids.
+tilo-fabric-core = { path = "../../collab/fabric-core" }
 # A sibling device's half of this device's disk key: the unlock exchange an
 # early-boot client speaks, and the sealed halves each device holds of the
 # other.

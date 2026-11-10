@@ -38,15 +38,15 @@ use crate::device_actions::DeviceActions;
 #[cfg(target_os = "linux")]
 use crate::engine::Engine;
 #[cfg(target_os = "linux")]
-use crate::fabric::{Continuity, SessionFabric};
+use crate::platform::fabric::DeviceId;
+#[cfg(target_os = "linux")]
+use crate::platform::fabric::FabricRuntime;
+#[cfg(target_os = "linux")]
+use crate::platform::fabric::{Continuity, SessionFabric};
 #[cfg(target_os = "linux")]
 use crate::sync::Enrolling;
 #[cfg(target_os = "linux")]
 use tilo_action_broker::record_content::ContentSources;
-#[cfg(target_os = "linux")]
-use tilo_device_fabric::DeviceId;
-#[cfg(target_os = "linux")]
-use tilo_device_fabric::runtime::FabricRuntime;
 #[cfg(target_os = "linux")]
 use tilo_endpoint_reachability::{Need, Reachability};
 #[cfg(target_os = "linux")]
@@ -1403,17 +1403,17 @@ impl Client {
     #[cfg(target_os = "linux")]
     pub fn announce_fabric(&self) {
         if let Some(fabric) = &self.fabric {
-            fabric.announce_if_changed();
+            fabric.announce(true);
         }
     }
 
     /// This device's fabric, when the person certified it: the link the session's services act on.
     #[must_use]
     #[cfg(target_os = "linux")]
-    pub fn fabric(&self) -> Option<tilo_device_fabric::link::SharedLink> {
+    pub fn fabric(&self) -> Option<crate::platform::fabric::SharedLink> {
         self.fabric
             .as_ref()
-            .map(|fabric| Arc::clone(fabric) as tilo_device_fabric::link::SharedLink)
+            .map(|fabric| Arc::clone(fabric) as crate::platform::fabric::SharedLink)
     }
 
     /// This session's Nearby Send, when the session made one.
@@ -1448,7 +1448,7 @@ impl Client {
     /// engine's to take, whether or not a session runs on this client.
     #[must_use]
     #[cfg(target_os = "linux")]
-    pub fn fabric_actions(&self) -> Vec<tilo_device_fabric::PersonalFabricActionEnvelope> {
+    pub fn fabric_actions(&self) -> Vec<crate::platform::fabric::PersonalFabricActionEnvelope> {
         let actions = self
             .fabric
             .as_ref()

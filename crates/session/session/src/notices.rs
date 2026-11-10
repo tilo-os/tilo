@@ -294,8 +294,8 @@ pub fn announce_medium(notifications: &Notifications, medium: &Medium) -> u32 {
 /// or `None` while there is nothing to tell: the signal went out and the
 /// session is still waiting for the device.
 #[must_use]
-pub fn wake_notice(event: &tilo_device_fabric::wake::WakeEvent) -> Option<Notice> {
-    use tilo_device_fabric::WakeOutcome;
+pub fn wake_notice(event: &crate::platform::fabric::wake::WakeEvent) -> Option<Notice> {
+    use crate::platform::fabric::WakeOutcome;
     let device = event.label.as_str();
     let (title, body) = match event.outcome {
         WakeOutcome::Sent { .. } => return None,

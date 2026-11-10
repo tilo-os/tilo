@@ -28,16 +28,16 @@ use tilo_audio_service::sound::{self, Graph, SoundService};
 use tilo_compositor::OutputConfig;
 use tilo_connectivity_service::Connectivity;
 use tilo_connectivity_service::device::{Change, Device, Readings};
-use tilo_device_fabric::link::{FabricLink, PersonalFabricSendError};
-use tilo_device_fabric::speaker_group::{
+use tilo_service::lines::{self, Remote};
+use tilo_session::platform::fabric::UnlockFabricState;
+use tilo_session::platform::fabric::{
     AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerFabricState,
 };
-use tilo_device_fabric::unlock::UnlockFabricState;
-use tilo_device_fabric::{
+use tilo_session::platform::fabric::{
     DeviceFabric, DeviceFabricSnapshot, DeviceId, DeviceKind, DevicePresence,
     FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricStamp, OwnerSession, PersonalFabricAction,
 };
-use tilo_service::lines::{self, Remote};
+use tilo_session::platform::fabric::{FabricLink, PersonalFabricSendError};
 use tilo_session::{Options, Service, Session};
 use ui::host_operation::ResourceOperationStart;
 
@@ -316,7 +316,7 @@ impl Fabric {
             .collect()
     }
 
-    fn link(&self) -> tilo_device_fabric::link::SharedLink {
+    fn link(&self) -> tilo_session::platform::fabric::SharedLink {
         Arc::new(self.clone())
     }
 
@@ -347,14 +347,6 @@ impl FabricLink for Fabric {
 
     fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
         Some((self.local.clone(), "This laptop".into()))
-    }
-
-    fn send_personal_fabric_action(
-        &self,
-        _: &DeviceId,
-        _: PersonalFabricAction,
-    ) -> Result<[u8; 16], String> {
-        Err("no transport in a test".into())
     }
 
     fn try_send_personal_fabric_action(

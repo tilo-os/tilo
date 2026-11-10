@@ -31,14 +31,14 @@ use iroh::RelayMode;
 use iroh::endpoint::{Endpoint, RecvStream, SendStream};
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_compositor::OutputConfig;
-use tilo_device_fabric::link::{FabricLink as _, SharedLink};
-use tilo_device_fabric::unlock::{UnlockEnrolment, UnlockFabricState};
-use tilo_device_fabric::{DeviceId, FabricStamp};
 use tilo_identity_host::device_fleet::DeviceFleetStore;
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_network_actor::HostIdentity;
 use tilo_service::{Answer, Question, Questions};
-use tilo_session::fabric::Continuity;
+use tilo_session::platform::fabric::Continuity;
+use tilo_session::platform::fabric::{DeviceId, FabricStamp};
+use tilo_session::platform::fabric::{FabricLink as _, SharedLink};
+use tilo_session::platform::fabric::{UnlockEnrolment, UnlockFabricState};
 use tilo_session::sync::{Client, Entry, OwnPresence};
 use tilo_session::{Options, Session};
 use tilo_unlock_protocol::{

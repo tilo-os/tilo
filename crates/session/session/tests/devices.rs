@@ -29,19 +29,19 @@ use tilo_compositor::OutputConfig;
 use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
-use tilo_device_fabric::link::{FabricLink, PersonalFabricSendError, SharedLink};
-use tilo_device_fabric::speaker_group::SpeakerFabricState;
-use tilo_device_fabric::unlock::UnlockFabricState;
-use tilo_device_fabric::wake::{self, MagicPackets};
-use tilo_device_fabric::{
+use tilo_quick_settings::RowPart;
+use tilo_quick_settings::hosted::{ASK_KEY, DevicesReading, HostedActions, ROUTE_KEY, SOUND_KEY};
+use tilo_session::platform::fabric::SpeakerFabricState;
+use tilo_session::platform::fabric::UnlockFabricState;
+use tilo_session::platform::fabric::wake::{self, MagicPackets};
+use tilo_session::platform::fabric::{
     DeviceFabric, DeviceFabricSnapshot, DeviceId, DeviceKind, DevicePresence,
     FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricStamp, Ipv4Subnet, MediaSourceLocator,
     OwnerSession, PersonalFabricAction, PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS,
     REMOTE_AUDIO_FRAME_SAMPLES, REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ,
     WakeInterfaceKind, WakeRoute,
 };
-use tilo_quick_settings::RowPart;
-use tilo_quick_settings::hosted::{ASK_KEY, DevicesReading, HostedActions, ROUTE_KEY, SOUND_KEY};
+use tilo_session::platform::fabric::{FabricLink, PersonalFabricSendError, SharedLink};
 use tilo_session::surfaces::Surface;
 use tilo_session::{AppActions, AppLists, Lists, Options, Session, WakeInterfaces, WakeSeams};
 
@@ -319,15 +319,6 @@ impl FabricLink for FakeLink {
             .expect("the identity")
             .clone()
             .map(|device| (device, "this computer".to_owned()))
-    }
-
-    fn send_personal_fabric_action(
-        &self,
-        target: &DeviceId,
-        action: PersonalFabricAction,
-    ) -> Result<[u8; 16], String> {
-        self.try_send_personal_fabric_action(target, action)
-            .map_err(|error| error.to_string())
     }
 
     fn try_send_personal_fabric_action(

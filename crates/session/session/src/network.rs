@@ -10,9 +10,9 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
+use crate::platform::fabric::DeviceId;
+use crate::platform::fabric::SharedLink;
 use iroh::endpoint::Connection;
-use tilo_device_fabric::DeviceId;
-use tilo_device_fabric::link::SharedLink;
 use tilo_network_actor::services::{self, ApproversOf, DeviceUnlock, PeerVersion, Services};
 use tilo_service::Questions;
 
@@ -48,7 +48,7 @@ impl VersionMismatch {
 /// A session that is no certified device of the person's offers no door: it has no key to answer
 /// as.
 pub(crate) fn install(
-    link: Option<&Arc<crate::fabric::SessionFabric>>,
+    link: Option<&Arc<crate::platform::fabric::SessionFabric>>,
     questions: Option<Questions>,
 ) -> std::sync::mpsc::Receiver<VersionMismatch> {
     let (updates, requests) = std::sync::mpsc::channel();

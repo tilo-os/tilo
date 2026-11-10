@@ -1004,9 +1004,9 @@ impl FakeFabric {
     }
 }
 
-impl tilo_device_fabric::link::FabricLink for FakeFabric {
-    fn device_fabric(&self) -> tilo_device_fabric::DeviceFabric {
-        tilo_device_fabric::DeviceFabric::default()
+impl crate::platform::fabric::FabricLink for FakeFabric {
+    fn device_fabric(&self) -> crate::platform::fabric::DeviceFabric {
+        crate::platform::fabric::DeviceFabric::default()
     }
 
     fn online_device_ids(&self) -> BTreeSet<DeviceId> {
@@ -1017,20 +1017,11 @@ impl tilo_device_fabric::link::FabricLink for FakeFabric {
         Some((self.local.clone(), "Desk".to_owned()))
     }
 
-    fn send_personal_fabric_action(
-        &self,
-        target: &DeviceId,
-        action: PersonalFabricAction,
-    ) -> Result<[u8; 16], String> {
-        self.sent.lock().unwrap().push((target.clone(), action));
-        Ok([7; 16])
-    }
-
     fn try_send_personal_fabric_action(
         &self,
         target: &DeviceId,
         action: PersonalFabricAction,
-    ) -> Result<[u8; 16], tilo_device_fabric::link::PersonalFabricSendError> {
+    ) -> Result<[u8; 16], crate::platform::fabric::PersonalFabricSendError> {
         self.sent.lock().unwrap().push((target.clone(), action));
         Ok([7; 16])
     }
@@ -1048,7 +1039,7 @@ impl tilo_device_fabric::link::FabricLink for FakeFabric {
 fn rig_on_fabric(permitted: bool) -> (Rig, Arc<FakeFabric>) {
     let rig = rig();
     let fabric = FakeFabric::new(permitted);
-    let link: tilo_device_fabric::link::SharedLink = fabric.clone();
+    let link: crate::platform::fabric::SharedLink = fabric.clone();
     rig.bridge.borrow().attach_fabric(link);
     (rig, fabric)
 }

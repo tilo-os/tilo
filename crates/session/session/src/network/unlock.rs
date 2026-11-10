@@ -1,6 +1,6 @@
 //! Another of the person's devices asking for its disk-unlock half.
 //! Every device of the person holds the sibling halves of the others, sealed to the person's
-//! root-derived secret-sync key ([`tilo_device_fabric::unlock`]). Early boot of an enrolled device
+//! root-derived secret-sync key ([`crate::platform::fabric::unlock`]). Early boot of an enrolled device
 //! reaches this one over [`tilo_unlock_protocol::UNLOCK_ALPN`]: it presents the boot key
 //! certificate the person's root signed, answers this device's challenge, and waits. The person is
 //! asked on the session's question sheet, with the approval code the boot screen shows; an approval
@@ -17,15 +17,15 @@ use std::io::{Read as _, Write as _};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use iroh::endpoint::{Connection, RecvStream, SendStream};
-use serde::{Deserialize, Serialize};
-use tilo_device_fabric::DeviceId;
-use tilo_device_fabric::link::SharedLink;
-use tilo_device_fabric::unlock::{
+use crate::platform::fabric::DeviceId;
+use crate::platform::fabric::SharedLink;
+use crate::platform::fabric::{
     Decided, DecisionOutcome, MAX_UNLOCK_DECISIONS, MergedUnlock, UnlockDecision,
     UnlockDecisionRecord, UnlockEnrolment, UnlockFabricState, UnlockSibling, UnlockView,
     decision_for, merged_unlock_state,
 };
+use iroh::endpoint::{Connection, RecvStream, SendStream};
+use serde::{Deserialize, Serialize};
 use tilo_identity_host::device_fleet::DeviceFleetStore;
 use tilo_identity_host::registry::IdentityRegistryStore;
 use tilo_service::{Asked, Question, Questions};
@@ -193,7 +193,7 @@ impl Unlock {
         self.lock().hello(
             hello,
             &view,
-            tilo_device_fabric::random::nonzero::<32>(),
+            crate::platform::fabric::nonzero::<32>(),
             tilo_clock::unix_now_ns(),
         )
     }

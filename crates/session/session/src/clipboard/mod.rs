@@ -24,14 +24,14 @@ use std::time::{Duration, Instant};
 
 use std::path::Path;
 
+use crate::platform::fabric::FabricLink;
+use crate::platform::fabric::{ClipboardEntry, ClipboardPayload, DeviceId, FabricStamp};
 use serde_json::{Map, Value};
 use settings_store::clipboard_history::{HISTORY, StoredCopy, StoredHistory};
 use settings_store::paste_shortcut::{self, PasteShortcut};
 use tilo_actions::{ActionOutput, DoorError, ResourceSpec};
 use tilo_compositor::clipboard_history::{Copy, History, Pull, Pulled, TEXT_MIME, kept_mime};
 use tilo_compositor::{Compositor, InputEvent, Selection};
-use tilo_device_fabric::link::FabricLink;
-use tilo_device_fabric::{ClipboardEntry, ClipboardPayload, DeviceId, FabricStamp};
 use tilo_quick_settings::hosted::ClipboardCopy;
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};

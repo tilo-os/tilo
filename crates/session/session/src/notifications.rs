@@ -22,6 +22,9 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::platform::fabric::ContinuityNotificationProjection;
+use crate::platform::fabric::SharedLink;
+use crate::platform::fabric::{DeviceId, PersonalFabricAction};
 use crate::platform::surfaces::Held;
 use chrono::{Datelike as _, Timelike as _};
 use serde_json::{Map, Value};
@@ -34,9 +37,6 @@ use tilo_desktop_surface::notifications::{
     QuietReason, RemoteNotificationRoute, ScheduledNotificationTarget,
 };
 use tilo_desktop_surface::{DesktopNotifications, NotificationOutcome};
-use tilo_device_fabric::link::SharedLink;
-use tilo_device_fabric::notification::ContinuityNotificationProjection;
-use tilo_device_fabric::{DeviceId, PersonalFabricAction};
 use tilo_lock::MutexRecover as _;
 use tilo_notification_banners::{Ask, Link};
 use tilo_notifications_service::{Arrival, Caller, Callers, CloseReason, Notifications, Sender};

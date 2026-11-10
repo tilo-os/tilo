@@ -162,7 +162,7 @@ impl Session {
         // What may continue on the person's other devices — what they play
         // here, the Wi-Fi passphrases they share — read from the same settings
         // document on the same watch.
-        let continuity = crate::fabric::Continuity::default();
+        let continuity = crate::platform::fabric::Continuity::default();
         continuity.read(&settings_store::load());
         let watched_continuity = continuity.clone();
         // The bar's own setting, read on the same watch: it changes what the
@@ -547,7 +547,7 @@ impl Session {
             Some(_) => None,
             None => sync.as_ref().and_then(|sync| sync.fabric()),
         };
-        let fabric: Option<tilo_device_fabric::link::SharedLink> =
+        let fabric: Option<crate::platform::fabric::SharedLink> =
             match (&options.fabric, own_fabric) {
                 (Some(shared), _) => Some(Arc::clone(shared)),
                 (None, Some(own)) => Some(own),
