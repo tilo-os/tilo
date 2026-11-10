@@ -23,7 +23,7 @@ use std::{
 use tilo_action_broker::{
     channel_encryption::{
         ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
-        ChannelKeyProvider, GovernancePump,
+        ChannelKeyProvider, ChannelsDir, GovernancePump,
     },
     collab_core::{BrokerChannels, BrokerGates},
 };
@@ -58,6 +58,7 @@ pub(super) fn open(
     let service = ChannelEncryption::open(
         ChannelEncryptionConfig {
             root: profile.join(CHANNEL_STATE),
+            peers: Arc::new(ChannelsDir::new(profile.join(CHANNEL_STATE))),
             vault: vault_key(profile, profile_workspace, storage)?,
             device_key,
         },

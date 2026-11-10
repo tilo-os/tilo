@@ -56,11 +56,13 @@
 //!
 //! State is written before anything it produced leaves the device: a frame
 //! reaches [`ChannelPeer::outbox`] only once the state holding it is
-//! durable (on disk for a peer opened from a directory, or in the export a
+//! durable (in the host's store for a peer opened from one, or in the export a
 //! browser writes before it sends).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use collab_types::{
     ChannelId, Ed25519PublicKey, JoinMaterial, Joining, MlsAccessRequestV1, MlsGovernanceAction,
@@ -186,7 +188,7 @@ pub struct ChannelPeer {
     /// members with its next commit.
     orphaned: ContentKeyring,
     /// `None` for a peer kept in memory.
-    path: Option<PathBuf>,
+    states: Option<Arc<dyn PeerStates>>,
     /// The `issued_at` of the last request minted here, so one minted again
     /// in the same second is still newer.
     issued: u64,
@@ -219,45 +221,106 @@ fn governance(message: impl Into<String>) -> Error {
     Error::Governance(message.into())
 }
 
-impl ChannelPeer {
-    /// The file a peer for `channel` keeps under `dir`.
-    pub fn path_in(dir: &Path, channel: ChannelId) -> PathBuf {
-        dir.join(format!("{}.peer", channel.0))
+/// Where a peer's sealed state is kept between passes of the device: the
+/// files under a desktop's channels directory ([`Files`]), or a page's own
+/// store. `None` on a peer keeps its state in memory only.
+pub trait PeerStates: std::fmt::Debug + collab_types::signer::MaybeSendSync {
+    /// The state kept for `channel`, or `None` when there is none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the store cannot be read, or holds state too
+    /// large to be a peer's.
+    fn read(&self, channel: ChannelId) -> Result<Option<Vec<u8>>>;
+
+    /// Replace the state kept for `channel`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the store refuses the write.
+    fn write(&self, channel: ChannelId, sealed: &[u8]) -> Result<()>;
+
+    /// Drop the state kept for `channel`; a channel with none is not an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the store refuses the removal.
+    fn forget(&self, channel: ChannelId) -> Result<()>;
+}
+
+/// A desktop's channels directory: one file per peer, named for the channel it
+/// belongs to, as every earlier build wrote it.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+pub struct Files(PathBuf);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Files {
+    /// The peers kept in `dir`.
+    #[must_use]
+    pub fn new(dir: impl Into<PathBuf>) -> Self {
+        Self(dir.into())
     }
 
-    /// Open the state kept for `channel` under `dir`, or `None` when there
-    /// is none.
+    fn path(&self, channel: ChannelId) -> PathBuf {
+        self.0.join(format!("{}.peer", channel.0))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl PeerStates for Files {
+    fn read(&self, channel: ChannelId) -> Result<Option<Vec<u8>>> {
+        let too_large = Error::InvalidState("sealed peer state is too large".into());
+        tilo_files::native::bounded::read_or(&self.path(channel), MAX_PEER_STATE as u64, too_large)
+    }
+
+    fn write(&self, channel: ChannelId, sealed: &[u8]) -> Result<()> {
+        tilo_files::native::atomic::write_private(&self.path(channel), sealed).map_err(Error::Io)
+    }
+
+    fn forget(&self, channel: ChannelId) -> Result<()> {
+        match std::fs::remove_file(self.path(channel)) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
+            _ => Ok(()),
+        }
+    }
+}
+
+impl ChannelPeer {
+    /// Open the state `states` keeps for `channel`, or `None` when there is
+    /// none.
     ///
     /// # Errors
     ///
     /// Returns an error for corrupt or undecryptable state, or state of
     /// another channel or device.
     pub fn open(
-        dir: &Path,
+        states: Option<Arc<dyn PeerStates>>,
         channel: ChannelId,
         signer: Box<dyn DeviceSigner>,
         vault: &VaultKey,
     ) -> Result<Option<Self>> {
-        let path = Self::path_in(dir, channel);
-        let too_large = Error::InvalidState("sealed peer state is too large".into());
-        let Some(bytes) =
-            tilo_files::native::bounded::read_or(&path, MAX_PEER_STATE as u64, too_large)?
+        let Some(bytes) = states
+            .as_ref()
+            .map(|states| states.read(channel))
+            .transpose()?
+            .flatten()
         else {
             return Ok(None);
         };
         let mut peer = Self::restore(channel, signer, &bytes, vault)?;
-        peer.path = Some(path);
+        peer.states = states;
         Ok(Some(peer))
     }
 
-    /// A new peer for `channel` that waits for access, kept under `dir`
-    /// (or in memory when `dir` is `None`).
+    /// A new peer for `channel` that waits for access, keeping its state in
+    /// `states` (or in memory when there is none).
     ///
     /// # Errors
     ///
     /// Returns an error when the member key cannot be minted or written.
     pub fn waiting(
-        dir: Option<&Path>,
+        states: Option<Arc<dyn PeerStates>>,
         channel: ChannelId,
         signer: Box<dyn DeviceSigner>,
         vault: &VaultKey,
@@ -276,7 +339,7 @@ impl ChannelPeer {
             requests: BTreeMap::new(),
             outbox: Vec::new(),
             orphaned: ContentKeyring::new(),
-            path: dir.map(|dir| Self::path_in(dir, channel)),
+            states,
             issued: 0,
         };
         peer.save(vault)?;
@@ -292,12 +355,12 @@ impl ChannelPeer {
     ///
     /// Returns an error when the group cannot be created, signed or written.
     pub async fn create(
-        dir: Option<&Path>,
+        states: Option<Arc<dyn PeerStates>>,
         channel: ChannelId,
         signer: Box<dyn DeviceSigner>,
         vault: &VaultKey,
     ) -> Result<Self> {
-        let mut peer = Self::waiting(dir, channel, signer, vault)?;
+        let mut peer = Self::waiting(states, channel, signer, vault)?;
         peer.found(vault).await?;
         Ok(peer)
     }
@@ -308,12 +371,12 @@ impl ChannelPeer {
     ///
     /// As [`Self::create`], or when the signer would have to be awaited.
     pub fn create_now(
-        dir: Option<&Path>,
+        states: Option<Arc<dyn PeerStates>>,
         channel: ChannelId,
         signer: Box<dyn DeviceSigner>,
         vault: &VaultKey,
     ) -> Result<Self> {
-        complete_now(Self::create(dir, channel, signer, vault))
+        complete_now(Self::create(states, channel, signer, vault))
     }
 
     /// Create the channel's group with this waiting device alone in it, and
@@ -465,7 +528,7 @@ impl ChannelPeer {
                 .collect(),
             outbox: file.outbox,
             orphaned: ContentKeyring::from_wire(file.orphaned)?,
-            path: None,
+            states: None,
             issued: file.issued,
         })
     }
@@ -1318,11 +1381,11 @@ impl ChannelPeer {
     }
 
     fn save(&self, vault: &VaultKey) -> Result<()> {
-        let Some(path) = &self.path else {
+        let Some(states) = &self.states else {
             return Ok(());
         };
         let sealed = self.export_sealed(vault)?;
-        tilo_files::native::atomic::write_private(path, &sealed).map_err(Error::Io)
+        states.write(self.channel, &sealed)
     }
 }
 

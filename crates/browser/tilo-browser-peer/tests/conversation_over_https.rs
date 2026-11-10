@@ -151,7 +151,9 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
     let vault = VaultKey::new([7; 32]);
     let desktop_dir = tempfile::tempdir().unwrap();
     let mut desktop_channel = ChannelPeer::create_now(
-        Some(desktop_dir.path()),
+        Some(std::sync::Arc::new(channel_crypto::Files::new(
+            desktop_dir.path(),
+        ))),
         scope,
         Box::new(alice.key.clone()),
         &vault,

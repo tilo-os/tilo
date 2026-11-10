@@ -97,7 +97,9 @@ async fn a_page_takes_the_record_keys_though_every_write_it_received_is_held() {
     let artifact = document_artifact_id(&note.app_id, &note.cluster_id, &note.record);
     let laptop_dir = tempfile::tempdir().unwrap();
     let mut laptop_peer = ChannelPeer::create_now(
-        Some(laptop_dir.path()),
+        Some(std::sync::Arc::new(channel_crypto::Files::new(
+            laptop_dir.path(),
+        ))),
         scope,
         Box::new(laptop.key.clone()),
         &vault(),

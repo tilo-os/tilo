@@ -357,10 +357,16 @@ fn main() {
             for _ in 0..n {
                 let channel = ChannelId::new();
                 let key = SigningKey::from_bytes(&[0x41; 32]);
-                let peer = ChannelPeer::waiting(Some(&dir), channel, Box::new(key.clone()), &vault)
-                    .expect("waiting");
+                let states = std::sync::Arc::new(channel_crypto::Files::new(dir.clone()));
+                let peer = ChannelPeer::waiting(
+                    Some(states.clone()),
+                    channel,
+                    Box::new(key.clone()),
+                    &vault,
+                )
+                .expect("waiting");
                 assert_eq!(peer.access(), Access::Waiting);
-                let opened = ChannelPeer::open(&dir, channel, Box::new(key), &vault)
+                let opened = ChannelPeer::open(Some(states), channel, Box::new(key), &vault)
                     .expect("open")
                     .expect("a state file");
                 assert_eq!(opened.access(), Access::Waiting);

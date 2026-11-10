@@ -86,7 +86,9 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     let vault = VaultKey::new([7; 32]);
     let laptop_dir = tempfile::tempdir().unwrap();
     let mut laptop_peer = ChannelPeer::create_now(
-        Some(laptop_dir.path()),
+        Some(std::sync::Arc::new(channel_crypto::Files::new(
+            laptop_dir.path(),
+        ))),
         scope,
         Box::new(laptop.key.clone()),
         &vault,
@@ -489,7 +491,9 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
     let vault = VaultKey::new([7; 32]);
     let laptop_dir = tempfile::tempdir().unwrap();
     let mut laptop_peer = ChannelPeer::create_now(
-        Some(laptop_dir.path()),
+        Some(std::sync::Arc::new(channel_crypto::Files::new(
+            laptop_dir.path(),
+        ))),
         scope,
         Box::new(laptop.key.clone()),
         &vault,
@@ -647,7 +651,9 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
     let vault = VaultKey::new([7; 32]);
     let laptop_dir = tempfile::tempdir().unwrap();
     let mut laptop_peer = ChannelPeer::create_now(
-        Some(laptop_dir.path()),
+        Some(std::sync::Arc::new(channel_crypto::Files::new(
+            laptop_dir.path(),
+        ))),
         scope,
         Box::new(laptop.key.clone()),
         &vault,

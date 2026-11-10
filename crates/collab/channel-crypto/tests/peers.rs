@@ -16,6 +16,11 @@ fn vault() -> VaultKey {
     VaultKey::new([7; 32])
 }
 
+/// The peers kept in `dir`, as a host's channels directory keeps them.
+fn states(dir: &Path) -> std::sync::Arc<dyn channel_crypto::PeerStates> {
+    std::sync::Arc::new(channel_crypto::Files::new(dir))
+}
+
 struct Device {
     key: SigningKey,
     peer: ChannelPeer,
@@ -784,7 +789,8 @@ fn state_survives_a_restart_and_an_export() {
     let channel = ChannelId::new();
     let key = SigningKey::from_bytes(&[1; 32]);
     let created =
-        ChannelPeer::create_now(Some(dir), channel, Box::new(key.clone()), &vault()).unwrap();
+        ChannelPeer::create_now(Some(states(dir)), channel, Box::new(key.clone()), &vault())
+            .unwrap();
     let sealed = {
         let device = Device {
             key: key.clone(),
@@ -839,7 +845,7 @@ fn reopen(
     channel: ChannelId,
     key: &SigningKey,
 ) -> channel_crypto::Result<Option<ChannelPeer>> {
-    ChannelPeer::open(dir, channel, Box::new(key.clone()), &vault())
+    ChannelPeer::open(Some(states(dir)), channel, Box::new(key.clone()), &vault())
 }
 
 /// A signer that answers on the second poll, as a browser's `WebCrypto` key

@@ -173,6 +173,9 @@ fn keys(device: u8, vault: u8, admitted: &[u8]) -> (ChannelKeyProvider, tempfile
     let encryption = ChannelEncryption::open(
         ChannelEncryptionConfig {
             root: directory.path().join("channels"),
+            peers: Arc::new(tilo_channels::ChannelsDir::new(
+                directory.path().join("channels"),
+            )),
             vault: VaultKey::new([vault; 32]),
             device_key: ed25519_dalek::SigningKey::from_bytes(&[device; 32]),
         },

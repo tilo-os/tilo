@@ -31,7 +31,7 @@ use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use tilo_action_broker::channel_encryption::{
     ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
-    ChannelKeyProvider, GovernancePark, GovernancePump, GovernanceTransport,
+    ChannelKeyProvider, ChannelsDir, GovernancePark, GovernancePump, GovernanceTransport,
     InboundChannelGovernance, NoGates,
 };
 use tilo_desktop_model::WorkspaceId;
@@ -73,7 +73,8 @@ impl Channels {
         };
         let service = ChannelEncryption::open(
             ChannelEncryptionConfig {
-                root,
+                root: root.clone(),
+                peers: Arc::new(ChannelsDir::new(&root)),
                 vault: vault_key(&device),
                 device_key: device,
             },

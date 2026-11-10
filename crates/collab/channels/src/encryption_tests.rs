@@ -1,8 +1,8 @@
-use crate::testing::*;
 use super::*;
+use crate::gates::Gates;
+use crate::testing::*;
 use collab_types::{ArtifactId, ContentRetention};
 use std::sync::atomic::Ordering;
-use crate::gates::Gates;
 
 struct Device {
     service: ChannelEncryption,
@@ -39,6 +39,7 @@ fn sealed_device(
     let service = ChannelEncryption::open(
         ChannelEncryptionConfig {
             root: dir.join("channels"),
+            peers: Arc::new(ChannelsDir::new(dir.join("channels"))),
             vault: VaultKey::new([vault; 32]),
             device_key: key(seed),
         },
@@ -294,6 +295,7 @@ fn scoped_device(
     let service = ChannelEncryption::open(
         ChannelEncryptionConfig {
             root: dir.join("channels"),
+            peers: Arc::new(ChannelsDir::new(dir.join("channels"))),
             vault: VaultKey::new([seed; 32]),
             device_key: key(seed),
         },
@@ -381,7 +383,11 @@ fn units_of_one_reader_set_share_one_group_and_one_commit() {
 
     // The scope's gate is what refuses a unit's cleartext: the unit has no
     // gate of its own, and its payloads are sealed with the scope's keys.
-    assert!(!owner.gates.allows_document(&workspace_id.to_string(), unit, None));
+    assert!(
+        !owner
+            .gates
+            .allows_document(&workspace_id.to_string(), unit, None)
+    );
     assert!(
         owner
             .gates
@@ -1152,7 +1158,7 @@ fn a_read_deny_on_an_app_withholds_every_routed_channel_of_it() {
 fn member_request(dir: &Path, channel: ChannelId, seed: u8) -> MlsAccessRequestV1 {
     std::fs::create_dir_all(dir).unwrap();
     ChannelPeer::waiting(
-        Some(dir),
+        Some(std::sync::Arc::new(channel_crypto::Files::new(dir))),
         channel,
         Box::new(key(seed)),
         &VaultKey::new([2; 32]),
@@ -1933,10 +1939,8 @@ fn a_branched_device_rejoins_as_itself_beside_its_source() {
     // The disk is copied; the copy re-keys to device 21 and keeps the
     // person's vault. Certified, it is the person's device and a reader.
     copy_tree(source_dir.path(), branch_dir.path());
-    let copied = ChannelPeer::path_in(
-        &channels_dir(&branch_dir.path().join("channels"), workspace_id),
-        channel,
-    );
+    let copied = channels_dir(&branch_dir.path().join("channels"), workspace_id)
+        .join(format!("{}.peer", channel.0));
     assert!(copied.exists());
     policy.allowed.lock().unwrap().insert(public(21));
     let mut branch = sealed_device(

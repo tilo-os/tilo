@@ -155,7 +155,8 @@ impl GovernancePump {
 mod tests {
     use super::*;
     use crate::encryption::{
-        ChannelAccess, ChannelEncryption, ChannelEncryptionConfig, InboundChannelGovernance,
+        ChannelAccess, ChannelEncryption, ChannelEncryptionConfig, ChannelsDir,
+        InboundChannelGovernance,
     };
     use crate::gates::Gates;
     use crate::testing::{Announcements, Directory, Endpoint, Policy, Workspace, key};
@@ -198,6 +199,7 @@ mod tests {
         let service = ChannelEncryption::open(
             ChannelEncryptionConfig {
                 root: dir.join("channels"),
+                peers: Arc::new(ChannelsDir::new(dir.join("channels"))),
                 vault: VaultKey::new([1; 32]),
                 device_key: key(1),
             },
@@ -315,6 +317,7 @@ mod tests {
             let service = ChannelEncryption::open(
                 ChannelEncryptionConfig {
                     root: dir.join("channels"),
+                    peers: Arc::new(ChannelsDir::new(dir.join("channels"))),
                     vault: VaultKey::new([seed; 32]),
                     device_key: key(seed),
                 },

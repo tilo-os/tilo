@@ -162,7 +162,9 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
     let artifact = document_artifact_id(&note.app_id, &note.cluster_id, &note.record);
     let laptop_dir = tempfile::tempdir().unwrap();
     let mut laptop_peer = ChannelPeer::create_now(
-        Some(laptop_dir.path()),
+        Some(std::sync::Arc::new(channel_crypto::Files::new(
+            laptop_dir.path(),
+        ))),
         scope,
         Box::new(laptop.key.clone()),
         &vault(),

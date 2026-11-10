@@ -226,12 +226,42 @@ pub trait ChannelDirectory: collab_types::signer::MaybeSendSync {
 /// page — so the state's own store never holds the key that opens it.
 pub const VAULT_SECRET_APP: &str = "so.tilo.collaboration.mls";
 
+/// Where a host keeps the peers of its channels: a desktop's channels directory
+/// of one file per channel ([`ChannelsDir`]), or a page's own store.
+pub trait ChannelPeers: std::fmt::Debug + collab_types::signer::MaybeSendSync {
+    /// The peers of `workspace`'s channels.
+    fn of(&self, workspace: WorkspaceId) -> Arc<dyn channel_crypto::PeerStates>;
+}
+
+/// A desktop's channels directory, with the layout every earlier build wrote.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+pub struct ChannelsDir(PathBuf);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ChannelsDir {
+    /// The peers kept under `root`, one directory per workspace.
+    #[must_use]
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self(root.into())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ChannelPeers for ChannelsDir {
+    fn of(&self, workspace: WorkspaceId) -> Arc<dyn channel_crypto::PeerStates> {
+        Arc::new(channel_crypto::Files::new(channels_dir(&self.0, workspace)))
+    }
+}
+
 /// Durable location and keys of this device's own channel state: what a
 /// participant of a channel needs, and only workspaces this device's own workspace
 /// host does not take part in need it.
 pub struct ChannelEncryptionConfig {
     /// Private directory holding sealed channel state.
     pub root: PathBuf,
+    /// Where this host keeps each workspace's channel peers.
+    pub peers: Arc<dyn ChannelPeers>,
     /// Key sealing that state, held by the platform secret store.
     pub vault: VaultKey,
     /// This device's certified key: MLS credential, request and frame signer.
@@ -1162,10 +1192,9 @@ impl ChannelEncryption {
         if !entry.wanted && entry.peer.access() == Access::Waiting && entry.peer.knows_group() {
             // Taken up only to create the group if no one had: someone has,
             // and its participants admit whoever asked.
-            let dir = channels_dir(&store.root, workspace);
             self.peers.remove(&channel);
             self.groups_seen.insert(channel);
-            if let Err(error) = std::fs::remove_file(ChannelPeer::path_in(&dir, channel)) {
+            if let Err(error) = store.peers.of(workspace).forget(channel) {
                 tracing::warn!(%error, %workspace, "unwanted channel state could not be removed");
             }
             return;
@@ -1390,7 +1419,12 @@ impl ChannelEncryption {
         let dir = channels_dir(&store.root, workspace);
         create_private_dir(&dir)?;
         let signer = Box::new(store.device_key.clone());
-        let peer = ChannelPeer::waiting(Some(&dir), channel, signer, &store.vault)?;
+        let peer = ChannelPeer::waiting(
+            Some(store.peers.of(workspace)),
+            channel,
+            signer,
+            &store.vault,
+        )?;
         self.insert_peer(workspace, channel, peer, now);
         Ok(true)
     }
@@ -1441,9 +1475,8 @@ impl ChannelEncryption {
         now: Instant,
     ) -> channel_crypto::Result<bool> {
         let store = self.store.as_ref().ok_or_else(no_store)?;
-        let dir = channels_dir(&store.root, workspace);
         let opened = match ChannelPeer::open(
-            &dir,
+            Some(store.peers.of(workspace)),
             channel,
             Box::new(store.device_key.clone()),
             &store.vault,
@@ -1458,12 +1491,8 @@ impl ChannelEncryption {
                     %workspace,
                     "channel state named the device this machine was copied from; joining as this device"
                 );
-                match std::fs::remove_file(ChannelPeer::path_in(&dir, channel)) {
-                    Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                        return Err(error.into());
-                    }
-                    _ => return Ok(false),
-                }
+                store.peers.of(workspace).forget(channel)?;
+                return Ok(false);
             }
             opened => opened?,
         };

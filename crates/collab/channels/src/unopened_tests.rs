@@ -44,6 +44,7 @@ fn late_readers_service(dir: &Path, directory: &LateReaders) -> ChannelEncryptio
     ChannelEncryption::open(
         ChannelEncryptionConfig {
             root: dir.join("channels"),
+            peers: Arc::new(ChannelsDir::new(dir.join("channels"))),
             vault: VaultKey::new([21; 32]),
             device_key: key(21),
         },
@@ -218,6 +219,7 @@ fn routed_service(dir: &Path, directory: &RoutedReaders) -> ChannelEncryption {
     ChannelEncryption::open(
         ChannelEncryptionConfig {
             root: dir.join("channels"),
+            peers: Arc::new(ChannelsDir::new(dir.join("channels"))),
             vault: VaultKey::new([21; 32]),
             device_key: key(21),
         },
