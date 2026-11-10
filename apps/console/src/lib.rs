@@ -277,22 +277,6 @@ pub(crate) fn ago(at_ms: i64) -> String {
     ui::format_relative_time(at, ui::time::wall())
 }
 
-/// Who `author` is, as a line names them: "You", a person's name, or an
-/// agent with whom it acted for.
-pub(crate) fn who(author: &wire::Author) -> String {
-    match (author.relation, &author.on_behalf_of) {
-        (wire::Relation::Reader, _) => tr("console-you"),
-        (wire::Relation::Software, Some(person)) => trf(
-            "console-agent-for",
-            &[
-                ("agent", author.name.clone().into()),
-                ("person", person.clone().into()),
-            ],
-        ),
-        _ => author.name.clone(),
-    }
-}
-
 /// A row led by `author`'s face: a person's round avatar, or an agent's
 /// square one with the agent mark, so the two are never mistaken, tinted by
 /// the client it is an agent of.

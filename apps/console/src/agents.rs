@@ -24,7 +24,7 @@ use ui::widget::{
 };
 
 use crate::effects::ConsoleEffect;
-use crate::{Console, Doors, Nav, Reads, ago, faced, page, tr, trf, who};
+use crate::{Console, Doors, Nav, Reads, ago, faced, page, tr, trf};
 
 /// What Agents reads: every run in every workspace.
 pub(crate) fn query() -> wire::RunsQuery {
@@ -254,7 +254,7 @@ pub(crate) fn run_row(nav: &Nav, seen: &Seen, run: &wire::AgentRun, selected: bo
         run.now
             .as_ref()
             .filter(|_| working)
-            .map_or_else(|| who(&run.agent), now_line),
+            .map_or_else(|| ui::wire_author_line(&run.agent), now_line),
     )
     .secondary(run.workspace.clone().unwrap_or_else(|| {
         trf(
@@ -412,7 +412,7 @@ pub(crate) fn inspect(
     run: &wire::AgentRun,
 ) -> Element {
     let doors = Doors::of(cx);
-    let mut facts = vec![Fact::with_icon(Icon::Bot, who(&run.agent))];
+    let mut facts = vec![Fact::with_icon(Icon::Bot, ui::wire_author_line(&run.agent))];
     facts.extend(
         run.workspace
             .clone()

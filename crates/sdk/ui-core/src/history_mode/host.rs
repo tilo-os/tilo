@@ -2133,7 +2133,10 @@ impl HistoryHost {
                 Row::new()
                     .with_gap(12.0)
                     .push(Box::new(
-                        Text::new(&newest.author.name).with_role(crate::tokens::TextRole::Caption),
+                        Text::new(&crate::history_source::sentence::author_line(
+                            &newest.author,
+                        ))
+                        .with_role(crate::tokens::TextRole::Caption),
                     ))
                     .push(Box::new(
                         Text::new(&when)

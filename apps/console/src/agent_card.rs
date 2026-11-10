@@ -157,6 +157,7 @@ fn card(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen, client: &str) -> Element {
     let face = wire::Author {
         name: client.to_owned(),
         relation: wire::Relation::Software,
+        kind: ui::tilo_actions::ActorKind::Agent,
         ..wire::Author::default()
     };
     // What it is doing now leads, in the words its run's row uses; an

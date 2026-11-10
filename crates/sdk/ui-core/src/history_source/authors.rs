@@ -230,25 +230,16 @@ impl AuthorDirectory {
     fn agent_author(&self, actor_hex: &str, agent: &HistoryAgent) -> HistoryAuthor {
         let person = self.resolve_identity(&principal_key(&agent.person)).name;
         let reader = self.reader();
-        let name = crate::history_source::sentence::with_reader(|words| {
-            words.actor(&tilo_history::Who {
-                actor: &agent.label,
-                kind: tilo_actions::ActorKind::Agent,
-                for_person: Some(&person),
-                for_reader: reader.as_deref() == Some(agent.person.as_str()),
-                is_reader: false,
-                task: None,
-            })
-        });
-        author_coloured(name, short_id(actor_hex), agent.rgb)
+        let mut author = author_coloured(agent.label.clone(), short_id(actor_hex), agent.rgb)
             .with_relation(AuthorRelation::Software)
             .with_attribution(HistoryAttribution {
                 actor: agent.principal.clone(),
                 kind: tilo_actions::ActorKind::Agent,
-                actor_name: agent.label.clone(),
                 on_behalf_of: Some(agent.person.clone()),
                 on_behalf_of_name: Some(person),
-            })
+            });
+        author.for_reader = reader.as_deref() == Some(agent.person.as_str());
+        author
     }
 
     /// [`Self::resolve`] for anyone but a registered agent.
@@ -346,34 +337,19 @@ impl AuthorDirectory {
         // as its person through it.
         let task = entry
             .and_then(|entry| entry.group.as_ref())
-            .filter(|group| group.kind == crate::history_source::steps::TASK_RUN);
-        let task = task.map(|task| tilo_history::Task {
-            id: &task.id,
-            label: &task.label,
-        });
-        let name = crate::history_source::sentence::with_reader(|words| {
-            words.actor(&tilo_history::Who {
-                actor: match &task {
-                    Some(_) => for_person.as_deref().unwrap_or(author.name.as_str()),
-                    None => author.name.as_str(),
-                },
-                kind: invoker.kind,
-                for_person: for_person.as_deref(),
-                for_reader,
-                is_reader: reads,
-                task: task.as_ref(),
-            })
-        });
+            .filter(|group| group.kind == crate::history_source::steps::TASK_RUN)
+            .map(|task| task.label.clone())
+            .filter(|label| !label.trim().is_empty());
         let attribution = invoker.kind.acts_for_someone().then(|| HistoryAttribution {
             actor: invoker.actor.clone(),
             kind: invoker.kind,
-            actor_name: author.name.clone(),
             on_behalf_of: invoker.on_behalf_of.clone(),
-            on_behalf_of_name: for_person.clone(),
+            on_behalf_of_name: for_person,
         });
         let mut author = author.with_relation(relation);
-        author.name = name;
         author.attribution = attribution;
+        author.for_reader = for_reader;
+        author.task = task;
         author
     }
 

@@ -940,7 +940,7 @@ fn rows_tell_the_readers_changes_from_a_collaborators_and_an_agents() {
         .iter()
         .rev()
         .take(3)
-        .map(|entry| (entry.author.name.clone(), entry.author.relation))
+        .map(|entry| (crate::author_line(&entry.author), entry.author.relation))
         .collect();
     assert_eq!(
         rows,
@@ -981,14 +981,14 @@ fn an_agents_change_reads_as_the_agent_on_behalf_of_its_person() {
     authors.set_reader("kai");
     let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
     let author = &entries.last().unwrap().author;
-    assert_eq!(author.name, "claude · Software, for ada");
+    assert_eq!(author.name, "claude");
+    assert_eq!(crate::author_line(author), "claude · Software, for ada");
     assert_eq!(author.relation, AuthorRelation::Software);
     assert_eq!(
         author.attribution,
         Some(HistoryAttribution {
             actor: "agent:claude".into(),
             kind: ActorKind::Agent,
-            actor_name: "claude".into(),
             on_behalf_of: Some("ada".into()),
             on_behalf_of_name: Some("ada".into()),
         })
@@ -1018,7 +1018,8 @@ fn an_agents_change_reads_as_the_agent_on_behalf_of_its_person() {
         .with_authors(authors.clone())
         .entries(&mut doc);
     let author = &entries.last().unwrap().author;
-    assert_eq!(author.name, "Scribe · Software, for Ada");
+    assert_eq!(author.name, "Scribe");
+    assert_eq!(crate::author_line(author), "Scribe · Software, for Ada");
     assert_eq!(author.relation, AuthorRelation::Software);
     assert_eq!(author.rgb(), (10, 20, 30), "the agent's presence colour");
     assert_eq!(
@@ -1026,7 +1027,6 @@ fn an_agents_change_reads_as_the_agent_on_behalf_of_its_person() {
         Some(HistoryAttribution {
             actor: "agent:scribe".into(),
             kind: ActorKind::Agent,
-            actor_name: "Scribe".into(),
             on_behalf_of: Some(person.clone()),
             on_behalf_of_name: Some("Ada".into()),
         })
@@ -1035,7 +1035,7 @@ fn an_agents_change_reads_as_the_agent_on_behalf_of_its_person() {
     authors.set_reader(person);
     let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
     assert_eq!(
-        entries.last().unwrap().author.name,
+        crate::author_line(&entries.last().unwrap().author),
         "Scribe · Software, for you"
     );
 }
@@ -1065,7 +1065,11 @@ fn a_change_taken_in_a_task_is_named_by_the_task() {
     authors.set_reader("kai");
     let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
     let entry = entries.last().expect("the change");
-    assert_eq!(entry.author.name, "ada via task ‘Prepare Q3 financials’");
+    assert_eq!(entry.author.name, "claude");
+    assert_eq!(
+        crate::author_line(&entry.author),
+        "ada via task ‘Prepare Q3 financials’"
+    );
     assert_eq!(entry.author.relation, AuthorRelation::Software);
     let group = entry
         .context
@@ -1364,4 +1368,42 @@ fn typing_in_one_field_is_one_change_until_the_person_stops() {
         .expect("the first row is as of its last keystroke");
     let changes = revert::changes_of_entries(&mut doc, &[first.id]);
     assert_eq!(changes.len(), 4, "restoring the row takes back all of it");
+}
+
+/// An author as an app reads it over the wire words its row once: the
+/// agent's own name, whom it acted for, and the reader as themselves.
+#[test]
+fn a_wire_author_reads_as_one_line() {
+    use tilo_actions::ActorKind;
+    use tilo_actions::remote::workspace_activity as wire;
+    let agent = wire::Author {
+        name: "claude".into(),
+        relation: wire::Relation::Software,
+        kind: ActorKind::Agent,
+        on_behalf_of: Some("ada".into()),
+        ..wire::Author::default()
+    };
+    assert_eq!(
+        crate::wire_author_line(&agent),
+        "claude · Software, for ada"
+    );
+    let software = wire::Author {
+        for_reader: true,
+        ..agent
+    };
+    assert_eq!(
+        crate::wire_author_line(&software),
+        "claude · Software, for you"
+    );
+    let reader = wire::Author {
+        name: "Ada".into(),
+        relation: wire::Relation::Reader,
+        ..wire::Author::default()
+    };
+    assert_eq!(crate::wire_author_line(&reader), "You");
+    let person = wire::Author {
+        name: "Grace".into(),
+        ..wire::Author::default()
+    };
+    assert_eq!(crate::wire_author_line(&person), "Grace");
 }

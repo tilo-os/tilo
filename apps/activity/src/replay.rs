@@ -193,7 +193,7 @@ fn frame_view(frame: &wire::Frame, index: usize, total: usize, note: Option<&str
         position,
         vec![Box::new(
             ListRow::new("activity-replay-change", frame.summary.clone())
-                .subtitle(frame.author.name.clone())
+                .subtitle(ui::wire_author_line(&frame.author))
                 .avatar(frame.author.name.clone(), frame.author.identity.clone()),
         )],
     ))];

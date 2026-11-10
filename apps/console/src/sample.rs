@@ -44,7 +44,9 @@ fn agent(name: &str, identity: &str, rgb: [u8; 3]) -> wire::Author {
         rgb,
         identity: identity.to_owned(),
         relation: wire::Relation::Software,
+        kind: ui::tilo_actions::ActorKind::Agent,
         on_behalf_of: Some("Ada".to_owned()),
+        ..wire::Author::default()
     }
 }
 

@@ -5,9 +5,6 @@ console-place-workspaces = Workspaces
 console-place-connect = Connect
 console-place-usage = Usage
 
-console-you = You
-console-agent-for = { $agent } for { $person }
-
 console-filter-agent = Agent
 console-filter-workspace = Workspace
 console-every-agent = Every agent

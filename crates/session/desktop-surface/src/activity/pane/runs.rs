@@ -181,6 +181,7 @@ impl WorkspaceActivityPane {
         let mut agent = author(&first.author);
         agent.name = self.agent_name(run);
         agent.relation = wire::Relation::Software;
+        agent.kind = tilo_actions::ActorKind::Agent;
         if agent.on_behalf_of.is_none() && run.issued_by.is_some() {
             agent.on_behalf_of = Some(self.issuer_name(run));
         }
@@ -253,6 +254,7 @@ impl WorkspaceActivityPane {
             let mut agent = author(&first.author);
             agent.name.clone_from(&group.label);
             agent.relation = wire::Relation::Software;
+            agent.kind = tilo_actions::ActorKind::Agent;
             let instruction = members
                 .iter()
                 .find_map(|entry| {

@@ -1199,11 +1199,12 @@ impl ActivityTimeline {
 
     /// The name an entry's author goes by in this History: an agent by its
     /// own name where History filters by person, else the author's.
-    fn author_label<'a>(&self, entry: &'a HistoryEntry) -> &'a str {
-        match &entry.author.attribution {
+    fn author_label(&self, entry: &HistoryEntry) -> String {
+        if self.filters_people {
             // An agent's own name; its row's place in the History says for whom.
-            Some(who) if self.filters_people => who.actor_name.as_str(),
-            _ => entry.author.name.as_str(),
+            entry.author.name.clone()
+        } else {
+            crate::history_source::sentence::author_line(&entry.author)
         }
     }
 
@@ -3227,10 +3228,7 @@ impl ActivityTimeline {
                 crate::widget::ChipLead::Face(Color::from_rgb8(r, g, b))
             };
             // An agent's chip names the agent itself; its rows say for whom.
-            let label = author
-                .attribution
-                .as_ref()
-                .map_or_else(|| author.name.clone(), |who| who.actor_name.clone());
+            let label = author.name.clone();
             chips.push((Some(author.name.clone()), label, lead));
         }
         let mut x = strip.x0;
@@ -3387,7 +3385,7 @@ impl Widget for ActivityTimeline {
         }
         (0..self.row_count()).find_map(|i| {
             let face = self.avatar_rect(i).filter(|face| face.contains(point))?;
-            Some((face, self.author_label(self.row_entry(i)?).to_owned()))
+            Some((face, self.author_label(self.row_entry(i)?)))
         })
     }
 
@@ -3614,7 +3612,11 @@ impl Widget for ActivityTimeline {
                         let said = if item.is_genesis() {
                             self.summary_of(item).to_owned()
                         } else {
-                            format!("{}: {}", item.author.name, self.summary_of(item))
+                            format!(
+                                "{}: {}",
+                                crate::history_source::sentence::author_line(&item.author),
+                                self.summary_of(item)
+                            )
                         };
                         let name = Self::entry_breadcrumb(item).map_or_else(
                             || said.clone(),
@@ -4324,7 +4326,6 @@ mod tests {
                 .with_attribution(crate::widget::history::HistoryAttribution {
                     actor: "bot:standup".into(),
                     kind,
-                    actor_name: "Standup Bot".into(),
                     on_behalf_of: Some("ada".into()),
                     on_behalf_of_name: Some("Ada".into()),
                 })

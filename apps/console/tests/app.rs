@@ -230,6 +230,7 @@ fn agent() -> wire::Author {
         identity: "agent:claude".into(),
         relation: wire::Relation::Software,
         on_behalf_of: Some("Ada".into()),
+        kind: ui::tilo_actions::ActorKind::Agent,
         ..wire::Author::default()
     }
 }

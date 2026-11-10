@@ -19,6 +19,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{InvokeArgument, RemoteActionTarget};
+use crate::ActorKind;
 use crate::door::ActionAddress;
 
 /// The provider the session serves workspace activity under.
@@ -163,15 +164,26 @@ pub enum Relation {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Author {
+    /// The name it goes by: a person's, an agent's own, "You" for the reader.
+    /// A name, never a sentence: a row that says whom software acted for
+    /// words that line once, from the facts beside it.
     pub name: String,
     /// The colour presence paints them in, `[r, g, b]`.
     pub rgb: [u8; 3],
     /// A short fragment of their key, telling apart two of the same name.
     pub identity: String,
     pub relation: Relation,
+    /// What acted: a person, an agent, a Shortcut, an app or a bot. The line
+    /// that names a software author words it after its name ("· Software").
+    pub kind: ActorKind,
     /// For software: who it acted for, as a sentence names them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub on_behalf_of: Option<String>,
+    /// The person it acted for is the reader.
+    pub for_reader: bool,
+    /// The task that named it, as it was called then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
 }
 
 /// What kind of change an entry is.

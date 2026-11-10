@@ -54,9 +54,9 @@ impl ActivityBrief {
     pub fn glance(&self) -> String {
         let who = match self.authors.as_slice() {
             [] => String::new(),
-            [author] => author.name.clone(),
-            [first, second] => authors_pair(&first.name, &second.name),
-            [first, second, rest @ ..] => authors_more(&first.name, &second.name, rest.len()),
+            [author] => line(author),
+            [first, second] => authors_pair(&line(first), &line(second)),
+            [first, second, rest @ ..] => authors_more(&line(first), &line(second), rest.len()),
         };
         if who.is_empty() {
             self.title.clone()
@@ -64,6 +64,11 @@ impl ActivityBrief {
             format!("{who} · {}", self.title)
         }
     }
+}
+
+/// One change's author as the line that names them.
+fn line(author: &HistoryAuthor) -> String {
+    crate::history_source::sentence::author_line(author)
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

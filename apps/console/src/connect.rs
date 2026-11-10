@@ -75,6 +75,7 @@ fn grant_row(doors: &Doors, index: usize, grant: &door::Grant) -> Element {
     let agent = wire::Author {
         name: grant.agent.clone(),
         relation: wire::Relation::Software,
+        kind: ui::tilo_actions::ActorKind::Agent,
         ..wire::Author::default()
     };
     let status = if grant.runs.is_empty() {

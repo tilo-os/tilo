@@ -164,6 +164,9 @@ pub fn rgb_to_hue(rgb: [u8; 3]) -> f32 {
 /// disambiguation when two authors share a name.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistoryAuthor {
+    /// The name it goes by: a person's, an agent's own, the reader's as "You".
+    /// A name, never a sentence: a row that says whom software acted for
+    /// words that line once, from the facts beside it.
     pub name: String,
     /// Degrees `[0, 360)`. Kept for fixtures and any surface that still
     /// reads hue; paint uses [`HistoryAuthor::rgb`].
@@ -181,9 +184,13 @@ pub struct HistoryAuthor {
     /// person, or software acting for someone.
     pub relation: AuthorRelation,
     /// Who acted and for whom, when the author is an agent, a Shortcut or an
-    /// app acting for a person: the same facts [`Self::name`] reads as a
-    /// sentence, kept as data for the action surface and assistive tech.
+    /// app acting for a person: the facts the line that names it words.
     pub attribution: Option<HistoryAttribution>,
+    /// The person the author acted for is the reader: the line says "for you".
+    pub for_reader: bool,
+    /// The task that named the author, as it was called then: the line reads
+    /// "Ada via task ‘Prepare Q3 financials’".
+    pub task: Option<String>,
 }
 
 /// An author that acted for someone: an agent's change is the agent's, on
@@ -195,8 +202,6 @@ pub struct HistoryAttribution {
     pub actor: String,
     /// What the actor is.
     pub kind: tilo_actions::ActorKind,
-    /// The actor's display name, without the person it acted for.
-    pub actor_name: String,
     /// The principal of the person it acted for, when it acted for one.
     pub on_behalf_of: Option<String>,
     /// That person's display name.
@@ -230,6 +235,8 @@ impl HistoryAuthor {
             avatar_rgb: hue_to_rgb(avatar_hue),
             relation: AuthorRelation::Person,
             attribution: None,
+            for_reader: false,
+            task: None,
         }
     }
 

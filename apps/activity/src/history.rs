@@ -381,18 +381,7 @@ fn entry_row(
     selected: bool,
     selection: Option<&wire::Range>,
 ) -> Element {
-    let author = entry.author.on_behalf_of.as_ref().map_or_else(
-        || entry.author.name.clone(),
-        |person| {
-            trf(
-                "activity-entry-on-behalf",
-                &[
-                    ("agent", entry.author.name.clone().into()),
-                    ("person", person.clone().into()),
-                ],
-            )
-        },
-    );
+    let who = ui::wire_author_line(&entry.author);
     let mut place: Vec<String> = Vec::new();
     if feed.scope == wire::Scope::AllWorkspaces
         && let Some(workspace) = &entry.workspace
@@ -416,7 +405,7 @@ fn entry_row(
         format!("activity-entry-{}", entry.id),
         entry.summary.clone(),
     )
-    .subtitle(author)
+    .subtitle(who)
     .meta(ago(entry.at_ms))
     .avatar(entry.author.name.clone(), entry.author.identity.clone())
     .selected(selected);

@@ -178,11 +178,7 @@ fn brief_card(
     let state = DisclosureState::new();
     state.set_open(opened.with(|open| open.as_deref() == Some(key.as_str())));
     let remembered = opened.clone();
-    let authors: Vec<&str> = brief
-        .authors
-        .iter()
-        .map(|author| author.name.as_str())
-        .collect();
+    let authors: Vec<String> = brief.authors.iter().map(ui::wire_author_line).collect();
     let name = key.clone();
     let mut row = DisclosureRow::new(&brief.title, brief_body(index, brief))
         .with_id(key)
@@ -237,7 +233,7 @@ fn brief_body(index: usize, brief: &wire::Brief) -> Element {
                 format!("activity-brief-{index}-action-{at}"),
                 action.summary.clone(),
             )
-            .secondary(action.author.name.clone())
+            .secondary(ui::wire_author_line(&action.author))
             .meta(ago(action.at_ms))
             .avatar(action.author.name.clone(), action.author.identity.clone()),
         ));
