@@ -232,13 +232,27 @@ impl WidgetHost {
     /// Lay the tree out with the wells and the previews in effect, as `work`
     /// runs it: a placement made then reports to them, so a policy reading
     /// them in the same frame sees the windows where the tree just laid them
-    /// out.
+    /// out. What `work` draws, it draws over this tree's own backdrops.
     fn with_reports<T>(&mut self, work: impl FnOnce(&mut FrameHarness) -> T) -> T {
         let _wells = self.wells.clone().map(ui::widget::window_well::install);
         let _previews = self
             .previews
             .clone()
             .map(ui::widget::window_preview::install);
+        // Translucent material records what lies below it; the compositor
+        // blurs that and hands it back (`set_backdrops`). The images are
+        // this tree's, and the toolkit holds one tree's at a time: every
+        // pass that may draw provides them first, a layout asked for
+        // between frames as much as a frame. A pass that drew without them
+        // drew its material over the stand-in, and kept it: the compositor
+        // hands a backdrop over again only when what lies below changes.
+        ui::backdrop::provide_backdrops(
+            self.provided
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, image)| Some((slot, image.clone()?)))
+                .collect(),
+        );
         work(&mut self.host)
     }
 
@@ -866,17 +880,6 @@ impl SurfaceHost for WidgetHost {
         {
             return false;
         }
-        // Translucent material records what lies below it; the compositor
-        // blurs that and hands it back (`set_backdrops`). The images are
-        // this tree's: every host on the thread provides its own before it
-        // draws.
-        ui::backdrop::provide_backdrops(
-            self.provided
-                .iter()
-                .enumerate()
-                .filter_map(|(slot, image)| Some((slot, image.clone()?)))
-                .collect(),
-        );
         // The tree lays out with the wells in effect, so a placement made
         // now reports to them, and a policy reading them in the same frame
         // sees the windows where the tree just laid them out.
