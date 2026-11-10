@@ -1671,8 +1671,7 @@ fn what_a_listing_offers_is_what_its_path_invokes() {
                 let inside = signature
                     .split_once('(')
                     .and_then(|(_, rest)| rest.split_once(')'))
-                    .map(|(inside, _)| inside)
-                    .unwrap_or("");
+                    .map_or("", |(inside, _)| inside);
                 if inside
                     .split(',')
                     .map(str::trim)
