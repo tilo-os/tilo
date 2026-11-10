@@ -498,6 +498,10 @@ pub struct FrameHarness {
     /// Presence changed through [`Self::update_presence`]: the next frame redraws the collaborator
     /// overlays without a synchronous relayout.
     presence_redraw: bool,
+    /// The agents' action marks the last drawn frame painted, as the native
+    /// [`App`](crate::app::App) keeps them: where each one rests, and the pointer and nametag it
+    /// floats beside it.
+    drawn_action_markers: Vec<crate::app::PaintedActionMarker>,
     /// Other people's pointers its host placed over this surface
     /// ([`Self::set_placed_pointers`]), drawn above everything else.
     placed_pointers: Vec<crate::presence::PeerCursor>,
@@ -1572,6 +1576,7 @@ impl FrameHarness {
             room_index: None,
             presence: Box::new(PresenceCtx::empty()),
             presence_redraw: false,
+            drawn_action_markers: Vec::new(),
             placed_pointers: Vec::new(),
             tooltips: crate::host_core::TooltipLayer::default(),
             settle_frame_owed: false,
@@ -4144,6 +4149,7 @@ impl FrameHarness {
         }
         let interaction_now = crate::time::now();
         self.presence.prune_interactions(interaction_now);
+        self.drawn_action_markers.clear();
         if self.presence.has_visible_interactions(interaction_now)
             && let Some((tree, bindings)) = self.retained_action_geometry()
         {
@@ -4159,7 +4165,7 @@ impl FrameHarness {
                 &self.presence,
                 &self.presence.visible_interactions(interaction_now),
             );
-            crate::action_locus::draw_action_presence(
+            self.drawn_action_markers = crate::action_locus::draw_action_presence(
                 &mut crate::paint::PaintCtx::new(
                     &mut self.scene,
                     Affine::IDENTITY,
@@ -8011,6 +8017,13 @@ impl FrameHarness {
     /// Read-only view of the collaborator presence drawn by this harness.
     pub fn presence(&self) -> &PresenceCtx {
         &self.presence
+    }
+
+    /// The agents' action marks the last drawn frame painted: where each rests and the pointer and
+    /// nametag it floats beside it, in surface coordinates.
+    #[must_use]
+    pub fn drawn_action_markers(&self) -> &[crate::app::PaintedActionMarker] {
+        &self.drawn_action_markers
     }
 
     /// Outbound caret/selection presence of the widget holding keyboard

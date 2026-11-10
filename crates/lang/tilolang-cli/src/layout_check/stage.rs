@@ -1182,6 +1182,13 @@ mod tests {
     ) {
         changed_pixels(before, after, width, pixels(check))
             .expect("the agent's marker rests on the check box the app binds");
+        // The agent's pointer and nametag float beside the mark, over whatever stands there, as a
+        // peer's cursor does: only the mark itself is held to the control the app binds.
+        let [marker] = staged.harness().drawn_action_markers() else {
+            panic!("the frame paints the agent's mark");
+        };
+        let [x0, y0, x1, y1] = marker.marker;
+        let chrome = ui::kurbo::Rect::new(x0, y0, x1, y1);
         let others: Vec<_> = staged
             .harness()
             .controls()
@@ -1192,9 +1199,11 @@ mod tests {
             .collect();
         assert!(!others.is_empty(), "the scenario shows more than one row");
         for other in others {
+            let (x0, y0, x1, y1) = pixels(other);
+            let changed = changed_pixels_clear_of(before, after, width, (x0, y0, x1, y1), chrome);
             assert!(
-                changed_pixels(before, after, width, pixels(other)).is_none(),
-                "no mark rests on {other:?}, which the action does not act on"
+                changed.is_none(),
+                "no mark rests on {other:?}, which the action does not act on: {changed:?}"
             );
         }
     }
@@ -1215,15 +1224,27 @@ mod tests {
     }
 
     /// The bounds of the pixels that changed between `before` and `after`, within `region`.
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "a pixel index and its neighbours inside a frame's own dimensions"
-    )]
     fn changed_pixels(
         before: &[u8],
         after: &[u8],
         width: u32,
         region: (u32, u32, u32, u32),
+    ) -> Option<(u32, u32, u32, u32)> {
+        changed_pixels_clear_of(before, after, width, region, ui::kurbo::Rect::ZERO)
+    }
+
+    /// The bounds of the pixels that changed between `before` and `after` within `region`, leaving
+    /// out those `chrome` covers: what a frame draws over the region rather than in it.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "a pixel index and its neighbours inside a frame's own dimensions"
+    )]
+    fn changed_pixels_clear_of(
+        before: &[u8],
+        after: &[u8],
+        width: u32,
+        region: (u32, u32, u32, u32),
+        chrome: ui::kurbo::Rect,
     ) -> Option<(u32, u32, u32, u32)> {
         let mut bbox: Option<(u32, u32, u32, u32)> = None;
         for (index, (a, b)) in before
@@ -1237,6 +1258,12 @@ mod tests {
             let index = u32::try_from(index).expect("a pixel index fits u32");
             let (x, y) = (index % width, index / width);
             if x < region.0 || y < region.1 || x >= region.2 || y >= region.3 {
+                continue;
+            }
+            // A pixel is the area the frame draws between its whole edges: one the chrome covers
+            // whole is the chrome's, and one it only partly covers is still the frame's.
+            let centre = ui::kurbo::Point::new(f64::from(x) + 0.5, f64::from(y) + 0.5);
+            if chrome.contains(centre) {
                 continue;
             }
             bbox = Some(match bbox {
