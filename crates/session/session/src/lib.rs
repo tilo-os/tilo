@@ -43,6 +43,7 @@ mod activity_provider;
 mod continuations;
 pub mod host_actions;
 pub mod overlays;
+#[cfg(target_os = "linux")]
 mod record_reads;
 pub mod records;
 pub mod search;
@@ -201,6 +202,7 @@ pub mod files_daemon;
 pub mod firstboot;
 #[cfg(target_os = "linux")]
 mod fs_authority;
+#[cfg(target_os = "linux")]
 mod governance;
 #[cfg(target_os = "linux")]
 mod held;

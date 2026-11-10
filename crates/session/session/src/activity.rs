@@ -520,7 +520,7 @@ impl Activity {
             },
         ));
         #[cfg(not(target_os = "linux"))]
-        let known = Rc::new(Reading::read(self.0.changes.clone(), key.clone(), read));
+        let known = Rc::new(Reading::read(&self.0.changes, &key, read));
         let value = known.get().as_ref().clone();
         self.0.records.borrow_mut().insert(key, Rc::clone(&known));
         value
@@ -622,12 +622,12 @@ impl Reading {
 impl Reading {
     /// Read `read` now: this host has one thread, and reads the records on it.
     fn read(
-        changes: crate::platform::records::Changes,
-        workspace: String,
+        changes: &crate::platform::records::Changes,
+        workspace: &str,
         read: impl Fn() -> Vec<DetachedRecordHistory> + 'static,
     ) -> Self {
         Self {
-            held: RefCell::new((changes.moved_in(&workspace), Arc::new(read()))),
+            held: RefCell::new((changes.moved_in(workspace), Arc::new(read()))),
             read: Box::new(read),
         }
     }

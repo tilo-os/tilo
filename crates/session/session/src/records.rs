@@ -209,7 +209,7 @@ impl Records {
             let named = std::thread::Builder::new()
                 .name("tilo-search-bring".into())
                 .spawn(move || {
-                    if name_in(&root, &workspace, &package, &record) {
+                    if name_in(&root, &workspace, &package, record) {
                         changes.note(&keeping, &held, "", false);
                     }
                 });
@@ -218,7 +218,7 @@ impl Records {
             }
         }
         #[cfg(not(target_os = "linux"))]
-        if name_in(&self.root, &workspace, &package, &record) {
+        if name_in(&self.root, &workspace, &package, record) {
             self.changes.note(&workspace, &package, "", false);
         }
     }
@@ -233,7 +233,8 @@ impl Records {
 }
 
 /// Name `record` in the index of `package` in `workspace` , as its app would. Whether it is named.
-fn name_in(root: &Path, workspace: &str, package: &str, record: &RecordCheckout) -> bool {
+fn name_in(root: &Path, workspace: &str, package: &str, record: RecordCheckout) -> bool {
+    let RecordCheckout { id, kind, .. } = record;
     let store: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(root.to_path_buf()));
     let key = StorageKey::workspace_index(package, workspace);
     let mut index = match DocStore::shared(store, key) {
@@ -244,7 +245,7 @@ fn name_in(root: &Path, workspace: &str, package: &str, record: &RecordCheckout)
         }
     };
     let mut doc = index.load_or_new();
-    if !ui::record::index::reference(&mut doc, &record.id, &record.kind) {
+    if !ui::record::index::reference(&mut doc, &id, &kind) {
         return true;
     }
     match index.append(&mut doc) {

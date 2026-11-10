@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tilo_actions::remote::{ActionHost as _, InvokeArgument, InvokeRequest};
 use tilo_session::mentions::Mentions;
 use tilo_session::platform::notice::{Place, Toolkit, open_target};
-use tilo_session::platform::records::{Changed, Records};
+use tilo_session::platform::records::{Changed, Changes, Records};
 use ui::automerge::AutoCommit;
 
 use super::Desktop;
