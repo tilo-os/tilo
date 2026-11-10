@@ -1179,6 +1179,20 @@ mod tests {
     }
 
     /// A device of a person, certified for their root, that owns workspaces.
+    /// This device's engine, opened again under `state` as a session that starts afresh does.
+    fn reopened(
+        state: &tempfile::TempDir,
+        identity: &tilo_identity_host::custody::HostIdentity,
+    ) -> Engine {
+        Engine::open(
+            identity.clone(),
+            Some(state.path()),
+            Vec::new(),
+            crate::platform::custody::of_this_desk(),
+        )
+        .expect("this device's engine opens")
+    }
+
     fn identity() -> tilo_identity_host::custody::HostIdentity {
         let person = ed25519_dalek::SigningKey::from_bytes(&[0x31; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&[0x32; 32]);
@@ -1216,7 +1230,7 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let identity = identity();
         let person = hex::encode(identity.device_cert.user_public_key);
-        let engine = Engine::open(identity.clone(), Some(state.path()), Vec::new()).unwrap();
+        let engine = reopened(&state, &identity);
         let (from, to) = ids();
         engine.found(WorkspaceSlot(1), from, "Research", None);
         engine.found(WorkspaceSlot(2), to, "Research branch", None);
@@ -1305,7 +1319,7 @@ mod tests {
 
         drop(held);
         drop(engine);
-        let engine = Engine::open(identity, Some(state.path()), Vec::new()).unwrap();
+        let engine = reopened(&state, &identity);
         assert!(
             engine.holds(to),
             "the branch is this device's after a restart"

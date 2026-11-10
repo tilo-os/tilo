@@ -183,8 +183,13 @@ impl Device {
         let identity = tilo_network_actor::HostIdentity::kept(cert, key);
         let state = tempfile::tempdir().expect("the session's directory");
         let engine = std::sync::Arc::new(
-            Engine::open(identity.clone(), Some(state.path()), std::iter::empty())
-                .expect("the session's engine opens"),
+            Engine::open(
+                identity.clone(),
+                Some(state.path()),
+                std::iter::empty(),
+                crate::platform::custody::of_this_desk(),
+            )
+            .expect("the session's engine opens"),
         );
         engine.attach_link(ChannelLink::new());
         let plane = Client::start(

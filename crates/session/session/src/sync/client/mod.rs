@@ -46,13 +46,13 @@ use crate::device_actions::DeviceActions;
 #[cfg(target_os = "linux")]
 use crate::engine::Engine;
 #[cfg(target_os = "linux")]
-use crate::platform::fabric::{Continuity, SessionFabric};
-#[cfg(target_os = "linux")]
-use tilo_action_broker::record_content::ContentSources;
-#[cfg(target_os = "linux")]
 use crate::platform::fabric::DeviceId;
 #[cfg(target_os = "linux")]
 use crate::platform::fabric::FabricRuntime;
+#[cfg(target_os = "linux")]
+use crate::platform::fabric::{Continuity, SessionFabric};
+#[cfg(target_os = "linux")]
+use tilo_action_broker::record_content::ContentSources;
 #[cfg(target_os = "linux")]
 use tilo_endpoint_reachability::{Need, Reachability};
 #[cfg(target_os = "linux")]
@@ -618,7 +618,9 @@ impl Seat {
     /// engine: the offer, the checkpoint, the withdrawal and the ending of a transfer are the
     /// engine's to take, whether or not a session runs on this client.
     #[must_use]
-    pub(crate) fn fabric_actions(&self) -> Vec<crate::platform::fabric::PersonalFabricActionEnvelope> {
+    pub(crate) fn fabric_actions(
+        &self,
+    ) -> Vec<crate::platform::fabric::PersonalFabricActionEnvelope> {
         let actions = self
             .fabric
             .as_ref()

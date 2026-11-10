@@ -21518,19 +21518,35 @@ dependencies = [
 name = "tilo-session-client"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "bounded-command",
+ "channel-crypto",
  "collab-types",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
  "hex",
  "iroh",
  "neighbour-wire",
  "postcard",
+ "rand_core 0.10.0",
  "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
  "tilo-action-policy",
+ "tilo-automerge-isolate",
+ "tilo-broker-core",
+ "tilo-channels",
  "tilo-clock",
+ "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-identity-host",
  "tilo-live",
+ "tilo-lock",
+ "tilo-paths",
  "tilo-peer-state",
  "tilo-relay-protocol",
+ "tilo-secrets",
  "tilo-ui",
  "tilo-user-identity",
  "tokio",
@@ -21538,6 +21554,7 @@ dependencies = [
  "uuid",
  "web-time",
  "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]

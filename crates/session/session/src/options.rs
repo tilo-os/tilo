@@ -334,7 +334,11 @@ pub(crate) fn open_engine(
             .map(|workspace| (workspace.slot, workspace.id()))
             .collect()
     });
-    match engine::Engine::for_this_device(options.state.as_deref(), workspaces) {
+    match engine::Engine::for_this_device(
+        options.state.as_deref(),
+        workspaces,
+        crate::platform::custody::of_this_desk(),
+    ) {
         Ok(engine) => Some(std::sync::Arc::new(engine)),
         Err(error) => {
             tracing::warn!(%error, "this session holds no workspaces");

@@ -50,6 +50,8 @@ mod session_actions;
 // What a message from another member is, and whether the workspace's policy grants it: the gate
 // table every host asks, named here as the session always has.
 pub use tilo_session_client::gate as workspace_gate;
+// This device's workspaces, and the sealed channels their records travel in.
+pub use tilo_session_client::{channels, engine};
 
 // The Linux host's effects: the compositor, the services it starts, the
 // devices and the processes. A web host provides these through `platform`.
@@ -106,7 +108,6 @@ mod capture_studio;
 mod cards;
 #[cfg(target_os = "linux")]
 mod certification;
-mod channels;
 #[cfg(target_os = "linux")]
 mod chrome;
 #[cfg(target_os = "linux")]
@@ -182,7 +183,6 @@ mod downloaded;
 pub mod drives;
 #[cfg(target_os = "linux")]
 mod emoji;
-mod engine;
 #[cfg(target_os = "linux")]
 mod env;
 #[cfg(target_os = "linux")]

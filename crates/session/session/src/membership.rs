@@ -410,6 +410,7 @@ mod tests {
             identity(&cert, &person_key),
             Some(directory.path()),
             std::iter::empty(),
+            crate::platform::custody::of_this_desk(),
         )
         .expect("this device's engine opens");
         let governor = TestGovernor::empty_interactive(cert.clone(), person_key.clone(), WORKSPACE)
@@ -502,6 +503,7 @@ mod tests {
             identity(&a_cert, &a_key),
             Some(a_state.path()),
             std::iter::empty(),
+            crate::platform::custody::of_this_desk(),
         )
         .expect("the owner's engine opens");
         let mut governor = testing::enroll_into(governor, a_engine.owner(), &a_key, &a_cert)
@@ -515,6 +517,7 @@ mod tests {
             identity(&b_cert, &b_key),
             Some(b_state.path()),
             [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
+            crate::platform::custody::of_this_desk(),
         )
         .expect("this desk's engine opens");
         governor = testing::enroll_into(governor, b_engine.owner(), &b_key, &b_cert)
@@ -1382,6 +1385,7 @@ mod tests {
                 identity(&cert, &key),
                 Some(state.path()),
                 [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
+                crate::platform::custody::of_this_desk(),
             )
             .expect("this computer's engine opens");
             the_fixture_governs(&engine, workspace_id);
@@ -1573,6 +1577,7 @@ mod tests {
             identity(&her, &her_key),
             Some(her_state),
             [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
+            crate::platform::custody::of_this_desk(),
         )
         .expect("her engine opens");
         // This computer's device governs the workspace, and admits her.
@@ -1580,6 +1585,7 @@ mod tests {
             identity(cert, key),
             Some(state),
             [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
+            crate::platform::custody::of_this_desk(),
         )
         .expect("this computer's engine opens");
         // The workspace the desk made is this computer's own already: a fixture host governs it
@@ -1713,6 +1719,7 @@ mod tests {
             identity(cert, key),
             Some(state),
             [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
+            crate::platform::custody::of_this_desk(),
         )
         .expect("this computer's engine opens");
         let written = mine
@@ -1909,6 +1916,7 @@ mod tests {
             crate::sync::device_identity().expect("this computer is a device"),
             Some(state.path()),
             [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
+            crate::platform::custody::of_this_desk(),
         )
         .expect("this computer's engine opens");
         assert!(
@@ -1934,6 +1942,7 @@ mod tests {
             identity(cert, key),
             Some(state),
             [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
+            crate::platform::custody::of_this_desk(),
         )
         .expect("this computer's engine opens");
         let now = tilo_clock::SystemTime::now();

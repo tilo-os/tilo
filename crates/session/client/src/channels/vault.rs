@@ -14,7 +14,7 @@ use tilo_channels::ChannelState;
 
 /// This device's vault: the master key the platform secret store keeps for collaboration, and the
 /// store it seals. Only ciphertext is written to it.
-pub(crate) struct MlsVault {
+pub struct MlsVault {
     state: Arc<dyn ChannelState>,
     master_key: Zeroizing<[u8; 32]>,
 }
@@ -25,7 +25,7 @@ impl MlsVault {
     ///
     /// # Errors
     /// The secret store is absent or locked, or holds a key this vault cannot read.
-    pub(crate) fn open(state: Arc<dyn ChannelState>, locator: &str) -> Result<Self, String> {
+    pub fn open(state: Arc<dyn ChannelState>, locator: &str) -> Result<Self, String> {
         let existed = state.open_vault()?;
         let master_key = match secret_service_load(locator) {
             Ok(bytes) => bytes,
@@ -53,7 +53,7 @@ impl MlsVault {
     /// # Errors
     /// The launcher named no state directory, or the vault material cannot be opened.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn open_for_session() -> Result<Self, String> {
+    pub fn open_for_session() -> Result<Self, String> {
         let state = tilo_paths::env_dir("XDG_STATE_HOME").ok_or_else(|| {
             "the launcher did not provide XDG_STATE_HOME for MLS state".to_owned()
         })?;
@@ -66,13 +66,13 @@ impl MlsVault {
     }
 
     /// Where this device keeps its sealed channel state.
-    pub(crate) fn channel_state(&self) -> Arc<dyn ChannelState> {
+    pub fn channel_state(&self) -> Arc<dyn ChannelState> {
         Arc::clone(&self.state)
     }
 
     /// The key sealing this device's channel state, derived from the master key under its own
     /// domain so it seals nothing else.
-    pub(crate) fn channel_state_key(&self) -> channel_crypto::VaultKey {
+    pub fn channel_state_key(&self) -> channel_crypto::VaultKey {
         channel_crypto::VaultKey::new(self.channel_state_key_bytes())
     }
 
@@ -90,7 +90,7 @@ impl MlsVault {
 /// earlier builds used, so a device that kept its sealed channel state has it opened here, never
 /// replaced.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn master_key_locator(root: &std::path::Path) -> String {
+pub fn master_key_locator(root: &std::path::Path) -> String {
     format!(
         "mls-master-{}",
         hex::encode(Sha256::digest(root.as_os_str().as_encoded_bytes()))

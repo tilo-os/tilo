@@ -28,6 +28,28 @@ tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # The action a message from another member is, and the claims access answers it with, holding
 # every message to the workspace's own policy.
 tilo-action-policy = { path = "../../collab/action-policy" }
+# This device's channels: the groups its workspaces' sealed records are in, and the governance that
+# settles who reads each one.
+tilo-channels = { path = "../../collab/channels" }
+channel-crypto = { path = "../../collab/channel-crypto" }
+# The channel state and ingress gates a workspace's sealed records are held to, as the broker keeps
+# them on every host.
+tilo-broker-core = { path = "../../collab/broker-core" }
+# The vault's master key: the platform secret store, or the sealed file store a headless machine
+# names.
+tilo-secrets.workspace = true
+tilo-paths.workspace = true
+# A freshly drawn vault key.
+getrandom.workspace = true
+sha2.workspace = true
+zeroize.workspace = true
+rand_core.workspace = true
+serde_json.workspace = true
+# This device signs its workspaces' commits with its own key.
+ed25519-dalek.workspace = true
+blake3.workspace = true
+# The map beside every board.
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # This device's identity: the certificate it presents and the key it signs with, from the store
 # its host keeps them in.
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
@@ -43,10 +65,24 @@ tracing.workspace = true
 # The gate's table of every wire variant builds ids and channels as the wire does.
 uuid.workspace = true
 web-time = { version = "1", features = ["serde"] }
+# A state directory for an engine, and a vault root for the channel state kept in it.
+tempfile.workspace = true
+# A workspace's documents are automerge, which a test binary serves from its own workers.
+tilo-automerge-isolate.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Where a workspace's own host is reached, as an invitation names it for the joiner.
+tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
+# A vault key an earlier build left with `secret-tool`, moved into the platform store.
+bounded-command = { path = "../../system/bounded-command" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The web has no system random source; the page supplies the browser's.
+getrandom = { workspace = true, features = ["wasm_js"] }
 
 [lints]
 workspace = true

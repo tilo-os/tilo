@@ -29,3 +29,9 @@ impl Custody for Signed {
             .map(drop)
     }
 }
+
+/// This desktop's custody, as its engine asks it before every commit to a workspace.
+#[cfg(target_os = "linux")]
+pub(crate) fn of_this_desk() -> std::sync::Arc<dyn Custody> {
+    std::sync::Arc::new(Signed)
+}

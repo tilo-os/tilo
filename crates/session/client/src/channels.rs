@@ -10,32 +10,33 @@
 //! Nothing here decides who may read what: the workspace's governance does, and
 //! this device only follows it.
 
-// Nothing compiled for the web reads this module's roles yet: the page's session wires them with
-// its own host.
+// The page's session runs no channel service of its own: only a desktop's build settles a
+// workspace's groups here.
 #![cfg_attr(
     target_arch = "wasm32",
     allow(
         dead_code,
         unused_imports,
-        reason = "the page's session reads these with its own wiring"
+        reason = "a page runs its workspaces' channels with its own host"
     )
 )]
-
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tilo_clock::{SystemTime, UNIX_EPOCH};
 
-use crate::sync::{Cmd, RosterDevice, Topic, topic_of};
+use crate::plane::{Cmd, RosterDevice, Topic, topic_of};
 
 use collab_types::{ChannelId, ChannelRoute, Ed25519PublicKey};
 use neighbour_wire::NeighbourMsg;
 #[cfg(target_os = "linux")]
 use tilo_broker_core::collab_core::{BrokerChannels, BrokerGates};
 use tilo_channels::{
-    ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelGates, ChannelKeyAccess,
-    GovernancePark, GovernancePump, GovernanceTransport, InboundChannelGovernance,
+    ChannelDirectory, ChannelKeyAccess, GovernancePark, GovernanceTransport,
+    InboundChannelGovernance,
 };
+#[cfg(target_os = "linux")]
+use tilo_channels::{ChannelEncryption, ChannelEncryptionConfig, ChannelGates, GovernancePump};
 use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
 use tilo_identity_host::policy_change;
 use tilo_lock::MutexRecover as _;
@@ -43,11 +44,11 @@ use tilo_lock::MutexRecover as _;
 use crate::engine::Engine;
 
 mod vault;
-pub(crate) use vault::MlsVault;
+pub use vault::MlsVault;
 
 /// The running channel service: this device's keys, and the thread that keeps their groups in step
 /// with the workspaces' governance. Stops when dropped.
-pub(crate) struct Channels {
+pub struct Channels {
     /// This device's keys and the groups they are in; `None` while no secret store
     /// keeps its channel state.
     #[cfg_attr(
@@ -68,7 +69,7 @@ impl Channels {
         not(target_arch = "wasm32"),
         allow(dead_code, reason = "a host with threads runs its own pump")
     )]
-    pub(crate) fn pump(&self, transport: &dyn GovernanceTransport) -> Option<Duration> {
+    pub fn pump(&self, transport: &dyn GovernanceTransport) -> Option<Duration> {
         self.access
             .as_ref()
             .and_then(|access| access.pump_until_due(transport))
@@ -88,7 +89,7 @@ impl Channels {
     ///
     /// # Errors
     /// The thread settling the channels could not start.
-    pub(crate) fn open(
+    pub fn open(
         engine: &Arc<Engine>,
         link: Arc<ChannelLink>,
         broker: Arc<Mutex<BrokerChannels>>,
@@ -167,7 +168,7 @@ pub struct ChannelLink {
     /// read asks once, and the plane asks a host session that starts later itself.
     asked: Mutex<BTreeSet<(Topic, [u8; 32])>>,
     /// What this session says on the collaboration plane, once it is running.
-    outgoing: Mutex<Option<std::sync::Arc<dyn tilo_session_client::Outbox>>>,
+    outgoing: Mutex<Option<std::sync::Arc<dyn crate::Outbox>>>,
     park: Arc<GovernancePark>,
 }
 
@@ -184,7 +185,7 @@ impl ChannelLink {
     }
 
     /// Say `message` on the collaboration plane from now on; `None` once the plane is gone.
-    pub(crate) fn attach(&self, outgoing: std::sync::Arc<dyn tilo_session_client::Outbox>) {
+    pub fn attach(&self, outgoing: std::sync::Arc<dyn crate::Outbox>) {
         *self.outgoing.lock_recover() = Some(outgoing);
         // What was told before the plane ran was told to no one: every workspace this device holds
         // is read and told again.
@@ -192,7 +193,7 @@ impl ChannelLink {
     }
 
     /// Wake whatever unsettles the groups: a frame arrived, or a workspace moved.
-    pub(crate) fn park(&self) -> Arc<GovernancePark> {
+    pub fn park(&self) -> Arc<GovernancePark> {
         Arc::clone(&self.park)
     }
 
@@ -203,7 +204,7 @@ impl ChannelLink {
 
     /// Take in one message the plane heard. Anything but the channels' governance is left to the
     /// plane.
-    pub(crate) fn heard(&self, message: &NeighbourMsg) {
+    pub fn heard(&self, message: &NeighbourMsg) {
         let Some(governance) = InboundChannelGovernance::from_message(message.clone()) else {
             return;
         };
@@ -214,7 +215,7 @@ impl ChannelLink {
     /// Take what a workspace's governor never admits into its replica: the channels' governance,
     /// which the workspace's devices settle their groups with between each other. Says whether
     /// `message` was one of them, and so never reaches the workspace's state.
-    pub(crate) fn dispatch(&self, message: &NeighbourMsg) -> bool {
+    pub fn dispatch(&self, message: &NeighbourMsg) -> bool {
         if !matches!(
             message,
             NeighbourMsg::MlsGovernance { .. }
@@ -229,7 +230,7 @@ impl ChannelLink {
 
     /// Workspace `workspace` 's state moved here: the devices it admits and the channels its
     /// records are may differ from what was last read.
-    pub(crate) fn workspace_changed(&self, workspace: ModelWorkspaceId) {
+    pub fn workspace_changed(&self, workspace: ModelWorkspaceId) {
         self.changed.lock_recover().insert(workspace);
         self.park.poke();
     }
@@ -241,7 +242,7 @@ impl ChannelLink {
     }
 
     /// The workspaces that moved since the last call, in a stable order.
-    pub(crate) fn take_changed(&self) -> Vec<ModelWorkspaceId> {
+    pub fn take_changed(&self) -> Vec<ModelWorkspaceId> {
         let mut changed = self.changed.lock_recover();
         let workspaces = changed.iter().copied().collect();
         changed.clear();
@@ -251,7 +252,7 @@ impl ChannelLink {
     /// Ask `workspace` 's hosts for the record on `channel` the first time a local reader reads it
     /// (an on-demand record, or a part of a chain behind its head): its history then arrives as the
     /// workspace's other documents do, and later reads ask nobody.
-    pub(crate) fn ask_record(&self, workspace: ModelWorkspaceId, channel: [u8; 32]) {
+    pub fn ask_record(&self, workspace: ModelWorkspaceId, channel: [u8; 32]) {
         let ws = topic_of(workspace);
         let outgoing = self.outgoing.lock_recover().clone();
         let Some(outgoing) = outgoing else {
@@ -270,7 +271,7 @@ impl ChannelLink {
 
     /// Ask the host of `workspace` to replay what it retains: a message the workspace held back
     /// waited on something the host sends of its own accord too, and the replay decides it again.
-    pub(crate) fn ask_replay(&self, workspace: ModelWorkspaceId) {
+    pub fn ask_replay(&self, workspace: ModelWorkspaceId) {
         let outgoing = self.outgoing.lock_recover().clone();
         if let Some(outgoing) = outgoing {
             let _ = outgoing.send(Cmd::Replay(topic_of(workspace)));
@@ -280,7 +281,7 @@ impl ChannelLink {
     /// Send this device's owner's outgoing custody of `workspace` to its peers: what the owner
     /// committed leaves this device on the plane's session with the workspace's host, as every
     /// other change of the workspace does.
-    pub(crate) fn publish_custody(&self, workspace: ModelWorkspaceId) {
+    pub fn publish_custody(&self, workspace: ModelWorkspaceId) {
         let outgoing = self.outgoing.lock_recover().clone();
         if let Some(outgoing) = outgoing {
             let _ = outgoing.send(Cmd::PublishCustody(topic_of(workspace)));
@@ -324,11 +325,13 @@ impl GovernanceTransport for ChannelLink {
 
 /// The workspaces whose rosters this session has told the plane, by workspace topic: a roster is
 /// told when the workspace it is of changed, and only then.
+#[cfg(target_os = "linux")]
 #[derive(Default)]
 struct Rosters {
     told: HashMap<Topic, Roster>,
 }
 
+#[cfg(target_os = "linux")]
 impl Rosters {
     /// Whether the plane is not holding `roster` as workspace `ws` 's yet.
     fn moved(&self, ws: Topic, roster: &Roster) -> bool {
@@ -490,23 +493,20 @@ impl ChannelDirectory for Directory {
 
 /// The devices a workspace admits, by the publisher each of their sessions is known by, and when
 /// the certificate the workspace holds of them expires (Unix nanoseconds).
-pub(crate) type Roster = Vec<RosterDevice>;
+pub type Roster = Vec<RosterDevice>;
 
 /// One device `workspace` admits, with the certificate the workspace certified it under: what its
 /// role in the workspace is read from.
 #[derive(Clone, Debug)]
-pub(crate) struct Member {
-    pub(crate) device: [u8; 32],
-    pub(crate) cert: tilo_user_identity::DeviceCert,
+pub struct Member {
+    pub device: [u8; 32],
+    pub cert: tilo_user_identity::DeviceCert,
 }
 
 /// The members of `workspace` : the devices its governance admits now, with the certificate it
 /// holds of each. A device the workspace removed, or whose certificate ran out, is not one, and
 /// what it sent or would receive is refused from then on.
-pub(crate) fn members_of(
-    engine: &Engine,
-    workspace: ModelWorkspaceId,
-) -> Result<Vec<Member>, String> {
+pub fn members_of(engine: &Engine, workspace: ModelWorkspaceId) -> Result<Vec<Member>, String> {
     let now = SystemTime::now();
     engine.owner().with_current(workspace, |view| {
         let admitted: BTreeSet<[u8; 32]> = view
@@ -545,7 +545,7 @@ pub(crate) fn members_of(
 
 /// The roster of `workspace` , as [`members_of`] reads it: the devices whose window streams carry
 /// between.
-pub(crate) fn roster_of(engine: &Engine, workspace: ModelWorkspaceId) -> Result<Roster, String> {
+pub fn roster_of(engine: &Engine, workspace: ModelWorkspaceId) -> Result<Roster, String> {
     members_of(engine, workspace)?
         .into_iter()
         .map(|member| {

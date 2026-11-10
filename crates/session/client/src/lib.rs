@@ -4,8 +4,10 @@
 //! A host brings the transport; the client says what a participant says on it. What only one host
 //! can do — a desktop's workspaces, channels, fabric and transfers — stays that host's.
 
+pub mod channels;
 pub mod client;
 pub mod custody;
+pub mod engine;
 pub mod gate;
 pub mod identity;
 pub mod plane;

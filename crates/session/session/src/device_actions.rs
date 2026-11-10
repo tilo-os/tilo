@@ -533,8 +533,13 @@ mod tests {
         let directory = tempfile::TempDir::new().expect("a state directory");
         let id = identity(cert.clone(), key);
         let engine = Arc::new(
-            Engine::open(id.clone(), Some(directory.path()), std::iter::empty())
-                .expect("this device's engine opens"),
+            Engine::open(
+                id.clone(),
+                Some(directory.path()),
+                std::iter::empty(),
+                crate::platform::custody::of_this_desk(),
+            )
+            .expect("this device's engine opens"),
         );
         // This device makes the workspace, and the other device of the person joins it: the device
         // certified in the workspace is the one that acts.
