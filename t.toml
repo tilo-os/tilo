@@ -4824,6 +4824,22 @@ outputs = ["/target/agent-setup/**"]
 timeout_secs = 1800
 default = false
 
+# A person's setup survives what their browser does mid-way, on every change that reaches it: the
+# real page in headless Chromium against the Lounge's relay run directly and the tilo command an
+# agent runs, reloaded, closed and reopened, gone back and forward to and opened in a second tab at
+# every step of "Set up with your agent", with a code running out and the network dropping. Each
+# case must land on the step the person was at, never in the Lounge by surprise. It builds nothing
+# itself: it takes the same cached outputs as agent-setup.
+[[check]]
+name = "setup-resume"
+run = "mkdir -p /target/setup-resume-cli\ntar -xzf /target/publish/cli/linux-x86_64/tilo-linux-x86_64.tar.gz -C /target/setup-resume-cli tilo\nbash os/containers/tilo-lounge/test-setup-resume.sh /target/publish/web-desktop/bundle /target/setup-resume"
+needs = ["lounge-gate-binaries", "lounge-fonts", "cli-x86_64", "lounge-gate-tools", "web-desktop-bundle"]
+env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/setup-resume-cli/tilo" }
+requires = ["arch=x86_64"]
+# What it found, not what it ran: the captures, the report, each tab's console and the Lounge's logs.
+outputs = ["/target/setup-resume/setup-resume/*.png", "/target/setup-resume/setup-resume/*.json", "/target/setup-resume/setup-resume/*.log", "/target/setup-resume/*.log"]
+timeout_secs = 1800
+
 # The web page boots for real, on every change that reaches it: the built bundle in headless
 # Chromium against the Lounge's relay run directly, arriving, joining the workspace and opening
 # Notes, failing on any exception the page throws or panic it reports. A page's unit tests run

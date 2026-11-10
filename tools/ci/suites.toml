@@ -1628,6 +1628,10 @@ reason = "needs the built web entry image"
 suite = "os/containers/tilo-lounge/test-page-boot.sh"
 check = "page-boot"
 
+[[covered]]
+suite = "os/containers/tilo-lounge/test-setup-resume.sh"
+check = "setup-resume"
+
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-agent-setup.sh"
 reason = "needs the built web desktop bundle, headless Chromium and the built relay, CLI and crypto programs; the agent-setup check runs it in its image"
