@@ -338,8 +338,9 @@ impl Described for BlockEditor {
             &commands,
             command,
             headings,
-            open_reference,
-            !editing,
+            // A shown text opens the reference itself; an edited one's host opens it, so an
+            // editor that binds a field offers no event of its own there.
+            (!editing).then_some(open_reference),
         );
         editor.set_image_store(Some(crate::pictures::Pictures::window().store().clone()));
         if editing {
@@ -381,8 +382,7 @@ impl Described for BlockEditor {
             &commands,
             command,
             headings,
-            open_reference,
-            showing,
+            showing.then_some(open_reference),
         );
         self.set_find_replace_enabled(!showing);
         let rebound = if showing {
@@ -408,8 +408,7 @@ impl BlockEditor {
         commands: &[String],
         command: Event,
         headings: Event,
-        open_reference: Event,
-        open_by_itself: bool,
+        open_reference: Option<Event>,
     ) {
         // A view that answers the picker's text finds its records itself: what it hands is what
         // the picker shows, and it offers records even while it hands none.
@@ -435,9 +434,7 @@ impl BlockEditor {
         self.on_command(move |label| {
             command.fire(Some(Value::Text(label.to_owned())));
         });
-        if open_by_itself {
-            // A shown text opens the reference itself; an edited one's host opens it, so an
-            // editor that binds a field offers no event of its own here.
+        if let Some(open_reference) = open_reference {
             self.on_open_reference(move |reference| {
                 open_reference.fire(Some(Value::Text(reference.to_owned())));
             });
