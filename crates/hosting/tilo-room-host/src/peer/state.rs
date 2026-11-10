@@ -557,11 +557,10 @@ pub(crate) async fn tell_governor(
     author: [u8; 32],
     body: Vec<u8>,
 ) {
-    // The workspace's link keeps the write as it is admitted, not on the
-    // governor's own schedule: a device that joins reads the history as it
-    // stands then, and a copy kept later would answer it a record missing the
-    // writes in between.
-    crate::workspaces::keep_admitted(ws, &body).await;
+    // The workspace's link carries the write as it is admitted, not on the
+    // governor's own schedule: a linked device reads it live, and one that
+    // joins reads the history as it stands then.
+    crate::workspaces::carry_admitted(ws, author, &body).await;
     if tap.send((author, body)).await.is_err() {
         tracing::debug!("the room's governor no longer follows it");
     }

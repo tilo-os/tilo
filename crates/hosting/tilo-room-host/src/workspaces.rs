@@ -52,6 +52,7 @@ mod hard_stop_tests;
 pub(crate) use desktop_writes::writes_desktop;
 mod hosts;
 mod link_follow;
+pub(crate) use link_follow::carry_admitted;
 mod listing;
 mod memberships;
 mod own;
@@ -961,24 +962,6 @@ impl WorkspaceAuthority {
             workspace: workspace.to_owned(),
         }
     }
-}
-
-/// Keep `body`, a member's write the relay admitted for `workspace`, in the
-/// history its devices catch up from over the workspace's link
-/// ([`Workspaces::keep_for_links`]).
-///
-/// Called where the write is admitted, not on a reader's own schedule: a device
-/// that joins the workspace reads that history as it stands, and a copy kept
-/// later would answer it a record missing the writes in between.
-pub(crate) async fn keep_admitted(workspace: &crate::workspace::SharedWorkspace, body: &[u8]) {
-    let authority = workspace.lock().await.workspace_authority.clone();
-    let Some(authority) = authority else {
-        return;
-    };
-    let Some(workspaces) = authority.workspaces() else {
-        return;
-    };
-    workspaces.keep_for_links(authority.workspace(), body);
 }
 
 /// `host`, serving with the certificate the workspace records under `dir`
@@ -1980,27 +1963,6 @@ impl Workspaces {
         .map(|()| None)
     }
 
-    /// Keep `body`, a member's write the relay admitted for `workspace`, in the
-    /// history its devices catch up from over the workspace's link: a device
-    /// that joins later replays what the workspace holds before it arrived. A
-    /// member reaches the workspace on whatever carrier its runtime runs — a
-    /// relay session, or the link itself — and the carrier is no property of
-    /// the workspace the other members read.
-    fn keep_for_links(&self, workspace: &str, body: &[u8]) {
-        let Ok(number) = crate::room_workspace_id(workspace) else {
-            return;
-        };
-        let Some(link) = self.inner.direct.link(number) else {
-            return;
-        };
-        // A body that does not decode is one [`Self::absorb`] already reported.
-        let Ok(message) = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body) else {
-            // ignored-failure: the workspace's own follow reports the body that does not decode.
-            return;
-        };
-        link.keep_admitted(&message);
-    }
-
     /// Take in the record write `body` of `author`. A record the workspace lacks
     /// is created from it, if `author` is a device of an editor: records are
     /// born only from a governor checkpoint. A write to a record the workspace has
@@ -2686,7 +2648,7 @@ impl Workspaces {
             // The link keeps what the workspace holds from before a device
             // joins it, this start's replay included: a device that joins now
             // reads the history the workspace was founded with.
-            self.keep_for_links(workspace.workspace(), &retained.body);
+            self.carry_to_links(workspace.workspace(), retained.author, &message);
             let Followed {
                 changed: took,
                 replay_wanted,

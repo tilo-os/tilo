@@ -302,8 +302,8 @@ pub(super) async fn handle_presence(
         let mut wr = ws.lock().await;
         // A device sends presence only to say hello, to ask for a baseline
         // (`SyncReq`) or after rejecting a checkpoint — each means it needs the
-        // next live checkpoint (the per-device checkpoint gate in
-        // `fanout_delta`).
+        // next live checkpoint (the per-device checkpoint gate of the live
+        // fan-out).
         if !attached {
             wr.request_checkpoint(&peer.device_public_key);
         }

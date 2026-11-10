@@ -980,31 +980,15 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
     .unwrap();
     wr.admit_device(native.device_public_key).unwrap();
     wr.admit_device(browser.device_public_key).unwrap();
-    let (btx, mut brx) = mpsc::channel(4);
+    let (btx, _brx) = mpsc::channel(4);
     let (bdis, _bdis_rx) = mpsc::channel(1);
     wr.add_subscriber(Subscriber {
         device_public_key: browser.device_public_key,
         tx: btx.clone(),
         disconnect: bdis.clone(),
     });
-    // Serve the subscribe-time need with one checkpoint from the native.
-    let raw = crate::coedit::CoeditPayload::Checkpoint {
-        channel: [1; 32],
-        body: vec![1],
-    }
-    .encode()
-    .unwrap();
-    let checkpoint_at = |authored_at_ns: u64| Envelope::Delta {
-        workspace_id: id,
-        author_device_public_key: native.device_public_key,
-        authored_at_ns,
-        delta: raw.clone(),
-        signature: [0; 64],
-    };
-    let env = checkpoint_at(1);
-    wr.fanout_delta(&native.device_public_key, &env, &raw, 1)
-        .unwrap();
-    brx.try_recv().unwrap();
+    // The subscribe-time need is served: one live checkpoint reached it.
+    wr.mark_checkpoint_served(&browser.device_public_key, [1; 32]);
     assert!(!wr.needs_checkpoint(&browser.device_public_key, &[1; 32]));
 
     let wr = Arc::new(AsyncMutex::new(wr));
@@ -1029,20 +1013,6 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
             .needs_checkpoint(&browser.device_public_key, &[1; 32]),
         "a device presence frame must re-arm its live checkpoint"
     );
-    // The native's fresh checkpoint now reaches it, once.
-    let env2 = checkpoint_at(2);
-    wr.lock()
-        .await
-        .fanout_delta(&native.device_public_key, &env2, &raw, 2)
-        .unwrap();
-    assert!(brx.try_recv().is_ok());
-    let env3 = checkpoint_at(3);
-    wr.lock()
-        .await
-        .fanout_delta(&native.device_public_key, &env3, &raw, 3)
-        .unwrap();
-    assert!(brx.try_recv().is_err(), "satisfied by one checkpoint");
-
     let (native_tx, mut native_rx) = mpsc::channel(4);
     let (native_disconnect, _native_disconnect_rx) = mpsc::channel(1);
     wr.lock().await.add_subscriber(Subscriber {

@@ -337,10 +337,11 @@ impl SharedDesktops {
             },
         );
         if wrote.is_ok() {
-            // What the record now holds of this desk: the windows a later fold may lay back into it.
-            self.written_windows
-                .borrow_mut()
-                .insert(room, windows_of(&laid_out));
+            // What the record now holds of this desk: the windows it showed when it wrote. A window
+            // only the record holds is not on this desk yet, and the fold lays it in rather than
+            // reading it as one this device closed.
+            let written = &windows_of(&laid_out) & &windows_of(workspace);
+            self.written_windows.borrow_mut().insert(room, written);
         }
         match wrote {
             Ok(false) => {

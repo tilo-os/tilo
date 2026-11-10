@@ -104,6 +104,9 @@ pub struct Heard {
     /// What the workspace's admission decided: the frame is already in, and
     /// this says how.
     pub report: Result<crate::AdmissionReport, String>,
+    /// Whether this device had not taken the frame in before, on any carrier:
+    /// a sealed frame its store already held is one it carried on already.
+    pub fresh: bool,
 }
 
 /// A frame on its way to this device's links, with the device that authored
@@ -409,13 +412,22 @@ impl DirectSync {
         Ok(())
     }
 
-    /// Keep `message`, a frame the workspace admitted on a carrier other than
-    /// this link, at this device's store: the history a device that joins the
-    /// workspace later replays. A member's write reaches the workspace on
-    /// whatever carrier its runtime runs, and a device that reads the workspace
-    /// over a link reads what the others wrote on any of them.
-    pub fn keep_admitted(&self, message: &NeighbourMsg) {
-        self.keep(message);
+    /// Carry `message`, `from`'s frame the workspace admitted on another
+    /// carrier (a relay session), to every device on this link, once: kept at
+    /// this device's store, the history a device that joins later replays, and
+    /// sent live to the devices linked now. A sealed frame the store already
+    /// holds went out when it first arrived, and is not sent again. Returns
+    /// whether it went out.
+    pub fn carry(&self, from: [u8; 32], message: &NeighbourMsg) -> bool {
+        if !self.keep(message) {
+            return false;
+        }
+        self.outgoing(Authored {
+            from,
+            message: message.clone(),
+            published: false,
+        });
+        true
     }
 
     /// Hand `authored` to every open link; no open link is no error, as the
@@ -503,8 +515,8 @@ impl DirectSync {
         member.replay_from(host)?;
         member.0.caught_up.send_replace(true);
         host.0.caught_up.send_replace(true);
-        let to_host = forward(live_mine, theirs, host, false);
-        let to_member = forward(live_theirs, own, member, false);
+        let to_host = forward(live_mine, own, host, false);
+        let to_member = forward(live_theirs, theirs, member, false);
         tokio::try_join!(to_host, to_member)?;
         Ok(())
     }
@@ -790,7 +802,8 @@ impl DirectSync {
             Some(admission) => self.admit_owned(admission, author, message, retained),
             None => self.admit_local(author, message, retained)?,
         };
-        self.keep(&heard.message);
+        let mut heard = heard;
+        heard.fresh = self.keep(&heard.message);
         if heard.landed {
             self.0.changed.send_modify(bump);
         }
@@ -804,8 +817,9 @@ impl DirectSync {
             self.ask_replay();
         }
         // The workspace's host is its members' one path: what one member's
-        // link brings reaches every other, under the member's own name.
-        if self.fans_out() && heard.report.is_ok() {
+        // link brings reaches every other, under the member's own name, once:
+        // a frame its store already held went out when it first arrived.
+        if self.fans_out() && heard.report.is_ok() && heard.fresh {
             self.outgoing(Authored {
                 from: heard.author,
                 message: heard.message.clone(),
@@ -848,6 +862,7 @@ impl DirectSync {
             landed: false,
             retained,
             report: Err(NOT_WORKSPACE_STATE.into()),
+            fresh: true,
         });
     }
 
@@ -885,6 +900,7 @@ impl DirectSync {
             landed,
             retained,
             report,
+            fresh: true,
         }
     }
 
@@ -951,23 +967,29 @@ impl DirectSync {
             landed,
             retained,
             report,
+            fresh: true,
         })
     }
 
     /// Keep `message` at this device's store when it is a sealed document
-    /// frame, the only history a store holds.
-    fn keep(&self, message: &NeighbourMsg) {
+    /// frame, the only history a store holds. Returns `false` only for a frame
+    /// the store already held: one this device took in before, on any carrier.
+    fn keep(&self, message: &NeighbourMsg) -> bool {
         let Some(store) = &self.0.store else {
-            return;
+            return true;
         };
         let Ok(workspace) = self.0.replica.number() else {
-            return;
+            return true;
         };
         let Ok(frame) = Frame::of(message) else {
-            return;
+            return true;
         };
-        if let Err(error) = store.retain(workspace, &frame) {
-            tracing::warn!(%error, "a frame was not kept at the store");
+        match store.retain(workspace, &frame) {
+            Ok(retained) => retained != crate::store::Retained::Duplicate,
+            Err(error) => {
+                tracing::warn!(%error, "a frame was not kept at the store");
+                true
+            }
         }
     }
 
@@ -1251,17 +1273,18 @@ impl ProtocolHandler for Owning {
     }
 }
 
-/// Take every frame `live` publishes into `device`'s workspace, in its
-/// author's name.
+/// Take every frame `live`, the device `sender`'s links, publishes into
+/// `device`'s workspace, in its author's name: what `device` wrote itself
+/// does not come back to it.
 async fn forward(
     mut live: broadcast::Receiver<Authored>,
-    remote: [u8; 32],
+    sender: [u8; 32],
     device: &DirectSync,
     retained: bool,
 ) -> Result<(), String> {
     loop {
         match live.recv().await {
-            Ok(authored) if already_theirs(&authored, remote, device.device()) => {}
+            Ok(authored) if already_theirs(&authored, device.device(), sender) => {}
             Ok(authored) => {
                 device.admit(authored.from, authored.message, retained)?;
             }

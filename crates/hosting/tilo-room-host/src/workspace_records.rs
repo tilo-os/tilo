@@ -404,13 +404,40 @@ impl WorkspaceRecords {
     }
 
     /// [`Self::enqueue`] for a commit whose place `reservation` holds.
+    pub(crate) async fn enqueue_reserved(
+        &self,
+        workspace_id: u64,
+        commit: HostCommit,
+        reservation: Reservation,
+    ) -> Result<WorkspaceAdmission, String> {
+        self.enqueue_as(workspace_id, self.device, commit, reservation)
+            .await
+    }
+
+    /// Admit `commit`, `author`'s frame the workspace admitted on another
+    /// carrier (its direct link), in `author`'s name: ordered, retained and
+    /// fanned out to every subscriber like the host's own, so a member that
+    /// takes part through a relay session reads what a linked member wrote,
+    /// live and on catch-up.
+    pub(crate) async fn carry(
+        &self,
+        workspace_id: u64,
+        author: [u8; 32],
+        commit: HostCommit,
+    ) -> Result<WorkspaceAdmission, String> {
+        let reservation = self.reserve(workspace_id);
+        self.enqueue_as(workspace_id, author, commit, reservation)
+            .await
+    }
+
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the guard only lives for the lookup; the value kept is a clone"
     )]
-    pub(crate) async fn enqueue_reserved(
+    async fn enqueue_as(
         &self,
         workspace_id: u64,
+        author: [u8; 32],
         commit: HostCommit,
         reservation: Reservation,
     ) -> Result<WorkspaceAdmission, String> {
@@ -435,7 +462,7 @@ impl WorkspaceRecords {
             .ok_or("the workspace is not hosted here")?;
         let envelope = Envelope::Delta {
             workspace_id,
-            author_device_public_key: self.device,
+            author_device_public_key: author,
             authored_at_ns: unix_now_ns(),
             delta,
             signature: [0; 64],

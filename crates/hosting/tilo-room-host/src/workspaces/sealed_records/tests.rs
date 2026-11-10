@@ -95,6 +95,7 @@ struct Lounge {
     workspace: String,
     workspace_id: u64,
     governor: DeviceCert,
+    governor_key: ed25519_dalek::SigningKey,
     member_key: ed25519_dalek::SigningKey,
     member_cert: DeviceCert,
     member: SealingMember,
@@ -128,6 +129,7 @@ async fn lounge() -> Lounge {
         workspace: created.workspace,
         workspace_id: created.workspace_id,
         governor: cert,
+        governor_key: key,
         member_key,
         member_cert,
         member,
@@ -1581,4 +1583,231 @@ async fn a_change_a_repair_kept_is_taken_in_once_what_it_builds_on_arrives() {
         "a member reads the kept change from the node's write"
     );
     lounge.relay.shutdown().await;
+}
+
+/// A device linked to the workspace directly, as a desktop's runtime is,
+/// hearing what the link brings it.
+struct Desk {
+    key: ed25519_dalek::SigningKey,
+    link: tilo_peer_state::direct::DirectSync,
+    heard: tokio::sync::broadcast::Receiver<tilo_peer_state::direct::Heard>,
+    pairing: tokio::task::JoinHandle<Result<(), String>>,
+}
+
+impl Desk {
+    /// Another device of the lounge's person, admitted and linked to the node, caught up.
+    async fn link(lounge: &Lounge, seed: u8) -> Self {
+        let (key, _) = member_device(
+            &lounge.workspaces,
+            &lounge.workspace,
+            (&lounge.governor_key, &lounge.governor),
+            seed,
+        )
+        .await;
+        let host = lounge
+            .workspaces
+            .direct()
+            .link(lounge.workspace_id)
+            .expect("the node serves the workspace over a direct link");
+        let link = tilo_peer_state::direct::DirectSync::new(host.read(Clone::clone), key.clone());
+        let heard = link.heard();
+        let mut caught_up = link.caught_up();
+        let linked = link.clone();
+        let pairing =
+            tokio::spawn(
+                async move { tilo_peer_state::direct::DirectSync::pair(&linked, &host).await },
+            );
+        tilo_test_env::within("the desk catches up with the node", async {
+            caught_up.wait_for(|caught_up| *caught_up).await.unwrap();
+        })
+        .await;
+        Self {
+            key,
+            link,
+            heard,
+            pairing,
+        }
+    }
+
+    /// The sequence numbers of `author`'s writes of [`RECORD`] this desk hears live, in order,
+    /// up to and including `last`: each write the desk took in, as many times as it arrived.
+    async fn hears(&mut self, author: [u8; 32], last: u64) -> Vec<u64> {
+        let heard = &mut self.heard;
+        tilo_test_env::within("the desk hears the writes", async {
+            let mut seqs = Vec::new();
+            loop {
+                let frame = heard.recv().await.unwrap();
+                if let Some(seq) = write_of(&frame.message, author) {
+                    assert!(
+                        frame.report.is_ok(),
+                        "the desk takes the write in: {:?}",
+                        frame.report.err()
+                    );
+                    seqs.push(seq);
+                    if seq == last {
+                        return seqs;
+                    }
+                }
+            }
+        })
+        .await
+    }
+}
+
+/// The sequence number of `message`, when it is `author`'s write of [`RECORD`].
+fn write_of(message: &NeighbourMsg, author: [u8; 32]) -> Option<u64> {
+    match message {
+        NeighbourMsg::AppDocument {
+            record_id,
+            envelope,
+            ..
+        } if record_id == RECORD && envelope.author.as_bytes() == &author => Some(envelope.seq),
+        _ => None,
+    }
+}
+
+/// The sequence numbers of `author`'s writes of [`RECORD`] the relay sends `client` live, in
+/// order, up to and including `last`, as many times as each arrived.
+async fn delivered(client: &crate::RelayClient, author: [u8; 32], last: u64) -> Vec<u64> {
+    tilo_test_env::within("the session is sent the writes", async {
+        let mut seqs = Vec::new();
+        loop {
+            let Some(crate::Envelope::Delta { delta, .. }) = client.recv().await else {
+                continue;
+            };
+            let Some(
+                crate::CoeditPayload::Checkpoint { body, .. }
+                | crate::CoeditPayload::RetainedDelta { body, .. },
+            ) = crate::CoeditPayload::decode(&delta)
+            else {
+                continue;
+            };
+            let Ok(message) = postcard::from_bytes::<NeighbourMsg>(&body) else {
+                continue;
+            };
+            if let Some(seq) = write_of(&message, author) {
+                seqs.push(seq);
+                if seq == last {
+                    return seqs;
+                }
+            }
+        }
+    })
+    .await
+}
+
+/// A workspace's members write on whatever carrier their runtime runs: a page
+/// through a relay session, a desktop over the workspace's direct link. What
+/// one writes reaches every other member live, once, on either carrier, and
+/// never comes back to its own: each linked desk hears each of the page's
+/// writes once, and the page and the other desk each get each of a desk's
+/// writes once, all sealed as their authors wrote them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_write_reaches_every_member_once_whatever_carrier_it_came_on() {
+    const WRITES: u64 = 6;
+    let (lounge, page) = lounge_with_client().await;
+    let mut desks = [Desk::link(&lounge, 5).await, Desk::link(&lounge, 6).await];
+    let page_author = lounge.member_key.verifying_key().to_bytes();
+
+    let started = std::time::Instant::now();
+    for line in 0..WRITES {
+        seal_and_send_title(
+            &lounge.member,
+            &page,
+            &lounge.workspace,
+            lounge.workspace_id,
+            &lounge.member_key,
+            &format!("from the page {line}"),
+        );
+    }
+    for desk in &mut desks {
+        assert_eq!(
+            desk.hears(page_author, WRITES).await,
+            (1..=WRITES).collect::<Vec<_>>(),
+            "a linked desk hears each of the page's writes once, live"
+        );
+    }
+    eprintln!(
+        "{WRITES} writes of a relay session reached two linked desks in {:?}",
+        started.elapsed()
+    );
+
+    let [writer, other] = &mut desks;
+    let sealing = SealingMember::join(
+        &lounge.workspaces,
+        &lounge.workspace,
+        (APP, RECORD),
+        writer.key.clone(),
+    )
+    .await;
+    let desk_author = writer.key.verifying_key().to_bytes();
+    let started = std::time::Instant::now();
+    for line in 0..WRITES {
+        let ((), message) = sealing.seal(&lounge.workspace, |doc| {
+            doc.put(ROOT, "title", format!("from a desk {line}"))
+                .unwrap();
+            doc.commit_edit("fixture", "title");
+        });
+        assert!(
+            matches!(&message, NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some()),
+            "the desk writes sealed"
+        );
+        writer.link.send(message).unwrap();
+    }
+    assert_eq!(
+        other.hears(desk_author, WRITES).await,
+        (1..=WRITES).collect::<Vec<_>>(),
+        "the other linked desk hears each of the desk's writes once"
+    );
+    assert_eq!(
+        delivered(&page, desk_author, WRITES).await,
+        (1..=WRITES).collect::<Vec<_>>(),
+        "the page's session is sent each of the desk's writes once"
+    );
+    eprintln!(
+        "{WRITES} writes of a linked desk reached the other desk and a relay session in {:?}",
+        started.elapsed()
+    );
+
+    // Nothing the writer wrote came back to it, and nothing reached it twice:
+    // the link carries in order, so an echo of any write would arrive before
+    // the page's next one.
+    seal_and_send_title(
+        &lounge.member,
+        &page,
+        &lounge.workspace,
+        lounge.workspace_id,
+        &lounge.member_key,
+        "the page again",
+    );
+    let heard = &mut writer.heard;
+    let echoed = tilo_test_env::within("the writer hears the page again", async {
+        let mut echoed = Vec::new();
+        loop {
+            let frame = heard.recv().await.unwrap();
+            if write_of(&frame.message, page_author) == Some(WRITES + 1) {
+                return echoed;
+            }
+            if let Some(seq) = write_of(&frame.message, desk_author) {
+                echoed.push(("the desk's own", seq, frame.retained));
+            }
+            if let Some(seq) = write_of(&frame.message, page_author) {
+                echoed.push(("the page's", seq, frame.retained));
+            }
+        }
+    })
+    .await;
+    assert!(
+        echoed.is_empty(),
+        "no write came back to its author or reached the writer twice: {echoed:?}"
+    );
+    for desk in desks {
+        desk.pairing.abort();
+    }
+    drop(page);
+    let Lounge {
+        relay, workspaces, ..
+    } = lounge;
+    drop(workspaces);
+    relay.shutdown().await;
 }

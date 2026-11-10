@@ -1,5 +1,6 @@
-//! What a governed workspace's direct link brings its host, and how a reader
-//! that fell behind it catches up.
+//! What a governed workspace's direct link brings its host, how a reader
+//! that fell behind it catches up, and how a member's write crosses between
+//! the link and the relay's sessions, once each way.
 //!
 //! A member device of a workspace governed here syncs with the host over the
 //! workspace's direct link, with no relay session in between: what it writes
@@ -20,10 +21,98 @@ use std::sync::Arc;
 use tilo_peer_state::store::{self, Budget, Cursor};
 use tokio::sync::broadcast::error::RecvError;
 
+/// Carry `body`, `author`'s write the relay admitted for `workspace` from a
+/// relay session, to the devices on the workspace's link
+/// ([`Workspaces::carry_to_links`]).
+///
+/// Called where the write is admitted, not on a reader's own schedule: a device
+/// linked now reads it live, and one that joins later reads the history as it
+/// stands then, the writes in between included.
+pub(crate) async fn carry_admitted(
+    workspace: &crate::workspace::SharedWorkspace,
+    author: [u8; 32],
+    body: &[u8],
+) {
+    let authority = workspace.lock().await.workspace_authority.clone();
+    let Some(authority) = authority else {
+        return;
+    };
+    let Some(workspaces) = authority.workspaces() else {
+        return;
+    };
+    // A body that does not decode is one the governor's follow reports.
+    let Ok(message) = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body) else {
+        // ignored-failure: the workspace's own follow reports the body that does not decode.
+        return;
+    };
+    workspaces.carry_to_links(authority.workspace(), author, &message);
+}
+
 impl Workspaces {
+    /// Carry `message`, `author`'s write the relay admitted for `workspace`
+    /// from a relay session, to the devices on the workspace's link: live to
+    /// those linked now, and kept for those that join later. A member reaches
+    /// the workspace on whatever carrier its runtime runs, and every member
+    /// reads every other's records and channel governance on its own. What a
+    /// member's desk publishes of its windows reaches the link as the
+    /// workspace's governance once the governor took it in.
+    pub(super) fn carry_to_links(
+        &self,
+        workspace: &str,
+        author: [u8; 32],
+        message: &neighbour_wire::NeighbourMsg,
+    ) {
+        if !matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. })
+            && super::channel_workspace(message).is_none()
+        {
+            return;
+        }
+        let Ok(number) = crate::room_workspace_id(workspace) else {
+            return;
+        };
+        if let Some(link) = self.inner.direct.link(number) {
+            link.carry(author, message);
+        }
+    }
+
+    /// Carry `message`, `author`'s record write the workspace's link
+    /// admitted, to the members that take part through relay sessions: the
+    /// relay retains it in `author`'s name and sends it to every session, as
+    /// it does a session's own write. Only the link's first copy of a frame
+    /// comes here ([`tilo_peer_state::direct::Heard::fresh`]), so nothing a
+    /// session sent reaches the sessions twice.
+    async fn carry_to_sessions(
+        &self,
+        workspace: &str,
+        author: [u8; 32],
+        message: &neighbour_wire::NeighbourMsg,
+    ) {
+        if !matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. }) {
+            return;
+        }
+        let (Ok(number), Some((channel, retention))) = (
+            crate::room_workspace_id(workspace),
+            neighbour_wire::retention(message, false),
+        ) else {
+            return;
+        };
+        let Ok(body) = postcard::to_allocvec(message) else {
+            return;
+        };
+        let commit = crate::workspace_records::HostCommit {
+            body,
+            channel,
+            checkpoint: retention == neighbour_wire::Retention::Checkpoint,
+        };
+        if let Err(error) = self.inner.host.records.carry(number, author, commit).await {
+            tracing::warn!(%workspace, %error, "a linked member's write did not reach the relay's sessions");
+        }
+    }
+
     /// Take in what `workspace`'s link admits and answer what its members ask
     /// there: a frame the link admitted is what a member's write through a
-    /// relay session was, so it is followed as one ([`Self::absorb`]), and each
+    /// relay session was, so it is followed as one ([`Self::absorb`]) and
+    /// carried to the relay's sessions ([`Self::carry_to_sessions`]), and each
     /// ask for content is answered with what this host keeps of it, or word
     /// that it keeps none, addressed to whoever asked. The link carries each
     /// ask on to the workspace's other members itself.
@@ -80,6 +169,13 @@ impl Workspaces {
                 let Ok(body) = postcard::to_allocvec(&frame.message) else {
                     continue;
                 };
+                // The members on relay sessions read it as the linked members
+                // do, the first time the link takes it in.
+                if frame.fresh && frame.report.is_ok() {
+                    workspaces
+                        .carry_to_sessions(&name, frame.author, &frame.message)
+                        .await;
+                }
                 if let Err(error) = workspaces.absorb(&name, frame.author, &body).await {
                     tracing::warn!(%name, %error, "the host did not keep what its link admitted");
                 }
