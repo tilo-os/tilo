@@ -700,6 +700,198 @@ fn a_secret_filled_into_the_page_is_never_written() {
     );
 }
 
+/// What a person types straight into the page is no action, and no answer
+/// carries it: the engine says it set an entry down, and the window writes
+/// it into the tab's record in its place, as the person's change and under
+/// no agent's name. One the engine set down after actions the window has
+/// not read yet waits for them and follows them in order; one told twice is
+/// written once. Of what was typed into a secret field the record keeps
+/// that it was set, whatever the entry carries.
+#[test]
+fn what_a_person_types_is_set_down_in_its_place_as_the_persons() {
+    let engine = TestEngine::new();
+    let mut app = open(&engine);
+    two_agents_answer_the_form(&mut app, &engine);
+    let record = record(&mut app);
+    let tab = only_tab(&record);
+    assert_eq!(held(&record, &tab).len(), 3);
+
+    // The person types an address. Nothing asked for it and nothing answers
+    // with it: the engine tells of it.
+    let typed = json!({"seq": 4, "time_ms": 1_700_000_000_004_u64, "actor": "", "how": "input",
+        "ok": true, "message": "Direct input into textbox \"Passport number\"", "url": PAGE,
+        "target": {"role": "textbox", "name": "Passport number"}, "text": "P1234567"});
+    let page_asks = |engine: &TestEngine| {
+        engine
+            .commands()
+            .iter()
+            .filter(|command| matches!(command, WebViewCommand::Page { .. }))
+            .count()
+    };
+    let asked = page_asks(&engine);
+    engine.emit_page_record(4, typed.clone());
+    app.settle();
+    assert_eq!(
+        record.with(|state| state.page(&tab, 3).entries).as_slice(),
+        std::slice::from_ref(&typed),
+        "the entry is kept as the engine set it down, with no action of anyone's"
+    );
+    assert_eq!(
+        page_asks(&engine),
+        asked,
+        "what follows the record as the window has it is written as told, without a read"
+    );
+
+    // The engine sets down an agent's action and then more typing, and tells
+    // of the typing before the window has read the action: the typing waits
+    // for the action before it, which the window reads from the engine.
+    let next = json!({"seq": 5, "time_ms": 1_700_000_000_005_u64, "actor": "agent:ben",
+        "action": "click", "ok": true, "message": "Clicked button \"Next\"", "url": PAGE,
+        "target": {"role": "button", "name": "Next"}});
+    let more = json!({"seq": 6, "time_ms": 1_700_000_000_006_u64, "actor": "", "how": "input",
+        "ok": true, "message": "Direct input into checkbox \"Accept terms\"", "url": PAGE,
+        "target": {"role": "checkbox", "name": "Accept terms"}, "text": "checked"});
+    engine.push_page_reply(Ok(listing(&[next.clone(), more.clone()], &json!({}))));
+    engine.emit_page_record(6, more.clone());
+    for _ in 0..3 {
+        app.settle();
+    }
+    // Told again, it is the entry the record already holds.
+    engine.emit_page_record(6, more.clone());
+    engine.emit_page_record(4, typed);
+    for _ in 0..3 {
+        app.settle();
+    }
+    assert_eq!(
+        held(&record, &tab)[3..],
+        [
+            (4, String::new(), String::new()),
+            (5, "agent:ben".to_owned(), "click".to_owned()),
+            (6, String::new(), String::new()),
+        ],
+        "each in its place, once"
+    );
+    assert_eq!(
+        record.with(|state| state.page(&tab, 4).entries),
+        [next, more]
+    );
+    let authors: Vec<String> = steps(&record, &tab)
+        .into_iter()
+        .map(|(author, ..)| author)
+        .collect();
+    let person = ada();
+    assert_eq!(
+        authors[3..],
+        [person.as_str(), "agent:ben", person.as_str()],
+        "what was typed is the person's change, among the agents' own"
+    );
+
+    // Typed into a secret field: the engine says so and sends no text. An
+    // engine that sent it all the same would not have it kept.
+    engine.emit_page_record(
+        7,
+        json!({"seq": 7, "time_ms": 1_700_000_000_007_u64, "actor": "", "how": "input",
+            "ok": true, "secret": true, "text": "hunter2-typed", "values": ["hunter2-typed"],
+            "message": "Direct input into textbox \"Password\"", "url": PAGE,
+            "target": {"role": "textbox", "name": "Password"}}),
+    );
+    app.settle();
+    assert_eq!(
+        record.with(|state| state.page(&tab, 6).entries),
+        [
+            json!({"seq": 7, "time_ms": 1_700_000_000_007_u64, "actor": "", "how": "input",
+            "ok": true, "secret": true, "message": "Direct input into textbox \"Password\"",
+            "url": PAGE, "target": {"role": "textbox", "name": "Password"}})
+        ],
+        "the record says the field was set, and holds none of it"
+    );
+    // A reader of the record is told the same, in the order it happened.
+    let read = review(&mut app, Some(3));
+    let entries = read["data"]["entries"].as_array().expect("entries");
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| (
+                entry["seq"].as_u64().unwrap_or(0),
+                entry["how"].as_str().unwrap_or_default(),
+                entry["secret"].as_bool().unwrap_or(false)
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (4, "input", false),
+            (5, "", false),
+            (6, "input", false),
+            (7, "input", true)
+        ]
+    );
+    for kept in [read.to_string(), format!("{:?}", record.get())] {
+        assert!(!kept.contains("hunter2"), "{kept}");
+    }
+
+    // Nobody but the window sets typing down: an agent that writes some as
+    // the person's is refused, and the record is as it was.
+    let forged = json!({"seq": 8, "actor": "", "how": "input", "ok": true,
+        "target": {"role": "textbox", "name": "Passport number"}, "text": "X0000000"});
+    let refused = set_down(&record, Some(&agent("agent:mallory")), &tab, forged).unwrap_err();
+    assert!(refused.contains("the actor who did it"), "{refused}");
+    assert_eq!(held(&record, &tab).len(), 7);
+}
+
+/// What was written into a secret field is in the page and nowhere else,
+/// whatever wrote it: the record keeps of such an entry that the field was
+/// set, and no text, chosen value or answer it carries. A key pressed there
+/// is kept by what the engine said of it, which names no key.
+#[test]
+fn an_entry_of_a_secret_field_says_it_was_set_and_keeps_none_of_its_text() {
+    let (_app, record) = quiet_window();
+    let by = agent("agent:ada");
+    let password = json!({"role": "textbox", "name": "Password"});
+    set_down(
+        &record,
+        Some(&by),
+        "tab-a",
+        json!({"seq": 1, "actor": "agent:ada", "action": "fill", "ok": true, "secret": true,
+            "message": "Filled textbox \"Password\"", "url": PAGE, "target": password,
+            "text": "s3cret-text", "values": ["s3cret-value"],
+            "answers": [{"name": "Password", "value": "s3cret-answer"}]}),
+    )
+    .unwrap();
+    set_down(
+        &record,
+        Some(&by),
+        "tab-a",
+        json!({"seq": 2, "actor": "agent:ada", "action": "press", "ok": true, "secret": true,
+            "message": "Pressed a key in a secret field", "url": PAGE,
+            "target": password}),
+    )
+    .unwrap();
+    // A flag that is no boolean marks nothing.
+    set_down(
+        &record,
+        Some(&by),
+        "tab-a",
+        json!({"seq": 3, "actor": "agent:ada", "action": "fill", "ok": true, "secret": "no",
+            "message": "Filled textbox \"Email\"", "url": PAGE,
+            "target": {"role": "textbox", "name": "Email"}, "text": "ada@example.org"}),
+    )
+    .unwrap();
+    let state = record.get();
+    assert_eq!(
+        state.page("tab-a", 0).entries,
+        [
+            json!({"seq": 1, "actor": "agent:ada", "action": "fill", "ok": true, "secret": true,
+                "message": "Filled textbox \"Password\"", "url": PAGE, "target": password}),
+            json!({"seq": 2, "actor": "agent:ada", "action": "press", "ok": true, "secret": true,
+                "message": "Pressed a key in a secret field", "url": PAGE,
+                "target": {"role": "textbox", "name": "Password"}}),
+            json!({"seq": 3, "actor": "agent:ada", "action": "fill", "ok": true,
+                "message": "Filled textbox \"Email\"", "url": PAGE,
+                "target": {"role": "textbox", "name": "Email"}, "text": "ada@example.org"}),
+        ]
+    );
+    assert!(!format!("{state:?}").contains("s3cret"));
+}
+
 /// Browser's record of page actions in a window whose page nobody acted
 /// on, with the window that keeps it.
 fn quiet_window() -> (App, PersonRecord<PageRecord>) {

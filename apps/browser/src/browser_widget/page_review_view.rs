@@ -634,12 +634,21 @@ fn step_row(step: &Step, secrets: &[&str]) -> Element {
         .target
         .as_deref()
         .is_some_and(|target| secrets.contains(&target));
-    if !secret && !step.wrote.is_empty() {
+    if step.secret {
+        // The record says the field was set, and that is what is shown.
+        row = row.subtitle(t("browser-review-wrote-secret"));
+    } else if !secret && !step.wrote.is_empty() {
         row = row.subtitle(step.wrote.join(", "));
     }
-    row = row.secondary(match actor_name(&step.actor) {
-        Some(name) => named("browser-review-by", &name),
-        None => t("browser-review-by-you"),
+    row = row.secondary(if step.typed {
+        // Typed straight into the page, at this window or through one that
+        // shares it: no actor's action.
+        t("browser-review-by-typing")
+    } else {
+        match actor_name(&step.actor) {
+            Some(name) => named("browser-review-by", &name),
+            None => t("browser-review-by-you"),
+        }
     });
     if let Some(when) = step.time_ms.and_then(time_of) {
         row = row.meta(when);
@@ -663,6 +672,12 @@ fn step_title(step: &Step) -> String {
         .target
         .as_deref()
         .filter(|target| !target.trim().is_empty());
+    if step.typed {
+        return match target {
+            Some(target) => on("browser-review-did-type", target),
+            None => t("browser-review-did-type-page"),
+        };
+    }
     match (step.action.as_str(), target) {
         ("click", Some(target)) => on("browser-review-did-click", target),
         ("fill", Some(target)) => on("browser-review-did-fill", target),

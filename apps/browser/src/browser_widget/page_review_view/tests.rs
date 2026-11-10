@@ -456,6 +456,53 @@ fn a_field_changed_after_it_was_set_is_marked_and_the_review_follows_the_page() 
     );
 }
 
+/// What a person typed straight into the page stands in the tab's record
+/// among the actions, said as typing and under no agent's name. What was
+/// written into a secret field, typed or by an action, shows as set and
+/// never as text, whatever the record's entry carries.
+#[test]
+fn what_a_person_typed_is_listed_as_typing_and_a_secret_only_as_set() {
+    let (engine, mut app) = window();
+    let record = [
+        json!({"seq": 1, "actor": "", "how": "input", "ok": true,
+            "target": {"role": "textbox", "name": "Email"}, "text": "ada@example.org"}),
+        json!({"seq": 2, "actor": "", "how": "input", "ok": true, "secret": true,
+            "target": {"role": "textbox", "name": "Portal password"}, "text": "hunter2-typed"}),
+        json!({"seq": 3, "actor": "agent:ada", "action": "press", "ok": true, "secret": true,
+            "message": "Pressed a key in a secret field", "text": "7",
+            "target": {"role": "textbox", "name": "Card PIN"}}),
+    ];
+    page_holds(
+        &engine,
+        &[("Email", "email", "ada@example.org", json!({"how": "input"}))],
+        &record,
+    );
+    invoke(&mut app, None, &BrowserEffect::ReviewPage);
+    eventually(&mut app, "the review lists what was typed", |app| {
+        row(app, "Typed into Email").is_some()
+    });
+    assert_eq!(
+        row(&mut app, "Typed into Email").as_deref(),
+        Some("ada@example.org, Direct input")
+    );
+    assert_eq!(
+        row(&mut app, "Typed into Portal password").as_deref(),
+        Some("Set, not shown, Direct input"),
+        "the record says the field was set"
+    );
+    assert_eq!(
+        row(&mut app, "Pressed a key in Card PIN").as_deref(),
+        Some("Set, not shown, By ada"),
+        "no key is named"
+    );
+    let tree = format!("{:?}", app.harness().a11y_tree_update());
+    assert!(!tree.contains("hunter2"), "a secret reached the tree");
+    assert!(
+        !app.texts().iter().any(|text| text.contains("hunter2")),
+        "a secret is read out"
+    );
+}
+
 /// A secret is reviewed as set or not set. Its text is in no part of the
 /// window's accessibility tree, whatever a read of the page carried.
 #[test]

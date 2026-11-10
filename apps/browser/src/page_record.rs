@@ -21,9 +21,17 @@
 //! by name, as a value and in a group. So an actor cannot set down what it
 //! never did, and a reviewer reads who did what.
 //!
-//! Never a secret: a secret fill's text is not in what the engine lists, and
-//! text the window itself sent as a secret is taken out of whatever the
-//! engine lists before it is written ([`TabRecorder::admitted`]).
+//! Never a secret: what was written into a secret field is not in what the
+//! engine lists, whatever wrote it, and the entry says so (`secret`). The
+//! record keeps of such an entry that the field was set and none of its
+//! text, whatever the entry carries; and text the window itself sent as a
+//! secret is taken out of whatever the engine lists before it is written
+//! ([`TabRecorder::admitted`]).
+//!
+//! What a person types straight into the page is no action and no answer
+//! carries it: the engine sets it down and says so of its own accord
+//! ([`TabRecorder::heard`]). It is written in its place among the actions
+//! around it, as the person's.
 //!
 //! The record is bounded as the engine bounds its own: a tab keeps its newest
 //! [`MAX_TAB_ACTIONS`] actions and the record its [`MAX_TABS`] most recently
@@ -110,6 +118,9 @@ pub struct PageAction {
     /// Which element of that role and name, counted from 1; 0 for the only
     /// one.
     pub nth: u64,
+    /// It wrote into a secret field: what it wrote is in the page and
+    /// nowhere else, and the record holds none of it.
+    pub secret: bool,
     /// The text it wrote. Never a secret's.
     pub text: Option<Atom>,
     /// The options it chose.
@@ -313,12 +324,15 @@ impl PageAction {
                     .unwrap_or_default(),
             )
         };
-        // What an action wrote is kept only when the page took it.
-        let wrote = ok
+        let secret = entry.get("secret").and_then(Value::as_bool) == Some(true);
+        // What an action wrote is kept only when the page took it, and never
+        // when it went into a secret field, whatever the entry carries.
+        let kept = ok && !secret;
+        let wrote = kept
             .then(|| entry.get("text").and_then(Value::as_str))
             .flatten()
             .map(|text| Atom(clipped(text, MAX_TEXT_BYTES)));
-        let values = ok
+        let values = kept
             .then(|| entry.get("values").and_then(Value::as_array))
             .flatten()
             .map(|values| {
@@ -328,7 +342,7 @@ impl PageAction {
                     .map(|value| Atom(plain(value, MAX_TEXT_BYTES)))
                     .collect()
             });
-        let answers = ok
+        let answers = kept
             .then(|| entry.get("answers").and_then(Value::as_array))
             .flatten()
             .into_iter()
@@ -373,6 +387,7 @@ impl PageAction {
                 .and_then(|target| target.get("nth"))
                 .and_then(whole)
                 .unwrap_or(0),
+            secret,
             text: wrote,
             values,
             answers,
@@ -423,6 +438,10 @@ impl PageAction {
                 target.insert("nth".into(), self.nth.into());
             }
             entry.insert("target".into(), target.into());
+        }
+        // Said so a reader knows the field was set and why no text follows.
+        if self.secret {
+            entry.insert("secret".into(), true.into());
         }
         if let Some(text) = &self.text {
             entry.insert("text".into(), text.0.clone().into());
@@ -734,6 +753,29 @@ impl TabRecorder {
             self.cursor = seq;
         }
         data.get("more").and_then(Value::as_bool).unwrap_or(false)
+    }
+
+    /// The engine says it set `entry` down at its place `seq` of its own
+    /// accord: what a person typed straight into the page, which no action's
+    /// answer carries. The entry that follows what this window has written
+    /// is written at once, as the person's. One further on has actions
+    /// before it this window has not read: it is written in its place once
+    /// they are, from the engine's own listing. Whether the window is to
+    /// read the engine's record for that.
+    pub(crate) fn heard(&mut self, seq: u64, entry: &Value) -> bool {
+        if !self.attached() || seq <= self.cursor {
+            return false;
+        }
+        if seq != self.cursor.saturating_add(1) {
+            return true;
+        }
+        let mut entry = entry.clone();
+        if let Some(fields) = entry.as_object_mut() {
+            fields.insert("seq".into(), seq.into());
+        }
+        self.set_down(Some(&serde_json::json!({ "entries": [entry] })));
+        // One that could not be written is read from the engine again.
+        self.cursor < seq
     }
 
     /// The part of the tab's record after the place `since`, as a read of

@@ -386,8 +386,14 @@ pub(crate) struct Step {
     /// Who asked: the name the action door admitted them under, empty for
     /// the person at the window.
     pub(crate) actor: String,
-    /// What was asked, by the engine's name for it (`fill`, `click`).
+    /// What was asked, by the engine's name for it (`fill`, `click`); empty
+    /// for what was typed straight into the page.
     pub(crate) action: String,
+    /// It is no action: a person typed it straight into the page.
+    pub(crate) typed: bool,
+    /// It wrote into a secret field: the record says the field was set and
+    /// holds none of what was written.
+    pub(crate) secret: bool,
     pub(crate) ok: bool,
     /// The element it acted on, by its name (its role when it has none).
     pub(crate) target: Option<String>,
@@ -406,17 +412,22 @@ impl Step {
                 .find(|said| !said.trim().is_empty())
                 .map(str::to_owned)
         });
+        let secret = flag(entry, "secret");
         let mut wrote: Vec<String> = Vec::new();
-        let written = text(entry, "text");
-        if !written.is_empty() {
-            wrote.push(written.to_owned());
+        // What went into a secret field is never read, whatever the entry
+        // carries.
+        if !secret {
+            let written = text(entry, "text");
+            if !written.is_empty() {
+                wrote.push(written.to_owned());
+            }
+            wrote.extend(
+                list(Some(entry), "values")
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned),
+            );
         }
-        wrote.extend(
-            list(Some(entry), "values")
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned),
-        );
         wrote.extend(
             list(Some(entry), "answers")
                 .iter()
@@ -428,6 +439,8 @@ impl Step {
             seq: whole(entry.get("seq"))?,
             actor: text(entry, "actor").to_owned(),
             action: text(entry, "action").to_owned(),
+            typed: text(entry, "how") == "input",
+            secret,
             ok: entry.get("ok").and_then(Value::as_bool).unwrap_or(true),
             target,
             wrote,
@@ -675,6 +688,29 @@ mod tests {
             question(&review, "Portal password").holds,
             Holds::Secret { set: true }
         );
+    }
+
+    /// The record says of an entry that it was typed straight into the
+    /// page, and that it wrote into a secret field: of that one nothing
+    /// written is read, whatever the entry carries.
+    #[test]
+    fn a_step_says_that_it_was_typed_and_that_it_wrote_a_secret() {
+        let mut record = Record::default();
+        record.take(&json!({"entries": [
+            {"seq": 1, "actor": "", "how": "input", "ok": true,
+                "target": {"role": "textbox", "name": "Email"}, "text": "ada@example.org"},
+            {"seq": 2, "actor": "agent:ada", "action": "fill", "ok": true, "secret": true,
+                "target": {"role": "textbox", "name": "Password"}, "text": "leaked",
+                "values": ["leaked"]},
+        ], "next": 2, "more": false}));
+        let typed = &record.steps[0];
+        assert!(typed.typed && !typed.secret);
+        assert_eq!((typed.action.as_str(), typed.actor.as_str()), ("", ""));
+        assert_eq!(typed.wrote, ["ada@example.org"]);
+        let secret = &record.steps[1];
+        assert!(!secret.typed && secret.secret);
+        assert!(secret.wrote.is_empty());
+        assert!(!format!("{record:?}").contains("leaked"));
     }
 
     #[test]

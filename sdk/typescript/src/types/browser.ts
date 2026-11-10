@@ -87,6 +87,7 @@ export interface PageAction {
   role: string;
   name: string;
   nth: number;
+  secret: boolean;
   text: string | null;
   values: string[] | null;
   answers: Answer[];

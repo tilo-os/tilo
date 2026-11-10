@@ -294,6 +294,10 @@ browser-review-did-form = { $count ->
    *[other] Answered { $count } questions
 }
 browser-review-did-other = Acted on the page
+browser-review-did-type = Typed into { $target }
+browser-review-did-type-page = Typed into the page
+browser-review-by-typing = Direct input
+browser-review-wrote-secret = Set, not shown
 
 ## Downloads: the list in the Library and its progress
 browser-downloads-empty = No downloads yet

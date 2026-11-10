@@ -3,7 +3,9 @@
 //!
 //! The engine sets an operating action down as it ends and says so in the
 //! action's answer. The window then reads what the engine listed since it
-//! last looked and writes each action into the resource, as its actor. A
+//! last looked and writes each action into the resource, as its actor. What
+//! a person types straight into the page no answer carries: the engine says
+//! it set that down, and the window writes it as the person's. A
 //! read of the tab's record answers from the resource, so it answers the
 //! same after the engine started again, and adds what only the engine knows
 //! at that moment: what is running and how many wait.
@@ -89,6 +91,20 @@ impl BrowserWidget {
             self.pull_page_record();
         }
         Some(result)
+    }
+
+    /// The engine set `entry` down at its place `seq` and no action's
+    /// answer carries it: what a person typed straight into the page. It
+    /// joins the tab's record in its place, as the person's.
+    pub(super) fn hear_page_record(&mut self, seq: u64, entry: &serde_json::Value) {
+        if self.page_record.attached() {
+            self.page_record.engine_is(self.page_engine());
+            if self.page_record.heard(seq, entry) {
+                self.pull_page_record();
+            }
+        }
+        // The tab's record moved under the page's review.
+        self.page_review_moved();
     }
 
     /// Ask the engine what it set down since this window last read it. It

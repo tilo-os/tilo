@@ -3402,7 +3402,6 @@ impl BrowserWidget {
                 | WebViewEvent::DocumentSize { .. }
                 | WebViewEvent::SelectionText { .. }
                 | WebViewEvent::LinkHovered(_)
-                | WebViewEvent::PageRecord { .. }
                 | WebViewEvent::PageChanged(_)
                 | WebViewEvent::FindSelection { .. } => {}
                 WebViewEvent::LoadFinished => {
@@ -3515,6 +3514,7 @@ impl BrowserWidget {
                 WebViewEvent::PageResult { request_id, result } => {
                     self.accept_page_result(request_id, result);
                 }
+                WebViewEvent::PageRecord { seq, entry } => self.hear_page_record(seq, &entry),
                 event @ (WebViewEvent::PageDialog(_) | WebViewEvent::PageDialogClosed { .. }) => {
                     // The question is taken first, so the action it stopped
                     // answers with it rather than with a question already gone.

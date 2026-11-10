@@ -98,6 +98,7 @@ class PageAction(TypedDict):
     role: str
     name: str
     nth: int
+    secret: bool
     text: str | None
     values: list[str] | None
     answers: list[Answer]

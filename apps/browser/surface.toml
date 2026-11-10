@@ -256,6 +256,7 @@ fields = [
   { name = "role", type = "text" },
   { name = "name", type = "text" },
   { name = "nth", type = "int" },
+  { name = "secret", type = "bool" },
   { name = "text", type = { option = "text" } },
   { name = "values", type = { option = { list = "text" } } },
   { name = "answers", type = { list = { named = "Answer" } } },

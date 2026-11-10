@@ -294,6 +294,10 @@ browser-review-did-form = { $count ->
    *[other] { $count } Fragen beantwortet
 }
 browser-review-did-other = Auf der Seite gehandelt
+browser-review-did-type = In { $target } getippt
+browser-review-did-type-page = In die Seite getippt
+browser-review-by-typing = Direkte Eingabe
+browser-review-wrote-secret = Gesetzt, nicht angezeigt
 
 ## Downloads: the list in the Library and its progress
 browser-downloads-empty = Noch keine Downloads
