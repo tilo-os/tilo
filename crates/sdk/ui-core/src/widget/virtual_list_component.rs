@@ -569,9 +569,14 @@ impl ListModel for DescribedRows {
     /// A row the host has named but not rendered is on its way: the list keeps its slot, of the
     /// height the rows around it take, and shows a placeholder there until it arrives, rather
     /// than a row of nothing.
+    ///
+    /// A row standing in for an item someone removed is the list's own, given whole beside the
+    /// rows the host renders: the host never renders it, and asking it for one would leave the
+    /// row on its way forever.
     fn row_state(&self, index: usize) -> crate::arriving::Arrival<(), &str> {
         if let Held::Rendered(rows) = &self.held
             && let Some(key) = self.key_at(index)
+            && !self.is_removed(&key)
             && let Ok(rows) = rows.try_borrow()
             && !rows.rendered(&key)
         {
@@ -2395,6 +2400,73 @@ mod tests {
         assert!(
             rows.row_state(1).is_pending(),
             "the row it has not rendered is on its way"
+        );
+    }
+
+    /// The rows standing in for items someone else removed are the list's own: the host that
+    /// renders the rows it shows, one at a time, has never rendered them and never will. A list
+    /// showing one row builds such a row beside the one it holds, struck, rather than leaving
+    /// its slot on its way.
+    #[test]
+    fn a_row_standing_in_for_a_removed_item_is_built_beside_the_hosts_rows() {
+        let props = |removed: Vec<ListItemProps>| VirtualListProps {
+            in_column: true,
+            rows: DescribedRows {
+                held: Held::Rendered(Rc::new(RefCell::new(ViewRows::new(
+                    &[("row-0", None)],
+                    0.0,
+                    0.0,
+                )))),
+                ..DescribedRows::default()
+            },
+            removed: RemovedRows(Rc::new(removed)),
+            ..VirtualListProps::default()
+        };
+        // The list shows the one row its host renders.
+        let mut list = DescribedList::from_props("list", props(Vec::new()));
+        let inner = list.list_mut().expect("the list stands");
+        lay_out(inner, 400.0);
+        assert_eq!(inner.mounted_len(), 1, "one row shows");
+        assert!(
+            inner.model().row_state(0).ready().is_some(),
+            "the row the host rendered is there"
+        );
+        // An item someone else removed comes among the rows: the list builds it where it
+        // stands, after the row it holds, without the host having rendered it.
+        let mut list = DescribedList::from_props(
+            "list",
+            props(vec![ListItemProps {
+                key: "row-gone".to_owned(),
+                removed: true,
+                row: ItemRow::Row(Box::new(ListRowProps {
+                    title: "Book the dentist".to_owned(),
+                    ..ListRowProps::default()
+                })),
+                ..ListItemProps::default()
+            }]),
+        );
+        let inner = list.list_mut().expect("the list stands");
+        lay_out(inner, 400.0);
+        assert_eq!(inner.model().len(), 2, "the model grew by the removed row");
+        assert!(
+            inner.model().row_state(1).ready().is_some(),
+            "a row the list holds itself is no row on its way"
+        );
+        assert_eq!(
+            inner.mounted_rows().collect::<Vec<_>>(),
+            [0, 1],
+            "both rows are built"
+        );
+        let semantics = inner.accessibility().expect("the list has a node");
+        let listed: Vec<Option<&str>> = semantics
+            .children
+            .iter()
+            .map(|row| row.name.as_deref())
+            .collect();
+        assert_eq!(
+            listed,
+            [Some("row-0's words"), Some("Book the dentist")],
+            "the removed item's row is built as a row, where it stands"
         );
     }
 
