@@ -2,7 +2,8 @@
 //! action door admitted act on the page, the engine sets down what they did,
 //! and the record is read where Browser keeps it — by a reviewer through the
 //! page's own action, by History, by another device, and after the engine
-//! that set it down is gone.
+//! that set it down is gone. Only the window adds to it: nobody at the door
+//! does.
 //!
 //! The engine is the deterministic one. It answers what a test queues: an
 //! operating action's answer with its place in the engine's record, then the
@@ -12,9 +13,11 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 use ui::framework::testing::TestApp;
-use ui::tilo_actions::{ActionInvoker, ActorKind, InteractionActor, InvocationUpdate};
+use ui::tilo_actions::{
+    ActionAddress, ActionInvoker, ActorKind, InteractionActor, InvocationUpdate,
+};
 use ui::tilo_resource::history;
-use ui::tilo_resource::{Effect as _, Replica};
+use ui::tilo_resource::{Effect as _, Invoke};
 use ui::webview::test_engine::TestEngine;
 use ui::webview::{PageNavigation, WebViewCommand, WebViewEngine as _};
 
@@ -52,27 +55,38 @@ fn agent(principal: &str) -> ActionInvoker {
     ActionInvoker::admitted(&InteractionActor::new(principal, ActorKind::Agent))
 }
 
-/// Run the page action `effect` for `invoker` as the host does for an agent
-/// it admitted (nobody: the person at the window), and wait for its answer.
-fn act(
+/// An agent the action door admitted to act for Ada, by its principal: what
+/// the door of a record of Ada's own takes actions from, beside Ada.
+fn agent_for_ada(principal: &str) -> ActionInvoker {
+    ActionInvoker::admitted(&InteractionActor::new(principal, ActorKind::Agent).acting_for(ada()))
+}
+
+/// What a call through the door comes to when nothing answers it in time.
+const NO_ANSWER: &str = "it did not answer";
+
+/// Invoke the action at `address` with `arguments` through the window's
+/// door for `invoker`, as the host does for an agent it admitted (nobody:
+/// the person at the window), and wait for what it answers with.
+fn invoke(
     app: &mut App,
     invoker: Option<&ActionInvoker>,
-    effect: &BrowserEffect,
-) -> Result<Value, String> {
+    address: ActionAddress,
+    arguments: &serde_json::Map<String, Value>,
+) -> Result<Option<Value>, String> {
     let instance = app
         .harness()
         .component_instance_id()
         .ok_or("Browser has no component")?;
     let address = ui::bound_dispatch::BoundActionAddress {
         instance_id: instance,
-        address: effect.address_on("browser.page"),
+        address,
     };
     let (invocation, started) = app
         .harness()
-        .start_bound_job_for(invoker.cloned(), &address, &effect.arguments(), true)
+        .start_bound_job_for(invoker.cloned(), &address, arguments, true)
         .map_err(|error| error.to_string())?;
     if let Some(output) = started.completed() {
-        return output.value.ok_or_else(|| "it answered nothing".to_owned());
+        return Ok(output.value);
     }
     app.harness()
         .wait_until(ui::time::Duration::from_secs(30), |harness| {
@@ -83,19 +97,30 @@ fn act(
         });
     for update in app.harness().job_updates(invocation) {
         match update {
-            InvocationUpdate::Succeeded { output, .. } => {
-                return output
-                    .value
-                    .clone()
-                    .ok_or_else(|| "it answered nothing".to_owned());
-            }
+            InvocationUpdate::Succeeded { output, .. } => return Ok(output.value.clone()),
             InvocationUpdate::Failed { error, .. } => {
                 return Err(format!("{}: {}", error.code, error.message));
             }
             _ => {}
         }
     }
-    Err("it did not answer".to_owned())
+    Err(NO_ANSWER.to_owned())
+}
+
+/// Run the page action `effect` for `invoker` as the host does for an agent
+/// it admitted (nobody: the person at the window), and wait for its answer.
+fn act(
+    app: &mut App,
+    invoker: Option<&ActionInvoker>,
+    effect: &BrowserEffect,
+) -> Result<Value, String> {
+    invoke(
+        app,
+        invoker,
+        effect.address_on("browser.page"),
+        &effect.arguments(),
+    )?
+    .ok_or_else(|| "it answered nothing".to_owned())
 }
 
 /// An engine answer that says `message` and nothing else.
@@ -675,15 +700,37 @@ fn a_secret_filled_into_the_page_is_never_written() {
     );
 }
 
-fn set_down(record: &mut Replica<PageRecord>, tab: &str, entry: Value) -> Result<(), String> {
-    record
-        .apply(PageRecord::SET_DOWN.with(page_actions::SetDown {
-            tab: tab.into(),
-            device: "laptop".into(),
-            entry,
-        }))
-        .map(drop)
-        .map_err(|error| error.to_string())
+/// Browser's record of page actions in a window whose page nobody acted
+/// on, with the window that keeps it.
+fn quiet_window() -> (App, PersonRecord<PageRecord>) {
+    let mut app = open(&TestEngine::new());
+    let record = record(&mut app);
+    (app, record)
+}
+
+/// The window's own writing of `entry` into `tab`'s record.
+fn setting_down(tab: &str, entry: Value) -> Invoke<PageRecord> {
+    PageRecord::SET_DOWN.with(page_actions::SetDown {
+        tab: tab.into(),
+        device: "laptop".into(),
+        entry,
+    })
+}
+
+/// Set `entry` down in `tab` as a window does, authored by `by`: the invoker
+/// the door admitted the action for (nobody: the person at the window).
+fn set_down(
+    record: &PersonRecord<PageRecord>,
+    by: Option<&ActionInvoker>,
+    tab: &str,
+    entry: Value,
+) -> Result<(), String> {
+    let invoke = setting_down(tab, entry);
+    match by {
+        Some(by) => record.invoke_as(by, &invoke),
+        None => record.invoke(&invoke),
+    }
+    .map_err(|error| error.to_string())
 }
 
 fn clicked(seq: u64) -> Value {
@@ -697,10 +744,12 @@ fn clicked(seq: u64) -> Value {
 /// entry carries beside.
 #[test]
 fn an_entry_is_kept_by_what_the_record_keeps_of_one() {
-    let mut record = Replica::<PageRecord>::new().as_agent_for("agent:ada", &ada());
+    let (_app, record) = quiet_window();
+    let by = agent("agent:ada");
     let long = "é".repeat(400);
     set_down(
-        &mut record,
+        &record,
+        Some(&by),
         "tab-a",
         json!({"seq": 1.0, "time_ms": 1_700_000_000_001.0_f64, "actor": "agent:ada",
             "action": "fill", "ok": true, "message": long, "url": PAGE,
@@ -710,7 +759,8 @@ fn an_entry_is_kept_by_what_the_record_keeps_of_one() {
     .unwrap();
     // Text the page refused is not what was written.
     set_down(
-        &mut record,
+        &record,
+        Some(&by),
         "tab-a",
         json!({"seq": 2, "actor": "agent:ada", "action": "fill", "ok": false,
             "code": "not_editable", "message": "The field takes no text", "url": PAGE,
@@ -718,7 +768,7 @@ fn an_entry_is_kept_by_what_the_record_keeps_of_one() {
             "answers": [{"name": "Refused", "value": "refused answer"}]}),
     )
     .unwrap();
-    let state = record.state().unwrap();
+    let state = record.get();
     let kept = state.page("tab-a", 0).entries;
     let clipped = "é".repeat(100);
     assert_eq!(
@@ -746,18 +796,19 @@ fn an_entry_is_kept_by_what_the_record_keeps_of_one() {
         ("tab-a", json!("click")),
     ] {
         assert!(
-            set_down(&mut record, tab, entry.clone()).is_err(),
+            set_down(&record, Some(&by), tab, entry.clone()).is_err(),
             "{tab} {entry}"
         );
     }
-    assert_eq!(record.state().unwrap().page("tab-a", 0).entries.len(), 2);
+    assert_eq!(record.get().page("tab-a", 0).entries.len(), 2);
 }
 
-/// An action is set down by whoever did it. An agent cannot write an action
-/// under another actor's name, nor what a person typed or did at the window;
-/// a person does not write an agent's.
+/// The window writes an action as whoever did it and as nobody else: an
+/// entry under another actor's name is refused, and so is what a person
+/// typed or did at the window written as an agent, or an agent's action
+/// written as the person.
 #[test]
-fn nobody_sets_down_another_actors_action() {
+fn an_action_is_written_only_as_the_actor_who_did_it() {
     let typed = json!({"seq": 1, "actor": "", "how": "input", "action": "input", "ok": true,
         "target": {"role": "textbox", "name": "Passport number"}, "text": "P1234567"});
     let own = json!({"seq": 1, "actor": "", "action": "click", "ok": true});
@@ -771,30 +822,29 @@ fn nobody_sets_down_another_actors_action() {
         entry
     };
 
-    let mut mallory = Replica::<PageRecord>::new().as_agent_for("agent:mallory", &ada());
+    let (_app, record) = quiet_window();
+    let mallory = agent("agent:mallory");
     for forged in [clicked(1), typed.clone(), own.clone(), by_long(1)] {
-        let refused = set_down(&mut mallory, "tab-a", forged.clone()).unwrap_err();
+        let refused = set_down(&record, Some(&mallory), "tab-a", forged.clone()).unwrap_err();
         assert!(
             refused.contains("the actor who did it"),
             "{forged}: {refused}"
         );
     }
-    assert!(mallory.state().unwrap().actions.is_empty());
+    assert!(record.with(|state| state.actions.is_empty()));
 
-    // The agent that acted sets its own action down, under the name the
-    // engine keeps it by: its principal, shortened when the engine takes no
-    // longer one.
-    let mut agent = Replica::<PageRecord>::new().as_agent_for("agent:ada", &ada());
-    set_down(&mut agent, "tab-a", clicked(1)).unwrap();
-    let mut wordy = Replica::<PageRecord>::new().as_agent_for(&long, &ada());
-    set_down(&mut wordy, "tab-a", by_long(1)).unwrap();
+    // The agent that acted is who its action is written as, under the name
+    // the engine keeps it by: its principal, shortened when the engine takes
+    // no longer one.
+    set_down(&record, Some(&agent("agent:ada")), "tab-a", clicked(1)).unwrap();
+    set_down(&record, Some(&agent(&long)), "tab-b", by_long(1)).unwrap();
 
-    // A person sets down what they typed and what they did at the window,
-    // and no agent's action.
-    let mut person = Replica::<PageRecord>::new().as_author(&ada());
-    set_down(&mut person, "tab-a", typed).unwrap();
-    set_down(&mut person, "tab-b", own).unwrap();
-    assert!(set_down(&mut person, "tab-a", clicked(2)).is_err());
+    // What a person typed and what they did at the window is written as
+    // theirs, and no agent's action is.
+    set_down(&record, None, "tab-c", typed).unwrap();
+    set_down(&record, None, "tab-d", own).unwrap();
+    assert!(set_down(&record, None, "tab-a", clicked(2)).is_err());
+    assert_eq!(record.with(|state| state.actions.len()), 4);
 }
 
 /// The record is bounded as the engine bounds its own: a tab keeps its
@@ -803,22 +853,21 @@ fn nobody_sets_down_another_actors_action() {
 /// read on.
 #[test]
 fn a_tab_keeps_its_newest_actions_and_older_ones_stay_in_history() {
-    let mut record = Replica::<PageRecord>::new().as_agent_for("agent:ada", &ada());
+    let (_app, record) = quiet_window();
+    let by = agent("agent:ada");
     let over = 3;
     let total = MAX_TAB_ACTIONS as u64 + over;
     let mut first_full = Vec::new();
     for seq in 1..=total {
-        set_down(&mut record, "tab-a", clicked(seq)).unwrap();
+        set_down(&record, Some(&by), "tab-a", clicked(seq)).unwrap();
         if seq == 1 {
             first_full = record
-                .versions()
-                .last()
-                .map(|version| version.hash)
-                .into_iter()
-                .collect();
+                .record()
+                .read(|doc| doc.clone().get_heads())
+                .expect("the record is open");
         }
     }
-    let state = record.state().unwrap();
+    let state = record.get();
     assert_eq!(state.actions.len(), MAX_TAB_ACTIONS);
     let tab = state.tabs.get("tab-a").unwrap();
     assert_eq!((tab.last, tab.dropped), (total, over));
@@ -843,7 +892,11 @@ fn a_tab_keeps_its_newest_actions_and_older_ones_stay_in_history() {
     assert_eq!(read, (over + 1..=total).collect::<Vec<_>>());
 
     // What left the state is still what History shows of that time.
-    let then = record.state_at(&first_full).unwrap();
+    let then = record
+        .record()
+        .read(|doc| history::read_at::<PageRecord>(&mut doc.clone(), &first_full))
+        .expect("the record is open")
+        .expect("the record's first version reads");
     assert_eq!(then.page("tab-a", 0).entries, [clicked(1)]);
 }
 
@@ -851,14 +904,15 @@ fn a_tab_keeps_its_newest_actions_and_older_ones_stay_in_history() {
 /// takes the place of the one that acted longest ago.
 #[test]
 fn the_record_keeps_the_tabs_that_acted_last() {
-    let mut record = Replica::<PageRecord>::new().as_agent_for("agent:ada", &ada());
+    let (_app, record) = quiet_window();
+    let by = agent("agent:ada");
     for tab in 0..=MAX_TABS as u64 {
         // Each tab acts a little later than the one before it.
         let mut entry = clicked(1);
         entry["time_ms"] = (1_700_000_000_000_u64 + tab).into();
-        set_down(&mut record, &format!("tab-{tab}"), entry).unwrap();
+        set_down(&record, Some(&by), &format!("tab-{tab}"), entry).unwrap();
     }
-    let state = record.state().unwrap();
+    let state = record.get();
     assert_eq!(state.tabs.len(), MAX_TABS);
     assert_eq!(state.actions.len(), MAX_TABS);
     assert!(state.tabs.get("tab-0").is_none(), "the oldest made room");
@@ -868,4 +922,138 @@ fn the_record_keeps_the_tabs_that_acted_last() {
     // One tab's places never read as another's.
     assert_eq!(state.page("tab-1", 0).entries.len(), 1);
     assert!(state.page("tab", 0).entries.is_empty());
+}
+
+/// The actions the window's door offers on the record.
+fn offered_on_the_record(app: &mut App) -> Vec<String> {
+    app.agent_surface()
+        .as_array()
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .filter(|row| row["resource"] == RESOURCE)
+        .filter_map(|row| row["action"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// Why the door refused a call: it must have refused it, and at once.
+fn refusal(answer: Result<Option<Value>, String>) -> String {
+    let refusal = answer.expect_err("the door takes it from nobody");
+    assert_ne!(refusal, NO_ANSWER, "the door refuses at once");
+    refusal
+}
+
+/// Only a window adds to the record, and only what its engine listed. An
+/// agent the door admitted for the person cannot set down, under its own
+/// name, an action it never did: not by the verb's name, which the door
+/// does not know, not as a value of `apply`, not in a group. Nor can the
+/// person. The record stays what the engine listed, a reviewer reads it as
+/// before, and what the window writes next still lands as the change of the
+/// agent that acted.
+#[test]
+fn nobody_at_the_door_adds_to_the_record() {
+    let engine = TestEngine::new();
+    let mut app = open(&engine);
+    let (ada_agent, ben) = (agent_for_ada("agent:ada"), agent_for_ada("agent:ben"));
+    engine_sets_down(&engine, &email_filled(1));
+    act(&mut app, Some(&ada_agent), &fill("d1e2", "ada@example.org")).expect("the fill answers");
+    app.settle();
+    let record = record(&mut app);
+    let tab = only_tab(&record);
+    let listed = record.with(|state| state.page(&tab, 0).entries);
+    assert_eq!(listed, [email_filled(1)]);
+
+    // The record is at the door with what every record offers, and without
+    // an action that sets one down.
+    let offered = offered_on_the_record(&mut app);
+    for open in ["apply", "group"] {
+        assert!(
+            offered.iter().any(|action| action == open),
+            "{open} in {offered:?}"
+        );
+    }
+    assert!(
+        !offered.iter().any(|action| action == "set-down"),
+        "{offered:?}"
+    );
+
+    // Ada's agent never sent the form and Ada typed nothing. Each claims it
+    // did, with an entry the record keeps when the window writes it: under
+    // the claimant's own name, at the tab's next place.
+    let typed = json!({"seq": 2, "time_ms": 1_700_000_000_002_u64, "actor": "", "how": "input",
+        "action": "input", "ok": true, "url": PAGE,
+        "target": {"role": "textbox", "name": "Passport number"}, "text": "P1234567"});
+    for (claimant, claimed) in [(Some(&ada_agent), form_sent(2)), (None, typed)] {
+        let named = json!({"tab": tab, "device": "laptop", "entry": claimed});
+        let named = named.as_object().expect("the verb's arguments");
+        let unknown = refusal(invoke(
+            &mut app,
+            claimant,
+            ActionAddress::new(RESOURCE, "set-down"),
+            named,
+        ));
+        assert!(unknown.contains("no action addressed by"), "{unknown}");
+
+        let value = setting_down(&tab, claimed.clone())
+            .build(0)
+            .expect("Browser builds its own writing");
+        let value = Invoke::<PageRecord>::apply(&value).expect("the writing as a value");
+        refusal(invoke(
+            &mut app,
+            claimant,
+            ActionAddress::new(RESOURCE, "apply"),
+            &value.arguments,
+        ));
+
+        let grouped = json!({"actions": [{"action": "set-down", "args": named}]});
+        refusal(invoke(
+            &mut app,
+            claimant,
+            ActionAddress::new(RESOURCE, "group"),
+            grouped.as_object().expect("the group's arguments"),
+        ));
+    }
+    app.settle();
+    assert_eq!(
+        record.with(|state| state.page(&tab, 0).entries),
+        listed,
+        "the record holds what the engine listed, and nothing claimed"
+    );
+    assert_eq!(
+        steps(&record, &tab),
+        [(
+            "agent:ada".to_owned(),
+            1,
+            "Filled textbox \"Email\"".to_owned()
+        )]
+    );
+
+    // A reviewer reads the record as before.
+    engine.push_page_reply(Ok(listing(&[], &json!({}))));
+    let read = review(&mut app, None);
+    assert_eq!(read["message"], "1 action");
+    assert_eq!(read["data"]["entries"], json!([email_filled(1)]));
+    assert_eq!(read["data"]["next"], 1);
+
+    // What the engine lists next the window still writes, as the change of
+    // the agent that acted.
+    engine_sets_down(&engine, &country_chosen(2));
+    let chosen = BrowserEffect::SelectPage {
+        element: "d1e4".into(),
+        values: vec!["Belgium".into()],
+        frame: None,
+    };
+    act(&mut app, Some(&ben), &chosen).expect("the choice answers");
+    app.settle();
+    assert_eq!(
+        held(&record, &tab),
+        [
+            (1, "agent:ada".to_owned(), "fill".to_owned()),
+            (2, "agent:ben".to_owned(), "select".to_owned()),
+        ]
+    );
+    let authors: Vec<String> = steps(&record, &tab)
+        .into_iter()
+        .map(|(author, ..)| author)
+        .collect();
+    assert_eq!(authors, ["agent:ada", "agent:ben"]);
 }

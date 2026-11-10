@@ -231,15 +231,6 @@ fields = [
   { path = "tabs", type = { map = { named = "Tab" } }, readonly = true },
 ]
 
-[[resources.verbs]]
-id = "set-down"
-kind = "undoable"
-params = [
-  { name = "tab", type = "text", required = true, schema = { type = "string" } },
-  { name = "device", type = "text", required = true, schema = { type = "string" } },
-  { name = "entry", required = true, schema = {} },
-]
-
 [[resources.types]]
 name = "Answer"
 fields = [

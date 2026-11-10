@@ -15,6 +15,12 @@
 //! engine's record stands against the resource, which it loses with the
 //! engine and finds again in the resource.
 //!
+//! Only a window adds to it, and only what its engine listed. Setting an
+//! action down is Browser's own writing (`#[action(by_app)]`), not an action
+//! of the record: no caller is offered it, and the record's door refuses it
+//! by name, as a value and in a group. So an actor cannot set down what it
+//! never did, and a reviewer reads who did what.
+//!
 //! Never a secret: a secret fill's text is not in what the engine lists, and
 //! text the window itself sent as a secret is taken out of whatever the
 //! engine lists before it is written ([`TabRecorder::admitted`]).
@@ -164,13 +170,17 @@ impl PageRecord {
     /// none of them; only what the record keeps of an action is taken from
     /// the entry.
     ///
-    /// An action is set down by whoever did it: the entry's actor is the
-    /// name of the one setting it down, and what a person typed or did at
-    /// the window is set down by a person. Nobody writes another's actions.
+    /// Only the window whose engine listed the action sets it down (its
+    /// `TabRecorder`). It is the browser keeping its record: not an action
+    /// anyone invokes, nor an edit of anyone's to take back. No caller is
+    /// offered it and the record's door refuses it, so nobody sets down an
+    /// action the engine did not list.
     ///
-    /// Setting an action down is the browser keeping its record, not an edit
-    /// of anyone's to take back.
-    #[action(housekeeping)]
+    /// The window writes each action as whoever did it: the entry's actor
+    /// is the name of the invoker its change is authored by, and what a
+    /// person typed or did at the window is authored by a person. An entry
+    /// under another's name is refused.
+    #[action(housekeeping, by_app)]
     pub fn set_down(
         &mut self,
         cx: &mut ActionCx,
