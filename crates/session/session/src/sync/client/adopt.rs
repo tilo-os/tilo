@@ -28,10 +28,9 @@ pub(super) async fn redeem(
     // the renewal, reissued here or signed by the person's devices, and a join that cannot renew
     // says why rather than presenting what the host refuses.
     let renewal = request.renewal.clone();
-    let before = tokio::task::spawn_blocking(move || {
-        crate::mount::renewal::before_presenting(renewal.as_deref())
-    })
-    .await;
+    let before =
+        tokio::task::spawn_blocking(move || crate::renewal::before_presenting(renewal.as_deref()))
+            .await;
     match before {
         Ok(Ok(())) => {}
         Ok(Err(error)) => return Err(error),

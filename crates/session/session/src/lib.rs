@@ -116,9 +116,13 @@ mod clock_wait;
 #[cfg(target_os = "linux")]
 mod collaboration;
 #[cfg(target_os = "linux")]
+pub mod comforts;
+#[cfg(target_os = "linux")]
 mod community;
 #[cfg(target_os = "linux")]
 mod config;
+#[cfg(target_os = "linux")]
+pub mod connectors;
 #[cfg(target_os = "linux")]
 mod content;
 #[cfg(target_os = "linux")]
@@ -175,6 +179,8 @@ mod door_runs;
 mod doors;
 #[cfg(target_os = "linux")]
 mod downloaded;
+#[cfg(target_os = "linux")]
+pub mod drives;
 #[cfg(target_os = "linux")]
 mod emoji;
 mod engine;
@@ -234,7 +240,6 @@ mod lock_service;
 mod look;
 mod membership;
 #[cfg(target_os = "linux")]
-pub mod mount;
 #[cfg(target_os = "linux")]
 pub mod nearby_transfer;
 #[cfg(target_os = "linux")]
@@ -265,6 +270,8 @@ mod plane;
 #[cfg(target_os = "linux")]
 pub mod portal_link;
 #[cfg(target_os = "linux")]
+mod power;
+#[cfg(target_os = "linux")]
 mod press_outside;
 #[cfg(target_os = "linux")]
 mod projection;
@@ -282,6 +289,8 @@ pub mod recovery;
 mod remote_door;
 #[cfg(target_os = "linux")]
 mod render;
+#[cfg(target_os = "linux")]
+mod renewal;
 #[cfg(target_os = "linux")]
 mod rotation;
 #[cfg(target_os = "linux")]
@@ -351,6 +360,10 @@ pub mod unlock;
 mod unlock_history;
 #[cfg(target_os = "linux")]
 mod update_finish;
+#[cfg(target_os = "linux")]
+mod vpn;
+#[cfg(target_os = "linux")]
+mod wake;
 #[cfg(target_os = "linux")]
 mod wallpapers;
 #[cfg(target_os = "linux")]

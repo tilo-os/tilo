@@ -28,7 +28,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_service::Wake;
 
 use crate::Launches;
-use crate::mount::drives::{Medium, files_on};
+use crate::drives::{Medium, files_on};
 
 /// The app the person's own app list is answered to. Every other app is told nothing of it.
 fn files() -> String {

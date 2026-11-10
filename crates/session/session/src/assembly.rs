@@ -53,7 +53,7 @@ pub(crate) struct Shared {
     pub(crate) restore: RefCell<crate::desk_restore::Restore>,
     /// The drives the person plugs in, when this session watches them.
     #[cfg(target_os = "linux")]
-    pub(crate) drives: Option<Rc<crate::mount::drives::Drives>>,
+    pub(crate) drives: Option<Rc<crate::drives::Drives>>,
     /// What the desk and the chrome asked of the session.
     pub(crate) asks: Rc<RefCell<Vec<DesktopAsk>>>,
     /// Whether the shell's send key was pressed, waiting for the pass that
@@ -151,7 +151,7 @@ pub(crate) struct Shared {
     /// its profiles' kill switches, and the route through another of the
     /// person's devices, which follows the pass.
     #[cfg(target_os = "linux")]
-    pub(crate) vpn: Option<crate::mount::vpn::Routes>,
+    pub(crate) vpn: Option<crate::vpn::Routes>,
     /// The person's devices as the panel was last fed them.
     #[cfg(target_os = "linux")]
     pub(crate) devices: crate::devices::press::Devices,
@@ -167,7 +167,7 @@ pub(crate) struct Shared {
     pub(crate) handoff: Rc<std::cell::RefCell<Option<tilo_quick_settings::MediaOffer>>>,
     /// The wakes this session takes part in.
     #[cfg(target_os = "linux")]
-    pub(crate) waking: Rc<crate::mount::wake::Wake>,
+    pub(crate) waking: Rc<crate::wake::Wake>,
     pub(crate) wake_handle: tilo_service::Wake,
     /// What plays, as the desk's music widget shows it.
     pub(crate) music: tilo_desktop::desk_widgets::DeskMusic,
@@ -320,7 +320,7 @@ pub(crate) struct Shared {
     /// A joined device's certificate, renewed through the person's devices
     /// once it is due: this device holds no root to reissue it with.
     #[cfg(target_os = "linux")]
-    pub(crate) fleet_renewal: Option<std::sync::Arc<crate::mount::renewal::FleetRenewal>>,
+    pub(crate) fleet_renewal: Option<std::sync::Arc<crate::renewal::FleetRenewal>>,
     /// The overview's pictures and the clock they fly on, which its panel
     /// in the chrome draws with.
     #[cfg(target_os = "linux")]
@@ -431,7 +431,7 @@ pub struct Session {
     pub(crate) setup: Option<Rc<RefCell<crate::setup::Setup>>>,
     /// The login screens' comforts, kept equal to the person's own.
     #[cfg(target_os = "linux")]
-    pub(crate) comforts: Option<crate::mount::comforts::Mirror>,
+    pub(crate) comforts: Option<crate::comforts::Mirror>,
     /// Checking the passwords the lock screen was given.
     #[cfg(target_os = "linux")]
     pub(crate) unlocking: crate::platform::session::Unlocking,
@@ -628,7 +628,7 @@ pub struct Session {
     /// The machine's power: the idle policy, the service over logind and
     /// what holds it awake.
     #[cfg(target_os = "linux")]
-    pub(crate) machine: crate::mount::power::PowerRun,
+    pub(crate) machine: crate::power::PowerRun,
     /// The shell's bar, when its package started.
     #[cfg(target_os = "linux")]
     pub(crate) shell: Option<crate::shell::Shell>,
@@ -646,7 +646,7 @@ pub struct Session {
     #[cfg(target_os = "linux")]
     pub(crate) controllers: Option<crate::controllers::Controllers>,
     #[cfg(target_os = "linux")]
-    pub(crate) connectors: crate::mount::connectors::ConnectorHost,
+    pub(crate) connectors: crate::connectors::ConnectorHost,
     /// The controllers' descriptors, polled by the loop so their input ends
     /// its wait, by the key the controller source gave each.
     #[cfg(target_os = "linux")]

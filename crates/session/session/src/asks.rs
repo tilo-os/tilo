@@ -19,7 +19,7 @@ use ui::shortcut_table::{FixedAction, ShortcutAction};
 use crate::i18n::{t, t_args};
 use crate::keys::Invocation;
 use crate::{
-    Magnify, SessionAction, SessionCommand, Shared, identity, mount, people, workspace_settings,
+    Magnify, SessionAction, SessionCommand, Shared, identity, people, workspace_settings,
     workspaces,
 };
 
@@ -555,7 +555,7 @@ impl Shared {
     pub(crate) fn follow_tools(
         &self,
         tools: &crate::tools::Handle,
-        media: Vec<mount::drives::Medium>,
+        media: Vec<crate::drives::Medium>,
     ) {
         tools.saw_apps(&crate::app_icons::app_lists().unwrap_or_default().tools);
         tools.saw_media(media);

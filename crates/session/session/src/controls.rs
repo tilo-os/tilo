@@ -50,7 +50,7 @@ pub const SESSION_RESOURCE: &str = "session:screen";
 /// The resource of the night light.
 pub const NIGHT_LIGHT_RESOURCE: &str = "session:night-light";
 /// The resource of this device's clipboard, which the clipboard publishes itself:
-/// [`crate::mount::clipboard`].
+/// [`crate::clipboard`].
 pub const CLIPBOARD_RESOURCE: &str = "session:clipboard";
 
 /// What the session's resources ask of the compositor.

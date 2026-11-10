@@ -30,8 +30,8 @@ use tilo_system_service::update;
 use ui::format::NaiveDate;
 
 use crate::desk_doc::StateNotice;
+use crate::drives::Medium;
 use crate::i18n::{t, t_args};
-use crate::mount::drives::Medium;
 
 /// The action the update notice offers: restart the machine into the staged update.
 pub const RESTART_ACTION: &str = update::RESTART_TO_UPDATE;
@@ -1116,7 +1116,7 @@ mod tests {
     /// ejecting it from the notice reaches the eject.
     #[test]
     fn a_plugged_in_drive_is_announced_with_its_contents() {
-        use crate::mount::drives::{Drives, Media, Medium};
+        use crate::drives::{Drives, Media, Medium};
 
         /// The udisks of a machine with one drive plugged into it, which remembers what it was
         /// asked to eject.

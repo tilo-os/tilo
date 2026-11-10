@@ -12,8 +12,7 @@ use crate::displays::Backlights;
 use crate::rotation::Accelerometer;
 use crate::{AppActions, Launches, SearchOptions, Service, SessionAction, SessionConfig, Vpn};
 use crate::{
-    capture, controllers, desktop_services, engine, fabric, mount, portal_link, surfaces, sync,
-    unlock,
+    capture, controllers, desktop_services, engine, fabric, portal_link, surfaces, sync, unlock,
 };
 use tilo_desktop_surface::DesktopHandle;
 
@@ -72,7 +71,7 @@ pub struct Options {
     pub launches: std::sync::Arc<Launches>,
     /// The drives the person plugs in, which this session announces and acts on when they open or
     /// eject one.
-    pub drives: Option<Rc<mount::drives::Drives>>,
+    pub drives: Option<Rc<crate::drives::Drives>>,
     /// What stands over everything before the desktop is used: the setup the person goes through
     /// once (the first use of this device, or the recovery of its identity), or the wait for the
     /// clock to admit this device's certificate.
@@ -138,7 +137,7 @@ pub struct Options {
     /// The person's device fabric, when this session runs on one: what was copied here is shared
     /// with their other devices through it, and what they copied there joins the clipboard here.
     pub fabric: Option<tilo_device_fabric::link::SharedLink>,
-    pub wake_seams: mount::wake::Seams,
+    pub wake_seams: crate::wake::Seams,
     /// The device VPN, when this session runs on a machine with the helper: a VPN profile set to
     /// connect and not connected blocks traffic while its kill switch is on, and this device routes
     /// through another of the person's devices while they choose one. Without one, nothing does.
@@ -385,7 +384,7 @@ impl Default for Options {
             old_desk: None,
             collab: true,
             fabric: None,
-            wake_seams: mount::wake::Seams::default(),
+            wake_seams: crate::wake::Seams::default(),
             vpn: None,
             action_plane: ActionPlane::default(),
             agent_door: None,

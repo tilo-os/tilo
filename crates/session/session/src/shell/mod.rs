@@ -1494,7 +1494,7 @@ impl crate::Session {
         // that no longer shows any ends. Read every pass, so a place made, moved between
         // workspaces or closed is followed on the pass it happened on, in every workspace of
         // the desk, not only the one in front (`docs/architecture/apps.md` §1, §8).
-        crate::mount::connectors::reconcile(self);
+        crate::connectors::reconcile(self);
         Ok(())
     }
 

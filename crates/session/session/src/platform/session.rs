@@ -35,8 +35,6 @@ pub use crate::env::SessionEnvironment;
 pub use crate::keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA, MICROPHONE, QUICK_SETTINGS};
 pub use crate::launches::Launches;
 pub use crate::lists::{AppLists, Lists};
-pub use crate::mount::vpn::Vpn;
-pub use crate::mount::wake::{Seams as WakeSeams, WakeInterfaces};
 pub use crate::notifications::RESOURCE as NOTIFICATIONS_RESOURCE;
 use crate::options::start_collaboration;
 pub use crate::options::{ActionPlane, Machine, Options, no_session_actions};
@@ -45,6 +43,8 @@ pub use crate::rotation::Accelerometer;
 pub use crate::run::{Backend, Reach};
 pub use crate::search::{AppActions, SearchOptions};
 pub use crate::setup::BeforeDesk;
+pub use crate::vpn::Vpn;
+pub use crate::wake::{Seams as WakeSeams, WakeInterfaces};
 pub use tilo_service::{Service, Services};
 
 use crate::doors::plane::{mount_services, start_action_plane};
@@ -130,9 +130,9 @@ impl Session {
         let beside = options
             .vpn
             .as_ref()
-            .map(crate::mount::vpn::Vpn::served)
+            .map(crate::vpn::Vpn::served)
             .unwrap_or_default();
-        let vpn = options.vpn.take().map(crate::mount::vpn::Vpn::start);
+        let vpn = options.vpn.take().map(crate::vpn::Vpn::start);
         // What the desk and the chrome ask of the session, from their own
         // widget trees.
         let notices = tilo_desktop_surface::DesktopNotifications::default();
@@ -427,7 +427,7 @@ impl Session {
         compositor.set_idle_config(options.config.idle);
         crate::a11y_settings::apply(&mut compositor, &options.config.a11y)?;
         compositor.set_backlight(Box::new(crate::display_settings::PanelBacklight::find()));
-        let machine = crate::mount::power::install(&mut compositor, &options);
+        let machine = crate::power::install(&mut compositor, &options);
         compositor.add_host(crate::shell::under(options.shell, desktop.clone()));
         // The desk draws every window whole — its card, the lift under it
         // and its edge, in the theme's colours, brighter on the window in
@@ -1246,7 +1246,7 @@ impl Session {
             devices: crate::devices::press::Devices::default(),
             bluetooth: crate::bluetooth_handoff::Handoffs::default(),
             handoff: Rc::new(std::cell::RefCell::new(None)),
-            waking: crate::mount::wake::Wake::new(&options.wake_seams),
+            waking: crate::wake::Wake::new(&options.wake_seams),
             wake_handle: options.wake.handle(),
             music,
             power,
@@ -1320,7 +1320,7 @@ impl Session {
             arrangement,
             underway: busy,
             settings: crate::settings_sync::SettingsSync::new(),
-            fleet_renewal: crate::mount::renewal::FleetRenewal::for_joined_device(fabric)
+            fleet_renewal: crate::renewal::FleetRenewal::for_joined_device(fabric)
                 .map(std::sync::Arc::new),
             overview,
             dictation,
@@ -1416,12 +1416,9 @@ impl Session {
         // changes here afterwards does, where they let it follow.
         let comforts = options.machine.is_owned().then(|| {
             let wake = loop_wake.clone();
-            crate::mount::comforts::Mirror::mount(
-                std::path::PathBuf::from(tilo_auth::SOCKET),
-                move || {
-                    wake.wake_by_ref();
-                },
-            )
+            crate::comforts::Mirror::mount(std::path::PathBuf::from(tilo_auth::SOCKET), move || {
+                wake.wake_by_ref();
+            })
         });
         let surface_apps = std::mem::take(&mut options.surfaces);
         let slot_views = crate::slot_views::SlotViews::new(
@@ -1529,11 +1526,11 @@ impl Session {
                 .take()
                 .map(crate::controllers::Controllers::mount),
             controller_wakes: std::collections::BTreeMap::new(),
-            connectors: crate::mount::connectors::ConnectorHost::new(),
+            connectors: crate::connectors::ConnectorHost::new(),
         };
         session.watch_sockets()?;
         session.shared.directory_store.waking(options.wake.handle());
-        crate::mount::connectors::reconcile(&session);
+        crate::connectors::reconcile(&session);
         if starts_locked {
             session.compositor.lock_now()?;
         }

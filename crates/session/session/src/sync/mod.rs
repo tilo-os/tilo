@@ -52,7 +52,7 @@ pub struct Enrolling {
     /// person's identity: the ask the session's pass may already have under way, waited for rather
     /// than presented past.
     #[cfg(target_os = "linux")]
-    pub(crate) renewal: Option<std::sync::Arc<crate::mount::renewal::FleetRenewal>>,
+    pub(crate) renewal: Option<std::sync::Arc<crate::renewal::FleetRenewal>>,
 }
 
 /// One of the person's workspaces this device holds nothing of yet: it takes the workspace in as a

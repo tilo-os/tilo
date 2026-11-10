@@ -1,6 +1,6 @@
 //! What the session's render broker and a workspace's render service say to
 //! each other, over the `SOCK_SEQPACKET` socket the service is started with
-//! (`tilo_session::mount::render`).
+//! (`tilo_session::render`).
 //!
 //! The broker owns attribution: the launcher connects every app to it and
 //! names the app and its workspace before the app holds the connection, so

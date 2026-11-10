@@ -933,14 +933,14 @@ fn drives(
     backend: Backend,
     desktop: Option<&std::rc::Rc<tilo_session::desktop_services::DesktopServices>>,
     wake: &tilo_service::LoopWake,
-) -> Option<std::rc::Rc<tilo_session::mount::drives::Drives>> {
+) -> Option<std::rc::Rc<tilo_session::drives::Drives>> {
     if backend != Backend::Drm {
         return None;
     }
     let desktop = desktop?;
     let connection = desktop.system_bus()?.clone();
-    Some(std::rc::Rc::new(tilo_session::mount::drives::Drives::new(
-        tilo_session::mount::drives::udisks(connection, wake.handle()),
+    Some(std::rc::Rc::new(tilo_session::drives::Drives::new(
+        tilo_session::drives::udisks(connection, wake.handle()),
         desktop.notifications().clone(),
     )))
 }

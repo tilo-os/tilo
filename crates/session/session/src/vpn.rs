@@ -172,7 +172,7 @@ impl Authority for SessionAuthority {
 
 /// The networks this device is attached to, other than the tunnel's own.
 fn home_networks() -> Vec<Ipv4Net> {
-    crate::mount::wake::ipv4_subnets()
+    crate::wake::ipv4_subnets()
         .into_iter()
         .filter(|(name, _)| name != CLIENT_INTERFACE && name != EXIT_INTERFACE)
         .filter_map(|(_, subnet)| Ipv4Net::new(Ipv4Addr::from(subnet.network), subnet.prefix))
