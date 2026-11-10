@@ -73,8 +73,7 @@ impl Channels {
         };
         let service = ChannelEncryption::open(
             ChannelEncryptionConfig {
-                root: root.clone(),
-                peers: Arc::new(ChannelsDir::new(&root)),
+                state: Arc::new(ChannelsDir::new(&root)),
                 vault: vault_key(&device),
                 device_key: device,
             },

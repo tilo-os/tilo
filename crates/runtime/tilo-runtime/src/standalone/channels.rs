@@ -57,8 +57,7 @@ pub(super) fn open(
 ) -> io::Result<Channels> {
     let service = ChannelEncryption::open(
         ChannelEncryptionConfig {
-            root: profile.join(CHANNEL_STATE),
-            peers: Arc::new(ChannelsDir::new(profile.join(CHANNEL_STATE))),
+            state: Arc::new(ChannelsDir::new(profile.join(CHANNEL_STATE))),
             vault: vault_key(profile, profile_workspace, storage)?,
             device_key,
         },

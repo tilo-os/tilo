@@ -198,8 +198,7 @@ mod tests {
     ) -> (ChannelKeyAccess, Arc<GovernancePark>, GovernancePump) {
         let service = ChannelEncryption::open(
             ChannelEncryptionConfig {
-                root: dir.join("channels"),
-                peers: Arc::new(ChannelsDir::new(dir.join("channels"))),
+                state: Arc::new(ChannelsDir::new(dir.join("channels"))),
                 vault: VaultKey::new([1; 32]),
                 device_key: key(1),
             },
@@ -316,8 +315,7 @@ mod tests {
         let open = |id: usize, seed: u8, dir: &Path| {
             let service = ChannelEncryption::open(
                 ChannelEncryptionConfig {
-                    root: dir.join("channels"),
-                    peers: Arc::new(ChannelsDir::new(dir.join("channels"))),
+                    state: Arc::new(ChannelsDir::new(dir.join("channels"))),
                     vault: VaultKey::new([seed; 32]),
                     device_key: key(seed),
                 },

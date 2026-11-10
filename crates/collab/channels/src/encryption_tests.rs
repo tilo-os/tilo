@@ -2,6 +2,7 @@ use super::*;
 use crate::gates::Gates;
 use crate::testing::*;
 use collab_types::{ArtifactId, ContentRetention};
+use std::path::Path;
 use std::sync::atomic::Ordering;
 
 struct Device {
@@ -38,8 +39,7 @@ fn sealed_device(
     let gates = Arc::new(Gates::default());
     let service = ChannelEncryption::open(
         ChannelEncryptionConfig {
-            root: dir.join("channels"),
-            peers: Arc::new(ChannelsDir::new(dir.join("channels"))),
+            state: Arc::new(ChannelsDir::new(dir.join("channels"))),
             vault: VaultKey::new([vault; 32]),
             device_key: key(seed),
         },
@@ -294,8 +294,7 @@ fn scoped_device(
     let gates = Arc::new(Gates::default());
     let service = ChannelEncryption::open(
         ChannelEncryptionConfig {
-            root: dir.join("channels"),
-            peers: Arc::new(ChannelsDir::new(dir.join("channels"))),
+            state: Arc::new(ChannelsDir::new(dir.join("channels"))),
             vault: VaultKey::new([seed; 32]),
             device_key: key(seed),
         },
@@ -1939,7 +1938,8 @@ fn a_branched_device_rejoins_as_itself_beside_its_source() {
     // The disk is copied; the copy re-keys to device 21 and keeps the
     // person's vault. Certified, it is the person's device and a reader.
     copy_tree(source_dir.path(), branch_dir.path());
-    let copied = channels_dir(&branch_dir.path().join("channels"), workspace_id)
+    let copied = ChannelsDir::new(branch_dir.path().join("channels"))
+        .workspace_dir(workspace_id)
         .join(format!("{}.peer", channel.0));
     assert!(copied.exists());
     policy.allowed.lock().unwrap().insert(public(21));

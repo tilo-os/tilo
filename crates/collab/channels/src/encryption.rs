@@ -15,7 +15,8 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -226,31 +227,299 @@ pub trait ChannelDirectory: collab_types::signer::MaybeSendSync {
 /// page — so the state's own store never holds the key that opens it.
 pub const VAULT_SECRET_APP: &str = "so.tilo.collaboration.mls";
 
-/// Where a host keeps the peers of its channels: a desktop's channels directory
-/// of one file per channel ([`ChannelsDir`]), or a page's own store.
-pub trait ChannelPeers: std::fmt::Debug + collab_types::signer::MaybeSendSync {
+/// Where a host keeps this device's channel state: the peers of each
+/// workspace's channels and the route of each channel's record. A desktop keeps
+/// it in its channels directory ([`ChannelsDir`]); a page keeps it in its store.
+pub trait ChannelState: std::fmt::Debug + collab_types::signer::MaybeSendSync {
+    /// Make the store ready for the state a channel writes: a directory that
+    /// pays for it is created owner-only here, so a write cannot land in one a
+    /// person's umask left open. A store that always exists answers nothing.
+    ///
+    /// # Errors
+    /// The store cannot be created.
+    fn prepare(&self) -> Result<(), String> {
+        Ok(())
+    }
     /// The peers of `workspace`'s channels.
-    fn of(&self, workspace: WorkspaceId) -> Arc<dyn channel_crypto::PeerStates>;
+    fn peers(&self, workspace: WorkspaceId) -> Arc<dyn channel_crypto::PeerStates>;
+    /// The route kept for `channel`, only if it still proves to be `channel`'s
+    /// in `workspace`: a damaged or swapped route names no record rather than a
+    /// wrong one, and the channel is then decided as one whose record is
+    /// unknown, which withholds more, never less.
+    fn route(&self, workspace: WorkspaceId, channel: ChannelId) -> Option<ChannelRoute>;
+    /// Keep `route` as `channel`'s in `workspace`, when this device takes part
+    /// in it.
+    fn keep_route(&self, workspace: WorkspaceId, channel: ChannelId, route: &ChannelRoute);
+    /// Every channel this store holds peers for, so a service registers their
+    /// gates before the first op after a restart. A store that cannot list
+    /// them answers none: its channels open as an endpoint asks about them.
+    fn held(&self) -> Vec<(WorkspaceId, Vec<ChannelId>)> {
+        Vec::new()
+    }
+    /// Prepare the vault this store seals, and say whether one was already kept
+    /// here: a vault whose master key is gone refuses a new one, since that key
+    /// opens none of the state sealed under the old. A store that keeps no
+    /// marker of its own answers `false`.
+    ///
+    /// # Errors
+    /// The store cannot be prepared for a vault.
+    fn open_vault(&self) -> Result<bool, String> {
+        Ok(false)
+    }
 }
 
-/// A desktop's channels directory, with the layout every earlier build wrote.
+/// A desktop's channels directory, with the layout every earlier build wrote: a
+/// directory per workspace under the state root, one `.peer` and one `.route`
+/// file per channel in it.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
-pub struct ChannelsDir(PathBuf);
+pub struct ChannelsDir {
+    /// Where the state of every workspace's channels lives.
+    state: PathBuf,
+    /// Where this device's vault lives, when this directory seals it: the
+    /// marker and the files of a retired lifecycle authority beside it.
+    vault: Option<PathBuf>,
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 impl ChannelsDir {
-    /// The peers kept under `root`, one directory per workspace.
+    /// The state kept under `root`, one directory per workspace.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self(root.into())
+        Self {
+            state: root.into(),
+            vault: None,
+        }
+    }
+
+    /// This directory also seals the vault at `root`: its marker, and what
+    /// earlier builds left beside it.
+    #[must_use]
+    pub fn with_vault(mut self, root: impl Into<PathBuf>) -> Self {
+        self.vault = Some(root.into());
+        self
+    }
+
+    /// The directory of `workspace`'s channels.
+    fn workspace_dir(&self, workspace: WorkspaceId) -> PathBuf {
+        self.state.join(workspace.to_string()).join(CHANNELS_DIR)
+    }
+
+    fn route_path(&self, workspace: WorkspaceId, channel: ChannelId) -> PathBuf {
+        self.workspace_dir(workspace)
+            .join(format!("{}.route", channel.0))
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl ChannelPeers for ChannelsDir {
-    fn of(&self, workspace: WorkspaceId) -> Arc<dyn channel_crypto::PeerStates> {
-        Arc::new(channel_crypto::Files::new(channels_dir(&self.0, workspace)))
+impl ChannelState for ChannelsDir {
+    fn prepare(&self) -> Result<(), String> {
+        tilo_files::native::atomic::create_private_directory(&self.state)
+            .map_err(|error| error.to_string())
+    }
+
+    fn peers(&self, workspace: WorkspaceId) -> Arc<dyn channel_crypto::PeerStates> {
+        Arc::new(channel_crypto::Files::new(self.workspace_dir(workspace)))
+    }
+
+    fn route(&self, workspace: WorkspaceId, channel: ChannelId) -> Option<ChannelRoute> {
+        let path = self.route_path(workspace, channel);
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "channel route cannot be read");
+                return None;
+            }
+        };
+        let route = match postcard::from_bytes::<ChannelRoute>(&bytes) {
+            Ok(route) => route,
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "channel route does not decode");
+                return None;
+            }
+        };
+        if !route.proves(&workspace.to_string(), channel) {
+            tracing::warn!(path = %path.display(), "channel route names another channel");
+            return None;
+        }
+        Some(route)
+    }
+
+    fn keep_route(&self, workspace: WorkspaceId, channel: ChannelId, route: &ChannelRoute) {
+        let path = self.route_path(workspace, channel);
+        let saved = postcard::to_allocvec(route)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| tilo_files::native::atomic::write_private(&path, &bytes));
+        if let Err(error) = saved {
+            tracing::warn!(%error, "channel route could not be saved");
+        }
+    }
+
+    fn held(&self) -> Vec<(WorkspaceId, Vec<ChannelId>)> {
+        let entries = match std::fs::read_dir(&self.state) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(error) => {
+                tracing::warn!(dir = %self.state.display(), %error, "channel state cannot be listed");
+                return Vec::new();
+            }
+        };
+        entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let workspace = entry.file_name().to_str().and_then(WorkspaceId::parse)?;
+                Some((workspace, self.channels_in(workspace)))
+            })
+            .filter(|(_, channels)| !channels.is_empty())
+            .collect()
+    }
+
+    fn open_vault(&self) -> Result<bool, String> {
+        let Some(root) = &self.vault else {
+            return Ok(false);
+        };
+        // `registry.postcard` in the layout earlier builds wrote marks a vault whose master key
+        // must already be in the secret store. It stays as the marker; its entries named the group,
+        // key-package and snapshot-receipt records of a retired lifecycle authority, which nothing
+        // reads.
+        let registry = root.join(REGISTRY);
+        let existed = registry.exists();
+        if existed {
+            let retired: RetiredRegistry =
+                postcard::from_bytes(&std::fs::read(&registry).map_err(|error| error.to_string())?)
+                    .map_err(|error| error.to_string())?;
+            if !retired.is_empty() {
+                let cleared = postcard::to_allocvec(&RetiredRegistry::default())
+                    .map_err(|error| error.to_string())
+                    .and_then(|bytes| {
+                        tilo_files::native::atomic::write_with_mode(&registry, &bytes, 0o600)
+                            .map_err(|error| error.to_string())
+                    });
+                if let Err(error) = cleared {
+                    tracing::warn!(%error, "retired MLS registry records could not be cleared");
+                }
+            }
+        }
+        remove_retired_files(root);
+        Ok(existed)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// `registry.postcard` at a vault's root.
+const REGISTRY: &str = "registry.postcard";
+
+#[cfg(not(target_arch = "wasm32"))]
+/// What the retired lifecycle authority's registry held, kept only so its file decodes: postcard
+/// is not self-describing, so the field order and wire types here must not change either.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct RetiredRegistry {
+    groups: std::collections::BTreeMap<[u8; 32], RetiredGroupRecord>,
+    key_packages: std::collections::BTreeMap<[u8; 32], String>,
+    snapshots: std::collections::BTreeMap<[u8; 32], RetiredSnapshotRecord>,
+    latest_snapshot: std::collections::BTreeMap<[u8; 16], [u8; 32]>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl RetiredRegistry {
+    fn is_empty(&self) -> bool {
+        self.groups.is_empty()
+            && self.key_packages.is_empty()
+            && self.snapshots.is_empty()
+            && self.latest_snapshot.is_empty()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RetiredGroupRecord {
+    state_file: String,
+    signer_locator: String,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RetiredSnapshotRecord {
+    channel: ChannelId,
+    digest: [u8; 32],
+    envelope_file: String,
+}
+
+/// Remove what the retired MLS lifecycle authority and its snapshot receipts left in `root` : the
+/// authority's ledger directory, every compaction envelope copied to `snapshot-*.op` , and the
+/// `group-*.mls` and `key-package-*.mls` files its registry named. Nothing reads them; the sealed
+/// channel state lives under `channels/` and is untouched. Best-effort.
+#[cfg(not(target_arch = "wasm32"))]
+fn remove_retired_files(root: &std::path::Path) {
+    let authority = root.join("authority");
+    if std::fs::symlink_metadata(&authority).is_ok()
+        && let Err(error) = std::fs::remove_dir_all(&authority)
+    {
+        tracing::warn!(%error, "retired MLS authority ledger could not be removed");
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if is_retired_file(&path)
+            && entry.file_type().is_ok_and(|kind| kind.is_file())
+            && let Err(error) = std::fs::remove_file(&path)
+        {
+            tracing::warn!(%error, "retired MLS vault file could not be removed");
+        }
+    }
+}
+
+/// A top-level file only the retired authority wrote: `snapshot-*.op`, `group-*.mls` or
+/// `key-package-*.mls`.
+#[cfg(not(target_arch = "wasm32"))]
+fn is_retired_file(path: &std::path::Path) -> bool {
+    let (Some(stem), Some(extension)) = (
+        path.file_stem().and_then(|stem| stem.to_str()),
+        path.extension().and_then(|extension| extension.to_str()),
+    ) else {
+        return false;
+    };
+    match extension {
+        "op" => stem.starts_with("snapshot-"),
+        "mls" => stem.starts_with("group-") || stem.starts_with("key-package-"),
+        _ => false,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ChannelsDir {
+    /// Channel ids of the `*.peer` files of `workspace`. A file whose name is no
+    /// channel id is logged and skipped.
+    fn channels_in(&self, workspace: WorkspaceId) -> Vec<ChannelId> {
+        let dir = self.workspace_dir(workspace);
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(error) => {
+                tracing::warn!(dir = %dir.display(), %error, "channel state cannot be listed");
+                return Vec::new();
+            }
+        };
+        entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.extension().and_then(|ext| ext.to_str()) != Some("peer") {
+                    return None;
+                }
+                let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default();
+                match uuid::Uuid::parse_str(stem) {
+                    Ok(channel) => Some(ChannelId(channel)),
+                    Err(error) => {
+                        tracing::warn!(path = %path.display(), %error, "channel state file names no channel");
+                        None
+                    }
+                }
+            })
+            .collect()
     }
 }
 
@@ -258,10 +527,8 @@ impl ChannelPeers for ChannelsDir {
 /// participant of a channel needs, and only workspaces this device's own workspace
 /// host does not take part in need it.
 pub struct ChannelEncryptionConfig {
-    /// Private directory holding sealed channel state.
-    pub root: PathBuf,
-    /// Where this host keeps each workspace's channel peers.
-    pub peers: Arc<dyn ChannelPeers>,
+    /// Where this host keeps each workspace's channel state.
+    pub state: Arc<dyn ChannelState>,
     /// Key sealing that state, held by the platform secret store.
     pub vault: VaultKey,
     /// This device's certified key: MLS credential, request and frame signer.
@@ -413,28 +680,20 @@ pub struct ChannelEncryption {
 }
 
 impl ChannelEncryption {
-    /// Open every channel state under `config.root` and register each
-    /// channel's gate with the broker, so the plaintext gate holds from the
-    /// first op after a restart.
+    /// Open every channel state the host keeps and register each channel's
+    /// gate with the broker, so the plaintext gate holds from the first op after
+    /// a restart.
     pub fn open(
         config: ChannelEncryptionConfig,
         directory: Box<dyn ChannelDirectory>,
         gates: Arc<dyn ChannelGates>,
     ) -> std::io::Result<Self> {
-        create_private_dir(&config.root)?;
-        let state_root = config.root.clone();
+        config.state.prepare().map_err(std::io::Error::other)?;
+        let held = config.state.held();
         let mut service = Self::with_store(Some(config), directory, gates);
         let now = Instant::now();
-        for workspace_dir in std::fs::read_dir(&state_root)? {
-            let workspace_dir = workspace_dir?.path();
-            let Some(workspace) = workspace_dir
-                .file_name()
-                .and_then(|name| name.to_str())
-                .and_then(WorkspaceId::parse)
-            else {
-                continue;
-            };
-            for channel in channels_in(&workspace_dir.join(CHANNELS_DIR), "peer") {
+        for (workspace, channels) in held {
+            for channel in channels {
                 if let Err(error) = service.open_peer(workspace, channel, now) {
                     tracing::warn!(%error, %workspace, "channel state could not be opened");
                 }
@@ -770,7 +1029,7 @@ impl ChannelEncryption {
             entry.route = Some(route.clone());
             entry.dirty = true;
             learned = true;
-            save_route(&route_path(&store.root, workspace, channel), route);
+            store.state.keep_route(workspace, channel, route);
         }
         // The scope a unit seals under is read from its record, so a route
         // that arrives after the channel was opened resolves it now.
@@ -1194,7 +1453,7 @@ impl ChannelEncryption {
             // and its participants admit whoever asked.
             self.peers.remove(&channel);
             self.groups_seen.insert(channel);
-            if let Err(error) = store.peers.of(workspace).forget(channel) {
+            if let Err(error) = store.state.peers(workspace).forget(channel) {
                 tracing::warn!(%error, %workspace, "unwanted channel state could not be removed");
             }
             return;
@@ -1416,11 +1675,9 @@ impl ChannelEncryption {
             return Ok(true);
         }
         let store = self.store.as_ref().ok_or_else(no_store)?;
-        let dir = channels_dir(&store.root, workspace);
-        create_private_dir(&dir)?;
         let signer = Box::new(store.device_key.clone());
         let peer = ChannelPeer::waiting(
-            Some(store.peers.of(workspace)),
+            Some(store.state.peers(workspace)),
             channel,
             signer,
             &store.vault,
@@ -1476,7 +1733,7 @@ impl ChannelEncryption {
     ) -> channel_crypto::Result<bool> {
         let store = self.store.as_ref().ok_or_else(no_store)?;
         let opened = match ChannelPeer::open(
-            Some(store.peers.of(workspace)),
+            Some(store.state.peers(workspace)),
             channel,
             Box::new(store.device_key.clone()),
             &store.vault,
@@ -1491,7 +1748,7 @@ impl ChannelEncryption {
                     %workspace,
                     "channel state named the device this machine was copied from; joining as this device"
                 );
-                store.peers.of(workspace).forget(channel)?;
+                store.state.peers(workspace).forget(channel)?;
                 return Ok(false);
             }
             opened => opened?,
@@ -1510,13 +1767,10 @@ impl ChannelEncryption {
         peer: ChannelPeer,
         now: Instant,
     ) {
-        let route = self.store.as_ref().and_then(|store| {
-            load_route(
-                &route_path(&store.root, workspace, channel),
-                workspace,
-                channel,
-            )
-        });
+        let route = self
+            .store
+            .as_ref()
+            .and_then(|store| store.state.route(workspace, channel));
         let gate = peer.gate();
         let found_at = now
             .checked_add(found_after(&peer.device(), channel))
@@ -2038,94 +2292,6 @@ impl tilo_identity_host::sources::ChannelKeySource for ChannelKeyProvider {
             ChannelAccess::NoSecretStore => Ok((Wire::NoSecretStore, generation, Vec::new())),
         })
     }
-}
-
-/// Where the state of `workspace`'s channels is kept.
-fn channels_dir(state_root: &Path, workspace: WorkspaceId) -> PathBuf {
-    state_root.join(workspace.to_string()).join(CHANNELS_DIR)
-}
-
-/// Where the route of `channel`'s record is kept beside its state.
-fn route_path(state_root: &Path, workspace: WorkspaceId, channel: ChannelId) -> PathBuf {
-    channels_dir(state_root, workspace).join(format!("{}.route", channel.0))
-}
-
-/// The route kept at `path`, only if it is still `channel`'s in `workspace`: a
-/// route proves itself, so a damaged or swapped file names no record rather
-/// than a wrong one, and the channel is then decided as one whose record is
-/// unknown, which withholds more, never less.
-/// A missing file is a channel with no route kept; one that cannot be read
-/// or decoded, or proves another channel, is logged.
-fn load_route(path: &Path, workspace: WorkspaceId, channel: ChannelId) -> Option<ChannelRoute> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(error) => {
-            tracing::warn!(path = %path.display(), %error, "channel route cannot be read");
-            return None;
-        }
-    };
-    let route = match postcard::from_bytes::<ChannelRoute>(&bytes) {
-        Ok(route) => route,
-        Err(error) => {
-            tracing::warn!(path = %path.display(), %error, "channel route does not decode");
-            return None;
-        }
-    };
-    if !route.proves(&workspace.to_string(), channel) {
-        tracing::warn!(path = %path.display(), "channel route names another channel");
-        return None;
-    }
-    Some(route)
-}
-
-fn save_route(path: &Path, route: &ChannelRoute) {
-    let saved = postcard::to_allocvec(route)
-        .map_err(std::io::Error::other)
-        .and_then(|bytes| tilo_files::native::atomic::write_private(path, &bytes));
-    if let Err(error) = saved {
-        tracing::warn!(%error, "channel route could not be saved");
-    }
-}
-
-/// Channel ids of the `*.{extension}` files in `dir`. A missing directory
-/// holds none; a file whose name is no channel id is logged and skipped.
-fn channels_in(dir: &Path, extension: &str) -> Vec<ChannelId> {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
-        Err(error) => {
-            tracing::warn!(dir = %dir.display(), %error, "channel state cannot be listed");
-            return Vec::new();
-        }
-    };
-    entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some(extension) {
-                return None;
-            }
-            let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default();
-            match uuid::Uuid::parse_str(stem) {
-                Ok(channel) => Some(ChannelId(channel)),
-                Err(error) => {
-                    tracing::warn!(path = %path.display(), %error, "channel state file names no channel");
-                    None
-                }
-            }
-        })
-        .collect()
-}
-
-fn create_private_dir(dir: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -80,8 +80,7 @@ impl Channels {
         let service = match MlsVault::open_for_session() {
             Ok(vault) => ChannelEncryption::open(
                 ChannelEncryptionConfig {
-                    root: vault.channel_state_root(),
-                    peers: Arc::new(tilo_channels::ChannelsDir::new(vault.channel_state_root())),
+                    state: vault.channel_state(),
                     vault: vault.channel_state_key(),
                     device_key: engine.identity().device_signing_key.clone(),
                 },
