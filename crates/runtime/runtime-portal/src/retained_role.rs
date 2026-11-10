@@ -2,6 +2,7 @@
 //! This role is not a source/file grant or an identity certificate.
 #[cfg(target_os = "linux")]
 use crate::process_binding::ExecutingPeer;
+#[cfg(target_os = "linux")]
 use std::io;
 #[cfg(target_os = "linux")]
 use std::{
@@ -11,6 +12,7 @@ use std::{
 };
 
 pub const HELPER_PATH: &str = "/usr/libexec/tilo-prepared-setup";
+#[cfg(target_os = "linux")]
 fn refused() -> io::Error {
     io::ErrorKind::PermissionDenied.into()
 }
