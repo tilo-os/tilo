@@ -1196,7 +1196,7 @@ impl Session {
             )));
         // The shell's own records reach the door as any app's do the moment its package runs.
         if let Some(shell) = &shell {
-            shell.share_records(&services);
+            shell.share_records(&services, &session_doors);
         }
         // The shell's own readings and verbs, on the same door every other
         // service answers on.

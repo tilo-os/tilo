@@ -696,6 +696,7 @@ impl Shell {
     pub(crate) fn share_records(
         &self,
         services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
+        doors: &crate::agent_door::SessionDoors,
     ) {
         let Some(compiled) = self.package() else {
             return;
@@ -706,8 +707,9 @@ impl Shell {
             wasm: &compiled.wasm,
             records: &records,
         });
-        if let Err(error) = taken {
-            tracing::error!(%error, "the shell's records are not published");
+        match taken {
+            Ok(()) => doors.keep_records_of(&compiled.meta.app),
+            Err(error) => tracing::error!(%error, "the shell's records are not published"),
         }
     }
 

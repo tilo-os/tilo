@@ -407,35 +407,6 @@ impl Site {
             None => "the site holds no copy of the workspace".to_owned(),
         }
     }
-
-    /// The workspace's shared desktop as the site keeps it, described for a step that waited for
-    /// it: how many bytes and changes it holds, and how many windows read out of it.
-    pub fn desk_report(&self) -> String {
-        let Some(bytes) = self.record(
-            tilo_desktop_model::ownership::DESKTOP_APP,
-            tilo_desktop_model::ownership::DESKTOP_RECORD,
-        ) else {
-            return "the site keeps no desk record".to_owned();
-        };
-        let Ok(mut document) = automerge::AutoCommit::load(&bytes) else {
-            return format!("{} bytes that do not load", bytes.len());
-        };
-        let changes = document.get_changes(&[]).len();
-        let read = tilo_desktop_model::shared_record::read(&document, None).map_or_else(
-            || "no desk reads out of it".to_owned(),
-            |desk| {
-                let windows = desk
-                    .tree
-                    .workspaces
-                    .iter()
-                    .flat_map(|workspace| &workspace.strips)
-                    .map(|strip| strip.window_groups.len())
-                    .sum::<usize>();
-                format!("{windows} windows in it")
-            },
-        );
-        format!("{} bytes, {changes} changes, {read}", bytes.len())
-    }
 }
 
 /// What the site holds, named on the wait that found it short: the routes it kept are the
