@@ -33,6 +33,9 @@ struct Inner {
     commands: Vec<WebViewCommand>,
     media_element: Option<MediaElementInfo>,
     page_replies: std::collections::VecDeque<Result<PageReply, PageFailure>>,
+    /// What the page holds for a kind of read, by the read's action name:
+    /// answered whenever no queued reply answers that read first.
+    page_data: std::collections::HashMap<&'static str, serde_json::Value>,
     next_download: u64,
     downloads: std::collections::HashMap<String, String>,
     /// Every `set_visible` the engine was told, oldest first.
@@ -257,6 +260,15 @@ impl TestEngine {
         self.lock_inner().page_replies.push_back(reply);
     }
 
+    /// Answer every later page read of the kind `action` names
+    /// ([`PageRequest::action`]: `fields`, `forms`, `ledger`) with `data`,
+    /// as a page that holds this state answers however often it is read,
+    /// until a test sets another. A reply queued with
+    /// [`Self::push_page_reply`] still answers first.
+    pub fn set_page_data(&self, action: &'static str, data: serde_json::Value) {
+        self.lock_inner().page_data.insert(action, data);
+    }
+
     fn page_reply_locked(
         inner: &mut Inner,
         request: &PageRequest,
@@ -273,6 +285,10 @@ impl TestEngine {
             .then(|| format!("- document \"{url} — test page\"")),
             // Logs and lookups answer with an empty, well-formed finding.
             data: match request {
+                // What a test said the page holds for this kind of read.
+                _ if inner.page_data.contains_key(request.action()) => {
+                    inner.page_data.get(request.action()).cloned()
+                }
                 PageRequest::Console { .. } | PageRequest::Network { .. } => {
                     Some(serde_json::json!({"entries": [], "next": 0, "dropped": 0}))
                 }
