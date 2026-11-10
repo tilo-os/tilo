@@ -91,5 +91,5 @@ mod admission;
 pub mod resources;
 pub use admission::{
     AdmissionError, AdmissionReport, DocumentAdmission, DropReason, DroppedInput, InputDisposition,
-    MAX_EXACT_ADMISSION_BYTES, MAX_EXACT_ADMISSIONS, MissingPrerequisite, Released,
+    MAX_EXACT_ADMISSION_BYTES, MAX_EXACT_ADMISSIONS, MissingPrerequisite, Released, StillHeld,
 };

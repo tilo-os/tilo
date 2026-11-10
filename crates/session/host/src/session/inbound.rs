@@ -29,7 +29,6 @@ const GOVERNANCE_BATCH_BYTES: usize = 8 * 1024 * 1024;
 impl Task {
     /// Tell this device's readers that `route` changed in its replica.
     pub(super) fn landed(&mut self, route: &DocumentRoute, author: Option<[u8; 32]>) {
-        self.held_inbound.remove(route);
         self.engine.arrivals().landed();
         self.emit(&PeerEvent::Landed {
             author,
@@ -452,7 +451,6 @@ impl Task {
         report: Result<tilo_peer_state::AdmissionReport, String>,
     ) {
         let Arrived {
-            workspace_id,
             author,
             retained,
             route,
@@ -473,23 +471,11 @@ impl Task {
                 self.received.insert(entry);
             }
             self.note_delivered(&route, &[entry]);
+            // The replica took a write of the record in: what it held of it is decided.
+            self.held_inbound.remove(&route);
             landed.insert(route.clone(), author);
-        } else if let (
-            tilo_peer_state::InputDisposition::RetryLater(
-                tilo_peer_state::MissingPrerequisite::AppSurface,
-            ),
-            Some(surface),
-        ) = (report.primary(), surface)
-        {
-            self.awaiting_surface
-                .insert(surface, (workspace_id, route.clone()));
-            self.held_inbound.insert(
-                route.clone(),
-                format!("for its app surface {}", hex::encode(surface)),
-            );
-        } else {
-            self.held_inbound
-                .insert(route.clone(), format!("{:?}", report.primary()));
+        } else if let tilo_peer_state::InputDisposition::RetryLater(waiting) = report.primary() {
+            self.held(&route, waiting, surface);
         }
         if report.replay_wanted {
             self.replays.insert(route.clone());
@@ -509,6 +495,18 @@ impl Task {
         cluster: &str,
         report: &tilo_peer_state::AdmissionReport,
     ) {
+        // A write decided again that waits for something else now says so, and asks for an app
+        // surface it waits for.
+        for still in report.still_held() {
+            if let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = &still.message
+                && let Some(route) = DocumentRoute::of_message(&still.message)
+            {
+                let surface = (envelope.kind == collab_types::OpKind::Change)
+                    .then_some(envelope.surface)
+                    .flatten();
+                self.held(&route, &still.waiting_for, surface);
+            }
+        }
         for dropped in &report.summary().dropped {
             if dropped.waiting_for.is_some() && !dropped.app.is_empty() {
                 self.let_go.insert(DocumentRoute {
@@ -534,8 +532,28 @@ impl Task {
             })
             .collect();
         for (route, author) in landed {
+            self.held_inbound.remove(&route);
             self.landed(&route, Some(author));
         }
+    }
+
+    /// Say that the replica holds a write of `route` undecided until `waiting` arrives: an app
+    /// surface the write names (`surface`) is asked of its workspace.
+    pub(super) fn held(
+        &mut self,
+        route: &DocumentRoute,
+        waiting: &tilo_peer_state::MissingPrerequisite,
+        surface: Option<[u8; 32]>,
+    ) {
+        let reason = match (waiting, surface, route.workspace_id()) {
+            (tilo_peer_state::MissingPrerequisite::AppSurface, Some(surface), Ok(workspace_id)) => {
+                self.awaiting_surface
+                    .insert(surface, (workspace_id, route.clone()));
+                format!("for its app surface {}", hex::encode(surface))
+            }
+            (waiting, ..) => format!("for {waiting}"),
+        };
+        self.held_inbound.insert(route.clone(), reason);
     }
 
     /// Ask the workspaces for the app surfaces their writes here wait for and this page does

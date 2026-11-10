@@ -194,6 +194,14 @@ pub struct Released {
     /// Whether it came as retained history rather than live.
     pub retained: bool,
 }
+/// A held message decided again with the input a report is about that still
+/// waits, and what it waits for now: what it waited for came, and it needs
+/// something else besides.
+#[derive(Clone, Debug)]
+pub struct StillHeld {
+    pub message: neighbour_wire::NeighbourMsg,
+    pub waiting_for: MissingPrerequisite,
+}
 #[derive(Clone, Debug)]
 pub struct AdmissionReport {
     pub(crate) primary: InputDisposition,
@@ -201,6 +209,8 @@ pub struct AdmissionReport {
     pub(crate) summary: ReceiveOutcome,
     /// The held messages taken in with this input, in the order they were.
     pub(crate) released: Vec<Released>,
+    /// The held messages decided again with this input that still wait.
+    pub(crate) still_held: Vec<StillHeld>,
 }
 impl AdmissionReport {
     pub fn primary(&self) -> &InputDisposition {
@@ -218,6 +228,11 @@ impl AdmissionReport {
     pub fn summary(&self) -> &ReceiveOutcome {
         &self.summary
     }
+    /// The held messages this input had decided again that still wait, with
+    /// what each waits for now.
+    pub fn still_held(&self) -> &[StillHeld] {
+        &self.still_held
+    }
     pub(crate) fn new(primary: InputDisposition, summary: ReceiveOutcome) -> Self {
         let settled = match &primary {
             InputDisposition::Accepted(op) => vec![op.clone()],
@@ -228,6 +243,7 @@ impl AdmissionReport {
             settled,
             summary,
             released: Vec::new(),
+            still_held: Vec::new(),
         }
     }
     /// What deciding the held `message` again took in: the message itself

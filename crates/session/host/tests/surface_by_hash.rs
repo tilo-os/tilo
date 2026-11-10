@@ -177,24 +177,31 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
             },
         );
     }
-    // The record's history: three page edits, each naming a field of the
-    // notes app as its executor does, so every op carries the claim the
-    // receiver decides against the app's surface, and each sealed with the
-    // record's content key.
+    // The record's history: the record started empty, as an app starts one,
+    // then three page edits, each naming a field of the notes app as its
+    // executor does, so every edit carries the claim the receiver decides
+    // against the app's surface. Every write is sealed with the record's
+    // content key.
     let mut document = automerge::AutoCommit::new();
+    let mut writes = vec![(DocumentMutation::Snapshot(document.save()), None)];
     for page_number in 1..=3 {
         document
             .put(automerge::ROOT, "pages", format!("page {page_number}"))
             .unwrap();
         collab_types::CommitNamed::commit_edit(&mut document, "notes.notebook", "pages");
-        let mutation = DocumentMutation::Incremental(document.save_incremental());
+        writes.push((
+            DocumentMutation::Incremental(document.save_incremental()),
+            Some(*blake3::hash(&surface).as_bytes()),
+        ));
+    }
+    for (seq, (mutation, named)) in (1..).zip(writes) {
         let claims = collab_types::mutation_claims(&mutation, collab_types::record_unit).unwrap();
         let frame = mutation.encode().unwrap();
         let (metadata, sealed) = laptop_peer
             .content_keys()
             .unwrap()
             .for_unit(channel)
-            .seal_content(artifact, ContentRetention::Delta, &frame)
+            .seal_content(artifact, ContentRetention::of_frame(&frame), &frame)
             .unwrap();
         let mut op = SignedOp::new_unsigned_with_encryption(
             sealed,
@@ -203,11 +210,11 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
             document_attestation_id(&note.app_id, &note.cluster_id, &note.record),
             OpKind::Change,
             SystemTime::now(),
-            page_number,
+            seq,
             metadata,
         )
         .with_claims(claims)
-        .with_surface(Some(*blake3::hash(&surface).as_bytes()));
+        .with_surface(named);
         collab_types::sign_op(&mut op, &laptop.key).unwrap();
         publish(
             &session,
@@ -281,8 +288,8 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
     })
     .await;
     assert!(
-        support::record_of(&page, &note).is_none(),
-        "nothing of the record is opened before its surface arrives"
+        support::said(&page, &note).is_empty(),
+        "no edit of the record is opened before its surface arrives"
     );
 
     // The page asked its workspace for that surface. The host answers, and
