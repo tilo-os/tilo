@@ -142,12 +142,10 @@ fn a_search_from_inside_a_book_is_the_books_until_its_chip_is_cleared() {
 #[test]
 fn the_book_chips_clear_control_widens_the_search() {
     let mut app = TestApp::<EbookShell>::drive("search-in-book").unwrap();
-    let address = ui::tilo_actions::ActionAddress::new("tilo.control:view-chip:book", "remove");
     let resources = app.harness().resources();
-    assert!(
-        ui::tilo_actions::door::resolve(&resources, &address).is_some(),
-        "{address:?} is published"
-    );
+    let address =
+        ui::tilo_actions::door::published(&resources, "tilo.control:view-chip:book", "remove")
+            .expect("the chip publishes its remove");
     let inside = found(&mut app, PASSAGE);
     assert!(!inside.is_empty(), "the book's words are found");
 

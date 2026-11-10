@@ -151,6 +151,8 @@ NOT_CONTROL_CALLBACKS = {
     "on_own_device_effect": "activates a published native effect action",
     "on_view": "activates a published native view action",
     "on_activate_view": "activates the widget's published view action for the entry it opened",
+    "on_command": "the slash menu's row for a command the view placed fires the view's own "
+    "command event, which runs what the view declared as its other controls are run",
     "on_dismiss": "a dialog's or popover's close control, published as a native view action; "
     "a banner's follows its published dismiss button",
     "on_expand": "folds or unfolds a row: what this window shows, no edit",
