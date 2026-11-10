@@ -1,28 +1,24 @@
-//! Inviting people into the workspace a page is in: the session's own sheet
-//! ([`tilo_sheets::invite`]), over the page, made, listed and taken back
-//! through the workspace's host.
-//!
-//! Which parts this person may hand out is their role here; who is in the
-//! workspace is the membership the page already follows (with the names the
-//! here layer knows), and which links still work is the host's answer. A link
-//! the sheet shows opens this page, naming the workspace and the host that keeps
-//! it, and carries the handle and key of the invitation sealed on the host's
-//! shelf beside it — the same short link the desk hands over, and the same
-//! join every build takes.
+//! Inviting people into the workspace a page is in: the session's own role
+//! ([`tilo_session::invite`]) and sheet, over the page. Who is in the workspace
+//! is the membership the page follows, the parts this person may hand out are
+//! their standing here, and the workspace's host makes, lists and cancels the
+//! links, which open this page.
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 
 use serde::Deserialize;
 use tilo_desktop::here::Here;
 use tilo_relay_protocol::workspaces::{
     PendingInvite, WorkspaceRole, WorkspacesReply, WorkspacesRequest,
 };
-use tilo_sheets::invite::{self as sheet, Choosing, Invitations, InviteEffect};
-use tilo_sheets::{Presentation, word, words};
+use tilo_session::invite::{Answer, Invite, Issued, Refused, Workspace};
+use tilo_sheets::Presentation;
+use tilo_sheets::invite::{self as sheet, Choosing, InviteEffect};
 use tilo_workspace_directory::Store;
 
 use ui::LocalState;
@@ -33,17 +29,13 @@ use crate::shell::{HostRequest, HostRequests};
 /// How long a link the sheet makes works, as the session's desk makes one.
 const LINK_SECONDS: u64 = 3_600;
 
-/// What the page tells its desktop about invitations
-/// (`mountDesktop({invite})`): a page has no desk, no identity on disk and no
-/// transport of its own to make a link through.
+/// What the page tells its desktop about invitations (`mountDesktop({invite})`).
 #[derive(Clone, Debug, Default, Deserialize)]
 pub(crate) struct PageInviteConfig {
-    /// The page's entry, as a link names it (`https://tilo.sh/`): the link
-    /// the sheet hands over opens this page.
+    /// The page's entry (`https://tilo.sh/`): the link the sheet hands over opens it.
     #[serde(default)]
     pub base: String,
-    /// The workspace's host: where the invitation waits on its shelf, and the
-    /// workspace's own address in the link.
+    /// The workspace's host, which the link names.
     #[serde(default)]
     pub origin: String,
     /// The workspace, by its uuid.
@@ -57,54 +49,26 @@ pub(crate) struct PageInviteConfig {
     pub user: String,
 }
 
-/// What the host answered since the last pass, from its own thread.
-enum Answer {
-    /// The invitations that still work.
-    Pending(Result<WorkspacesReply, String>),
-    /// An invitation was made.
-    Made {
-        brings: String,
-        expires_at_ns: u64,
-        reply: Result<WorkspacesReply, String>,
-    },
-    /// An invitation was taken back, and the ones that still work.
-    Cancelled {
-        invite: String,
-        reply: Result<WorkspacesReply, String>,
-    },
-}
+/// What the host answered, from its own thread.
+type Reply = Result<WorkspacesReply, String>;
+
+/// Who hears a host's answer.
+type Then = Box<dyn FnOnce(Reply)>;
 
 /// The sheet over the page, while it is up.
 pub(crate) struct PageInvite {
-    requests: HostRequests,
+    invite: Invite,
+    workspace: Rc<PageWorkspace>,
     /// Where an invitation is left for the link that names it.
-    store: Store,
+    store: Rc<Store>,
     presentation: Presentation,
     ask: sheet::Ask,
-    config: Option<PageInviteConfig>,
-    peer: Option<u32>,
-    shared: crate::desktop::Shared,
-    /// Who is here, as the workspace's presence names them.
-    here: Here,
+    asked: Rc<RefCell<Vec<InviteEffect>>>,
     choosing: LocalState<Choosing>,
     link: LocalState<String>,
-    asked: Rc<RefCell<Vec<InviteEffect>>>,
-    made: RefCell<sheet::Making>,
-    pending: RefCell<Vec<PendingInvite>>,
-    /// The page's person, as they are here.
-    person: Option<[u8; 32]>,
-    /// Whether this person may invite here, as the workspace last answered
-    /// ([`crate::replication`] asks it with the rest of their standing).
-    invitable: Arc<AtomicBool>,
-    /// An invitation is being made: the sheet says so until the host answers.
-    creating: Cell<bool>,
-    /// The sheet is up and the host has not been asked what stands since.
-    asking: Cell<bool>,
     /// What the built sheet shows, and what it was built with, so it is built
     /// again only when one of them moved.
     built: Option<(sheet::Invite, u64, u64)>,
-    answers: Arc<Mutex<Vec<Answer>>>,
-    woken: Arc<AtomicBool>,
 }
 
 impl PageInvite {
@@ -116,36 +80,38 @@ impl PageInvite {
         peer: Option<u32>,
         wake: &Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
-        let store = Store::default();
+        let store = Rc::new(Store::default());
         store.waking(Arc::clone(wake));
         let asked: Rc<RefCell<Vec<InviteEffect>>> = Rc::default();
         let pressing = Rc::clone(&asked);
         let ask: sheet::Ask = Rc::new(move |effect: InviteEffect| {
             pressing.borrow_mut().push(effect);
         });
-        let woken = Arc::clone(&shared.woken);
-        let invitable = Arc::clone(&shared.invitable);
+        let workspace = Rc::new(PageWorkspace {
+            config: config.cloned(),
+            peer,
+            person: config.and_then(|config| hex::decode(&config.user).ok()?.try_into().ok()),
+            shared,
+            here,
+            pending: Rc::default(),
+            replies: Arc::default(),
+            waiting: RefCell::default(),
+            asks: Cell::new(0),
+        });
         Self {
-            requests,
+            invite: Invite::new(
+                Rc::clone(&workspace) as Rc<dyn Workspace>,
+                Rc::new(PageClipboard(requests)),
+                Rc::clone(&store),
+            ),
+            workspace,
             store,
             presentation: Presentation::default(),
             ask,
-            config: config.cloned(),
-            peer,
-            shared,
-            here,
+            asked,
             choosing: LocalState::new(Choosing::default()),
             link: LocalState::new(String::new()),
-            asked,
-            made: RefCell::new(sheet::Making::default()),
-            pending: RefCell::new(Vec::new()),
-            person: config.and_then(|config| hex::decode(&config.user).ok()?.try_into().ok()),
-            invitable,
-            creating: Cell::new(false),
-            asking: Cell::new(false),
             built: None,
-            answers: Arc::default(),
-            woken,
         }
     }
 
@@ -153,11 +119,8 @@ impl PageInvite {
     pub(crate) fn open(&self) {
         self.choosing.set(Choosing::default());
         self.link.set(String::new());
-        self.made.borrow_mut().opening();
-        self.pending.borrow_mut().clear();
-        self.creating.set(false);
+        self.invite.opening();
         self.presentation.open(false);
-        self.refresh();
     }
 
     pub(crate) fn is_open(&self) -> bool {
@@ -168,11 +131,10 @@ impl PageInvite {
     /// workspace stands, and carry out what the person pressed since the last
     /// pass. Whether anything changed.
     fn follow(&mut self, show: &mut dyn FnMut(Option<ui::widget::Element>), missing: bool) -> bool {
-        let mut changed = self.take_answers();
+        let mut changed = self.workspace.take_replies();
         changed |= self.store.answered();
-        changed |= self.store.follow_shelf(&mut self.made.borrow_mut());
+        changed |= self.invite.follow_shelf();
         if !self.presentation.is_open() {
-            self.close();
             show(None);
             return changed;
         }
@@ -180,16 +142,15 @@ impl PageInvite {
         if !asked.is_empty() {
             changed = true;
             if asked.contains(&InviteEffect::Done) {
-                self.close();
+                self.presentation.close();
             }
-            sheet::answer(&asked, self);
+            sheet::answer(&asked, &self.invite);
         }
         if !self.presentation.is_open() {
-            self.close();
             show(None);
             return changed;
         }
-        let shown = sheet::view(self);
+        let shown = sheet::view(&self.invite);
         let built = (
             shown.clone(),
             self.choosing.revision(),
@@ -208,265 +169,94 @@ impl PageInvite {
         }
         changed
     }
+}
 
-    /// Ask the host which links still work. Who is in the workspace is the
-    /// membership this page already follows, not the host's own listing of
-    /// every workspace it keeps.
-    fn refresh(&self) {
-        if self.asking.replace(true) {
-            return;
-        }
-        let Some(workspace) = self.workspace() else {
-            self.asking.set(false);
-            return;
-        };
-        if let Err(error) = self.ask(Answer::Pending, move |_| WorkspacesRequest::Pending {
-            workspace,
-        }) {
-            self.asking.set(false);
-            self.refused("invite-failed", &error);
-        }
+/// The page's clipboard: a link is written from the press that asked for it.
+struct PageClipboard(HostRequests);
+
+impl tilo_session::platform::clipboard::Clipboard for PageClipboard {
+    fn copy(&self, text: String, _kept_for: std::time::Duration) {
+        self.0.borrow_mut().push(HostRequest::Copy(text));
     }
+}
 
-    /// Ask this page's workspace host `request`, and hand its answer to
-    /// `answer`.
+/// The workspace this page is in, as its host answers for it.
+struct PageWorkspace {
+    config: Option<PageInviteConfig>,
+    peer: Option<u32>,
+    shared: crate::desktop::Shared,
+    /// Who is here, as the workspace's presence names them.
+    here: Here,
+    /// The page's person, as they are here.
+    person: Option<[u8; 32]>,
+    /// The links that still work, as the host last answered.
+    pending: Rc<RefCell<Vec<PendingInvite>>>,
+    /// What the host answered, by the ask, from its own thread.
+    replies: Arc<Mutex<Vec<(u64, Reply)>>>,
+    /// Who hears each answer, by the ask.
+    waiting: RefCell<BTreeMap<u64, Then>>,
+    asks: Cell<u64>,
+}
+
+impl PageWorkspace {
+    /// Ask this page's workspace host `request`; `then` hears its answer on a
+    /// later pass, or why it was not asked.
     fn ask(
         &self,
-        answer: impl FnOnce(Result<WorkspacesReply, String>) -> Answer + Send + 'static,
         request: impl FnOnce(&str) -> WorkspacesRequest,
-    ) -> Result<(), String> {
-        let peer = self.peer.ok_or(NO_HOST)?;
-        let answers = Arc::clone(&self.answers);
-        let woken = Arc::clone(&self.woken);
-        crate::replication::host_then(
+        then: impl FnOnce(Reply) + 'static,
+    ) {
+        let Some(peer) = self.peer else {
+            return then(Err(NO_HOST.to_owned()));
+        };
+        let id = self.asks.replace(self.asks.get().wrapping_add(1));
+        let (replies, woken) = (Arc::clone(&self.replies), Arc::clone(&self.shared.woken));
+        let asked = crate::replication::host_then(
             peer,
             request,
             Box::new(move |reply| {
-                answers
+                replies
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(answer(reply));
+                    .push((id, reply));
                 woken.store(true, Ordering::Release);
             }),
-        )
+        );
+        match asked {
+            Ok(()) => drop(self.waiting.borrow_mut().insert(id, Box::new(then))),
+            Err(error) => then(Err(error)),
+        }
     }
 
-    /// Take what the host answered since the last pass. Whether anything
-    /// arrived.
-    fn take_answers(&self) -> bool {
-        let answers: Vec<Answer> = std::mem::take(
+    /// Hand what the host answered since the last pass to whoever asked.
+    /// Whether anything arrived.
+    fn take_replies(&self) -> bool {
+        let replies: Vec<(u64, Reply)> = std::mem::take(
             &mut *self
-                .answers
+                .replies
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
-        let arrived = !answers.is_empty();
-        for answer in answers {
-            match answer {
-                Answer::Pending(reply) => {
-                    self.pending(reply);
-                    self.asking.set(false);
-                }
-                Answer::Made {
-                    brings,
-                    expires_at_ns,
-                    reply,
-                } => {
-                    self.creating.set(false);
-                    self.made(brings, expires_at_ns, reply);
-                }
-                Answer::Cancelled { invite, reply } => {
-                    self.pending(reply);
-                    // The site's copy goes too: a link handed out before is
-                    // not one that waits there to be fetched, and the one this
-                    // opening showed goes with it.
-                    self.store.take_back(&mut self.made.borrow_mut(), &invite);
-                    self.say(word("invite-revoked"), false);
-                }
+        let arrived = !replies.is_empty();
+        for (id, reply) in replies {
+            let then = self.waiting.borrow_mut().remove(&id);
+            if let Some(then) = then {
+                then(reply);
             }
         }
         arrived
     }
 
-    /// The links that still work, from the host's answer.
-    fn pending(&self, reply: Result<WorkspacesReply, String>) {
-        match reply {
-            Ok(WorkspacesReply::Pending(pending)) => *self.pending.borrow_mut() = pending,
-            other => self.refused("invite-failed", &refused(other)),
-        }
-    }
-
-    /// The invitation the host made: its own bytes sealed onto the shelf of
-    /// the site this page's workspace is hosted at, so the link carries a
-    /// handle and a key instead of the invitation's kilobytes.
-    fn made(&self, brings: String, expires_at_ns: u64, reply: Result<WorkspacesReply, String>) {
-        let (invite, invitation) = match reply {
-            Ok(WorkspacesReply::Invitation {
-                invite_id,
-                signed_invitation,
-            }) => (hex::encode(invite_id), signed_invitation),
-            other => {
-                self.refused("invite-failed", &refused(other));
-                return;
+    /// Keep the links that still work from the host's answer.
+    fn keeping(&self) -> impl FnOnce(Reply) -> Result<(), Refused> + 'static {
+        let pending = Rc::clone(&self.pending);
+        move |reply| match reply {
+            Ok(WorkspacesReply::Pending(listed)) => {
+                *pending.borrow_mut() = listed;
+                Ok(())
             }
-        };
-        // Until the shelf answers, the link is the invitation's own text, as
-        // the desk hands it over: what the sheet shows when the site keeps
-        // nothing.
-        let long = tilo_workspace_join::encode_invitation_text(&invitation);
-        let host = self.config.as_ref().map(|config| config.origin.as_str());
-        let site = self.site();
-        if let Err(reason) = self.store.hand_over(
-            &mut self.made.borrow_mut(),
-            &invite,
-            &long,
-            expires_at_ns,
-            brings,
-            site.as_ref(),
-            host,
-        ) {
-            self.refused("invite-failed", &reason);
+            other => Err(Refused::Because(refused(other))),
         }
-    }
-
-    /// Make a link, through the host that governs this workspace.
-    fn create(&self, role: &str, recipient: &str) {
-        let Some(role) = role_from_id(role).filter(|role| *role != Role::Owner) else {
-            self.refused(
-                "invite-failed",
-                "that is not a part a link can bring someone in at",
-            );
-            return;
-        };
-        let Some(workspace) = self.workspace() else {
-            self.refused("invite-failed", NO_WORKSPACE);
-            return;
-        };
-        let recipient = match recipient {
-            "" => None,
-            key => {
-                let Some(key) = hex::decode(key).ok().and_then(|key| key.try_into().ok()) else {
-                    self.refused("invite-failed", "that is not a person's key");
-                    return;
-                };
-                Some(key)
-            }
-        };
-        let mut request_id = [0u8; 32];
-        if let Err(error) = getrandom::fill(&mut request_id) {
-            self.refused("invite-failed", &error.to_string());
-            return;
-        }
-        let expires_at_ns =
-            ui::time::unix_now_ns().saturating_add(LINK_SECONDS.saturating_mul(1_000_000_000));
-        let label = role_label(role);
-        let brings = match recipient {
-            Some(key) => {
-                let name = self
-                    .name_of(key)
-                    .unwrap_or_else(|| hex::encode(key).chars().take(8).collect());
-                sheet::brings(&label, Some(&name))
-            }
-            None => sheet::brings(&label, None),
-        };
-        let name = self
-            .config
-            .as_ref()
-            .map(|config| config.name.trim().to_owned())
-            .filter(|name| !name.is_empty());
-        let Some(asked) = workspace_role(role) else {
-            return;
-        };
-        self.creating.set(true);
-        let sent = self.ask(
-            move |reply| Answer::Made {
-                brings,
-                expires_at_ns,
-                reply,
-            },
-            move |_| WorkspacesRequest::Invite {
-                workspace: workspace.clone(),
-                request_id,
-                role: asked,
-                expires_at_ns,
-                inviter_name: name,
-                wait_list_entry: None,
-                recipient,
-            },
-        );
-        if let Err(error) = sent {
-            self.creating.set(false);
-            self.refused("invite-failed", &error);
-        }
-    }
-
-    /// Take a link back: the host stops redeeming it, and the shelf lets go of
-    /// what it keeps.
-    fn revoke(&self, invite: &str) {
-        let Some(invite_id) = hex::decode(invite)
-            .ok()
-            .and_then(|id| <[u8; 32]>::try_from(id).ok())
-        else {
-            self.refused("invite-revoke-failed", "that is not an invitation");
-            return;
-        };
-        let Some(workspace) = self.workspace() else {
-            self.refused("invite-revoke-failed", NO_WORKSPACE);
-            return;
-        };
-        let mut request_id = [0u8; 32];
-        if let Err(error) = getrandom::fill(&mut request_id) {
-            self.refused("invite-revoke-failed", &error.to_string());
-            return;
-        }
-        let cancelled = invite.to_owned();
-        let sent = self.ask(
-            move |reply| Answer::Cancelled {
-                invite: cancelled,
-                reply,
-            },
-            move |_| WorkspacesRequest::Cancel {
-                workspace: workspace.clone(),
-                request_id,
-                invite_id,
-            },
-        );
-        if let Err(error) = sent {
-            self.refused("invite-revoke-failed", &error);
-        }
-    }
-
-    /// Put a link on the clipboard, through the page's own.
-    fn copy(&self, link: &str) {
-        self.requests
-            .borrow_mut()
-            .push(HostRequest::Copy(link.to_owned()));
-        self.say(word("invite-copied"), false);
-    }
-
-    /// The name the workspace knows `person` by, when it knows one.
-    fn name_of(&self, person: [u8; 32]) -> Option<String> {
-        let user = hex::encode(person);
-        self.here
-            .borrow()
-            .person(&user)
-            .map(|(name, _)| name)
-            .filter(|name| !name.is_empty())
-    }
-
-    /// This page's own person, hex, when the page knows them.
-    fn own_user(&self) -> Option<String> {
-        self.person.map(hex::encode)
-    }
-
-    /// Say in the sheet what went wrong, and why.
-    fn refused(&self, key: &str, reason: &str) {
-        self.say(words(key, &[("reason", reason)]), true);
-    }
-
-    /// Say in the sheet what became of the last ask.
-    fn say(&self, text: String, bad: bool) {
-        self.made.borrow_mut().say(text, bad);
     }
 
     fn workspace(&self) -> Option<String> {
@@ -475,18 +265,11 @@ impl PageInvite {
             .map(|config| config.workspace.clone())
             .filter(|workspace| !workspace.is_empty())
     }
+}
 
-    /// The site whose shelf keeps the invitation: the one this page comes
-    /// from, so the link opens it.
-    fn site(&self) -> Option<url::Url> {
-        let config = self.config.as_ref()?;
-        let origin = config.base.trim().trim_end_matches('/');
-        tilo_workspace_directory::web_origin(&format!("{origin}/")).ok()
-    }
-
-    fn close(&self) {
-        self.presentation.close();
-    }
+/// What the workspace said no to, and why.
+fn refuse<T>(reason: &str) -> Result<T, Refused> {
+    Err(Refused::Because(reason.to_owned()))
 }
 
 /// Why nothing was asked: a page with no workspace host makes no links.
@@ -495,9 +278,25 @@ const NO_HOST: &str = "this page is in no workspace to invite anyone into";
 /// Why nothing was asked: a page that is in no workspace.
 const NO_WORKSPACE: &str = "this page is in no workspace";
 
-impl Invitations for PageInvite {
+impl Workspace for PageWorkspace {
     fn may_invite(&self) -> bool {
-        self.peer.is_some() && self.workspace().is_some() && self.invitable.load(Ordering::Relaxed)
+        // Whether this person may invite here is the workspace's last answer, which
+        // [`crate::replication`] asks with the rest of their standing.
+        self.peer.is_some()
+            && self.workspace().is_some()
+            && self.shared.invitable.load(Ordering::Relaxed)
+    }
+
+    fn opened(&self, listed: Answer<()>) {
+        self.pending.borrow_mut().clear();
+        let Some(workspace) = self.workspace() else {
+            return;
+        };
+        let keeping = self.keeping();
+        self.ask(
+            move |_| WorkspacesRequest::Pending { workspace },
+            move |reply| listed(keeping(reply)),
+        );
     }
 
     fn roles(&self) -> Vec<sheet::Role> {
@@ -517,7 +316,7 @@ impl Invitations for PageInvite {
         let Some(members) = self.shared.members.borrow().clone() else {
             return Vec::new();
         };
-        let own = self.own_user();
+        let own = self.person.map(hex::encode);
         let here = self.here.borrow();
         members
             .into_iter()
@@ -549,32 +348,93 @@ impl Invitations for PageInvite {
             .collect()
     }
 
-    fn made(&self) -> Option<sheet::Created> {
-        self.made.borrow().made()
+    fn issue(&self, role: &str, recipient: &str, answer: Answer<Issued>) {
+        let Some(asked) = role_from_id(role).and_then(workspace_role) else {
+            return answer(refuse("that is not a part a link can bring someone in at"));
+        };
+        let Some(workspace) = self.workspace() else {
+            return answer(refuse(NO_WORKSPACE));
+        };
+        let recipient = match recipient {
+            "" => None,
+            key => {
+                let Some(key) = hex::decode(key).ok().and_then(|key| key.try_into().ok()) else {
+                    return answer(refuse("that is not a person's key"));
+                };
+                Some(key)
+            }
+        };
+        let mut request_id = [0u8; 32];
+        if let Err(error) = getrandom::fill(&mut request_id) {
+            return answer(refuse(&error.to_string()));
+        }
+        let expires_at_ns =
+            ui::time::unix_now_ns().saturating_add(LINK_SECONDS.saturating_mul(1_000_000_000));
+        let name = self
+            .config
+            .as_ref()
+            .map(|config| config.name.trim().to_owned())
+            .filter(|name| !name.is_empty());
+        self.ask(
+            move |_| WorkspacesRequest::Invite {
+                workspace,
+                request_id,
+                role: asked,
+                expires_at_ns,
+                inviter_name: name,
+                wait_list_entry: None,
+                recipient,
+            },
+            move |reply| {
+                answer(match reply {
+                    Ok(WorkspacesReply::Invitation {
+                        invite_id,
+                        signed_invitation,
+                    }) => Ok(Issued {
+                        invite: hex::encode(invite_id),
+                        text: tilo_workspace_join::encode_invitation_text(&signed_invitation),
+                        expires_at_ns,
+                    }),
+                    other => Err(Refused::Because(refused(other))),
+                });
+            },
+        );
     }
 
-    fn making(&self) -> bool {
-        self.creating.get() || self.made.borrow().making()
+    fn cancel(&self, invite: &str, answer: Answer<()>) {
+        let Some(invite_id) = hex::decode(invite)
+            .ok()
+            .and_then(|id| <[u8; 32]>::try_from(id).ok())
+        else {
+            return answer(refuse("that is not an invitation"));
+        };
+        let Some(workspace) = self.workspace() else {
+            return answer(refuse(NO_WORKSPACE));
+        };
+        let mut request_id = [0u8; 32];
+        if let Err(error) = getrandom::fill(&mut request_id) {
+            return answer(refuse(&error.to_string()));
+        }
+        let keeping = self.keeping();
+        self.ask(
+            move |_| WorkspacesRequest::Cancel {
+                workspace,
+                request_id,
+                invite_id,
+            },
+            move |reply| answer(keeping(reply)),
+        );
     }
 
-    fn note(&self) -> Option<sheet::Note> {
-        self.made.borrow().note()
-    }
-
-    fn create(&self, role: &str, recipient: &str) {
-        self.create(role, recipient);
-    }
-
-    fn revoke(&self, invite: &str) {
-        self.revoke(invite);
-    }
-
-    fn copy(&self, link: &str) {
-        self.copy(link);
-    }
-
-    fn clear_note(&self) {
-        self.made.borrow_mut().clear();
+    /// The site whose shelf keeps the invitation is the one this page comes
+    /// from, so the link opens it; the link names the workspace's host.
+    fn shelf(&self) -> (Option<url::Url>, Option<String>) {
+        let Some(config) = self.config.as_ref() else {
+            return (None, None);
+        };
+        let origin = config.base.trim().trim_end_matches('/');
+        let site = tilo_workspace_directory::web_origin(&format!("{origin}/")).ok();
+        (site, Some(config.origin.clone()))
     }
 }
 

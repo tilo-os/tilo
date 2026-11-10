@@ -95,6 +95,12 @@ pub(crate) enum Ask {
     Copy { text: String, kept_for: Duration },
 }
 
+impl crate::platform::clipboard::Clipboard for Clipboard {
+    fn copy(&self, text: String, kept_for: Duration) {
+        self.ask(Ask::Copy { text, kept_for });
+    }
+}
+
 impl Clipboard {
     /// The history this device kept, newest first.
     pub(crate) fn new(wake: tilo_service::Wake) -> Self {

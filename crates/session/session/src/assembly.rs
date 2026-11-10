@@ -206,9 +206,8 @@ pub(crate) struct Shared {
     pub(crate) directory: Option<tilo_sheets::directory::DirectorySeat>,
     /// Inviting people: the sheet a link into the workspace in front is made
     /// from, and what it made in this opening.
-    #[cfg(target_os = "linux")]
     pub(crate) invite: Option<tilo_sheets::invite::InviteSeat>,
-    pub(crate) invite_made: RefCell<tilo_sheets::invite::Making>,
+    pub(crate) inviting: crate::invite::Invite,
     /// The question deleting a workspace asks, and the workspace it is about.
     #[cfg(target_os = "linux")]
     pub(crate) delete_workspace: Option<tilo_sheets::delete_workspace::DeleteWorkspaceSeat>,
@@ -216,7 +215,7 @@ pub(crate) struct Shared {
     /// What the sites this computer knows list as public workspaces, read
     /// on a worker of its own.
     #[cfg(target_os = "linux")]
-    pub(crate) directory_store: crate::directory::Store,
+    pub(crate) directory_store: Rc<crate::directory::Store>,
     /// The workspace the host started this session to join.
     #[cfg(target_os = "linux")]
     pub(crate) boot_join: RefCell<crate::boot_join::BootJoin>,

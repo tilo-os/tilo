@@ -851,7 +851,7 @@ fn general(
     // it lets invite makes a link like anyone else it allows. The invite sheet asks again when the
     // link is made.
     let invitable = workspace.is_some_and(|workspace| {
-        crate::invite::may_invite(engine, &workspace.id().to_string(), person)
+        crate::platform::invite::may_invite(engine, &workspace.id().to_string(), person)
     });
     // What the workspace holds, in the three measures a person acts on: who is in it, what it gives
     // particular people or apps, and which apps it opens things with.

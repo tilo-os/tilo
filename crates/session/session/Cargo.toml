@@ -143,6 +143,8 @@ serde_json.workspace = true
 # search reads them from, as the apps that write them keep them.
 tilo-app-state = { path = "../../system/app-state" }
 tilo-sheets = { path = "../sheets" }
+# The public workspaces sites list, their doors, and where a join stands.
+tilo-workspace-directory = { path = "../workspace-directory" }
 # The models a session's own questions run on, and the person's provider settings: the same
 # gateway an app asks, reached on every host.
 agent-provider-config = { path = "../../agent/provider-config" }
@@ -190,8 +192,6 @@ tilo-quick-settings = { path = "../quick-settings" }
 tilo-activities = { path = "../activities" }
 tilo-notification-banners = { path = "../notification-banners" }
 tilo-onboarding-host = { path = "../onboarding-host" }
-# The public workspaces sites list, their doors, and where a join stands.
-tilo-workspace-directory = { path = "../workspace-directory" }
 # What a door's invitation is verified as before a workspace is joined: only
 # a grant signed for this person's key joins it.
 tilo-workspace-join = { path = "../../collab/workspace-join" }

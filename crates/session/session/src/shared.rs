@@ -286,7 +286,6 @@ impl Shared {
             &self.workspace_settings_feed(),
         );
         self.follow_invite();
-        self.refresh_invite();
         self.follow_delete_workspace();
         self.follow_boot_join();
         // A program of this login asking to work as an agent is a question of the person's: their

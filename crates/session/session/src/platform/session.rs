@@ -1228,7 +1228,8 @@ impl Session {
         );
         let workspace_tabs =
             crate::workspace_settings::WorkspaceTabs::new(cli::data_home(), options.wake.handle());
-        let directory_store = crate::directory::Store::default();
+        let directory_store = Rc::new(crate::directory::Store::default());
+        let clipboard = Rc::new(crate::clipboard::Clipboard::new(options.wake.handle()));
         let boot_join = crate::boot_join::BootJoin::at_boot(&directory_store, &handle);
         let community = crate::community::Community::for_site(crate::directory::community_site());
         // The person's notifications: what their apps sent, and what the session's roles tell them
@@ -1282,6 +1283,18 @@ impl Session {
                 wake: Some(options.wake.handle()),
             })
         });
+        let inviting = crate::invite::Invite::new(
+            Rc::new(crate::platform::invite::DeskWorkspace {
+                handle: handle.clone(),
+                person: options.person.clone(),
+                sync: sync.is_some(),
+                engine: engine.clone(),
+                services: Rc::clone(&services),
+                site: crate::directory::community_site,
+            }),
+            Rc::clone(&clipboard) as Rc<dyn crate::platform::clipboard::Clipboard>,
+            Rc::clone(&directory_store),
+        );
         let mut shared = Shared {
             handle,
             desktop,
@@ -1335,7 +1348,7 @@ impl Session {
             agents,
             directory,
             invite,
-            invite_made: RefCell::default(),
+            inviting,
             delete_workspace,
             delete_workspace_ask: RefCell::default(),
             directory_store,
@@ -1374,7 +1387,7 @@ impl Session {
             membership_fed: Cell::new(None),
             _channels: channels,
             personal,
-            clipboard: Rc::new(crate::clipboard::Clipboard::new(options.wake.handle())),
+            clipboard,
             arrangement,
             underway: busy,
             settings: crate::settings_sync::SettingsSync::new(),

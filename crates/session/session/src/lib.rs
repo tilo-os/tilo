@@ -222,8 +222,7 @@ mod import_readiness;
 mod input_method;
 #[cfg(target_os = "linux")]
 mod input_sources;
-#[cfg(target_os = "linux")]
-mod invite;
+pub mod invite;
 #[cfg(target_os = "linux")]
 pub mod keyboard;
 mod keyboard_shortcuts;

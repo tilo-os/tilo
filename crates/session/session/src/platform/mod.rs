@@ -20,6 +20,13 @@ pub mod session;
 /// What a host lists as apps.
 pub mod apps;
 
+/// The clipboard a role hands the person something on.
+pub mod clipboard;
+
+/// The workspace in front, as this desk makes invitations into it.
+#[cfg(target_os = "linux")]
+pub mod invite;
+
 /// Whether this device still holds custody of a workspace, as this desktop checks it.
 pub mod custody;
 
