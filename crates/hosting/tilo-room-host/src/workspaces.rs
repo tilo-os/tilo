@@ -35,7 +35,7 @@ mod content;
 pub mod fixtures;
 mod surfaces;
 pub(crate) use content::lacks_answer;
-pub use content::{ContentKeeper, WorkspaceContent};
+pub use content::{ContentKeeper, WholeRecords, WorkspaceContent};
 mod desktop_writes;
 mod device_keys;
 mod device_plane;

@@ -83,6 +83,10 @@ impl SealedLog {
     pub(crate) fn first(&self) -> Option<&collab_types::SignedOp> {
         self.iter().next()
     }
+    /// The write admitted last.
+    pub(crate) fn last(&self) -> Option<&collab_types::SignedOp> {
+        self.chunks.last()?.ops.last()
+    }
     pub(crate) fn to_vec(&self) -> Vec<collab_types::SignedOp> {
         self.iter().cloned().collect()
     }

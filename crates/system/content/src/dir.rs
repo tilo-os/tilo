@@ -416,16 +416,18 @@ impl ContentBackend for DirBackend {
             let Some(path) = Self::path_in(&self.root, &hash) else {
                 return Err(ContentError::InvalidHash(hash.clone()));
             };
-            // Content already here is an idempotent write, even if a later configuration tightened
-            // the limits.
-            if self.intact(&path, &hash, usize::MAX) {
-                return Ok(());
-            }
             let mut index = self
                 .state
                 .lock()
                 .map_err(|_| ContentError::Io("content store lock poisoned".into()))?;
             let root_lock = self.lock_root_for_write()?;
+            // Content already here is an idempotent write, even if a later configuration tightened
+            // the limits. It is written again just now, as far as a collection that spares what
+            // was written lately goes: under the lock, so no collection removes it in between.
+            if self.intact(&path, &hash, usize::MAX) {
+                self.written_now(&path);
+                return Ok(());
+            }
             // The kept index is authority for admission only while no other writer has written
             // since: every writer bumps the generation under this lock.
             let (generation, scanned) = self.refresh_index(&mut index)?;
@@ -518,6 +520,41 @@ impl ContentBackend for DirBackend {
 }
 
 impl DirBackend {
+    /// Remove every item not in `live` that was last written before `before`: what a store
+    /// collects when an item may be referenced only after it is written (an upload a record
+    /// names once it is kept). Writing an item that is already here counts as writing it.
+    ///
+    /// # Errors
+    ///
+    /// The store could not be read or changed.
+    pub fn collect_unreferenced_before(
+        &self,
+        live: &BTreeSet<String>,
+        before: SystemTime,
+    ) -> Result<Collected, ContentError> {
+        self.remove_where(|hash| {
+            !live.contains(hash)
+                && Self::path_in(&self.root, hash)
+                    .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
+                    .is_some_and(|written| written < before)
+        })
+    }
+
+    /// Mark the item at `path`, found intact, as written now, still known intact.
+    fn written_now(&self, path: &Path) {
+        let touched = std::fs::File::options()
+            .append(true)
+            .open(path)
+            .and_then(|file| {
+                file.set_modified(SystemTime::now())?;
+                file.metadata()
+            });
+        match touched {
+            Ok(meta) => self.remember_intact(path.to_path_buf(), FileSig::of(&meta)),
+            Err(_) => self.forget_intact(path),
+        }
+    }
+
     /// Remove every item whose address `gone` names.
     fn remove_where(&self, gone: impl Fn(&str) -> bool) -> Result<Collected, ContentError> {
         let mut index = self
