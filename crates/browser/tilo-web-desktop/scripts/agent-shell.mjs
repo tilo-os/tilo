@@ -863,6 +863,26 @@ async function palette(tab, words) {
   return null;
 }
 
+/** The desktop's search, opened with its chord and dismissed by a press on the desk beside its
+ * card. A palette still up after the press is the answer: the press went under it instead. */
+async function pressBesideSearch(tab, {height}) {
+  const mac = await tab.evaluate('/Mac|iPhone|iPad/.test(navigator.platform ?? navigator.userAgent ?? "")');
+  const showing = async () => (await semantics(tab)).some(node => /search apps, windows, documents/i.test(node.name));
+  await key(tab, 'k', 'KeyK', 75, mac ? 4 : 2);
+  if (!await until(showing, 8000)) return `the search chord opened no search: ${names(await semantics(tab))}`;
+  const searchOpen = () => tab.evaluate('globalThis.tiloMount?.state()?.searchOpen ?? null');
+  // The desk's bottom-left corner: the card stands centred over the top of it.
+  const x = 40, y = height - 40;
+  await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
+  await tab.send('Input.dispatchMouseEvent', {type: 'mousePressed', x, y, button: 'left', clickCount: 1});
+  await tab.send('Input.dispatchMouseEvent', {type: 'mouseReleased', x, y, button: 'left', clickCount: 1});
+  if (!await until(async () => !await showing(), 8000)) {
+    return `the search stayed up after a press beside it: ${names(await semantics(tab))}`;
+  }
+  const state = await until(async () => (await searchOpen()) === false, 8000);
+  return state ? null : `the page still says search is open: ${JSON.stringify(await tab.evaluate('globalThis.tiloMount?.state() ?? null')).slice(0, 300)}`;
+}
+
 async function openNote(tab) {
   // A window of Notes with a note in it is what following needs: it is the
   // window the person's view goes to, and where the agent's writing lands.
@@ -1258,6 +1278,11 @@ try {
         // to over the run is the number the check below is about.
         memory = watchMemory(tab);
         await memory.sample('landed');
+
+        // The desk itself, before anything opens over it: its search takes the keyboard when the
+        // chord asks for it, and the first press beside the card puts it away again.
+        const searchProblem = await pressBesideSearch(tab, {height});
+        check(`${combo}: a press beside system search dismisses it`, !searchProblem, searchProblem ?? '');
 
         // 3. The agent's MCP connection: present in the workspace from now on.
         agent = mcpClient();

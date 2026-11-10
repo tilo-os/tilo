@@ -32,6 +32,9 @@ class Node {
  replaceChildren(){this.children=[];}
 }
 const tick=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
+// What the desk answers to `desktop_input_ownership`: the semantics tree's keyboard owner path, who
+// that is, and the field an input method is helping.
+const holding=(holder,{purpose='Text',ime=true,field='field'}={})=>({owner:`/${holder}/${field}[0]`,holder,ime:ime?{x:0,y:0,width:2,height:20,purpose}:null});
 async function fixture({standalone=false,models,providerManagement,app}={}){
  const document=new Node('document');document.body=new Node('body');document.append(document.body);document.activeElement=document.body;document.createElement=tag=>new Node(tag);globalThis.document=document;
  Object.defineProperty(globalThis,'navigator',{configurable:true,value:{gpu:{},platform:'Mac'}});
@@ -39,14 +42,17 @@ async function fixture({standalone=false,models,providerManagement,app}={}){
   if(String(url).endsWith('fonts.json'))return {ok:true,json:async()=>({schema:1,catalog:'host-input-fixture',assets:[{name:'NotoSans[wght].ttf',bytes:1,sha256:'4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a',startup:true}]})};
   return {ok:true,arrayBuffer:async()=>new Uint8Array([1]).buffer};
  };
- let allocated=false;let state={sequence:'1',activation:'1',owner:'writer',ime:{x:0,y:0,height:20}};const delivered=[],deliveredOwners=[],windowFocus=[];let update;
+ let allocated=false,ownershipReads=0;let state=holding('writer');const delivered=[],windowFocus=[];let update;
  // Winit's web backend reports the canvas's own focus and blur as the window's.
  const runtime=runtimeFake({provide_startup_font(){},mount(canvas,_config,_entries,callback){this.config=JSON.parse(_config);update=callback;for(const type of ['focus','blur'])canvas.addEventListener(type,()=>windowFocus.push(type));setTimeout(()=>{allocated=true;callback(JSON.stringify({phase:'gpu-pending'}));queueMicrotask(()=>callback(JSON.stringify({phase:'presented',frames:1})));},0);return 1;},close:()=>[],refresh_storage_lease(){},load_storage(){},mirror_files:async()=>{},load_application:async()=>true,flush_files:async()=>{},storage_write_hook(){},provide_settings:()=>false,drain_storage:()=>[],retry_storage:()=>0,acknowledge_storage(){},pending_writes:()=>[],asset_requests:()=> '[]',modifiers(){},ime:(...args)=>delivered.push(args.slice(1)),clipboard_event:(_id,kind)=>{delivered.push([kind]);return true;},
 
-  desktop_navigation_snapshot:()=>{if(!allocated)throw Error('Desktop disposed');return standalone?undefined:JSON.stringify({generation:'g'});},desktop_navigation_revision:()=>1,desktop_search_toggle(){this.searchToggles++;},
-  desktop_navigate:(_id,raw)=>{const command=JSON.parse(raw);if(command.route==='bad')throw Error('rejected');state={sequence:String(Number(state.sequence)+1),activation:String(Number(state.activation)+1),owner:command.route,ime:command.route==='calculator'?null:{x:0,y:0,height:20}};},
- }, {searchToggles:0});
- const originalIme=runtime.ime;runtime.ime=(...args)=>{if(args[1]==='commit')deliveredOwners.push([state.owner,args[2]]);originalIme(...args);};
+  // The desk's live answer: who holds the keyboard, and the field an input method is helping.
+  desktop_input_ownership:()=>{ownershipReads++;if(!allocated)throw Error('Desktop closed');return standalone?undefined:JSON.stringify(state);},
+  desktop_navigation_snapshot:()=>{if(!allocated)throw Error('Desktop disposed');return standalone?undefined:JSON.stringify({generation:'g'});},desktop_navigation_revision:()=>1,
+  desktop_search_toggle(){this.searchToggles++;state=state.holder==='system-search'?holding('writer',{ime:false}):holding('system-search',{purpose:'Search'});},
+  desktop_search_close(){this.searchCloses++;if(state.holder==='system-search')state=holding('writer',{ime:false});},
+  desktop_navigate:(_id,raw)=>{const command=JSON.parse(raw);if(command.route==='bad')throw Error('rejected');state=holding(command.route,{ime:command.route!=='calculator'});},
+ }, {searchToggles:0,searchCloses:0});
  globalThis.__hostFixture={runtime,storage:{fresh:false,hydrate:async()=>[],commit:async()=>{},release:async()=>{}}};
  let source=(await readFile(new URL('./host.mjs',import.meta.url),'utf8')).replaceAll('import.meta.url',JSON.stringify(new URL('./host.mjs',import.meta.url).href));
  source=source.replace("import init,* as runtime from './pkg/tilo_browser_runtime.js';","const init=async()=>{};const runtime=globalThis.__hostFixture.runtime;")
@@ -54,7 +60,9 @@ async function fixture({standalone=false,models,providerManagement,app}={}){
   .replace(/from '(\.\/[^']+)'/g,(_all,path)=>`from '${new URL(path,import.meta.url).href}'`);
  const {mountDesktop}=await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// ${Math.random()}`).toString('base64')}`);
  const target=new Node('div');document.body.append(target);const host=await mountDesktop(target,{app:app??(standalone?'writer':'desktop'),models,providerManagement});await tick();
- return {host,runtime,document,delivered,deliveredOwners,windowFocus,disposeRuntime(){allocated=false;},get state(){return state;},set state(value){state=value;},update:state=>update(JSON.stringify(state))};
+ // A status's `ime` is the presented frame's field, which the desk's own answer reports from then on.
+ const updateStatus=status=>{if('ime' in status)state={...state,ime:status.ime??null};return update(JSON.stringify(status));};
+ return {host,runtime,document,delivered,windowFocus,disposeRuntime(){allocated=false;},get state(){return state;},set state(value){state=value;},get ownershipReads(){return ownershipReads;},update:updateStatus};
 }
 test('model bootstrap stays mount scoped and forwards only its transport binding',async()=>{
  const models={endpoint:'https://models.example.test',sessionToken:'mount-one',profileId:'profile-one',modelId:'model-one',extra:'not a transport field'};
@@ -145,6 +153,37 @@ test('mounted dead key composes one caret and retains the following numeric inpu
  assert.deepEqual(canvasKeys,[],'the dead key is not forwarded as a Winit command');
  assert.equal(f.host.editor.value,'','the hidden editor retains no committed value');
 });
+test('Rust-internal Search selection hands off only for a local surface gesture',async()=>{
+ const f=await fixture();f.host.canvas.focus();
+ f.host.canvas.addEventListener('keydown',()=>{f.state=holding('chat');});
+ f.host.canvas.dispatchEvent(new DomEvent('keydown',{key:'Enter'}));await tick();
+ assert.equal(f.document.activeElement,f.host.editor,'what the desk activated owns the keyboard now, and the page hands it the editor');
+ const external=new Node('textarea');f.document.body.append(external);external.focus();
+ f.state=holding('writer');f.update({phase:'presented',frames:2});await tick();
+ assert.equal(f.document.activeElement,external,'a later outside focus is not stolen back');
+});
+test('focus moving between the canvas and its IME editor is not a window blur',async()=>{
+ const f=await fixture();f.host.editor.focus();f.windowFocus.length=0;f.delivered.length=0;
+ // A press on the canvas takes focus from the editor; the next status hands it back.
+ f.host.canvas.focus();f.update({phase:'presented',frames:2});await tick();
+ assert.equal(f.document.activeElement,f.host.editor);
+ assert.deepEqual(f.windowFocus.filter(type=>type==='blur'),[],'a pointer gesture on the canvas survives the IME handoff');
+ assert.deepEqual(f.delivered,[['end',''],['start','']],'the IME still ends and restarts');
+ const outside=new Node('input');f.document.body.append(outside);outside.focus();
+ assert.deepEqual(f.windowFocus.at(-1),'blur','leaving the surface is still a window blur');
+ f.host.canvas.focus();f.windowFocus.length=0;outside.focus();
+ assert.deepEqual(f.windowFocus,['blur'],'and so is leaving it from the canvas');
+});
+test('asynchronous Rust Search activation retains local gesture authority but respects later outside focus',async()=>{
+ for(const outside of [false,true]){
+  const f=await fixture();const search=new Node('textarea');f.host.canvas.parentNode.append(search);search.focus();let complete;
+  search.addEventListener('keydown',()=>{complete=()=>{f.state=holding('chat');f.update({phase:'presented',frames:2});};});
+  search.dispatchEvent(new DomEvent('keydown',{key:'Enter'}));await tick();
+  const external=new Node('textarea');f.document.body.append(external);if(outside)external.focus();
+  // Runtime allocation/event queues may finish after the initiating DOM turn.
+  complete();await tick();assert.equal(f.document.activeElement,outside?external:f.host.editor);
+ }
+});
 test('the hidden IME editor paints nothing over the canvas',async()=>{
  const f=await fixture();
  const invisible=editor=>{for(const rule of ['background:transparent','color:transparent','caret-color:transparent','outline:none'])assert.ok(editor.style.cssText.includes(rule),`the IME editor sets ${rule}`);};
@@ -153,9 +192,10 @@ test('the hidden IME editor paints nothing over the canvas',async()=>{
  invisible(f.host.editor.cloneNode(false));
 });
 
-test('a standalone runtime retains local text input',async()=>{
+test('a standalone runtime keeps local text input and is never asked who owns it',async()=>{
  const f=await fixture({standalone:true});f.host.editor.focus();f.host.editor.dispatchEvent(new DomEvent('beforeinput',{inputType:'insertText',data:'local'}));
  assert.deepEqual(f.delivered.filter(([kind])=>kind==='commit'),[['commit','local']]);
+ assert.equal(f.ownershipReads,0,'a page that holds its own input has no desk to ask');
 });
 test('the focused field\'s purpose reaches the browser editor and free text keeps its defaults',async()=>{
  const f=await fixture();
@@ -197,6 +237,28 @@ test('a Safari trackpad swipe reaches the runtime whole and never the page, from
  const wheels=swipe.map(dx=>new WheelEvent('wheel',{cancelable:true,deltaX:dx,deltaY:0.25,wheelDeltaX:-3*dx,wheelDeltaY:0,webkitDirectionInvertedFromDevice:true}));
  for(const event of wheels){canvas.dispatchEvent(event);assert.equal(event.defaultPrevented,true,`deltaX ${event.deltaX}`);}
  assert.deepEqual(seen.map(event=>event.deltaX),swipe,'every delta reaches the runtime once, unscaled, in order');
+});
+test('outside pointer press dismisses only the current system search and preserves the external click',async()=>{
+ const f=await fixture();const outside=new Node('button');f.document.body.append(outside);
+ const dismissed=()=>f.runtime.searchCloses;
+ assert.ok(f.ownershipReads>0,'the desk is asked live who holds the keyboard');
+ f.state=holding('system-search',{purpose:'Search'});
+ const press=new DomEvent('pointerdown');outside.dispatchEvent(press);
+ assert.equal(dismissed(),1,'the press closes the search that holds the keyboard');
+ assert.equal(press.defaultPrevented,false);assert.equal(press.stopped,undefined,'the external control keeps its press');
+ // Dismissing is not a toggle: the same search is never opened by asking twice.
+ f.state=holding('system-search',{purpose:'Search'});
+ outside.dispatchEvent(new DomEvent('pointerdown'));
+ assert.equal(dismissed(),2,'the press never opens a search of its own');
+ assert.equal(f.runtime.searchToggles,0);
+ // A throttled status still saying search is open is not who holds the keyboard now.
+ f.state=holding('writer',{ime:false});f.update({phase:'presented',frames:2,searchOpen:true});await tick();
+ outside.dispatchEvent(new DomEvent('pointerdown'));
+ assert.equal(dismissed(),2,'no search holds the keyboard: the press dismisses nothing');
+ // A press on the surface is the desk\'s own hit test: the page leaves it alone.
+ f.state=holding('system-search',{purpose:'Search'});
+ f.host.canvas.dispatchEvent(new DomEvent('pointerdown'));
+ assert.equal(dismissed(),2);
 });
 test('the desktop search chord opens search from anywhere on the page and the browser never sees it',async()=>{
  const f=await fixture();const outside=new Node('input');f.document.body.append(outside);outside.focus();

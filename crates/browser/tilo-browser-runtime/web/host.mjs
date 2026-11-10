@@ -244,8 +244,8 @@ export async function mountDesktop(target,options={}) {
   const liveLayer=()=>typeof options.live==='function'?options.live():options.peer?.live;
   const semanticPresentation=createSemanticPresentation({request:(target,observe)=>{if(active())runtime.request_component_locus(id,JSON.stringify(target),observe);},valid:()=>fontMountValid(),surfaceSize:()=>[canvas.width,canvas.height]});
   const capture=createPresentedSource({audience:JSON.stringify([config.profile,config.device,config.workspace]),app:config.app,canvas,layer:liveLayer,valid:()=>fontMountValid()});
-  let media,semantic,semanticKeys,hiddenKeys,composition,navigation,fontDemands,externalFocusEpoch=0,runtimeReady=false,localActivationGesture;
-  const inputScope=createInputScope({active,onChange:()=>{
+  let media,semantic,semanticKeys,hiddenKeys,composition,navigation,fontDemands,externalFocusEpoch=0,runtimeReady=false,desktopOwnership=false,localActivationGesture;
+  const inputScope=createInputScope({active,read:()=>desktopOwnership?runtime.desktop_input_ownership(id):undefined,onChange:()=>{
     hiddenKeys?.invalidate();semanticKeys?.invalidate();composition?.cancel();semantic?.revokeInput();composing=false;editor.value='';pasteShift=false;
     replaceEditor();
   }});
@@ -351,6 +351,9 @@ export async function mountDesktop(target,options={}) {
     if('liveWave' in state)liveLayer()?.publishPresence({wave:state.liveWave});
     if('liveFollowing' in state)liveLayer()?.publishPresence({following:state.liveFollowing});
     if(!runtimeReady&&['gpu-pending','presented'].includes(state.phase)){
+      // A mount of one application holds no desk, so the page answers for its input
+      // itself; a desktop's answer is read live (`desktop_input_ownership`).
+      desktopOwnership=Boolean(runtime.desktop_navigation_snapshot?.(id));
       runtimeReady=true;
       if(options.hostActions&&runtime.desktop_set_host_actions&&runtime.desktop_navigation_snapshot?.(id))runtime.desktop_set_host_actions(id,JSON.stringify(options.hostActions));
       if(runtime.desktop_navigation_snapshot(id)){
@@ -624,10 +627,12 @@ export async function mountDesktop(target,options={}) {
     const dispatchCanvasKey=(key,mods={})=>{canvas.dispatchEvent(new KeyboardEvent('keydown',{key,...mods}));canvas.dispatchEvent(new KeyboardEvent('keyup',{key,...mods}));};
     // Canvas clicks are hit-tested by the runtime. Page chrome is outside that
     // surface, so route dismissal to the current search owner without stealing
-    // focus or consuming the external control's pointer event.
+    // focus or consuming the external control's pointer event. A press beside
+    // the card closes the desk's search on the desk itself; closing it is what
+    // this press means there too.
     on(document,'pointerdown',event=>{
       if(!active()||surface.contains(event.target))return;
-      if(inputScope.capture()?.owner==='system-search')dispatchCanvasKey('Escape');
+      if(inputScope.capture()?.holder==='system-search')runtime.desktop_search_close(id);
     },{capture:true});
     onEditor('keydown',event=>{
       inputScope.capture();if(!active())return;
