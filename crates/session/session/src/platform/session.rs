@@ -1393,9 +1393,12 @@ impl Session {
             let handle = shared.handle.clone();
             let engine = shared.engine.clone();
             launch.lend_authorship(Rc::new(move |workspace: &str, app: &str| {
-                if let Err(error) =
-                    crate::membership::authorship(engine.as_deref(), &handle, workspace, app)
-                {
+                if let Err(error) = crate::membership::authorship(
+                    engine.as_deref(),
+                    &crate::governance::Desk(&handle),
+                    workspace,
+                    app,
+                ) {
                     tracing::warn!(
                         %workspace,
                         app,

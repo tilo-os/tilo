@@ -10,6 +10,7 @@ pub mod custody;
 pub mod engine;
 pub mod gate;
 pub mod identity;
+pub mod membership;
 pub mod plane;
 pub mod presence;
 

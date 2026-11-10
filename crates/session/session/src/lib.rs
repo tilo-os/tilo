@@ -51,7 +51,7 @@ mod session_actions;
 // table every host asks, named here as the session always has.
 pub use tilo_session_client::gate as workspace_gate;
 // This device's workspaces, and the sealed channels their records travel in.
-pub use tilo_session_client::{channels, engine};
+pub use tilo_session_client::{channels, engine, membership};
 
 // The Linux host's effects: the compositor, the services it starts, the
 // devices and the processes. A web host provides these through `platform`.
@@ -199,6 +199,7 @@ pub mod files_daemon;
 pub mod firstboot;
 #[cfg(target_os = "linux")]
 mod fs_authority;
+mod governance;
 #[cfg(target_os = "linux")]
 mod held;
 mod here;
@@ -236,7 +237,6 @@ mod lock_screen;
 mod lock_service;
 #[cfg(target_os = "linux")]
 mod look;
-mod membership;
 pub mod mentions;
 #[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
