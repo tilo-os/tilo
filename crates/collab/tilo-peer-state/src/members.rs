@@ -20,4 +20,7 @@ pub(crate) mod replay;
 mod tests;
 
 pub use op::{MEMBERS_KEY, Membership, MembershipOpCommand, OpId, SignedMembershipOp};
-pub use replay::{genesis, growth, heads, materialise, ops, replay, settle, starts, steps};
+pub use replay::{
+    differences, genesis, growth, heads, materialise, ops, refusal, refused, replay, settle,
+    starts, steps, unwritten,
+};

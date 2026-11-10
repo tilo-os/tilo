@@ -284,35 +284,142 @@ fn tier(policy: &WorkspacePolicy, person: &str) -> u8 {
 /// one refused step takes the whole operation with it, so a writer cannot slip
 /// a change past the membership by putting an allowed one in front of it.
 fn op_effect(policy: &mut WorkspacePolicy, op: &SignedMembershipOp) {
+    // ignored-failure: a change this author's grants do not allow takes the
+    // whole operation with it, and it has no effect
+    if let Ok(next) = effect(policy, op) {
+        *policy = next;
+    }
+}
+
+/// The membership `op` leaves `policy` at ([`op_effect`]), or the first of its
+/// changes its author's grants do not allow, with why.
+fn effect(
+    policy: &WorkspacePolicy,
+    op: &SignedMembershipOp,
+) -> Result<WorkspacePolicy, Box<(Change, tilo_action_policy::Refusal)>> {
     let person = op.person();
     let bound = roles::foreign_device_bound();
     let cx = Context::at(op.at_ns / 1_000_000);
     match &op.command {
         // A governance operation changes no row of the membership: what it
         // touched is judged where its batch is admitted.
-        MembershipOpCommand::Genesis { .. } | MembershipOpCommand::Governance { .. } => {}
+        MembershipOpCommand::Genesis { .. } | MembershipOpCommand::Governance { .. } => {
+            Ok(policy.clone())
+        }
         MembershipOpCommand::Project { changes } => {
             let mut next = policy.clone();
             let foreign = op.author.capabilities.foreign && !next.is_owner(&person);
             for change in changes {
                 // The change is decided against the membership as the changes
-                // before it left it, and applied to the operation's own copy:
-                // one refused change takes the whole operation with it.
+                // before it left it, and applied to the operation's own copy.
                 let mut after = next.clone();
                 let authority = next.person_on_device(&person, foreign, &bound);
-                // ignored-failure: a change this author's grants do not allow
-                // takes the whole operation with it, and it has no effect
-                if after
+                after
                     .apply(&person, &authority, change.clone(), &cx, false)
-                    .is_err()
-                {
-                    return;
-                }
+                    .map_err(|refusal| Box::new((change.clone(), refusal)))?;
                 next = after;
             }
-            *policy = next;
+            Ok(next)
         }
     }
+}
+
+/// Why `op`, written on top of the membership `policy`, changes nothing: the
+/// first of its changes its author's grants do not allow, and the answer it
+/// got. `None` when it applies.
+#[must_use]
+pub fn refused(policy: &WorkspacePolicy, op: &SignedMembershipOp) -> Option<String> {
+    effect(policy, op)
+        .err()
+        .map(|refused| format!("{:?} was refused: {:?}", refused.0, refused.1))
+}
+
+/// Why `op`, the steps from the membership the log holds (`held`) to the
+/// rows' (`rows`), does not reach the rows: which step the log refuses and
+/// whose it is, and where the log differs from the rows. An operator reads it
+/// to tell a change this device may not make from rows the log never wrote.
+#[must_use]
+pub fn refusal(held: &WorkspacePolicy, rows: &WorkspacePolicy, op: &SignedMembershipOp) -> String {
+    let why = refused(held, op).unwrap_or_else(|| "the log does not reach the rows".to_owned());
+    format!(
+        "the membership change is not this device's to make, as device {} of {}: {why}; the log differs from the rows in: {}",
+        hex::encode(op.author.device_public_key),
+        op.person(),
+        differences(held, rows).join("; ")
+    )
+}
+
+/// Why rows that differ from the log (`held`) only in what no membership step
+/// writes cannot be written: where they differ.
+#[must_use]
+pub fn unwritten(held: &WorkspacePolicy, rows: &WorkspacePolicy) -> String {
+    format!(
+        "the membership change is not this device's to make: the log and the rows differ in what no step writes: {}",
+        differences(held, rows).join("; ")
+    )
+}
+
+/// Where two memberships of one workspace differ, in words an operator reads:
+/// who is in only one, whose role or admission time differs, which grants
+/// only one holds or holds on other terms.
+#[must_use]
+pub fn differences(one: &WorkspacePolicy, other: &WorkspacePolicy) -> Vec<String> {
+    let mut said = Vec::new();
+    if one.owner != other.owner {
+        said.push(format!("owner {:?} against {:?}", one.owner, other.owner));
+    }
+    for (person, role) in &one.members {
+        match other.members.get(person) {
+            None => said.push(format!("member {person} ({role:?}) only in the first")),
+            Some(theirs) if theirs != role => {
+                said.push(format!("member {person} is {role:?} against {theirs:?}"));
+            }
+            Some(_) => {}
+        }
+    }
+    for (person, role) in &other.members {
+        if !one.members.contains_key(person) {
+            said.push(format!("member {person} ({role:?}) only in the second"));
+        }
+    }
+    for (person, at) in &one.joined {
+        if other.joined.get(person) != Some(at) {
+            said.push(format!(
+                "{person} joined at {at} against {:?}",
+                other.joined.get(person)
+            ));
+        }
+    }
+    for person in other.joined.keys() {
+        if !one.joined.contains_key(person) {
+            said.push(format!("{person} has a joining time only in the second"));
+        }
+    }
+    let theirs: BTreeMap<&GrantId, &Grant> = other
+        .grants
+        .iter()
+        .map(|grant| (&grant.id, grant))
+        .collect();
+    let ours: BTreeMap<&GrantId, &Grant> =
+        one.grants.iter().map(|grant| (&grant.id, grant)).collect();
+    for (id, grant) in &ours {
+        match theirs.get(id) {
+            None => said.push(format!("grant {} only in the first", id.as_str())),
+            Some(held) if held != grant => {
+                said.push(format!("grant {} on other terms", id.as_str()));
+            }
+            Some(_) => {}
+        }
+    }
+    for id in theirs.keys() {
+        if !ours.contains_key(id) {
+            said.push(format!("grant {} only in the second", id.as_str()));
+        }
+    }
+    if said.is_empty() && one != other {
+        said.push("the same grants, in another order".to_owned());
+    }
+    said
 }
 
 /// The changes that turn `from` into `to`, as the steps an operation carries,

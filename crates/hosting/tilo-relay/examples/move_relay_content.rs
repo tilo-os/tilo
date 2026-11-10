@@ -271,6 +271,22 @@ async fn named_by_workspace(
                 )
             }
         );
+        // A workspace whose membership log and rows disagree refuses every
+        // membership change its host writes, which the upgraded host makes
+        // at start: said here, before it is started.
+        match workspaces.membership_log(&workspace).await {
+            Ok(lines)
+                if lines.len() > 1
+                    && lines.iter().any(|line| line.contains("log against rows")) =>
+            {
+                println!("{workspace}: its membership log and its rows disagree:");
+                for line in lines {
+                    println!("  {line}");
+                }
+            }
+            Ok(_) => {}
+            Err(error) => println!("{workspace}: its membership log does not read: {error}"),
+        }
         named.insert(workspace, found);
     }
     relay.shutdown().await;

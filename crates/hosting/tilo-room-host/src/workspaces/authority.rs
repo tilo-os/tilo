@@ -304,6 +304,24 @@ impl Workspaces {
     }
 }
 
+impl Workspaces {
+    /// How `workspace`'s membership log stands against its rows, for an
+    /// operator ([`tilo_peer_state::PeerGovernance::membership_log`]).
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not governed here, or holds no governance.
+    pub async fn membership_log(&self, workspace: &str) -> Result<Vec<String>, CollaborationError> {
+        let state = self.workspace(workspace).await?;
+        let governed = state.lock().await;
+        governed
+            .peer()
+            .governance()
+            .membership_log()
+            .map_err(CollaborationError::new)
+    }
+}
+
 /// Whether the person `user_public_key` administers `workspace`.
 fn is_administrator(
     workspace: &GovernedWorkspace,

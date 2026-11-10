@@ -1030,3 +1030,43 @@ mod arrival {
         }
     }
 }
+
+/// Rows the log never wrote (an owner named outside it) leave every change
+/// its owner's device makes after them refused, and the refusal says which
+/// step the log refuses and where the rows differ from it.
+#[test]
+fn a_change_on_rows_the_log_never_wrote_says_why_it_is_refused() {
+    let (owner_key, relay, mut doc) = lounge();
+    let rows = policy(&doc);
+    let (_, co_owner) = device(2);
+    let mut logged = rows.clone();
+    logged.members.remove(&person(&co_owner));
+    logged.joined.remove(&person(&co_owner));
+    let genesis = legacy::genesis_op(
+        &relay,
+        &owner_key,
+        &doc.get_heads(),
+        &logged,
+        1_700_000_000_000_000_000,
+    )
+    .unwrap();
+    let started = holding(&doc, std::slice::from_ref(&genesis));
+    let held = replay(&started, WORKSPACE);
+    assert_ne!(held, rows);
+    let differ = differences(&held, &rows);
+    assert!(
+        differ
+            .iter()
+            .any(|said| said.contains(&person(&co_owner)) && said.contains("only in the second")),
+        "{differ:?}"
+    );
+    let op = project(
+        &relay,
+        &owner_key,
+        vec![genesis.id().unwrap()],
+        steps(&held, &rows).unwrap(),
+    );
+    let why = refused(&held, &op).expect("the log refuses an owner it never named");
+    assert!(why.contains("OwnerRole"), "{why}");
+    assert_ne!(replay(&holding(&started, &[op]), WORKSPACE), rows);
+}

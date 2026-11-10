@@ -294,6 +294,60 @@ impl PeerGovernance<'_> {
             .ok_or("workspace governance missing")?;
         Ok(doc.policy().workspace_policy(&self.peer.core.workspace))
     }
+    /// How the workspace's membership log stands against its rows, for an
+    /// operator: how many operations it holds, whether it has started, and
+    /// each way the membership it replays to differs from the one the rows
+    /// hold (log first). Where they differ, every membership change this
+    /// host writes on top is refused.
+    pub fn membership_log(self) -> Result<Vec<String>, String> {
+        let doc = self
+            .peer
+            .core
+            .workspace_doc
+            .as_ref()
+            .ok_or("workspace governance missing")?;
+        let workspace = &self.peer.core.workspace;
+        let held = crate::members::ops(doc);
+        let rows = tilo_desktop_model::projection::workspace_policy_of(doc, workspace);
+        let mut said = vec![format!(
+            "{} membership operations; log {}; owner {:?}",
+            held.len(),
+            if crate::members::starts(doc, workspace) {
+                "started"
+            } else {
+                "not started"
+            },
+            rows.owner
+        )];
+        for op in held.values() {
+            let command = match &op.command {
+                crate::members::MembershipOpCommand::Genesis { .. } => "genesis".to_owned(),
+                crate::members::MembershipOpCommand::Governance { rows } => {
+                    format!("governance of {} rows", rows.len())
+                }
+                crate::members::MembershipOpCommand::Project { changes } => {
+                    format!("{changes:?}").chars().take(400).collect()
+                }
+            };
+            said.push(format!(
+                "  op by {} on device {} at {}: {command}",
+                op.person(),
+                hex::encode(op.author.device_public_key),
+                op.at_ns
+            ));
+        }
+        let log = crate::members::replay(doc, workspace);
+        let mut sorted = rows;
+        sorted
+            .grants
+            .sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
+        said.extend(
+            crate::members::differences(&log, &sorted)
+                .into_iter()
+                .map(|line| format!("  log against rows: {line}")),
+        );
+        Ok(said)
+    }
     /// Authority-authored collaborator projection. The structural owner is
     /// exposed separately by [`PeerGovernance::owner_user_public_key`].
     pub fn governed_members(self, now: SystemTime) -> Result<Vec<GovernedMember>, String> {

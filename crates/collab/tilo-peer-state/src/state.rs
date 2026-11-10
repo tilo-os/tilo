@@ -931,7 +931,7 @@ impl StatePeer {
         let steps = members::steps(&held, &target)
             .map_err(|error| format!("the membership change is not a step to write: {error}"))?;
         if steps.is_empty() {
-            return Err("the membership change is not this device's to make".into());
+            return Err(members::unwritten(&held, &target));
         }
         let op = SignedMembershipOp::signed(
             cert,
@@ -942,7 +942,7 @@ impl StatePeer {
         )?;
         crate::members::legacy::put_op(doc, &op)?;
         if members::replay(doc, &workspace) != target {
-            return Err("the membership change is not this device's to make".into());
+            return Err(members::refusal(&held, &target, &op));
         }
         members::materialise(doc, &target)?;
         Ok(())
