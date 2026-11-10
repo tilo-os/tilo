@@ -81,7 +81,7 @@ view thread(about: host.Resource) {
         for c in said {
             if let u = unread {
                 if u == c {
-                    ui.UnreadDivider()
+                    ui.SectionDivider(tone: .accent)
                 }
             }
             comment_row(c, spoke, editing, revised)

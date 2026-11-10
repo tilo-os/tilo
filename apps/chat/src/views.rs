@@ -636,7 +636,7 @@ fn header_facts(c: &Channel, cx: &ViewCx) -> Vec<Node> {
 ///
 /// A transcript's rows are the ones every conversation draws: a day's divider over the first
 /// message of a local day, and a run of one person's consecutive messages under their avatar and
-/// name once, the time beside it. The day is the toolkit's (`ui.DayDivider`), the avatar theirs
+/// name once, the time beside it. The day is the toolkit's (`ui.SectionDivider`), the avatar
 /// (`ui.Avatar`), the clock the person's (`ui.Time`, read in their language and zone), and the
 /// grouping the run's own rule ([`runs`]): a message continues the run above it when one person
 /// wrote it within [`RUN_WINDOW_SECS`] of the one before, on the same local day.
@@ -674,7 +674,8 @@ fn transcript(c: &Channel, cx: &ViewCx) -> Node {
         if let Some(label) = day {
             flush(&mut run, &mut rows);
             rows.push(
-                ui::DayDividerBuilder::new(&cx.key(format!("day-{index}")), label.clone()).into(),
+                ui::SectionDividerBuilder::new(&cx.key(format!("day-{index}")), label.clone())
+                    .into(),
             );
         }
         if !*continues {
@@ -1519,14 +1520,14 @@ mod tests {
         let cx = view_cx(&channel);
         let tree = page(&channel, &cx);
         passes(&tree);
-        let dividers = keyed(&tree, "ui.DayDivider", "@day-");
+        let dividers = keyed(&tree, "ui.SectionDivider", "@day-");
         assert_eq!(
             dividers.len(),
             2,
             "a divider stands over the first message of each of two days"
         );
         for divider in dividers {
-            let Value::Text(label) = divider.props.get("day").expect("a divider names its day")
+            let Value::Text(label) = divider.props.get("label").expect("a divider names its day")
             else {
                 panic!("a day's label is text");
             };

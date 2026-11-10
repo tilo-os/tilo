@@ -33,7 +33,8 @@ use crate::tokens::contrast::BODY_TEXT_MIN_CONTRAST;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
-use super::day::{ConversationClock, ConversationDay, DayBreaks, DayDividerFace};
+use super::band::SectionDividerFace;
+use super::day::{ConversationClock, ConversationDay, DayBreaks};
 use super::delivery::{DeliveryFace, DeliveryState};
 
 /// How long after the line before it a message from the same person still
@@ -589,7 +590,7 @@ impl<'a> ListFace<'a> {
         for (index, line) in self.lines.iter().enumerate() {
             let day = self.clock.day(seconds(line.at_ms));
             if days.begins(day) {
-                let height = DayDividerFace::height(theme);
+                let height = SectionDividerFace::height(theme);
                 rows.push(Row::Divider {
                     y0: y,
                     y1: y + height,
@@ -782,7 +783,7 @@ impl<'a> ListFace<'a> {
                     label,
                 } => {
                     let band = Rect::new(*x0, *y0, *x1, *y1);
-                    DayDividerFace::new(label).paint(paint, band, band.x0, band.x1);
+                    SectionDividerFace::new(label).paint(paint, band, band.x0, band.x1);
                 }
                 Row::Line {
                     index,

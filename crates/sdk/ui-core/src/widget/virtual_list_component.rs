@@ -24,7 +24,7 @@ use crate::widget::arrange::{
     Align, Fit, Length, MEASURE_REM, Page, Row, Slot, Stack, TranscriptEdges,
 };
 use crate::widget::conversation::list::RUN_WINDOW_SECS;
-use crate::widget::conversation::{ConversationClock, DayDivider};
+use crate::widget::conversation::{ConversationClock, SectionDivider};
 use crate::widget::{
     Attachments, Avatar, AvatarSize, ContextMenuArea, Decorator, Element, ListRow, ListRowProps,
     MenuEntry, MenuPart, RowBuild, Spacer, SwipeActionProps, Text, Tone, Widget,
@@ -226,7 +226,7 @@ pub struct VirtualListProps {
     /// Escape puts the selection away. Without it a click chooses the one row the window shows.
     pub multi_select: bool,
     /// The item where the person looking has seen nothing yet (`first_unseen(c)`): the toolkit's
-    /// [`UnreadDivider`](crate::widget::conversation::UnreadDivider) stands over the row that
+    /// [`SectionDivider`](crate::widget::conversation::SectionDivider) stands over the row that
     /// shows it, and while that is above the view a pill at the foot offers the way back to it
     /// ([`VirtualList::following_end`]). `None` draws neither. The list works out the row as it
     /// builds, so a list keeps its rows and only the two the divider moved between build again.
@@ -1271,7 +1271,7 @@ fn message_of(
         Some(day) => Box::new(
             Stack::stack()
                 .gap(RUN_GAP)
-                .push(Box::new(DayDivider::new(clock.day_label(day))))
+                .push(Box::new(SectionDivider::new(clock.day_label(day))))
                 .push(message),
         ) as Element,
         None => message,
@@ -1305,8 +1305,9 @@ fn read_faces(key: &str, read: Vec<Person>) -> Element {
 }
 
 /// `content` under the "New messages" divider, for the row of the first message the reader had
-/// not read: the divider is the toolkit's ([`crate::widget::conversation::UnreadDivider`]),
-/// placed from what the app says is unread, so every conversation draws the same one.
+/// not read: the divider is the toolkit's ([`crate::widget::conversation::SectionDivider`], in
+/// the accent where reading starts again), placed from what the app says is unread, so every
+/// conversation draws the same one.
 ///
 /// It stands in the row's own column, one gap above what the row shows, so the row keeps the
 /// column it has without it: the divider adds its band and nothing else.
@@ -1317,7 +1318,7 @@ fn under_unread(content: Element, first_unread: bool) -> Element {
     Box::new(
         Stack::stack()
             .gap(RUN_GAP)
-            .push(Box::new(crate::widget::conversation::UnreadDivider::new()))
+            .push(Box::new(SectionDivider::unread()))
             .push(content),
     )
 }
@@ -1926,14 +1927,18 @@ mod tests {
         }
     }
 
-    /// Where the first widget `widget` stands, in `node`.
-    fn rect_of_widget(node: &crate::headless::InspectionNode, widget: &str) -> Option<[f64; 4]> {
+    /// Where each widget `widget` stands, in `node` and under it, in reading order.
+    fn rects_of_widget(
+        node: &crate::headless::InspectionNode,
+        widget: &str,
+        out: &mut Vec<[f64; 4]>,
+    ) {
         if node.widget == widget {
-            return Some(node.rect);
+            out.push(node.rect);
         }
-        node.children
-            .iter()
-            .find_map(|child| rect_of_widget(child, widget))
+        for child in &node.children {
+            rects_of_widget(child, widget, out);
+        }
     }
 
     /// Where the first widget `widget` whose words are `words` stands, in `node`.
@@ -2001,15 +2006,22 @@ mod tests {
                 unread[0], other[0]
             );
         }
-        // The two dividers of one conversation rule the same column: the day's over the third
-        // message, and the "New messages" one over it.
-        let day = rect_of_widget(&marked, "DayDivider").expect("the day's divider shows");
-        let new = rect_of_widget(&marked, "UnreadDivider").expect("the unread divider shows");
+        // The two dividers of one conversation are one component and rule the same column: the
+        // day's over the third message, and the "New messages" one over it.
+        let mut dividers = Vec::new();
+        rects_of_widget(&marked, "SectionDivider", &mut dividers);
         assert_eq!(
-            [new[0], new[2]],
-            [day[0], day[2]],
-            "the two dividers end at the same edges: the day's {day:?}, the new messages' {new:?}"
+            dividers.len(),
+            3,
+            "the two days and the place the unread part starts, all one component: {dividers:?}"
         );
+        for (edge, divider) in dividers.iter().enumerate() {
+            assert_eq!(
+                [divider[0], divider[2]],
+                [dividers[0][0], dividers[0][2]],
+                "divider {edge} ends where the first does: {dividers:?}"
+            );
+        }
     }
 
     /// Who has read to a line shows on that line alone: each reader's face stands once, on the

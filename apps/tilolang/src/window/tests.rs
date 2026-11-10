@@ -2279,7 +2279,17 @@ fn a_transcript_names_each_run_of_one_authors_messages_once_and_marks_where_the_
     /// The day dividers, the avatars shown and the avatars' workspaces kept empty under `widget`.
     fn marks(widget: &dyn ui::widget::Widget, found: &mut (usize, usize, usize)) {
         match widget.name() {
-            "DayDivider" => found.0 += 1,
+            "SectionDivider" => {
+                let day = widget
+                    .as_any()
+                    .and_then(|any| any.downcast_ref::<ui::widget::conversation::SectionDivider>())
+                    .is_some_and(|divider| {
+                        divider.tone() == ui::widget::conversation::DividerTone::Quiet
+                    });
+                if day {
+                    found.0 += 1;
+                }
+            }
             "Avatar" if widget.accessibility().is_some() => found.1 += 1,
             "Avatar" => found.2 += 1,
             _ => {}

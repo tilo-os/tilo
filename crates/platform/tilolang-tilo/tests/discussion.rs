@@ -92,6 +92,19 @@ fn of_kind<'a>(node: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
     out.into_iter().filter(|node| node.kind == kind).collect()
 }
 
+/// The dividers saying where the thread's unread comments start: the conversation's one divider
+/// in the accent, told apart from a day's by the tone it is drawn in.
+fn unread_dividers(tree: &UiNode) -> Vec<&UiNode> {
+    of_kind(tree, "ui.SectionDivider")
+        .into_iter()
+        .filter(|node| match node.props.get("tone") {
+            Some(Value::Enum(found)) => found.variant == "accent",
+            Some(Value::Text(case)) => case == "accent",
+            _ => false,
+        })
+        .collect()
+}
+
 /// The resource the `prop` of `node` names.
 fn ref_of(node: &UiNode, prop: &str) -> Option<ResourceRef> {
     match node.props.get(prop) {
@@ -283,7 +296,7 @@ fn a_thread_draws_what_was_said_and_is_read_with_what_it_is_about() {
 
     // The task's page draws the comment under it, with the line saying she has not read it.
     let page = ada.host.open_resource(&task, None).unwrap();
-    let dividers = of_kind(page.tree(), "ui.UnreadDivider").len();
+    let dividers = unread_dividers(page.tree()).len();
     assert_eq!(dividers, 1, "the thread says what she has not read");
     let drawn = comments_drawn(page.tree());
     assert_eq!(
@@ -313,7 +326,7 @@ fn a_thread_draws_what_was_said_and_is_read_with_what_it_is_about() {
     assert!(window_mark(&mut view).is_none(), "{:?}", rows(&mut view));
     let page = ada.host.open_resource(&task, None).unwrap();
     assert_eq!(
-        of_kind(page.tree(), "ui.UnreadDivider").len(),
+        unread_dividers(page.tree()).len(),
         0,
         "nothing stands since she read the task"
     );
@@ -350,7 +363,7 @@ fn a_thread_draws_what_was_said_and_is_read_with_what_it_is_about() {
         said.id_string()
     );
     assert_eq!(
-        of_kind(page.tree(), "ui.UnreadDivider").len(),
+        unread_dividers(page.tree()).len(),
         1,
         "Bo's thread says he has not read her answer"
     );
@@ -420,7 +433,7 @@ fn a_comment_under_a_note_draws_in_the_notes_view() {
         "the note's view draws what was said about it: {said:?}"
     );
     assert_eq!(
-        of_kind(view.tree(), "ui.UnreadDivider").len(),
+        unread_dividers(view.tree()).len(),
         1,
         "and says she has not read it"
     );

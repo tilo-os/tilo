@@ -98,7 +98,7 @@ view data(d: Data) {
         ui.Section("Conversation") {
             // The divider a view that draws a conversation's own rows marks a day with; the
             // list below places the same one over each day it shows.
-            ui.DayDivider("Jun 30")
+            ui.SectionDivider("Jun 30")
             ui.ConversationList(name: "Conversation with Ada") {
                 for m in d.messages {
                     ui.ConversationEntry(m, m.body, author: m.from, time: m.at, outgoing: m.mine)

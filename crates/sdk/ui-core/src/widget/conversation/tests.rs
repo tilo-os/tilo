@@ -8,10 +8,9 @@ use super::attachment::{
     AttachmentAction, AttachmentKind, AttachmentSummary, Availability, UploadProgress,
     full_size_rect,
 };
+use super::band::{self, DividerTone, SectionDivider, SectionDividerFace};
 use super::composer::{ComposerIntent, ComposerRule};
-use super::day::{
-    ConversationClock, ConversationDay, DayBreaks, DayDividerFace, day_break_indices,
-};
+use super::day::{ConversationClock, ConversationDay, DayBreaks, day_break_indices};
 use super::delivery::{DeliveryState, DeliveryStep};
 use super::draft::{self, DraftBook};
 use super::list::{ConversationLine, ConversationRole, ListFace, bubble_colors, run_breaks};
@@ -41,6 +40,101 @@ fn a_divider_appears_wherever_the_day_changes() {
     assert!(!breaks.begins(days[1]));
     breaks.reset();
     assert!(breaks.begins(days[1]));
+}
+
+/// Both dividers of a conversation are one mark: a caption centred in the band, ruled out to
+/// both sides of it. A day and the place the reader's unread lines start are built by the same
+/// code and told apart by ink alone, so neither can be drawn as bare text beside the other.
+#[test]
+fn both_dividers_of_a_conversation_rule_the_column_on_each_side_of_their_label() {
+    use crate::widget::Widget as _;
+    let mut text = crate::font_catalog::fixture_renderer();
+    for theme in [Theme::light(), Theme::dark()] {
+        let mut draw = |label: &str, tone: DividerTone| {
+            let (left, right) = (48.0, 688.0);
+            let band = Rect::new(left, 120.0, right, 120.0 + band::height(&theme));
+            let mut scene = vello::Scene::new();
+            let parts = band::paint(
+                &mut crate::paint::PaintCtx::new(
+                    &mut scene,
+                    vello::kurbo::Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                ),
+                band,
+                left,
+                right,
+                label,
+                tone,
+            );
+            (parts, band)
+        };
+        let (day, band) = draw("Today", DividerTone::Quiet);
+        let (unread, _) = draw(&band::unread_label(), DividerTone::Accent);
+        for (what, parts) in [("a day's", day), ("the unread part's", unread)] {
+            let lead = parts
+                .lead
+                .unwrap_or_else(|| panic!("{what} divider rules out to the column's left edge"));
+            let trail = parts
+                .trail
+                .unwrap_or_else(|| panic!("{what} divider rules out to the column's right edge"));
+            // Each rule runs on the band's own line, from the column's edge to the words, and
+            // never over them: the same mark on either side of the label.
+            assert_eq!(lead.y0, trail.y0, "{what} two rules stand on one line");
+            assert!(
+                (lead.center().y - band.center().y).abs() <= 0.5,
+                "{what} divider rules on the band's line: {:?} against {:?}",
+                lead,
+                band
+            );
+            assert_eq!(
+                (lead.x0, trail.x1),
+                (band.x0, band.x1),
+                "{what} divider rules out to both of the column's edges"
+            );
+            assert!(
+                lead.x1 <= parts.label.x0 && trail.x0 >= parts.label.x1,
+                "{what} rules stop short of the words it says: {parts:?}"
+            );
+            // The words stand centred in the band itself, top to bottom: one band, whatever
+            // the divider says.
+            assert_eq!(
+                (parts.label.y0, parts.label.y1),
+                (band.y0, band.y1),
+                "{what} words stand in the band"
+            );
+            assert!(
+                (parts.label.center().x - band.center().x).abs() < 0.5,
+                "{what} words are centred in the band: {parts:?}"
+            );
+        }
+        // The day is dimmed text over a hairline; the place reading starts again is the
+        // person's colour, as an unread count is.
+        let colors = &theme.tokens.colors;
+        assert_eq!(DividerTone::Quiet.ink(&theme).label, theme.text_dim);
+        assert_eq!(
+            DividerTone::Accent.ink(&theme).label,
+            colors.intent.accent_ink
+        );
+        assert_ne!(
+            DividerTone::Quiet.ink(&theme).rule,
+            DividerTone::Accent.ink(&theme).rule,
+            "the two dividers are apart in the ink of their rules"
+        );
+        // The toolkit's own unread divider is that accent one, saying where reading starts.
+        let built = <SectionDivider as crate::component::Described>::from_props(
+            "unread",
+            super::SectionDividerProps {
+                label: None,
+                tone: DividerTone::Accent,
+            },
+        );
+        assert_eq!(
+            built.accessibility().and_then(|node| node.name),
+            Some(band::unread_label()),
+            "the unread divider says where reading starts"
+        );
+    }
 }
 
 #[test]
@@ -349,7 +443,7 @@ fn the_list_reserves_exactly_what_it_paints_and_marks_every_day() {
     // Two days, so two dividers and three lines: the list is taller than the
     // lines alone, and the divider's height is the list row's.
     let without_dividers =
-        face.height(&mut text, &theme, width) - 2.0 * DayDividerFace::height(&theme);
+        face.height(&mut text, &theme, width) - 2.0 * SectionDividerFace::height(&theme);
     assert!(measured > without_dividers);
     assert!(measured > 0.0);
     // A narrow column wraps a body instead of clipping it.

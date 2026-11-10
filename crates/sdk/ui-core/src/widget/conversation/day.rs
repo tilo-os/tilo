@@ -5,18 +5,16 @@
 //! otherwise; and every line can name its own time. A divider carries the day
 //! in the person's language — "Today", "Yesterday", the weekday inside the last
 //! week, then the date — so a line from three days ago never reads as "14:32"
-//! with no day anywhere near it.
+//! with no day anywhere near it. The divider it is drawn as is the
+//! conversation's one ([`super::band`]), a day's tone of it.
 //!
 //! The local zone is read once ([`ConversationClock::local`]) and threaded
 //! through, so a paint pass cannot straddle two offsets and a test can pin a
 //! zone instead of hoping the machine is in one.
 
 use chrono::Datelike as _;
-use vello::kurbo::Rect;
 
-use crate::component::Component;
 use crate::format;
-use crate::paint::PaintCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -213,171 +211,9 @@ pub fn day_break_indices(days: impl IntoIterator<Item = ConversationDay>) -> Vec
         .collect()
 }
 
-/// The day divider: a caption centred in a band, ruled out to both sides
-/// ([`super::band`], the band every conversation's divider stands in).
-///
-/// The band is a list row tall, so a divider sits in the same rhythm as the
-/// lines it separates, and the rules stop short of the text at an `s3` gap so
-/// the label never touches one.
-pub struct DayDividerFace<'a> {
-    label: &'a str,
-}
-
-impl<'a> DayDividerFace<'a> {
-    #[must_use]
-    pub fn new(label: &'a str) -> Self {
-        Self { label }
-    }
-
-    /// The height a divider takes: one list row, at every text scale.
-    #[must_use]
-    pub fn height(theme: &Theme) -> f64 {
-        super::band::height(theme)
-    }
-
-    /// Paint the divider across `band`, its rules running from `leading` to
-    /// `trailing` (the message column's edges, not the window's).
-    pub fn paint(&self, paint: &mut PaintCtx<'_>, band: Rect, leading: f64, trailing: f64) {
-        let theme = paint.theme;
-        super::band::paint(
-            paint,
-            band,
-            leading,
-            trailing,
-            self.label,
-            super::band::Ink {
-                label: theme.text_dim,
-                rule: theme.tokens.colors.surfaces.content,
-            },
-        );
-    }
-}
-
 /// The height of one line of `role` in `theme` — what a conversation row
 /// reserves for its time or its delivery line.
 #[must_use]
 pub fn line_height(text: &mut TextRenderer, theme: &Theme, role: TextRole) -> f64 {
     f64::from(text.measure_style("Ag", None, &theme.text(role)).1)
-}
-
-/// [`DayDividerFace`] as a widget, for a list built of widgets: a band across its column with
-/// the day's label at its centre, where a conversation's day changes.
-///
-/// A described component (`ui.DayDivider`), so a view that draws a conversation's own rows —
-/// a Rust view of a channel, whose rows are components rather than a `transcript` list — marks
-/// its days with the very divider a transcript draws, in the same band, at the same rhythm.
-pub struct DayDivider {
-    label: String,
-    rect: Rect,
-    /// It was drawn, and shows the same since: a divider never changes, so it repaints only
-    /// where it moved.
-    drawn: bool,
-}
-
-impl DayDivider {
-    #[must_use]
-    pub fn new(label: impl Into<String>) -> Self {
-        Self {
-            label: label.into(),
-            rect: Rect::ZERO,
-            drawn: false,
-        }
-    }
-}
-
-/// A day in a conversation: the divider a transcript draws over the first message of a local
-/// day, as its own described component (`ui.DayDivider`). A view that draws a conversation's
-/// rows itself marks its days with it, so the band, the rules and the label are the toolkit's
-/// and every transcript places the same divider.
-///
-/// The label is the day as the person reads it ("Today", "Yesterday", "Sunday", "Jun 21"); a
-/// view that draws its own rows reads it from the clock it already has, as a transcript does
-/// (`ConversationClock::day_label`).
-#[derive(Clone, Component, Debug, Default, PartialEq)]
-#[component(name = "DayDivider", role = "Group", label = "day")]
-pub struct DayDividerProps {
-    /// The day, as the person reads it: "Today", "Yesterday", the weekday inside the last week,
-    /// then the date.
-    #[component(required, positional)]
-    pub day: String,
-}
-
-impl crate::component::Described for DayDivider {
-    type Props = DayDividerProps;
-
-    fn from_props(_key: &str, props: DayDividerProps) -> Self {
-        Self::new(props.day)
-    }
-
-    /// Another day, or the same: the label it shows changes where the divider stands.
-    fn set_props(&mut self, props: DayDividerProps) -> bool {
-        if self.label == props.day {
-            return true;
-        }
-        self.label = props.day;
-        self.drawn = false;
-        true
-    }
-}
-
-impl crate::widget::Widget for DayDivider {
-    crate::described!();
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut taffy::TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
-    ) -> taffy::NodeId {
-        use crate::widget::TaffyTreeExt as _;
-        let style = taffy::Style {
-            flex_shrink: 0.0,
-            size: taffy::Size {
-                width: taffy::style_helpers::percent(1.0_f32),
-                height: taffy::style_helpers::length(crate::num::f32_of_f64(
-                    DayDividerFace::height(theme),
-                )),
-            },
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
-    }
-
-    crate::rect_geometry!();
-
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        if presence.should_cull(self.rect) {
-            return;
-        }
-        DayDividerFace::new(&self.label).paint(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            self.rect,
-            self.rect.x0,
-            self.rect.x1,
-        );
-    }
-
-    fn name(&self) -> &'static str {
-        "DayDivider"
-    }
-
-    fn needs_redraw(&self) -> bool {
-        !self.drawn
-    }
-
-    fn mark_drawn(&mut self) {
-        self.drawn = true;
-    }
-
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
-        Some(AccessNode::new(Role::Heading { level: 3 }).with_name(self.label.clone()))
-    }
 }

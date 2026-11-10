@@ -15,7 +15,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::conversation::{
-    ConversationClock, DayBreaks, DayDividerFace, EarlierUnavailableFace, UnreadDividerFace,
+    ConversationClock, DayBreaks, EarlierUnavailableFace, SectionDividerFace, unread_label,
 };
 use ui::widget::{ArrivalFace, SkeletonFace, SkeletonShape};
 use ui::widget::{
@@ -147,7 +147,7 @@ impl ChatApp {
         };
         let new_h = first_unread
             .as_ref()
-            .map_or(0.0, |_| UnreadDividerFace::height(theme));
+            .map_or(0.0, |_| SectionDividerFace::height(theme));
         let total = measured + earlier_h + new_h;
         let tops = Self::item_tops(&items, theme, earlier_h, new_h, first_unread.as_deref());
 
@@ -343,11 +343,12 @@ impl ChatApp {
         }
     }
 
-    /// The "new messages" line, `height` tall at `y`: the cursor beneath it.
+    /// The "new messages" line, `height` tall at `y`: the cursor beneath it. It is the day's
+    /// divider in the accent, in the toolkit's words.
     fn draw_unread_line(&self, mut paint: PaintCtx<'_>, area: Rect, y: f64, height: f64) -> f64 {
         let band = Rect::new(area.x0, y, area.x1, y + height);
         let (leading, trailing) = (area.x0 + self.chrome.gutter, area.x1 - self.chrome.gutter);
-        UnreadDividerFace::paint(&mut paint, band, leading, trailing);
+        SectionDividerFace::accent(&unread_label()).paint(&mut paint, band, leading, trailing);
         y + height
     }
 
@@ -478,7 +479,7 @@ impl ChatApp {
                 };
                 let day = clock.day(m.ts);
                 if days.begins(day) {
-                    let height = DayDividerFace::height(theme);
+                    let height = SectionDividerFace::height(theme);
                     total += height;
                     items.push(TimelineItem::Divider {
                         label: clock.day_label(day),
@@ -495,7 +496,7 @@ impl ChatApp {
     /// One timeline item's height: a divider's row, or a message's.
     fn item_height(item: &TimelineItem, theme: &Theme) -> f64 {
         match item {
-            TimelineItem::Divider { .. } => DayDividerFace::height(theme),
+            TimelineItem::Divider { .. } => SectionDividerFace::height(theme),
             TimelineItem::Row(rm) => rm.height(),
         }
     }
@@ -504,11 +505,11 @@ impl ChatApp {
     /// centring Messages draws, so a day reads the same in both apps.
     fn draw_day_divider(&self, mut paint: PaintCtx<'_>, area: Rect, label: &str, y: f64) -> f64 {
         let theme = paint.theme;
-        let height = DayDividerFace::height(theme);
+        let height = SectionDividerFace::height(theme);
         let band = Rect::new(area.x0, y, area.x1, y + height);
         let leading = area.x0 + self.chrome.gutter;
         let trailing = area.x1 - self.chrome.gutter;
-        DayDividerFace::new(label).paint(&mut paint.reborrow(), band, leading, trailing);
+        SectionDividerFace::new(label).paint(&mut paint.reborrow(), band, leading, trailing);
         y + height
     }
 

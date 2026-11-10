@@ -199,6 +199,29 @@ fn rects(staged: &stage::Staged, name: &str) -> Vec<Rect> {
     out
 }
 
+/// Each divider of a conversation the inspection sees, in reading order: the words it says and
+/// where it stands. A day's divider and the one over the unseen part are one component, told
+/// apart by what they say and the ink they are drawn in.
+fn dividers_of(staged: &stage::Staged) -> Vec<(String, Rect)> {
+    fn all(node: &ui::headless::InspectionNode, out: &mut Vec<(String, Rect)>) {
+        if node.widget == "SectionDivider" {
+            let [x, y, width, height] = node.rect;
+            let words = node
+                .semantics
+                .as_ref()
+                .and_then(|semantics| semantics.name.clone())
+                .unwrap_or_default();
+            out.push((words, Rect::new(x, y, x + width, y + height)));
+        }
+        for child in &node.children {
+            all(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    all(&staged.harness().inspection().root, &mut out);
+    out
+}
+
 /// Where the floating surface the widget `name` draws, a popover or a sheet, stands.
 fn floating_rect(staged: &stage::Staged, name: &str) -> Option<Rect> {
     rects(staged, name).into_iter().next()
@@ -1484,38 +1507,34 @@ fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own() {
         unseen.is_some(),
         "the conversation says where its unseen part starts: {lists:?}"
     );
-    // The toolkit draws one divider there, over the row where that part begins.
-    let dividers = rects(&channels, "UnreadDivider");
+    // The toolkit draws the conversation's one divider there, over the row where that part
+    // begins: the day's dividers and this one are one component, told apart by the ink it is
+    // drawn in.
+    let dividers = dividers_of(&channels);
+    let unseen: Vec<&(String, Rect)> = dividers
+        .iter()
+        .filter(|(words, _)| words == "New messages")
+        .collect();
     assert_eq!(
-        dividers.len(),
+        unseen.len(),
         1,
         "one divider, over the row where the unseen part starts: {dividers:?}"
     );
     assert!(
-        dividers[0].x0 > 300.0 && dividers[0].y1 > 100.0,
-        "the divider stands in the conversation's column, under its header: {:?}",
-        dividers[0]
+        dividers.len() > 1,
+        "the days around it are the same component: {dividers:?}"
     );
-    // It says what stands under it, in the toolkit's words for every conversation.
-    let mut words = Vec::new();
-    {
-        fn labels(node: &ui::headless::InspectionNode, out: &mut Vec<String>) {
-            if node.widget == "UnreadDivider"
-                && let Some(name) = node.semantics.as_ref().and_then(|node| node.name.clone())
-            {
-                out.push(name);
-            }
-            for child in &node.children {
-                labels(child, out);
-            }
-        }
-        labels(&channels.harness().inspection().root, &mut words);
+    for (words, rect) in &dividers {
+        assert!(
+            rect.x0 > 300.0 && rect.y1 > 100.0,
+            "the divider {words:?} stands in the conversation's column, under its header: {rect:?}"
+        );
+        assert_eq!(
+            (rect.x0, rect.x1),
+            (dividers[0].1.x0, dividers[0].1.x1),
+            "the dividers rule the one column: {words:?} is {rect:?}, the first {dividers:?}"
+        );
     }
-    assert_eq!(
-        words,
-        vec!["New messages".to_owned()],
-        "the divider says what the rows under it are"
-    );
     // Nothing marks a message of its own: a face over each line under the divider would read as
     // who read it, and the divider already says those rows are new. The one mark left counts
     // what is new in the window's header.
