@@ -292,3 +292,24 @@ def answer_of(answer: Mapping[str, Any]) -> Mapping[str, Any]:
             [str(step) for step in error.get("next_steps") or []],
         )
     return answer
+
+
+CONTENT_PREFIX = "tilo.content:"
+
+
+def result_of(answer: Mapping[str, Any]) -> Any:
+    """What an action answered: its value, or, when it gave none and made a
+    file instead (Writer's `export-content`), that file's `tilo.content:`
+    reference, which `ws.files.download` fetches. Several files answer a
+    list of references."""
+    result = answer.get("result")
+    if result is not None:
+        return result
+    made = [
+        resource
+        for resource in answer.get("resources") or []
+        if isinstance(resource, str) and resource.startswith(CONTENT_PREFIX)
+    ]
+    if len(made) == 1:
+        return made[0]
+    return made or None

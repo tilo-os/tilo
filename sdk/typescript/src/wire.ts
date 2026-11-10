@@ -328,3 +328,25 @@ export function askOf(
 function textOr(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
+
+const CONTENT_PREFIX = "tilo.content:";
+
+/**
+ * What an action answered: its value, or, when it gave none and made a file
+ * instead (Writer's `export-content`), that file's `tilo.content:` reference,
+ * which `ws.files.download` fetches. Several files answer a list.
+ */
+export function resultOf(answer: Answer): unknown {
+  if (answer.result !== undefined && answer.result !== null) {
+    return answer.result;
+  }
+  const resources = Array.isArray(answer.resources) ? answer.resources : [];
+  const made = resources.filter(
+    (resource): resource is string =>
+      typeof resource === "string" && resource.startsWith(CONTENT_PREFIX),
+  );
+  if (made.length === 1) {
+    return made[0];
+  }
+  return made.length > 0 ? made : null;
+}

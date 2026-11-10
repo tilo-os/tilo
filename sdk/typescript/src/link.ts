@@ -8,7 +8,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { Answer } from "./wire.ts";
-import { answerOf, askOf, type Transport } from "./wire.ts";
+import { answerOf, askOf, resultOf, type Transport } from "./wire.ts";
 import { eventOf, type Event, programAnswerOf, type ProgramAnswer } from "./models.ts";
 import { ProtocolError } from "./errors.ts";
 import { Run } from "./run.ts";
@@ -91,7 +91,7 @@ export class Link {
       return new Run(this, String(answer.invocation_id ?? ""), path);
     }
     if (answer.status === "ok") {
-      return answer.result;
+      return resultOf(answer);
     }
     return answer;
   }

@@ -467,7 +467,10 @@ Paths under `account` manage them and need no `workspace`: `tilo_ls account` lis
 `account/workspaces#create {name}` makes one. Every other call acts in one workspace, \
 named by id in its `workspace` argument. To give another agent one workspace and nothing else \
 (one workspace per customer), `tilo_do {path: \"account/keys#mint\", args: {workspace}}` answers \
-an `mcp_url` and a `token` for it; revoking this key ends every key it minted.";
+an `mcp_url` and a `token` for it; revoking this key ends every key it minted. \
+Files go in with `tilo_put_begin`/`_append`/`_finish` (or `PUT /w/<workspace>/content`), answering \
+a `tilo.content:<hash>` an action takes; an action that makes a file (Writer's `export-content`) \
+names its `tilo.content:` in the answer's resources, and `tilo_get {content, offset}` reads it back.";
 
 /// The tools an account session offers before a workspace served the
 /// workspace tools: the ones the account itself answers.

@@ -13,7 +13,7 @@ from typing import Any, AsyncIterator, Mapping
 
 from ._errors import AskPending, ProtocolError
 from ._models import Event
-from ._wire import Session, Transport, answer_of
+from ._wire import Session, Transport, answer_of, result_of
 
 
 class RunGroup:
@@ -110,7 +110,7 @@ class Link:
                 path=path,
             )
         if status == "ok":
-            return answer.get("result")
+            return result_of(answer)
         return answer
 
     async def status(self, invocation_id: str, cancel: bool = False) -> dict[str, Any]:

@@ -419,6 +419,12 @@ export class FakeDoor {
       }
       return { status: "ok", path, invocation_id: invocation, result: { appended: "c01e" }, resources: [TODO] };
     }
+    if (path === "word-processor#export-content") {
+      const letter = new TextEncoder().encode("PK cover letter");
+      const content = `tilo.content:${letter.length}`;
+      this.contents.set(content, letter);
+      return { status: "ok", path, invocation_id: invocation, resources: [content] };
+    }
     if (path === `${PDF}#import-pdf-content`) {
       return { status: "ok", path, invocation_id: invocation, result: { imported: args.content } };
     }

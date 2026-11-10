@@ -7,6 +7,7 @@ from typing import Any, AsyncIterator
 from ._errors import ProtocolError
 from ._link import Link
 from ._models import Event
+from ._wire import result_of
 
 
 class Run:
@@ -53,7 +54,7 @@ class Run:
 
     async def _result(self, timeout: float | None) -> Any:
         answer = await self._answer(timeout)
-        return answer.get("result")
+        return result_of(answer)
 
     def cancel(self) -> Any:
         """Stop the invocation."""

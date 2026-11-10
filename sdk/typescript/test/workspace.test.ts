@@ -291,6 +291,18 @@ describe("acting", () => {
     await tilo.close();
   });
 
+  it("answers the file an action makes as its reference", async () => {
+    const tilo = open(door());
+    const workspace = tilo.workspace("jane-doe");
+
+    const letter = await workspace.do("word-processor#export-content", { format: "docx" });
+
+    expect(letter).toBe("tilo.content:15");
+    const bytes = await workspace.files.download(letter as string);
+    expect(new TextDecoder().decode(bytes)).toBe("PK cover letter");
+    await tilo.close();
+  });
+
   it("refuses to download unknown content", async () => {
     const tilo = open(door());
     const workspace = tilo.workspace("jane-doe");

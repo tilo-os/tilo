@@ -41,22 +41,30 @@ from pathlib import Path
 from tilo import Tilo                      # uv add tilo  (TypeScript: @tilo/sdk)
 
 tilo = Tilo()                              # the key in TILO_API_KEY
-applicant = tilo.workspaces.create("Applicant: Jane Doe")
-ws = tilo.workspace(applicant.id)
+for applicant in ["Jane Doe", "Amir Haddad", "Li Wei"]:   # one per customer, no limit
+    ws = tilo.workspace(tilo.workspaces.create(f"Applicant: {applicant}").id)
 
-# Their files: the bytes go up once, then the apps take them by reference.
-passport = ws.files.upload(Path("passport.png").read_bytes())
-form = ws.files.upload(Path("application.pdf").read_bytes())
-ws.do("pdf-viewer#open")
-ws.do("pdf-viewer#import-pdf-content", content=form, name="application.pdf")
+    # Their files: the bytes go up once, then the apps take them by reference.
+    ws.files.upload(Path(f"{applicant}/passport.png"))
+    form = ws.files.upload(Path(f"{applicant}/application.pdf"))
+    ws.do("pdf-viewer#open")
+    ws.do("pdf-viewer#import-pdf-content", content=form, name="application.pdf")
 
-# A key for this applicant's agent: it reaches this workspace alone.
-agent = ws.keys.mint(name="Jane Doe's agent")
-print(agent.mcp_url, agent.token)          # hand both to the applicant's agent
+    # A key for this applicant's agent: it reaches this workspace alone.
+    agent = ws.keys.mint(name=f"{applicant}'s agent")
+    hand_to_agent(agent.mcp_url, agent.token)   # your agent runner
 
-# Later: what the agent filled in, to review.
+# Later, for review: what the agent filled in, and the letter it wrote.
+ws = tilo.workspace("applicant-jane-doe")
 print(ws.do("pdf-viewer#read-form-fields"))
+letter = ws.do("word-processor#export-content", format="docx")
+Path("cover-letter.docx").write_bytes(ws.files.download(letter))
 ```
+
+The same calls are `async` on `AsyncTilo`, and `tilo sdk gen --lang python -w
+<workspace>` writes typed classes for the apps in a workspace
+(`read_form_fields()` answers a typed `FormFields`), so an editor completes
+them.
 
 Hand the agent the MCP URL and token. Any MCP client connects with them. For
 example, with Claude Code:
@@ -86,6 +94,8 @@ backend with `ws.watch()`.
 tilo account workspaces create "Applicant: Jane Doe"
 tilo files put passport.png -w applicant-jane-doe
 tilo -w applicant-jane-doe do pdf-viewer#read-form-fields
+tilo -w applicant-jane-doe do word-processor#export-content format=docx
+tilo files get tilo.content:… -w applicant-jane-doe -o cover-letter.docx
 tilo keys mint -w applicant-jane-doe --name "Jane Doe's agent"
 tilo keys revoke <grant>
 ```

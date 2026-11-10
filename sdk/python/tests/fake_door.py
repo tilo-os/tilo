@@ -441,6 +441,11 @@ class FakeDoor:
             if getattr(self, "append_pending", False):
                 return {"status": "pending", "path": path, "invocation_id": invocation}
             return {"status": "ok", "path": path, "invocation_id": invocation, "result": {"appended": "c01e"}, "resources": [TODO]}
+        if path == "word-processor#export-content":
+            letter = b"PK cover letter"
+            content = f"tilo.content:{len(letter)}"
+            self.contents[content] = letter
+            return {"status": "ok", "path": path, "invocation_id": invocation, "resources": [content]}
         if path == f"{PDF}#import-pdf-content":
             return {"status": "ok", "path": path, "invocation_id": invocation, "result": {"imported": args.get("content")}}
         if path == f"{PDF}#read-form-fields":

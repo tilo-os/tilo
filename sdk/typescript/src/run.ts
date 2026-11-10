@@ -1,7 +1,7 @@
 /** A run: an invocation that has not finished, and what to do with it. */
 
 import type { Link } from "./link.ts";
-import type { Answer } from "./wire.ts";
+import { resultOf, type Answer } from "./wire.ts";
 import type { Event } from "./models.ts";
 import { ProtocolError } from "./errors.ts";
 
@@ -43,7 +43,7 @@ export class Run<Result = unknown> {
   /** The action's result; a refusal the host made throws `Refused`. */
   async result(timeoutMs: number | null = null): Promise<Result> {
     const answer = await this.answer(timeoutMs);
-    return answer.result as Result;
+    return resultOf(answer) as Result;
   }
 
   /** Stop the invocation. */

@@ -244,6 +244,13 @@ async def test_a_download_gathers_every_piece(workspace, door):
     assert [call["arguments"]["offset"] for call in door.asked("tilo_get")] == [0, 4, 8]
 
 
+async def test_an_action_that_makes_a_file_answers_its_reference(workspace, door):
+    letter = await workspace.do("word-processor#export-content", format="docx")
+
+    assert letter == "tilo.content:15"
+    assert await workspace.files.download(letter) == b"PK cover letter"
+
+
 async def test_a_download_of_unknown_content_is_refused(workspace):
     with pytest.raises(Refused) as refused:
         await workspace.files.download("tilo.content:nothing")
