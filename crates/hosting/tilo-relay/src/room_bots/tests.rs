@@ -1162,7 +1162,8 @@ async fn a_file_a_member_posted_stays_in_the_room_after_they_leave() {
         member_bytes: 40,
         workspace_bytes: 1000,
     });
-    workspaces.keep_content(keeper.clone());
+    let kept: std::sync::Arc<dyn crate::workspaces::ContentKeeper> = keeper.clone();
+    workspaces.keep_content(&kept);
     let ada = hex::encode(ADA);
 
     let notes = b"the meeting notes, version one".to_vec();

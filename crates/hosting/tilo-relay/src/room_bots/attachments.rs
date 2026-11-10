@@ -254,7 +254,8 @@ impl WorkspaceAttachments {
     /// member write to a part after, until the workspace is no longer governed
     /// here.
     pub async fn run(self: Arc<Self>) {
-        self.workspaces.keep_content(self.clone());
+        let keeper: Arc<dyn ContentKeeper> = self.clone();
+        self.workspaces.keep_content(&keeper);
         let mut writes = self.workspaces.record_writes();
         let mut again = tokio::time::interval(ASK_AGAIN);
         again.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

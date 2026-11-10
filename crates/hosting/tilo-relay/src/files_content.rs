@@ -131,7 +131,8 @@ impl FilesContent {
     /// the trees hold already, then each tree as it changes, until the
     /// workspaces are no longer governed here.
     pub async fn run(self: Arc<Self>) {
-        self.workspaces.keep_content(self.clone());
+        let keeper: Arc<dyn ContentKeeper> = self.clone();
+        self.workspaces.keep_content(&keeper);
         // Subscribed before the first read, so a write that lands while the
         // trees are read is read too.
         let mut writes = self.workspaces.record_writes();

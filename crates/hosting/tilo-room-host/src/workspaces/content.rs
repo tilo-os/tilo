@@ -24,7 +24,7 @@
 //! content it keeps and leaving the rest to the others.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 
 use neighbour_wire::NeighbourMsg;
 use neighbour_wire::content::ContentWants;
@@ -94,7 +94,11 @@ pub trait ContentKeeper: Send + Sync {
 #[derive(Default)]
 pub(super) struct ContentSlot {
     pub(super) sources: RwLock<Vec<Arc<dyn WorkspaceContent>>>,
-    pub(super) keepers: RwLock<Vec<Arc<dyn ContentKeeper>>>,
+    /// Held weakly: a keeper keeps the workspaces that answer members' pieces
+    /// (a host's files do), so a strong handle here would keep the keeper and
+    /// the workspaces alive — and the host's endpoint with them — for as long
+    /// as the process runs.
+    pub(super) keepers: RwLock<Vec<Weak<dyn ContentKeeper>>>,
     /// The app surfaces this host asked the workspace for, by hash
     /// ([`Workspaces::ask_surface`]).
     pub(super) surfaces: Mutex<ContentWants<()>>,
@@ -109,7 +113,11 @@ impl ContentSlot {
     }
 
     fn keepers(&self) -> Vec<Arc<dyn ContentKeeper>> {
-        self.keepers.read_recover().clone()
+        self.keepers
+            .read_recover()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect()
     }
 }
 
@@ -296,10 +304,13 @@ impl Workspaces {
     }
 
     /// Hand the pieces of content members send this host to `keeper`, beside
-    /// whatever else this host keeps.
-    pub fn keep_content(&self, keeper: Arc<dyn ContentKeeper>) {
+    /// whatever else this host keeps. The keeper is not held: whoever runs it
+    /// owns it, and its pieces stop coming here when it goes.
+    pub fn keep_content(&self, keeper: &Arc<dyn ContentKeeper>) {
         let mut keepers = self.inner.content.keepers.write_recover();
-        if !keepers.iter().any(|kept| Arc::ptr_eq(kept, &keeper)) {
+        keepers.retain(|kept| kept.strong_count() > 0);
+        let keeper = Arc::downgrade(keeper);
+        if !keepers.iter().any(|kept| Weak::ptr_eq(kept, &keeper)) {
             keepers.push(keeper);
         }
     }

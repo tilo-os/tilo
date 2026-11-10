@@ -49,7 +49,8 @@ async fn a_visitors_file_as_large_as_the_host_keeps_reaches_it() {
         state.path().join("attachments.json"),
         limits,
     );
-    workspaces.keep_content(keeper.clone());
+    let kept: std::sync::Arc<dyn tilo_relay::workspaces::ContentKeeper> = keeper.clone();
+    workspaces.keep_content(&kept);
 
     // Bob posted a file exactly as large as the host keeps; the host asks
     // for it, and his page answers as a browser page does.
