@@ -422,6 +422,60 @@ impl Slots {
         } else {
             icons
         };
+        // The room this layout leaves empty beside its location: what a word of an action could
+        // stand in ([`Self::spare`], before the notice takes its own).
+        let spare = (slots.location.width() - (forms.width(form) + forms.chrome)).max(0.0);
+        // The actions that say what they do say it where the row leaves room for their words
+        // beside its location, the first actions first, even while the rest keep their glyph
+        // alone: a glyph with the room to be read is a glyph nobody can name.
+        if !slots.actions_labelled {
+            let mut extra = 0.0;
+            let mut kept = vec![0.0; action_labels.len()];
+            for (index, action) in toolbar.actions.iter().enumerate() {
+                if !action.labelled {
+                    continue;
+                }
+                let Some(words) = action_labels
+                    .get(index)
+                    .copied()
+                    .filter(|words| *words > CONTROL_PX)
+                else {
+                    continue;
+                };
+                let needed = words - CONTROL_PX;
+                if extra + needed <= spare {
+                    extra += needed;
+                    if let Some(slot) = kept.get_mut(index) {
+                        *slot = words;
+                    }
+                }
+            }
+            if extra > 0.0 {
+                let labelled = Self::arranged(toolbar, row, views, shown, (&[], &kept));
+                if labelled.folds_as(&slots) {
+                    slots = labelled;
+                }
+            }
+        }
+        // The window's main action says what it does where the row leaves room for its words
+        // beside its location: a glyph with the room to be read is a glyph nobody can name.
+        if !slots.labelled
+            && let Some(index) = toolbar.leading.iter().position(|action| action.primary)
+            && let Some(words) = labels
+                .get(index)
+                .copied()
+                .filter(|words| *words > CONTROL_PX)
+            && spare + CONTROL_PX >= words
+        {
+            let mut kept = vec![0.0; labels.len()];
+            if let Some(slot) = kept.get_mut(index) {
+                *slot = words;
+            }
+            let labelled = Self::arranged(toolbar, row, views, shown, (&kept, &[]));
+            if labelled.folds_as(&slots) {
+                slots = labelled;
+            }
+        }
         // A row short of room for the words keeps the window's main action and puts the rest
         // behind its door, rather than standing glyphs nobody can name with room beside them.
         let floor = main_action_floor(
@@ -431,7 +485,23 @@ impl Slots {
                 .min(crate::window_toolbar::MAX_ACTIONS),
         );
         if !slots.actions_labelled && slots.actions.len() > floor && floor > 0 {
-            slots = Self::arranged_below(toolbar, row, views, shown, (&[], &[]), floor, false);
+            // The main action keeps its words where the row leaves room for them once the rest
+            // are behind the door: a glyph with room to say what it does is a glyph nobody can
+            // name. Every other action goes behind the door unnamed, as before.
+            let main = floor.saturating_sub(1);
+            let mut below =
+                Self::arranged_below(toolbar, row, views, shown, (&[], &[]), floor, false);
+            let words = action_labels.get(main).copied().unwrap_or(0.0);
+            if words > CONTROL_PX && spare + CONTROL_PX >= words {
+                let labels: Vec<f64> = action_labels
+                    .iter()
+                    .enumerate()
+                    .map(|(index, width)| if index == main { *width } else { 0.0 })
+                    .collect();
+                below =
+                    Self::arranged_below(toolbar, row, views, shown, (&[], &labels), floor, false);
+            }
+            slots = below;
         }
         slots.settle(form, labels, action_labels, notice, forms);
         // The room the location leaves empty beside its own label is where its actions say what
