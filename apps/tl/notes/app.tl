@@ -266,13 +266,14 @@ view notebook(nb: Notebook) {
         nb,
         nb.notes,
         parent: n -> n.parent,
-        label: n -> n.title,
+        label: n -> meta(n).title,
         place: (moved, parent, before) -> move_to(nb, moved, parent, before),
         add: add_child,
         path: n -> trail(nb.notes, n),
         above: [Note.pinned],
         doc: note_page,
     ) { n ->
+        // A note with no title yet is called what its type calls it, as in every list of it.
         note_node(n)
         head: {
             row(gap: .related) {
