@@ -169,6 +169,63 @@ fields = [
 ]
 
 [[resources]]
+kind = "browser.page-record"
+label = "Page record"
+version = 1
+fields = [
+  { path = "actions", type = { map = { named = "PageAction" } }, readonly = true },
+  { path = "tabs", type = { map = { named = "Tab" } }, readonly = true },
+]
+
+[[resources.verbs]]
+id = "set-down"
+kind = "undoable"
+params = [
+  { name = "tab", type = "text", required = true, schema = { type = "string" } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "entry", required = true, schema = {} },
+]
+
+[[resources.types]]
+name = "Answer"
+fields = [
+  { name = "name", type = "text" },
+  { name = "value", type = "text" },
+]
+
+[[resources.types]]
+name = "PageAction"
+fields = [
+  { name = "seq", type = "int" },
+  { name = "time_ms", type = "int" },
+  { name = "actor", type = "text" },
+  { name = "how", type = "text" },
+  { name = "action", type = "text" },
+  { name = "ok", type = "bool" },
+  { name = "code", type = "text" },
+  { name = "message", type = "text" },
+  { name = "url", type = "text" },
+  { name = "to_url", type = "text" },
+  { name = "navigation", type = "text" },
+  { name = "frame", type = "text" },
+  { name = "role", type = "text" },
+  { name = "name", type = "text" },
+  { name = "nth", type = "int" },
+  { name = "text", type = { option = "text" } },
+  { name = "values", type = { option = { list = "text" } } },
+  { name = "answers", type = { list = { named = "Answer" } } },
+]
+
+[[resources.types]]
+name = "Tab"
+fields = [
+  { name = "last", type = "int" },
+  { name = "dropped", type = "int" },
+  { name = "at", type = "int" },
+  { name = "device", type = "text" },
+]
+
+[[resources]]
 kind = "browser.address-book"
 label = "Address book"
 version = 1

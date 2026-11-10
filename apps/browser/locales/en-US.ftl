@@ -23,6 +23,9 @@ browser-visit = Visited { $url }
 browser-forget = Forgot { $url }
 browser-clear-history = Cleared the browsing history
 
+## History: what operated a tab's page
+browser-set-down = Set down what was done on a page
+
 ## History: the person's address book
 browser-address-book-enabled = { $new ->
     [true] Turned address autofill on

@@ -867,7 +867,7 @@ impl ui::application_view::ApplicationViewState for BrowserWindow {
             .map(|payload| ui::application_view::ApplicationLocalView {
                 app_id: <crate::resource::BrowserShell as ui::framework::ResourceApp>::ID.into(),
                 version: SAVED_PAGE_VERSION,
-                payload,
+                payload: self.page.saved_with_page_record(payload),
             }))
     }
 
@@ -881,6 +881,7 @@ impl ui::application_view::ApplicationViewState for BrowserWindow {
                 "the saved page cannot be shown".into(),
             ));
         }
+        self.page.restore_page_record(&local.payload);
         // The window shows a page again; the caret has no address to wait in.
         self.focus_address = false;
         self.dirty = true;

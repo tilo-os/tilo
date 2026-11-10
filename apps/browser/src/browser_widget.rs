@@ -83,6 +83,7 @@ mod page_actions;
 mod page_answer;
 mod page_clipboard;
 mod page_find;
+mod page_record;
 mod page_stopping;
 mod page_turns;
 pub(crate) mod personal;
@@ -678,6 +679,9 @@ pub struct BrowserWidget {
     /// not yet read. They take no turn: the record answers whatever runs.
     page_record_reads: Vec<page_turns::RecordRead>,
     page_record_answers: Vec<ui::tilo_actions::InvocationUpdate>,
+    /// Where this tab's engine stands against the tab's record, which is
+    /// Browser's resource ([`crate::page_record`]).
+    page_record: crate::page_record::TabRecorder,
     /// Effects waiting on an operation this window accepted.
     pending_replies: Vec<(ui::tilo_actions::InvocationId, ui::framework::EffectReply)>,
     page_request_seq: u32,
@@ -1582,6 +1586,7 @@ impl BrowserWidget {
             page_waiting: std::collections::VecDeque::new(),
             page_record_reads: Vec::new(),
             page_record_answers: Vec::new(),
+            page_record: crate::page_record::TabRecorder::default(),
             pending_replies: Vec::new(),
             page_request_seq: 0,
             pending_pip: None,
@@ -2182,6 +2187,11 @@ impl BrowserWidget {
     }
 
     fn accept_page_result(&mut self, request_id: u32, result: Result<PageReply, PageFailure>) {
+        // What the engine set down is written into the tab's record, which
+        // is Browser's resource, and every place is named as it counts them.
+        let Some(result) = self.record_page_result(request_id, result) else {
+            return;
+        };
         if self.reads_page_record(request_id) {
             self.accept_page_record(request_id, result);
             return;
@@ -6090,6 +6100,9 @@ impl BrowserWidget {
         operation: BrowserOperation,
     ) -> Result<ui::framework::Effected, String> {
         let actor = invoker.and_then(|invoker| ui::webview::PageActor::named(&invoker.actor));
+        if let BrowserOperation::Page(request) = &operation {
+            self.page_record.admitted(actor.as_ref(), invoker, request);
+        }
         if matches!(operation, BrowserOperation::ReadServiceSession) {
             if let Some(pending) = &self.service_forget {
                 return Ok(ui::framework::Effected::value(pending.report()));

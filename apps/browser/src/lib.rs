@@ -76,6 +76,7 @@ pub mod omnibox;
 pub mod page_dialogs;
 pub mod page_menu;
 pub mod page_popups;
+pub mod page_record;
 mod personal_bookmark_view;
 pub mod personal_bookmarks;
 pub mod private_window;

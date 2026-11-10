@@ -127,6 +127,7 @@ impl BrowserWidget {
             acted: request.clone(),
             deadline: Instant::now() + PAGE_OPERATION_TIMEOUT,
         });
+        let request = self.page_record_request(request);
         self.engine.send(ui::webview::WebViewCommand::Page {
             request_id: self.page_request_seq,
             actor,
@@ -157,6 +158,7 @@ impl BrowserWidget {
             return;
         };
         let read = self.page_record_reads.remove(index);
+        let result = self.page_record_reply(&read.acted, result);
         let answer = match result {
             Ok(reply) => self.page_success(read.invocation, &reply, &read.acted, None),
             Err(failure) => action_failed(
@@ -187,7 +189,20 @@ impl BrowserWidget {
             .page_record_reads
             .iter()
             .position(|read| read.invocation == invocation && now >= read.deadline)?;
-        self.page_record_reads.remove(index);
+        let read = self.page_record_reads.remove(index);
+        // The record is Browser's resource: an engine that does not answer
+        // leaves it as readable as it was.
+        if self.page_record.attached()
+            && let Ok(reply) = self.page_record_reply(
+                &read.acted,
+                Err(ui::webview::PageFailure::new(
+                    "timeout",
+                    "the engine did not answer",
+                )),
+            )
+        {
+            return Some(self.page_success(invocation, &reply, &read.acted, None));
+        }
         // Reading the record changes nothing, so nothing is unknown here.
         Some(action_failed(
             invocation,

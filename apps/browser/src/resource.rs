@@ -494,6 +494,17 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
     {
         window.attach_history(history);
     }
+    // What operated this tab's page is a record of Browser's in the
+    // workspace, each action a change of it by whoever acted: History, a
+    // recording and the person's other devices read it there. A private
+    // window keeps none.
+    if !cx.is_private()
+        && let Some(record) = cx.person::<crate::page_record::PageRecord>()
+    {
+        window
+            .page_mut()
+            .attach_page_record(record, cx.device().unwrap_or_default());
+    }
     if custody && let Some(person) = cx.me() {
         window
             .page_mut()
