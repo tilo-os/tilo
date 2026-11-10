@@ -587,6 +587,9 @@ default = false
 [[check]]
 name = "web-examples"
 run = "bash tools/ci/build-web-examples.sh $(for d in examples/apps/*/; do printf ' example-%s' \"$(basename \"$d\")\"; done)"
+# Runs `cargo install` of a crate the state's Cargo.lock doesn't name, so it needs cargo's
+# network; t turns it off where it hands a job the state's crates.
+env = { CARGO_NET_OFFLINE = "false" }
 on = ["stable", "dispatch", "idle"]
 heavy = true
 
@@ -680,6 +683,9 @@ heavy = true
 [[check]]
 name = "standalone-app"
 run = "bash tools/ci/standalone-app.sh --bootstrap --branch main"
+# Runs `cargo install` of a crate the state's Cargo.lock doesn't name, so it needs cargo's
+# network; t turns it off where it hands a job the state's crates.
+env = { CARGO_NET_OFFLINE = "false" }
 image = "registry.fedoraproject.org/fedora:44@sha256:55159f5c92b7baf5f1c1ca1d727c95e77a4cb77c0829b2c11740a700ff4ea02b"
 on = ["dispatch"]
 
@@ -4469,6 +4475,9 @@ on = ["idle"]
 [[check]]
 name = "editor-typing-iai-tools"
 run = "bash tools/perf/build-typing-tools.sh"
+# Runs `cargo install` of a crate the state's Cargo.lock doesn't name, so it needs cargo's
+# network; t turns it off where it hands a job the state's crates.
+env = { CARGO_NET_OFFLINE = "false" }
 requires = ["arch=x86_64"]
 outputs = ["/target/iai-runner/**", "/target/iai-valgrind-fixed/install/**", "/target/iai-valgrind-fixed/build-inputs.txt", "/target/iai-valgrind-fixed/install.sha256"]
 timeout_secs = 3600
