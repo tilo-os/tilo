@@ -281,7 +281,21 @@ view outline<T>(
                     .filter(y -> parent(y) == parent(x))
                     .last()
                 let count = if let c = progress { c(x) }
-                ui.TreeViewNode(x, label(x), parent: parent(x), above: above, progress: count) {
+                // How deep it stands in this outline and whether it holds any of its items, said
+                // by the row itself: the tree builds the rows the window shows, so a row whose
+                // parent stands out of view keeps the place this gives it. An item above the
+                // outline's own is no step of it, so it counts none.
+                let deep = items.ancestors(x, .parent).filter(a -> items.contains(a)).len()
+                let holds = items.any(y -> parent(y) == .some(x))
+                ui.TreeViewNode(
+                    x,
+                    label(x),
+                    parent: parent(x),
+                    depth: deep,
+                    branch: holds,
+                    above: above,
+                    progress: count,
+                ) {
                     on drop(moved: T): place(moved, .none, x)
                     on into(moved: T): place(moved, x, .none)
                     on check: toggled(x)

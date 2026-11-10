@@ -788,12 +788,15 @@ fn launch_post() -> (Replica, Value) {
     (ada, parent)
 }
 
-/// The page a task opens, drawn.
+/// The page a task opens, drawn: its outline's rows built as a window that shows them all
+/// builds them, so the test reads the rows a person sees rather than the ones a scroll would
+/// have to reach.
 pub(crate) fn task_page(ada: &Replica, task: &Value) -> ViewInstance {
     let Value::Ref(at) = task else {
         panic!("a task: {task:?}")
     };
     let mut view = ada.host.open_resource(&at.target, None).unwrap();
+    view.set_lazy_rows(false).unwrap();
     view.poll_patches().unwrap();
     view
 }
@@ -867,6 +870,68 @@ fn a_subtask_dropped_inside_another_is_nested() {
         node.props.get("parent").and_then(target),
         target(&draft),
         "the row is drawn under its new parent"
+    );
+    assert_eq!(
+        node.props.get("depth"),
+        Some(&Value::Int(1)),
+        "one step in from the top of the page's outline"
+    );
+}
+
+/// A task's page draws its steps as a tree whose rows the window fills as it shows them: the
+/// tree holds every step, and a step's row says how deep it stands without the row it stands
+/// under having been read, so a step indented under another draws one step in even where it is
+/// the only row on screen.
+#[test]
+fn a_task_pages_outline_tells_the_window_where_each_step_stands() {
+    let (mut ada, parent) = launch_post();
+    call(
+        &ada,
+        "indent",
+        vec![
+            task(&ada, "Screenshots"),
+            Value::some(task(&ada, "First draft")),
+        ],
+    );
+    ada.commit();
+    let Value::Ref(at) = &parent else {
+        panic!("a task: {parent:?}")
+    };
+    let mut page = ada.host.open_resource(&at.target, None).unwrap();
+    page.poll_patches().unwrap();
+    let tree = key_of(&page, "ui.TreeView", &|node| {
+        node.props.get("name") == Some(&Value::text("Subtasks"))
+    });
+    assert_eq!(
+        page.list_len(&tree),
+        Some(3),
+        "the outline holds every step of the task"
+    );
+    assert!(
+        all(page.tree(), "ui.TreeViewNode").is_empty(),
+        "no step is drawn before the window shows it"
+    );
+    // The indented step, read first: neither the step over it nor its parent has been read.
+    let row = page.row(&tree, 2).unwrap().expect("shown").clone();
+    let node = all(&row, "ui.TreeViewNode").first().copied().unwrap();
+    assert_eq!(node.props.get("label"), Some(&Value::text("Screenshots")));
+    assert_eq!(
+        node.props.get("depth"),
+        Some(&Value::Int(1)),
+        "one step in, of the row it stands under"
+    );
+    assert!(!flag(node, "branch"), "it holds no step of its own");
+    let row = page.row(&tree, 1).unwrap().expect("shown").clone();
+    let node = all(&row, "ui.TreeViewNode").first().copied().unwrap();
+    assert_eq!(node.props.get("label"), Some(&Value::text("First draft")));
+    assert_eq!(
+        node.props.get("depth"),
+        Some(&Value::Int(0)),
+        "a step of the task itself stands at the top of its outline"
+    );
+    assert!(
+        flag(node, "branch"),
+        "it says it holds a step, so the window draws it foldable"
     );
 }
 
@@ -1806,6 +1871,7 @@ fn a_step_names_its_day_only_when_its_task_does_not() {
 /// What each step's row of a task's page says of the day it is due, by the step's title: the day
 /// it gives, which kind of fact that is, and none where it leaves the day to the page.
 fn step_rows(view: &mut ViewInstance) -> Vec<(String, Option<String>, Option<String>)> {
+    view.set_lazy_rows(false).unwrap();
     view.poll_patches().unwrap();
     let tree = all(view.tree(), "ui.TreeView")
         .into_iter()
