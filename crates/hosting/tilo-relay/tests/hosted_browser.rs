@@ -80,7 +80,7 @@ impl BrowserMeter for Counting {
         }
     }
 
-    fn record(&self, _: &str) {
+    fn record(&self, _: &str, _: &str) {
         let mut recorded = self.recorded.lock().unwrap();
         *recorded = recorded.saturating_add(1);
     }
@@ -314,8 +314,8 @@ impl BrowserEnvironments for EnvironmentsHandle {
         self.0.start(material)
     }
 
-    fn stop(&self, workspace_id: u64) {
-        self.0.stop(workspace_id);
+    fn stop(&self, workspace: &str) {
+        self.0.stop(workspace);
     }
 }
 
@@ -327,8 +327,8 @@ impl BrowserMeter for SharedMeter {
         self.0.admit(account)
     }
 
-    fn record(&self, account: &str) {
-        self.0.record(account);
+    fn record(&self, workspace: &str, account: &str) {
+        self.0.record(workspace, account);
     }
 }
 

@@ -30,13 +30,16 @@ Linux VM. A browser environment is that service's VM with these differences:
   (`registry.tilo.so/tilo/hosted-browser-guest`, pinned as
   `HOSTED_BROWSER_GUEST_X86_64_REF` in `os/hosted-guest-snapshot.env`). Hosts
   never build it.
-- **Its session** starts from `/usr/libexec/tilo/browser-session`, which the
-  guest agent runs once the environment belongs to a workspace. It sources the
-  configuration file it is given (`/run/tilo/browser-session.env` by default,
-  or `TILO_BROWSER_SESSION_CONFIG`): a shell-compatible `KEY=VALUE` file whose
-  keys become the session's environment, and whose `TILO_SESSION_ARGS` are the
-  session's own arguments. The relay's certificate for the session and the
-  window to open reach the session that way.
+- **Its session** starts from `/usr/libexec/tilo/browser-session`, the
+  image's own entry, which the guest agent runs: it makes the runtime
+  directory a login would have, points the session at the image's software
+  Vulkan driver (the hosts have no GPU), and starts `tilo-session --backend
+  headless --no-x11` on a bus of its own. The workspace it joined, and the
+  window it opened, reach the session as one line of material on its standard
+  input, and it reports on its standard output: `ready` once its engine is up
+  and it waits for a workspace, `up <provider>` once it has joined and the
+  window is live, and `used` whenever the page is used. What a person
+  operating a host sets is under ["Running it"](#running-it).
 - **Its size** is `browser`: 2 vCPU, 2 GiB, an 8 GiB disk.
 - **It keeps nothing.** Its disk is a fresh copy of the image every time it
   starts, it is never snapshotted, and once it has been idle for 10 minutes,
@@ -127,7 +130,8 @@ workspace's person, made with the stand-in the person gave the host, lasting
 as long as the environment may run — lists it in that one workspace, and asks
 the VM host to start the environment. What the session in the VM is started
 with is the relay's placement record, one object
-(`tilo_relay::hosted_browser::Material`):
+(`tilo_relay_protocol::hosted::Material`), written to its standard input as
+one line:
 
 | Field | What the session does with it |
 | :--- | :--- |
@@ -141,9 +145,11 @@ with is the relay's placement record, one object
 
 The session starts headless (`--backend headless`), with that device as its
 identity, joins the workspace through `relay`, and opens Browser on `record`,
-then reports the window's provider (`browser@42`) so the relay can route page
-actions and the open can answer. It keeps the window live, published and
-subscribed until it stops.
+then reports the window's provider (`up 42`) so the relay can route page
+actions and the open can answer. An agent names that window `browser@42`; the
+provider token itself is the number, which is what every live window of the
+desk publishes under. It keeps the window live, published and subscribed
+until it stops.
 
 Door agents' calls go to the workspace host's device. So the relay forwards
 a page action addressed to the hosted Browser window to the device holding
@@ -208,6 +214,36 @@ Spot. Nothing new is provisioned. Browser environments use the existing
 `tilosh` pool, which scales to zero, and the always-up warm node. The two
 spares take 4 GiB of the warm node's 12 GiB budget.
 
+## Running it
+
+A host that places workspaces (`tilo-relay room … --room-records`) serves
+their Browser when these are set, all of them read from its environment:
+
+| Variable | What it names |
+| :--- | :--- |
+| `TILO_HOSTED_PLACER` | The placer's address (`vm-placer:7702`): where a workspace's environments are placed. |
+| `TILO_HOSTED_MEMBERS` | The VM hosts' member devices: a JSON map of host name to its device key and address. |
+| `TILO_HOSTED_ACCOUNT` | The account the machines run for. |
+| `TILO_HOSTED_VM_SIZE` | The size a workspace's Linux VM runs at; browser environments are always `browser`. |
+| `TILO_HOSTED_BROWSER_RELAY` | `KEY@HOST:PORT`: this host's device key and the **public** address the sessions in its environments reach it at. Their network reaches the public internet and no private, cluster-internal or link-local address, so this is never the host's own. Required: the host refuses to start without it. |
+| `TILO_HOSTED_BROWSER_ACTIONS` | The ledger file the page actions are counted in. |
+| `TILO_HOSTED_PLANS` | The plans file: what a period's free page actions are (`sells.browser_free_actions`) and which accounts have a card. |
+
+A host that runs the environments — a VM host — adds these to the member
+device's own environment:
+
+| Variable | What it names |
+| :--- | :--- |
+| `TILO_HOSTED_VM_SOCKET` | The VM host's own hosted-VM service, which the member asks for an environment over its socket. |
+| `TILO_HOSTED_PLANS` | The plans file the service admits by. |
+
+and starts that service with `--browser`, the browser guest image
+(`--browser-kernel REF --browser-disk-image PATH`), and optionally
+`--browser-spares N`, `--browser-idle-stop SECONDS`, `--browser-lifetime
+SECONDS`. The image is the digest CI pins as `HOSTED_BROWSER_GUEST_X86_64_REF`
+in `os/hosted-guest-snapshot.env`; a host that runs no image runs no
+environments and says so when someone opens Browser.
+
 ## What is built and what is not
 
 Each part above is a unit:
@@ -220,9 +256,9 @@ Each part above is a unit:
 4. **Joining and routing**: `#open` in a hosted workspace places an
    environment, its session joins as a device of that workspace only and
    opens the window, and the relay routes page actions to it through the
-   gate. The relay's half is in (`tilo_relay::hosted_browser`); the
-   environment's client and the session's start with the material are not
-   linked yet.
+   gate. The relay's half is in and runs where its environment names it
+   (`tilo_relay::hosted_browser`); the session in the environment does not
+   read the material yet, so no environment joins a workspace.
 5. **The page track** on the live carrier, and the desk drawing it,
    natively and in a web tab.
 6. **The end-to-end test**: a workspace key opens Browser, fills a test form

@@ -37,7 +37,6 @@ use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use iroh::EndpointAddr;
-use serde::{Deserialize, Serialize};
 use tilo_actions::remote::host_account::{NextStep, NextStepKind, Reason, Refusal};
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, InvokeRequest,
@@ -132,8 +131,8 @@ pub trait BrowserMeter: Send + Sync {
     /// ([`Refusal`]).
     fn admit(&self, account: &str) -> Result<(), Refusal>;
 
-    /// One page action ran for `account`.
-    fn record(&self, account: &str);
+    /// One page action ran for `account`, in the workspace it is booked to.
+    fn record(&self, workspace: &str, account: &str);
 }
 
 /// A host whose plans file sells nothing: it counts nothing and refuses
@@ -146,7 +145,7 @@ impl BrowserMeter for Unmetered {
         Ok(())
     }
 
-    fn record(&self, _: &str) {}
+    fn record(&self, _: &str, _: &str) {}
 }
 
 /// What placing needs of the host itself, once it runs: the certificate it
@@ -276,17 +275,21 @@ impl HostedBrowsers {
         let RemoteActionMessage::Invoke(request) = message else {
             return None;
         };
-        let (provider, device) = {
+        let (provider, device, workspace) = {
             let open = self.open.lock_recover();
             let up = open.get(&workspace_id)?;
-            (up.window.provider.clone(), up.window.device)
+            (
+                up.window.provider.clone(),
+                up.window.device,
+                up.workspace.clone(),
+            )
         };
         if !page_action(&request.target, &provider) {
             return None;
         }
         Some(match self.meter.admit(&self.account) {
             Ok(()) => {
-                self.meter.record(&self.account);
+                self.meter.record(&workspace, &self.account);
                 crate::app_serving::Routing::Device(device)
             }
             Err(refusal) => crate::app_serving::Routing::Refused(ActionHostError::Refused {
@@ -590,6 +593,54 @@ mod tests {
         assert_eq!(opened_record(&made).as_deref(), Some("abc"));
         let refused = refused(tilo_actions::InvocationId::new(), unplaced());
         assert_eq!(opened_record(&refused), None);
+    }
+
+    #[test]
+    fn a_host_serves_browsers_only_when_it_names_where_they_start_where_it_is_reached_and_what_it_counts()
+     {
+        use crate::browser_actions::BrowserMeter;
+        use crate::placed_shells::{MEMBERS_ENV, PLACER_ENV};
+        use tilo_host_account::{ACCOUNT_ENV, LEDGER_ENV, PLANS_ENV};
+
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove(PLACER_ENV)
+            .remove(MEMBERS_ENV)
+            .remove(ACCOUNT_ENV)
+            .remove(LEDGER_ENV)
+            .remove(PLANS_ENV)
+            .remove(RELAY_ENV);
+        assert!(
+            HostedBrowsers::from_env().unwrap().is_none(),
+            "a host with no placer places no Browser"
+        );
+
+        // A placer alone is half a host: without a ledger it would serve
+        // Browser free of charge.
+        let dir = tempfile::tempdir().unwrap();
+        let members = dir.path().join("members.json");
+        std::fs::write(&members, "{}").unwrap();
+        env.set(PLACER_ENV, "vm-placer:7702")
+            .set(MEMBERS_ENV, &members)
+            .set(ACCOUNT_ENV, "acct-1");
+        let error = HostedBrowsers::from_env().err().unwrap();
+        assert!(error.contains(LEDGER_ENV), "{error}");
+        assert!(BrowserMeter::from_env().unwrap().is_none());
+
+        // With the ledger but no address, its sessions would be told to reach
+        // it where they cannot.
+        env.set(LEDGER_ENV, dir.path().join("actions.jsonl"))
+            .set(PLANS_ENV, dir.path().join("plans.json"));
+        let error = HostedBrowsers::from_env().err().unwrap();
+        assert!(error.contains(RELAY_ENV), "{error}");
+
+        // All of them: this host places its workspaces' Browser.
+        let key = hex::encode(
+            ed25519_dalek::SigningKey::from_bytes(&[7; 32])
+                .verifying_key()
+                .to_bytes(),
+        );
+        env.set(RELAY_ENV, format!("{key}@127.0.0.1:7704"));
+        assert!(HostedBrowsers::from_env().unwrap().is_some());
     }
 
     #[test]

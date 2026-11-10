@@ -115,6 +115,25 @@ impl BrowserMeter {
     }
 }
 
+/// The ledger is what the relay places Browser with: a page action is
+/// admitted for the account of the workspace it is booked to, counted at the
+/// moment it ran.
+impl crate::hosted_browser::BrowserMeter for BrowserMeter {
+    fn admit(&self, account: &str) -> Result<(), host_account::Refusal> {
+        BrowserMeter::admit(self, account, tilo_clock::unix_now_ms())
+    }
+
+    fn record(&self, workspace: &str, account: &str) {
+        // The action ran: the ledger says so, and one it cannot write is
+        // said rather than taken out on the caller.
+        if let Err(error) =
+            BrowserMeter::record(self, account, workspace, tilo_clock::unix_now_ms())
+        {
+            tracing::warn!(%error, %account, %workspace, "a Browser page action was not counted");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

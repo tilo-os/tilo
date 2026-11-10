@@ -762,7 +762,7 @@ fn attach_records(
             // The sessions in the environments dial this host from a machine
             // that reaches the public internet and nothing of this network:
             // the address they are given is the public one.
-            relay: crate::hosted_browser::relay_address()?,
+            relay: crate::hosted_browser::relay_address().map_err(RelayError::Identity)?,
             workspaces: relay.workspaces().cloned(),
             runtime: tokio::runtime::Handle::current(),
         });
