@@ -658,7 +658,10 @@ heavy = true
 name = "sdk-web-size"
 run = "cargo build --locked -p tilo-app-cli --bin tilo-app\ncargo test --locked --manifest-path tools/web/wasm-split/Cargo.toml\napp=$CARGO_TARGET_DIR/debug/tilo-app\n# model-providers-web builds the same bundle path in the dev profile, possibly\n# at the same time in the same build directory, so the release bundle has its own.\nexport CARGO_TARGET_DIR=$CARGO_TARGET_DIR/release-web\nbundle=$CARGO_TARGET_DIR/tilo-app/web/calculator/bundle\n\"$app\" build --target web --bundle desktop --release apps/calculator\npython3 tools/web/wasm_size_ratchet.py measure desktop \"$bundle\"\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nnode crates/browser/tilo-browser-compute/scripts/qualify-packaged.mjs \"$bundle\" \"$TMPDIR/compute-qualification\" --no-sandbox\n"
 needs = ["test-assets"]
-env = { TILO_TEST_ASSET_SEED = "/target/test-assets" }
+# It also tests tools/web/wasm-split, a workspace of its own whose lockfile names crates the root
+# Cargo.lock doesn't, so it needs cargo's network; t turns it off where it hands a job the
+# state's crates.
+env = { TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_NET_OFFLINE = "false" }
 git = true
 on = ["stable", "dispatch", "idle"]
 heavy = true
