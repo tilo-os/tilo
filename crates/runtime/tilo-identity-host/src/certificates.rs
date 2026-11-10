@@ -76,6 +76,7 @@ mod host {
 pub use host::{authorize, authorize_join};
 
 #[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{Duration, SystemTime};

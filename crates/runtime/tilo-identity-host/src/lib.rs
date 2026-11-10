@@ -13,6 +13,14 @@
 //! Hosts supply their committed workspaces and channel service through
 //! [`broker::WorkspaceMembership`] and [`broker::ChannelKeySource`].
 
+#![cfg_attr(
+    target_family = "wasm",
+    allow(
+        clippy::arc_with_non_send_sync,
+        reason = "a page's custody reaches JavaScript and stays on the page's one thread; `Arc` keeps a page's handles the same type as a desktop's"
+    )
+)]
+
 #[cfg(unix)]
 pub mod broker;
 pub mod certificates;
