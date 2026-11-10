@@ -1495,6 +1495,7 @@ impl ChannelEncryption {
             }
             return;
         }
+        let (epoch, signer) = (frame.epoch, frame.signed_by);
         let received = match &allowed {
             Some(allowed) => entry.peer.receive(frame, allowed, &store.vault),
             None => entry.peer.follow(frame, &store.vault),
@@ -1506,6 +1507,7 @@ impl ChannelEncryption {
                 return;
             }
         };
+        tracing::debug!(%workspace, channel = %channel.0, epoch, ?signer, ?event, access = ?entry.peer.access(), "channel frame taken in");
         if !entry.wanted && entry.peer.access() == Access::Waiting && entry.peer.knows_group() {
             // Taken up only to create the group if no one had: someone has,
             // and its participants admit whoever asked.
@@ -1646,6 +1648,7 @@ impl ChannelEncryption {
         }
         let mut accepted = true;
         for frame in entry.peer.outbox() {
+            tracing::debug!(workspace = %entry.workspace, channel = %channel.0, epoch = frame.epoch, "channel frame published");
             self.delivery = self.delivery.wrapping_add(1);
             accepted &= transport.publish(NeighbourMsg::MlsGovernance {
                 workspace: entry.workspace.to_string(),

@@ -914,3 +914,100 @@ fn a_signer_that_answers_later_signs_every_frame() {
     deliver(&frames[1..], &mut [&mut bob], &both);
     assert_eq!(bob.epoch(), Some(1));
 }
+
+/// Two participants admit a device on one epoch at once, and the one whose
+/// commit loses commits again on top of its own before the winner reaches
+/// it. When the winner arrives, a whole epoch below its head, it starts over
+/// rather than staying on a branch no other participant follows; the winner's
+/// writer, hearing a commit that went on from the loser, publishes its own
+/// again. Everything the loser sealed on its branch stays readable.
+#[test]
+fn a_device_that_went_on_from_a_commit_that_lost_starts_over() {
+    let channel = ChannelId::new();
+    let mut alice = Device::creating(1, channel);
+    let mut bob = Device::waiting(2, channel);
+    let mut dave = Device::waiting(4, channel);
+    let mut erin = Device::waiting(5, channel);
+    let both = allowed(&[&alice, &bob]);
+    alice.peer.learn_request(bob.ask(false), &vault()).unwrap();
+    alice.peer.reconcile_now(&both, &vault()).unwrap();
+    deliver(&alice.take(), &mut [&mut bob], &both);
+    assert_eq!((alice.epoch(), bob.epoch()), (Some(1), Some(1)));
+
+    // Both admit Dave on epoch 1: two sibling commits for epoch 2.
+    let everyone = allowed(&[&alice, &bob, &dave, &erin]);
+    let request = dave.ask(false);
+    alice.peer.learn_request(request.clone(), &vault()).unwrap();
+    bob.peer.learn_request(request, &vault()).unwrap();
+    alice.peer.reconcile_now(&everyone, &vault()).unwrap();
+    bob.peer.reconcile_now(&everyone, &vault()).unwrap();
+    let from_alice = alice.take();
+    let from_bob = bob.take();
+    let head = |frames: &[MlsGovernanceFrame]| frames[0].digest().unwrap();
+    let alice_won = head(&from_alice) < head(&from_bob);
+    let (winner, loser, winning_frames) = if alice_won {
+        (&mut alice, &mut bob, from_alice)
+    } else {
+        (&mut bob, &mut alice, from_bob)
+    };
+
+    // The loser admits Erin on its own epoch 2 before it hears the winner,
+    // and seals content there.
+    loser.peer.learn_request(erin.ask(false), &vault()).unwrap();
+    loser.peer.reconcile_now(&everyone, &vault()).unwrap();
+    let went_on = loser.take();
+    assert_eq!((went_on[0].epoch, loser.epoch()), (3, Some(3)));
+    let sealed = loser.seal("on the branch that lost");
+
+    // The winner's commit for epoch 2 reaches the loser at epoch 3.
+    assert_eq!(
+        loser.receive(&winning_frames[0], &everyone).unwrap(),
+        PeerEvent::Desynchronised
+    );
+    assert_eq!(loser.peer.access(), Access::Waiting);
+    // The loser's commit for epoch 3 reaches the winner, which publishes its
+    // head again for whoever went on from the loser.
+    assert_eq!(
+        winner.receive(&went_on[0], &everyone).unwrap(),
+        PeerEvent::Ignored
+    );
+    assert!(
+        winner
+            .take()
+            .iter()
+            .any(|frame| frame.digest().unwrap() == head(&winning_frames))
+    );
+
+    settle(&mut [&mut alice, &mut bob], &everyone);
+    assert_eq!(alice.epoch(), bob.epoch());
+    for device in [&alice, &bob] {
+        assert_eq!(
+            device.opens(&sealed).as_deref(),
+            Some("on the branch that lost")
+        );
+    }
+}
+
+/// A device that asked to join while it waited, and then founded the group
+/// because no genesis came, is in the group with the key it asked with: a
+/// participant that holds its request admits no one again, so founding sets
+/// off no commits.
+#[test]
+fn the_founder_is_in_the_group_with_the_key_it_asked_with() {
+    let channel = ChannelId::new();
+    let mut alice = Device::waiting(1, channel);
+    let mut bob = Device::waiting(2, channel);
+    let both = allowed(&[&alice, &bob]);
+    let asked = alice.ask(false);
+    bob.peer.learn_request(asked, &vault()).unwrap();
+    assert!(alice.peer.found_now(&vault()).unwrap());
+
+    alice.peer.learn_request(bob.ask(false), &vault()).unwrap();
+    alice.peer.reconcile_now(&both, &vault()).unwrap();
+    deliver(&alice.take(), &mut [&mut bob], &both);
+    assert_eq!((alice.epoch(), bob.epoch()), (Some(1), Some(1)));
+
+    assert!(bob.peer.asking(&both).is_empty());
+    assert!(!bob.peer.reconcile_now(&both, &vault()).unwrap().changed());
+    assert!(bob.take().is_empty());
+}

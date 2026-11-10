@@ -394,7 +394,6 @@ impl ChannelPeer {
         if self.knows_group() {
             return Ok(false);
         }
-        let group = ChannelGroup::create(self.channel, MemberKey::for_device(&self.device)?)?;
         let genesis = self
             .sign(MlsGovernanceFrame::unsigned(
                 self.channel,
@@ -404,6 +403,25 @@ impl ChannelPeer {
                 self.device,
             ))
             .await?;
+        // The group is founded with the member key this device asked with
+        // while it waited: participants that hold its request then see it in
+        // the group with the key it asked with. With any other key they take
+        // the request for a device that lost its state and admit it again,
+        // a commit that sets every participant committing at once.
+        let member = match std::mem::replace(&mut self.record, MemberRecord::Removed) {
+            MemberRecord::Waiting(member) => *member,
+            other => {
+                self.record = other;
+                MemberKey::for_device(&self.device)?
+            }
+        };
+        let group = match ChannelGroup::create(self.channel, member) {
+            Ok(group) => group,
+            Err(error) => {
+                self.record = MemberRecord::Waiting(Box::new(MemberKey::for_device(&self.device)?));
+                return Err(error);
+            }
+        };
         self.record = MemberRecord::Joined(Box::new(group));
         self.parent = None;
         self.genesis = Some(digest(&genesis)?);
@@ -1192,6 +1210,20 @@ impl ChannelPeer {
             }
             return self.desynchronise(vault);
         }
+        if frame.epoch.saturating_add(1) == head_epoch && incoming != head.previous_frame_digest {
+            // A commit for the epoch this device's head was committed on, and
+            // not the frame the head follows: this device committed on top of
+            // its own commit before the other one reached it. The two compete
+            // like siblings; when the other is lower, everything this device
+            // built on its own lost, and it cannot reach the winner from where
+            // it stands, so it starts over and asks again. Ignoring it as old
+            // would leave this device on a branch no other participant
+            // follows, sealing what it writes under keys none of them hold.
+            if incoming < head.previous_frame_digest {
+                return self.desynchronise(vault);
+            }
+            return Ok(PeerEvent::Ignored);
+        }
         if frame.epoch < head_epoch {
             return Ok(PeerEvent::Ignored);
         }
@@ -1203,6 +1235,13 @@ impl ChannelPeer {
             // sibling's digest is lower, and the frame's when it is higher.
             if frame.previous_frame_digest < head_digest {
                 return self.desynchronise(vault);
+            }
+            // The frame's author went on from a sibling that lost: whoever
+            // wrote the head publishes it again, so that author hears the
+            // winner and starts over.
+            if head.signed_by == self.device {
+                self.republish_head();
+                self.save(vault)?;
             }
             return Ok(PeerEvent::Ignored);
         }
