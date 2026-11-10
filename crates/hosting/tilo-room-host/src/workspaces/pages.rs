@@ -699,43 +699,52 @@ impl Workspaces {
                 challenge,
                 signature,
                 name,
-            } => {
-                let challenge: JoinChallenge = postcard::from_bytes(&challenge)
-                    .map_err(|_| CollaborationError::new("join challenge is malformed"))?;
-                self.prove(
-                    JoinProof {
-                        challenge,
-                        signature,
-                    },
-                    &valid_name(&name)?,
-                    None,
-                    now,
-                )
-                .await
-            }
+            } => self.proved(&challenge, signature, &name, None, now).await,
             JoinStep::ProvePreAdmitted {
                 challenge,
                 signature,
                 name,
                 token,
             } => {
-                let challenge: JoinChallenge = postcard::from_bytes(&challenge)
-                    .map_err(|_| CollaborationError::new("join challenge is malformed"))?;
-                self.prove(
-                    JoinProof {
-                        challenge,
-                        signature,
-                    },
-                    &valid_name(&name)?,
-                    Some(&token),
-                    now,
-                )
-                .await
+                self.proved(&challenge, signature, &name, Some(&token), now)
+                    .await
             }
             JoinStep::Status {
                 request_id,
                 device_public_key,
             } => self.status(request_id, device_public_key, now).await,
+        }
+    }
+
+    /// Admit the page that signed `challenge`, then answer once the governance
+    /// that admitted it is retained ([`Self::retained_for`]).
+    async fn proved(
+        &self,
+        challenge: &[u8],
+        signature: [u8; 64],
+        name: &str,
+        token: Option<&[u8]>,
+        now: u64,
+    ) -> Result<JoinReply, CollaborationError> {
+        let challenge: JoinChallenge = postcard::from_bytes(challenge)
+            .map_err(|_| CollaborationError::new("join challenge is malformed"))?;
+        let proof = JoinProof {
+            challenge,
+            signature,
+        };
+        let reply = self.prove(proof, &valid_name(name)?, token, now).await?;
+        self.retained_for(&reply).await;
+        Ok(reply)
+    }
+
+    /// Wait, off the workspace's lock, until the governance that admitted the
+    /// device `reply` answers is retained. The page subscribes as soon as it
+    /// hears it is in: a replay that began before that governance was written
+    /// would tell it the workspace without it, and its channels would wait for
+    /// the catch-up to learn it may read them.
+    async fn retained_for(&self, reply: &JoinReply) {
+        if let JoinReply::Admitted { workspace_id, .. } = reply {
+            self.inner.host.records.settled(*workspace_id).await;
         }
     }
 
