@@ -72,6 +72,17 @@ fn nodes_of<'a>(node: &'a tilo_ui_host::UiNode, kind: &str) -> Vec<&'a tilo_ui_h
     out
 }
 
+/// What the menus under `node` say, in drawing order.
+fn menu_labels(node: &tilo_ui_host::UiNode) -> Vec<String> {
+    nodes_of(node, "ui.MenuItem")
+        .into_iter()
+        .filter_map(|item| match item.props.get("label") {
+            Some(tilo_render_protocol::patch::Value::Text(label)) => Some(label.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The catch-up a window's mark opens: each item it changed, newest first, with who and
 /// when, and the one move that marks them all seen.
 fn the_catch_up_names_each_item_it_changed(window: &tilo_ui_host::UiNode) {
@@ -1009,15 +1020,12 @@ fn an_action_without_an_icon_is_reachable_from_the_row_that_offers_it() {
             .lay_out(size, ui::Theme::light(), input, 1.0)
             .expect("the notes lay out");
         let tree = staged.composed().expect("the window composes");
-        let mut items = Vec::new();
-        nodes(&tree, "ui.MenuItem", &mut items);
-        let labels: Vec<String> = items
-            .iter()
-            .filter_map(|item| match item.props.get("label") {
-                Some(tilo_render_protocol::patch::Value::Text(label)) => Some(label.clone()),
-                _ => None,
-            })
-            .collect();
+        // A tree's rows are built as the window shows them, so a note's menu stands in the row
+        // the window built for it rather than in the tree the app sent.
+        let mut labels = menu_labels(&tree);
+        for row in staged.rows().values() {
+            labels.extend(menu_labels(row));
+        }
         assert!(
             labels.iter().any(|label| label == "Untag…"),
             "a note's row offers its actions, its icon-less ones too, at {size:?}: {labels:?}"
