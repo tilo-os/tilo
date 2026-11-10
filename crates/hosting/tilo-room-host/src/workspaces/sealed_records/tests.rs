@@ -2084,6 +2084,9 @@ async fn a_kept_change_a_bot_showed_another_name_in_keeps_the_name_it_showed() {
         Some("for Ada"),
         "the record holds the change, showing the name it showed"
     );
+    lounge.relay.shutdown().await;
+}
+
 /// Every write of [`RECORD`] the relay sends `client` live, as `(author, seq)`
 /// in the order they arrived, up to and including `author`'s write `last`.
 async fn writes_sent(

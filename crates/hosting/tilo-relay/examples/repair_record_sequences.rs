@@ -1219,6 +1219,51 @@ mod tests {
         }
     }
 
+    /// A dry run of the repair reports the record that holds a sequence
+    /// twice, and changes nothing.
+    async fn dry_run_changes_nothing(
+        workspaces: &Workspaces,
+        workspace: &str,
+        route: &BTreeSet<(String, String)>,
+        scratch: &std::path::Path,
+    ) {
+        let reports = repair_workspace(
+            workspaces,
+            workspace,
+            Some(CHAT),
+            true,
+            &scratch.join(ARCHIVE),
+        )
+        .await
+        .unwrap();
+        let [report] = reports.as_slice() else {
+            panic!("one record holds a sequence twice: {reports:?}");
+        };
+        assert_eq!(report.record, part());
+        assert_eq!(
+            report.collisions.len(),
+            2,
+            "both later posts of each page: {report:?}"
+        );
+        assert_eq!(
+            report.carried.len(),
+            2,
+            "the second page's posts: {report:?}"
+        );
+        assert_eq!(
+            (report.before, report.union, report.after),
+            (Some(3), Some(5), Some(5))
+        );
+        assert!(!report.repaired);
+        assert!(
+            !workspaces
+                .whole_records(workspace, Some(route))
+                .await
+                .unwrap()
+                .is_whole()
+        );
+    }
+
     /// Two pages of one person write the chat's messages under the one writer
     /// a saved row carried, each from the same messages: both number their
     /// next changes the same, and the relay keeps both writes in the record's
@@ -1254,42 +1299,7 @@ mod tests {
             "the record holds a sequence twice and does not read whole"
         );
 
-        // A dry run changes nothing.
-        let reports = repair_workspace(
-            &workspaces,
-            &workspace,
-            Some(CHAT),
-            true,
-            &scratch.path().join(ARCHIVE),
-        )
-        .await
-        .unwrap();
-        let [report] = reports.as_slice() else {
-            panic!("one record holds a sequence twice: {reports:?}");
-        };
-        assert_eq!(report.record, part());
-        assert_eq!(
-            report.collisions.len(),
-            2,
-            "both later posts of each page: {report:?}"
-        );
-        assert_eq!(
-            report.carried.len(),
-            2,
-            "the second page's posts: {report:?}"
-        );
-        assert_eq!(
-            (report.before, report.union, report.after),
-            (Some(3), Some(5), Some(5))
-        );
-        assert!(!report.repaired);
-        assert!(
-            !workspaces
-                .whole_records(&workspace, Some(&route))
-                .await
-                .unwrap()
-                .is_whole()
-        );
+        dry_run_changes_nothing(&workspaces, &workspace, &route, scratch.path()).await;
 
         let mut reports = repair_workspace(
             &workspaces,

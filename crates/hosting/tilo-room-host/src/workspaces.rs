@@ -1413,7 +1413,7 @@ impl Workspaces {
     /// Give the links of the workspaces served from now on room for only
     /// `capacity` frames heard and not read yet: what a test that makes the
     /// host's reader of a link fall behind sets.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "agents"))]
     pub(crate) fn bound_link_readers(&self, capacity: usize) {
         self.inner
             .link_heard_capacity
