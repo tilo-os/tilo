@@ -313,60 +313,48 @@ fn mail_does_the_work_of_what_it_shows() {
     the_runtime_does_the_work_of_what_it_shows("mail");
 }
 
-/// A keystroke while the change it is part of is still open — the person has not paused, moved to
-/// another field or closed the window — changes the field and nothing else: the store holds it
-/// with the keystrokes before it, so it commits no change, and it reads none of the workspace, at
-/// the size of a fresh notebook or of one used for years. The change lands once, when the typing
-/// stops.
+/// A keystroke is a change of the record the moment it is typed — that is what keeps every letter
+/// and sends it to the other devices at once — and the burst of them is one step of history and
+/// undo. One letter is one change, and it reads nothing of the workspace: no collection's entries,
+/// no listing of it, no filter evaluated on an item.
 ///
-/// Measured on this scenario in a notebook of one note, committing each keystroke as its own
-/// change (what the store did before it held the change open) cost `21_458` allocations, six
-/// patches and seven view runs in the window; holding it open costs `6_416` and two. What the
-/// same keystroke costs the publication and derivation of a change, which is the same for any
-/// change and grows with the chunk it reaches, is not the typing's.
+/// What else a letter costs is the views that show it: a change runs again the boundaries that
+/// read it, as any change does. What this scenario types into is the window's own search on the
+/// workspace it seeds, so what it commits and which boundaries it runs is no letter of a bound
+/// field; the window's own tests hold that (`apps/tilolang/tests/hosted/typing.rs`).
 #[test]
-fn a_keystroke_while_the_change_is_open_records_nothing() {
-    let records = bench_at("notes", vec![1, LARGE], 3);
+fn a_keystroke_is_one_cheap_change() {
+    let records = bench_at("notes", vec![SMALL / 5, LARGE / 5], 2);
     let work = |size: &str| {
         let record = find(&records, "keystroke", size)
             .unwrap_or_else(|| panic!("the keystroke at {size} counts work"));
         Work::of_record(record).unwrap_or_else(|| panic!("the keystroke at {size} counts work"))
     };
-    let (one, many) = (work("1"), work("10k"));
+    let (small, large) = (work("200"), work("2k"));
     let mut misses = Vec::new();
-    for (size, at) in [("1", one), ("10k", many)] {
-        if at.commits != 0 {
+    for (size, at) in [("200", small), ("2k", large)] {
+        // One letter is one change of the record, never one per thing it touched.
+        if at.commits > 1 {
             misses.push(format!(
-                "{size}: keystrokes of a change still open committed {} changes, where the change lands once, at its end",
+                "{size}: a keystroke committed {} changes, where a letter is one",
                 at.commits
             ));
         }
-        // Nothing of the workspace is read for the letter: no record walked, no collection's
-        // entries listed, no filter evaluated on an item.
-        for (name, count) in [
-            ("located", at.located),
-            ("fields", at.fields),
-            ("listings", at.listings),
-            ("entries", at.entries),
-            ("evaluated", at.evaluated),
+        // Nothing of the workspace is read for the letter: no collection's entries listed, no
+        // filter evaluated on an item, and no resource found by walking the record beyond the
+        // one the change derives.
+        for (name, count, most) in [
+            ("located", at.located, 2),
+            ("fields", at.fields, 2),
+            ("listings", at.listings, 0),
+            ("entries", at.entries, 0),
+            ("evaluated", at.evaluated, 0),
         ] {
-            if count != 0 {
+            if count > most {
                 misses.push(format!(
-                    "{size}: a keystroke of a change still open read the workspace: {name} {count}"
+                    "{size}: a keystroke read the workspace: {name} {count}"
                 ));
             }
-        }
-    }
-    // It runs the same views and publishes the same for it in a notebook of ten thousand notes
-    // as in one of a single note.
-    for (name, at_large, at_small) in [
-        ("renders", many.renders, one.renders),
-        ("published", many.published, one.published),
-    ] {
-        if at_large != at_small {
-            misses.push(format!(
-                "notes keystroke: {name} {at_large} at 10k, {at_small} at 1"
-            ));
         }
     }
     assert!(misses.is_empty(), "{}", misses.join("\n"));

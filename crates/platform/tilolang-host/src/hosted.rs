@@ -1717,13 +1717,8 @@ impl Hosted {
         true
     }
 
-    /// Land what the person was still typing, commit it, and write what the record holds to its
-    /// on-disk copy, as the instance ends.
+    /// Write what the record holds to its on-disk copy, as the instance ends.
     pub fn flush(&mut self) {
-        // What the person was still typing when the window closed is a change of theirs like
-        // any other: it lands and reaches the workspace before the record is written.
-        self.instance.close_edit();
-        let _ = self.commit();
         self.record.flush();
     }
 }

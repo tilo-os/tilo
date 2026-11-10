@@ -105,10 +105,6 @@ pub struct InstanceRecord {
     /// Whether this device governs the workspace: the record's origin (convergence.md §1), whose
     /// copy needs no committed read from another host.
     governs: bool,
-    /// The person's gesture open now, and its last action: the next action of theirs that goes
-    /// on from it ([`DynAction::continues`]) is a change of the same gesture, which undo takes
-    /// back with it as one step. Any other step, an undo or a redo closes it.
-    gesture: Option<(tilo_actions::ActionId, DynAction)>,
 }
 
 /// The on-disk copies of the record's chunks: the store the record was opened from, and the
@@ -229,7 +225,6 @@ impl InstanceRecord {
             words: HostWords::new("en-US"),
             writers,
             governs: true,
-            gesture: None,
         }
     }
 
@@ -874,8 +869,6 @@ impl InstanceRecord {
         invoker: ActionInvoker,
         ambient: Option<&ActionContext>,
     ) -> Result<Option<Json>, RecordError> {
-        // An undo or redo ends the gesture: what is typed after it is a step of its own.
-        self.gesture = None;
         let action = HostHistoryEdit {
             edit: edit.clone(),
             words: self.words.clone(),
@@ -1215,12 +1208,13 @@ impl InstanceRecord {
             .committed(ticket)
             .ok_or(RecordError::NoAction(ticket))?;
         let invoker = ActionInvoker::actor(self.person.clone());
-        let gesture = match self.gesture.take() {
-            Some((gesture, last)) if last.continues(&action) => gesture,
-            _ => tilo_actions::ActionId::new(),
-        };
+        // The stage of the person's the change is one of, when it is one of a burst of typing;
+        // every other change is a step of its own.
+        let gesture = action
+            .authorship
+            .gesture
+            .unwrap_or_else(tilo_actions::ActionId::new);
         self.apply_in_gesture(&action, &invoker, None, Some(gesture))?;
-        self.gesture = Some((gesture, action));
         Ok(())
     }
 
@@ -1248,8 +1242,6 @@ impl InstanceRecord {
         invoker: &ActionInvoker,
         ambient: Option<&ActionContext>,
     ) -> Result<(), RecordError> {
-        // A step of its own ends the gesture open before it.
-        self.gesture = None;
         self.apply_in_gesture(action, invoker, ambient, None)
     }
 

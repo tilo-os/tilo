@@ -484,13 +484,8 @@ impl Workspace {
         (driver, in_place)
     }
 
-    /// Land what the person typed in the field they left: the change their typing made lands as
-    /// one, as the window lands it when the field leaves the keyboard (the bar's search taking
-    /// it, a pause, the window closing).
+    /// Send what the person typed to the record, as the window's next frame does.
     fn land_typed(&mut self) {
-        if let Some(host) = self.window.current_host() {
-            host.store().close_edit();
-        }
         self.window.commit_planned();
         self.settle();
     }

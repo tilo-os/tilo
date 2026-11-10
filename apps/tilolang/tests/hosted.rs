@@ -1180,8 +1180,7 @@ fn who_edited_a_page_reads_as_the_name_the_window_knows_them_by_never_their_key(
         .expect("the title field is laid out")
         .get_rect();
     session.window.click_at(rect.center().x, rect.center().y);
-    // The typing lands as the person stops: the page reads the change that named them the editor.
-    typing::after_a_pause(&session, std::time::Duration::ZERO);
+    // Each letter is a change of the record: the page reads the one that named them the editor.
     session.window.type_text("Plan");
     session.settle();
     // The person's name changes, as a roster renames them: the page follows.

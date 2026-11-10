@@ -372,6 +372,9 @@ fn read(change: &automerge::Change) -> Option<(Stamp, DynAction, Option<Run>)> {
             from: action.authorship.from.clone(),
             suggested_by: action.authorship.suggested_by.clone(),
             count: action.authorship.count.max(1),
+            gesture: context
+                .gesture
+                .map(|gesture| gesture.0.simple().to_string()),
             ..Version::default()
         },
     };

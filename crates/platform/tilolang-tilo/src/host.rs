@@ -760,6 +760,7 @@ impl HostInner {
                 suggested_by: None,
                 count: 1,
                 invocation: None,
+                gesture: None,
             },
             edits: Vec::new(),
         };

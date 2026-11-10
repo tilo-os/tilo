@@ -1005,16 +1005,21 @@ impl Core {
             let run = Value::Opt(last.run.as_ref().map(|run| Box::new(run_value(run))));
             let mine =
                 last.run.is_none() && self.looking_now().as_deref() == Some(last.who.as_str());
-            // How many changes the step folds: versions of one change are one command over many
-            // items, which history says the count of and Undo takes back together.
+            // How many acts the step folds: versions of one change are one command over many
+            // items, and the changes of one gesture are the keystrokes of one burst of typing —
+            // history says the count of each, and Undo takes them all back together.
             let changes = {
                 let mut count = 0usize;
-                let mut previous: Option<&str> = None;
+                let mut previous: Option<(&str, Option<&str>)> = None;
                 for v in &step {
-                    if previous != Some(v.change.as_str()) {
+                    let holds = (v.change.as_str(), v.gesture.as_deref());
+                    let continues = previous.is_some_and(|(change, gesture)| {
+                        change == holds.0 || (gesture.is_some() && gesture == holds.1)
+                    });
+                    if !continues {
                         count = count.saturating_add(1);
                     }
-                    previous = Some(v.change.as_str());
+                    previous = Some(holds);
                 }
                 count
             };

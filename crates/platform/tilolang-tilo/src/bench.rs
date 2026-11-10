@@ -2139,9 +2139,7 @@ fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<Vec<Record>, String> {
             };
             let mut loading = loading.borrow_mut();
             let doc = loading.wait()?;
-            // Typing is one change, landed when the person stops: the first change of a window
-            // is what the keystroke made, once the burst it opened is over.
-            host.store().close_edit();
+            // The keystroke is a change of its own: what the first change of a window costs.
             for committed in host.take_committed() {
                 execute(doc, &committed.action, "bench")?;
             }
@@ -2371,10 +2369,7 @@ fn keystroke(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Option<Reco
         done.patches = patches as u64;
         changes.push(took, done);
     }
-    // The keystrokes are one change of the field, landed when the person stops typing: what each
-    // of them cost while it was open is what the samples measured, and the change lands after
-    // them.
-    workspace.host.store().close_edit();
+    // Each keystroke was a change of the field of its own, committed in the frame it was made.
     match &mut typing {
         Typing::Item(editor, _) => {
             workspace.frame(&mut [editor.as_mut()])?;

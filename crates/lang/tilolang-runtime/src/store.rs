@@ -447,6 +447,11 @@ pub struct Version {
     /// How many items the change was made over ([`ChangeNote::count`]): more than one for one
     /// action applied to many items at once.
     pub count: u32,
+    /// The gesture the change is one of, when several of them are one act of the person's (the
+    /// keystrokes of one burst of typing): history lists them as one entry, and undo takes them
+    /// back as one step. `None` for a change that is an act of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gesture: Option<String>,
 }
 
 impl Version {
@@ -697,6 +702,7 @@ pub fn versions_in<'c>(
                 from: made.then(|| note.from.clone()).flatten(),
                 suggested_by: note.suggested_by.clone(),
                 count: note.count.max(1),
+                gesture: None,
             }
         })
         .collect();
