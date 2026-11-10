@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use fs_protocol::{FileNameV1, FileRecordId, FileVersionId, MAX_FILE_NAME_BYTES};
 use iroh_blobs::Hash;
 
-use crate::namespace::{ContentAuthority, Namespace, ROOT_ID};
+use crate::namespace::{Namespace, ROOT_ID};
 use tilo_lock::MutexRecover as _;
 
 /// A conflict copy that needs to be created (fully resolved location + name).
@@ -138,13 +138,6 @@ fn concurrent_edits(ns: &Namespace, id: &str, out: &mut Vec<ContentConflict>) {
             }
             return;
         }
-    }
-    // Under signed records a node's hash is the projection of its
-    // record, and concurrent edits are the record's own conflict (two
-    // heads, kept in its history). Concurrent hash values only say that
-    // two devices projected their own heads while apart.
-    if ns.content_authority() == ContentAuthority::SignedRecords {
-        return;
     }
     let distinct: std::collections::BTreeSet<String> = ns
         .content_conflicts(id)

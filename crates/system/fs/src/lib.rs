@@ -19,8 +19,6 @@ mod blob_access;
 #[cfg(feature = "filesystem")]
 pub mod cache_policy;
 #[cfg(feature = "filesystem")]
-mod canonical_frame;
-#[cfg(feature = "filesystem")]
 pub mod caps_file;
 #[cfg(feature = "filesystem")]
 pub mod change_signal;
@@ -69,41 +67,9 @@ pub mod public_content;
 #[cfg(feature = "filesystem")]
 pub mod reachability;
 #[cfg(feature = "filesystem")]
-pub mod record_access;
-#[cfg(feature = "filesystem")]
-pub mod record_changeset;
-#[cfg(feature = "filesystem")]
-mod record_log;
-#[cfg(feature = "filesystem")]
-pub mod record_materializer;
-#[cfg(feature = "filesystem")]
-pub mod record_mesh;
-#[cfg(feature = "filesystem")]
-pub mod record_protocol;
-#[cfg(feature = "filesystem")]
-pub mod record_publisher;
-#[cfg(feature = "filesystem")]
-pub mod record_reconcile;
-#[cfg(feature = "filesystem")]
-pub mod record_replication;
-#[cfg(feature = "filesystem")]
-pub mod record_repository;
-#[cfg(feature = "filesystem")]
-pub mod record_subscription;
-#[cfg(feature = "filesystem")]
-pub mod record_transaction;
-#[cfg(feature = "filesystem")]
-pub mod replica_ack;
-#[cfg(feature = "filesystem")]
 pub mod replica_content;
 #[cfg(feature = "filesystem")]
 mod rich_metadata;
-#[cfg(feature = "filesystem")]
-pub mod share_authority;
-#[cfg(feature = "filesystem")]
-pub mod share_link;
-#[cfg(feature = "filesystem")]
-pub mod share_session;
 #[cfg(feature = "filesystem")]
 pub mod smart;
 #[cfg(feature = "filesystem")]
@@ -117,8 +83,6 @@ pub mod sync;
 pub mod sync_folder;
 #[cfg(feature = "filesystem")]
 pub mod thumbs;
-#[cfg(feature = "filesystem")]
-pub mod transaction_coordinator;
 #[cfg(feature = "filesystem")]
 pub mod transport_gate;
 /// The mounted tree as the Files app's person record: the writer on the
@@ -175,76 +139,14 @@ pub use peer_auth::{
     AuthenticatedFsPeer, PeerAuthChallenge, PeerAuthError, PeerAuthProof, PendingPeerChallenges,
 };
 #[cfg(feature = "filesystem")]
-pub use record_access::{
-    MAX_RECORD_ACCESS_ENTRIES, MAX_RECORD_ACCESS_TTL_MS, RecordAccessBinding, RecordAccessRegistry,
-    RecordAccessRegistryError, RecordAccessSessionId,
-};
-#[cfg(feature = "filesystem")]
-pub use record_materializer::{
-    RecordMaterializer, RecordMaterializerError, RecordReconciliationReport,
-};
-#[cfg(feature = "filesystem")]
-pub use record_protocol::{
-    MAX_RECORD_CHANGE_AWAITS, MAX_RECORD_PROTOCOL_FRAME_BYTES, RECORD_AWAIT_CHANGE_LIMIT,
-    RECORD_PROTOCOL_VERSION, RecordMutationSink, RecordMutationSinkError, RecordProtocol,
-    RecordProtocolClient, RecordProtocolClientError, RecordProtocolCredentialV1,
-    RecordProtocolError, RecordProtocolOperationV1, RecordProtocolRequestV1,
-    RecordProtocolResponseV1, RecordProtocolSessionV1, RecordProtocolSnapshotV1,
-    RecordProtocolStream, TILO_FS_RECORD_ALPN,
-};
-#[cfg(feature = "filesystem")]
-pub use record_publisher::{
-    BindingPublishStatus, LocalOwnerAuthorizer, MetadataPublishStatus, PublishReport,
-    RecordPublisher, RecordPublisherError,
-};
-#[cfg(feature = "filesystem")]
-pub use record_replication::{
-    RecordAction, RecordAuthorizer, RecordEnvelopeV1, RecordOperationV1, RecordReplica,
-    RecordReplicationError, RecordSnapshot,
-};
-#[cfg(feature = "filesystem")]
-pub use record_repository::{
-    MAX_RECORD_OPERATIONS, MAX_RECORD_VERSIONS, MAX_REPOSITORY_RECORDS, RecordRepository,
-    RecordRepositoryError, RecordRepositoryKey, RecordTransactionCheckpoint,
-};
-#[cfg(feature = "filesystem")]
-pub use record_subscription::{
-    MAX_RECORD_SUBSCRIPTION_FILE_BYTES, MAX_RECORD_SUBSCRIPTION_URI_BYTES,
-    MAX_RECORD_SUBSCRIPTIONS, RECORD_SUBSCRIPTION_STORE_VERSION, RecordSubscription,
-    RecordSubscriptionFailure, RecordSubscriptionFailureCode, RecordSubscriptionKey,
-    RecordSubscriptionStore, RecordSubscriptionStoreError,
-};
-#[cfg(feature = "filesystem")]
-pub use record_transaction::{
-    MAX_RECORD_TRANSACTION_ENTRIES, MAX_RECORD_TRANSACTION_ENTRY_BYTES,
-    RECORD_TRANSACTION_JOURNAL_VERSION, RecordTransactionJournal, RecordTransactionJournalEntry,
-    RecordTransactionJournalError, RecordTransactionParticipantBatch, RecordTransactionPhase,
-};
-#[cfg(feature = "filesystem")]
-pub use replica_ack::{
-    MAX_REPLICA_ACK_LIFETIME_MS, REPLICA_ACK_PROTOCOL_VERSION, ReplicaAckError,
-    ReplicaAckRequestV1, ReplicaAckResponseV1, ReplicaAckV1,
-};
-#[cfg(feature = "filesystem")]
-pub use share_authority::{Redemption, ShareAuthority, ShareAuthorityError};
-#[cfg(feature = "filesystem")]
-pub use share_link::{FileShareLinkError, FileShareLinkV2};
-#[cfg(feature = "filesystem")]
-pub use share_session::{LiveActorCertification, ShareSession, ShareSessionError};
-#[cfg(feature = "filesystem")]
 pub use smart::Heuristics;
 #[cfg(feature = "filesystem")]
 pub use store::{BackendGcRelease, StoreEvictionError};
 pub use store::{ContentStore, DEFAULT_BLOB_GC_INTERVAL};
 #[cfg(feature = "filesystem")]
-pub use sync::{FsTransportIdentity, RecordServices, Ticket, Workspace};
+pub use sync::{FsTransportIdentity, Ticket, Workspace};
 #[cfg(feature = "filesystem")]
 pub use thumbs::ThumbProvider;
-#[cfg(feature = "filesystem")]
-pub use transaction_coordinator::{
-    RecordTransactionCoordinatorError, complete_replacement_transaction,
-};
-
 #[cfg(test)]
 #[cfg(all(target_os = "macos", feature = "filesystem"))]
 mod native_mount_selection_tests {

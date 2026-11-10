@@ -46,12 +46,11 @@ use super::state::{LocalStat, Materialized, NativeState, NodeUpdate, StoredLease
 use crate::fs::QuickFS;
 use crate::hydration::Hydrator;
 use crate::namespace::{ChangesetMark, PosixAttrs};
-use crate::sync::SyncHandle;
+use tilo_lock::MutexRecover as _;
 
-/// How often the record plane is re-projected without a change signal. A
-/// projection waiting for records runs again when they are applied (the
-/// sync layer's change signal); this only retries content that could not
-/// be fetched.
+/// How often the tree is re-projected without a change signal. A projection
+/// waiting for content runs again when the tree changes; this only retries
+/// content that could not be fetched.
 const PROJECT_FALLBACK: Duration = Duration::from_secs(3);
 const LEASE_TICK: Duration = Duration::from_secs(1);
 /// Delay before a failed publication is tried again.
@@ -272,7 +271,6 @@ impl NativePlane {
         cfg: NativeConfig,
         fs: Arc<QuickFS>,
         content: Arc<Hydrator>,
-        sync: Option<Arc<SyncHandle>>,
         runtime: tokio::runtime::Handle,
     ) -> Result<Self> {
         let status = Arc::new(Mutex::new(PlaneStatus::default()));
@@ -300,7 +298,7 @@ impl NativePlane {
                 .name("native-plane".into())
                 .spawn(move || {
                     let _exit = ExitSignal(exit);
-                    engine.run(&stop, sync)
+                    engine.run(&stop)
                 })
                 .context("starting the native data plane thread")?
         };
@@ -460,8 +458,8 @@ impl Engine {
         Ok(())
     }
 
-    fn run(mut self, stop: &AtomicBool, sync: Option<Arc<SyncHandle>>) -> Result<()> {
-        let mut generation = sync.map(|s| s.subscribe_record_index_generation());
+    fn run(mut self, stop: &AtomicBool) -> Result<()> {
+        let mut generation = self.fs.namespace.lock_recover().subscribe_changes();
         let mut last_project = Instant::now();
         let mut last_lease = Instant::now()
             .checked_sub(LEASE_TICK)
@@ -483,13 +481,9 @@ impl Engine {
                 }
                 self.scheduler.cut();
             }
-            let remote = generation
-                .as_mut()
-                .is_some_and(|g| g.has_changed().unwrap_or(false));
+            let remote = generation.has_changed().unwrap_or(false);
             if remote || last_project.elapsed() >= PROJECT_FALLBACK {
-                if let Some(g) = generation.as_mut() {
-                    g.borrow_and_update();
-                }
+                generation.borrow_and_update();
                 if remote {
                     self.leases.arbitrate();
                 }

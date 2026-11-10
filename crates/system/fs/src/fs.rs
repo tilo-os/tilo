@@ -57,7 +57,6 @@ use crate::namespace::{InodeQuery, InodeView, Namespace};
 use crate::smart::Heuristics;
 use crate::smart::history::{AccessHistory, natural_cmp};
 use crate::smart::kept_history::{KeptHistory, KeptHistorySource};
-use crate::sync::SyncHandle;
 use fs_protocol::projection::{
     RECORD_INDEX_PAGE_ENTRIES, RECORD_INDEX_V2_VERSION, RecordIndexEntryV1,
 };
@@ -192,8 +191,9 @@ mod exact_conflict_name_tests {
     }
 }
 
-struct ReplacementTransactionRuntime {
-    journal: Arc<Mutex<crate::record_transaction::RecordTransactionJournal>>,
+/// Where this mount's document lives, so a commit can make itself durable
+/// before it answers.
+struct NamespacePersistence {
     namespace_path: std::path::PathBuf,
 }
 
@@ -659,8 +659,6 @@ pub struct QuickFS {
     kept_history: Option<Arc<KeptHistory>>,
     /// Binary content (images, binary package parts) that documents projected as files refer to.
     document_content: tilo_content::ContentStore,
-    /// Broadcasts local CRDT deltas to peers (None when running standalone).
-    sync: Option<Arc<SyncHandle>>,
     /// Per-inode in-flight write stages (content-addressed on flush/release).
     write_buffers: Arc<Mutex<WriteStages>>,
     /// Where stages keep written bytes; `None` keeps them in memory.
@@ -725,12 +723,10 @@ pub struct QuickFS {
     /// The certified local actor attributed to the versions this mount
     /// appends; the versions themselves live in the namespace document.
     history: Option<fs_protocol::FileActor>,
-    /// Signed exact-record projection used by partial-share network sessions.
-    record_publisher: Option<Arc<crate::record_publisher::RecordPublisher>>,
     /// Which agent the desktop session says caused the writes to some paths
     /// ([`crate::write_attribution`]).
     write_attributions: Option<Arc<crate::write_attribution::WriteAttributions>>,
-    replacement_transactions: Option<ReplacementTransactionRuntime>,
+    namespace_persistence: Option<NamespacePersistence>,
     /// Downloads behind restores and conflict resolutions whose content is
     /// not local yet, so no FUSE worker waits for them.
     history_jobs: history_jobs::HistoryJobs,
@@ -745,10 +741,10 @@ pub struct QuickFS {
     /// A changeset changed the namespace but was not durable: the next
     /// durable changeset announces both.
     announce_held: AtomicBool,
-    /// Explicit one-time owner migration permission. Joining peers disable
-    /// this so unsigned legacy namespace bytes are never automatically
-    /// blessed into their certified actor's signed history.
-    allow_legacy_record_migration: bool,
+    /// Whether files a mount inherits from a document written before versions
+    /// lived in it get their baseline version here. A mount that joined
+    /// another device's workspace does not rewrite that device's history.
+    allow_history_baseline: bool,
 
     /// Tells inotify of the changes the kernel did not make
     /// ([`crate::change_signal`]); `None` leaves watchers to poll.
@@ -777,7 +773,6 @@ impl QuickFS {
             access_history: Arc::new(Mutex::new(AccessHistory::new())),
             kept_history: None,
             document_content: tilo_content::ContentStore::memory(),
-            sync: None,
             write_buffers: Arc::new(Mutex::new(HashMap::new())),
             stage_dir: None,
             memory_stage_budget: Arc::new(write_stage::MemoryBudget::default()),
@@ -802,16 +797,15 @@ impl QuickFS {
             eviction_queue: None,
 
             history: None,
-            record_publisher: None,
             write_attributions: None,
-            replacement_transactions: None,
+            namespace_persistence: None,
             history_jobs: history_jobs::HistoryJobs::default(),
             checked_history_workspace: None,
             mount_lifetime: uuid::Uuid::new_v4(),
             durability_hook: std::sync::OnceLock::new(),
             changeset_open: AtomicBool::new(false),
             announce_held: AtomicBool::new(false),
-            allow_legacy_record_migration: true,
+            allow_history_baseline: true,
 
             change_signal: None,
             #[cfg(test)]
@@ -864,8 +858,8 @@ impl QuickFS {
     }
 
     #[must_use]
-    pub fn without_legacy_record_migration(mut self) -> Self {
-        self.allow_legacy_record_migration = false;
+    pub fn without_history_baseline(mut self) -> Self {
+        self.allow_history_baseline = false;
         self
     }
 
@@ -1699,7 +1693,7 @@ impl QuickFS {
         let registry = Arc::clone(self.availability.as_ref()?);
         let (record_id, revision) = {
             let ns = self.ns();
-            (ns.record_id_for(ino)?, ns.content_revision_for(ino))
+            (ns.record_id_for(ino)?, ns.observed_content_revision(ino))
         };
         let content = hash.zip(revision).and_then(|(hash, revision)| {
             (revision.content_hash.map(|content| content.0) == Some(*hash.as_bytes())).then(|| {
@@ -1959,8 +1953,7 @@ impl QuickFS {
     /// Whether `ino` is a CRDT-backed document (vs. opaque content).
     fn is_document(&self, ino: u64) -> bool {
         let namespace = self.ns();
-        namespace.content_authority() == crate::namespace::ContentAuthority::LegacyNamespace
-            && namespace.document_codec(ino).is_some()
+        namespace.document_codec(ino).is_some()
     }
 
     /// The hydration state of `ino`, served for the `user.tilo.sync` xattr.
@@ -2181,24 +2174,6 @@ impl QuickFS {
         Some(bytes)
     }
 
-    /// Attach a sync handle so write ops propagate to peers.
-    #[must_use]
-    pub fn with_sync(mut self, sync: Arc<SyncHandle>) -> Self {
-        self.sync = Some(sync);
-        self.start_record_index_sync_worker();
-        self
-    }
-
-    fn start_record_index_sync_worker(&self) {
-        let (Some(sync), Some(enforcement)) = (&self.sync, self.enforcement.clone()) else {
-            return;
-        };
-        self.start_record_index_refresh_worker(
-            sync.subscribe_record_index_generation(),
-            enforcement,
-        );
-    }
-
     fn start_record_index_acl_worker(&self) {
         let Some((acl, identity)) = self.enforcement.clone() else {
             return;
@@ -2390,7 +2365,7 @@ impl QuickFS {
         actor: fs_protocol::FileActor,
     ) -> Result<Self, crate::namespace::history::HistoryError> {
         self.history = Some(actor);
-        if self.allow_legacy_record_migration {
+        if self.allow_history_baseline {
             self.ensure_history_baseline()?;
         }
         Ok(self)
@@ -2408,13 +2383,11 @@ impl QuickFS {
     }
 
     /// Record which agent caused this device's `version`, when a session
-    /// lease covers `path` (or, without one, the record's current path).
-    /// Signed by this device like the version itself. A failure leaves the
-    /// version the person's and never fails the write.
+    /// lease covers `path` (or, without one, the record's current path), in
+    /// the record's own history. A failure leaves the version the person's
+    /// and never fails the write.
     fn attribute_version(&self, version: &fs_protocol::FileVersionV1, path: Option<&str>) {
-        let (Some(attributions), Some(publisher)) =
-            (&self.write_attributions, &self.record_publisher)
-        else {
+        let Some(attributions) = &self.write_attributions else {
             return;
         };
         // Most writes happen with no lease at all: they cost no path lookup.
@@ -2432,10 +2405,22 @@ impl QuickFS {
         let Some(attribution) = path.and_then(|path| attributions.for_path(&path)) else {
             return;
         };
-        if let Err(error) = publisher.attribute(version.record_id, version.id, &attribution) {
+        let attributed = fs_protocol::FileVersionAttributionV1 {
+            version_id: version.id,
+            attribution,
+        };
+        let recorded = {
+            let mut namespace = self.ns();
+            let recorded = namespace.attribute_version(version.record_id, &attributed);
+            if recorded.as_ref().is_ok_and(|recorded| *recorded) {
+                namespace.note_change();
+            }
+            recorded
+        };
+        if let Err(error) = recorded {
             eprintln!(
-                "could not attribute version {:?} to {}: {error}",
-                version.id, attribution.actor
+                "could not attribute version {:?} of {:?}: {error}",
+                version.id, version.record_id
             );
         }
     }
@@ -2448,183 +2433,12 @@ impl QuickFS {
         }
     }
 
-    /// Whether the session leases any write attribution right now.
-    fn attributing(&self) -> bool {
-        self.write_attributions
-            .as_ref()
-            .is_some_and(|attributions| !attributions.is_idle())
-    }
-
-    /// Attach the signed record publisher and backfill locally authored
-    /// history that predates the record transport.
-    pub fn with_record_publisher(
-        mut self,
-        publisher: Arc<crate::record_publisher::RecordPublisher>,
-    ) -> Result<Self, crate::record_publisher::RecordPublisherError> {
-        self.record_publisher = Some(publisher);
-        if self.allow_legacy_record_migration {
-            self.ensure_record_publication()?;
-        }
-        self.rebuild_signed_content_projection()?;
-        Ok(self)
-    }
-
-    /// Attach the durable replacement-transaction journal and recover any
-    /// interrupted transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns a publisher error when recovery cannot be completed safely.
-    pub fn with_replacement_transactions(
-        mut self,
-        journal: Arc<Mutex<crate::record_transaction::RecordTransactionJournal>>,
-        namespace_path: std::path::PathBuf,
-    ) -> Result<Self, crate::record_publisher::RecordPublisherError> {
-        if let (Some(publisher), Some(_)) = (&self.record_publisher, &self.history) {
-            publisher
-                .repository()
-                .restore_admission_fences(&*journal.lock().map_err(|_| {
-                    crate::record_publisher::RecordPublisherError::PublicationUnavailable
-                })?)?;
-            let sync = self.sync.clone();
-            publisher.recover_replacement_transactions(
-                &mut journal.lock_recover(),
-                &self.namespace,
-                &namespace_path,
-                move |_delta| {
-                    if let Some(sync) = &sync {
-                        sync.announce_change();
-                    }
-                    Ok(())
-                },
-            )?;
-        }
-        self.replacement_transactions = Some(ReplacementTransactionRuntime {
-            journal,
-            namespace_path,
-        });
-        Ok(self)
-    }
-
-    fn rebuild_signed_content_projection(
-        &self,
-    ) -> Result<(), crate::record_publisher::RecordPublisherError> {
-        let Some(publisher) = &self.record_publisher else {
-            return Ok(());
-        };
-        let file_records = {
-            let mut namespace = self.ns();
-            let records = namespace
-                .live_node_ids()
-                .into_iter()
-                .filter_map(|id| {
-                    let path = namespace.path_for_id(&id)?;
-                    let ino = namespace.resolve_path_ino(&path)?;
-                    let attr = namespace.getattr(ino)?;
-                    (attr.kind == FileType::RegularFile)
-                        .then(|| namespace.record_id_for(ino))
-                        .flatten()
-                })
-                .collect::<Vec<_>>();
-            namespace.enable_signed_content_authority();
-            records
-        };
-        for record_id in file_records {
-            let Some(snapshot) = publisher.snapshot(record_id)? else {
-                continue;
-            };
-            let Some(revision) = snapshot.content_revision else {
-                continue;
-            };
-            let thumbnail = snapshot.metadata.as_ref().and_then(|metadata| {
-                metadata
-                    .previews
-                    .iter()
-                    .filter(|preview| preview.status == fs_protocol::PreviewStatus::Ready)
-                    .filter_map(|preview| {
-                        preview
-                            .hash
-                            .map(|hash| (preview.max_edge, Hash::from(hash.0)))
-                    })
-                    .max_by_key(|(max_edge, _)| *max_edge)
-                    .map(|(_, hash)| hash)
-            });
-            let mut namespace = self.ns();
-            if !namespace.install_verified_content_revision(revision) {
-                return Err(
-                    crate::record_publisher::RecordPublisherError::ProjectionRejected(record_id),
-                );
-            }
-            let _ = namespace.install_verified_thumbnail(record_id, thumbnail);
-        }
-        Ok(())
-    }
-
-    fn ensure_record_publication(
-        &self,
-    ) -> Result<(), crate::record_publisher::RecordPublisherError> {
-        let (Some(publisher), Some(_)) = (&self.record_publisher, &self.history) else {
-            return Ok(());
-        };
-        let binding_inodes = self.live_inodes_with_root();
-        for ino in binding_inodes {
-            let binding = {
-                let namespace = self.ns();
-                let observed_at_ms = namespace.getattr(ino).map_or_else(now_ms, |attr| {
-                    attr.mtime.duration_since(UNIX_EPOCH).map_or_else(
-                        |_| now_ms(),
-                        |duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
-                    )
-                });
-                namespace.signed_binding_for(ino, publisher.actor(), observed_at_ms)
-            };
-            if let Some(binding) = binding {
-                publisher.publish_binding(&binding)?;
-            }
-        }
-        let inodes = self.live_regular_file_inodes();
-        for ino in inodes {
-            let Some(snapshot) = self.version_snapshot(ino, false, None) else {
-                continue;
-            };
-            let history_state = self.ns().record_history(snapshot.record_id);
-            let versions = history_state
-                .as_ref()
-                .map(|history| {
-                    history
-                        .versions
-                        .iter()
-                        .filter(|version| version.actor == publisher.actor())
-                        .cloned()
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            let conflicts = history_state
-                .map(|history| {
-                    history
-                        .conflicts
-                        .into_iter()
-                        .filter(|conflict| {
-                            conflict
-                                .resolution
-                                .as_ref()
-                                .is_none_or(|resolution| resolution.actor == publisher.actor())
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            let observed_at_ms = versions
-                .iter()
-                .map(|version| version.timestamp_ms)
-                .max()
-                .unwrap_or_else(now_ms);
-            publisher.publish_state(
-                &self.record_metadata(&snapshot, observed_at_ms, publisher.actor()),
-                &versions,
-                &conflicts,
-            )?;
-        }
-        Ok(())
+    /// Keep the path of this mount's document, so a commit writes it out
+    /// before answering.
+    #[must_use]
+    pub fn with_namespace_persistence(mut self, namespace_path: std::path::PathBuf) -> Self {
+        self.namespace_persistence = Some(NamespacePersistence { namespace_path });
+        self
     }
 
     fn ensure_history_baseline(&self) -> Result<(), crate::namespace::history::HistoryError> {
@@ -2661,21 +2475,6 @@ impl QuickFS {
             .iter()
             .filter_map(|path| namespace.resolve_path_ino(path))
             .collect()
-    }
-
-    fn live_regular_file_inodes(&self) -> Vec<u64> {
-        let mut namespace = self.ns();
-        let live_inodes = Self::live_inodes_locked(&mut namespace);
-        let regular_file_inodes = live_inodes
-            .into_iter()
-            .filter(|ino| {
-                namespace
-                    .getattr(*ino)
-                    .is_some_and(|attr| attr.kind == FileType::RegularFile)
-            })
-            .collect();
-        drop(namespace);
-        regular_file_inodes
     }
 
     fn version_snapshot(
@@ -2723,52 +2522,24 @@ impl QuickFS {
         })
     }
 
-    fn record_metadata(
-        &self,
-        snapshot: &VersionSnapshot,
-        observed_at_ms: u64,
-        actor: fs_protocol::FileActor,
-    ) -> fs_protocol::FileMetadataV1 {
+    /// The metadata projection of `ino`'s current content: the rich facts
+    /// this device extracted from exactly those bytes.
+    fn metadata_projection_for(&self, ino: u64) -> Option<Vec<u8>> {
+        let (record_id, hash) = {
+            let namespace = self.ns();
+            (
+                namespace.record_id_for(ino)?,
+                namespace
+                    .hash_for(ino)
+                    .map(|hash| fs_protocol::ContentHash(*hash.as_bytes())),
+            )
+        };
         let properties = self
             .rich_metadata
             .lock_recover()
-            .get(&snapshot.record_id)
-            .filter(|(hash, _)| Some(*hash) == snapshot.content_hash)
-            .map(|(_, properties)| properties.clone())
-            .or_else(|| {
-                let published = self
-                    .record_publisher
-                    .as_ref()?
-                    .snapshot(snapshot.record_id)
-                    .ok()??;
-                let metadata = published.metadata?;
-                (metadata.content_hash == snapshot.content_hash)
-                    .then_some(metadata.properties)
-                    .flatten()
-            });
-        fs_protocol::FileMetadataV1 {
-            schema_version: fs_protocol::files::FILE_METADATA_VERSION,
-            record_id: snapshot.record_id,
-            content_hash: snapshot.content_hash,
-            byte_len: snapshot.byte_len,
-            mime: None,
-            previews: Vec::new(),
-            latest_actor: Some(actor),
-            observed_at_ms,
-            index_status: fs_protocol::IndexStatus::Pending,
-            properties,
-        }
-    }
-
-    fn metadata_projection_for(&self, ino: u64) -> Option<Vec<u8>> {
-        let record_id = self.ns().record_id_for(ino)?;
-        let properties = self
-            .record_publisher
-            .as_ref()?
-            .snapshot(record_id)
-            .ok()??
-            .metadata?
-            .properties?;
+            .get(&record_id)
+            .filter(|(properties_hash, _)| Some(*properties_hash) == hash)
+            .map(|(_, properties)| properties.clone())?;
         fs_protocol::MetadataProjectionV1 {
             schema_version: fs_protocol::projection::METADATA_PROJECTION_VERSION,
             record_id,
@@ -2842,30 +2613,12 @@ impl QuickFS {
             metadata_hash: snapshot.metadata_hash,
             provenance,
         };
-        if let Some(publisher) = &self.record_publisher {
-            let published = if snapshot.kind == FileType::Directory {
-                publisher.publish_structural_version(&version).map(|_| ())
-            } else {
-                publisher
-                    .publish(
-                        &self.record_metadata(&snapshot, observed_at_ms, *actor),
-                        std::slice::from_ref(&version),
-                    )
-                    .map(|_| ())
-            };
-            published.map_err(|error| {
-                if error.is_capacity_exhausted() {
-                    crate::namespace::history::HistoryError::CapacityExhausted(error.to_string())
-                } else {
-                    crate::namespace::history::HistoryError::Publication(error.to_string())
-                }
-            })?;
-        }
-        self.attribute_version(&version, None);
         {
             let mut namespace = self.ns();
-            namespace.append_version(version)?;
+            namespace.append_version(version.clone())?;
         }
+        let _ = observed_at_ms;
+        self.attribute_version(&version, None);
         if let Some(registry) = &self.availability {
             let mut registry = registry.lock_recover();
             if let Some(mut record) = registry.get(snapshot.record_id).cloned() {
@@ -2876,6 +2629,42 @@ impl QuickFS {
             }
         }
         Ok(id)
+    }
+
+    /// The workspace this mount belongs to: what a multi-record commit names.
+    fn mount_workspace(&self) -> Result<uuid::Uuid, i32> {
+        self.checked_history_workspace
+            .filter(|workspace| !workspace.is_nil())
+            .ok_or(libc::ENOTSUP)
+    }
+
+    /// Apply one multi-record mutation to this mount's document: the whole
+    /// namespace it produces is durable before anything answers, and the
+    /// mount publishes it once.
+    fn commit_manifest(
+        &self,
+        manifest: &fs_protocol::FileMutationTransactionManifest,
+    ) -> Result<(), i32> {
+        {
+            let mut namespace = self.ns();
+            let mut candidate = namespace.clone();
+            candidate.note_change();
+            let delta = candidate.apply_manifest(manifest).map_err(|_| EIO)?;
+            if delta.is_none() {
+                return Ok(());
+            }
+            if let Some(persistence) = &self.namespace_persistence {
+                crate::durable_backup::write(
+                    &persistence.namespace_path,
+                    &candidate.save(),
+                    |bytes| Namespace::from_bytes("checked-restore-validator", bytes).is_ok(),
+                )
+                .map_err(|_| EIO)?;
+            }
+            *namespace = candidate;
+        }
+        self.publish();
+        Ok(())
     }
 
     fn record_version(
@@ -3420,12 +3209,11 @@ impl QuickFS {
             return Err(libc::ENOTSUP);
         }
         let actor = self.history.as_ref().ok_or(libc::ENOTSUP)?;
-        let publisher = self.record_publisher.as_ref().ok_or(libc::ENOTSUP)?;
         let (record_id, expected_revision) = {
             let namespace = self.ns();
             (
                 namespace.record_id_for(ino).ok_or(ENOENT)?,
-                namespace.content_revision_for(ino).ok_or(EIO)?,
+                namespace.observed_content_revision(ino).ok_or(EIO)?,
             )
         };
         if expected_revision.record_id != record_id {
@@ -3502,34 +3290,24 @@ impl QuickFS {
         resolved.status = fs_protocol::ConflictStatus::Resolved;
         resolved.resolution = Some(resolution.clone());
 
-        // Publish the immutable result and resolution before exposing its
-        // bytes through the namespace. The repository operation stream is
-        // signed, replay-safe and deterministically ordered across devices.
-        publisher
-            .publish_state(
-                &self.record_metadata(&result_snapshot, timestamp_ms, *actor),
-                std::slice::from_ref(&result_version),
-                std::slice::from_ref(&resolved),
-            )
-            .map_err(|_| EIO)?;
-        self.attribute_version(&result_version, None);
+        let converged = fs_protocol::ContentRevisionV1 {
+            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
+            record_id,
+            version_id: result_version.id,
+            content_hash: result_snapshot.content_hash,
+            byte_len: result_snapshot.byte_len,
+            metadata_hash: result_snapshot.metadata_hash,
+        };
         {
             let mut namespace = self.ns();
-            namespace.append_version(result_version).map_err(|_| EIO)?;
+            namespace
+                .append_version(result_version.clone())
+                .map_err(|_| EIO)?;
             namespace
                 .resolve_history_conflict(record_id, conflict_id, &resolution)
                 .map_err(|_| EIO)?;
-        }
-
-        let converged = publisher
-            .snapshot(record_id)
-            .map_err(|_| EIO)?
-            .and_then(|snapshot| snapshot.content_revision)
-            .ok_or(EIO)?;
-        {
-            let mut namespace = self.ns();
             if namespace.record_id_for(ino) != Some(record_id)
-                || namespace.content_revision_for(ino) != Some(expected_revision)
+                || namespace.observed_content_revision(ino) != Some(expected_revision)
             {
                 return Err(EBUSY);
             }
@@ -3538,6 +3316,7 @@ impl QuickFS {
             }
             namespace.note_change();
         }
+        self.attribute_version(&result_version, None);
         self.publish();
         if let Some(registry) = &self.availability {
             let mut registry = registry.lock_recover();
@@ -3562,15 +3341,11 @@ impl QuickFS {
         selected_version: fs_protocol::FileVersionId,
     ) -> Result<(), i32> {
         let actor = self.history.as_ref().ok_or(libc::ENOTSUP)?;
-        let publisher = self.record_publisher.as_ref().ok_or(libc::ENOTSUP)?;
-        let runtime = self
-            .replacement_transactions
-            .as_ref()
-            .ok_or(libc::ENOTSUP)?;
+        let workspace_id = self.mount_workspace()?;
         let (record_id, current_revision, parent_record, source_name) = {
             let mut namespace = self.ns();
             let record_id = namespace.record_id_for(ino).ok_or(ENOENT)?;
-            let current = namespace.content_revision_for(ino).ok_or(EIO)?;
+            let current = namespace.observed_content_revision(ino).ok_or(EIO)?;
             let parent = namespace
                 .parent_ino(ino)
                 .and_then(|parent| namespace.record_id_for(parent))
@@ -3596,7 +3371,7 @@ impl QuickFS {
             .ok_or(EINVAL)?;
         let result_id = fs_protocol::FileVersionId(merge_uuid(
             b"result",
-            publisher.workspace_id(),
+            workspace_id,
             record_id,
             conflict_id,
             &conflict.versions,
@@ -3761,13 +3536,13 @@ impl QuickFS {
             schema_version: fs_protocol::files::FILE_MUTATION_TRANSACTION_VERSION_V2,
             transaction_id: merge_uuid(
                 b"transaction",
-                publisher.workspace_id(),
+                workspace_id,
                 record_id,
                 conflict_id,
                 &conflict.versions,
                 *actor,
             ),
-            workspace_id: publisher.workspace_id(),
+            workspace_id,
             actor: *actor,
             timestamp_ms,
             operation: fs_protocol::FileMutationOperation::MergeContentConflict {
@@ -3789,21 +3564,7 @@ impl QuickFS {
             .iter()
             .map(|participant| participant.proposed_version.clone())
             .collect();
-        let sync = self.sync.clone();
-        publisher
-            .execute_replacement_transaction(
-                manifest,
-                &mut runtime.journal.lock_recover(),
-                &self.namespace,
-                &runtime.namespace_path,
-                move |_delta| {
-                    if let Some(sync) = &sync {
-                        sync.announce_change();
-                    }
-                    Ok(())
-                },
-            )
-            .map_err(|_| EIO)?;
+        self.commit_manifest(&manifest)?;
         self.attribute_versions(&attributed, None);
         Ok(())
     }
@@ -3821,15 +3582,11 @@ impl QuickFS {
         selected_version: fs_protocol::FileVersionId,
     ) -> Result<(), i32> {
         let actor = self.history.as_ref().ok_or(libc::ENOTSUP)?;
-        let publisher = self.record_publisher.as_ref().ok_or(libc::ENOTSUP)?;
-        let transaction_runtime = self
-            .replacement_transactions
-            .as_ref()
-            .ok_or(libc::ENOTSUP)?;
+        let workspace_id = self.mount_workspace()?;
         let (source_record, current_revision, parent_record, source_name, source_path) = {
             let mut namespace = self.ns();
             let source_record = namespace.record_id_for(ino).ok_or(ENOENT)?;
-            let current_revision = namespace.content_revision_for(ino).ok_or(EIO)?;
+            let current_revision = namespace.observed_content_revision(ino).ok_or(EIO)?;
             let parent_ino = namespace.parent_ino(ino).ok_or(EIO)?;
             let parent_record = namespace.record_id_for(parent_ino).ok_or(EIO)?;
             let source_path = namespace.path_for(ino).ok_or(EIO)?;
@@ -3845,7 +3602,7 @@ impl QuickFS {
         let derive = |domain: &[u8]| {
             keep_both_uuid(
                 domain,
-                publisher.workspace_id(),
+                workspace_id,
                 source_record,
                 conflict_id,
                 selected_version,
@@ -4020,7 +3777,7 @@ impl QuickFS {
         let manifest = fs_protocol::FileMutationTransactionManifest {
             schema_version: fs_protocol::files::FILE_MUTATION_TRANSACTION_VERSION_V2,
             transaction_id,
-            workspace_id: publisher.workspace_id(),
+            workspace_id,
             actor: *actor,
             timestamp_ms,
             operation: fs_protocol::FileMutationOperation::KeepBothContentConflict {
@@ -4042,21 +3799,7 @@ impl QuickFS {
             .iter()
             .map(|participant| participant.proposed_version.clone())
             .collect();
-        let sync = self.sync.clone();
-        publisher
-            .execute_replacement_transaction(
-                manifest,
-                &mut transaction_runtime.journal.lock_recover(),
-                &self.namespace,
-                &transaction_runtime.namespace_path,
-                move |_delta| {
-                    if let Some(sync) = &sync {
-                        sync.announce_change();
-                    }
-                    Ok(())
-                },
-            )
-            .map_err(|_| EIO)?;
+        self.commit_manifest(&manifest)?;
         self.attribute_versions(&attributed, None);
         Ok(())
     }
@@ -4418,58 +4161,18 @@ impl QuickFS {
         }
 
         let bytes = self.local_content_blocking(content_hash)?;
-        let properties = self.remember_rich_metadata(ino, &bytes);
+        self.remember_rich_metadata(ino, &bytes);
         let png = provider.generate(ch, category, &bytes)?;
 
         // Record the hash on the node so the pointer projects to peers, who
         // then hydrate the blob (not the whole file) to show a preview.
         if let Some(tbh) = self.ingest_blob_blocking(&png) {
-            if let Some(publisher) = &self.record_publisher {
-                let record_id = self.ns().record_id_for(ino)?;
-                let published = (|| {
-                    let snapshot = publisher.snapshot(record_id).ok()??;
-                    let revision = snapshot.content_revision?;
-                    if revision.content_hash != Some(fs_protocol::ContentHash(ch)) {
-                        return None;
-                    }
-                    let mut metadata = snapshot.metadata?;
-                    metadata.previews.retain(|preview| preview.max_edge != 256);
-                    metadata.previews.push(fs_protocol::PreviewVariant {
-                        max_edge: 256,
-                        hash: Some(fs_protocol::ContentHash(*tbh.as_bytes())),
-                        status: fs_protocol::PreviewStatus::Ready,
-                    });
-                    metadata.latest_actor = Some(publisher.actor());
-                    if properties.is_some() {
-                        metadata.properties.clone_from(&properties);
-                    }
-                    metadata.observed_at_ms =
-                        now_ms().max(metadata.observed_at_ms.saturating_add(1));
-                    publisher.publish(&metadata, &[]).ok()?;
-                    publisher
-                        .snapshot(record_id)
-                        .ok()??
-                        .metadata?
-                        .previews
-                        .into_iter()
-                        .filter(|preview| preview.status == fs_protocol::PreviewStatus::Ready)
-                        .filter_map(|preview| preview.hash.map(|hash| (preview.max_edge, hash)))
-                        .max_by_key(|(max_edge, _)| *max_edge)
-                        .map(|(_, hash)| hash)
-                })();
-                if let Some(verified_hash) = published {
-                    let _ = self
-                        .ns()
-                        .install_verified_thumbnail(record_id, Some(Hash::from(verified_hash.0)));
-                }
-            } else {
-                {
-                    let mut ns = self.ns();
-                    ns.set_thumb(ino, &tbh);
-                    ns.note_change();
-                }
-                self.publish();
+            {
+                let mut ns = self.ns();
+                ns.set_thumb(ino, &tbh);
+                ns.note_change();
             }
+            self.publish();
         }
         Some(png)
     }
@@ -4514,7 +4217,6 @@ impl QuickFS {
         // between these operations then has a receiver to wake, rather than
         // becoming an initial watch value that no `.changed()` can observe.
         self.start_record_index_acl_worker();
-        self.start_record_index_sync_worker();
         // Build the authority view once when the mount is bound. Thereafter
         // ordinary v3 manifest/page requests use only this retained snapshot.
         self.refresh_acl_visible_record_index();
@@ -4816,9 +4518,6 @@ impl QuickFS {
             // poll observes a visible addition without a request-time scan.
             self.refresh_acl_visible_record_index();
         }
-        if let Some(sync) = &self.sync {
-            sync.announce_change();
-        }
         self.wake_pinned_hydration();
     }
 
@@ -4953,15 +4652,6 @@ impl QuickFS {
                 }
                 error => io::Error::other(error.to_string()),
             })?;
-        let revision = match &self.record_publisher {
-            Some(publisher) => publisher
-                .snapshot(snapshot.record_id)
-                .map_err(|error| io::Error::other(error.to_string()))?
-                .and_then(|snapshot| snapshot.content_revision)
-                .ok_or_else(|| io::Error::other("published record has no content revision"))
-                .map(Some)?,
-            None => None,
-        };
         {
             let mut ns = self.ns();
             let current_len = ns.getattr(ino).map(|attr| attr.size);
@@ -4977,15 +4667,7 @@ impl QuickFS {
             {
                 return Err(io::Error::other("could not tag the version with its lease"));
             }
-            if let Some(revision) = &revision {
-                if !ns.set_content_revision(ino, revision, stamp) {
-                    return Err(io::Error::other(
-                        "could not install signed content revision",
-                    ));
-                }
-            } else {
-                ns.set_content(ino, hash.as_ref(), byte_len, stamp);
-            }
+            ns.set_content(ino, hash.as_ref(), byte_len, stamp);
             ns.note_change();
         }
         self.publish();
@@ -5027,95 +4709,6 @@ impl QuickFS {
     ) -> Result<u64, i32> {
         let name: &[u8] = name.as_ref();
         let byte_len = if content.is_some() { byte_len } else { 0 };
-        let content_hash = content.map(|hash| fs_protocol::ContentHash(*hash.as_bytes()));
-        let timestamp_ms = now_ms();
-        if let (Some(publisher), Some(actor)) = (&self.record_publisher, &self.history) {
-            let path = {
-                let mut namespace = self.ns();
-                if namespace.lookup_kind(parent, name).is_some() {
-                    return Err(EEXIST);
-                }
-                let parent_path = namespace.path_for(parent).ok_or(ENOENT)?;
-                child_path(&parent_path, name)
-            };
-            let record_id = fs_protocol::FileRecordId::new();
-            let metadata_digest = VersionMetadataDigest {
-                path: Some(path.clone()),
-                kind: 2,
-                byte_len,
-                deleted: false,
-            };
-            let metadata_hash = fs_protocol::ContentHash(
-                *blake3::hash(&postcard::to_allocvec(&metadata_digest).map_err(|_| EIO)?)
-                    .as_bytes(),
-            );
-            let version = fs_protocol::FileVersionV1 {
-                id: fs_protocol::FileVersionId::new(),
-                record_id,
-                parents: Vec::new(),
-                actor: *actor,
-                timestamp_ms,
-                content_hash,
-                metadata_hash,
-                provenance: fs_protocol::FileProvenance::Create,
-            };
-            let snapshot = VersionSnapshot {
-                record_id,
-                content_hash,
-                metadata_hash,
-                byte_len,
-                kind: FileType::RegularFile,
-            };
-            let parent_record = self.ns().record_id_for(parent).ok_or(EIO)?;
-            publisher
-                .publish_binding(&fs_protocol::FileBindingV1 {
-                    schema_version: fs_protocol::FILE_BINDING_VERSION,
-                    record_id,
-                    parent: Some(parent_record),
-                    name: name.to_vec().into(),
-                    kind: fs_protocol::FileNodeKind::File,
-                    tombstoned: false,
-                    actor: *actor,
-                    observed_at_ms,
-                })
-                .map_err(|_| EIO)?;
-            publisher
-                .publish(
-                    &self.record_metadata(&snapshot, observed_at_ms, *actor),
-                    std::slice::from_ref(&version),
-                )
-                .map_err(|_| EIO)?;
-            self.attribute_version(&version, Some(&path));
-            {
-                let mut namespace = self.ns();
-                namespace.append_version(version).map_err(|_| EIO)?;
-            }
-            let revision = publisher
-                .snapshot(record_id)
-                .map_err(|_| EIO)?
-                .and_then(|snapshot| snapshot.content_revision)
-                .ok_or(EIO)?;
-            let mut namespace = self.ns();
-            if namespace.lookup_kind(parent, name).is_some() {
-                return Err(EEXIST);
-            }
-            let ino = if content.is_some() {
-                namespace
-                    .create_projected_file_at_revision(parent, name, &revision, observed_at_ms)
-                    .ok_or(EIO)?
-            } else {
-                let ino = namespace
-                    .create_projected_file(parent, name, record_id, None, 0, observed_at_ms)
-                    .ok_or(EIO)?;
-                if !namespace.install_verified_content_revision(revision) {
-                    let _ = namespace.remove(ino);
-                    return Err(EIO);
-                }
-                ino
-            };
-            namespace.note_change();
-            return Ok(ino);
-        }
 
         let mut namespace = self.ns();
         let ino = namespace
@@ -5132,67 +4725,6 @@ impl QuickFS {
     fn create_empty_dir(&self, parent: u64, name: impl AsRef<[u8]>) -> Result<u64, i32> {
         let name: &[u8] = name.as_ref();
         let timestamp_ms = now_ms();
-        if let (Some(publisher), Some(actor)) = (&self.record_publisher, &self.history) {
-            let (parent_record, path) = {
-                let mut namespace = self.ns();
-                if namespace.lookup_kind(parent, name).is_some() {
-                    return Err(EEXIST);
-                }
-                let parent_record = namespace.record_id_for(parent).ok_or(ENOENT)?;
-                let parent_path = namespace.path_for(parent).ok_or(ENOENT)?;
-                (parent_record, child_path(&parent_path, name))
-            };
-            let record_id = fs_protocol::FileRecordId::new();
-            let metadata_digest = VersionMetadataDigest {
-                path: Some(path.clone()),
-                kind: 1,
-                byte_len: 0,
-                deleted: false,
-            };
-            let metadata_hash = fs_protocol::ContentHash(
-                *blake3::hash(&postcard::to_allocvec(&metadata_digest).map_err(|_| EIO)?)
-                    .as_bytes(),
-            );
-            let version = fs_protocol::FileVersionV1 {
-                id: fs_protocol::FileVersionId::new(),
-                record_id,
-                parents: Vec::new(),
-                actor: *actor,
-                timestamp_ms,
-                content_hash: None,
-                metadata_hash,
-                provenance: fs_protocol::FileProvenance::Create,
-            };
-            publisher
-                .publish_binding(&fs_protocol::FileBindingV1 {
-                    schema_version: fs_protocol::FILE_BINDING_VERSION,
-                    record_id,
-                    parent: Some(parent_record),
-                    name: name.to_vec().into(),
-                    kind: fs_protocol::FileNodeKind::Directory,
-                    tombstoned: false,
-                    actor: *actor,
-                    observed_at_ms: timestamp_ms,
-                })
-                .map_err(|_| EIO)?;
-            publisher
-                .publish_structural_version(&version)
-                .map_err(|_| EIO)?;
-            self.attribute_version(&version, Some(&path));
-            {
-                let mut namespace = self.ns();
-                namespace.append_version(version).map_err(|_| EIO)?;
-            }
-            let mut namespace = self.ns();
-            if namespace.lookup_kind(parent, name).is_some() {
-                return Err(EEXIST);
-            }
-            let ino = namespace
-                .create_projected_dir(parent, name, record_id, timestamp_ms)
-                .ok_or(EIO)?;
-            namespace.note_change();
-            return Ok(ino);
-        }
         let mut namespace = self.ns();
         let ino = namespace
             .create_dir(parent, name, timestamp_ms)
@@ -5255,14 +4787,6 @@ impl QuickFS {
         {
             return Err(EIO);
         }
-        if let (Some(publisher), Some(actor)) = (&self.record_publisher, &self.history) {
-            let mut binding = self
-                .ns()
-                .signed_binding_for(ino, *actor, timestamp_ms)
-                .ok_or(EIO)?;
-            binding.tombstoned = true;
-            publisher.publish_binding(&binding).map_err(|_| EIO)?;
-        }
         {
             let mut ns = self.ns();
             if ns.lookup(parent, name).is_none_or(|attr| attr.ino.0 != ino)
@@ -5283,256 +4807,6 @@ impl QuickFS {
         Ok(())
     }
 
-    // All parameters are independent authenticated rename facts; the body is
-    // one atomic signed replacement transaction.
-    #[allow(
-        clippy::significant_drop_tightening,
-        clippy::too_many_lines,
-        reason = "the explicit authenticated rename facts feed one atomic signed replacement transaction"
-    )]
-    fn replacement_rename_named(
-        &self,
-        parent: u64,
-        name: impl AsRef<[u8]>,
-        new_parent: u64,
-        new_name: impl AsRef<[u8]>,
-        source_ino: u64,
-        victim_ino: u64,
-        timestamp_ms: u64,
-    ) -> Result<(), i32> {
-        let name: &[u8] = name.as_ref();
-        let new_name: &[u8] = new_name.as_ref();
-        let runtime = self.replacement_transactions.as_ref().ok_or(EEXIST)?;
-        let publisher = self.record_publisher.as_ref().ok_or(EIO)?;
-        let actor = self.history.as_ref().ok_or(EIO)?;
-        let (
-            source_current,
-            victim_current,
-            source_proposed,
-            victim_proposed,
-            source_binding,
-            victim_binding,
-            source_parent_record,
-            destination_parent_record,
-        ) = {
-            let mut namespace = self.ns();
-            let source_attr = namespace.getattr(source_ino).ok_or(ENOENT)?;
-            let victim_attr = namespace.getattr(victim_ino).ok_or(ENOENT)?;
-            if source_attr.kind != victim_attr.kind {
-                return Err(if source_attr.kind == FileType::Directory {
-                    ENOTDIR
-                } else {
-                    EISDIR
-                });
-            }
-            if victim_attr.kind == FileType::Directory
-                && namespace
-                    .readdir(victim_ino)
-                    .is_some_and(|entries| entries.len() > 2)
-            {
-                return Err(ENOTEMPTY);
-            }
-            let source_current =
-                Self::version_snapshot_locked(&namespace, source_ino, false, None, None)
-                    .ok_or(EIO)?;
-            let victim_current =
-                Self::version_snapshot_locked(&namespace, victim_ino, false, None, None)
-                    .ok_or(EIO)?;
-            let source_parent_record = namespace.record_id_for(parent).ok_or(EIO)?;
-            let destination_parent_record = namespace.record_id_for(new_parent).ok_or(EIO)?;
-            let destination_parent_path = namespace.path_for(new_parent).ok_or(ENOENT)?;
-            let source_metadata = VersionMetadataDigest {
-                path: Some(child_path(&destination_parent_path, new_name)),
-                kind: if source_attr.kind == FileType::Directory {
-                    1
-                } else {
-                    2
-                },
-                byte_len: source_attr.size,
-                deleted: false,
-            };
-            let victim_metadata = VersionMetadataDigest {
-                path: namespace.path_for(victim_ino),
-                kind: if victim_attr.kind == FileType::Directory {
-                    1
-                } else {
-                    2
-                },
-                byte_len: victim_attr.size,
-                deleted: true,
-            };
-            let source_proposed = VersionSnapshot {
-                metadata_hash: fs_protocol::ContentHash(
-                    *blake3::hash(&postcard::to_allocvec(&source_metadata).map_err(|_| EIO)?)
-                        .as_bytes(),
-                ),
-                ..source_current
-            };
-            let victim_proposed = VersionSnapshot {
-                metadata_hash: fs_protocol::ContentHash(
-                    *blake3::hash(&postcard::to_allocvec(&victim_metadata).map_err(|_| EIO)?)
-                        .as_bytes(),
-                ),
-                ..victim_current
-            };
-            let node_kind = if source_attr.kind == FileType::Directory {
-                fs_protocol::FileNodeKind::Directory
-            } else {
-                fs_protocol::FileNodeKind::File
-            };
-            let source_binding = fs_protocol::FileBindingV1 {
-                schema_version: fs_protocol::FILE_BINDING_VERSION,
-                record_id: source_current.record_id,
-                parent: Some(destination_parent_record),
-                name: new_name.to_vec().into(),
-                kind: node_kind,
-                tombstoned: false,
-                actor: *actor,
-                observed_at_ms: timestamp_ms,
-            };
-            let victim_binding = fs_protocol::FileBindingV1 {
-                schema_version: fs_protocol::FILE_BINDING_VERSION,
-                record_id: victim_current.record_id,
-                parent: Some(destination_parent_record),
-                name: new_name.to_vec().into(),
-                kind: node_kind,
-                tombstoned: true,
-                actor: *actor,
-                observed_at_ms: timestamp_ms,
-            };
-            (
-                source_current,
-                victim_current,
-                source_proposed,
-                victim_proposed,
-                source_binding,
-                victim_binding,
-                source_parent_record,
-                destination_parent_record,
-            )
-        };
-        let (source_heads, victim_heads) = {
-            let namespace = self.ns();
-            (
-                namespace.record_history_heads(source_current.record_id),
-                namespace.record_history_heads(victim_current.record_id),
-            )
-        };
-        let ([source_expected], [victim_expected]) =
-            (source_heads.as_slice(), victim_heads.as_slice())
-        else {
-            return Err(EBUSY);
-        };
-        let participant = |snapshot: VersionSnapshot,
-                           binding: fs_protocol::FileBindingV1,
-                           expected: fs_protocol::FileVersionId,
-                           role: fs_protocol::FileMutationParticipantRole,
-                           provenance: fs_protocol::FileProvenance| {
-            let version = fs_protocol::FileVersionV1 {
-                id: fs_protocol::FileVersionId::new(),
-                record_id: snapshot.record_id,
-                parents: vec![expected],
-                actor: *actor,
-                timestamp_ms,
-                content_hash: snapshot.content_hash,
-                metadata_hash: snapshot.metadata_hash,
-                provenance,
-            };
-            let proposed_content_revision = (snapshot.kind == FileType::RegularFile).then_some(
-                fs_protocol::ContentRevisionV1 {
-                    schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                    record_id: snapshot.record_id,
-                    version_id: version.id,
-                    content_hash: snapshot.content_hash,
-                    byte_len: snapshot.byte_len,
-                    metadata_hash: snapshot.metadata_hash,
-                },
-            );
-            let mut value = fs_protocol::FileMutationParticipant {
-                record_id: snapshot.record_id,
-                role,
-                expected_version: expected,
-                proposed_binding: binding,
-                proposed_version: version,
-                proposed_content_revision,
-                projection_hash: fs_protocol::ContentHash([0; 32]),
-            };
-            value.projection_hash = value.computed_projection_hash().map_err(|_| EIO)?;
-            Ok::<_, i32>(value)
-        };
-        let mut participants = vec![
-            participant(
-                source_proposed,
-                source_binding,
-                *source_expected,
-                fs_protocol::FileMutationParticipantRole::Source,
-                if parent == new_parent {
-                    fs_protocol::FileProvenance::Rename
-                } else {
-                    fs_protocol::FileProvenance::Move
-                },
-            )?,
-            participant(
-                victim_proposed,
-                victim_binding,
-                *victim_expected,
-                fs_protocol::FileMutationParticipantRole::Replaced,
-                fs_protocol::FileProvenance::Delete,
-            )?,
-        ];
-        participants.sort_by_key(|value| value.record_id);
-        let manifest = fs_protocol::FileMutationTransactionManifest {
-            schema_version: fs_protocol::FILE_MUTATION_TRANSACTION_VERSION,
-            transaction_id: uuid::Uuid::new_v4(),
-            workspace_id: publisher.workspace_id(),
-            actor: *actor,
-            timestamp_ms,
-            operation: fs_protocol::FileMutationOperation::ReplacementRename {
-                source_parent: source_parent_record,
-                source_name: name.to_vec().into(),
-                destination_parent: destination_parent_record,
-                destination_name: new_name.to_vec().into(),
-                source_record: source_current.record_id,
-                replaced_record: victim_current.record_id,
-            },
-            participants,
-        };
-        // Who caused these versions, when an agent did, is recorded once
-        // the transaction committed them.
-        let attributed: Vec<_> = manifest
-            .participants
-            .iter()
-            .map(|participant| participant.proposed_version.clone())
-            .collect();
-        // Both versions now name the destination: the moved record, and the
-        // one it replaced.
-        let destination = self
-            .attributing()
-            .then(|| {
-                self.ns()
-                    .path_for(new_parent)
-                    .map(|dir| child_path(&dir, new_name))
-            })
-            .flatten();
-        let sync = self.sync.clone();
-        publisher
-            .execute_replacement_transaction(
-                manifest,
-                &mut runtime.journal.lock_recover(),
-                &self.namespace,
-                &runtime.namespace_path,
-                move |_delta| {
-                    if let Some(sync) = &sync {
-                        sync.announce_change();
-                    }
-                    Ok(())
-                },
-            )
-            .map_err(|_| EIO)?;
-        self.attribute_versions(&attributed, destination.as_deref());
-        Ok(())
-    }
-
     // Keep signed preflight, publication, and namespace projection ordered.
     #[allow(
         clippy::significant_drop_tightening,
@@ -5548,17 +4822,23 @@ impl QuickFS {
     ) -> Result<(), i32> {
         let name: &[u8] = name.as_ref();
         let new_name: &[u8] = new_name.as_ref();
-        let signed = self.record_publisher.is_some() && self.history.is_some();
-        if !signed {
-            let ino = {
+        {
+            let (ino, replaced) = {
                 let mut namespace = self.ns();
                 let ino = namespace.lookup(parent, name).ok_or(ENOENT)?.ino.0;
+                let replaced = namespace
+                    .lookup(new_parent, new_name)
+                    .map(|attr| attr.ino.0)
+                    .filter(|replaced| *replaced != ino);
                 if !namespace.rename(parent, name, new_parent, new_name, now_ms()) {
                     return Err(ENOENT);
                 }
                 namespace.note_change();
-                ino
+                (ino, replaced)
             };
+            if let Some(replaced) = replaced {
+                self.record_version(replaced, fs_protocol::FileProvenance::Delete, None);
+            }
             self.record_version(
                 ino,
                 if parent == new_parent {
@@ -5568,117 +4848,7 @@ impl QuickFS {
                 },
                 None,
             );
-            return Ok(());
         }
-
-        let timestamp_ms = now_ms();
-        let (ino, expected, proposed, proposed_binding) = {
-            let mut namespace = self.ns();
-            let ino = namespace.lookup(parent, name).ok_or(ENOENT)?.ino.0;
-            if let Some(victim) = namespace.lookup(new_parent, new_name)
-                && victim.ino.0 != ino
-            {
-                let victim_ino = victim.ino.0;
-                drop(namespace);
-                return self.replacement_rename_named(
-                    parent,
-                    name,
-                    new_parent,
-                    new_name,
-                    ino,
-                    victim_ino,
-                    timestamp_ms,
-                );
-            }
-            let expected =
-                Self::version_snapshot_locked(&namespace, ino, false, None, None).ok_or(EIO)?;
-            let parent_path = namespace.path_for(new_parent).ok_or(ENOENT)?;
-            let attr = namespace.getattr(ino).ok_or(ENOENT)?;
-            let metadata = VersionMetadataDigest {
-                path: Some(child_path(&parent_path, new_name)),
-                kind: match attr.kind {
-                    FileType::Directory => 1,
-                    FileType::RegularFile => 2,
-                    _ => 0,
-                },
-                byte_len: attr.size,
-                deleted: false,
-            };
-            let bytes = postcard::to_allocvec(&metadata).map_err(|_| EIO)?;
-            let proposed = VersionSnapshot {
-                metadata_hash: fs_protocol::ContentHash(*blake3::hash(&bytes).as_bytes()),
-                ..expected
-            };
-            let parent_record = namespace.record_id_for(new_parent).ok_or(EIO)?;
-            let actor = *self.history.as_ref().ok_or(EIO)?;
-            let kind = match attr.kind {
-                FileType::Directory => fs_protocol::FileNodeKind::Directory,
-                FileType::RegularFile => fs_protocol::FileNodeKind::File,
-                _ => return Err(EINVAL),
-            };
-            let binding = fs_protocol::FileBindingV1 {
-                schema_version: fs_protocol::FILE_BINDING_VERSION,
-                record_id: proposed.record_id,
-                parent: Some(parent_record),
-                name: new_name.to_vec().into(),
-                kind,
-                tombstoned: false,
-                actor,
-                observed_at_ms: timestamp_ms,
-            };
-            (ino, expected, proposed, binding)
-        };
-        self.append_version(
-            proposed,
-            if parent == new_parent {
-                fs_protocol::FileProvenance::Rename
-            } else {
-                fs_protocol::FileProvenance::Move
-            },
-            timestamp_ms,
-        )
-        .map_err(|_| EIO)?;
-        self.record_publisher
-            .as_ref()
-            .ok_or(EIO)?
-            .publish_binding(&proposed_binding)
-            .map_err(|_| EIO)?;
-        let revision = if proposed.kind == FileType::RegularFile {
-            Some(
-                self.record_publisher
-                    .as_ref()
-                    .ok_or(EIO)?
-                    .snapshot(proposed.record_id)
-                    .map_err(|_| EIO)?
-                    .and_then(|snapshot| snapshot.content_revision)
-                    .ok_or(EIO)?,
-            )
-        } else {
-            None
-        };
-        let mut namespace = self.ns();
-        if namespace
-            .lookup(parent, name)
-            .is_none_or(|attr| attr.ino.0 != ino)
-            || Self::version_snapshot_locked(&namespace, ino, false, None, None) != Some(expected)
-            || namespace
-                .lookup(new_parent, new_name)
-                .is_some_and(|attr| attr.ino.0 != ino)
-        {
-            return Err(EBUSY);
-        }
-        if !namespace.rename(parent, name, new_parent, new_name, timestamp_ms) {
-            return Err(ENOENT);
-        }
-        if let Some(revision) = revision {
-            if !namespace.set_content_revision_preserving_preview(ino, &revision, timestamp_ms) {
-                return Err(EIO);
-            }
-            if namespace.content_revision_for(ino) != Some(revision) {
-                return Err(EIO);
-            }
-        }
-        namespace.note_change();
         Ok(())
     }
 }
@@ -5846,7 +5016,6 @@ fn topology_update(
         record.current_version = candidate.version;
         record.residency = Residency::NotResident;
         record.transfer = crate::availability::TransferState::default();
-        record.replica_observations.clear();
         record.replicas = crate::availability::ReplicaEvidence::default();
         record.freshness.local_verified_at_ms = None;
         record.freshness.replicas_observed_at_ms = None;
@@ -6315,7 +5484,7 @@ fn pinned_candidate_is_current(
         return false;
     };
     namespace
-        .content_revision_for(ino)
+        .observed_content_revision(ino)
         .map(|revision| revision.version_id)
         == candidate.version
         && namespace.hash_for(ino) == candidate.hash
@@ -6581,23 +5750,19 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(e));
             return;
         }
-        let signed = self.record_publisher.is_some() && self.history.is_some();
-        let codec = (!signed)
-            .then(|| name.to_str().and_then(document_codec_for))
-            .flatten();
-        let created =
-            if let (false, Some(name), Some(codec)) = (signed, name.to_str(), codec.as_deref()) {
-                let mut ns = self.ns();
-                let created = ns
-                    .create_document(parent.0, name, codec, now_ms())
-                    .ok_or(ENOENT);
-                if created.is_ok() {
-                    ns.note_change();
-                }
-                created
-            } else {
-                self.create_empty_file(parent.0, name_bytes)
-            };
+        let codec = name.to_str().and_then(document_codec_for);
+        let created = if let (Some(name), Some(codec)) = (name.to_str(), codec.as_deref()) {
+            let mut ns = self.ns();
+            let created = ns
+                .create_document(parent.0, name, codec, now_ms())
+                .ok_or(ENOENT);
+            if created.is_ok() {
+                ns.note_change();
+            }
+            created
+        } else {
+            self.create_empty_file(parent.0, name_bytes)
+        };
         let ino = match created {
             Ok(created) => created,
             Err(error) => {
@@ -6625,9 +5790,7 @@ impl Filesystem for QuickFS {
             );
         }
         self.publish();
-        if !signed {
-            self.record_version(attr.ino.0, fs_protocol::FileProvenance::Create, None);
-        }
+        self.record_version(attr.ino.0, fs_protocol::FileProvenance::Create, None);
         let handle = self.next_file_handle.fetch_add(1, Ordering::Relaxed);
         let opened_path = self.ns().path_for(attr.ino.0);
         if let Some(opened_path) = opened_path {
@@ -6830,9 +5993,7 @@ impl Filesystem for QuickFS {
         match attr {
             Some(attr) => {
                 self.publish();
-                if self.record_publisher.is_none() || self.history.is_none() {
-                    self.record_version(attr.ino.0, fs_protocol::FileProvenance::Create, None);
-                }
+                self.record_version(attr.ino.0, fs_protocol::FileProvenance::Create, None);
                 reply.entry_with_ttls(
                     &self.attr_ttl(TTL),
                     &TTL,
@@ -7364,7 +6525,7 @@ impl Filesystem for QuickFS {
             buf.push(0);
             buf.extend_from_slice(fs_protocol::HISTORY_CONTROL_XATTR.as_bytes());
             buf.push(0);
-            if self.replacement_transactions.is_some() {
+            if self.namespace_persistence.is_some() {
                 buf.extend_from_slice(fs_protocol::files::CHECKED_HISTORY_REVIEW_XATTR.as_bytes());
                 buf.push(0);
                 buf.extend_from_slice(fs_protocol::files::CHECKED_HISTORY_RESTORE_XATTR.as_bytes());

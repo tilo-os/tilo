@@ -1,23 +1,20 @@
-//! Path-level record operations for the native data plane.
+//! Path-level operations for the native data plane.
 //!
 //! On Tier 1 the workspace is a real tree on the store volume and nothing
 //! passes through FUSE. Changes are observed afterwards, as ordered
-//! changesets of paths, and applied here through the same signed
+//! changesets of paths, and applied here through the same namespace
 //! operations a FUSE `create`, `write`+`release`, `mkdir`, `unlink` and
-//! `rmdir` use: record bindings and envelopes, versions, history and the
-//! namespace delta broadcast to peers. The FUSE callbacks and these entry
-//! points share one implementation, so a record written through either
-//! path is indistinguishable to a peer.
+//! `rmdir` use: files, versions, history and the namespace delta the record
+//! route publishes. The FUSE callbacks and these entry points share one
+//! implementation, so a file written through either path looks the same.
 
 use std::path::{Component, Path};
 use std::sync::atomic::Ordering;
 
 use super::{EIO, EISDIR, ENOENT, ENOTDIR, FileType, Hash, QuickFS, document_codec_for, now_ms};
-use crate::namespace::{
-    ContentAuthority, LeaseRequest, PosixAttrs, ROOT_INO, VersionFence, WriteLease,
-};
+use crate::namespace::{LeaseRequest, PosixAttrs, ROOT_INO, VersionFence, WriteLease};
 
-/// One file or directory of the workspace tree as the record plane sees it.
+/// One file or directory of the workspace tree, as a projection sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TreeEntry {
     /// Root-relative path components, raw bytes.
@@ -31,9 +28,9 @@ pub struct TreeEntry {
     /// author assigns it when the change is committed, so it orders one
     /// author's changes the way that author made them.
     pub mtime_ms: u64,
-    /// Whether this device holds the verified content revision. A signed
-    /// record whose revision has not been verified yet reads as empty; it is
-    /// not empty, just not known.
+    /// Whether this device holds the content the tree names. A file whose
+    /// bytes have not arrived yet reads as empty; it is not empty, just not
+    /// known.
     pub known: bool,
     /// The stable record this path is. A rename keeps it.
     pub record: Option<fs_protocol::FileRecordId>,
@@ -391,10 +388,6 @@ impl QuickFS {
     /// children. Taken while no changeset is being applied, so it holds
     /// each changeset entirely or not at all.
     pub fn tree_snapshot(&self) -> Vec<TreeEntry> {
-        let _gate = self
-            .record_publisher
-            .as_ref()
-            .map(|p| p.repository().publication_gate().blocking_read());
         let mut out = Vec::new();
         let mut stack: Vec<(u64, Vec<Vec<u8>>)> = vec![(ROOT_INO, Vec::new())];
         while let Some((dir, prefix)) = stack.pop() {
@@ -423,12 +416,7 @@ impl QuickFS {
                         .as_ref()
                         .and_then(|a| a.mtime.duration_since(std::time::UNIX_EPOCH).ok())
                         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
-                    let known = if kind == FileType::Directory {
-                        self.directory_known(&ns, ino)
-                    } else {
-                        ns.content_authority() == ContentAuthority::LegacyNamespace
-                            || ns.content_revision_for(ino).is_some()
-                    };
+                    let known = true;
                     (
                         hash.flatten(),
                         attr.map_or(0, |a| a.size),
@@ -479,49 +467,12 @@ impl QuickFS {
         self.ns().changeset_marks()
     }
 
-    /// Whether this device holds the signed record of the directory at
-    /// `ino`. Its placement can arrive before the changeset that made it;
-    /// until the changeset is here, the directory is not shown either.
-    fn directory_known(&self, ns: &crate::namespace::Namespace, ino: u64) -> bool {
-        let Some(publisher) = &self.record_publisher else {
-            return true;
-        };
-        if ns.content_authority() == ContentAuthority::LegacyNamespace {
-            return true;
-        }
-        ns.record_id_for(ino).is_some_and(|record_id| {
-            publisher
-                .repository()
-                .contains(crate::record_repository::RecordRepositoryKey {
-                    workspace_id: publisher.workspace_id(),
-                    record_id,
-                })
-        })
-    }
-
     /// Runs `apply` (a changeset's worth of the path-level operations
-    /// above) as one signed changeset, made durable at once:
-    ///
-    /// 1. the content of every file is synced once, not once per file;
-    /// 2. every record operation is signed once as a changeset and written
-    ///    with it in one log transaction: after a crash either all of the
-    ///    changeset is there or none of it;
-    /// 3. the durability hook persists the namespace that places the
-    ///    changeset's records and holds their history, so a crash cannot
-    ///    leave durable records without placements (which a restart would
-    ///    read as deletions).
-    ///
-    /// Until then peers see none of it: its records are served only once
-    /// durable, namespace exchanges wait on the publication gate, and the
-    /// change is announced after the last step.
+    /// above) as one changeset, made durable at once: content is synced once
+    /// rather than once per file, and the durability hook persists the
+    /// namespace that places the changeset's files. Nothing is announced
+    /// until both are on disk.
     pub fn changeset<T>(&self, apply: impl FnOnce() -> T) -> T {
-        let publisher = self.record_publisher.as_ref();
-        let gate = publisher.map(|p| p.repository().publication_gate().blocking_write());
-        if let Some(publisher) = publisher
-            && let Err(error) = publisher.begin_changeset()
-        {
-            eprintln!("records are published one by one: {error}");
-        }
         self.changeset_open.store(true, Ordering::Release);
         let store = std::sync::Arc::clone(&self.hydrator.store);
         store.defer_sync();
@@ -529,29 +480,13 @@ impl QuickFS {
         if let Err(error) = self.hydrator.block_on(store.end_deferred_sync()) {
             eprintln!("content stays pending: {error:#}");
         }
-        let mut durable = true;
-        if durable && let Some(publisher) = publisher {
-            match publisher.commit_changeset() {
-                Ok(Some(changeset)) if std::env::var_os("TILO_FS_NATIVE_TRACE").is_some() => {
-                    eprintln!(
-                        "  changeset {} of {} record(s) is durable",
-                        changeset.header.sequence, changeset.header.leaf_count
-                    );
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    eprintln!("the changeset stays pending: {error}");
-                    durable = false;
-                }
-            }
-        }
+        let durable = true;
         if durable
             && let Some(hook) = self.durability_hook.get()
             && let Err(error) = hook()
         {
             eprintln!("the namespace placing the changeset stays pending: {error}");
         }
-        drop(gate);
         self.changeset_open.store(false, Ordering::Release);
         if durable {
             self.announce();
@@ -584,12 +519,7 @@ impl QuickFS {
             .mtime
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
-        let known = if attr.kind == FileType::Directory {
-            self.directory_known(&ns, ino)
-        } else {
-            ns.content_authority() == ContentAuthority::LegacyNamespace
-                || ns.content_revision_for(ino).is_some()
-        };
+        let known = true;
         Some(TreeEntry {
             path: components,
             dir: attr.kind == FileType::Directory,
@@ -712,15 +642,11 @@ impl QuickFS {
                 self.commit_bytes(ino, &read()?)
             }
             None => {
-                if let Some(codec) = self.new_document_codec(name) {
+                if let Some(codec) = Self::new_document_codec(name) {
                     return self.create_local_document(parent, name, &codec, &read()?, mtime_ms);
                 }
                 self.write_snapshot(rel, snapshot, mtime_ms)?;
-                // A signed record's first version is its creation; an
-                // unsigned one is created as FUSE `create` creates it.
-                if !self.signed()
-                    && let Some((ino, _)) = self.lookup_kind(parent, name)
-                {
+                if let Some((ino, _)) = self.lookup_kind(parent, name) {
                     self.record_version(ino, fs_protocol::FileProvenance::Create, None);
                 }
                 Ok(())
@@ -734,16 +660,8 @@ impl QuickFS {
         self.apply_local_snapshot(rel, snapshot, None, mtime_ms, attrs, None)
     }
 
-    fn signed(&self) -> bool {
-        self.record_publisher.is_some() && self.history.is_some()
-    }
-
-    /// The codec a new file named `name` is kept in as a document. Signed
-    /// records carry opaque content only, so there it is always `None`.
-    fn new_document_codec(&self, name: &[u8]) -> Option<String> {
-        if self.signed() || self.ns().content_authority() != ContentAuthority::LegacyNamespace {
-            return None;
-        }
+    /// The codec a new file named `name` is kept in as a document.
+    fn new_document_codec(name: &[u8]) -> Option<String> {
         std::str::from_utf8(name).ok().and_then(document_codec_for)
     }
 

@@ -178,20 +178,6 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
         ),
         device: fs_protocol::Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
     };
-    let publisher = || {
-        Arc::new(
-            fs::RecordPublisher::new(
-                Arc::new(
-                    fs::record_repository::RecordRepository::open(directory.path().join("records"))
-                        .unwrap(),
-                ),
-                workspace,
-                actor,
-                device.clone(),
-            )
-            .unwrap(),
-        )
-    };
     let mut versions = Vec::new();
     for (id, parents, hash, time, provenance) in [
         (
@@ -224,21 +210,12 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     let namespace = Arc::new(Mutex::new(namespace));
     let hydrator = Arc::new(fs::Hydrator::new(endpoint.clone(), content));
     let heuristics = Arc::new(fs::Heuristics::new(hydrator.clone()));
-    let journal = Arc::new(Mutex::new(
-        fs::record_transaction::RecordTransactionJournal::open(
-            directory.path().join("transactions"),
-        )
-        .unwrap(),
-    ));
     let backend = Arc::new(
         fs::QuickFS::new(namespace, hydrator.clone(), heuristics)
             .with_history(actor)
             .unwrap()
             .with_checked_history_workspace(workspace)
-            .with_record_publisher(publisher())
-            .unwrap()
-            .with_replacement_transactions(journal, directory.path().join("namespace.am"))
-            .unwrap(),
+            .with_namespace_persistence(directory.path().join("namespace.am")),
     );
     let transport = Arc::new(Backend {
         fs: backend.clone(),
@@ -390,22 +367,11 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     ));
     let reopened_heuristics = Arc::new(fs::Heuristics::new(hydrator.clone()));
     let reopened = fs::QuickFS::new(reopened_namespace, hydrator, reopened_heuristics)
-        .without_legacy_record_migration()
+        .without_history_baseline()
         .with_history(actor)
         .unwrap()
         .with_checked_history_workspace(workspace)
-        .with_record_publisher(publisher())
-        .unwrap()
-        .with_replacement_transactions(
-            Arc::new(Mutex::new(
-                fs::record_transaction::RecordTransactionJournal::open(
-                    directory.path().join("transactions"),
-                )
-                .unwrap(),
-            )),
-            directory.path().join("namespace.am"),
-        )
-        .unwrap();
+        .with_namespace_persistence(directory.path().join("namespace.am"));
     let reopened_ino = reopened
         .namespace
         .lock()

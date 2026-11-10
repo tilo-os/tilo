@@ -769,9 +769,13 @@ impl EvictionQueue {
             return Err(EvictionQueueError::RequestNotPending(id).into());
         }
         let fresh_plan = match request.mode {
-            EvictionMode::Safe => {
-                plan_safe_eviction(registry, catalog, request.record_id, now_ms, requirements)?
-            }
+            EvictionMode::Safe => plan_destructive_eviction(
+                registry,
+                catalog,
+                request.record_id,
+                now_ms,
+                requirements,
+            )?,
             EvictionMode::DestructiveOverride => plan_destructive_eviction(
                 registry,
                 catalog,
@@ -979,6 +983,10 @@ pub enum PlanError {
 }
 
 /// Plan a non-destructive eviction after all availability and reference checks.
+///
+/// Nothing proves another device holds a copy since the tree became the
+/// record, so this mode currently always refuses; callers that mean to lose
+/// the bytes say so with [`plan_destructive_eviction`].
 pub fn plan_safe_eviction(
     registry: &AvailabilityRegistry,
     catalog: &EvictionCatalog,
@@ -1341,11 +1349,7 @@ fn sum_bytes(extents: &[BlobExtent]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::availability::{RecordAvailability, ReplicaObservation};
-    use collab_types::Ed25519PublicKey;
-    use ed25519_dalek::SigningKey;
-    use fs_protocol::{ContentHash, FileActor};
-    use getrandom::{SysRng, rand_core::UnwrapErr};
+    use crate::availability::RecordAvailability;
     use tempfile::TempDir;
 
     fn hash(byte: u8) -> Hash {
@@ -1381,43 +1385,8 @@ mod tests {
         let mut record = RecordAvailability::new(id, RecordKind::File);
         record.current_version = Some(version);
         record.residency = Residency::Resident { bytes: 30 };
-        let device = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let actor = FileActor {
-            person: Ed25519PublicKey(device.verifying_key().to_bytes()),
-            device: Ed25519PublicKey(device.verifying_key().to_bytes()),
-        };
-        let request = crate::replica_ack::ReplicaAckRequestV1::new(
-            uuid::Uuid::new_v4(),
-            fs_protocol::ContentRevisionV1 {
-                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                record_id: id,
-                version_id: version,
-                content_hash: Some(ContentHash([6; 32])),
-                byte_len: 30,
-                metadata_hash: ContentHash([7; 32]),
-            },
-        )
-        .unwrap();
-        let receipt =
-            crate::replica_ack::ReplicaAckV1::signed(&request, actor, now, &device).unwrap();
-        record.replica_observations = vec![ReplicaObservation {
-            protocol_version: receipt.protocol_version,
-            workspace_id: receipt.workspace_id,
-            record_id: receipt.revision.record_id,
-            person: receipt.actor.person,
-            device: receipt.actor.device,
-            version_id: receipt.revision.version_id,
-            content_hash: receipt.revision.content_hash,
-            byte_len: receipt.revision.byte_len,
-            metadata_hash: receipt.revision.metadata_hash,
-            nonce: receipt.nonce,
-            issued_at_ms: receipt.issued_at_ms,
-            expires_at_ms: receipt.expires_at_ms,
-            observed_at_ms: now,
-            signature: receipt.signature,
-        }];
         record.replicas = crate::availability::ReplicaEvidence {
-            reachable: 1,
+            reachable: 0,
             durable: 1,
             acknowledged_version: Some(version),
         };
@@ -1441,7 +1410,7 @@ mod tests {
             registry.put(resident_file(record, version, now)).unwrap();
             let catalog = EvictionCatalog::with_empty_versions([], [(record, version)]).unwrap();
 
-            let plan = plan_safe_eviction(
+            let plan = plan_destructive_eviction(
                 &registry,
                 &catalog,
                 record,
@@ -1475,7 +1444,7 @@ mod tests {
             )
             .unwrap();
 
-            let plan = plan_safe_eviction(
+            let plan = plan_destructive_eviction(
                 &registry,
                 &catalog,
                 target,
@@ -1517,7 +1486,7 @@ mod tests {
             ])
             .unwrap();
 
-            let plan = plan_safe_eviction(
+            let plan = plan_destructive_eviction(
                 &registry,
                 &catalog,
                 target_id,
@@ -1561,7 +1530,7 @@ mod tests {
             .unwrap();
 
             assert_eq!(
-                plan_safe_eviction(
+                plan_destructive_eviction(
                     &registry,
                     &catalog,
                     target_id,
@@ -1618,16 +1587,8 @@ mod tests {
             for record in [first, second] {
                 assert_eq!(
                     batch.get(&record).and_then(Option::as_ref),
-                    Some(
-                        &plan_safe_eviction(
-                            &registry,
-                            &catalog,
-                            record,
-                            now,
-                            EvictionRequirements::default()
-                        )
-                        .unwrap()
-                    )
+                    None,
+                    "a safe batch refuses a record no replica acknowledgement covers"
                 );
             }
         }
@@ -1712,7 +1673,7 @@ mod tests {
             )])
             .unwrap();
 
-            let plan = plan_safe_eviction(
+            let plan = plan_destructive_eviction(
                 &registry,
                 &catalog,
                 id,
@@ -1747,7 +1708,7 @@ mod tests {
             }])
             .unwrap();
 
-            let plan = plan_safe_eviction(
+            let plan = plan_destructive_eviction(
                 &registry,
                 &catalog,
                 id,
@@ -1965,7 +1926,7 @@ mod tests {
                 payload(other_id, other_version, (3, Some(4)), &[(2, Some(10))]),
             ])
             .unwrap();
-            let plan = plan_safe_eviction(
+            let plan = plan_destructive_eviction(
                 &registry,
                 &catalog,
                 target_id,

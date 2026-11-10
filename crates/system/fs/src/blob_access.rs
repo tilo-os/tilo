@@ -19,10 +19,9 @@
 //! - No namespace lock is held while decoding, and requests
 //!   are checked concurrently.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 
-use fs_protocol::FileRecordId;
 use iroh_blobs::Hash;
 
 use crate::acl::IdentityKey;
@@ -46,7 +45,6 @@ struct Snapshot {
 #[derive(Clone)]
 struct Owner {
     path: String,
-    record_id: Option<FileRecordId>,
     /// Whether the owner names this hash as file content (a manifest)
     /// rather than as a thumbnail; only manifests authorise chunks.
     manifest: bool,
@@ -57,25 +55,16 @@ pub(crate) struct Requester<'a> {
     pub policy: &'a PeerPolicy,
     pub device: IdentityKey,
     pub person: Option<IdentityKey>,
-    /// Records the device holds a live record grant for, when the
-    /// workspace serves record-scoped shares.
-    pub readable_records: Option<BTreeSet<FileRecordId>>,
 }
 
 impl Requester<'_> {
     fn may_read(&self, owner: &Owner) -> bool {
-        let by_path = self.policy.as_ref().is_some_and(|acl| {
+        self.policy.as_ref().is_some_and(|acl| {
             acl.permits_peer(&self.device, &owner.path, crate::acl::Access::Read)
                 || self.person.is_some_and(|person| {
                     acl.permits_peer(&person, &owner.path, crate::acl::Access::Read)
                 })
-        });
-        by_path
-            || owner.record_id.is_some_and(|record| {
-                self.readable_records
-                    .as_ref()
-                    .is_some_and(|readable| readable.contains(&record))
-            })
+        })
     }
 }
 
@@ -258,14 +247,12 @@ fn index_owners(owners: Vec<LiveBlobOwner>) -> HashMap<Hash, Vec<Owner>> {
         if let Some(manifest) = owner.manifest {
             roots.entry(manifest).or_default().push(Owner {
                 path: owner.path.clone(),
-                record_id: owner.record_id,
                 manifest: true,
             });
         }
         if let Some(thumbnail) = owner.thumbnail {
             roots.entry(thumbnail).or_default().push(Owner {
                 path: owner.path,
-                record_id: owner.record_id,
                 manifest: false,
             });
         }

@@ -57,17 +57,13 @@ impl QuickFS {
         }
         let workspace_id = self.restore_workspace().map_err(|_| Error::Unavailable)?;
         // Entire immutable set (including late backfill), order, heads and
-        // binding identity participate. A cursor is never a live-list offset.
-        let binding = namespace
-            .checked_record_frontier(ino)
-            .ok_or(Error::Unavailable)?;
+        // revision participate. A cursor is never a live-list offset.
         let bytes = serde_json::to_vec(&(
             "tilo.history-read.v1",
             workspace_id,
             self.mount_lifetime,
             record_id,
             &path,
-            binding,
             &snapshot,
             current_revision,
         ))
@@ -90,18 +86,13 @@ impl QuickFS {
         let attributions = self.version_attributions(scope.record_id);
         snapshot.read_query(scope, current_revision, query, &attributions)
     }
-    /// Who caused each of `record_id`'s versions an agent caused, as the
-    /// version's own signing device recorded it in the signed record
-    /// (`AttributeVersion`). Empty without signed records.
+    /// Who caused each of `record_id`'s versions, when an agent did, as the
+    /// version's own device recorded it in the record's history.
     fn version_attributions(
         &self,
         record_id: fs_protocol::FileRecordId,
     ) -> Vec<fs_protocol::FileVersionAttributionV1> {
-        self.record_publisher
-            .as_ref()
-            .and_then(|publisher| publisher.snapshot(record_id).ok().flatten())
-            .map(|record| record.attributions)
-            .unwrap_or_default()
+        self.ns().version_attributions(record_id)
     }
 
     /// Read a version preview, provided the history frontier still matches.

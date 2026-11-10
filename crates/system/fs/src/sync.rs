@@ -1,51 +1,36 @@
-//! The sync plane: content hydration, workspaces' records and their ACLs.
+//! The content plane: a mount's blobs served to the peers that hydrate from
+//! it, and the signed workspace ACL a joiner reads.
 //!
-//! A workspace's tree is a record of the workspace's Files app, published
-//! by every mount over the session its desktop runs ([`crate::tree_record`]);
-//! files' bytes hydrate on read, guarded by the live namespace and ACL.
-//!
-//! Every request names the workspace it is for, and every connection is
-//! authenticated as a certified device of a person before it is served.
-use std::collections::{HashMap, HashSet};
+//! A workspace's tree itself travels as the workspace's Files record
+//! ([`crate::tree_record`]); only file bytes and the ACL come over this
+//! plane, and every connection is authenticated as a certified device of a
+//! person before it is served.
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::Result;
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::{Connection, Endpoint, RecvStream, SendStream, presets};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh_base::EndpointAddr;
-use iroh_blobs::Hash;
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::RevocationList;
-use tokio::sync::mpsc;
 
 use crate::acl::{AclHandle, IdentityKey};
 use crate::authenticated_transport::{AuthenticatedTransportConfig, authenticate_fs_peer_parts_at};
 use crate::blob_access::{BlobAccessIndex, Requester};
-use crate::clock::{unix_now_ms, unix_now_ns};
+use crate::clock::unix_now_ns;
 use crate::hydration::Hydrator;
 use crate::identity::PeerCredentials;
 use crate::namespace::Namespace;
 use crate::peer_auth::AuthenticatedFsPeer;
-use crate::record_access::RecordAccessRegistry;
-use crate::record_protocol::{RecordProtocol, TILO_FS_RECORD_ALPN};
-use crate::record_replication::{RecordAction, RecordAuthorizer};
-use crate::record_repository::{RecordRepository, RecordRepositoryKey};
-use crate::replica_ack::{ReplicaAckRequestV1, ReplicaAckResponseV1, ReplicaAckV1};
-use crate::share_authority::ShareAuthority;
-use crate::share_session::LiveActorCertification;
 use crate::store::ContentStore;
 use crate::workspace_authority::{
     AuthorityRequest, AuthorityResponse, TILO_FS_AUTHORITY_ALPN, WorkspaceAuthority,
     read_frame as read_authority_frame, write_frame as write_authority_frame,
 };
-use session::{SessionPool, SessionProtocol};
 use tilo_lock::MutexRecover as _;
-
-/// Interactive peers always retain small previews when metadata changes, but
-/// never fetch a file manifest/chunks merely to populate a directory view.
-const MAX_INTERACTIVE_THUMBNAIL_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Certified local identity and live revocation state required by every
 /// workspace-sync connection.
@@ -55,7 +40,6 @@ pub struct FsTransportIdentity {
     revocations: Arc<RwLock<RevocationList>>,
     gate: crate::transport_gate::TransportGate,
     certified_peers: Arc<RwLock<std::collections::HashMap<IdentityKey, AuthenticatedFsPeer>>>,
-    authenticated_peer_addrs: Arc<RwLock<std::collections::HashMap<IdentityKey, EndpointAddr>>>,
 }
 
 impl FsTransportIdentity {
@@ -67,7 +51,6 @@ impl FsTransportIdentity {
             revocations,
             gate: crate::transport_gate::TransportGate::default(),
             certified_peers: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            authenticated_peer_addrs: Arc::new(RwLock::new(std::collections::HashMap::new())),
         }
     }
 
@@ -77,26 +60,12 @@ impl FsTransportIdentity {
         self
     }
 
-    pub(crate) fn partitioned(&self) -> bool {
-        self.gate.partitioned()
-    }
-
-    fn remember_peer(&self, peer: &AuthenticatedFsPeer, addr: EndpointAddr) {
-        if self.certification_is_current(peer, unix_now_ns()) {
-            if let Ok(mut peers) = self.certified_peers.write() {
-                peers.insert(peer.device_public_key, peer.clone());
-            }
-            if let Ok(mut addrs) = self.authenticated_peer_addrs.write() {
-                addrs.insert(peer.device_public_key, addr);
-            }
+    fn remember_peer(&self, peer: &AuthenticatedFsPeer) {
+        if self.certification_is_current(peer, unix_now_ns())
+            && let Ok(mut peers) = self.certified_peers.write()
+        {
+            peers.insert(peer.device_public_key, peer.clone());
         }
-    }
-
-    fn authenticated_peer_addrs(&self) -> Vec<EndpointAddr> {
-        self.authenticated_peer_addrs
-            .read()
-            .map(|addrs| addrs.values().cloned().collect())
-            .unwrap_or_default()
     }
 
     fn certified_person_for_device(&self, device: IdentityKey) -> Option<IdentityKey> {
@@ -115,14 +84,6 @@ impl FsTransportIdentity {
         self.credentials.device_public_key()
     }
 
-    pub(crate) fn credentials(&self) -> PeerCredentials {
-        self.credentials.clone()
-    }
-
-    pub(crate) fn revocations(&self) -> Arc<RwLock<RevocationList>> {
-        Arc::clone(&self.revocations)
-    }
-
     fn revocation_snapshot(&self) -> Result<RevocationList> {
         self.revocations
             .read()
@@ -131,7 +92,7 @@ impl FsTransportIdentity {
     }
 }
 
-impl crate::share_session::LiveActorCertification for FsTransportIdentity {
+impl FsTransportIdentity {
     #[allow(
         clippy::suspicious_operation_groupings,
         reason = "the direct certificate predicate keeps every authenticated identity equality visible"
@@ -176,7 +137,7 @@ async fn authenticate_connection(
         AuthenticatedTransportConfig::default(),
     )
     .await?;
-    identity.remember_peer(&peer, EndpointAddr::new(remote_id));
+    identity.remember_peer(&peer);
     Ok(peer)
 }
 
@@ -306,72 +267,6 @@ pub async fn bind_ephemeral_endpoint() -> Result<(Endpoint, MemoryLookup)> {
     bind_endpoint_with_key(iroh::SecretKey::generate()).await
 }
 
-/// Fetch only preview blobs newly referenced by the namespace. This makes a
-/// normal desktop immediately useful offline for browsing while keeping
-/// manifests and file bytes strictly on-demand. Callers invoke it only after
-/// a successful namespace/record change, never on the reconciliation timer.
-async fn prefetch_namespace_thumbnails(
-    namespace: &Arc<Mutex<Namespace>>,
-    hydrator: &Hydrator,
-    pending: &mut HashMap<Hash, (u8, tokio::time::Instant)>,
-    refresh_roots: bool,
-) -> Result<()> {
-    if refresh_roots {
-        let thumbnails = namespace
-            .lock_recover()
-            .live_record_blob_roots(crate::namespace::MAX_LIVE_RECORD_BLOB_SCAN)?
-            .into_iter()
-            .filter_map(|roots| roots.thumbnail)
-            .collect::<HashSet<Hash>>();
-        pending.retain(|hash, _| thumbnails.contains(hash));
-        let now = tokio::time::Instant::now();
-        for thumbnail in thumbnails {
-            pending.entry(thumbnail).or_insert((0, now));
-        }
-    }
-    let now = tokio::time::Instant::now();
-    let due = pending
-        .iter()
-        .filter_map(|(hash, (_, retry_at))| (*retry_at <= now).then_some(*hash))
-        .collect::<Vec<_>>();
-    for thumbnail in due {
-        if hydrator.store.has(thumbnail).await {
-            pending.remove(&thumbnail);
-            continue;
-        }
-        let result = hydrator
-            .read_blob(
-                thumbnail,
-                0,
-                MAX_INTERACTIVE_THUMBNAIL_BYTES.saturating_add(1),
-            )
-            .await
-            .and_then(|bytes| {
-                anyhow::ensure!(
-                    u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-                        <= MAX_INTERACTIVE_THUMBNAIL_BYTES,
-                    "interactive thumbnail exceeds byte budget"
-                );
-                Ok(())
-            });
-        if result.is_ok() {
-            pending.remove(&thumbnail);
-            continue;
-        }
-        // A certificate/authority refresh or a temporarily offline owner must
-        // not make the rest of the preview queue fail. Retry each pending
-        // thumbnail independently with a capped 3/6/12/24/30 second backoff.
-        if let Some((attempts, retry_at)) = pending.get_mut(&thumbnail) {
-            *attempts = attempts.saturating_add(1).min(4);
-            let delay = 3_u64.saturating_mul(1_u64 << u32::from(*attempts));
-            *retry_at = now
-                .checked_add(Duration::from_secs(delay.min(30)))
-                .unwrap_or(now);
-        }
-    }
-    Ok(())
-}
-
 /// The policy the network planes serve through, or `None` for an
 /// unenforced mount — same opt-out as [`crate::QuickFS`]: a mount
 /// without `--acl` states no policy, and inventing one here would deny a
@@ -400,37 +295,12 @@ fn peer_may_read_whole_workspace(policy: &PeerPolicy, peer: &IdentityKey) -> boo
     }
 }
 
-/// Receiving an Automerge sync message lets the caller contribute arbitrary
-/// namespace changes. Until changes are individually authorised, only a peer
-/// with write authority at the workspace root may use the bidirectional mode.
-fn peer_may_write_whole_workspace(policy: &PeerPolicy, peer: &IdentityKey) -> bool {
-    match policy {
-        None => true,
-        Some(acl) => {
-            acl.permits_peer(peer, "/", crate::acl::Access::Read)
-                && acl.permits_peer(peer, "/", crate::acl::Access::Write)
-        }
-    }
-}
-
-/// A named human grant applies to all currently certified devices; a
-/// device-specific grant remains possible by naming the device key. The
-/// transport has proved both identities, so authorization may safely accept
-/// either without treating an endpoint key as if it were a person.
 fn authenticated_peer_may_read_whole_workspace(
     policy: &PeerPolicy,
     peer: &AuthenticatedFsPeer,
 ) -> bool {
     peer_may_read_whole_workspace(policy, &peer.user_public_key)
         || peer_may_read_whole_workspace(policy, &peer.device_public_key)
-}
-
-fn authenticated_peer_may_write_whole_workspace(
-    policy: &PeerPolicy,
-    peer: &AuthenticatedFsPeer,
-) -> bool {
-    peer_may_write_whole_workspace(policy, &peer.user_public_key)
-        || peer_may_write_whole_workspace(policy, &peer.device_public_key)
 }
 
 /// An iroh endpoint id read as a Tilo identity — the same 32 bytes (see
@@ -444,18 +314,9 @@ fn identity_of(id: iroh::EndpointId) -> IdentityKey {
 /// remember for requests riding the connection. `None` endpoint id means
 /// the transport couldn't name the caller: refuse, since an unnamed
 /// caller can't be checked.
-#[cfg(test)]
 fn admit_blob_caller(
     policy: &PeerPolicy,
     endpoint_id: Option<iroh::EndpointId>,
-) -> Result<IdentityKey, iroh_blobs::provider::events::AbortReason> {
-    admit_blob_caller_with_records(policy, endpoint_id, None)
-}
-
-fn admit_blob_caller_with_records(
-    policy: &PeerPolicy,
-    endpoint_id: Option<iroh::EndpointId>,
-    records: Option<&RecordPlane>,
 ) -> Result<IdentityKey, iroh_blobs::provider::events::AbortReason> {
     use iroh_blobs::provider::events::AbortReason;
 
@@ -463,68 +324,14 @@ fn admit_blob_caller_with_records(
         return Err(AbortReason::Permission);
     };
     let peer = identity_of(id);
-    let has_record_session = records.is_some_and(|records| {
-        !records
-            .access_registry
-            .readable_record_ids_for_device(
-                records.workspace_id,
-                collab_types::Ed25519PublicKey(peer),
-            )
-            .is_empty()
-    });
-    if peer_may_read_anything(policy, &peer) || has_record_session {
+    if peer_may_read_anything(policy, &peer) {
         Ok(peer)
     } else {
         Err(AbortReason::Permission)
     }
 }
-
 /// Does `peer` currently read at least one live path naming `hash` as file
 /// content or thumbnail content? Hash knowledge alone is never authority.
-#[cfg(test)]
-async fn peer_may_read_blob(
-    policy: &PeerPolicy,
-    namespace: &Arc<Mutex<Namespace>>,
-    store: &ContentStore,
-    peer: &IdentityKey,
-    hash: iroh_blobs::Hash,
-) -> bool {
-    peer_may_read_blob_with_records(policy, namespace, store, peer, None, hash, None).await
-}
-
-/// One blob request checked the way the provider checks it, against a
-/// fresh index of the namespace.
-#[cfg(test)]
-async fn peer_may_read_blob_with_records(
-    policy: &PeerPolicy,
-    namespace: &Arc<Mutex<Namespace>>,
-    store: &ContentStore,
-    peer: &IdentityKey,
-    certified_person: Option<IdentityKey>,
-    hash: iroh_blobs::Hash,
-    records: Option<&RecordPlane>,
-) -> bool {
-    let index = BlobAccessIndex::new(Arc::clone(namespace));
-    // A client names the manifest of every chunk it asks for; ask as one
-    // that names every file version the namespace holds.
-    let context: Vec<iroh_blobs::Hash> = namespace
-        .lock_recover()
-        .live_blob_owners()
-        .into_iter()
-        .filter_map(|owner| owner.manifest)
-        .collect();
-    authorize_blob_request(
-        policy,
-        &index,
-        store,
-        records,
-        (*peer, certified_person),
-        &[hash],
-        &context,
-    )
-    .await
-}
-
 /// What one blob request asks for.
 enum BlobAsk {
     /// Whole blobs, with `context`: further hashes named in the same request
@@ -553,57 +360,21 @@ impl BlobAsk {
 /// Whether the caller `(device, certified person)` may receive every blob
 /// in `wanted`; `context` are further hashes named in the same request with
 /// nothing asked of them (the manifests of requested chunks).
-#[cfg(test)]
-async fn authorize_blob_request(
-    policy: &PeerPolicy,
-    index: &BlobAccessIndex,
-    store: &ContentStore,
-    records: Option<&RecordPlane>,
-    caller: (IdentityKey, Option<IdentityKey>),
-    wanted: &[iroh_blobs::Hash],
-    context: &[iroh_blobs::Hash],
-) -> bool {
-    authorize_ask(
-        policy,
-        index,
-        store,
-        records,
-        caller,
-        &BlobAsk::Blobs {
-            wanted: wanted.to_vec(),
-            context: context.to_vec(),
-        },
-    )
-    .await
-}
-
 async fn authorize_ask(
     policy: &PeerPolicy,
     index: &BlobAccessIndex,
     store: &ContentStore,
-    records: Option<&RecordPlane>,
     caller: (IdentityKey, Option<IdentityKey>),
     ask: &BlobAsk,
 ) -> bool {
-    if policy.is_none() && records.is_none() {
+    if policy.is_none() {
         return true;
     }
     let (device, person) = caller;
-    let readable_records = records.map(|records| {
-        records
-            .access_registry
-            .readable_record_ids_for_device(
-                records.workspace_id,
-                collab_types::Ed25519PublicKey(device),
-            )
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>()
-    });
     let requester = Requester {
         policy,
         device,
         person,
-        readable_records,
     };
     match ask {
         BlobAsk::Blobs { wanted, context } => {
@@ -629,7 +400,6 @@ struct BlobGuard {
     policy: PeerPolicy,
     index: Arc<BlobAccessIndex>,
     store: Arc<ContentStore>,
-    records: Option<RecordPlane>,
     callers: Arc<Mutex<BlobCallers>>,
     slots: Arc<tokio::sync::Semaphore>,
 }
@@ -648,8 +418,7 @@ impl BlobGuard {
         let person = device.and_then(|device| {
             identity.and_then(|identity| identity.certified_person_for_device(device))
         });
-        let mut verdict =
-            admit_blob_caller_with_records(&self.policy, endpoint_id, self.records.as_ref());
+        let mut verdict = admit_blob_caller(&self.policy, endpoint_id);
         if verdict.is_err()
             && person.is_some_and(|person| peer_may_read_anything(&self.policy, &person))
         {
@@ -689,15 +458,7 @@ impl BlobGuard {
         tokio::spawn(async move {
             let ok = match caller {
                 Some(caller) => {
-                    authorize_ask(
-                        &guard.policy,
-                        &guard.index,
-                        &guard.store,
-                        guard.records.as_ref(),
-                        caller,
-                        &ask,
-                    )
-                    .await
+                    authorize_ask(&guard.policy, &guard.index, &guard.store, caller, &ask).await
                 }
                 None => false,
             };
@@ -744,7 +505,6 @@ fn blob_guard(
     policy: PeerPolicy,
     namespace: Arc<Mutex<Namespace>>,
     store: Arc<ContentStore>,
-    records: Option<RecordPlane>,
     identity: Option<FsTransportIdentity>,
 ) -> Option<iroh_blobs::provider::events::EventSender> {
     use iroh_blobs::provider::events::{
@@ -752,9 +512,7 @@ fn blob_guard(
         RequestMode, ThrottleMode,
     };
 
-    if policy.is_none() && records.is_none() {
-        return None;
-    }
+    policy.as_ref()?;
     let mask = EventMask {
         connected: ConnectMode::Intercept,
         get: RequestMode::Intercept,
@@ -768,7 +526,6 @@ fn blob_guard(
         policy,
         index: Arc::new(BlobAccessIndex::new(namespace)),
         store,
-        records,
         callers: Arc::new(Mutex::new(HashMap::new())),
         slots: Arc::new(tokio::sync::Semaphore::new(
             MAX_CONCURRENT_BLOB_AUTHORIZATIONS,
@@ -894,88 +651,31 @@ fn blob_guard(
     Some(sender)
 }
 
-/// Wakes the workspace's reconciliation on local namespace changes. Cheap to
-/// clone.
-#[derive(Clone)]
-pub struct SyncHandle {
-    local_tx: mpsc::UnboundedSender<()>,
-    record_index_generation: tokio::sync::watch::Sender<u64>,
-}
-
-impl SyncHandle {
-    /// A local change produced `delta`: announce it to peers (no-op if empty).
-    pub fn announce_change(&self) {
-        let _ = self.local_tx.send(());
-    }
-
-    /// Subscribe to coalesced completed namespace mutations.  Consumers only
-    /// need the latest generation: rebuilding an ACL view for every member of
-    /// a remote burst would be wasted work and could publish an intermediate
-    /// projection.
-    pub fn subscribe_record_index_generation(&self) -> tokio::sync::watch::Receiver<u64> {
-        self.record_index_generation.subscribe()
-    }
-
-    pub(crate) fn notify_record_index_changed(&self) {
-        self.record_index_generation
-            .send_modify(|generation| *generation = generation.wrapping_add(1));
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_handle() -> Arc<Self> {
-        let (local_tx, _local_rx) = mpsc::unbounded_channel();
-        let (record_index_generation, _) = tokio::sync::watch::channel(0_u64);
-        Arc::new(Self {
-            local_tx,
-            record_index_generation,
-        })
-    }
-}
-
-/// Aborts the pump task when the workspace is dropped.
-struct AbortOnDrop(tokio::task::JoinHandle<()>);
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
 /// A live, replicated workspace: a CRDT namespace kept in sync with peers.
+/// Exchange the current signed workspace authority with one authenticated peer.
+pub async fn submit_workspace_authority(
+    endpoint: &Endpoint,
+    remote: EndpointAddr,
+    identity: &FsTransportIdentity,
+    workspace: uuid::Uuid,
+    publish: Option<crate::workspace_authority::WorkspaceAuthorityEnvelope>,
+) -> Result<Option<crate::workspace_authority::WorkspaceAuthorityEnvelope>> {
+    let connection = endpoint.connect(remote, TILO_FS_AUTHORITY_ALPN).await?;
+    let (mut send, mut recv) = connection.open_bi().await?;
+    let _ = authenticate_connection(endpoint, &connection, &mut recv, &mut send, identity).await?;
+    write_authority_frame(&mut send, &AuthorityRequest { workspace, publish }).await?;
+    send.finish()?;
+    let response: AuthorityResponse = read_authority_frame(&mut recv).await?;
+    connection.close(0u32.into(), b"");
+    Ok(response.authority)
+}
+
+/// A live workspace's content plane: the blobs this device holds, served to
+/// the peers its mount hydrates from.
 pub struct Workspace {
     pub namespace: Arc<Mutex<Namespace>>,
-    pub sync: Arc<SyncHandle>,
     _router: Router,
-    _tasks: Vec<AbortOnDrop>,
 }
-
-/// Durable state installed when this workspace serves record-scoped shares.
-/// Keeping this separate preserves the legacy whole-workspace constructors
-/// while letting production mounts opt into the stricter record ALPN.
-#[derive(Clone)]
-pub struct RecordServices {
-    pub authority: Arc<ShareAuthority>,
-    pub repository: Arc<RecordRepository>,
-    pub access_registry: Arc<RecordAccessRegistry>,
-    pub mutation_sink: Option<Arc<dyn crate::record_protocol::RecordMutationSink>>,
-    pub materializer: Option<Arc<crate::record_materializer::RecordMaterializer>>,
-    /// Durable verified remote-replica receipts. `None` preserves ephemeral
-    /// test/workspace construction but cannot ever produce eviction proof.
-    pub availability: Option<Arc<Mutex<crate::availability::AvailabilityRegistry>>>,
-    /// Signed workspace ACL state shared through the authority ALPN.
-    pub workspace_authority: Option<Arc<WorkspaceAuthority>>,
-}
-
-#[derive(Clone)]
-struct RecordPlane {
-    protocol: RecordProtocol,
-    access_registry: Arc<RecordAccessRegistry>,
-    repository: Arc<RecordRepository>,
-    materializer: Option<Arc<crate::record_materializer::RecordMaterializer>>,
-    workspace_id: uuid::Uuid,
-    availability: Option<Arc<Mutex<crate::availability::AvailabilityRegistry>>>,
-    workspace_authority: Option<Arc<WorkspaceAuthority>>,
-}
-
 #[derive(Clone)]
 struct AuthorityProtocol {
     endpoint: Endpoint,
@@ -1050,108 +750,6 @@ fn authority_response(
     }
 }
 
-/// A signed receipt for `request` if this device durably holds the exact
-/// revision and `peer` may read the record, as a session answers it.
-async fn replica_ack_response(
-    identity: &FsTransportIdentity,
-    policy: &PeerPolicy,
-    workspace_id: uuid::Uuid,
-    repository: &RecordRepository,
-    store: &ContentStore,
-    peer: &AuthenticatedFsPeer,
-    request: &ReplicaAckRequestV1,
-) -> ReplicaAckResponseV1 {
-    if request.validate().is_err() || request.workspace_id != workspace_id {
-        return ReplicaAckResponseV1::Denied;
-    }
-    let requester = fs_protocol::FileActor {
-        person: collab_types::Ed25519PublicKey(peer.user_public_key),
-        device: collab_types::Ed25519PublicKey(peer.device_public_key),
-    };
-    let key = RecordRepositoryKey {
-        workspace_id,
-        record_id: request.revision.record_id,
-    };
-    let Ok(snapshot) = repository.snapshot(
-        key,
-        &requester,
-        &DirectMeshAuthorizer {
-            peer,
-            identity,
-            policy,
-        },
-    ) else {
-        return ReplicaAckResponseV1::Denied;
-    };
-    let version_matches = snapshot.versions.iter().any(|version| {
-        version.id == request.revision.version_id
-            && version.record_id == request.revision.record_id
-            && version.content_hash == request.revision.content_hash
-            && version.metadata_hash == request.revision.metadata_hash
-    });
-    if snapshot.content_revision != Some(request.revision) || !version_matches {
-        return ReplicaAckResponseV1::Unavailable;
-    }
-    if store
-        .verify_durable_revision(&request.revision)
-        .await
-        .is_err()
-    {
-        return ReplicaAckResponseV1::Unavailable;
-    }
-    let actor = fs_protocol::FileActor {
-        person: collab_types::Ed25519PublicKey(identity.user_public_key()),
-        device: collab_types::Ed25519PublicKey(identity.device_public_key()),
-    };
-    match ReplicaAckV1::signed(
-        request,
-        actor,
-        unix_now_ms(),
-        identity.credentials().signing_key(),
-    ) {
-        Ok(receipt) => ReplicaAckResponseV1::Acknowledged(receipt),
-        Err(_) => ReplicaAckResponseV1::Unavailable,
-    }
-}
-
-fn build_record_plane(
-    endpoint: &Endpoint,
-    identity: &FsTransportIdentity,
-    store: Arc<ContentStore>,
-    workspace_id: uuid::Uuid,
-    records: Option<RecordServices>,
-) -> Result<Option<RecordPlane>> {
-    let Some(records) = records else {
-        return Ok(None);
-    };
-    let mut protocol = RecordProtocol::new(
-        endpoint.clone(),
-        identity.credentials(),
-        identity.revocations(),
-        workspace_id,
-        Arc::clone(&records.authority),
-        Arc::new(identity.clone()),
-        Arc::clone(&records.access_registry),
-        Arc::clone(&records.repository),
-    )?
-    .with_replica_store(store);
-    if let Some(sink) = records.mutation_sink.clone() {
-        protocol = protocol.with_mutation_sink(sink);
-    }
-    if let Some(availability) = records.availability.clone() {
-        protocol = protocol.with_availability(availability);
-    }
-    Ok(Some(RecordPlane {
-        protocol,
-        access_registry: records.access_registry,
-        repository: records.repository,
-        materializer: records.materializer,
-        workspace_id,
-        availability: records.availability,
-        workspace_authority: records.workspace_authority,
-    }))
-}
-
 /// The local node a workspace's sync runs on: its endpoint and peer lookup,
 /// content store and hydrator, the namespace it projects, the transport
 /// identity it authenticates as and the [`PeerPolicy`] it serves through.
@@ -1167,221 +765,43 @@ pub struct SyncNode {
 
 impl Workspace {
     /// Begin hosting a new workspace, returning a ticket to share with
-    /// peers. `policy` is what the sync and content planes serve *through*
-    /// (see [`PeerPolicy`]); `None` hosts unenforced.
+    /// peers. `policy` is what the content plane serves *through* (see
+    /// [`PeerPolicy`]); `None` hosts unenforced. `authority` is the signed
+    /// ACL state a joiner reads over the authority ALPN.
     pub fn host(
-        endpoint: Endpoint,
-        lookup: MemoryLookup,
-        store: Arc<ContentStore>,
-        hydrator: Arc<Hydrator>,
-        namespace: Arc<Mutex<Namespace>>,
-        identity: FsTransportIdentity,
-        policy: PeerPolicy,
+        node: SyncNode,
+        authority: Option<&Arc<WorkspaceAuthority>>,
     ) -> Result<(Workspace, Ticket)> {
-        Self::host_inner(
-            SyncNode {
-                endpoint,
-                lookup,
-                store,
-                hydrator,
-                namespace,
-                identity,
-                policy,
-            },
-            None,
-        )
-    }
-
-    /// Host a workspace with the exact-record sharing protocol enabled.
-    pub fn host_with_records(
-        endpoint: Endpoint,
-        lookup: MemoryLookup,
-        store: Arc<ContentStore>,
-        hydrator: Arc<Hydrator>,
-        namespace: Arc<Mutex<Namespace>>,
-        identity: FsTransportIdentity,
-        policy: PeerPolicy,
-        records: RecordServices,
-    ) -> Result<(Workspace, Ticket)> {
-        Self::host_inner(
-            SyncNode {
-                endpoint,
-                lookup,
-                store,
-                hydrator,
-                namespace,
-                identity,
-                policy,
-            },
-            Some(records),
-        )
-    }
-
-    fn host_inner(node: SyncNode, records: Option<RecordServices>) -> Result<(Workspace, Ticket)> {
-        let SyncNode {
-            endpoint,
-            lookup,
-            store,
-            hydrator,
-            namespace,
-            identity,
-            policy,
-        } = node;
-        let topic = *endpoint.id().as_bytes();
+        let topic = *node.endpoint.id().as_bytes();
         let ticket = Ticket {
-            node: endpoint.addr(),
+            node: node.endpoint.addr(),
             workspace: topic,
         };
-        let record_plane = build_record_plane(
-            &endpoint,
-            &identity,
-            Arc::clone(&store),
-            ticket.workspace_id(),
-            records,
-        )?;
-        let sessions = Arc::new(SessionPool::new(
-            endpoint.clone(),
-            identity.clone(),
-            ticket.workspace_id(),
-        ));
-        let ws = Self::start(
-            SyncNode {
-                endpoint,
-                lookup,
-                store,
-                hydrator,
-                namespace,
-                identity,
-                policy,
-            },
-            ticket.workspace_id(),
-            &[],
-            record_plane,
-            sessions,
-        );
-        Ok((ws, ticket))
+        let workspace = Self::start(node, ticket.workspace_id(), &[], authority);
+        Ok((workspace, ticket))
     }
 
     /// Join the workspace described by `ticket`. A joiner serves too (what
     /// it hydrates, peers may hydrate from it), so it carries the same
     /// `policy` a host does.
-    pub async fn join(
-        endpoint: Endpoint,
-        lookup: MemoryLookup,
-        store: Arc<ContentStore>,
-        hydrator: Arc<Hydrator>,
-        namespace: Arc<Mutex<Namespace>>,
-        ticket: Ticket,
-        identity: FsTransportIdentity,
-        policy: PeerPolicy,
-    ) -> Result<Workspace> {
-        Self::join_inner(
-            SyncNode {
-                endpoint,
-                lookup,
-                store,
-                hydrator,
-                namespace,
-                identity,
-                policy,
-            },
-            ticket,
-            None,
-        )
-        .await
-    }
-
-    /// Join a workspace and serve/consume its exact-record sharing protocol.
-    pub async fn join_with_records(
+    pub fn join(
         node: SyncNode,
-        ticket: Ticket,
-        records: RecordServices,
+        ticket: &Ticket,
+        authority: Option<&Arc<WorkspaceAuthority>>,
     ) -> Result<Workspace> {
-        Self::join_inner(node, ticket, Some(records)).await
-    }
-
-    async fn join_inner(
-        node: SyncNode,
-        ticket: Ticket,
-        records: Option<RecordServices>,
-    ) -> Result<Workspace> {
-        let SyncNode {
-            endpoint,
-            lookup,
-            store,
-            hydrator,
-            namespace,
-            identity,
-            policy,
-        } = node;
-        let record_plane = build_record_plane(
-            &endpoint,
-            &identity,
-            Arc::clone(&store),
-            ticket.workspace_id(),
-            records,
-        )?;
-        // A full namespace bootstrap contains the structural tree, but signed
-        // file hashes and byte lengths live in the authenticated record mesh.
-        // Pull that projection before exposing the mount: otherwise a fresh
-        // collaborator can briefly observe real files as zero-byte entries,
-        // and an eager application may cache that false empty state.
-        let sessions = Arc::new(SessionPool::new(
-            endpoint.clone(),
-            identity.clone(),
-            ticket.workspace_id(),
-        ));
-        if let Some(records) = &record_plane {
-            let initial_mesh = tokio::time::timeout(
-                Duration::from_secs(10),
-                pull_records_from_peer(
-                    &sessions,
-                    ticket.node.clone(),
-                    &identity,
-                    &policy,
-                    records,
-                    &hydrator,
-                ),
-            )
-            .await
-            .map_err(|_| anyhow::anyhow!("initial record mesh timed out"))
-            .and_then(std::convert::identity);
-            if let Err(error) = initial_mesh
-                && !identity.partitioned()
-            {
-                // Persisted/offline mounts remain available. The periodic
-                // mesh worker below keeps retrying a temporarily unavailable
-                // peer after startup.
-                eprintln!("initial record mesh reconciliation failed: {error}");
-            }
-        }
         Ok(Self::start(
-            SyncNode {
-                endpoint,
-                lookup,
-                store,
-                hydrator,
-                namespace,
-                identity,
-                policy,
-            },
+            node,
             ticket.workspace_id(),
-            &[ticket.node],
-            record_plane,
-            sessions,
+            std::slice::from_ref(&ticket.node),
+            authority,
         ))
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "startup owns the ordered lifecycle and cleanup of every sync protocol task"
-    )]
     fn start(
         node: SyncNode,
         workspace_id: uuid::Uuid,
         bootstrap: &[EndpointAddr],
-        record_plane: Option<RecordPlane>,
-        sessions: Arc<SessionPool>,
+        authority: Option<&Arc<WorkspaceAuthority>>,
     ) -> Workspace {
         let SyncNode {
             endpoint,
@@ -1392,825 +812,36 @@ impl Workspace {
             identity,
             policy,
         } = node;
-        // Register bootstrap peers so sessions can dial them and we can hydrate.
-        register_bootstrap_peers(&lookup, &hydrator, bootstrap);
-
-        let (announce_tx, announce_rx) = mpsc::unbounded_channel();
-        let session_proto = SessionProtocol {
-            endpoint: endpoint.clone(),
-            identity: identity.clone(),
-            policy: policy.clone(),
-            store: Arc::clone(&store),
-            records: record_plane.clone(),
-            workspace_id,
-            announcements: announce_tx,
-            pool: Arc::downgrade(&sessions),
-        };
-        sessions.serve_with(session_proto.clone());
-        let builder = Router::builder(endpoint.clone())
-            .accept(TILO_FS_SESSION_ALPN, session_proto)
-            .accept(
-                iroh_blobs::ALPN,
-                store.blobs_protocol(blob_guard(
-                    policy.clone(),
-                    namespace.clone(),
-                    store.clone(),
-                    record_plane.clone(),
-                    Some(identity.clone()),
-                )),
-            );
-        let builder = match &record_plane {
-            Some(records) => builder.accept(TILO_FS_RECORD_ALPN, records.protocol.clone()),
+        // Register bootstrap peers so the mount can hydrate from them.
+        for address in bootstrap {
+            lookup.add_endpoint_info(address.clone());
+            hydrator.add_peer(address.clone());
+        }
+        let builder = Router::builder(endpoint.clone()).accept(
+            iroh_blobs::ALPN,
+            store.blobs_protocol(blob_guard(
+                policy.clone(),
+                namespace.clone(),
+                store.clone(),
+                Some(identity.clone()),
+            )),
+        );
+        let builder = match authority {
+            Some(authority) => builder.accept(
+                TILO_FS_AUTHORITY_ALPN,
+                AuthorityProtocol {
+                    endpoint,
+                    identity,
+                    policy,
+                    authority: Arc::clone(authority),
+                    workspace_id,
+                },
+            ),
             None => builder,
         };
-        let builder = if let Some(records) = &record_plane {
-            if let Some(authority) = &records.workspace_authority {
-                builder.accept(
-                    TILO_FS_AUTHORITY_ALPN,
-                    AuthorityProtocol {
-                        endpoint,
-                        identity: identity.clone(),
-                        policy: policy.clone(),
-                        authority: Arc::clone(authority),
-                        workspace_id: records.workspace_id,
-                    },
-                )
-            } else {
-                builder
-            }
-        } else {
-            builder
-        };
-        let router = builder.spawn();
-
-        let (local_tx, local_rx) = mpsc::unbounded_channel();
-        let (record_index_generation, _) = tokio::sync::watch::channel(0_u64);
-        let sync = Arc::new(SyncHandle {
-            local_tx,
-            record_index_generation,
-        });
-        // Anti-entropy backstop: periodically exchange namespace changes and
-        // records with every peer and resolve conflicts, so a missed delta
-        // or a mid-join window can't leave a peer permanently diverged.
-        let tasks = vec![AbortOnDrop(tokio::spawn(reconcile_loop(ReconcileLoop {
-            namespace: namespace.clone(),
-            hydrator,
-            identity,
-            policy,
-            records: record_plane,
-            local_rx: Some(local_rx),
-            announcements: announce_rx,
-            sessions,
-            sync: Arc::clone(&sync),
-        })))];
-
         Workspace {
             namespace,
-            sync,
-            _router: router,
-            _tasks: tasks,
+            _router: builder.spawn(),
         }
     }
 }
-
-fn register_bootstrap_peers(
-    lookup: &MemoryLookup,
-    hydrator: &Hydrator,
-    bootstrap: &[EndpointAddr],
-) {
-    for address in bootstrap {
-        lookup.add_endpoint_info(address.clone());
-        hydrator.add_peer(address.clone());
-    }
-}
-
-/// Periodic anti-entropy + conflict resolution: pulls each known peer's
-/// changes to recover from a missed announcement or a mid-join window, then
-/// materializes conflict copies for concurrent content edits.
-struct DirectMeshAuthorizer<'a> {
-    peer: &'a AuthenticatedFsPeer,
-    identity: &'a FsTransportIdentity,
-    policy: &'a PeerPolicy,
-}
-
-impl RecordAuthorizer for DirectMeshAuthorizer<'_> {
-    fn actor_is_certified(&self, actor: &fs_protocol::FileActor) -> bool {
-        // A home peer is commonly a second device certified to the same
-        // human as the desktop which authored the record. The envelope still
-        // verifies the original device signature; the live transport cert
-        // permits that human's directly-connected sibling device to relay it.
-        // Never extend this across people: collaborator A cannot vouch for
-        // collaborator B's device or attribution.
-        actor.person.as_bytes() == &self.peer.user_public_key
-            && crate::share_session::LiveActorCertification::certification_is_current(
-                self.identity,
-                self.peer,
-                unix_now_ns(),
-            )
-    }
-
-    fn allows(
-        &self,
-        actor: &fs_protocol::FileActor,
-        _record_id: fs_protocol::FileRecordId,
-        action: RecordAction,
-    ) -> bool {
-        self.actor_is_certified(actor)
-            && match action {
-                RecordAction::Read => {
-                    authenticated_peer_may_read_whole_workspace(self.policy, self.peer)
-                }
-                RecordAction::Write => {
-                    authenticated_peer_may_write_whole_workspace(self.policy, self.peer)
-                }
-            }
-    }
-}
-
-/// Exchange the current signed workspace authority with one authenticated peer.
-pub async fn submit_workspace_authority(
-    endpoint: &Endpoint,
-    remote: EndpointAddr,
-    identity: &FsTransportIdentity,
-    workspace: uuid::Uuid,
-    publish: Option<crate::workspace_authority::WorkspaceAuthorityEnvelope>,
-) -> Result<Option<crate::workspace_authority::WorkspaceAuthorityEnvelope>> {
-    let connection = endpoint.connect(remote, TILO_FS_AUTHORITY_ALPN).await?;
-    let (mut send, mut recv) = connection.open_bi().await?;
-    let _ = authenticate_connection(endpoint, &connection, &mut recv, &mut send, identity).await?;
-    write_authority_frame(&mut send, &AuthorityRequest { workspace, publish }).await?;
-    send.finish()?;
-    let response: AuthorityResponse = read_authority_frame(&mut recv).await?;
-    connection.close(0u32.into(), b"");
-    Ok(response.authority)
-}
-
-/// A receipt with less than this left is renewed.
-const RECEIPT_RENEW_BEFORE_MS: u64 = 60 * 1000;
-
-/// Current revisions `device` has not acknowledged recently: receipts last
-/// minutes, so a pass asks only for new revisions and ones about to lapse,
-/// not for every record every few seconds.
-fn revisions_awaiting_receipt(
-    records: &RecordPlane,
-    registry: &Mutex<crate::availability::AvailabilityRegistry>,
-    device: collab_types::Ed25519PublicKey,
-) -> Vec<fs_protocol::ContentRevisionV1> {
-    let revisions = records
-        .repository
-        .current_content_revisions(records.workspace_id);
-    let renew_after = unix_now_ms().saturating_add(RECEIPT_RENEW_BEFORE_MS);
-    let registry = registry.lock_recover();
-    revisions
-        .into_iter()
-        .filter(|revision| {
-            !registry.get(revision.record_id).is_some_and(|record| {
-                record.current_version == Some(revision.version_id)
-                    && record.replica_observations.iter().any(|receipt| {
-                        receipt.device == device
-                            && receipt.version_id == revision.version_id
-                            && receipt.expires_at_ms > renew_after
-                    })
-            })
-        })
-        .collect()
-}
-
-/// Records a verified receipt for `revision`, tracking the revision first
-/// when this registry has no row for it yet.
-fn record_replica_observation(
-    registry: &mut crate::availability::AvailabilityRegistry,
-    revision: fs_protocol::ContentRevisionV1,
-    local_device: collab_types::Ed25519PublicKey,
-    observation: crate::availability::ReplicaObservation,
-    observed_at: u64,
-) -> Result<(), crate::availability::AvailabilityError> {
-    // Whole-workspace records historically never created availability rows,
-    // so valid NAS receipts were silently rejected as `UnknownRecord`.
-    let parent = registry
-        .get(revision.record_id)
-        .and_then(|record| record.parent);
-    let metadata_observed = registry
-        .get(revision.record_id)
-        .and_then(|record| record.freshness.metadata_observed_at_ms)
-        .unwrap_or(observed_at);
-    registry.track_current_revision(
-        revision,
-        crate::availability::RecordKind::File,
-        parent,
-        metadata_observed,
-    )?;
-    registry.observe_replica(revision.record_id, local_device, observation, observed_at)
-}
-
-/// How soon every peer is reconciled again after anything happened (a
-/// local change, an announcement, a pass that changed
-/// something). While nothing happens the wait doubles per timer pass up to
-/// [`IDLE_RECONCILE_CEILING`] ([`IdleBackoff`]).
-const RECONCILE_INTERVAL: Duration = Duration::from_secs(3);
-/// The longest an idle device waits between two timer passes: how long a
-/// change whose announcement was lost can take to arrive.
-const IDLE_RECONCILE_CEILING: Duration = Duration::from_secs(30);
-/// How long after an exchange first fails passes keep the short interval,
-/// so a peer that drops briefly is caught up with at once.
-const FAILURE_RETRY_WINDOW: Duration = Duration::from_secs(60);
-/// Peers one pass exchanges with at once.
-const PASS_CONCURRENCY: usize = 8;
-/// How long a pass waits for one peer's exchange once it has begun. The
-/// exchange is not cancelled (that could stop between a durable record and
-/// its projection); it finishes on its own and holds its slot, and its peer
-/// is not started again until it has. The pass moves on without it.
-const PEER_DEADLINE: Duration = Duration::from_secs(20);
-
-/// One peer's share of a reconciliation pass.
-struct PeerPass<'a> {
-    hydrator: &'a Hydrator,
-    identity: &'a FsTransportIdentity,
-    policy: &'a PeerPolicy,
-    records: Option<&'a RecordPlane>,
-    /// Which records to project again even if nothing new arrives: all of
-    /// them on the first pass, the ones still unplaced on timer passes.
-    reconcile: crate::record_materializer::ReconcileScope,
-}
-
-impl PeerPass<'_> {
-    /// The pass over the peer's session: every exchange on its one
-    /// connection.
-    async fn over_session(&self, sessions: &SessionPool, peer: &session::Session) -> PassOutcome {
-        // Each exchange stands on its own: one the peer refuses does not
-        // hold back the others.
-        let mut changed = false;
-        let failed = std::sync::atomic::AtomicBool::new(false);
-        let report = |what: &str, error: &anyhow::Error| {
-            failed.store(true, std::sync::atomic::Ordering::Relaxed);
-            if !self.identity.partitioned() {
-                eprintln!("{what} with {} failed: {error:#}", peer.addr.id);
-            }
-        };
-        if let Some(records) = self.records {
-            if let Some(authority) = &records.workspace_authority
-                && let Err(error) = session::exchange_authority(
-                    sessions,
-                    peer,
-                    self.identity,
-                    authority,
-                    records.workspace_id,
-                )
-                .await
-            {
-                report("workspace authority reconciliation", &error);
-            }
-            // A namespace change may place records that arrived earlier.
-            let scope = match self.reconcile {
-                crate::record_materializer::ReconcileScope::Touched if changed => {
-                    crate::record_materializer::ReconcileScope::Unplaced
-                }
-                scope => scope,
-            };
-            let pull_started = Instant::now();
-            match session::pull_records(
-                sessions,
-                peer,
-                self.identity,
-                self.policy,
-                records,
-                self.hydrator,
-                scope,
-            )
-            .await
-            {
-                Ok(pulled) => changed |= pulled,
-                Err(error) => report("record reconciliation", &error),
-            }
-            let pull_done = Instant::now();
-            if let Err(error) =
-                session::collect_replica_acks(sessions, peer, self.identity, records).await
-            {
-                report("replica receipts", &error);
-            }
-            if std::env::var_os("TILO_FS_NATIVE_TRACE").is_some() {
-                eprintln!(
-                    "  session with {}: records {} ms, receipts {} ms",
-                    peer.addr.id.fmt_short(),
-                    pull_done.duration_since(pull_started).as_millis(),
-                    pull_done.elapsed().as_millis()
-                );
-            }
-        }
-        PassOutcome {
-            changed,
-            failed: failed.into_inner(),
-        }
-    }
-}
-
-/// What every peer exchange of the reconciliation loop works on. Owned, so
-/// an exchange can outlive the pass that stopped waiting for it.
-struct PassShared {
-    hydrator: Arc<Hydrator>,
-    identity: FsTransportIdentity,
-    policy: PeerPolicy,
-    records: Option<RecordPlane>,
-    sessions: Arc<SessionPool>,
-}
-
-/// What one pass does with each peer.
-#[derive(Clone, Copy, Debug)]
-struct PassPlan {
-    /// Tell the peer first that this device published changes, so it pulls
-    /// them without waiting for its own timer.
-    announce: bool,
-    reconcile: crate::record_materializer::ReconcileScope,
-}
-
-/// What a pass, or one peer's share of it, came to.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct PassOutcome {
-    /// Records changed.
-    changed: bool,
-    /// An exchange failed or a peer could not be reached.
-    failed: bool,
-}
-
-/// When the reconciliation loop's next timer pass is due. After anything
-/// happens it is [`RECONCILE_INTERVAL`]; each timer pass that changes
-/// nothing doubles the wait, up to [`IDLE_RECONCILE_CEILING`], so an idle
-/// device wakes twice a minute rather than twenty times. A pass where an
-/// exchange failed keeps the short wait for [`FAILURE_RETRY_WINDOW`] after
-/// the first failure in a row, then backs off as well, so an absent peer is
-/// not dialled every few seconds forever. Collaborators' changes do not
-/// wait on this: announcements and peers' own passes act at once.
-#[derive(Debug)]
-struct IdleBackoff {
-    interval: Duration,
-    failing_since: Option<Instant>,
-}
-
-impl Default for IdleBackoff {
-    fn default() -> Self {
-        Self {
-            interval: RECONCILE_INTERVAL,
-            failing_since: None,
-        }
-    }
-}
-
-impl IdleBackoff {
-    /// How long after the last pass the next timer pass is due.
-    const fn interval(&self) -> Duration {
-        self.interval
-    }
-
-    /// A pass ended at `now`; `timer` says whether the timer started it
-    /// (rather than a local change or an announcement).
-    fn after_pass(&mut self, timer: bool, outcome: PassOutcome, now: Instant) {
-        if outcome.failed {
-            let since = *self.failing_since.get_or_insert(now);
-            if now.saturating_duration_since(since) < FAILURE_RETRY_WINDOW {
-                self.interval = RECONCILE_INTERVAL;
-                return;
-            }
-        } else {
-            self.failing_since = None;
-        }
-        self.interval = if timer && !outcome.changed {
-            self.interval.saturating_mul(2).min(IDLE_RECONCILE_CEILING)
-        } else {
-            RECONCILE_INTERVAL
-        };
-    }
-}
-
-/// When a timer of `interval` started now runs out.
-fn timer_due(interval: Duration) -> tokio::time::Instant {
-    let now = tokio::time::Instant::now();
-    now.checked_add(interval).unwrap_or(now)
-}
-
-impl PassShared {
-    /// One peer's share of a pass: the announcement if `plan` asks for it,
-    /// then every exchange over the peer's session.
-    async fn exchange(&self, peer: EndpointAddr, plan: PassPlan) -> PassOutcome {
-        let session = match self.sessions.get(&peer).await {
-            Ok(session) => session,
-            Err(error) => {
-                if !self.identity.partitioned() {
-                    eprintln!("no session with {}: {error:#}", peer.id);
-                }
-                return PassOutcome {
-                    changed: false,
-                    failed: true,
-                };
-            }
-        };
-        let context = PeerPass {
-            hydrator: &self.hydrator,
-            identity: &self.identity,
-            policy: &self.policy,
-            records: self.records.as_ref(),
-            reconcile: plan.reconcile,
-        };
-        if plan.announce
-            && let Err(error) = session::announce(&self.sessions, &session).await
-        {
-            eprintln!("announcing to {} failed: {error:#}", session.addr.id);
-        }
-        let outcome = context.over_session(&self.sessions, &session).await;
-        if session.is_closed() {
-            // The next pass connects afresh.
-            self.sessions.forget(&session).await;
-        }
-        outcome
-    }
-}
-
-/// Runs each pass's peer exchanges concurrently: at most
-/// [`PASS_CONCURRENCY`] at once, at most one per peer at a time, and each
-/// waited for at most `deadline`, so one unreachable or stalled peer holds
-/// back neither the others nor the pass.
-struct PeerExchanges {
-    shared: Arc<PassShared>,
-    slots: Arc<tokio::sync::Semaphore>,
-    /// Peers with an exchange in progress, possibly from an earlier pass.
-    busy: Arc<Mutex<HashSet<iroh_base::PublicKey>>>,
-    /// Set by an exchange that changed namespace or records; taken by the
-    /// pass that next looks, which covers exchanges that outlived their
-    /// own pass.
-    changed: Arc<std::sync::atomic::AtomicBool>,
-    /// Set, and taken, the same way by an exchange that failed.
-    failed: Arc<std::sync::atomic::AtomicBool>,
-    deadline: Duration,
-}
-
-/// A peer's place in [`PeerExchanges::busy`], given back when its exchange
-/// ends however it ends.
-struct BusyPeer {
-    busy: Arc<Mutex<HashSet<iroh_base::PublicKey>>>,
-    peer: iroh_base::PublicKey,
-}
-
-impl Drop for BusyPeer {
-    fn drop(&mut self) {
-        self.busy.lock_recover().remove(&self.peer);
-    }
-}
-
-impl PeerExchanges {
-    fn new(shared: PassShared, deadline: Duration) -> Self {
-        Self {
-            shared: Arc::new(shared),
-            slots: Arc::new(tokio::sync::Semaphore::new(PASS_CONCURRENCY)),
-            busy: Arc::new(Mutex::new(HashSet::new())),
-            changed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            deadline,
-        }
-    }
-
-    /// One pass over `peers`, skipping any still exchanging since an
-    /// earlier pass. Says whether namespace or records changed, and whether
-    /// an exchange failed, since the previous pass looked.
-    async fn run(&self, peers: Vec<EndpointAddr>, plan: PassPlan) -> PassOutcome {
-        let started: Vec<_> = peers
-            .into_iter()
-            .filter_map(|peer| {
-                let claimed = self.busy.lock_recover().insert(peer.id);
-                claimed.then(|| {
-                    let busy = BusyPeer {
-                        busy: Arc::clone(&self.busy),
-                        peer: peer.id,
-                    };
-                    self.start(peer, busy, plan)
-                })
-            })
-            .collect();
-        futures_util::future::join_all(started).await;
-        PassOutcome {
-            changed: self
-                .changed
-                .swap(false, std::sync::atomic::Ordering::AcqRel),
-            failed: self.failed.swap(false, std::sync::atomic::Ordering::AcqRel),
-        }
-    }
-
-    /// Starts the exchange with `peer` once a slot is free, and waits for it
-    /// at most the deadline.
-    async fn start(&self, peer: EndpointAddr, busy: BusyPeer, plan: PassPlan) {
-        let Ok(slot) = Arc::clone(&self.slots).acquire_owned().await else {
-            return;
-        };
-        let shared = Arc::clone(&self.shared);
-        let changed = Arc::clone(&self.changed);
-        let failed = Arc::clone(&self.failed);
-        let exchange = tokio::spawn(async move {
-            let outcome = shared.exchange(peer, plan).await;
-            if outcome.changed {
-                changed.store(true, std::sync::atomic::Ordering::Release);
-            }
-            if outcome.failed {
-                failed.store(true, std::sync::atomic::Ordering::Release);
-            }
-            drop(busy);
-            drop(slot);
-        });
-        // On timeout the task carries on detached; dropping its handle does
-        // not abort it.
-        let _ = tokio::time::timeout(self.deadline, exchange).await;
-    }
-}
-
-/// The records a peer holds that this device lacks, over its session.
-async fn pull_records_from_peer(
-    sessions: &SessionPool,
-    remote: EndpointAddr,
-    identity: &FsTransportIdentity,
-    policy: &PeerPolicy,
-    records: &RecordPlane,
-    hydrator: &Hydrator,
-) -> Result<bool> {
-    let session = sessions.get(&remote).await?;
-    let pulled = session::pull_records(
-        sessions,
-        &session,
-        identity,
-        policy,
-        records,
-        hydrator,
-        crate::record_materializer::ReconcileScope::Everything,
-    )
-    .await;
-    if pulled.is_err() {
-        sessions.forget(&session).await;
-    }
-    pulled
-}
-
-struct ReconcileLoop {
-    namespace: Arc<Mutex<Namespace>>,
-    hydrator: Arc<Hydrator>,
-    identity: FsTransportIdentity,
-    policy: PeerPolicy,
-    records: Option<RecordPlane>,
-    local_rx: Option<mpsc::UnboundedReceiver<()>>,
-    /// Peers that announced new changes over a session.
-    announcements: mpsc::UnboundedReceiver<iroh_base::PublicKey>,
-    sessions: Arc<SessionPool>,
-    sync: Arc<SyncHandle>,
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "the reconciliation task keeps fetch, validation, publication, and retry ordering in one lifecycle loop"
-)]
-async fn reconcile_loop(reconcile: ReconcileLoop) {
-    let ReconcileLoop {
-        namespace,
-        hydrator,
-        identity,
-        policy,
-        records,
-        mut local_rx,
-        mut announcements,
-        sessions,
-        sync,
-    } = reconcile;
-    let may_write = peer_may_write_whole_workspace(&policy, &identity.user_public_key())
-        || peer_may_write_whole_workspace(&policy, &identity.device_public_key());
-    let exchanges = PeerExchanges::new(
-        PassShared {
-            hydrator: hydrator.clone(),
-            identity: identity.clone(),
-            policy,
-            records: records.clone(),
-            sessions,
-        },
-        PEER_DEADLINE,
-    );
-    let mut backoff = IdleBackoff::default();
-    let mut due = timer_due(backoff.interval());
-    let mut pending_thumbnails = HashMap::new();
-    // `mount` bootstraps a namespace before this task starts, so schedule its
-    // previews once even if the first anti-entropy exchange is clean.
-    let mut refresh_thumbnails = true;
-    let mut first_pass = true;
-    let mut conflict_watch = conflict_watch::ConflictWatch::default();
-    let trace = std::env::var_os("TILO_FS_NATIVE_TRACE").is_some();
-    // Changes a pass took from one peer are announced to every peer at
-    // once by the next, so they spread live rather than on peers' timers.
-    let mut forward = false;
-    loop {
-        // A local change, changes taken from a peer, or a peer's
-        // announcement starts a pass at once; otherwise the timer does.
-        let (local_change, timer) = if std::mem::take(&mut forward) {
-            (true, false)
-        } else {
-            tokio::select! {
-            () = tokio::time::sleep_until(due) => (false, true),
-            mutation = async {
-                match &mut local_rx {
-                    Some(receiver) => receiver.recv().await,
-                    None => std::future::pending().await,
-                }
-            } => {
-                if mutation.is_none() {
-                    local_rx = None;
-                }
-                (true, false)
-            }
-            Some(_) = announcements.recv() => (false, false),
-            }
-        };
-        // A burst of changes is one pass: what arrived meanwhile is covered.
-        let local_change = local_change
-            | local_rx.as_mut().is_some_and(|receiver| {
-                std::iter::from_fn(|| receiver.try_recv().ok()).count() > 0
-            });
-        while announcements.try_recv().is_ok() {}
-        let pass_started = Instant::now();
-        if trace {
-            eprintln!("  sync pass begins (local change {local_change}, timer {timer})");
-        }
-        for peer in identity.authenticated_peer_addrs() {
-            hydrator.add_peer(peer);
-        }
-        let known_peers = hydrator.known_peers();
-        let peer_count = known_peers.len();
-        // Peers pull what this device just published without waiting for
-        // their own timer, or for this pass: each is announced to first, on
-        // the session its exchange then uses.
-        let plan = PassPlan {
-            announce: local_change,
-            // A pass that follows something heals what it placed; an
-            // idle one only looks at what is still unplaced.
-            reconcile: if first_pass {
-                crate::record_materializer::ReconcileScope::Everything
-            } else if timer {
-                crate::record_materializer::ReconcileScope::Unplaced
-            } else {
-                crate::record_materializer::ReconcileScope::Touched
-            },
-        };
-        let outcome = exchanges.run(known_peers, plan).await;
-        let changed = outcome.changed;
-        forward = changed && !local_change && peer_count > 1;
-        first_pass = false;
-        backoff.after_pass(timer, outcome, Instant::now());
-        due = timer_due(backoff.interval());
-        if trace {
-            eprintln!(
-                "  sync pass over {peer_count} peer(s) took {} ms (changed {changed}, \
-                 failed {}); next timer pass in {} s",
-                pass_started.elapsed().as_millis(),
-                outcome.failed,
-                backoff.interval().as_secs()
-            );
-        }
-
-        if changed {
-            sync.notify_record_index_changed();
-        }
-
-        if let Err(error) = prefetch_namespace_thumbnails(
-            &namespace,
-            &hydrator,
-            &mut pending_thumbnails,
-            changed || std::mem::take(&mut refresh_thumbnails),
-        )
-        .await
-            && !identity.partitioned()
-        {
-            eprintln!("thumbnail metadata prefetch failed: {error}");
-        }
-
-        // Conflicts come from what peers sent: a pass that only announced
-        // this device's own changes and received nothing has none to find,
-        // and a burst of local changes must not recheck records per change.
-        // Other passes look only at what was written or merged since the
-        // last look ([`conflict_watch`]), so an idle pass does nothing.
-        if !may_write || (local_change && !changed) {
-            continue;
-        }
-        conflict_watch.begin_pass(Instant::now());
-        if let Some(records) = &records {
-            let actor = fs_protocol::FileActor {
-                person: collab_types::Ed25519PublicKey(identity.user_public_key()),
-                device: collab_types::Ed25519PublicKey(identity.device_public_key()),
-            };
-            match crate::record_publisher::RecordPublisher::new(
-                Arc::clone(&records.repository),
-                records.workspace_id,
-                actor,
-                identity.credentials().signing_key().clone(),
-            ) {
-                Ok(publisher) => {
-                    let conflict_published = conflict_watch.publish_record_conflicts(
-                        &publisher,
-                        &records.repository,
-                        records.workspace_id,
-                    );
-                    if conflict_published
-                        && let Some(materializer) = &records.materializer
-                        && let Err(error) = materializer.reconcile_repository(&records.repository)
-                    {
-                        eprintln!("record conflict materialization failed: {error}");
-                    }
-                }
-                Err(error) => eprintln!("record conflict publisher unavailable: {error}"),
-            }
-        }
-        // Takes the namespace lock a step at a time: FUSE requests between
-        // the steps never wait for the whole walk.
-        let conflicts = conflict_watch.namespace_conflicts(&namespace);
-        if trace {
-            let pass = conflict_watch.namespace_pass();
-            eprintln!(
-                "  conflict scan: {} node(s) in {} lock hold(s), longest {} us",
-                pass.nodes,
-                pass.lock_holds,
-                pass.longest_hold.as_micros()
-            );
-        }
-        for c in conflicts {
-            // Fetch just the loser's manifest for its length (chunks hydrate
-            // lazily on read). Skipped if no peer can serve it yet; retried next pass.
-            let Ok(len) = hydrator.content_len(c.loser).await else {
-                conflict_watch.retry_namespace();
-                continue;
-            };
-            {
-                let mut ns = namespace.lock_recover();
-                let _ = crate::conflict::materialize(&mut ns, &c, len, unix_now_ms());
-            }
-            sync.announce_change();
-        }
-    }
-}
-
-#[cfg(test)]
-static NEXT_TEST_IDENTITY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-
-/// Build a real certified endpoint for cross-module transport integration
-/// tests. Production never synthesizes certificates.
-#[cfg(test)]
-pub(crate) async fn bind_certified_test_endpoint() -> (Endpoint, MemoryLookup, FsTransportIdentity)
-{
-    let (endpoint, lookup, identity, _root, _device) =
-        bind_certified_test_endpoint_with_root().await;
-    (endpoint, lookup, identity)
-}
-
-#[cfg(test)]
-async fn bind_certified_test_endpoint_with_root() -> (
-    Endpoint,
-    MemoryLookup,
-    FsTransportIdentity,
-    ed25519_dalek::SigningKey,
-    ed25519_dalek::SigningKey,
-) {
-    use ed25519_dalek::SigningKey;
-    use std::sync::atomic::Ordering;
-    use tilo_user_identity::{
-        DeviceCapabilities, DeviceCert, IdentityPaths, adopt_device_key,
-        persist::write_device_cert, sign_device_cert,
-    };
-
-    let sequence = NEXT_TEST_IDENTITY.fetch_add(1, Ordering::Relaxed);
-    // Fresh keys, not ones derived from the counter: every test process
-    // starts the counter over, and two endpoints with one id reach each
-    // other's sockets through the shared relay.
-    let device_seed = iroh::SecretKey::generate().to_bytes();
-    let root_seed = iroh::SecretKey::generate().to_bytes();
-    let device = SigningKey::from_bytes(&device_seed);
-    let root = SigningKey::from_bytes(&root_seed);
-    let now = unix_now_ns();
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: device.verifying_key().to_bytes(),
-        device_label: format!("sync-test-device-{sequence}"),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: now.saturating_sub(1),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, &root).unwrap();
-    let temp = tempfile::tempdir().unwrap();
-    let paths = IdentityPaths::under(temp.path());
-    adopt_device_key(&paths, &device_seed).unwrap();
-    write_device_cert(&paths.device_cert, &cert).unwrap();
-    let certified = crate::identity::load_certified_mount_identity(&paths, now).unwrap();
-    let (mount, credentials) = certified.into_parts();
-    let transport =
-        FsTransportIdentity::new(credentials, Arc::new(RwLock::new(RevocationList::new())));
-    let (endpoint, lookup) = bind_endpoint_with_key(mount.secret).await.unwrap();
-    (endpoint, lookup, transport, root, device)
-}
-
-mod conflict_watch;
-mod session;
-pub use session::TILO_FS_SESSION_ALPN;
-
-#[cfg(test)]
-mod keep_alive_tests;
-#[cfg(test)]
-mod tests;

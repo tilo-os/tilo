@@ -5,169 +5,6 @@ fn h(b: u8) -> Hash {
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "verify two signed AtomicSave namespace publications, stable identity and durable replay"
-)]
-fn atomic_save_namespace_keeps_document_node_across_two_publications() {
-    use ed25519_dalek::SigningKey;
-    use fs_protocol::{
-        ContentHash, FileMutationOperation, FileMutationParticipant,
-        FileMutationTransactionManifest, FileProvenance, FileVersionId, FileVersionV1,
-    };
-    use getrandom::{SysRng, rand_core::UnwrapErr};
-
-    let mut ns = Namespace::new("atomic-save").unwrap();
-    let mut document_ino = ns.create_file(ROOT_INO, "report.txt", None, 1, 1).unwrap();
-    let document = ns.record_id_for(document_ino).unwrap();
-    let document_node = ns.id_for_ino(document_ino).unwrap().to_owned();
-    let parent = ns.record_id_for(ROOT_INO).unwrap();
-    let mut prior = FileVersionId::new();
-    assert!(ns.set_content_revision(
-        document_ino,
-        &ContentRevisionV1 {
-            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-            record_id: document,
-            version_id: prior,
-            content_hash: None,
-            byte_len: 1,
-            metadata_hash: ContentHash([1; 32]),
-        },
-        1,
-    ));
-    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let actor = FileActor {
-        person: collab_types::Ed25519PublicKey([9; 32]),
-        device: collab_types::Ed25519PublicKey(key.verifying_key().to_bytes()),
-    };
-    let workspace = Uuid::new_v4();
-    for at in [2_u64, 3] {
-        let temporary_ino = ns.create_file(ROOT_INO, "save-temp", None, 1, at).unwrap();
-        let temporary = ns.record_id_for(temporary_ino).unwrap();
-        let temp_prior = FileVersionId::new();
-        assert!(ns.set_content_revision(
-            temporary_ino,
-            &ContentRevisionV1 {
-                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                record_id: temporary,
-                version_id: temp_prior,
-                content_hash: None,
-                byte_len: at,
-                metadata_hash: ContentHash([2; 32]),
-            },
-            at,
-        ));
-        let participant = |record_id, expected_version, role, name: &str| {
-            let version = FileVersionV1 {
-                id: FileVersionId::new(),
-                record_id,
-                parents: vec![expected_version],
-                actor,
-                timestamp_ms: at,
-                content_hash: None,
-                metadata_hash: ContentHash([u8::try_from(at).unwrap(); 32]),
-                provenance: if role == FileMutationParticipantRole::AtomicSaveDocument {
-                    FileProvenance::Edit
-                } else {
-                    FileProvenance::Delete
-                },
-            };
-            let mut result = FileMutationParticipant {
-                record_id,
-                role,
-                expected_version,
-                proposed_binding: FileBindingV1 {
-                    schema_version: FILE_BINDING_VERSION,
-                    record_id,
-                    parent: Some(parent),
-                    name: name.into(),
-                    kind: FileNodeKind::File,
-                    tombstoned: role == FileMutationParticipantRole::AtomicSaveTemporary,
-                    actor,
-                    observed_at_ms: at,
-                },
-                proposed_content_revision: Some(ContentRevisionV1 {
-                    schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                    record_id,
-                    version_id: version.id,
-                    content_hash: None,
-                    byte_len: at,
-                    metadata_hash: version.metadata_hash,
-                }),
-                proposed_version: version,
-                projection_hash: ContentHash([0; 32]),
-            };
-            result.projection_hash = result.computed_projection_hash().unwrap();
-            result
-        };
-        let mut participants = vec![
-            participant(
-                document,
-                prior,
-                FileMutationParticipantRole::AtomicSaveDocument,
-                "report.txt",
-            ),
-            participant(
-                temporary,
-                temp_prior,
-                FileMutationParticipantRole::AtomicSaveTemporary,
-                "save-temp",
-            ),
-        ];
-        participants.sort_by_key(|participant| participant.record_id);
-        let transaction = FileMutationTransaction::signed(
-            FileMutationTransactionManifest {
-                schema_version: fs_protocol::files::FILE_MUTATION_TRANSACTION_VERSION_V4,
-                transaction_id: Uuid::new_v4(),
-                workspace_id: workspace,
-                actor,
-                timestamp_ms: at,
-                operation: FileMutationOperation::AtomicSave {
-                    parent_record: parent,
-                    document_name: "report.txt".into(),
-                    temporary_name: "save-temp".into(),
-                    document_record: document,
-                    temporary_record: temporary,
-                    prior_document_version: prior,
-                },
-                participants,
-            },
-            &key,
-        )
-        .unwrap();
-        let document_participant = transaction
-            .manifest
-            .participants
-            .iter()
-            .find(|participant| participant.record_id == document)
-            .unwrap();
-        assert_eq!(document_participant.proposed_version.parents, [prior]);
-        let expected = document_participant.proposed_content_revision.unwrap();
-        assert!(
-            ns.apply_mutation_transaction(&transaction)
-                .unwrap()
-                .is_some()
-        );
-        assert_eq!(
-            ns.lookup(ROOT_INO, "report.txt").unwrap().ino.0,
-            document_ino
-        );
-        assert_eq!(ns.record_id_for(document_ino), Some(document));
-        assert_eq!(ns.content_revision_for(document_ino), Some(expected));
-        assert!(ns.lookup(ROOT_INO, "save-temp").is_none());
-        assert!(ns.ino_for_record_id(temporary).is_none());
-        assert_eq!(ns.apply_mutation_transaction(&transaction), Ok(None));
-        let saved = ns.save();
-        ns = Namespace::from_bytes("atomic-save", &saved).unwrap();
-        document_ino = ns.lookup(ROOT_INO, "report.txt").unwrap().ino.0;
-        assert_eq!(ns.id_for_ino(document_ino), Some(document_node.as_str()));
-        assert_eq!(ns.record_id_for(document_ino), Some(document));
-        assert_eq!(ns.content_revision_for(document_ino), Some(expected));
-        prior = expected.version_id;
-    }
-}
-
-#[test]
 fn tree_operations_create_move_trash_and_persist() {
     {
         let mut ns = Namespace::new("a").unwrap();
@@ -442,7 +279,7 @@ fn signed_bindings_and_replacements_are_verified_exact_and_fail_closed() {
         )
         .unwrap();
         let delta = ns
-            .apply_replacement_transaction(&transaction)
+            .apply_replacement_transaction(&transaction.manifest)
             .unwrap()
             .unwrap();
         assert!(!delta.is_empty());
@@ -452,54 +289,10 @@ fn signed_bindings_and_replacements_are_verified_exact_and_fail_closed() {
         );
         assert!(ns.lookup(ROOT_INO, "source.txt").is_none());
         assert!(ns.ino_for_record_id(victim_record).is_none());
-        assert_eq!(ns.apply_replacement_transaction(&transaction), Ok(None));
-    }
-    {
-        let mut ns = Namespace::new("owner").unwrap();
-        let ino = ns
-            .create_file(ROOT_INO, "verified.bin", Some(&h(1)), 1, 1)
-            .unwrap();
-        assert!(ns.set_thumb(ino, &h(2)));
-        let record_id = ns.record_id_for(ino).unwrap();
-        ns.enable_signed_content_authority();
-        assert_eq!(ns.hash_for(ino), None);
-        assert_eq!(ns.getattr(ino).unwrap().size, 0);
-        assert_eq!(ns.thumb_hash(ino), None);
-        assert!(ns.live_paths_for_blob(h(1)).is_empty());
-
-        let revision = ContentRevisionV1 {
-            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-            record_id,
-            version_id: fs_protocol::FileVersionId::new(),
-            content_hash: Some(fs_protocol::ContentHash([3; 32])),
-            byte_len: 3,
-            metadata_hash: fs_protocol::ContentHash([4; 32]),
-        };
-        assert!(ns.install_verified_content_revision(revision));
-        assert!(ns.install_verified_thumbnail(record_id, Some(h(4))));
-
-        let id = ns.id_for_ino(ino).unwrap().to_string();
-        ns.set_field(&id, "hash", hash_to_hex(&h(9)));
-        ns.set_field(&id, "size", 999_u64);
-        ns.set_field(&id, "thumb", hash_to_hex(&h(9)));
-        let mut forged = revision;
-        forged.version_id = fs_protocol::FileVersionId::new();
-        forged.content_hash = Some(fs_protocol::ContentHash([9; 32]));
-        forged.byte_len = 999;
-        ns.set_field(
-            &id,
-            CONTENT_REVISION_KEY,
-            ScalarValue::Bytes(revision_to_bytes(&forged).unwrap()),
+        assert_eq!(
+            ns.apply_replacement_transaction(&transaction.manifest),
+            Ok(None)
         );
-
-        assert_eq!(ns.hash_for(ino), Some(h(3)));
-        assert_eq!(ns.getattr(ino).unwrap().size, 3);
-        assert_eq!(ns.thumb_hash(ino), Some(h(4)));
-        assert_eq!(ns.content_revision_for(ino), Some(revision));
-        assert!(ns.live_paths_for_blob(h(9)).is_empty());
-        assert_eq!(ns.live_paths_for_blob(h(3)), vec!["/verified.bin"]);
-        assert!(!ns.set_content(ino, Some(&h(8)), 8, 8));
-        assert!(!ns.set_thumb(ino, &h(8)));
     }
     {
         let mut ns = Namespace::new("owner").unwrap();
@@ -516,16 +309,6 @@ fn signed_bindings_and_replacements_are_verified_exact_and_fail_closed() {
             ns.indexed_record(record_id).is_none(),
             "an ambiguous durable record identity must be withheld, not routed to an arbitrary node"
         );
-        ns.enable_signed_content_authority();
-        let revision = ContentRevisionV1 {
-            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-            record_id,
-            version_id: fs_protocol::FileVersionId::new(),
-            content_hash: Some(fs_protocol::ContentHash([3; 32])),
-            byte_len: 3,
-            metadata_hash: fs_protocol::ContentHash([4; 32]),
-        };
-        assert!(!ns.install_verified_content_revision(revision));
         assert_eq!(ns.hash_for(first), None);
         assert_eq!(ns.hash_for(duplicate), None);
     }
@@ -1329,8 +1112,7 @@ fn assert_view_matches_accessors(ns: &Namespace, ino: u64) {
             assert_eq!(view.path, expected_path, "path of {ino}");
             assert_eq!(
                 view.document,
-                ns.document_codec(ino).is_some()
-                    && ns.content_authority() == ContentAuthority::LegacyNamespace,
+                ns.document_codec(ino).is_some(),
                 "document of {ino}"
             );
         }

@@ -16,22 +16,26 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use automerge::transaction::Transactable as _;
 use automerge::{ObjId, ObjType, ReadDoc as _, ScalarValue, Value};
+use fs_protocol::files::{CheckedHistoryRequestV1, FileRestoreReceiptV1};
 use fs_protocol::projection::{
     HISTORY_PROJECTION_VERSION, MAX_PROJECTED_CONFLICTS, MAX_PROJECTED_VERSIONS,
 };
 use fs_protocol::{
     ConflictResolution, ConflictStatus, FileConflictV1, FileProvenance, FileRecordError,
-    FileRecordId, FileVersionId, FileVersionV1, HistoryProjectionV1, prefer_conflict_resolution,
+    FileRecordId, FileVersionAttributionV1, FileVersionId, FileVersionV1, HistoryProjectionV1,
+    prefer_conflict_resolution,
 };
 use thiserror::Error;
 use uuid::Uuid;
 
-use super::Namespace;
+use super::{Namespace, hash_from_hex, read_u64, str_at};
 
 /// Root key of the history the tree document carries.
 pub(crate) const HISTORY_KEY: &str = "history";
 const VERSIONS_KEY: &str = "versions";
 const CONFLICTS_KEY: &str = "conflicts";
+const ATTRIBUTIONS_KEY: &str = "attributions";
+const RESTORES_KEY: &str = "restores";
 
 mod read_query;
 
@@ -95,6 +99,8 @@ pub enum HistoryError {
     ConflictIdCollision(Uuid),
     #[error("record {0:?} has no history")]
     UnknownRecord(FileRecordId),
+    #[error("the record has no version {0:?}")]
+    UnknownVersion(FileVersionId),
     #[error("conflict {0} is unknown")]
     UnknownConflict(Uuid),
     #[error("conflict names unknown version {0:?}")]
@@ -503,6 +509,174 @@ impl Namespace {
         resolved.validate()?;
         self.write_conflict(record_id, &resolved)?;
         Ok(true)
+    }
+
+    /// `record_id`'s version attributions, by version id: which agent wrote
+    /// a version, as the device that made the version said.
+    pub(crate) fn record_attributions(
+        &self,
+        record_id: FileRecordId,
+    ) -> BTreeMap<FileVersionId, FileVersionAttributionV1> {
+        let mut attributions = BTreeMap::new();
+        for record in self.record_maps(record_id) {
+            for map in self.sub_maps(&record, ATTRIBUTIONS_KEY) {
+                for key in self.doc.keys(&map) {
+                    let Some(bytes) = scalar_bytes(self.doc.get(&map, &key).ok().flatten()) else {
+                        continue;
+                    };
+                    let Ok(attributed) = collab_types::canonical::from_canonical_bytes::<
+                        FileVersionAttributionV1,
+                    >(&bytes) else {
+                        continue;
+                    };
+                    attributions.insert(attributed.version_id, attributed);
+                }
+            }
+        }
+        attributions
+    }
+
+    /// The attributions of versions of `record_id`, with the record's own
+    /// versions in the same order.
+    pub fn version_attributions(&self, record_id: FileRecordId) -> Vec<FileVersionAttributionV1> {
+        let mut versions = self.record_versions(record_id);
+        self.record_attributions(record_id)
+            .into_iter()
+            .filter(|(version_id, _)| versions.remove(version_id).is_some())
+            .map(|(_, attributed)| attributed)
+            .collect()
+    }
+
+    /// Record which agent caused this device's `attributed` version of
+    /// `record_id`. The version must already be the record's, and the same
+    /// attribution again is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns a history violation when the attribution is not presentable,
+    /// its version is not the record's, or a different attribution is
+    /// already recorded for it.
+    pub fn attribute_version(
+        &mut self,
+        record_id: FileRecordId,
+        attributed: &FileVersionAttributionV1,
+    ) -> Result<bool, HistoryError> {
+        attributed.attribution.validate()?;
+        if !self
+            .record_versions(record_id)
+            .contains_key(&attributed.version_id)
+        {
+            return Err(HistoryError::UnknownVersion(attributed.version_id));
+        }
+        match self
+            .record_attributions(record_id)
+            .get(&attributed.version_id)
+        {
+            Some(existing) if existing == attributed => Ok(false),
+            Some(_) => Err(HistoryError::VersionIdCollision(attributed.version_id)),
+            None => {
+                let record = self.history_slot(record_id)?;
+                let map = self.sub_map(&record, ATTRIBUTIONS_KEY)?;
+                let bytes = collab_types::canonical_bytes(&attributed)?;
+                self.doc
+                    .put(&map, attributed.version_id.0.to_string(), bytes)?;
+                Ok(true)
+            }
+        }
+    }
+
+    /// The admitted checked-history intent `intent`: the request and the
+    /// receipt it settled, if this workspace recorded it.
+    pub(crate) fn restore_record(
+        &self,
+        intent: Uuid,
+    ) -> Option<(CheckedHistoryRequestV1, FileRestoreReceiptV1)> {
+        for root in self.history_roots() {
+            for map in self.sub_maps(&root, RESTORES_KEY) {
+                let Some(bytes) =
+                    scalar_bytes(self.doc.get(&map, intent.to_string()).ok().flatten())
+                else {
+                    continue;
+                };
+                if let Ok(record) = serde_json::from_slice(&bytes) {
+                    return Some(record);
+                }
+            }
+        }
+        None
+    }
+
+    /// Record the receipt of a checked-history restore under its intent, once
+    /// the restore's own changes are in this document.
+    ///
+    /// # Errors
+    ///
+    /// Returns a history violation when the intent already holds a different
+    /// record.
+    pub(crate) fn record_restore(
+        &mut self,
+        intent: Uuid,
+        request: &CheckedHistoryRequestV1,
+        receipt: &FileRestoreReceiptV1,
+    ) -> Result<bool, HistoryError> {
+        if let Some((existing, _)) = self.restore_record(intent) {
+            if existing == *request {
+                return Ok(false);
+            }
+            return Err(HistoryError::ConflictIdCollision(intent));
+        }
+        let root = self.ensure_history_root()?;
+        if let Some(map) = object(self.doc.get(&root, RESTORES_KEY)?) {
+            let bytes = serde_json::to_vec(&(request, receipt))
+                .map_err(|_| HistoryError::Document(automerge::AutomergeError::Fail))?;
+            self.doc.put(&map, intent.to_string(), bytes)?;
+            return Ok(true);
+        }
+        let map = self.doc.put_object(&root, RESTORES_KEY, ObjType::Map)?;
+        let bytes = serde_json::to_vec(&(request, receipt))
+            .map_err(|_| HistoryError::Document(automerge::AutomergeError::Fail))?;
+        self.doc.put(&map, intent.to_string(), bytes)?;
+        Ok(true)
+    }
+
+    /// `ino`'s content as a revision: the one the document records, or, for a
+    /// file whose content was written without one, the version that wrote the
+    /// bytes the node holds now.
+    ///
+    /// Restores, conflicts and reviews name the version whose content is
+    /// current; the tree document holds both the bytes' hash and the versions,
+    /// so the answer is derived, never installed beside it.
+    pub fn observed_content_revision(&self, ino: u64) -> Option<fs_protocol::ContentRevisionV1> {
+        if let Some(revision) = self.content_revision_for(ino) {
+            return Some(revision);
+        }
+        let id = self.ino_to_id.get(&ino)?;
+        let record_id = self.record_id_for_id(id)?;
+        let obj = self.node(id)?;
+        let content_hash = str_at(&self.doc, &obj, "hash")
+            .and_then(|hash| hash_from_hex(&hash))
+            .map(|hash| fs_protocol::ContentHash(*hash.as_bytes()));
+        let byte_len = read_u64(&self.doc, &obj, "size");
+        let versions = self.record_versions(record_id);
+        let heads = computed_heads(&versions);
+        let version = versions
+            .values()
+            .filter(|version| version.content_hash == content_hash)
+            .max_by_key(|version| {
+                (
+                    heads.contains(&version.id),
+                    version.timestamp_ms,
+                    version.id,
+                )
+            })?;
+        Some(fs_protocol::ContentRevisionV1 {
+            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
+            record_id,
+            version_id: version.id,
+            content_hash,
+            byte_len,
+            metadata_hash: version.metadata_hash,
+        })
     }
 
     /// Whether `record_id` has any version.

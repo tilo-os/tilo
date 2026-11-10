@@ -1,9 +1,9 @@
 //! What a change to the namespace means for the kernel's view of the mount.
 //!
 //! The kernel knows of a change made through the mount, and tells inotify.
-//! A change it did not make (one merged from a peer, made over the control
-//! socket, or a verified content revision installed beside the document)
-//! reaches it only when the daemon says so ([`crate::change_signal`]). This
+//! A change it did not make (one merged from a peer, or made over the
+//! control socket) reaches it only when the daemon says so
+//! ([`crate::change_signal`]). This
 //! reads which nodes those were, and which directories' entries they
 //! touched, from the document's own changes: the cost follows the size of
 //! the changes, not of the tree.
@@ -13,11 +13,9 @@ use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
+use super::{Namespace, ROOT_ID};
 use automerge::legacy::Key;
 use automerge::{ChangeHash, Prop, ReadDoc, Value};
-use fs_protocol::FileRecordId;
-
-use super::{Namespace, ROOT_ID};
 
 /// What changed since some heads, as the kernel sees the mount.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -47,11 +45,7 @@ impl Namespace {
     /// operations since `heads`, so a change to a document's content counts
     /// for the file that holds it.
     pub fn kernel_changes_since(&mut self, heads: &[ChangeHash]) -> KernelChanges {
-        let mut touched: BTreeSet<String> = self
-            .projected_changes
-            .as_mut()
-            .map(std::mem::take)
-            .unwrap_or_default();
+        let mut touched: BTreeSet<String> = BTreeSet::new();
         let mut owners: HashMap<String, Option<Owner>> = HashMap::new();
         for change in self.doc.get_changes(heads) {
             for op in change.decode().operations {
@@ -128,31 +122,6 @@ impl Namespace {
             cur = parent;
         }
         Some(names.into_iter().rev().collect())
-    }
-
-    /// From now on, note the nodes whose verified projection changes beside
-    /// the document, for [`Self::kernel_changes_since`], and announce them.
-    pub fn collect_projected_changes(&mut self) {
-        self.projected_changes.get_or_insert_default();
-    }
-
-    /// Stop noting them, when nothing drains them any more.
-    pub fn stop_collecting_projected_changes(&mut self) {
-        self.projected_changes = None;
-    }
-
-    /// The verified projection of `record_id` changed without the document.
-    pub(super) fn note_projected_change(&mut self, record_id: FileRecordId) {
-        if self.projected_changes.is_none() {
-            return;
-        }
-        let Some(id) = self.unique_live_node_for_record(record_id) else {
-            return;
-        };
-        if let Some(changes) = self.projected_changes.as_mut() {
-            changes.insert(id);
-        }
-        self.doc.announce();
     }
 }
 
