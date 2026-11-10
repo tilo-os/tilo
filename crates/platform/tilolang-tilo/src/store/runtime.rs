@@ -227,6 +227,19 @@ impl Store for TiloStore {
 
     fn commit(&mut self, txn: Txn, note: &ChangeNote) -> Result<(), StoreError> {
         let mut inner = self.mutate();
+        // A change a test asked to be refused is not made: what wrote it takes it back, as it
+        // does when a record cannot take the change.
+        if let Some(ty) = inner.refused_commit.clone()
+            && let Some(state) = inner.txns.get(&txn.0)
+            && state.edits.iter().any(|edit| match edit {
+                DynEdit::Insert { record, .. } | DynEdit::Create { record, .. } => {
+                    record.get(crate::schema::TYPE_KEY).and_then(Json::as_str) == Some(&ty)
+                }
+                _ => false,
+            })
+        {
+            return Err(invalid(format!("a commit adding a {ty} was refused")));
+        }
         let mut state = inner
             .txns
             .remove(&txn.0)

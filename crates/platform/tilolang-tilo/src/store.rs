@@ -414,6 +414,9 @@ struct Inner {
     burst: Option<burst::Burst>,
     /// How long a pause in the typing ends the burst it is in.
     edit_pause: std::time::Duration,
+    /// The type a commit adding it is refused for, as a test asks
+    /// ([`TiloStore::fail_commits_adding`]): what a record that cannot take a change does.
+    refused_commit: Option<String>,
     /// The runs that have not finished, as they began: where a run's first write stands in the
     /// record's local changes and in what it queued, so that a run that fails anywhere takes all
     /// it wrote back out ([`Store::abort_run`]).
@@ -725,6 +728,7 @@ impl TiloStore {
                 committed: VecDeque::new(),
                 burst: None,
                 edit_pause: DEFAULT_EDIT_PAUSE,
+                refused_commit: None,
                 runs: HashMap::new(),
                 handed: BTreeMap::new(),
                 next_ticket: 1,
@@ -1007,6 +1011,18 @@ impl TiloStore {
     /// take as one step ([`DEFAULT_EDIT_PAUSE`] unless the host says otherwise).
     pub fn set_edit_pause(&self, pause: std::time::Duration) {
         self.mutate().edit_pause = pause;
+    }
+
+    /// Refuse every commit that adds a resource of the type `ty` (as a change names it, `$type`
+    /// included), until [`Self::take_commits`]: how a test takes a step the workspace cannot
+    /// keep, as a record that cannot take a change does.
+    pub fn fail_commits_adding(&self, ty: &str) {
+        self.mutate().refused_commit = Some(ty.to_owned());
+    }
+
+    /// Refuse no commit: the store takes changes again ([`Self::fail_commits_adding`]).
+    pub fn take_commits(&self) {
+        self.mutate().refused_commit = None;
     }
 
     /// Take every action committed under a ticket of `first` or later, oldest first.

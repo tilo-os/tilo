@@ -2,9 +2,11 @@
 //! (`tilolang::origin`, convergence.md "Outside services").
 //!
 //! The platform's side of an origin (a mail account's connection) gets resources from the
-//! service and hands them here as one batch of writes: items inserted into a collection, fields
-//! set, items removed. The batch is one change, made by the origin rather than by package code,
-//! so history shows it as the service's and undo never takes it back as someone's edit.
+//! service and hands them here as writes: items inserted into a collection, fields set, items
+//! removed. They are one change, made by the origin rather than by package code, so history
+//! shows it as the service's and undo never takes it back as someone's edit. A step of a sync
+//! that takes several writes — a conversation, the messages it read, what they add up to — is
+//! written as one change too, so it is kept whole or not at all.
 
 use crate::error::RuntimeError;
 use crate::host_res::to_scalar;
@@ -37,9 +39,112 @@ pub enum OriginWrite {
     },
 }
 
+/// One change of an origin as it is being written: what an origin makes of one answer of a
+/// service — the conversations a server started, the messages it read, what they add up to — is
+/// written into it as many times as the step takes and committed once, by
+/// [`Runtime::write_origin`]. A step the store does not take keeps nothing of itself, so the
+/// origin takes the whole step again rather than leaving half of it behind.
+pub struct OriginChange<'a> {
+    runtime: &'a Runtime,
+    txn: Txn,
+    note: ChangeNote,
+    /// Whether it can still be written: a write that failed took the whole change back.
+    open: bool,
+}
+
+impl OriginChange<'_> {
+    /// Write `writes` into the change. Each insert's new item is returned in its place; other
+    /// writes give `None`.
+    ///
+    /// # Errors
+    ///
+    /// An unknown type or field, a value that does not fit its field, or a store failure; then
+    /// the whole change is taken back and none of what it wrote stays.
+    pub fn write(
+        &mut self,
+        writes: Vec<OriginWrite>,
+    ) -> Result<Vec<Option<ResourceRef>>, RuntimeError> {
+        if !self.open {
+            return Err(RuntimeError::Package(
+                "the origin's change was taken back".into(),
+            ));
+        }
+        let mut made = Vec::with_capacity(writes.len());
+        for w in writes {
+            match self.runtime.origin_write(self.txn, w) {
+                Ok(r) => made.push(r),
+                Err(error) => {
+                    self.take_back();
+                    return Err(error);
+                }
+            }
+        }
+        Ok(made)
+    }
+
+    /// Nothing of the change stays.
+    fn take_back(&mut self) {
+        if std::mem::replace(&mut self.open, false) {
+            self.runtime.core.store.borrow_mut().rollback(self.txn);
+        }
+    }
+}
+
 impl Runtime {
-    /// Write what the origin `origin` said as one change, at the time `at`. Each insert's new
-    /// item is returned in its place; other writes give `None`.
+    /// Write what the origin `origin` says as one change, at the time `at`, made of whatever
+    /// writes `step` makes — see [`OriginChange::write`]. What `step` gives back is given back
+    /// here, once the change is committed.
+    ///
+    /// # Errors
+    ///
+    /// What `step` failed with, or a store that cannot take the change; then nothing is written.
+    pub fn write_origin<T>(
+        &self,
+        origin: &str,
+        at: Option<String>,
+        step: impl FnOnce(&mut OriginChange<'_>) -> Result<T, RuntimeError>,
+    ) -> Result<T, RuntimeError> {
+        let note = ChangeNote {
+            action: "$origin".into(),
+            args: serde_json::Value::String(origin.to_owned()),
+            invoker: format!("origin:{origin}"),
+            chain: Vec::new(),
+            module: "origin".into(),
+            at,
+            ..ChangeNote::default()
+        };
+        let txn = self.core.store.borrow_mut().begin()?;
+        let mut change = OriginChange {
+            runtime: self,
+            txn,
+            note,
+            open: true,
+        };
+        let value = match step(&mut change) {
+            Ok(value) => value,
+            Err(error) => {
+                change.take_back();
+                return Err(error);
+            }
+        };
+        if !change.open {
+            return Err(RuntimeError::Package(
+                "the origin's change was taken back".into(),
+            ));
+        }
+        change.open = false;
+        let committed = self.core.store.borrow_mut().commit(txn, &change.note);
+        match committed {
+            Ok(()) => Ok(value),
+            Err(error) => {
+                self.core.store.borrow_mut().rollback(txn);
+                Err(error.into())
+            }
+        }
+    }
+
+    /// Write what the origin `origin` said as one change of one write, at the time `at`. Each
+    /// insert's new item is returned in its place; other writes give `None`.
     ///
     /// # Errors
     ///
@@ -54,28 +159,7 @@ impl Runtime {
         if writes.is_empty() {
             return Ok(Vec::new());
         }
-        let note = ChangeNote {
-            action: "$origin".into(),
-            args: serde_json::Value::String(origin.to_owned()),
-            invoker: format!("origin:{origin}"),
-            chain: Vec::new(),
-            module: "origin".into(),
-            at,
-            ..ChangeNote::default()
-        };
-        let txn = self.core.store.borrow_mut().begin()?;
-        let mut made = Vec::with_capacity(writes.len());
-        for w in writes {
-            match self.origin_write(txn, w) {
-                Ok(r) => made.push(r),
-                Err(e) => {
-                    self.core.store.borrow_mut().rollback(txn);
-                    return Err(e);
-                }
-            }
-        }
-        self.core.store.borrow_mut().commit(txn, &note)?;
-        Ok(made)
+        self.write_origin(origin, at, |change| change.write(writes))
     }
 
     fn type_of(&self, ty: &str) -> Result<std::rc::Rc<TypeInfo>, RuntimeError> {

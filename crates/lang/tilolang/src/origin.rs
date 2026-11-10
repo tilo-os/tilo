@@ -726,7 +726,8 @@ pub const KINDS: &[OriginKind] = &[
             field(
                 "trouble",
                 "Text",
-                "Why the server cannot be reached now; empty while it can.",
+                "Why the account is not in step now: its server cannot be reached, or what the \
+                 server said could not be saved; empty while it is in step.",
             ),
             field(
                 "online",

@@ -43,13 +43,8 @@ struct Servers {
 }
 
 fn servers() -> Servers {
-    let rt = ui::rt::app();
-    let imap = rt
-        .block_on(FakeImap::start(Layout::Gmail, server_tls_config()))
-        .expect("the IMAP server starts");
-    let smtp = rt
-        .block_on(FakeSmtp::start(server_tls_config()))
-        .expect("the SMTP server starts");
+    let servers = empty_servers();
+    let imap = &servers.imap;
     imap.append(
         "INBOX",
         &mail(
@@ -83,6 +78,19 @@ fn servers() -> Servers {
         ),
         &["\\Seen"],
     );
+    servers
+}
+
+/// The two servers with nothing in the inbox yet: what a test puts there once a workspace
+/// stands, as mail arrives at an open window.
+fn empty_servers() -> Servers {
+    let rt = ui::rt::app();
+    let imap = rt
+        .block_on(FakeImap::start(Layout::Gmail, server_tls_config()))
+        .expect("the IMAP server starts");
+    let smtp = rt
+        .block_on(FakeSmtp::start(server_tls_config()))
+        .expect("the SMTP server starts");
     Servers { imap, smtp }
 }
 
@@ -465,6 +473,82 @@ fn an_unreachable_server_is_said_on_the_account() {
     let account = workspace.accounts().remove(0);
     assert!(!workspace.flag(&account, "online"));
     assert!(workspace.threads().is_empty());
+}
+
+// USER REQUIREMENT: mail a workspace cannot keep is not half kept: no conversation stands
+// filed nowhere and no message is taken as known, the account says the mail could not be
+// saved, and the next sync takes the whole step in — once.
+#[test]
+fn a_sync_the_workspace_cannot_keep_leaves_nothing_behind_and_is_taken_in_again() {
+    let servers = empty_servers();
+    let mut workspace = workspace_with(account(&servers));
+    let store = workspace.host().store().clone();
+    // The change a conversation is made by is refused, as a record that cannot take it is.
+    let package = crate::app::builtin::package_named("mail").expect("the mail package");
+    let thread = package
+        .types
+        .iter()
+        .find(|t| t.name == "Thread")
+        .expect("Mail keeps conversations")
+        .id
+        .clone();
+    store.fail_commits_adding(&thread);
+    servers.imap.append(
+        "INBOX",
+        &mail(
+            "plan@hopper.example",
+            "Grace Hopper <grace@hopper.example>",
+            "Launch plan",
+            "Here is the draft plan.",
+            None,
+        ),
+        &[],
+    );
+    servers.imap.append(
+        "INBOX",
+        &mail(
+            "dinner@chen.example",
+            "Bo Chen <bo@chen.example>",
+            "Dinner on Friday?",
+            "Shall we try the new place?",
+            None,
+        ),
+        &[],
+    );
+    workspace.until("the account to say the mail is not saved", |workspace| {
+        workspace
+            .accounts()
+            .first()
+            .is_some_and(|a| workspace.text(a, "trouble").contains("could not be saved"))
+    });
+    let account = workspace.accounts().remove(0);
+    assert!(
+        workspace.threads().is_empty(),
+        "nothing of the step is kept: {:?}",
+        workspace.threads()
+    );
+    assert!(
+        workspace.flag(&account, "online"),
+        "the server answered: it is the workspace that could not take what it said"
+    );
+
+    // The workspace takes changes again: the next sync takes in what the server said before,
+    // and the mail is there once.
+    store.take_commits();
+    synced(&mut workspace);
+    assert_eq!(
+        workspace
+            .refs(&workspace.thread("Launch plan"), "messages")
+            .len(),
+        1,
+        "the step that waited was taken in once"
+    );
+    let account = workspace.accounts().remove(0);
+    assert_eq!(
+        workspace.text(&account, "trouble"),
+        "",
+        "and the account says nothing more"
+    );
 }
 
 /// What the draft's window shows, as text.

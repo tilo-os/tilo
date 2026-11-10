@@ -682,12 +682,17 @@ impl YouTubeOrigin {
         };
         let mut fields = Vec::new();
         put(&t.video, &mut fields, "stream", Self::text(url));
-        let _ = host.runtime().apply_origin(
+        let wrote = host.runtime().apply_origin(
             "youtube",
             vec![OriginWrite::Set { target: at, fields }],
             None,
         );
-        true
+        // A stream nobody can write is not shown, as an answer nobody can write is: the video
+        // keeps what it had, and it says so.
+        if let Err(error) = &wrote {
+            tracing::warn!(%error, "the stream of a video is not written");
+        }
+        wrote.is_ok()
     }
 }
 

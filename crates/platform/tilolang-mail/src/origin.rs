@@ -20,7 +20,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde_json::Value as Json;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::origin::{Origin, OriginCx, OriginType, Polled, origin_types};
-use tilolang_tilo::runtime::origin::OriginWrite;
+use tilolang_tilo::runtime::RuntimeError;
+use tilolang_tilo::runtime::origin::{OriginChange, OriginWrite};
 use tilolang_tilo::runtime::store::{FieldKey, Store as _};
 use tilolang_tilo::runtime::{Delivery, ResourceRef, Value};
 
@@ -69,6 +70,7 @@ struct Acct {
     messages: HashMap<String, Msg>,
 }
 
+#[derive(Clone)]
 struct Types {
     /// The root's collection of accounts.
     accounts_field: String,
@@ -104,6 +106,33 @@ enum Sending {
     Unsent(String),
 }
 
+/// A step of the sync the workspace could not take, kept to be written again by the next poll:
+/// what a server said is not lost with the poll that could not keep it.
+enum Unwritten {
+    /// What a server said changed in an account.
+    In(Changes),
+    /// A message's fields put back as the server holds them, after the server refused them.
+    Back {
+        account: String,
+        key: String,
+        before: People,
+    },
+    /// The summaries of the conversations a person's change touched.
+    Summaries {
+        account: String,
+        threads: BTreeSet<String>,
+    },
+}
+
+impl Unwritten {
+    fn account(&self) -> &str {
+        match self {
+            Self::In(changes) => &changes.account,
+            Self::Back { account, .. } | Self::Summaries { account, .. } => account,
+        }
+    }
+}
+
 /// The origin. See the module docs.
 pub struct ImapOrigin {
     connector: Box<dyn MailConnector>,
@@ -116,6 +145,10 @@ pub struct ImapOrigin {
     sends: HashMap<String, Sending>,
     /// Why each account's server could not be reached, until it can.
     trouble: HashMap<String, String>,
+    /// Why each account's mail could not be written into the workspace, until it can be.
+    unsaved: HashMap<String, String>,
+    /// The steps the workspace could not take, oldest first.
+    unwritten: Vec<Unwritten>,
     /// Accounts whose changes to take in, with the mailboxes to ask for.
     due: Vec<(String, String)>,
     /// Set when the device came online again: servers that could not be reached are asked
@@ -135,6 +168,8 @@ impl ImapOrigin {
             pending: BTreeMap::new(),
             sends: HashMap::new(),
             trouble: HashMap::new(),
+            unsaved: HashMap::new(),
+            unwritten: Vec::new(),
             due: Vec::new(),
             reconnected: Arc::default(),
         }
@@ -161,7 +196,7 @@ impl ImapOrigin {
             match event {
                 Event::Changes(changes) => {
                     self.trouble.remove(&changes.account);
-                    polled.wrote |= self.take_in(host, now, &changes);
+                    polled.wrote |= self.take_step(host, now, changes);
                 }
                 Event::Found { account, messages } => {
                     let changes = Changes {
@@ -170,7 +205,7 @@ impl ImapOrigin {
                         messages,
                         flags: Vec::new(),
                     };
-                    polled.wrote |= self.take_in(host, now, &changes);
+                    polled.wrote |= self.take_step(host, now, changes);
                 }
                 Event::Arrived { account } => {
                     if self.connector.changes(&account, "inbox").is_none() {
@@ -372,8 +407,9 @@ impl ImapOrigin {
         state
     }
 
-    /// Each account of the settings has its record and its mailboxes, and its servers are asked
-    /// what they hold.
+    /// Each account of the settings has its record and its mailboxes, made as one change of the
+    /// origin, and its servers are asked what they hold. A change the workspace cannot take
+    /// leaves no account without its mailboxes behind: the next poll makes it again.
     fn add_accounts(&mut self, host: &Host, now: &str) -> bool {
         let Some(state) = self.state.as_mut() else {
             return false;
@@ -401,52 +437,64 @@ impl ImapOrigin {
         if writes.is_empty() {
             return false;
         }
-        let Ok(made) = host
+        let made = host
             .runtime()
-            .apply_origin("imap", writes, Some(now.to_owned()))
-        else {
-            return false;
+            .write_origin("imap", Some(now.to_owned()), |change| {
+                let records = change.write(writes)?;
+                let mut accounts: Vec<(String, Acct)> = Vec::new();
+                for (id, record) in new_accounts.into_iter().zip(records) {
+                    let Some(record) = record else { continue };
+                    let mut boxes = Vec::new();
+                    if let Some(field) = t.account.field("mailboxes") {
+                        let mut box_writes = Vec::new();
+                        let mut keys = Vec::new();
+                        for (key, name) in MAILBOXES {
+                            let mut fields = Vec::new();
+                            put(&t.mailbox, &mut fields, "key", text(key));
+                            put(&t.mailbox, &mut fields, "name", text(name));
+                            put(&t.mailbox, &mut fields, "role", text(key));
+                            box_writes.push(OriginWrite::Insert {
+                                owner: record.clone(),
+                                field: field.to_owned(),
+                                ty: t.mailbox.ty.clone(),
+                                fields,
+                            });
+                            keys.push((*key).to_owned());
+                        }
+                        let records = change.write(box_writes)?;
+                        for (key, record) in keys.into_iter().zip(records) {
+                            if let Some(record) = record {
+                                boxes.push((key, record));
+                            }
+                        }
+                    }
+                    accounts.push((
+                        id,
+                        Acct {
+                            record,
+                            boxes: boxes.into_iter().collect(),
+                            threads: HashMap::new(),
+                            messages: HashMap::new(),
+                        },
+                    ));
+                }
+                Ok(accounts)
+            });
+        let made = match made {
+            Ok(made) => made,
+            Err(error) => {
+                // There is no account's record to say it on: it is said here, and the next poll
+                // makes the accounts again.
+                tracing::warn!(%error, "the mail accounts could not be written");
+                return false;
+            }
         };
-        let mut box_writes = Vec::new();
-        let mut box_owner = Vec::new();
-        for (id, record) in new_accounts.iter().zip(made) {
-            let Some(record) = record else { continue };
-            if let Some(field) = t.account.field("mailboxes") {
-                for (key, name) in MAILBOXES {
-                    let mut fields = Vec::new();
-                    put(&t.mailbox, &mut fields, "key", text(key));
-                    put(&t.mailbox, &mut fields, "name", text(name));
-                    put(&t.mailbox, &mut fields, "role", text(key));
-                    box_writes.push(OriginWrite::Insert {
-                        owner: record.clone(),
-                        field: field.to_owned(),
-                        ty: t.mailbox.ty.clone(),
-                        fields,
-                    });
-                    box_owner.push((id.clone(), (*key).to_owned()));
-                }
-            }
-            state.accounts.insert(
-                id.clone(),
-                Acct {
-                    record,
-                    boxes: HashMap::new(),
-                    threads: HashMap::new(),
-                    messages: HashMap::new(),
-                },
-            );
+        let mut new = Vec::new();
+        for (id, acct) in made {
+            state.accounts.insert(id.clone(), acct);
+            new.push(id);
         }
-        if let Ok(made) = host
-            .runtime()
-            .apply_origin("imap", box_writes, Some(now.to_owned()))
-        {
-            for ((id, key), record) in box_owner.into_iter().zip(made) {
-                if let (Some(acct), Some(record)) = (state.accounts.get_mut(&id), record) {
-                    acct.boxes.insert(key, record);
-                }
-            }
-        }
-        for id in new_accounts {
+        for id in new {
             for mailbox in SYNCED {
                 self.due.push((id.clone(), (*mailbox).to_owned()));
             }
@@ -455,218 +503,260 @@ impl ImapOrigin {
         true
     }
 
-    /// What a server said changed, written into the account's conversations.
-    fn take_in(&mut self, host: &Host, now: &str, changes: &Changes) -> bool {
+    /// What a server said changed, written into the account's conversations. A step the
+    /// workspace cannot take leaves nothing of itself behind and gives why: the account is read
+    /// again as the store holds it, so no message of the step is known, and the next poll takes
+    /// the step in again whole.
+    fn take_in(&mut self, host: &Host, now: &str, changes: &Changes) -> Result<bool, RuntimeError> {
         let Some(state) = self.state.as_mut() else {
-            return false;
+            return Ok(false);
         };
-        let t = &state.types;
-        let Some(acct) = state.accounts.get_mut(&changes.account) else {
-            return false;
-        };
-        let Some(threads_field) = t.account.field("threads") else {
-            return false;
-        };
-        let mut touched: BTreeSet<String> = BTreeSet::new();
-        // New conversations first: their messages go inside them.
-        take_in_threads(host, now, t, acct, threads_field, changes);
-        // Then the messages: new ones inserted, known ones brought to what the server says
-        // unless someone changed them here and the server has not been told yet.
-        let mut writes = Vec::new();
-        let mut new_messages: Vec<&ImapMessage> = Vec::new();
-        for m in &changes.messages {
-            if let Some(held) = acct.messages.get_mut(&m.key) {
-                let server = People {
-                    unread: m.unread,
-                    flagged: m.flagged,
-                    mailbox: m.mailbox.clone(),
-                };
-                if held.confirmed != server {
-                    held.confirmed = server.clone();
-                    writes.push(people_write(t, &held.record, &server));
-                    touched.insert(held.thread.clone());
-                }
-                continue;
-            }
-            let Some(thread) = acct.threads.get(&m.thread) else {
-                continue;
-            };
-            let Some(messages_field) = t.thread.field("messages") else {
-                continue;
-            };
-            let mut fields = message_fields(&t.message, m);
-            put(&t.message, &mut fields, "account", text(&changes.account));
-            writes.push(OriginWrite::Insert {
-                owner: thread.record.clone(),
-                field: messages_field.to_owned(),
-                ty: t.message.ty.clone(),
-                fields,
-            });
-            new_messages.push(m);
-        }
-        for (key, unread, flagged) in &changes.flags {
-            if let Some(held) = acct.messages.get_mut(key) {
-                let server = People {
-                    unread: *unread,
-                    flagged: *flagged,
-                    mailbox: held.confirmed.mailbox.clone(),
-                };
-                if held.confirmed != server {
-                    held.confirmed = server.clone();
-                    writes.push(people_write(t, &held.record, &server));
-                    touched.insert(held.thread.clone());
-                }
+        let (types, root) = (state.types.clone(), state.root.clone());
+        match take_in_step(host, now, state, changes) {
+            Ok(wrote) => Ok(wrote),
+            Err(error) => {
+                *state = Self::load(host, types, root);
+                Err(error)
             }
         }
-        // The inserts are in `writes` interleaved with updates; find their results by order.
-        let Ok(made) = host
-            .runtime()
-            .apply_origin("imap", writes, Some(now.to_owned()))
-        else {
-            return false;
-        };
-        let mut made_iter = made.into_iter().flatten();
-        for m in new_messages {
-            let Some(record) = made_iter.next() else {
-                break;
-            };
-            state
-                .by_record
-                .insert(record.id_string(), (changes.account.clone(), m.key.clone()));
-            if let Some(thread) = acct.threads.get_mut(&m.thread) {
-                thread.keys.push(m.key.clone());
-            }
-            touched.insert(m.thread.clone());
-            acct.messages.insert(
-                m.key.clone(),
-                Msg {
-                    record,
-                    thread: m.thread.clone(),
-                    received: m.received,
-                    from_name: m.from_name.clone(),
-                    snippet: snippet_of(&m.body),
-                    confirmed: People {
-                        unread: m.unread,
-                        flagged: m.flagged,
-                        mailbox: m.mailbox.clone(),
-                    },
-                },
-            );
-        }
-        let summaries = summarize(host, t, acct, &touched);
-        let _ = host
-            .runtime()
-            .apply_origin("imap", summaries, Some(now.to_owned()));
-        true
     }
 
-    /// What people changed in the fields people change, handed to the servers.
-    fn push(&mut self, host: &Host, now: &str) -> bool {
-        let keys: Vec<FieldKey> = std::mem::take(&mut *self.changed.borrow_mut());
-        let Some(state) = self.state.as_mut() else {
-            return false;
-        };
-        let t = &state.types;
-        let people: BTreeSet<&str> = ["unread", "flagged", "mailbox"]
-            .iter()
-            .filter_map(|n| t.message.field(n))
-            .collect();
-        let mut seen = BTreeSet::new();
-        let mut touched: HashMap<String, BTreeSet<String>> = HashMap::new();
-        for key in keys {
-            if !people.contains(key.field.as_str()) && key.field != "*" {
-                continue;
+    /// What a server said, taken in, or kept for the next poll with the account saying why it
+    /// could not be: a step is never dropped because the workspace would not take it.
+    fn take_step(&mut self, host: &Host, now: &str, changes: Changes) -> bool {
+        match self.take_in(host, now, &changes) {
+            Ok(wrote) => {
+                self.settled(&changes.account);
+                wrote
             }
-            if !seen.insert(key.resource.clone()) {
-                continue;
-            }
-            let Some((account, mkey)) = state.by_record.get(&key.resource).cloned() else {
-                continue;
-            };
-            let Some(acct) = state.accounts.get_mut(&account) else {
-                continue;
-            };
-            let Some(held) = acct.messages.get_mut(&mkey) else {
-                continue;
-            };
-            let now_people = People {
-                unread: read_bool(host, &held.record, &t.message, "unread"),
-                flagged: read_bool(host, &held.record, &t.message, "flagged"),
-                mailbox: read_text(host, &held.record, &t.message, "mailbox"),
-            };
-            if now_people == held.confirmed {
-                continue;
-            }
-            let before = held.confirmed.clone();
-            if (now_people.unread != before.unread || now_people.flagged != before.flagged)
-                && let Some(request) =
-                    self.connector
-                        .flag(&account, &mkey, now_people.unread, now_people.flagged)
-            {
-                self.pending.insert(
-                    request,
-                    Pending::Write {
-                        account: account.clone(),
-                        key: mkey.clone(),
-                        before: before.clone(),
-                    },
+            Err(error) => {
+                tracing::warn!(account = %changes.account, %error, "what a mail server said could not be written");
+                self.unsaved.insert(
+                    changes.account.clone(),
+                    format!("The mail could not be saved: {error}"),
                 );
+                self.keep(changes);
+                true
             }
-            if now_people.mailbox != before.mailbox
-                && let Some(request) = self.connector.move_to(&account, &mkey, &now_people.mailbox)
-            {
-                self.pending.insert(
-                    request,
-                    Pending::Write {
-                        account: account.clone(),
-                        key: mkey.clone(),
-                        before: before.clone(),
-                    },
-                );
-            }
-            held.confirmed = now_people;
-            touched
-                .entry(account)
-                .or_default()
-                .insert(held.thread.clone());
         }
+    }
+
+    /// Keep what a server said for the next poll: one step waits per account, holding what the
+    /// server said before it too, so the mail is taken in in the order the server gave it.
+    fn keep(&mut self, changes: Changes) {
+        let held = self.unwritten.iter_mut().find_map(|step| match step {
+            Unwritten::In(held) if held.account == changes.account => Some(held),
+            _ => None,
+        });
+        let Some(held) = held else {
+            self.unwritten.push(Unwritten::In(changes));
+            return;
+        };
+        for message in changes.messages {
+            if !held.messages.iter().any(|known| known.key == message.key) {
+                held.messages.push(message);
+            }
+        }
+        for flag in changes.flags {
+            if !held.flags.iter().any(|known| known.0 == flag.0) {
+                held.flags.push(flag);
+            }
+        }
+    }
+
+    /// The account's mail is written: while no step of it waits, the account says nothing.
+    fn settled(&mut self, account: &str) {
+        if !self.unwritten.iter().any(|step| step.account() == account) {
+            self.unsaved.remove(account);
+        }
+    }
+
+    /// The steps the workspace could not take, taken again: what is written no longer waits, and
+    /// what is not stays for the next poll, its account saying why.
+    fn take_again(&mut self, host: &Host, now: &str) -> bool {
         let mut wrote = false;
-        for (account, threads) in touched {
-            if let Some(acct) = state.accounts.get(&account) {
-                let summaries = summarize(host, t, acct, &threads);
-                if !summaries.is_empty() {
-                    wrote |= host
-                        .runtime()
-                        .apply_origin("imap", summaries, Some(now.to_owned()))
-                        .is_ok();
+        for step in std::mem::take(&mut self.unwritten) {
+            match step {
+                Unwritten::In(changes) => wrote |= self.take_step(host, now, changes),
+                Unwritten::Back {
+                    account,
+                    key,
+                    before,
+                } => self.put_back(host, now, &account, &key, &before),
+                Unwritten::Summaries { account, threads } => {
+                    wrote |= self.write_summaries(host, now, &account, threads);
                 }
             }
         }
         wrote
     }
 
-    /// A write the server refused: the message is put back as the server holds it.
-    fn put_back(&mut self, host: &Host, now: &str, account: &str, key: &str, before: &People) {
-        let Some(state) = self.state.as_mut() else {
-            return;
+    /// What `threads` of `account` add up to, written. Not written, it waits for the next poll,
+    /// and the account says why.
+    fn write_summaries(
+        &mut self,
+        host: &Host,
+        now: &str,
+        account: &str,
+        threads: BTreeSet<String>,
+    ) -> bool {
+        let writes = {
+            let Some(state) = self.state.as_ref() else {
+                return false;
+            };
+            let Some(acct) = state.accounts.get(account) else {
+                return false;
+            };
+            summarize(host, &state.types, acct, &threads)
         };
-        let t = &state.types;
-        let Some(acct) = state.accounts.get_mut(account) else {
-            return;
-        };
-        let Some(held) = acct.messages.get_mut(key) else {
-            return;
-        };
-        held.confirmed = before.clone();
-        let mut writes = vec![people_write(t, &held.record, before)];
-        let thread = held.thread.clone();
-        writes.extend(summarize(host, t, acct, &BTreeSet::from([thread])));
-        let _ = host
+        if writes.is_empty() {
+            return false;
+        }
+        match host
             .runtime()
-            .apply_origin("imap", writes, Some(now.to_owned()));
+            .apply_origin("imap", writes, Some(now.to_owned()))
+        {
+            Ok(_) => {
+                self.settled(account);
+                true
+            }
+            Err(error) => {
+                tracing::warn!(account, %error, "what a conversation adds up to was not written");
+                self.unsaved.insert(
+                    account.to_owned(),
+                    format!("What the mail adds up to could not be saved: {error}"),
+                );
+                self.unwritten.push(Unwritten::Summaries {
+                    account: account.to_owned(),
+                    threads,
+                });
+                false
+            }
+        }
     }
 
-    /// Each account says whether its server answers, and why not.
+    /// What people changed in the fields people change, handed to the servers.
+    fn push(&mut self, host: &Host, now: &str) -> bool {
+        let keys: Vec<FieldKey> = std::mem::take(&mut *self.changed.borrow_mut());
+        let touched = {
+            let Some(state) = self.state.as_mut() else {
+                return false;
+            };
+            let t = &state.types;
+            let people: BTreeSet<&str> = ["unread", "flagged", "mailbox"]
+                .iter()
+                .filter_map(|n| t.message.field(n))
+                .collect();
+            let mut seen = BTreeSet::new();
+            let mut touched: HashMap<String, BTreeSet<String>> = HashMap::new();
+            for key in keys {
+                if !people.contains(key.field.as_str()) && key.field != "*" {
+                    continue;
+                }
+                if !seen.insert(key.resource.clone()) {
+                    continue;
+                }
+                let Some((account, mkey)) = state.by_record.get(&key.resource).cloned() else {
+                    continue;
+                };
+                let Some(acct) = state.accounts.get_mut(&account) else {
+                    continue;
+                };
+                let Some(held) = acct.messages.get_mut(&mkey) else {
+                    continue;
+                };
+                let now_people = People {
+                    unread: read_bool(host, &held.record, &t.message, "unread"),
+                    flagged: read_bool(host, &held.record, &t.message, "flagged"),
+                    mailbox: read_text(host, &held.record, &t.message, "mailbox"),
+                };
+                if now_people == held.confirmed {
+                    continue;
+                }
+                let before = held.confirmed.clone();
+                if (now_people.unread != before.unread || now_people.flagged != before.flagged)
+                    && let Some(request) =
+                        self.connector
+                            .flag(&account, &mkey, now_people.unread, now_people.flagged)
+                {
+                    self.pending.insert(
+                        request,
+                        Pending::Write {
+                            account: account.clone(),
+                            key: mkey.clone(),
+                            before: before.clone(),
+                        },
+                    );
+                }
+                if now_people.mailbox != before.mailbox
+                    && let Some(request) =
+                        self.connector.move_to(&account, &mkey, &now_people.mailbox)
+                {
+                    self.pending.insert(
+                        request,
+                        Pending::Write {
+                            account: account.clone(),
+                            key: mkey.clone(),
+                            before: before.clone(),
+                        },
+                    );
+                }
+                held.confirmed = now_people;
+                touched
+                    .entry(account)
+                    .or_default()
+                    .insert(held.thread.clone());
+            }
+            touched.into_iter().collect::<Vec<_>>()
+        };
+        let mut wrote = false;
+        for (account, threads) in touched {
+            wrote |= self.write_summaries(host, now, &account, threads);
+        }
+        wrote
+    }
+
+    /// A write the server refused: the message is put back as the server holds it. A workspace
+    /// that cannot take it keeps the step for the next poll, and the account says why.
+    fn put_back(&mut self, host: &Host, now: &str, account: &str, key: &str, before: &People) {
+        let writes = {
+            let Some(state) = self.state.as_mut() else {
+                return;
+            };
+            let t = &state.types;
+            let Some(acct) = state.accounts.get_mut(account) else {
+                return;
+            };
+            let Some(held) = acct.messages.get_mut(key) else {
+                return;
+            };
+            held.confirmed = before.clone();
+            let mut writes = vec![people_write(t, &held.record, before)];
+            let thread = held.thread.clone();
+            writes.extend(summarize(host, t, acct, &BTreeSet::from([thread])));
+            writes
+        };
+        match host
+            .runtime()
+            .apply_origin("imap", writes, Some(now.to_owned()))
+        {
+            Ok(_) => self.settled(account),
+            Err(error) => {
+                tracing::warn!(account, key, %error, "what the server refused was not put back");
+                self.unsaved.insert(
+                    account.to_owned(),
+                    format!("A message could not be put back as the server holds it: {error}"),
+                );
+                self.unwritten.push(Unwritten::Back {
+                    account: account.to_owned(),
+                    key: key.to_owned(),
+                    before: before.clone(),
+                });
+            }
+        }
+    }
+
+    /// Each account says whether its server answers, what is wrong with it, and why not.
     fn account_state(&self, host: &Host, now: &str) -> Vec<OriginWrite> {
         let Some(state) = self.state.as_ref() else {
             return Vec::new();
@@ -674,16 +764,21 @@ impl ImapOrigin {
         let t = &state.types;
         let mut writes = Vec::new();
         for (id, acct) in &state.accounts {
-            let trouble = self.trouble.get(id).cloned().unwrap_or_default();
-            if read_text(host, &acct.record, &t.account, "trouble") != trouble {
+            let unreached = self.trouble.get(id).map_or("", String::as_str);
+            // What is wrong with the account: a server not reached is said before mail that
+            // could not be written, which the next poll writes again.
+            let trouble = if unreached.is_empty() {
+                self.unsaved.get(id).map_or("", String::as_str)
+            } else {
+                unreached
+            };
+            let online = unreached.is_empty();
+            if read_text(host, &acct.record, &t.account, "trouble") != trouble
+                || read_bool(host, &acct.record, &t.account, "online") != online
+            {
                 let mut fields = Vec::new();
-                put(&t.account, &mut fields, "trouble", text(&trouble));
-                put(
-                    &t.account,
-                    &mut fields,
-                    "online",
-                    Value::Bool(trouble.is_empty()),
-                );
+                put(&t.account, &mut fields, "trouble", text(trouble));
+                put(&t.account, &mut fields, "online", Value::Bool(online));
                 writes.push(OriginWrite::Set {
                     target: acct.record.clone(),
                     fields,
@@ -695,15 +790,130 @@ impl ImapOrigin {
     }
 }
 
-/// The conversations a server's changes start, each a record in its account.
-fn take_in_threads(
+/// One step of the sync: the conversations a server's answer starts, the messages it read and
+/// what they add up to, written as one change of the origin, so the workspace keeps all of the
+/// step or none of it.
+///
+/// # Errors
+///
+/// A store that cannot take the change; then the change is taken back, and the account's record
+/// of itself is read again by [`ImapOrigin::take_in`].
+fn take_in_step(
     host: &Host,
     now: &str,
+    state: &mut State,
+    changes: &Changes,
+) -> Result<bool, RuntimeError> {
+    let t = &state.types;
+    let Some(threads_field) = t.account.field("threads") else {
+        return Ok(false);
+    };
+    let Some(acct) = state.accounts.get_mut(&changes.account) else {
+        return Ok(false);
+    };
+    // The messages inserted, by their record and the server's key, to be known by their record
+    // once the change is kept.
+    let mut inserted: Vec<(String, String)> = Vec::new();
+    host.runtime()
+        .write_origin("imap", Some(now.to_owned()), |change| {
+            let mut touched: BTreeSet<String> = BTreeSet::new();
+            // New conversations first: their messages go inside them.
+            take_in_threads(change, t, acct, threads_field, changes)?;
+            // Then the messages: new ones inserted, known ones brought to what the server says
+            // unless someone changed them here and the server has not been told yet.
+            let mut writes = Vec::new();
+            let mut new_messages: Vec<&ImapMessage> = Vec::new();
+            for m in &changes.messages {
+                if let Some(held) = acct.messages.get_mut(&m.key) {
+                    let server = People {
+                        unread: m.unread,
+                        flagged: m.flagged,
+                        mailbox: m.mailbox.clone(),
+                    };
+                    if held.confirmed != server {
+                        held.confirmed = server.clone();
+                        writes.push(people_write(t, &held.record, &server));
+                        touched.insert(held.thread.clone());
+                    }
+                    continue;
+                }
+                let Some(thread) = acct.threads.get(&m.thread) else {
+                    continue;
+                };
+                let Some(messages_field) = t.thread.field("messages") else {
+                    continue;
+                };
+                let mut fields = message_fields(&t.message, m);
+                put(&t.message, &mut fields, "account", text(&changes.account));
+                writes.push(OriginWrite::Insert {
+                    owner: thread.record.clone(),
+                    field: messages_field.to_owned(),
+                    ty: t.message.ty.clone(),
+                    fields,
+                });
+                new_messages.push(m);
+            }
+            for (key, unread, flagged) in &changes.flags {
+                if let Some(held) = acct.messages.get_mut(key) {
+                    let server = People {
+                        unread: *unread,
+                        flagged: *flagged,
+                        mailbox: held.confirmed.mailbox.clone(),
+                    };
+                    if held.confirmed != server {
+                        held.confirmed = server.clone();
+                        writes.push(people_write(t, &held.record, &server));
+                        touched.insert(held.thread.clone());
+                    }
+                }
+            }
+            // The inserts are in `writes` interleaved with updates; find their results by order.
+            let made = change.write(writes)?;
+            let mut made_iter = made.into_iter().flatten();
+            for m in new_messages {
+                let Some(record) = made_iter.next() else {
+                    break;
+                };
+                inserted.push((record.id_string(), m.key.clone()));
+                if let Some(thread) = acct.threads.get_mut(&m.thread) {
+                    thread.keys.push(m.key.clone());
+                }
+                touched.insert(m.thread.clone());
+                acct.messages.insert(
+                    m.key.clone(),
+                    Msg {
+                        record,
+                        thread: m.thread.clone(),
+                        received: m.received,
+                        from_name: m.from_name.clone(),
+                        snippet: snippet_of(&m.body),
+                        confirmed: People {
+                            unread: m.unread,
+                            flagged: m.flagged,
+                            mailbox: m.mailbox.clone(),
+                        },
+                    },
+                );
+            }
+            change.write(summarize(host, t, acct, &touched))?;
+            Ok(())
+        })?;
+    for (record, key) in inserted {
+        state
+            .by_record
+            .insert(record, (changes.account.clone(), key));
+    }
+    Ok(true)
+}
+
+/// The conversations a server's changes start, each a record in its account, in `change`.
+fn take_in_threads(
+    change: &mut OriginChange<'_>,
     t: &Types,
     acct: &mut Acct,
     threads_field: &str,
     changes: &Changes,
-) {
+) -> Result<(), RuntimeError> {
     let mut new_threads: Vec<String> = Vec::new();
     let mut writes = Vec::new();
     for m in &changes.messages {
@@ -725,22 +935,19 @@ fn take_in_threads(
         });
         new_threads.push(m.thread.clone());
     }
-    if let Ok(made) = host
-        .runtime()
-        .apply_origin("imap", writes, Some(now.to_owned()))
-    {
-        for (key, record) in new_threads.into_iter().zip(made) {
-            if let Some(record) = record {
-                acct.threads.insert(
-                    key,
-                    Thr {
-                        record,
-                        keys: Vec::new(),
-                    },
-                );
-            }
+    let made = change.write(writes)?;
+    for (key, record) in new_threads.into_iter().zip(made) {
+        if let Some(record) = record {
+            acct.threads.insert(
+                key,
+                Thr {
+                    record,
+                    keys: Vec::new(),
+                },
+            );
         }
     }
+    Ok(())
 }
 
 fn people_write(t: &Types, record: &ResourceRef, p: &People) -> OriginWrite {
@@ -903,6 +1110,7 @@ impl Origin for ImapOrigin {
             || self.woken.load(Ordering::Acquire)
             || self.reconnected.load(Ordering::Acquire)
             || !self.due.is_empty()
+            || !self.unwritten.is_empty()
             || !self.changed.borrow().is_empty()
     }
 
@@ -928,6 +1136,9 @@ impl Origin for ImapOrigin {
             self.state = Some(state);
             polled.wrote = true;
         }
+        // What the workspace could not take last time, before anything newer: a step waits
+        // until it is written, never behind newer mail.
+        polled.wrote |= self.take_again(cx.host, &cx.now);
         let events = self.take_events(cx.host, &cx.now);
         polled.wrote |= events.wrote;
         polled.settle |= events.settle;
@@ -947,11 +1158,18 @@ impl Origin for ImapOrigin {
         polled.wrote |= self.push(cx.host, &cx.now);
         let states = self.account_state(cx.host, &cx.now);
         if !states.is_empty() {
-            polled.wrote |= cx
+            // The next poll writes it again: what the account says of itself is read back from
+            // it first.
+            match cx
                 .host
                 .runtime()
                 .apply_origin("imap", states, Some(cx.now.clone()))
-                .is_ok();
+            {
+                Ok(_) => polled.wrote = true,
+                Err(error) => {
+                    tracing::warn!(%error, "what an account says of itself was not written");
+                }
+            }
         }
         polled
     }
