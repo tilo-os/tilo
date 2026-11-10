@@ -92,7 +92,9 @@ async function viaSealedLink({scope, secrets, home, runtime, deps, onProgress}) 
 
 /** `{peer}` once `peer` is ready to use. */
 async function ready(peer) {
-  await peer?.whenReady?.();
+  // The desktop shows once the workspace's shared desktop record is here,
+  // not after the whole workspace: the rest arrives while it is shown.
+  await peer?.whenReady?.({shown: true});
   return {peer};
 }
 

@@ -514,8 +514,9 @@ export async function joinViaHost({
     try {
       peer = await connect({...connectOptions, origin: known.origin, workspace: known.room, identity, custody, displayName});
       // A host refuses a membership it no longer has once the session
-      // starts, not when connecting: wait for its answer here.
-      await peer?.whenReady?.();
+      // starts, not when connecting: wait for its answer here. A host
+      // replaying the workspace's desktop to this device has let it in.
+      await peer?.whenReady?.({shown: true});
       return peer;
     } catch (error) {
       await peer?.dispose?.().catch(() => {});

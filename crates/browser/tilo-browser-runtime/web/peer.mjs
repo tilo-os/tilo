@@ -45,6 +45,9 @@ export {
 export {joinViaHost, listedWorkspaces, workspaceAt} from './workspaces.mjs';
 
 const CERTIFICATE = 'certificate';
+/** The workspace's shared desktop record (`tilo_desktop_model::ownership`). */
+const DESKTOP_APP = 'so.tilo.browser-desktop';
+const DESKTOP_RECORD = 'desktop';
 /**
  * The stored `{cert, hostCert}` JSON with the peer's start fields (the
  * person's name, whether it only watches) added, edited as text: certificate
@@ -211,7 +214,11 @@ const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
 const isLoopbackHttp = url => url.protocol === 'http:' && LOOPBACK.has(url.hostname);
 
 /** `post(path, body)` over `fetch` to the host origin: https, or loopback
- * http for local review (no certificate exception needed). */
+ * http for local review (no certificate exception needed). The request names
+ * no content type: the host reads every body as the bytes it is, and a
+ * cross-origin POST with only the browser's own headers goes without the
+ * CORS preflight, which cost a page entering through another origin's door a
+ * round trip before each of the door's, the host's and the join's requests. */
 export function httpsPost(origin, fetcher = (...args) => globalThis.fetch(...args)) {
   const base = new URL(origin);
   const secure = base.protocol === 'https:' || isLoopbackHttp(base);
@@ -221,7 +228,6 @@ export function httpsPost(origin, fetcher = (...args) => globalThis.fetch(...arg
   return async (path, body) => {
     const response = await fetcher(new URL(path, base).href, {
       method: 'POST',
-      headers: {'content-type': 'application/octet-stream'},
       body, credentials: 'omit', cache: 'no-store', redirect: 'error',
     });
     return {status: response.status, retryAfter: response.headers?.get?.('retry-after') ?? undefined,
@@ -435,7 +441,7 @@ async function connect({
   profile, device, displayName = '',
   fetch: fetcher, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
   voice: voiceOptions = {}, requireExistingCertificate = false, namespaces = globalThis.localStorage,
-  workspaceName,
+  workspaceName, hostInfo: answered,
 }) {
   userPublicKey ??= identity?.userPublicKey;
   // Only a peer in its profile's own namespace moves to a fresh one when the
@@ -481,7 +487,10 @@ async function connect({
   // desktop settles everyone here over the whole workspace instead, so people
   // here together never share one.
   const ownColor = () => runtime.presenceColor(userPublicKey);
-  let host = JSON.parse(await runtime.hostInfo(post));
+  // What the host said of itself: asked here, or handed on by the entry
+  // that just asked it (`join`), so the session dials without another
+  // round trip to the host first.
+  let host = answered?.address ? answered : JSON.parse(await runtime.hostInfo(post));
   if (!host.address) throw new Error('the host named no iroh endpoint to reach it at');
   const listeners = new Set();
   /** Called after each published status, so a surface follows the session
@@ -1154,8 +1163,13 @@ async function connect({
       return mount;
     },
     /** Resolves once the host admitted the workspace (`phase === 'ready'`);
-     * rejects when it refused this device. */
-    whenReady({signal, timeoutMs = 30_000} = {}) {
+     * rejects when it refused this device. With `shown`, resolves as soon
+     * as this page holds the workspace's shared desktop record: the host
+     * replays it ahead of the workspace's other records, and the desktop
+     * shows from it while the rest arrives. A workspace whose desktop record
+     * has not reached the page yet still waits for the whole replay, so a
+     * desktop never starts a record of its own beside the workspace's. */
+    whenReady({signal, timeoutMs = 30_000, shown = false} = {}) {
       return new Promise((resolve, reject) => {
         let timer;
         const finish = (error, value) => {
@@ -1167,6 +1181,7 @@ async function connect({
         const check = current => {
           if (disposed) finish(new Error('Shared resource connection closed'));
           else if (current.phase === 'ready') finish(undefined, current);
+          else if (shown && current.phase === 'admitting' && hasRecord(DESKTOP_APP, DESKTOP_RECORD)) finish(undefined, current);
           else if (current.phase === 'failed') finish(new Error(current.error ?? 'the host refused this device'));
         };
         if (signal?.aborted) { abort(); return; }
@@ -1434,7 +1449,7 @@ async function join({
     console.warn('join refused:', error?.code ?? error?.name, error?.message ?? error);
     throw Object.assign(new AdmissionError('refused', REFUSED_JOIN), {reason: error?.message ?? String(error), code: 'refused'});
   }
-  const {admission} = JSON.parse(accepted);
+  const {admission, host: answered} = JSON.parse(accepted);
   onProgress?.({phase: 'admitted', room: admission.workspace, workspaceName: admission.name, role: admission.role.toLowerCase()});
   return connect({
     ...connectOptions, origin, identity, userPublicKey: person.userPublicKey, workspace: admission.workspace, label, displayName, custody, runtime, signal,
@@ -1443,5 +1458,7 @@ async function join({
     // nanosecond timestamps exceed what a JavaScript number holds exactly
     // (json-text.mjs).
     fetch: fetcher, deviceCertificate: memberText(accepted, 'certificate'),
+    // The host the entry just asked, which the session dials as it is.
+    hostInfo: answered,
   });
 }

@@ -63,7 +63,7 @@ async fn a_device_accepts_an_invitation_under_its_own_certificate_from_that_host
 
     // The first time, the root certifies this very key, and the workspace admits it.
     let (invitation, token) = door(&host, &alice, &host_device, &acme.workspace, user).await;
-    let (admission, cert, host_cert) = accept_invitation(
+    let (admission, cert, answered) = accept_invitation(
         &*https,
         &invitation,
         &page,
@@ -76,7 +76,12 @@ async fn a_device_accepts_an_invitation_under_its_own_certificate_from_that_host
     assert_eq!(admission.name, "Acme");
     assert_eq!(cert.device_public_key, page.verifying_key().to_bytes());
     assert_eq!(cert.user_public_key, user);
+    let host_cert = answered.host_cert;
     assert_eq!(host_cert, host_device.cert);
+    assert!(
+        answered.address.is_some(),
+        "the entry hands on where the host answers"
+    );
     // Its session starts under it and is in the workspace.
     let peer = start_peer(host.iroh(), cert.clone(), host_cert.clone(), page.clone());
     peer.join(acme.workspace_id).unwrap();

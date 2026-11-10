@@ -67,14 +67,19 @@ async fn a_device_enters_a_listed_workspace_through_its_door_and_a_closed_door_s
     // Bob's tab, with his root, goes through the door: the workspace admits this very key.
     let bob = new_key();
     let page = new_key();
-    let (admission, cert, host_cert) =
+    let (admission, cert, answered) =
         enter_through_door(&*https, &door, &page, entering(None, &bob))
             .await
             .unwrap();
     assert_eq!(admission.workspace, lounge.workspace);
     assert_eq!(cert.device_public_key, page.verifying_key().to_bytes());
     assert_eq!(cert.user_public_key, bob.verifying_key().to_bytes());
+    let host_cert = answered.host_cert;
     assert_eq!(host_cert, host_device.cert);
+    assert!(
+        answered.address.is_some(),
+        "the entry hands on where the host answers"
+    );
     let peer = start_peer(host.iroh(), cert.clone(), host_cert.clone(), page.clone());
     peer.join(lounge.workspace_id).unwrap();
     in_workspace(&peer, lounge.workspace_id).await;

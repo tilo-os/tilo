@@ -81,8 +81,9 @@ function fakeRuntime({phase = 'ready'} = {}) {
       calls.accepted = {invitation: [...invitation], root, ...asked};
       if (calls.refuse) throw Object.assign(new Error(calls.refuse), {name: 'HostRefusal', code: 'not_admitted'});
       const cert = asked.held ? memberText(asked.held, 'cert') : JSON.stringify({guest: true, device_public_key: Array(32).fill(0xdd)});
-      const host = memberText(await runtime.hostInfo(post), 'hostCert');
-      return `{"admission":{"workspace":"${WORKSPACE}","workspace_id":7,"name":"Acme","role":"Editor"},"certificate":{"cert":${cert},"hostCert":${host}}}`;
+      const info = await runtime.hostInfo(post);
+      const host = memberText(info, 'hostCert');
+      return `{"admission":{"workspace":"${WORKSPACE}","workspace_id":7,"name":"Acme","role":"Editor"},"certificate":{"cert":${cert},"hostCert":${host}},"host":${info}}`;
     },
     /** The platform secret store's channel vault key of a namespace. */
     async channelVault(namespace) {
@@ -168,6 +169,9 @@ test('httpsPost posts bodies to the host origin', async () => {
   assert.equal(seen[0].url, 'https://host.example:8443/peer/v1/host');
   assert.deepEqual(seen[0].init.body, new Uint8Array([1]));
   assert.equal(seen[0].init.credentials, 'omit');
+  // Only the browser's own headers: a cross-origin host is asked without a
+  // preflight round trip first.
+  assert.equal(seen[0].init.headers, undefined);
   assert.throws(() => httpsPost('http://host.example'), TypeError);
 });
 
@@ -215,6 +219,22 @@ test('a guest certificate from an invitation reaches the session byte for byte',
   });
   assert.ok(runtime.peer.configText.includes(`"cert":${LINUX_CERT}`), runtime.peer.configText);
   assert.ok(runtime.peer.configText.includes(`"hostCert":{"issued_at_ns":${NANOS}}`));
+  await peer.dispose();
+});
+
+test('a session after an entry dials the host the entry asked, without asking it again', async () => {
+  const runtime = fakeRuntime();
+  let asked = 0;
+  const hostInfo = runtime.hostInfo;
+  runtime.hostInfo = async post => { asked += 1; return hostInfo(post); };
+  const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
+  const peer = await joinWorkspace({
+    origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity,
+    runtime, custody, store: memoryStore(), storage: null,
+    fetch: async () => { throw new Error('no network in tests'); },
+  });
+  assert.equal(asked, 1, 'the host is asked who it is once, by the entry');
+  assert.deepEqual(runtime.peer.config.address, HOST_ADDRESS);
   await peer.dispose();
 });
 
@@ -736,6 +756,41 @@ test('whenReady rejects when the host refuses the device', async () => {
   const ready = peer.whenReady();
   runtime.peer.emit('failed');
   await assert.rejects(ready, /refused/);
+  await peer.dispose();
+});
+
+test('a page waiting to show its desktop goes on once it holds the shared desktop, before the rest arrives', async () => {
+  const runtime = fakeRuntime({phase: 'admitting'});
+  const peer = await connect(options(runtime, memoryStore()));
+  let shown = false;
+  let ready = false;
+  const showing = peer.whenReady({shown: true}).then(() => { shown = true; });
+  const whole = peer.whenReady().then(() => { ready = true; });
+  // Another record first: the desktop is not shown from it.
+  runtime.peer.records.push({app: 'so.tilo.notes', record: 'note-1'});
+  runtime.peer.emit('admitting');
+  await settle();
+  assert.equal(shown, false);
+  runtime.peer.records.push({app: 'so.tilo.browser-desktop', record: 'desktop'});
+  runtime.peer.emit('admitting');
+  await showing;
+  assert.equal(ready, false, 'the rest of the workspace is still on its way');
+  runtime.peer.emit('ready');
+  await whole;
+  await peer.dispose();
+});
+
+test('a page whose workspace sent no desktop yet shows once the host has replayed it all', async () => {
+  const runtime = fakeRuntime({phase: 'admitting'});
+  const peer = await connect(options(runtime, memoryStore()));
+  let shown = false;
+  const showing = peer.whenReady({shown: true}).then(() => { shown = true; });
+  runtime.peer.records.push({app: 'so.tilo.notes', record: 'note-1'});
+  runtime.peer.emit('admitting');
+  await settle();
+  assert.equal(shown, false, 'a desktop mounted now would start a record of its own');
+  runtime.peer.emit('ready');
+  await showing;
   await peer.dispose();
 });
 

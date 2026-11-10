@@ -713,8 +713,8 @@ struct Accepting {
 /// one entry every device takes ([`tilo_session_host::device::accept_invitation`]): it enters with
 /// the certificate it holds from that host where that still serves, else with one the person's
 /// root (`root`, when the page holds it) certifies now. `options` is [`Accepting`] JSON. Resolves
-/// to `{admission: {workspace, workspace_id, name, role}, certificate: {cert, hostCert}}` JSON,
-/// the certificate what the page's session starts with.
+/// to `{admission: {workspace, workspace_id, name, role}, certificate: {cert, hostCert}, host}`
+/// JSON ([`entered_json`]), the certificate what the page's session starts with.
 ///
 /// # Errors
 ///
@@ -742,7 +742,7 @@ pub async fn accept_invitation(
     } else {
         Some(PageSigner::from_js(&root)?)
     };
-    let (admission, cert, host_cert) = tilo_session_host::device::accept_invitation(
+    let (admission, cert, host) = tilo_session_host::device::accept_invitation(
         &PageHttp(post),
         &invitation,
         &device,
@@ -756,11 +756,30 @@ pub async fn accept_invitation(
     )
     .await
     .map_err(|refusal| refusal_error(&refusal))?;
-    Ok(serde_json::json!({
-        "admission": admission,
-        "certificate": {"cert": cert, "hostCert": host_cert},
+    entered_json(&admission, &cert, host)
+}
+
+/// An entry's answer as the page reads it: `{admission, certificate: {cert, hostCert}, host:
+/// {hostCert, address}}`, `host` as [`host_info`] answers it, so the session that follows dials
+/// the host the entry just asked rather than asking it again.
+fn entered_json(
+    admission: &tilo_relay_client::login::Admission,
+    cert: &DeviceCert,
+    host: tilo_relay_protocol::web::HostInfo,
+) -> Result<String, JsValue> {
+    let certificate = serde_json::json!({"cert": cert, "hostCert": host.host_cert});
+    let host = serde_json::to_value(JsHostInfo {
+        host_cert: host.host_cert,
+        address: host.address.map(|address| JsHostAddress {
+            endpoint_addr: address.endpoint_addr,
+            relay_url: address.relay_url,
+        }),
     })
-    .to_string())
+    .map_err(js_error)?;
+    Ok(
+        serde_json::json!({"admission": admission, "certificate": certificate, "host": host})
+            .to_string(),
+    )
 }
 
 /// Go through a workspace's door as this page's device (`custody`), through the one entry every
@@ -801,7 +820,7 @@ pub async fn enter_through_door(
         client: &door_http,
         path: door_path,
     };
-    let (admission, cert, host_cert) = tilo_session_host::device::enter_through_door(
+    let (admission, cert, host) = tilo_session_host::device::enter_through_door(
         &PageHttp(post),
         &door,
         &device,
@@ -815,11 +834,7 @@ pub async fn enter_through_door(
     )
     .await
     .map_err(|refusal| refusal_error(&refusal))?;
-    Ok(serde_json::json!({
-        "admission": admission,
-        "certificate": {"cert": cert, "hostCert": host_cert},
-    })
-    .to_string())
+    entered_json(&admission, &cert, host)
 }
 
 /// The canonical encoding of a certificate (JSON in): what a native device

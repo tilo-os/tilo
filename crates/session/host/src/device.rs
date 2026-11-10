@@ -13,6 +13,7 @@ use tilo_relay_client::login::{Admission, redeem};
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_relay_client::login::{Door, SignIn, through_door};
 use tilo_relay_client::{CertifyError, DeviceSigner, HttpClient};
+use tilo_relay_protocol::web::HostInfo;
 use tilo_relay_session::workspaces::{
     CREATE_OWN_ROOM, CreatedWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, WorkspaceListing,
 };
@@ -539,8 +540,9 @@ pub struct Entering<'a> {
 
 /// Accept `invitation` on the host `client` reaches, as `device`: the host says who it is, the
 /// device enters with the certificate [`entering_certificate`] chooses, and the workspace admits
-/// it. Resolves to the admission, the certificate the device was admitted under and the host's
-/// own: what its session starts with.
+/// it. Resolves to the admission, the certificate the device was admitted under and what the host
+/// said of itself (its certificate and where its endpoint answers): what its session starts with,
+/// so the session dials it without asking the host again.
 ///
 /// # Errors
 /// The host was not reached, the device holds no certificate it could enter with, or the
@@ -550,14 +552,13 @@ pub async fn accept_invitation(
     invitation: &[u8],
     device: &dyn DeviceSigner,
     entering: Entering<'_>,
-) -> Result<(Admission, DeviceCert, DeviceCert), HostRefusal> {
+) -> Result<(Admission, DeviceCert, HostInfo), HostRefusal> {
     let host = tilo_relay_client::https::host_info(client)
         .await
-        .map_err(|error| HostRefusal::unanswered(&error.to_string()))?
-        .host_cert;
+        .map_err(|error| HostRefusal::unanswered(&error.to_string()))?;
     let cert = entering_certificate(
         entering.held,
-        &host,
+        &host.host_cert,
         device,
         entering.root,
         entering.label,
@@ -591,14 +592,13 @@ pub async fn enter_through_door(
     door: &tilo_relay_client::login::Door<'_>,
     device: &dyn DeviceSigner,
     entering: Entering<'_>,
-) -> Result<(Admission, DeviceCert, DeviceCert), HostRefusal> {
+) -> Result<(Admission, DeviceCert, HostInfo), HostRefusal> {
     let host = tilo_relay_client::https::host_info(client)
         .await
-        .map_err(|error| HostRefusal::unanswered(&error.to_string()))?
-        .host_cert;
+        .map_err(|error| HostRefusal::unanswered(&error.to_string()))?;
     let cert = entering_certificate(
         entering.held,
-        &host,
+        &host.host_cert,
         device,
         entering.root,
         entering.label,
