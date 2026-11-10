@@ -11,7 +11,8 @@
 #                                      x86_64 Linux node: aarch64 cross-builds with the Zig
 #                                      toolchain the check's setup installs), aarch64-apple-darwin
 #                                      or x86_64-apple-darwin (on a Mac), packed as OUT/tilo-<os>-
-#                                      <arch>.tar.gz; holds no credentials
+#                                      <arch>.tar.gz; holds no credentials. Built for a tag, the
+#                                      program says that release as `tilo --version`
 #   cli-release.sh pack PROGRAM ARCHIVE  PROGRAM packed as the archive ARCHIVE, as build packs it
 #   cli-release.sh sums OUT DIR...     the archives of each DIR together in OUT, with SHA256SUMS;
 #                                      both Linux archives are required
@@ -183,6 +184,13 @@ cmd_build() {
       *) die "$target is built on Linux or a Mac, not on $(uname -s)" ;;
     esac
   fi
+  # The release's version, so `tilo --version` names the release this program is from. A build
+  # that releases nothing (a branch's, a working tree's) keeps the crate's own version.
+  local released
+  if [[ ${T_REF:-} == tag:* || -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then
+    released=$(version)
+    export TILO_CLI_VERSION=${released#v}
+  fi
   RUSTFLAGS=$flags CARGO_PROFILE_RELEASE_STRIP=symbols CARGO_INCREMENTAL=0 \
     cargo build --locked --release --target "$target" -p tilo-cli --bin tilo
   local program=${CARGO_TARGET_DIR:-$repo_root/target}/$target/release/tilo
@@ -200,6 +208,10 @@ cmd_build() {
     # emulator a cross-built archive is checked only by its ELF, above.
     if [[ $arch == $(uname -m) ]]; then
       "$program" --help >/dev/null || die "$program --help failed"
+      if [[ -n ${TILO_CLI_VERSION:-} ]]; then
+        [[ $("$program" --version) == "tilo $TILO_CLI_VERSION" ]] \
+          || die "$program --version does not name the release $TILO_CLI_VERSION it was built for"
+      fi
     elif command -v "qemu-$arch-static" >/dev/null; then
       "qemu-$arch-static" "$program" --help >/dev/null \
         || die "$program --help failed under qemu-$arch-static"

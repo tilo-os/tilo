@@ -62,11 +62,19 @@ fn helper() -> String {
         .unwrap_or_else(|_| "/usr/libexec/tilo-deployment".to_string())
 }
 
+/// What `tilo --version` prints: the release this program was built for, which
+/// `cli-release.sh build` sets from the tag it builds (TILO_CLI_VERSION), else the crate's own
+/// version, for a build from the tree.
+fn release_version() -> &'static str {
+    option_env!("TILO_CLI_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+}
+
 #[derive(Parser)]
 #[command(
     name = "tilo",
     about = "Use apps and actions, and look after your devices",
-    long_about = None
+    long_about = None,
+    version = release_version()
 )]
 struct Cli {
     #[arg(
