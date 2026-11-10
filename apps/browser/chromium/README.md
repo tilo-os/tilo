@@ -110,6 +110,10 @@ host answers with a `selection_text` event carrying the same `request_id` and
 the frame's selection as `text` (empty when nothing is selected, at most 1 MiB).
 An offscreen engine cannot reach the system clipboard; the embedder copies it.
 
+`ready` / `tab_ready` advertise `page_events: true`: this host sends the events
+`page_record` and `page_changed` of its own accord (see "Several actors in one
+tab"). Neither is asked for and neither is answered.
+
 ### Keys and input methods
 
 `key` carries the key's logical name or text in `key` and, optionally, its
@@ -536,6 +540,39 @@ may act and passes the name of the invoker it admitted.
   `search`) says of a secret that it is set, by its length. A fill still
   needs `secret: true` to write into one (`secret_field` otherwise): that is
   the caller's consent, and not what keeps the text out of the record.
+- **What a person types is in the record.** Direct input, typed or chosen
+  straight in the page, is set down too: one entry to a burst of editing one
+  field, which ends when the person stops for a second, leaves the field,
+  commits it (a box ticked, an option chosen) or an action begins. The entry
+  has `how: "input"` and no `action`, an empty `actor`, `ok: true`, the field
+  as its `target` (`role`, `name` and `nth`, as an action's), the `text` the
+  field then holds as `fields` would give it, `message`, `url`, `time_ms` and,
+  in a frame, the frame fields. Of a secret field it carries `secret: true`
+  and no text. It takes the next `seq` when it is set down, so a reader of
+  the record sees it in order among the actions around it; one that ends
+  while an action runs is set down right after that action. An agent's own
+  input (the keys of its `press`, its fills, the clicks of its gestures) is
+  that action's entry and is not set down again. No answer carries such an
+  entry, so the host says it: the event `page_record`, with `tab`, `seq` and
+  the `entry` as `ledger` lists it. A named actor's next answer lists it
+  among `others`.
+- **The engine says when the page changes itself.** The event `page_changed`
+  tells whoever reviews a page that something other than an action's own edit
+  changed what a field holds or what a form asks, so nobody reads the page
+  again and again to find out. It carries `tab`, `document` (the number that
+  document's refs carry), in a frame `frame`, `frame_name` and `frame_url` as
+  a record entry does, `forms` (each form whose shape changed: `form`, with
+  its `signature` and `offers` now, or `gone: true`) and `fields` (at most 8
+  changed fields, `more` counting the rest: `element`, `role`, `name`, `how`,
+  and `form` and `question` when the field answers one). `how` is `page` for
+  the page's own script and `input` for what a person typed. It never carries
+  what a field holds: that is read with `fields`, which says a secret by its
+  length. What inputs, selects and text areas hold is compared every 400 ms
+  (a script that writes a value sends no event), a form's shape when the
+  document changed, and a document sends at most one event in 250 ms, so a
+  page that rewrites a field forty times in two seconds is told a few times.
+  A field in an open shadow root or an editable region is told when it sends
+  an input event of its own, not when a script rewrites it.
 - **An actor is told what the others did.** An answer to a named actor
   carries `others`: the newest eight record entries of other actors since
   that actor last heard from the tab (`others_earlier` counts older ones). An
@@ -558,7 +595,8 @@ may act and passes the name of the invoker it admitted.
 Attribution of edits is by time: an action opens a window its own input lands
 in, which each edit it causes extends, so direct input within 1.5 seconds of an
 action's last edit is read as that action's. Tracking starts when the document
-is first read or operated, so what was typed before that carries no `set`.
+is first read or operated, so what was typed before that carries no `set`, is
+not set down in the record and sends no `page_changed`.
 
 ### A form as typed actions
 

@@ -786,6 +786,20 @@ class PageActions(unittest.TestCase):
             got.append(event)
         return got
 
+    def typed(self, text):
+        # What a person types: keys straight to the page, and no page action.
+        for char in text:
+            for down in (True, False):
+                self.h.send(op='key', key=char, down=down, ctrl=False, shift=False, alt=False, meta=False)
+
+    def told(self, name, after, when=lambda event: True):
+        # What the engine said of its own accord, `name`, since the place
+        # `after` in what it has said, or says next.
+        for event in self.h.seen[after:]:
+            if event.get('event') == name and when(event):
+                return event
+        return self.h.until(lambda event: event.get('event') == name and when(event))
+
     def ref(self, outline, pattern):
         found = re.search(pattern + r'[^\n]*\[ref=(d\d+e\d+)\]', outline) or re.search(
             re.escape(pattern) + r'(?:[^\n]*\n)*?[^\n]*\[ref=(d\d+e\d+)\]', outline)
@@ -1257,6 +1271,156 @@ class PageActions(unittest.TestCase):
         everything = json.dumps(said)
         for text in list(filled.values()) + ['hunter2', '-secret', 'card-4000056655665556']:
             self.assertNotIn(text, everything)
+
+    def test_what_a_person_types_is_set_down_in_the_record(self):
+        # A person at the page is no action, and what they type is in the
+        # tab's record all the same: one entry to a burst of editing a
+        # field, in its place among the actions around it.
+        self.assertTrue(next(event for event in self.h.seen if event['event'] == 'ready')['page_events'])
+        self.h.navigate(self.url + '/form')
+        outline = self.ok('outline', actor='ada')['outline']
+        email, search = self.ref(outline, 'textbox "Email"'), self.ref(outline, 'searchbox "Search"')
+        self.ok('fill', element=email, text='ada@example.org', actor='ada')
+        time.sleep(2)
+        self.main_world('(document.querySelector("[name=q]").focus(), 1)')
+        mark = len(self.h.seen)
+        self.typed('lamp')
+        first = self.told('page_record', mark)
+        entry = first['entry']
+        self.assertEqual((first['seq'], entry['seq'], entry['how'], entry['actor'], entry['ok']), (2, 2, 'input', '', True), first)
+        self.assertNotIn('action', entry)
+        # The field is named as an action's is, so `find` names it again.
+        self.assertEqual(entry['target'], {'role': 'searchbox', 'name': 'Search'})
+        self.assertEqual((entry['text'], entry['message'], entry['url']),
+                         ('lamp', 'Direct input into searchbox "Search"', self.url + '/form'))
+        # Typing on after a pause is a burst of its own, set down with what
+        # the field then holds.
+        mark = len(self.h.seen)
+        self.typed(' shade')
+        self.assertEqual(self.told('page_record', mark)['entry']['text'], 'lamp shade')
+        # An agent's typing is its action's own and is not set down twice:
+        # a key pressed into the field it names, and one pressed where the
+        # keyboard is.
+        keys = dict(ctrl=False, shift=False, alt=False, meta=False)
+        self.ok('press', element=search, key='s', actor='ada', **keys)
+        self.ok('press', key='x', actor='ada', **keys)
+        self.h.settle(1.6)
+        # A box a person ticks is direct input as well, set down at once.
+        mark = len(self.h.seen)
+        self.main_world('(document.getElementById("terms").focus(), 1)')
+        self.typed(' ')
+        ticked = self.told('page_record', mark)['entry']
+        self.assertEqual((ticked['target'], ticked['text']), ({'role': 'checkbox', 'name': 'Accept terms'}, 'checked'))
+        # A secret a person types is set down as set, and no more.
+        mark = len(self.h.seen)
+        self.main_world('(document.querySelector("[name=password]").focus(), 1)')
+        self.typed('pw-9431')
+        secret = self.told('page_record', mark)['entry']
+        self.assertEqual((secret['how'], secret['secret'], secret['target']),
+                         ('input', True, {'role': 'textbox', 'name': 'Password'}), secret)
+        self.assertNotIn('text', secret)
+        self.assertEqual(self.main_world('document.querySelector("[name=password]").value'), 'pw-9431')
+        record = self.ok('ledger', since=0, actor='ben')
+        self.assertEqual([(listed['seq'], listed.get('action'), listed.get('how')) for listed in record['data']['entries']],
+                         [(1, 'fill', None), (2, None, 'input'), (3, None, 'input'), (4, 'press', None), (5, 'press', None),
+                          (6, None, 'input'), (7, None, 'input')])
+        own = [event for event in self.h.seen[mark:] if event.get('event') in ('page_record', 'page_changed')]
+        self.assertEqual(len(own), 2, own)
+        self.assertNotIn('pw-9431', json.dumps(record) + json.dumps(own))
+        # Another actor is told of it as of anyone's part in the tab.
+        heard = self.ok('changes', actor='ada')
+        self.assertEqual([(other['actor'], other['how'], other['seq']) for other in heard['others']],
+                         [('', 'input', 6), ('', 'input', 7)])
+        # The review says of each field what the record says.
+        fields = {field['name']: field for field in self.ok('fields')['data']['fields']}
+        self.assertEqual((fields['Accept terms']['set'], fields['Password']['set']), ({'how': 'input'}, {'how': 'input'}))
+        self.assertEqual(fields['Search']['set'], {'how': 'action', 'by': 'ada', 'seq': 5})
+
+    def test_what_a_person_types_into_another_site_s_frame_is_set_down_with_its_frame(self):
+        self.h.navigate(self.url + '/embedder')
+        outline = self.reads('textbox "Email"', 'the frame was never read with the page')['outline']
+        frame = re.search(r'iframe "Newsletter sign-up" \[frame=(\d+)\]', outline).group(1)
+        query = self.ref(outline, 'textbox "Search the letters"')
+        # The keyboard is put into the frame's field (an agent's click
+        # stands in for the person's), and the person types once that
+        # action's own moment has passed.
+        self.ok('click', element=query, actor='ada')
+        time.sleep(2)
+        mark = len(self.h.seen)
+        self.typed('budget')
+        entry = self.told('page_record', mark)['entry']
+        self.assertEqual((entry['how'], entry['text'], entry['target']),
+                         ('input', 'budget', {'role': 'textbox', 'name': 'Search the letters'}), entry)
+        self.assertEqual((entry['frame'], entry['frame_name'], entry['frame_url']),
+                         (frame, 'Newsletter sign-up', self.server.other + '/signup'), entry)
+        # The app is told the frame's field changed as well, and not what
+        # it holds.
+        changed = self.told('page_changed', mark, lambda event: event.get('frame') == frame)
+        self.assertEqual([(field['name'], field['how']) for field in changed['fields']], [('Search the letters', 'input')])
+        self.assertEqual((changed['frame_name'], changed['frame_url']), ('Newsletter sign-up', self.server.other + '/signup'))
+        self.assertNotIn('budget', json.dumps(changed))
+
+    def test_the_engine_says_when_the_page_changes_a_field_or_a_form_itself(self):
+        # Whoever reviews a page is told when the page's own script changes
+        # what a field holds or what a form asks, rather than reading the
+        # page again and again to find out.
+        self.h.navigate(self.url + '/apply')
+        form = self.ok('forms')['data']['forms'][0]
+        # A script writes a value: no event of the page's own says so.
+        mark = len(self.h.seen)
+        self.main_world('(document.querySelector("[name=arrival]").value = "2027-01-02", 1)')
+        told = self.told('page_changed', mark)
+        self.assertEqual([(field['role'], field['name'], field['how'], field['form'], field['question']) for field in told['fields']],
+                         [('textbox', 'Arrival', 'page', 'form1', 'Arrival')], told)
+        self.assertEqual((told['forms'], told['tab']), ([], 1), told)
+        self.assertNotIn('frame', told)
+        # It names the field by a ref that acts on it, and says nothing of
+        # what the field holds: that is read.
+        self.assertNotIn('2027-01-02', json.dumps(told))
+        arrival = self.ref(self.outline(), 'textbox "Arrival"')
+        self.assertEqual((told['fields'][0]['element'], int(arrival[1:arrival.index('e')])), (arrival, told['document']))
+        # A script makes the form ask more: the form, by what it is now.
+        mark = len(self.h.seen)
+        self.main_world('(document.getElementById("other").hidden = false, 1)')
+        told = self.told('page_changed', mark, lambda event: event['forms'])
+        grown = self.ok('forms')['data']['forms'][0]
+        self.assertNotEqual(grown['signature'], form['signature'])
+        self.assertEqual(told['forms'], [{'form': 'form1', 'signature': grown['signature'], 'offers': grown['offers']}])
+        # A script offers another answer: the same form, offering others.
+        mark = len(self.h.seen)
+        self.main_world('(document.getElementById("nat").add(new Option("Chile")), 1)')
+        told = self.told('page_changed', mark, lambda event: event['forms'])
+        self.assertEqual((told['forms'][0]['signature'], told['forms'][0]['offers'] != grown['offers']), (grown['signature'], True))
+        # A secret a script writes is named as changed and never told.
+        mark = len(self.h.seen)
+        self.main_world('(document.querySelector("[name=code]").value = "hunter2-secret", 1)')
+        told = self.told('page_changed', mark)
+        self.assertEqual([(field['name'], field['how']) for field in told['fields']], [('Passcode', 'page')])
+        self.assertNotIn('hunter2', json.dumps(told))
+        # A busy page does not flood: forty writes in two seconds are told
+        # a few times.
+        mark = len(self.h.seen)
+        self.main_world('(window.writes = 0, window.busy = setInterval(() => {'
+                        ' document.querySelector("[name=dob_day]").value = String(++window.writes);'
+                        ' if (window.writes >= 40) clearInterval(window.busy); }, 50), 1)')
+        self.h.settle(3.5)
+        self.assertEqual(self.main_world('window.writes'), 40)
+        busy = [event for event in self.h.seen[mark:] if event.get('event') == 'page_changed']
+        self.assertTrue(1 <= len(busy) <= 10, busy)
+        self.assertEqual({field['name'] for event in busy for field in event['fields']}, {'Day'})
+        # An action's own edit is told by its answer, not as the page's.
+        mark = len(self.h.seen)
+        self.ok('fill', element=arrival, text='2027-03-04', actor='ada')
+        self.h.settle(1.2)
+        self.assertEqual([event for event in self.h.seen[mark:] if event.get('event') == 'page_changed'], [])
+        # What a person types is told as theirs.
+        time.sleep(1)
+        self.main_world('(document.querySelector("[name=dob_month]").focus(), 1)')
+        mark = len(self.h.seen)
+        self.typed('11')
+        told = self.told('page_changed', mark)
+        self.assertEqual([(field['name'], field['how'], field['question']) for field in told['fields']],
+                         [('Month', 'input', 'Date of birth: Month')])
 
     def test_outline_lists_structure_with_refs_and_hides_secrets(self):
         self.h.navigate(self.url + '/form')

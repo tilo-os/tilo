@@ -2361,12 +2361,171 @@ globalThis.__tiloPage ||= (() => {
     // who set it: a field tells of its change again when focus leaves it,
     // which may be during someone else's action.
     const held = heldValue(element), known = provenance.get(element);
-    if (known && known.value === held) return;
-    provenance.set(element, {by: live ? live.actor : '', how: live ? 'action' : event.isTrusted ? 'input' : 'page',
-      seq: live ? live.seq : 0, value: held});
+    const how = live ? 'action' : event.isTrusted ? 'input' : 'page';
+    // What an action's own edit did its answer says; anything else that
+    // changed a field is told to whoever reviews the page.
+    const was = lastHeld.get(element);
+    lastHeld.set(element, held);
+    if (how !== 'action' && was !== held) changedSoon().fields.set(element, how);
+    if (!known || known.value !== held) {
+      provenance.set(element, {by: live ? live.actor : '', how, seq: live ? live.seq : 0, value: held});
+      if (how === 'input') typedInto(element);
+    }
+    // A field says it is done with when the person leaves it.
+    if (event.type === 'change' && burst && burst.element === element) endBurst();
   };
   addEventListener('input', noteEdit, true);
   addEventListener('change', noteEdit, true);
+  addEventListener('focusout', event => {
+    const path = event.composedPath ? event.composedPath() : [];
+    if (burst && burst.element === (path[0] || event.target)) endBurst();
+  }, true);
+  addEventListener('pagehide', () => { endBurst(); tellChanged(); });
+
+  // What this world tells the browser process without being asked: what a
+  // person typed into a field, and that the page changed a field or a form
+  // itself. The function is the browser process's own, put into this world
+  // alone: the page's scripts can neither see nor call it.
+  const tell = note => {
+    const send = globalThis.__tiloPageNote;
+    if (typeof send !== 'function') return;
+    try {
+      // The address of this document, which the record keeps of a frame.
+      note.document_url = clean(location.origin + location.pathname, 300);
+      send(JSON.stringify(note));
+    } catch (_) {}
+  };
+  // Direct input is set down in the tab's record a burst at a time: what a
+  // person typed into one field, until they stop for a moment, leave the
+  // field or an action begins. The entry says what the field then holds,
+  // and of a secret only that it was set.
+  const BURST_MS = 1000;
+  let burst = null;
+  function endBurst() {
+    const ended = burst;
+    burst = null;
+    if (!ended) return;
+    clearTimeout(ended.timer);
+    const element = ended.element, note = {kind: 'input'};
+    try {
+      note.said = summary(element);
+      const target = element.isConnected ? targetOf(element) : null;
+      if (target) note.target = target;
+      if (secret(element)) note.secret = true;
+      else note.text = clean(heldValue(element), MAX_VALUE);
+    } catch (_) {}
+    tell(note);
+  }
+  function typedInto(element) {
+    if (burst && burst.element !== element) endBurst();
+    if (!burst) burst = {element, timer: 0};
+    clearTimeout(burst.timer);
+    burst.timer = setTimeout(endBurst, BURST_MS);
+  }
+
+  // The page changes its own fields and forms: a script writes a value,
+  // shows a question, takes an answer away. Whoever reviews the page is
+  // told when, instead of reading it again and again to find out. What the
+  // inputs, selects and text areas hold is compared a few times a second (a
+  // script that writes a value sends no event), a form's shape whenever
+  // the document changed, and what was found is told at most once in a
+  // while, however busy the page is. It says which fields and which forms,
+  // never what a field holds.
+  const WATCH_MS = 400, CHANGED_MS = 250, MAX_CHANGED_FIELDS = 8, WATCH_SHAPES_EVERY = 10;
+  const NOT_WATCHED = new Set(['hidden', 'button', 'submit', 'reset', 'image']);
+  const lastHeld = new WeakMap();
+  let shapes = null, shapesDirty = true, watchTicks = 0, watching = false, changed = null;
+  function changedSoon() {
+    if (!changed) changed = {fields: new Map(), forms: new Map(), timer: setTimeout(tellChanged, CHANGED_MS)};
+    return changed;
+  }
+  function tellChanged() {
+    const told = changed;
+    changed = null;
+    if (!told) return;
+    clearTimeout(told.timer);
+    const note = {kind: 'changed', fields: [], forms: [...told.forms.values()]};
+    try {
+      if (told.fields.size) {
+        const listed = new Map(findCandidates().map(candidate => [candidate.element, candidate]));
+        const questions = askedOf();
+        let more = 0;
+        for (const [element, how] of told.fields) {
+          const candidate = element.isConnected ? listed.get(element) : null;
+          if (!candidate) continue;
+          if (note.fields.length >= MAX_CHANGED_FIELDS) { more++; continue; }
+          const field = {element: refOf(element), role: candidate.kind, name: candidate.label, how};
+          const asked = questions.get(element);
+          if (asked) { field.form = asked.form; field.question = asked.question; }
+          note.fields.push(field);
+        }
+        if (more) note.more = more;
+      }
+    } catch (_) {}
+    if (note.fields.length || note.forms.length) tell(note);
+  }
+  function heldNow() {
+    let seen = 0;
+    for (const control of document.querySelectorAll('input,select,textarea')) {
+      if (++seen > MAX_FIELDS) break;
+      if (control.localName === 'input' && NOT_WATCHED.has(type(control))) continue;
+      const held = heldValue(control), was = lastHeld.get(control);
+      lastHeld.set(control, held);
+      if (was !== undefined && was !== held) changedSoon().fields.set(control, 'page');
+    }
+  }
+  function shapesNow() {
+    const now = new Map();
+    for (const surface of readForms())
+      now.set(surface.id, {form: surface.id, signature: surface.signature, offers: surface.offers});
+    if (shapes) {
+      for (const [id, shape] of now) {
+        const was = shapes.get(id);
+        if (!was || was.signature !== shape.signature || was.offers !== shape.offers) changedSoon().forms.set(id, shape);
+      }
+      for (const id of shapes.keys()) if (!now.has(id)) changedSoon().forms.set(id, {form: id, gone: true});
+    }
+    shapes = now;
+  }
+  function watchTick() {
+    setTimeout(watchTick, WATCH_MS);
+    try {
+      heldNow();
+      if (shapesDirty || ++watchTicks % WATCH_SHAPES_EVERY === 0) { shapesDirty = false; shapesNow(); }
+    } catch (_) {}
+  }
+  // The watch starts with the first thing this world is asked, and only in
+  // the world the browser process listens to.
+  function watchPage() {
+    if (watching || typeof globalThis.__tiloPageNote !== 'function') return;
+    watching = true;
+    try {
+      new MutationObserver(records => {
+        shapesDirty = true;
+        // A password field the page turns into plain text is still one.
+        for (const record of records)
+          if (record.type === 'attributes' && record.attributeName === 'type' &&
+              String(record.oldValue).toLowerCase() === 'password') onceSecret.add(record.target);
+      }).observe(document, {subtree: true, childList: true, attributes: true, attributeOldValue: true});
+      heldNow();
+      shapesNow();
+      shapesDirty = false;
+    } catch (_) {}
+    setTimeout(watchTick, WATCH_MS);
+  }
+  // The question each field answers, as the page's forms name it, so a
+  // review, an answer and a change speak of a field by the same name.
+  function askedOf() {
+    const questions = new Map();
+    for (const surface of readForms()) {
+      for (const asked of surface.fields) {
+        if (grouped(asked))
+          for (const option of asked.options) questions.set(option.control, {form: surface.id, question: asked.name, answer: option.label});
+        else questions.set(asked.control, {form: surface.id, question: asked.name});
+      }
+    }
+    return questions;
+  }
 
   // The description that names an element wherever its document sits in its
   // history: the role and name `find` reads back, and its number among equal
@@ -2436,16 +2595,7 @@ globalThis.__tiloPage ||= (() => {
     const listed = [], lines = [];
     const counts = {action: 0, input: 0, page: 0, changed: 0, unset: 0};
     let cut = 0;
-    // The question each field answers, as the page's forms name it, so a
-    // review and an answer speak of a field by the same name.
-    const questions = new Map();
-    for (const surface of readForms()) {
-      for (const asked of surface.fields) {
-        if (grouped(asked))
-          for (const option of asked.options) questions.set(option.control, {form: surface.id, question: asked.name, answer: option.label});
-        else questions.set(asked.control, {form: surface.id, question: asked.name});
-      }
-    }
+    const questions = askedOf();
     for (const candidate of findCandidates()) {
       const element = candidate.element;
       if (!FIELD_KINDS.has(candidate.kind) || element.localName === 'option') continue;
@@ -2806,14 +2956,22 @@ globalThis.__tiloPage ||= (() => {
         if (typeof command.actor === 'string' || typeof command.seq === 'number' ||
             command.action === 'outline' || command.action === 'changes')
           actorId = typeof command.actor === 'string' ? command.actor : '';
+        watchPage();
         if (typeof command.seq === 'number') {
+          const begins = ACTS.has(command.action) || command.action === 'gesture_begin' || command.action === 'acting';
+          // What a person was typing when an action begins is set down
+          // before the action's own edits are.
+          if (begins && !(acting && acting.seq === command.seq)) endBurst();
           if (ACTS.has(command.action))
             acting = {actor: actorId, seq: command.seq, until: performance.now() + ACTING_MS};
-          else if (command.action === 'gesture_begin')
+          else if (command.action === 'gesture_begin' || command.action === 'acting')
             acting = {actor: actorId, seq: command.seq, until: performance.now() + GESTURE_ACTING_MS};
-          else if (command.action === 'gesture_end' && acting)
+          else if ((command.action === 'gesture_end' || command.action === 'changes') && acting && acting.seq === command.seq)
             acting.until = Math.min(acting.until, performance.now() + ACTING_MS);
         }
+        // A gesture made of pointer steps says it has begun, so the edits
+        // its steps cause are its own.
+        if (command.action === 'acting') return {ok: true, message: 'Acting'};
         // A gesture that spans two engine steps: read what is about to
         // change, let the pointer do its work, then answer with the change.
         if (command.action === 'gesture_begin') {

@@ -69,7 +69,10 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       std::function<void()> action_began,std::function<void()> action_ended)
       :browser_(browser),emit_(std::move(emit)),click_(std::move(click)),key_(std::move(key)),pointer_(std::move(pointer)),wheel_(std::move(wheel)),
        action_began_(std::move(action_began)),action_ended_(std::move(action_ended)) {}
-  void Attach() { registration_=browser_->GetHost()->AddDevToolsMessageObserver(this); }
+  void Attach() {
+    registration_=browser_->GetHost()->AddDevToolsMessageObserver(this);
+    binding_=true;Tell(std::string(),"Runtime.addBinding",NoteBinding(0));
+  }
   void Detach() { registration_=nullptr;browser_=nullptr;pending_.reset();asked_=nullptr;waiting_.clear();CancelFileDialog(); }
   // A page asked for files. A click this automation is driving holds the
   // chooser for `fill_files`; anything else keeps the platform panel.
@@ -253,6 +256,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     }
     native_attempted_=false;native_object_.clear();
     capture_=Area{};capture_label_.clear();
+    // The page's inspector was away and is back: it is told again what the
+    // page's own world may call.
+    if(!binding_) { binding_=true;Tell(std::string(),"Runtime.addBinding",NoteBinding(0)); }
     pending_=Pending(request,++token_,navigations_,false,owned,std::string{});
     pending_->asked=owned->GetString("action").ToString();
     pending_->actor=owned->GetType("actor")==VTYPE_STRING?owned->GetString("actor").ToString():std::string();
@@ -300,6 +306,8 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       const auto method=body->GetString("method").ToString();
       if(method=="Target.attachedToTarget") TargetAttached(body->GetDictionary("params"));
       else if(method=="Target.detachedFromTarget") TargetDetached(body->GetDictionary("params"));
+      // What a frame's own document tells without being asked (see `Noted`).
+      else if(method=="Runtime.bindingCalled") Noted(body->GetString("sessionId").ToString(),body->GetDictionary("params"));
       return true;
     }
     if(body->GetType("id")!=VTYPE_INT) return true;
@@ -313,7 +321,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   }
   void OnDevToolsAgentDetached(CefRefPtr<CefBrowser>) override {
     loader_.clear();world_loader_.clear();text_owner_.reset();text_lease_.clear();
-    ForgetPage();target_sessions_.clear();session_targets_.clear();auto_attach_=false;
+    ForgetPage();target_sessions_.clear();session_targets_.clear();auto_attach_=false;binding_=false;
     ++generation_;
     if(pending_ && call_) Fail("unavailable","The page's inspector connection closed");
   }
@@ -1186,6 +1194,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // The page's own document, in the world made for it.
   void EnterMain(int context) {
     world_=context;main_world_=context;world_session_.clear();frame_doc_=0;
+    Tell(std::string(),"Runtime.addBinding",NoteBinding(context));
     document_=DocumentOf(std::string(),context);main_document_=document_;
     PageDocument page;page.number=document_;page.context=context;page.frame=main_id_;
     docs_[document_]=page;
@@ -1281,6 +1290,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       if(success && result && result->GetType("executionContextId")==VTYPE_INT) {
         PageDocument document;
         document.context=result->GetInt("executionContextId");document.session=session;document.frame=frame;
+        Tell(session,"Runtime.addBinding",NoteBinding(document.context));
         document.holder=held.number;document.handle=handle;
         if(const auto named=frame_refs_.find(handle);named!=frame_refs_.end()) document.element=named->second;
         // A frame holds one document: what was kept of the one before it is
@@ -1361,6 +1371,12 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // either way the tree kept is older than the page.
   void OnDevToolsEvent(CefRefPtr<CefBrowser>,const CefString& method,const void* params,size_t size) override {
     const std::string name=method.ToString();
+    // What the page's own world tells without being asked (see `Noted`).
+    if(name=="Runtime.bindingCalled") {
+      auto parsed=CefParseJSON(std::string(size>0?static_cast<const char*>(params):"",size>0?size:0),JSON_PARSER_RFC);
+      Noted(std::string(),parsed && parsed->GetType()==VTYPE_DICTIONARY?parsed->GetDictionary():nullptr);
+      return;
+    }
     // A frame of another site is a target of its own, and the page's
     // inspector says when a connection to one is handed out or taken back.
     if(name=="Target.attachedToTarget" || name=="Target.detachedFromTarget") {
@@ -2553,6 +2569,126 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     });
   }
   void KeyPlaced() { auto arm=pending_->arm;pending_->arm=nullptr;Act(arm); }
+  // What the page's own world may call to tell this side something without
+  // being asked: `context` names one world, none the world of every
+  // document by its name. Only the world this side made holds it; the
+  // page's scripts can neither see nor call it.
+  static CefRefPtr<CefDictionaryValue> NoteBinding(int context) {
+    auto binding=CefDictionaryValue::Create();binding->SetString("name",kNoteBinding);
+    if(context) binding->SetInt("executionContextId",context);
+    else binding->SetString("executionContextName","tilo-page-actions");
+    return binding;
+  }
+  // The world's note: what a person typed into a field (set down in the
+  // tab's record), or that the page changed a field or a form itself (told
+  // to the app). A note is the word of a renderer, so it is taken only from
+  // a document this side is reading, bounded in size and in number, and
+  // nothing of it is kept but what a read of the same field would give.
+  void Noted(const std::string& session,CefRefPtr<CefDictionaryValue> params) {
+    if(!browser_ || !params || params->GetType("name")!=VTYPE_STRING || params->GetString("name")!=kNoteBinding) return;
+    if(params->GetType("executionContextId")!=VTYPE_INT || params->GetType("payload")!=VTYPE_STRING) return;
+    const int context=params->GetInt("executionContextId");
+    const PageDocument* found=nullptr;
+    for(const auto& [number,held]:docs_) if(held.context==context && held.session==session) { found=&held;break; }
+    if(!found) return;
+    const PageDocument document=*found;
+    const auto payload=params->GetString("payload").ToString();
+    if(payload.size()>kMaxNoteBytes) return;
+    const double now=Now();
+    while(!noted_.empty() && now-noted_.front()>kNoteWindowMs) noted_.pop_front();
+    if(noted_.size()>=kMaxNotes) return;
+    noted_.push_back(now);
+    auto parsed=CefParseJSON(payload,JSON_PARSER_RFC);
+    auto note=parsed && parsed->GetType()==VTYPE_DICTIONARY?parsed->GetDictionary():nullptr;
+    if(!note) return;
+    const auto kind=Text(note,"kind");
+    if(kind=="input") NoteInput(document,note);
+    else if(kind=="changed") NoteChanged(document,note);
+  }
+  static std::string Word(CefRefPtr<CefDictionaryValue> value,const char* key,size_t most) { return Clip(Text(value,key),most); }
+  // The frame a note came from, as the record says it of an action there.
+  void NoteFrame(const PageDocument& document,CefRefPtr<CefDictionaryValue> note,CefRefPtr<CefDictionaryValue> into) const {
+    if(!document.handle) return;
+    into->SetString("frame",std::to_string(document.handle));
+    if(const auto label=frame_labels_.find(document.handle);label!=frame_labels_.end() && !label->second.empty())
+      into->SetString("frame_name",label->second);
+    if(const auto address=Word(note,"document_url",300);!address.empty()) into->SetString("frame_url",address);
+  }
+  // What a person typed straight into the page, one entry to a burst of
+  // editing one field: the field as `find` names it, and the text it then
+  // holds, or of a secret only that it was set.
+  void NoteInput(const PageDocument& document,CefRefPtr<CefDictionaryValue> note) {
+    auto entry=CefDictionaryValue::Create();
+    entry->SetDouble("time_ms",NowMs());entry->SetString("actor","");entry->SetString("how","input");entry->SetBool("ok",true);
+    const auto said=Word(note,"said",kMaxLedgerText);
+    entry->SetString("message",said.empty()?"Direct input into the page":"Direct input into "+said);
+    entry->SetString("url",browser_->GetMainFrame()->GetURL());
+    if(auto target=note->GetType("target")==VTYPE_DICTIONARY?note->GetDictionary("target"):nullptr) {
+      auto kept=CefDictionaryValue::Create();
+      if(const auto role=Word(target,"role",64);!role.empty()) kept->SetString("role",role);
+      if(const auto name=Word(target,"name",kMaxLedgerText);!name.empty()) kept->SetString("name",name);
+      if(const double nth=Number(target,"nth");nth>=1 && nth<=100000) kept->SetInt("nth",static_cast<int>(nth));
+      if(kept->GetSize()) entry->SetDictionary("target",kept);
+    }
+    NoteFrame(document,note,entry);
+    if(note->GetType("secret")==VTYPE_BOOL && note->GetBool("secret")) entry->SetBool("secret",true);
+    else if(note->GetType("text")==VTYPE_STRING) entry->SetString("text",Word(note,"text",kMaxLedgerText));
+    // An entry takes its place when it is set down: one that comes while an
+    // action runs waits for that action's own, which was given its place
+    // when it began.
+    if(pending_ && pending_->seq) { if(held_.size()<kMaxHeld) held_.push_back(entry);return; }
+    SetDown(entry);
+  }
+  void SetDown(CefRefPtr<CefDictionaryValue> entry) {
+    entry->SetDouble("seq",static_cast<double>(++acted_seq_));
+    ledger_.push_back(entry);
+    if(ledger_.size()>kMaxLedger) { ledger_.pop_front();++ledger_dropped_; }
+    // No action's answer carries this entry, so the app is told of it.
+    auto told=CefDictionaryValue::Create();
+    told->SetDouble("seq",static_cast<double>(acted_seq_));told->SetDictionary("entry",entry->Copy(false));
+    emit_("page_record",told);
+  }
+  void SetDownHeld() {
+    auto held=std::move(held_);held_.clear();
+    for(const auto& entry:held) SetDown(entry);
+  }
+  // The page changed a field or a form itself, or a person typed into one:
+  // which document, which forms and which fields, and never what a field
+  // holds.
+  void NoteChanged(const PageDocument& document,CefRefPtr<CefDictionaryValue> note) {
+    auto told=CefDictionaryValue::Create();
+    told->SetInt("document",document.number);
+    NoteFrame(document,note,told);
+    auto forms=CefListValue::Create();
+    auto said_forms=note->GetType("forms")==VTYPE_LIST?note->GetList("forms"):nullptr;
+    for(size_t i=0;said_forms && i<said_forms->GetSize() && forms->GetSize()<kMaxChangedForms;++i) {
+      auto said=said_forms->GetType(i)==VTYPE_DICTIONARY?said_forms->GetDictionary(i):nullptr;
+      const auto id=Word(said,"form",64);
+      if(id.empty()) continue;
+      auto form=CefDictionaryValue::Create();form->SetString("form",id);
+      if(const auto signature=Word(said,"signature",16);!signature.empty()) form->SetString("signature",signature);
+      if(const auto offers=Word(said,"offers",16);!offers.empty()) form->SetString("offers",offers);
+      if(said->GetType("gone")==VTYPE_BOOL && said->GetBool("gone")) form->SetBool("gone",true);
+      forms->SetDictionary(forms->GetSize(),form);
+    }
+    auto fields=CefListValue::Create();
+    auto said_fields=note->GetType("fields")==VTYPE_LIST?note->GetList("fields"):nullptr;
+    for(size_t i=0;said_fields && i<said_fields->GetSize() && fields->GetSize()<kMaxChangedFields;++i) {
+      auto said=said_fields->GetType(i)==VTYPE_DICTIONARY?said_fields->GetDictionary(i):nullptr;
+      const auto ref=Word(said,"element",64);const auto how=Text(said,"how");
+      // A ref of the document that tells of it, and no other.
+      if(RefDocument(ref)!=document.number || (how!="page" && how!="input")) continue;
+      auto field=CefDictionaryValue::Create();field->SetString("element",ref);field->SetString("how",how);
+      field->SetString("role",Word(said,"role",64));field->SetString("name",Word(said,"name",kMaxLedgerText));
+      if(const auto form=Word(said,"form",64);!form.empty()) field->SetString("form",form);
+      if(const auto question=Word(said,"question",kMaxLedgerText);!question.empty()) field->SetString("question",question);
+      fields->SetDictionary(fields->GetSize(),field);
+    }
+    if(!forms->GetSize() && !fields->GetSize()) return;
+    told->SetList("forms",forms);told->SetList("fields",fields);
+    if(const double more=Number(note,"more");more>=1 && more<=100000) told->SetInt("more",static_cast<int>(more));
+    emit_("page_changed",told);
+  }
   // An operating action is set down in the tab's record as it ends, and
   // every answer to a named actor says what the other actors did in the tab
   // since that actor last heard from it: the page an agent acts on next may
@@ -2597,6 +2733,8 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       ledger_.push_back(entry);
       if(ledger_.size()>kMaxLedger) { ledger_.pop_front();++ledger_dropped_; }
       fields->SetDouble("seq",static_cast<double>(pending_->seq));
+      // What a person typed while the action ran takes its place after it.
+      SetDownHeld();
     }
     if(asked->GetType("actor")!=VTYPE_STRING) return;
     const uint64_t seen=seen_.count(pending_->actor)?seen_[pending_->actor]:0;
@@ -2618,6 +2756,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // What the page's script wrote of its frames is said by their numbers.
     NumberIn(fields);
     Record(fields);
+    SetDownHeld();
     // A rest the gesture could not tell mid-step is told now, while the request
     // that asked for it is still the one running.
     if(rest_pending_) { rest_pending_=false;RestPointer(rest_point_);rest_pending_=false;call_=0; }
@@ -2682,6 +2821,16 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   uint64_t acted_seq_=0,ledger_dropped_=0;
   std::map<std::string,uint64_t> seen_;
   static constexpr size_t kMaxLedger=1000,kMaxLedgerRead=200,kMaxOthers=8,kMaxActors=64,kMaxLedgerText=200;
+  // What the page's own world calls to tell this side something (`Noted`),
+  // whether the page's inspector has been told of it, and the bounds a
+  // renderer's notes are held to: the size of one, how many in a while, how
+  // many wait for the action that is running, and how much one tells.
+  static constexpr const char* kNoteBinding="__tiloPageNote";
+  bool binding_=false;
+  static constexpr size_t kMaxNoteBytes=32768,kMaxNotes=40,kMaxHeld=64,kMaxChangedForms=24,kMaxChangedFields=8;
+  static constexpr double kNoteWindowMs=2000;
+  std::deque<double> noted_;
+  std::vector<CefRefPtr<CefDictionaryValue>> held_;
   // How many frames deep a key's focus is followed.
   static constexpr int kKeyFrameDepth=4;
   int stage_=static_cast<int>(Stage::FrameTree);int call_=0;
