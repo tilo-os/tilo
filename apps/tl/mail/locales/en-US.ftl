@@ -221,7 +221,7 @@ d-eon6gbrn = New message
     .doc = Starts a message from the account.
 
 d-ygbvdl5l = New message
-    .doc = Starts a message from the first account.
+    .doc = Starts a message from the first account, where there is one: a window with no account offers nothing to press and says where an account comes from, rather than a control that cannot run.
 
 d-hirareiw = Reply
     .doc = Answers the conversation's newest message, to whoever wrote it, quoting it under what is written.
