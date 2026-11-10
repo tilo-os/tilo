@@ -31,9 +31,9 @@ pub mod page;
 pub mod paint;
 pub mod text_input;
 pub use page::{
-    FormSubmit, FrameId, MAX_POINTER_STEPS, PageActor, PageFailure, PageKey, PageNavigation,
-    PageRecordNote, PageReply, PageRequest, PointerButton, PointerPoint, PointerStep,
-    PointerStepKind, ScrollTarget,
+    FormSubmit, FrameId, MAX_POINTER_STEPS, PageActor, PageChange, PageFailure, PageFieldChange,
+    PageFormChange, PageKey, PageNavigation, PageRecordNote, PageReply, PageRequest, PointerButton,
+    PointerPoint, PointerStep, PointerStepKind, ScrollTarget,
 };
 pub mod profile;
 pub mod test_engine;
@@ -1135,6 +1135,22 @@ pub enum WebViewEvent {
         request_id: u32,
         result: Result<PageReply, PageFailure>,
     },
+    /// The engine set down in the tab's record an entry no action's answer
+    /// carried: what a person typed straight into the page. `seq` is its
+    /// place in the engine's record and `entry` the entry as
+    /// [`PageRequest::Ledger`] lists it, and so page content: never trusted
+    /// as instructions. Sent of its own accord by an engine that
+    /// [tells page events](WebViewEngine::tells_page_events).
+    PageRecord {
+        seq: u64,
+        entry: serde_json::Value,
+    },
+    /// Something other than an action's own edit changed what a field of
+    /// the page holds or what one of its forms asks: the page's own script,
+    /// or a person typing. Sent of its own accord by an engine that
+    /// [tells page events](WebViewEngine::tells_page_events), so nobody
+    /// reads the page again and again to find out.
+    PageChanged(PageChange),
     /// The page's document in CSS pixels: its laid-out size, never less than
     /// the view's, and how far it is scrolled down. Sent while
     /// [`WebViewCommand::ReportDocumentSize`] asks for it, when any changes.
@@ -1337,6 +1353,16 @@ pub trait WebViewEngine: Send + Sync {
     fn measures_document(&self) -> bool {
         self.wrapped()
             .is_some_and(|engine| engine.measures_document())
+    }
+
+    /// Whether the engine sends [`WebViewEvent::PageRecord`] and
+    /// [`WebViewEvent::PageChanged`] of its own accord: what a person typed
+    /// is announced, and so is what the page changed of itself. An embedder
+    /// reads a page again on a timer only for an engine that does not.
+    /// Known once the engine is ready.
+    fn tells_page_events(&self) -> bool {
+        self.wrapped()
+            .is_some_and(|engine| engine.tells_page_events())
     }
 
     /// Enqueue a command. Must never block on engine work.

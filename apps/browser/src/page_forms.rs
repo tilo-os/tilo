@@ -102,6 +102,7 @@ impl FormRun {
                 Some(FormSend { button: None, .. }) => FormSubmit::First,
             },
             cross_origin: self.send.as_ref().is_some_and(|send| send.cross_origin),
+            frame: None,
         }
     }
 }
@@ -1176,6 +1177,7 @@ mod tests {
                 .clone(),
                 submit: FormSubmit::No,
                 cross_origin: false,
+                frame: None,
             }
         );
         let sent = run(&actions[1], serde_json::json!({"cross_origin": true}));
@@ -1186,6 +1188,7 @@ mod tests {
                 answers: serde_json::Map::new(),
                 submit: FormSubmit::First,
                 cross_origin: true,
+                frame: None,
             }
         );
     }

@@ -312,6 +312,7 @@ fn answer(form_answers: &[(&str, Value)], submit: Option<bool>) -> BrowserEffect
         submit,
         submit_button: None,
         cross_origin: None,
+        frame: None,
     }
 }
 
@@ -432,6 +433,7 @@ fn find_and_read_on(app: &mut App, ben: &ActionInvoker) -> Result<(), Failure> {
         &BrowserEffect::FindPageText {
             text: "refused before".into(),
             frame: None,
+            frames: None,
         },
     )?;
     let line = found

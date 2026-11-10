@@ -574,6 +574,7 @@ fn agent_reads_and_consented_writes_reach_the_engine_typed() {
                 name: Some("Remove".into()),
                 nth: Some(2),
                 frame: None,
+                frames: false,
             },
         ],
         "a form leaves for another site only when the caller says so"
@@ -1900,6 +1901,106 @@ fn what_the_others_did_reaches_the_callers_output() {
     assert!(details.get("others_earlier").is_none());
 }
 
+/// A find and a search look in the frames the page shows as well as in the
+/// page when asked to, and their caller is told the frame of what was found:
+/// a find's answer names it beside the ref that acts there, a search's match
+/// carries it, and so does the element at a point over a frame. Asked
+/// nothing of frames, the engine is told nothing of them.
+#[test]
+fn a_find_and_a_search_reach_into_frames_and_say_the_frame_of_what_they_found() {
+    let (engine, mut widget, mut doc, root) = page_on("https://shop.test/checkout");
+    engine.push_page_reply(Ok(PageReply {
+        data: Some(serde_json::json!({"element": "d3e4", "role": "button",
+            "name": "Accept all", "line": "- button \"Accept all\" [ref=d3e4]", "nth": 1,
+            "matches": 1, "frame": "3"})),
+        ..answer("Found button \"Accept all\" in frame 3")
+    }));
+    let found = serde_json::json!({
+        "matches": [{"line": 12, "text": "Total 42.00", "frame": "3"}],
+        "total": 1, "page_total": 0,
+    });
+    engine.push_page_reply(Ok(PageReply {
+        outline: Some("frame 3, 12: Total 42.00".into()),
+        data: Some(found.clone()),
+        ..answer("1 line holds those words, in frame 3")
+    }));
+    engine.push_page_reply(Ok(PageReply {
+        data: Some(
+            serde_json::json!({"x": 310.0, "y": 240.0, "frame": "3", "ref": "d3e4",
+            "role": "button", "name": "Accept all"}),
+        ),
+        ..answer("button \"Accept all\" is at 310, 240 in frame 3")
+    }));
+    let mut answers = Vec::new();
+    for (id, args) in [
+        (
+            "find-page-element",
+            serde_json::json!({"role": "button", "name": "Accept all", "frames": true}),
+        ),
+        (
+            "find-page-text",
+            serde_json::json!({"text": "Total", "frames": true}),
+        ),
+        (
+            "read-page-element-at",
+            serde_json::json!({"x": 310.0, "y": 240.0}),
+        ),
+        ("find-page-text", serde_json::json!({"text": "Total"})),
+        (
+            "find-page-element",
+            serde_json::json!({"name": "Accept all", "frames": false}),
+        ),
+    ] {
+        let invocation = start(&mut widget, &mut doc, &root, id, &args).unwrap();
+        answers.push(succeeded(settled(&mut widget, &doc, &root, invocation)));
+    }
+    assert_eq!(
+        page_requests(&engine),
+        vec![
+            PageRequest::Find {
+                role: Some("button".into()),
+                name: Some("Accept all".into()),
+                nth: None,
+                frame: None,
+                frames: true,
+            },
+            PageRequest::Search {
+                text: "Total".into(),
+                frame: None,
+                frames: true,
+            },
+            PageRequest::At {
+                x: 310.0,
+                y: 240.0,
+                frame: None,
+            },
+            PageRequest::Search {
+                text: "Total".into(),
+                frame: None,
+                frames: false,
+            },
+            PageRequest::Find {
+                role: None,
+                name: Some("Accept all".into()),
+                nth: None,
+                frame: None,
+                frames: false,
+            },
+        ]
+    );
+    // A find's answer names the frame beside the ref, where a later step
+    // binds to it; a search's match and a point's element carry theirs.
+    assert_eq!(answers[0]["element"], "d3e4");
+    assert_eq!(answers[0]["frame"], "3");
+    assert_eq!(answers[1]["data"], found);
+    assert_eq!(answers[1]["data"]["matches"][0]["frame"], "3");
+    assert_eq!(answers[2]["data"]["frame"], "3");
+    assert_eq!(answers[2]["data"]["ref"], "d3e4");
+    for value in &answers {
+        assert_eq!(value["provenance"], "web-content", "{value}");
+    }
+}
+
 /// A long page is read on from where a read stopped, and its words are found
 /// by searching for them: both are typed reads, answered in the shape every
 /// page read has, and a line a search answers is one a read starts from.
@@ -1952,10 +2053,12 @@ fn a_long_page_is_read_on_and_its_words_are_found_by_searching() {
             PageRequest::Search {
                 text: "Section 1500 of the ACT".into(),
                 frame: None,
+                frames: false,
             },
             PageRequest::Search {
                 text: "within 30 days".into(),
                 frame: Some(FrameId::parse("1").unwrap()),
+                frames: false,
             },
             PageRequest::Outline {
                 from: Some(1500),
@@ -1964,6 +2067,7 @@ fn a_long_page_is_read_on_and_its_words_are_found_by_searching() {
             PageRequest::Search {
                 text: "é".repeat(200),
                 frame: None,
+                frames: false,
             },
         ]
     );
@@ -2148,6 +2252,7 @@ fn a_pages_forms_are_read_and_answered_by_the_names_they_ask_under() {
                 answers: object(first_answers),
                 submit: ui::webview::FormSubmit::First,
                 cross_origin: false,
+                frame: None,
             },
             PageRequest::FillForm {
                 form: "5f1c2a9be0".into(),
@@ -2156,12 +2261,14 @@ fn a_pages_forms_are_read_and_answered_by_the_names_they_ask_under() {
                 ),
                 submit: ui::webview::FormSubmit::Button("Send application".into()),
                 cross_origin: true,
+                frame: None,
             },
             PageRequest::FillForm {
                 form: "form1".into(),
                 answers: object(serde_json::json!({"Arrival": "2027-02-03"})),
                 submit: ui::webview::FormSubmit::No,
                 cross_origin: false,
+                frame: None,
             },
             PageRequest::Forms {
                 frame: Some(FrameId::parse("2").unwrap()),
@@ -2331,6 +2438,7 @@ fn a_forms_answers_are_bounded_before_they_reach_the_page() {
             answers: serde_json::Map::new(),
             submit: ui::webview::FormSubmit::First,
             cross_origin: false,
+            frame: None,
         }]
     );
 }
@@ -2441,6 +2549,7 @@ fn the_new_page_actions_declare_what_they_take() {
             ("submit".to_owned(), ParamType::Boolean),
             ("submit_button".to_owned(), ParamType::Text),
             ("cross_origin".to_owned(), ParamType::Boolean),
+            ("frame".to_owned(), ParamType::Text),
         ]
     );
     assert!(
@@ -2466,6 +2575,7 @@ fn the_new_page_actions_declare_what_they_take() {
         vec![
             ("text".to_owned(), ParamType::Text),
             ("frame".to_owned(), ParamType::Text),
+            ("frames".to_owned(), ParamType::Boolean),
         ]
     );
     assert_eq!(

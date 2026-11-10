@@ -364,7 +364,7 @@ pub enum BrowserEffect {
         #[param("Element ref of the field, such as d1e5")]
         element: String,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the field is then one of that frame's own document"
+            "Frame id from the outline, such as 3: the field is then one of that frame's own document"
         )]
         frame: Option<String>,
     },
@@ -465,7 +465,7 @@ pub enum BrowserEffect {
         )]
         from: Option<u32>,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
     },
@@ -494,7 +494,7 @@ pub enum BrowserEffect {
         #[param("How wide the picture may be, in pixels (default and most 1600)")]
         max_width: Option<u32>,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the element is then read in that frame's own document. The outline's own [frame=1] is read as the id it carries"
+            "Frame id from the outline, such as 3: the element is then read in that frame's own document. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
     },
@@ -513,14 +513,15 @@ pub enum BrowserEffect {
     )]
     ReadPageChanges {
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
     },
     /// Element at a page point
     ///
     /// Answers with what a click at the point would hit, through overlays
-    /// and banners, and the interactive element holding it.
+    /// and banners, and the interactive element holding it. Over a frame it
+    /// answers with the frame's own element and says which frame it is in.
     #[effect(
         row,
         job,
@@ -536,7 +537,7 @@ pub enum BrowserEffect {
         #[param("Viewport y in CSS pixels from the page's top edge")]
         y: f64,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Leave this out: a point is the page's own, and over a frame the answer names the frame's element, its frame and a ref that acts there. A point read that names a frame is refused"
         )]
         frame: Option<String>,
     },
@@ -559,7 +560,7 @@ pub enum BrowserEffect {
         #[param("Longest wait, milliseconds (default 10000, at most 20000)")]
         timeout_ms: Option<u32>,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
     },
@@ -641,7 +642,7 @@ pub enum BrowserEffect {
     )]
     ReadPageFields {
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the fields are then read from that frame's own document"
+            "Frame id from the outline, such as 3: the fields are then read from that frame's own document"
         )]
         frame: Option<String>,
     },
@@ -664,7 +665,7 @@ pub enum BrowserEffect {
     )]
     ReadPageForms {
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the forms are then read from that frame's own document"
+            "Frame id from the outline, such as 3: the forms are then read from that frame's own document"
         )]
         frame: Option<String>,
     },
@@ -677,7 +678,10 @@ pub enum BrowserEffect {
     /// exactly, then in any letter case, then by a part of it; `role` narrows
     /// it to one kind of element. Several equal matches are refused and
     /// listed, naming their numbers, and a description the page does not hold
-    /// names the nearest it has, rather than guessing.
+    /// names the nearest it has, rather than guessing. With no frame named,
+    /// a description the page itself has no match for is looked for in the
+    /// frames the page shows, and the answer says the frame of what it
+    /// found: the ref acts there.
     #[effect(
         row,
         job,
@@ -695,9 +699,13 @@ pub enum BrowserEffect {
         #[param("Number among equal matches, from 1 (the first)")]
         nth: Option<u32>,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the element is then found in that frame's own document"
+            "Frame id from the outline, such as 3: the element is then found in that frame's own document alone"
         )]
         frame: Option<String>,
+        #[param(
+            "Look in the frames the page shows as well as in the page itself (default false: they are looked in only when the page itself has no match). A match in a frame says which frame, and matches are counted across the documents looked in"
+        )]
+        frames: Option<bool>,
     },
     /// Find words on the page
     ///
@@ -706,7 +714,10 @@ pub enum BrowserEffect {
     /// number is what `read-page` takes as `from`, so a long page is read
     /// from where the words are instead of from its top. It reads what the
     /// outline reads: a secret's value is found by neither. Controls and
-    /// headings are found by `find-page-element`.
+    /// headings are found by `find-page-element`. With no frame named, words
+    /// the page itself does not say are looked for in the frames the page
+    /// shows; a match there says its frame, and its line is read on from
+    /// with that frame.
     #[effect(
         row,
         job,
@@ -720,9 +731,13 @@ pub enum BrowserEffect {
         #[param("Words to find, as the page writes them: 1 to 200 characters")]
         text: String,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the words are then found in that frame's own document"
+            "Frame id from the outline, such as 3: the words are then found in that frame's own document alone"
         )]
         frame: Option<String>,
+        #[param(
+            "Look in the frames the page shows as well as in the page itself (default false: they are looked in only when the page itself does not say the words). A match in a frame says which frame"
+        )]
+        frames: Option<bool>,
     },
     /// Click page element
     #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
@@ -730,7 +745,7 @@ pub enum BrowserEffect {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
     },
@@ -792,7 +807,7 @@ pub enum BrowserEffect {
         #[param("Text that replaces the field's contents")]
         text: String,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
     },
@@ -810,7 +825,7 @@ pub enum BrowserEffect {
         )]
         text: String,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
     },
@@ -822,7 +837,7 @@ pub enum BrowserEffect {
         #[param("Option values or visible labels to choose")]
         values: Vec<String>,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
     },
@@ -841,7 +856,7 @@ pub enum BrowserEffect {
         #[param("Absolute paths of the files to choose, in order")]
         paths: Vec<String>,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
     },
@@ -856,7 +871,7 @@ pub enum BrowserEffect {
         #[param("Element ref to focus first; otherwise the focused element")]
         element: Option<String>,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
     },
@@ -872,7 +887,7 @@ pub enum BrowserEffect {
         #[param("Allow sending the form to another site than the page's own (default false)")]
         cross_origin: Option<bool>,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
     },
@@ -902,6 +917,10 @@ pub enum BrowserEffect {
         submit_button: Option<String>,
         #[param("Allow sending the form to another site than the page's own (default false)")]
         cross_origin: Option<bool>,
+        #[param(
+            "Frame id from the outline, such as 3: the form is then one of that frame's own document, as read-page-forms with the same frame read it"
+        )]
+        frame: Option<String>,
     },
     /// Answer a form of the page
     ///
@@ -1011,7 +1030,7 @@ pub enum BrowserEffect {
         #[param("Element ref to bring into view, such as d1e5")]
         into_view: Option<String>,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
     },
@@ -1236,9 +1255,14 @@ impl BrowserEffect {
             Self::ReadPageForms { frame } => page(PageRequest::Forms {
                 frame: page_frame(frame),
             }),
-            Self::FindPageText { text, frame } => page(PageRequest::Search {
+            Self::FindPageText {
+                text,
+                frame,
+                frames,
+            } => page(PageRequest::Search {
                 text,
                 frame: page_frame(frame),
+                frames: frames.unwrap_or(false),
             }),
             Self::FillPageForm {
                 form,
@@ -1246,6 +1270,7 @@ impl BrowserEffect {
                 submit,
                 submit_button,
                 cross_origin,
+                frame,
             } => {
                 let button = submit_button.filter(|label| !label.trim().is_empty());
                 page(PageRequest::FillForm {
@@ -1262,6 +1287,7 @@ impl BrowserEffect {
                         (None, _) => FormSubmit::No,
                     },
                     cross_origin: cross_origin.unwrap_or(false),
+                    frame: page_frame(frame),
                 })
             }
             Self::AnswerForm { run } => BrowserOperation::Form(crate::page_forms::FormRun {
@@ -1286,11 +1312,13 @@ impl BrowserEffect {
                 name,
                 nth,
                 frame,
+                frames,
             } => page(PageRequest::Find {
                 role: role.filter(|role| !role.trim().is_empty()),
                 name: name.filter(|name| !name.trim().is_empty()),
                 nth,
                 frame: page_frame(frame),
+                frames: frames.unwrap_or(false),
             }),
             Self::ClickPage { element, frame } => page(PageRequest::Click {
                 element,

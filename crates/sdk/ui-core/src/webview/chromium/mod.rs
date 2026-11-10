@@ -86,6 +86,9 @@ struct Shared {
     unadopted: Mutex<HashMap<u32, Arc<Shared>>>,
     /// The host reads a page's selection as text (`selection_text`).
     selection_text: AtomicBool,
+    /// The host sends `page_record` and `page_changed` of its own accord
+    /// (`page_events`).
+    page_events: AtomicBool,
     text_input: Mutex<super::text_input::Transactions>,
     native_edit_history: AtomicBool,
     guarded_edit_history: AtomicBool,
@@ -625,6 +628,7 @@ impl UnavailableEngine {
                 text_field: Mutex::default(),
                 document_size: DocumentSizeReports::default(),
                 selection_text: AtomicBool::new(false),
+                page_events: AtomicBool::new(false),
                 open_tabs: Mutex::default(),
                 popups_can: AtomicBool::default(),
                 popups_asked: AtomicBool::default(),
@@ -1521,6 +1525,10 @@ impl WebViewEngine for ChromiumEngine {
         self.shared.document_size.can.load(Ordering::Acquire)
     }
 
+    fn tells_page_events(&self) -> bool {
+        self.shared.page_events.load(Ordering::Acquire)
+    }
+
     fn supports_guarded_edit_history(&self) -> bool {
         self.supports_text_input() && self.shared.guarded_edit_history.load(Ordering::Acquire)
     }
@@ -1931,6 +1939,10 @@ fn route_native_event(
             );
             shared.selection_text.store(
                 value["selection_text"].as_bool() == Some(true),
+                Ordering::Release,
+            );
+            shared.page_events.store(
+                value["page_events"].as_bool() == Some(true),
                 Ordering::Release,
             );
             (shared.clipboard.can).store(value["page_clipboard"] == true, Ordering::Release);
@@ -2534,6 +2546,11 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             let (request_id, result) = super::page::decode_result(value)?;
             WebViewEvent::PageResult { request_id, result }
         }
+        "page_record" => {
+            let (seq, entry) = super::page::decode_record_event(value)?;
+            WebViewEvent::PageRecord { seq, entry }
+        }
+        "page_changed" => WebViewEvent::PageChanged(super::page::decode_changed_event(value)?),
         "clipboard" | "clipboard_read" => page_clipboard::decode(value)?,
         "selection_text" => WebViewEvent::SelectionText {
             request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,

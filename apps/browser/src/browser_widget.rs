@@ -3402,6 +3402,8 @@ impl BrowserWidget {
                 | WebViewEvent::DocumentSize { .. }
                 | WebViewEvent::SelectionText { .. }
                 | WebViewEvent::LinkHovered(_)
+                | WebViewEvent::PageRecord { .. }
+                | WebViewEvent::PageChanged(_)
                 | WebViewEvent::FindSelection { .. } => {}
                 WebViewEvent::LoadFinished => {
                     if self.load_error.is_some() {
@@ -5478,15 +5480,17 @@ impl BrowserWidget {
                     name: None,
                     nth: None,
                     frame: None,
+                    frames: None,
                 },
-                &["role", "name", "nth", "frame"][..],
+                &["role", "name", "nth", "frame", "frames"][..],
             ),
             (
                 E::FindPageText {
                     text: String::new(),
                     frame: None,
+                    frames: None,
                 },
-                &["text", "frame"][..],
+                &["text", "frame", "frames"][..],
             ),
             (
                 E::ClickPage {
@@ -5550,8 +5554,16 @@ impl BrowserWidget {
                     submit: None,
                     submit_button: None,
                     cross_origin: None,
+                    frame: None,
                 },
-                &["form", "answers", "submit", "submit_button", "cross_origin"][..],
+                &[
+                    "form",
+                    "answers",
+                    "submit",
+                    "submit_button",
+                    "cross_origin",
+                    "frame",
+                ][..],
             ),
             (E::ReadPageChanges { frame: None }, &["frame"][..]),
             (

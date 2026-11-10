@@ -7,10 +7,11 @@
 //! so a ref from a page the tab has since left is refused rather than
 //! resolved against whatever now sits at the same position.
 //!
-//! A page inside a frame is addressed by the frame id its parent's outline
-//! printed (`[frame=1]`, `[frame=1.2]` for a frame of a frame): a request with
-//! that id runs in the frame's own document, and its refs and outline describe
-//! that document alone.
+//! A page inside a frame is addressed by the number the outline printed for
+//! the frame (`[frame=3]`). The number is the tab's: a frame keeps it while
+//! frames around it come and go, and a frame inside a frame has a number of
+//! its own. A request with that number runs in the frame's own document, and
+//! its refs and outline describe that document alone.
 //!
 //! Several actors may work in one tab: two agents, agents on other devices,
 //! an agent and the person reviewing what it did. A request then travels with
@@ -59,7 +60,8 @@ const POINTER_BUTTONS: &[&str] = &["left", "right"];
 /// of work for the page.
 pub const MAX_SCROLL_BY: u32 = 10_000;
 const MAX_REF_BYTES: usize = 40;
-/// A frame id is a dotted path of small decimal numbers, such as `1` or `1.2`.
+/// A frame id is a small decimal number, such as `3`. The dotted path an
+/// older outline printed for a frame inside a frame (`1.2`) still fits.
 const MAX_FRAME_BYTES: usize = 16;
 const MAX_FRAME_DEPTH: usize = 8;
 /// Upper bound on the accessible name a
@@ -286,9 +288,13 @@ pub enum PageRequest {
     /// The outline lines that hold `text`, in any letter case, each with its
     /// line number: a number a [`PageRequest::Outline`] reads on from. It
     /// reads what the outline reads, so a secret's value is found by neither.
+    /// With no `frame` named, a search the page's own document has no match
+    /// for looks on in the frames the page shows, and with `frames` it looks
+    /// there as well as in the page: a match in a frame says which.
     Search {
         text: String,
         frame: Option<FrameId>,
+        frames: bool,
     },
     /// The document's forms as what they ask: each form's id and signature,
     /// its questions by name and kind, the answers they offer, which are
@@ -301,12 +307,15 @@ pub enum PageRequest {
     /// is empty. A secret is never placed this way: the field is refused for
     /// [`PageRequest::Fill`] with `secret` to take. A form that sends its
     /// data to another site than the page's is refused unless `cross_origin`
-    /// says the caller means it.
+    /// says the caller means it. With `frame`, the form is one of that
+    /// frame's own document, as [`PageRequest::Forms`] with the same frame
+    /// read it.
     FillForm {
         form: String,
         answers: serde_json::Map<String, serde_json::Value>,
         submit: FormSubmit,
         cross_origin: bool,
+        frame: Option<FrameId>,
     },
     /// Show the document's article alone in a reading layout (`enabled`), or
     /// put the page back as it was. A page without an article is refused.
@@ -329,11 +338,17 @@ pub enum PageRequest {
     /// it is asked of, so a description recorded once is answered with the
     /// ref of the page as it is now: what a step replaying a person's work
     /// needs.
+    ///
+    /// With no `frame` named, a find the page's own document has no match
+    /// for looks on in the frames the page shows, and with `frames` it looks
+    /// there as well as in the page: the answer says the frame of what it
+    /// found, and the ref acts there.
     Find {
         role: Option<String>,
         name: Option<String>,
         nth: Option<u32>,
         frame: Option<FrameId>,
+        frames: bool,
     },
     /// Move the pointer over the page as a hand does: `steps` in order, a
     /// press and release of `button` where the page asks for one. A step
@@ -692,11 +707,11 @@ impl PageRequest {
             | Self::Fields { frame }
             | Self::Search { frame, .. }
             | Self::Forms { frame }
+            | Self::FillForm { frame, .. }
             | Self::Find { frame, .. } => frame.as_ref(),
             Self::Console { .. }
             | Self::Network { .. }
             | Self::Ledger { .. }
-            | Self::FillForm { .. }
             | Self::Reader { .. }
             | Self::Hover { .. }
             | Self::Drag { .. }
@@ -752,16 +767,38 @@ impl PageRequest {
                 frame: None,
             },
             Self::Find {
-                role, name, nth, ..
+                role,
+                name,
+                nth,
+                frames,
+                ..
             } => Self::Find {
                 role,
                 name,
                 nth,
                 frame: None,
+                frames,
+            },
+            Self::FillForm {
+                form,
+                answers,
+                submit,
+                cross_origin,
+                ..
+            } => Self::FillForm {
+                form,
+                answers,
+                submit,
+                cross_origin,
+                frame: None,
             },
             Self::Changes { .. } => Self::Changes { frame: None },
             Self::Fields { .. } => Self::Fields { frame: None },
-            Self::Search { text, .. } => Self::Search { text, frame: None },
+            Self::Search { text, frames, .. } => Self::Search {
+                text,
+                frame: None,
+                frames,
+            },
             Self::Forms { .. } => Self::Forms { frame: None },
             Self::At { x, y, .. } => Self::At { x, y, frame: None },
             Self::Scroll {
@@ -993,8 +1030,12 @@ fn point_is_viewport((x, y): (f64, f64)) -> bool {
         .all(|v| v.is_finite() && (0.0..=MAX_COORDINATE).contains(v))
 }
 
-/// A frame's place in the page: the id its parent's outline printed, a dot
-/// between the numbers of nested frames (`2`, then `2.1`), at most eight deep.
+/// A frame of the page, by the number the outline printed for it (`3`). The
+/// number is the tab's: a frame keeps it while its own document moves on and
+/// while frames around it come and go, and a frame inside a frame has a
+/// number of its own. The dotted path an older outline printed for a nested
+/// frame (`2.1`) is still read as an id; it names no frame an engine has, and
+/// the engine says so.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameId(String);
 
@@ -1007,7 +1048,7 @@ impl FrameId {
     pub fn parse(value: &str) -> Option<Self> {
         let written = value.trim();
         // What the outline brackets is the id, and what marks it is not part
-        // of it: `frame=1`, `[frame=1.2]` and `1.2` are one id.
+        // of it: `frame=3`, `[frame=3]` and `3` are one id.
         let written = written
             .strip_prefix('[')
             .and_then(|rest| rest.strip_suffix(']'))
@@ -1374,7 +1415,11 @@ pub(crate) fn encode_request(
         }
         PageRequest::Reader { enabled } => command["enabled"] = (*enabled).into(),
         PageRequest::Find {
-            role, name, nth, ..
+            role,
+            name,
+            nth,
+            frames,
+            ..
         } => {
             for (key, value) in [("role", role), ("name", name)] {
                 if let Some(value) = value {
@@ -1383,6 +1428,11 @@ pub(crate) fn encode_request(
             }
             if let Some(nth) = nth {
                 command["nth"] = (*nth).into();
+            }
+            // Said only when asked for: an engine from before it takes no
+            // such field.
+            if *frames {
+                command["frames"] = true.into();
             }
         }
         PageRequest::Capture { max_width, .. } => {
@@ -1452,12 +1502,18 @@ pub(crate) fn encode_request(
                 command["from"] = (*from).into();
             }
         }
-        PageRequest::Search { text, .. } => command["text"] = text.as_str().into(),
+        PageRequest::Search { text, frames, .. } => {
+            command["text"] = text.as_str().into();
+            if *frames {
+                command["frames"] = true.into();
+            }
+        }
         PageRequest::FillForm {
             form,
             answers,
             submit,
             cross_origin,
+            ..
         } => {
             command["form"] = form.as_str().into();
             command["answers"] = serde_json::Value::Object(answers.clone());
@@ -1561,6 +1617,148 @@ pub(crate) fn decode_result(
         })
     };
     Some((request_id, result))
+}
+
+/// What a page changed of itself, as the engine tells it of its own accord
+/// (`page_changed`): which document, which of its forms now ask or offer
+/// something else, and which fields hold something else, by the page's own
+/// script or by what a person typed. It never says what a field holds: that
+/// is read with [`PageRequest::Fields`]. All of it is page content: never
+/// trusted as instructions.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PageChange {
+    /// The number the changed document's refs carry.
+    pub document: u32,
+    /// The frame whose document changed; the page's own document when none.
+    pub frame: Option<FrameId>,
+    /// The forms whose shape changed.
+    pub forms: Vec<PageFormChange>,
+    /// The fields that changed, at most [`MAX_CHANGED_FIELDS`].
+    pub fields: Vec<PageFieldChange>,
+    /// How many more fields changed than `fields` lists.
+    pub more: u32,
+}
+
+/// One form a [`PageChange`] names: what it is now, or that it is gone.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PageFormChange {
+    /// The id the document gives it, such as `form1`.
+    pub form: String,
+    /// Its signature now; `None` when it is gone.
+    pub signature: Option<String>,
+    /// The hash of the answers its choice questions offer now.
+    pub offers: Option<String>,
+    /// The document no longer holds it.
+    pub gone: bool,
+}
+
+/// One field a [`PageChange`] names.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PageFieldChange {
+    /// The ref its own action takes.
+    pub element: String,
+    pub role: String,
+    pub name: String,
+    /// A person typed it straight into the page; otherwise the page's own
+    /// script changed it.
+    pub typed: bool,
+    /// The form it answers a question of, and the question.
+    pub form: Option<String>,
+    pub question: Option<String>,
+}
+
+/// The most forms and fields one [`PageChange`] names.
+pub const MAX_CHANGED_FORMS: usize = 64;
+pub const MAX_CHANGED_FIELDS: usize = 64;
+/// The longest name a [`PageChange`] carries, in bytes.
+const MAX_CHANGED_NAME_BYTES: usize = 2048;
+
+/// Decode a `page_record` event: the place of an entry the engine set down
+/// that no action's answer carried (what a person typed straight into the
+/// page), and the entry as [`PageRequest::Ledger`] lists it.
+pub(crate) fn decode_record_event(value: &serde_json::Value) -> Option<(u64, serde_json::Value)> {
+    let seq = whole_number(&value["seq"]).filter(|seq| *seq > 0)?;
+    let entry = value.get("entry").filter(|entry| entry.is_object())?;
+    // The entry names its own place, and it is the place the event names.
+    if entry
+        .get("seq")
+        .is_some_and(|own| whole_number(own) != Some(seq))
+        || runtime_collab::wire_json_len(entry) > MAX_DATA_BYTES
+    {
+        return None;
+    }
+    let mut entry = entry.clone();
+    entry["seq"] = seq.into();
+    Some((seq, entry))
+}
+
+/// Decode a `page_changed` event, rejecting anything outside its bounds.
+pub(crate) fn decode_changed_event(value: &serde_json::Value) -> Option<PageChange> {
+    let word = |from: &serde_json::Value, key: &str| match from.get(key) {
+        None | Some(serde_json::Value::Null) => Some(None),
+        Some(serde_json::Value::String(text)) if text.len() <= MAX_CHANGED_NAME_BYTES => {
+            Some(Some(text.clone()))
+        }
+        Some(_) => None,
+    };
+    let document = u32::try_from(whole_number(&value["document"])?)
+        .ok()
+        .filter(|document| *document > 0)?;
+    let frame = match word(value, "frame")? {
+        None => None,
+        Some(frame) => Some(FrameId::parse(&frame)?),
+    };
+    // A frame's name and address say which frame it was: bounded text.
+    word(value, "frame_name")?;
+    word(value, "frame_url")?;
+    let list = |key: &str, most: usize| match value.get(key) {
+        None | Some(serde_json::Value::Null) => Some(&[][..]),
+        Some(serde_json::Value::Array(listed)) if listed.len() <= most => Some(listed.as_slice()),
+        Some(_) => None,
+    };
+    let forms = list("forms", MAX_CHANGED_FORMS)?
+        .iter()
+        .map(|form| {
+            let gone = match form.get("gone") {
+                None | Some(serde_json::Value::Null) => false,
+                Some(gone) => gone.as_bool()?,
+            };
+            Some(PageFormChange {
+                form: word(form, "form")?.filter(|id| !id.is_empty())?,
+                signature: word(form, "signature")?,
+                offers: word(form, "offers")?,
+                gone,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let fields = list("fields", MAX_CHANGED_FIELDS)?
+        .iter()
+        .map(|field| {
+            Some(PageFieldChange {
+                element: word(field, "element")?.filter(|element| is_element_ref(element))?,
+                role: word(field, "role")?.unwrap_or_default(),
+                name: word(field, "name")?.unwrap_or_default(),
+                typed: match field.get("how")?.as_str()? {
+                    "input" => true,
+                    "page" => false,
+                    _ => return None,
+                },
+                form: word(field, "form")?,
+                question: word(field, "question")?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let more = match value.get("more") {
+        None | Some(serde_json::Value::Null) => 0,
+        Some(more) => u32::try_from(whole_number(more)?).ok()?,
+    };
+    Some(PageChange {
+        document,
+        frame,
+        forms,
+        fields,
+        more,
+    })
 }
 
 /// A whole number as an engine writes one: the record's places are counted

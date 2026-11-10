@@ -153,7 +153,9 @@ impl BrowserWidget {
                 }
                 Ok(reply)
             }
-            (PageRequest::FillForm { .. }, Ok(mut reply)) => {
+            // A form of the page itself: one answered in a frame is that
+            // frame's, and is none of the forms the page publishes.
+            (PageRequest::FillForm { frame: None, .. }, Ok(mut reply)) => {
                 let heard = reply
                     .data
                     .as_ref()

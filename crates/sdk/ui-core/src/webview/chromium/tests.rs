@@ -1505,6 +1505,7 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
             request: PageRequest::Search {
                 text: "within 30 days".into(),
                 frame: None,
+                frames: false,
             },
         };
         assert!(command_within_limits(&search));
@@ -1533,6 +1534,7 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
                 answers: answers.as_object().unwrap().clone(),
                 submit,
                 cross_origin: false,
+                frame: None,
             },
         };
         let first = fill(12, FormSubmit::First);
@@ -1569,6 +1571,7 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
                 request: PageRequest::Search {
                     text: String::new(),
                     frame: None,
+                    frames: false,
                 },
             },
             WebViewCommand::Page {
@@ -1579,6 +1582,7 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
                     answers: json!({"Arrival": {"day": 3}}).as_object().unwrap().clone(),
                     submit: FormSubmit::No,
                     cross_origin: false,
+                    frame: None,
                 },
             },
         ] {
@@ -2213,6 +2217,77 @@ fn private_text_input_receipts_route_only_to_the_original_tab_without_public_eve
         one.poll(),
         Some(Err(super::super::text_input::Failure::Unknown))
     ));
+}
+
+/// A host says per tab whether it tells page events of its own accord, and
+/// what it then tells reaches the tab it is of, decoded: what a person
+/// typed as the entry the host set down, what the page changed of itself as
+/// which forms and fields. One that is malformed is refused whole.
+#[test]
+fn page_events_are_advertised_per_tab_and_reach_the_tab_they_are_of() {
+    let first = Arc::new(Shared::default());
+    let second = Arc::new(Shared::default());
+    let routes = Arc::new(Mutex::new(HashMap::from([
+        (1, Arc::downgrade(&first)),
+        (2, Arc::downgrade(&second)),
+    ])));
+    let downloads = Mutex::default();
+    let (ready, _receiver) = sync_channel(1);
+    let route = |event: Value| route_native_event(&event, &routes, &downloads, &ready);
+    assert!(!first.page_events.load(Ordering::Acquire));
+    route(json!({"event":"ready","cef_version":"152","chromium_version":"152","page_events":true}))
+        .unwrap();
+    assert!(first.page_events.load(Ordering::Acquire));
+    // An older host's tab says nothing of it, and a flag is a boolean.
+    route(json!({"event":"tab_ready","tab":2})).unwrap();
+    assert!(!second.page_events.load(Ordering::Acquire));
+    assert!(route(json!({"event":"tab_ready","tab":2,"page_events":"true"})).is_err());
+    assert!(!second.page_events.load(Ordering::Acquire));
+    route(json!({"event":"tab_ready","tab":2,"page_events":true})).unwrap();
+    assert!(second.page_events.load(Ordering::Acquire));
+    first.events.lock().unwrap().clear();
+    second.events.lock().unwrap().clear();
+
+    route(
+        json!({"event":"page_record","tab":2,"seq":3.0,"entry":{"seq":3.0,"actor":"",
+        "how":"input","ok":true,"secret":true,"target":{"role":"textbox","name":"Password"},
+        "message":"Direct input into textbox \"Password\"","url":"https://shop.test/"}}),
+    )
+    .unwrap();
+    route(json!({"event":"page_changed","tab":2,"document":4,
+        "forms":[{"form":"form1","signature":"0badc0de","offers":"5f1c2a9b"}],
+        "fields":[{"element":"d4e2","role":"textbox","name":"Arrival","how":"page"}]}))
+    .unwrap();
+    assert!(
+        first.events.lock().unwrap().is_empty(),
+        "another tab's page"
+    );
+    let told: Vec<WebViewEvent> = second.events.lock().unwrap().drain(..).collect();
+    assert_eq!(told.len(), 2, "{told:?}");
+    assert!(matches!(
+        &told[0],
+        WebViewEvent::PageRecord { seq: 3, entry }
+            if entry["seq"] == 3 && entry["secret"] == true && entry.get("text").is_none()
+    ));
+    assert!(matches!(
+        &told[1],
+        WebViewEvent::PageChanged(change)
+            if change.document == 4
+                && change.frame.is_none()
+                && change.forms[0].signature.as_deref() == Some("0badc0de")
+                && change.fields[0].element == "d4e2"
+                && !change.fields[0].typed
+    ));
+
+    for malformed in [
+        json!({"event":"page_record","tab":2,"seq":0,"entry":{"how":"input"}}),
+        json!({"event":"page_record","tab":2,"seq":4,"entry":"typed"}),
+        json!({"event":"page_changed","tab":2,"document":4,"fields":[{"element":"d4e2","how":"value"}]}),
+        json!({"event":"page_changed","tab":2,"forms":[]}),
+    ] {
+        assert!(route(malformed.clone()).is_err(), "{malformed}");
+    }
+    assert!(second.events.lock().unwrap().is_empty());
 }
 
 #[test]

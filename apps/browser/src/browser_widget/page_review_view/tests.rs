@@ -197,6 +197,7 @@ fn fill_form(question: &str, answer: &str) -> BrowserEffect {
         submit: None,
         submit_button: None,
         cross_origin: None,
+        frame: None,
     }
 }
 

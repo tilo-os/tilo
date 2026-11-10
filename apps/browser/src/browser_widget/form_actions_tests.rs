@@ -376,6 +376,7 @@ fn fill(
             answers: answers.as_object().expect("answers are an object").clone(),
             submit,
             cross_origin: false,
+            frame: None,
         },
     )
 }
@@ -792,6 +793,60 @@ fn two_forms_of_a_page_are_two_actions() {
         )]
     );
     assert!(remembered(&app, VISA).is_some() && remembered(&app, "0a11ce00").is_some());
+}
+
+/// A form in a frame is answered through `fill-page-form` with its frame:
+/// the request reaches the engine for that frame's document. What comes of
+/// it is the frame's: the forms the page itself publishes are as they
+/// were, whatever the frame's form is called and whatever it became.
+#[test]
+fn a_form_in_a_frame_is_answered_through_fill_page_form_with_its_frame() {
+    let (engine, mut app) = open_on(APPLY, &[visa_form()]);
+    let reads = own_reads(&engine);
+    // The frame's form happens to have the signature of the page's own, and
+    // answering it makes it ask more.
+    let mut said = placed(VISA, &["Card holder"], false);
+    said["now_asks"] = serde_json::json!(["Security code"]);
+    said["became"] = serde_json::json!({"signature": "0badc0de", "offers": "bbbb2222"});
+    engine.push_page_reply(Ok(reply(
+        APPLY,
+        "Answered 1 of 1 questions of form1; the form now also asks \"Security code\"",
+        said,
+    )));
+    let answered = run(
+        &mut app,
+        "fill-page-form",
+        &serde_json::json!({"form": "form1", "answers": {"Card holder": "Ada Lovelace"},
+            "frame": "[frame=3]"}),
+    )
+    .answer("the frame's form is answered");
+    assert_eq!(answered["data"]["set"][0]["name"], "Card holder");
+    assert_eq!(
+        asked(&engine),
+        [(
+            Some("agent:ada".to_owned()),
+            PageRequest::FillForm {
+                form: "form1".into(),
+                answers: serde_json::json!({"Card holder": "Ada Lovelace"})
+                    .as_object()
+                    .expect("answers")
+                    .clone(),
+                submit: FormSubmit::No,
+                cross_origin: false,
+                frame: ui::webview::FrameId::parse("3"),
+            }
+        )],
+        "the frame is named to the engine by its number"
+    );
+    let actions = form_actions(&mut app);
+    assert_eq!(ids(&actions), ["form-5f1c2a9b", "send-form-5f1c2a9b"]);
+    assert!(
+        actions
+            .iter()
+            .all(|action| action.contract.availability.is_available()),
+        "the page's own form is not withdrawn for what a frame's form became"
+    );
+    assert_eq!(own_reads(&engine), reads, "and the page is not read again");
 }
 
 /// Sending is the form's other action. In a flow of several pages memory

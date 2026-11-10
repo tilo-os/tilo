@@ -583,6 +583,7 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
             name: Some("Email".into()),
             nth: None,
             frame: None,
+            frames: false,
         };
         assert!(by_name.valid());
         assert_eq!(by_name.action(), "find");
@@ -596,6 +597,7 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
             name: Some("Remove".into()),
             nth: Some(2),
             frame: FrameId::parse("1.2"),
+            frames: false,
         };
         assert!(by_role.valid());
         assert_eq!(
@@ -617,42 +619,49 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
                 name: None,
                 nth: None,
                 frame: None,
+                frames: false,
             },
             PageRequest::Find {
                 role: Some(String::new()),
                 name: None,
                 nth: None,
                 frame: None,
+                frames: false,
             },
             PageRequest::Find {
                 role: None,
                 name: Some(String::new()),
                 nth: None,
                 frame: None,
+                frames: false,
             },
             PageRequest::Find {
                 role: None,
                 name: Some("x".repeat(MAX_FIND_NAME_BYTES + 1)),
                 nth: None,
                 frame: None,
+                frames: false,
             },
             PageRequest::Find {
                 role: Some("r".repeat(MAX_FIND_ROLE_BYTES + 1)),
                 name: None,
                 nth: None,
                 frame: None,
+                frames: false,
             },
             PageRequest::Find {
                 role: Some("button".into()),
                 name: None,
                 nth: Some(0),
                 frame: None,
+                frames: false,
             },
             PageRequest::Find {
                 role: Some("button".into()),
                 name: None,
                 nth: None,
                 frame: Some(FrameId::malformed()),
+                frames: false,
             },
         ] {
             assert!(!bad.valid(), "{bad:?}");
@@ -1077,6 +1086,7 @@ fn a_page_is_read_on_searched_and_its_forms_answered_by_name() {
         let search = |text: &str| PageRequest::Search {
             text: text.into(),
             frame: None,
+            frames: false,
         };
         let words = search("within 30 days");
         assert!(words.valid() && words.only_observes());
@@ -1094,6 +1104,7 @@ fn a_page_is_read_on_searched_and_its_forms_answered_by_name() {
         let framed = PageRequest::Search {
             text: "Total".into(),
             frame: FrameId::parse("2"),
+            frames: false,
         };
         assert_eq!(
             encode_request(6, PageActor::named("agent:ada").as_ref(), &framed),
@@ -1122,6 +1133,7 @@ fn a_page_is_read_on_searched_and_its_forms_answered_by_name() {
             !PageRequest::Search {
                 text: "Total".into(),
                 frame: Some(FrameId::malformed()),
+                frames: false,
             }
             .valid()
         );
@@ -1155,6 +1167,7 @@ fn a_page_is_read_on_searched_and_its_forms_answered_by_name() {
             answers: answers(given.clone()),
             submit,
             cross_origin,
+            frame: None,
         };
         let answered = fill(FormSubmit::No, false);
         assert!(answered.valid());
@@ -1192,6 +1205,7 @@ fn a_page_is_read_on_searched_and_its_forms_answered_by_name() {
             answers: serde_json::Map::new(),
             submit: FormSubmit::First,
             cross_origin: false,
+            frame: None,
         };
         assert!(by_signature.valid());
         // The bounds an engine accepts, each met and each passed.
@@ -1201,6 +1215,7 @@ fn a_page_is_read_on_searched_and_its_forms_answered_by_name() {
                 answers: answers.as_object().unwrap().clone(),
                 submit,
                 cross_origin: false,
+                frame: None,
             };
         let most: serde_json::Map<String, serde_json::Value> = (0..MAX_FORM_ANSWERS)
             .map(|number| (format!("Question {number}"), serde_json::json!("x")))
@@ -1450,4 +1465,249 @@ fn a_capture_asks_for_a_bounded_picture_and_answers_with_its_pixels() {
             "data":{"capture":capture}});
         assert!(decode_result(&bad).is_none(), "{label}");
     }
+}
+
+/// A find and a search say when they are to look in the frames the page
+/// shows as well as in the page, and say nothing of it otherwise; a form is
+/// answered in a frame's own document by naming the frame.
+#[test]
+fn a_find_and_a_search_look_in_the_frames_when_asked_and_a_form_is_answered_in_a_frame() {
+    let find = PageRequest::Find {
+        role: Some("button".into()),
+        name: Some("Accept all".into()),
+        nth: None,
+        frame: None,
+        frames: true,
+    };
+    assert!(find.valid() && find.only_observes());
+    assert_eq!(
+        encode_request(3, None, &find),
+        serde_json::json!({"op":"page","request_id":3,"action":"find","role":"button",
+            "name":"Accept all","frames":true})
+    );
+    let search = PageRequest::Search {
+        text: "Total".into(),
+        frame: None,
+        frames: true,
+    };
+    assert!(search.valid() && search.only_observes());
+    assert_eq!(
+        encode_request(4, None, &search),
+        serde_json::json!({"op":"page","request_id":4,"action":"search","text":"Total",
+            "frames":true})
+    );
+    // Looking in the frames is no frame of its own: the request still runs
+    // from the page's document.
+    assert_eq!(find.frame(), None);
+    assert_eq!(search.clone().main_frame(), search);
+
+    let form = |frame: Option<FrameId>| PageRequest::FillForm {
+        form: "form1".into(),
+        answers: serde_json::Map::new(),
+        submit: FormSubmit::No,
+        cross_origin: false,
+        frame,
+    };
+    let framed = form(FrameId::parse("[frame=3]"));
+    assert!(framed.valid() && !framed.only_observes());
+    assert_eq!(framed.frame(), FrameId::parse("3").as_ref());
+    assert_eq!(
+        encode_request(5, None, &framed),
+        serde_json::json!({"op":"page","request_id":5,"action":"fill_form","form":"form1",
+            "answers":{},"cross_origin":false,"frame":"3"})
+    );
+    assert_eq!(framed.main_frame(), form(None));
+    assert!(
+        !form(Some(FrameId::malformed())).valid(),
+        "a frame nobody printed is refused, not answered in the page"
+    );
+}
+
+/// What a person typed straight into the page arrives as the entry the
+/// engine set down and its place, and only as that.
+#[test]
+fn what_a_person_typed_is_decoded_as_the_entry_the_engine_set_down() {
+    let typed = serde_json::json!({"event":"page_record","tab":2,"seq":4.0,"entry":{
+        "seq":4.0,"time_ms":1_700_000_000_004.0_f64,"actor":"","how":"input","ok":true,
+        "target":{"role":"textbox","name":"Email","nth":1},"text":"ada@example.org",
+        "message":"Direct input into textbox \"Email\"","url":"https://shop.test/form"}});
+    let (seq, entry) = decode_record_event(&typed).expect("the event is what the host sends");
+    assert_eq!(seq, 4);
+    assert_eq!(
+        entry["seq"], 4,
+        "the entry names its place as a whole number"
+    );
+    assert_eq!(entry["how"], "input");
+    assert_eq!(entry["text"], "ada@example.org");
+
+    // An entry that leaves its place out is at the place the event names.
+    let mut bare = typed.clone();
+    bare["entry"].as_object_mut().unwrap().remove("seq");
+    assert_eq!(
+        decode_record_event(&bare).map(|(seq, entry)| (seq, entry["seq"].clone())),
+        Some((4, serde_json::json!(4)))
+    );
+
+    for (why, change) in [
+        ("no place", serde_json::json!({"seq": null})),
+        ("the place before the first", serde_json::json!({"seq": 0})),
+        ("half a place", serde_json::json!({"seq": 4.5})),
+        ("no entry", serde_json::json!({"entry": null})),
+        (
+            "an entry that is a text",
+            serde_json::json!({"entry": "typed"}),
+        ),
+        (
+            "an entry of another place",
+            serde_json::json!({"entry": {"seq": 5, "how": "input"}}),
+        ),
+        (
+            "an entry longer than an answer's findings",
+            serde_json::json!({"entry": {"seq": 4, "text": "x".repeat(MAX_DATA_BYTES)}}),
+        ),
+    ] {
+        let mut event = typed.clone();
+        event
+            .as_object_mut()
+            .unwrap()
+            .extend(change.as_object().unwrap().clone());
+        assert!(decode_record_event(&event).is_none(), "{why}");
+    }
+}
+
+/// What the page changed of itself arrives as which document, which forms
+/// and which fields, and never as what a field holds.
+#[test]
+fn what_a_page_changed_of_itself_is_decoded_within_its_bounds() {
+    let told = serde_json::json!({"event":"page_changed","tab":2,"document":7.0,
+        "forms":[
+            {"form":"form1","signature":"0badc0de","offers":"5f1c2a9b"},
+            {"form":"form2","gone":true},
+        ],
+        "fields":[
+            {"element":"d7e4","role":"textbox","name":"Arrival","how":"page",
+                "form":"form1","question":"Arrival"},
+            {"element":"d7e9","role":"searchbox","name":"Search","how":"input"},
+        ],
+        "more":3});
+    assert_eq!(
+        decode_changed_event(&told),
+        Some(PageChange {
+            document: 7,
+            frame: None,
+            forms: vec![
+                PageFormChange {
+                    form: "form1".into(),
+                    signature: Some("0badc0de".into()),
+                    offers: Some("5f1c2a9b".into()),
+                    gone: false,
+                },
+                PageFormChange {
+                    form: "form2".into(),
+                    signature: None,
+                    offers: None,
+                    gone: true,
+                },
+            ],
+            fields: vec![
+                PageFieldChange {
+                    element: "d7e4".into(),
+                    role: "textbox".into(),
+                    name: "Arrival".into(),
+                    typed: false,
+                    form: Some("form1".into()),
+                    question: Some("Arrival".into()),
+                },
+                PageFieldChange {
+                    element: "d7e9".into(),
+                    role: "searchbox".into(),
+                    name: "Search".into(),
+                    typed: true,
+                    form: None,
+                    question: None,
+                },
+            ],
+            more: 3,
+        })
+    );
+
+    // A change in a frame says the frame by the number the tab calls it by.
+    let mut framed = told.clone();
+    framed["frame"] = "3".into();
+    framed["frame_name"] = "Payment".into();
+    framed["frame_url"] = "https://pay.test/card".into();
+    assert_eq!(
+        decode_changed_event(&framed).and_then(|change| change.frame),
+        FrameId::parse("3")
+    );
+    // Forms alone, or fields alone, are a change too.
+    let mut forms_only = told.clone();
+    forms_only.as_object_mut().unwrap().remove("fields");
+    forms_only.as_object_mut().unwrap().remove("more");
+    assert!(
+        decode_changed_event(&forms_only).is_some_and(|change| change.fields.is_empty()
+            && change.more == 0
+            && change.forms.len() == 2)
+    );
+
+    for (why, pointer, value) in [
+        ("no document", "/document", serde_json::json!(null)),
+        ("document 0", "/document", serde_json::json!(0)),
+        (
+            "a frame no outline printed",
+            "/frame",
+            serde_json::json!("main; drop"),
+        ),
+        ("a frame that is no text", "/frame", serde_json::json!(3)),
+        (
+            "forms that are no list",
+            "/forms",
+            serde_json::json!("form1"),
+        ),
+        (
+            "a form without an id",
+            "/forms/0/form",
+            serde_json::json!(""),
+        ),
+        (
+            "a form gone by a word",
+            "/forms/1/gone",
+            serde_json::json!("yes"),
+        ),
+        (
+            "a field whose ref is none",
+            "/fields/0/element",
+            serde_json::json!("#arrival"),
+        ),
+        (
+            "a field changed by nobody known",
+            "/fields/0/how",
+            serde_json::json!("action"),
+        ),
+        (
+            "a field's name that is no text",
+            "/fields/1/name",
+            serde_json::json!(7),
+        ),
+        (
+            "a count that is no number",
+            "/more",
+            serde_json::json!("many"),
+        ),
+    ] {
+        let mut event = told.clone();
+        if pointer == "/frame" {
+            event["frame"] = value;
+        } else {
+            *event.pointer_mut(pointer).expect(pointer) = value;
+        }
+        assert!(decode_changed_event(&event).is_none(), "{why}");
+    }
+    let mut many = told.clone();
+    many["fields"] =
+        serde_json::Value::Array(vec![told["fields"][0].clone(); MAX_CHANGED_FIELDS + 1]);
+    assert!(
+        decode_changed_event(&many).is_none(),
+        "more fields than one event names"
+    );
 }

@@ -33,9 +33,10 @@ impl BrowserWidget {
         }
         // A find answers an element, not a reading of the page: its ref is
         // what a later step binds to, so it is the answer's own field rather
-        // than only a finding inside it.
+        // than only a finding inside it. One found in a frame says the frame:
+        // the ref acts there.
         if let (PageRequest::Find { .. }, Some(data)) = (request, &reply.data) {
-            for key in ["element", "role", "name", "line", "nth", "matches"] {
+            for key in ["element", "role", "name", "line", "nth", "matches", "frame"] {
                 if let Some(field) = data.get(key) {
                     value.insert(key.into(), field.clone());
                 }
