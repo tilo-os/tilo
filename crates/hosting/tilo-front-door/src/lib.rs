@@ -154,7 +154,15 @@ pub struct Door {
     page_tokens: Mutex<HashMap<String, String>>,
     /// The keys approved for a poller, by the poll secret's digest.
     approved_keys: Mutex<HashMap<String, keys::Approval>>,
+    /// Reaches the site, to see that its sign-in page is served.
+    http: tilo_net::Client,
+    /// Whether the site serves the sign-in page every approval lands on, as
+    /// last seen and when ([`Self::sign_in_page`]).
+    sign_in_seen: Mutex<Option<(std::time::Instant, Result<(), String>)>>,
 }
+
+/// How long what the site answered for its sign-in page is trusted.
+const SIGN_IN_SEEN_FOR: Duration = Duration::from_secs(60);
 
 type Reply = Response<Full<Bytes>>;
 
@@ -173,6 +181,7 @@ impl Door {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         Ok(Arc::new(Self {
             relay: Arc::new(Relay::new(&http, &config.relay, &web_entry)),
+            http,
             config: Config {
                 issuer: config.issuer.trim_end_matches('/').to_owned(),
                 relay: config.relay.trim_end_matches('/').to_owned(),
@@ -186,7 +195,37 @@ impl Door {
             connections: Mutex::default(),
             page_tokens: Mutex::default(),
             approved_keys: Mutex::default(),
+            sign_in_seen: Mutex::default(),
         }))
+    }
+
+    /// Whether the site serves the sign-in page every key and agent approval
+    /// lands on (`<web entry>/sign-in`): `Err` with what it answered when it
+    /// does not, so a site deployed without it shows on `/health` and in the
+    /// log instead of as a dead link in front of the person approving.
+    pub async fn sign_in_page(&self) -> Result<(), String> {
+        if let Some((at, seen)) = lock(&self.sign_in_seen).as_ref()
+            && at.elapsed() < SIGN_IN_SEEN_FOR
+        {
+            return seen.clone();
+        }
+        let url = self.sign_in_entry.as_str();
+        let seen = match self
+            .http
+            .get(url)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+        {
+            Ok(answer) if answer.status().is_success() => Ok(()),
+            Ok(answer) => Err(format!("{url} answers {}", answer.status())),
+            Err(error) => Err(format!("{url} was not reached: {error}")),
+        };
+        if let Err(why) = &seen {
+            tracing::error!(%why, "the site serves no sign-in page: no key or agent can be approved");
+        }
+        *lock(&self.sign_in_seen) = Some((std::time::Instant::now(), seen.clone()));
+        seen
     }
 
     /// The live MCP sessions.
@@ -230,7 +269,15 @@ impl Door {
     ) -> Reply {
         let issuer = self.config.issuer.clone();
         match (method, path) {
-            (&Method::GET, "/health") => json_reply(StatusCode::OK, &json!({"ok":true})),
+            // The door itself answers whatever the site does; what the site's
+            // sign-in page answers is reported beside it.
+            (&Method::GET, "/health") => {
+                let sign_in = match self.sign_in_page().await {
+                    Ok(()) => "served".to_owned(),
+                    Err(why) => why,
+                };
+                json_reply(StatusCode::OK, &json!({"ok": true, "sign_in": sign_in}))
+            }
             (&Method::GET, oauth::AUTHORIZATION_SERVER_PATH | oauth::OPENID_CONFIGURATION_PATH) => {
                 json_reply(StatusCode::OK, &oauth::server_metadata(&issuer))
             }

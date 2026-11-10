@@ -921,3 +921,74 @@ fn the_run_is_named_for_the_person() {
     );
     assert_eq!(session::run_label("", &json!({}), 2), "Agent #2");
 }
+
+/// A site on loopback whose every page answers `status`, counting asks.
+async fn site_answering(status: &'static str) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&asked);
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut request = [0u8; 4096];
+            let _ = stream.read(&mut request).await;
+            let reply =
+                format!("HTTP/1.1 {status}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+            let _ = stream.write_all(reply.as_bytes()).await;
+        }
+    });
+    (origin, asked)
+}
+
+fn door_in_front_of(site: &str) -> Arc<Door> {
+    Door::new(
+        &Config {
+            issuer: ISSUER.into(),
+            web_entry: site.into(),
+            relay: "https://relay.tilo.test".into(),
+        },
+        Store::in_memory(),
+    )
+    .unwrap()
+}
+
+async fn health(door: &Arc<Door>) -> Value {
+    let reply = door
+        .dispatch(&Method::GET, "/health", "", &hyper::HeaderMap::new(), b"")
+        .await;
+    assert_eq!(
+        reply.status(),
+        StatusCode::OK,
+        "the door answers for itself"
+    );
+    serde_json::from_slice(&body(reply).await).unwrap()
+}
+
+/// A site deployed without the sign-in page every approval lands on shows
+/// on the door's health, and the door asks the site again only after a
+/// while, however often it is probed.
+#[tokio::test]
+async fn health_says_when_the_site_serves_no_sign_in_page() {
+    let (missing, asked) = site_answering("404 Not Found").await;
+    let door = door_in_front_of(&missing);
+    let answered = health(&door).await;
+    assert_eq!(answered["ok"], true);
+    assert_eq!(
+        answered["sign_in"],
+        format!("{missing}/sign-in answers 404 Not Found")
+    );
+    health(&door).await;
+    assert_eq!(
+        asked.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "probes within a minute reuse what the site answered"
+    );
+
+    let (served, _) = site_answering("200 OK").await;
+    assert_eq!(
+        health(&door_in_front_of(&served)).await["sign_in"],
+        "served"
+    );
+}

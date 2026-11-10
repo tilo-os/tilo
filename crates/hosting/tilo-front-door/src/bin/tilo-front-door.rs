@@ -52,6 +52,8 @@ fn main() -> Result<(), String> {
             .await
             .map_err(|error| format!("{listen}: {error}"))?;
         tracing::info!(%listen, "front door listening");
+        // Said once at start, in the log, when the site serves no sign-in page.
+        let _ = door.sign_in_page().await;
         tilo_front_door::serve(door, listener).await;
         Ok(())
     })
