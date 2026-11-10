@@ -219,6 +219,13 @@ pub trait ChannelDirectory: collab_types::signer::MaybeSendSync {
     }
 }
 
+/// The platform secret store's namespace holding a device's channel vault
+/// master key: the key the sealed channel state of every workspace is
+/// derived from. A host keeps it the way it keeps its other secrets — the
+/// system keychain on a desktop, a non-extractable `WebCrypto` key in a
+/// page — so the state's own store never holds the key that opens it.
+pub const VAULT_SECRET_APP: &str = "so.tilo.collaboration.mls";
+
 /// Durable location and keys of this device's own channel state: what a
 /// participant of a channel needs, and only workspaces this device's own workspace
 /// host does not take part in need it.

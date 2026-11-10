@@ -211,13 +211,10 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     tilo_files::native::atomic::write_with_mode(path, bytes, 0o600).map_err(io_error)
 }
 
-/// The secret-store namespace holding the MLS vault master keys.
-const MLS_SECRETS_APP: &str = "so.tilo.collaboration.mls";
-
 /// The platform secret store: the Secret Service on Linux, the login Keychain on macOS, or the
 /// sealed file store a headless machine names with `TILO_SECRETS_DIR` .
 fn mls_secrets() -> tilo_secrets::SecretStore {
-    tilo_secrets::SecretStore::for_app(MLS_SECRETS_APP)
+    tilo_secrets::SecretStore::for_app(tilo_channels::VAULT_SECRET_APP)
 }
 
 fn secret_service_store(locator: &str, secret: &[u8]) -> Result<(), String> {

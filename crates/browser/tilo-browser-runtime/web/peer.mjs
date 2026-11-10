@@ -22,7 +22,6 @@
  * `getSnapshot()` returns `PeerSnapshot` with `SessionHealth` v1.
  */
 import {resolveResourceReference, openResourceReference} from './resource-reference.mjs';
-import {openChannelVault} from './channel-vault.mjs';
 import {backoffDelay} from './reconnect.mjs';
 import {createSpeakers} from './live-speakers.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
@@ -380,9 +379,6 @@ export function createLiveLayer(peer, runtime, workspace, {
  * @param options.device         device namespace of `profile`
  * @param options.store          `{get, put, delete}` for public peer state;
  *                               defaults to the profile's storage
- * @param options.vaultStorage   `{get, put}` for the profile's wrapped channel
- *                               vault (`channel-vault.mjs`); defaults to the
- *                               device custody's IndexedDB
  * @param options.displayName    the person's name for history and presence
  * @param options.runtime        the wasm module (`certifyDevice`, `WasmPeer`, live codec);
  *                               defaults to the page host's (`desktop`'s)
@@ -464,7 +460,7 @@ export function hostRefusal(error) {
 
 async function connect({
   origin, userPublicKey, label = 'Browser', workspace, custody, store, runtime, identity, deviceCertificate,
-  profile, device, displayName = '', vaultStorage,
+  profile, device, displayName = '',
   fetch: fetcher, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
   voice: voiceOptions = {}, requireExistingCertificate = false, namespaces = globalThis.localStorage,
   workspaceName,
@@ -498,8 +494,9 @@ async function connect({
     storage = await surface.openProfileStorage(profile, device);
     store ??= profileStore(runtime, profile, device);
   }
-  // Seals the channel state the runtime keeps in the profile's storage.
-  const vaultOf = () => openChannelVault({profile: `${profile}/${device}`, userPublicKey, storage: vaultStorage ?? idbStorage()});
+  // Seals the channel state the runtime keeps in the profile's storage, from
+  // the platform secret store, as the session's own MLS vault keeps its key.
+  const vaultOf = () => runtime.channelVault(`page:${profile}/${device}:${userPublicKey}`);
   let channelVault = storage ? await vaultOf() : undefined;
   const post = httpsPost(origin, fetcher);
   const custodyForWasm = custody.kind === 'sealed-seed' ? await custody.unseal() : custody;

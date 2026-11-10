@@ -69,6 +69,11 @@ function fakeRuntime({phase = 'ready'} = {}) {
       calls.status = [...(calls.status ?? []), {requestId, device}];
       return JSON.stringify(calls.status.length < 2 ? {kind: 'waiting'} : {kind: 'admitted', room: WORKSPACE, workspaceId: '7', name: 'Acme', role: 'Editor'});
     },
+    /** The platform secret store's channel vault key of a namespace. */
+    async channelVault(namespace) {
+      calls.vaults = [...(calls.vaults ?? []), namespace];
+      return new Uint8Array(32).fill(0x5a);
+    },
     presenceColor: id => `#${String(id).padEnd(6, '0').slice(0, 6).replace(/[^0-9a-f]/g, '0')}`,
     WasmPeer: {
       start(config, custody, namespace, record, save, channelVault) {
@@ -129,11 +134,6 @@ function fakeRuntime({phase = 'ready'} = {}) {
 }
 
 const custody = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32), sign: async () => new Uint8Array(64)};
-function vaultMemory() {
-  const rows = new Map();
-  return {rows, get: async key => rows.get(key), put: async (key, value) => { rows.set(key, value); }};
-}
-
 const options = (runtime, store, extra = {}) => ({
   origin: 'https://host.example:8443', userPublicKey: 'bb'.repeat(32), label: 'Browser on Cloud', workspace: WORKSPACE,
   custody, store, runtime, fetch: async () => { throw new Error('no network in tests'); }, ...extra,
@@ -328,7 +328,7 @@ function profileFakes(runtime) {
   };
   const rows = new Map();
   const namespaces = {getItem: key => rows.get(key) ?? null, setItem: (key, value) => rows.set(key, value)};
-  return {values, handles, desktop, namespaces, vaultStorage: vaultMemory()};
+  return {values, handles, desktop, namespaces};
 }
 const hostCertOf = (user, device) => ({user_public_key: Array(32).fill(user), device_public_key: Array(32).fill(device)});
 const textOf = bytes => (bytes === undefined ? undefined : new TextDecoder().decode(bytes));
@@ -357,7 +357,7 @@ test('a renewed device is a new key in a namespace of its own; what the old key 
 
 test('a device the host set up again admitted keeps its state apart; what was kept for the previous host is never opened for it', async () => {
   const runtime = fakeRuntime();
-  const {values, handles, desktop, namespaces, vaultStorage} = profileFakes(runtime);
+  const {values, handles, desktop, namespaces} = profileFakes(runtime);
   const profile = 'tilo-identity:ee@host.example:8443';
   const identity = person();
   // What this browser kept for the host before it was set up again: its
@@ -365,7 +365,7 @@ test('a device the host set up again admitted keeps its state apart; what was ke
   const kept = JSON.stringify({cert: {device: 9}, hostCert: hostCertOf(1, 2)});
   values.set(`${profile}/${PROFILE_DEVICE}/certificate`, new TextEncoder().encode(kept));
   runtime.hostInfo = async () => JSON.stringify({address: HOST_ADDRESS, hostCert: hostCertOf(1, 3)});
-  const common = {origin: 'https://host.example:8443', identity, runtime, custody, desktop, namespaces, vaultStorage, profile,
+  const common = {origin: 'https://host.example:8443', identity, runtime, custody, desktop, namespaces, profile,
     fetch: async () => { throw new Error('no network in tests'); }};
 
   // Reconnecting with the kept state is refused, and nothing moves.
@@ -388,7 +388,7 @@ test('a device the host set up again admitted keeps its state apart; what was ke
   // the admitted session leaving it, and the new host's namespace.
   assert.deepEqual(handles.map(handle => [handle.device, handle.released]),
     [[PROFILE_DEVICE, 1], [PROFILE_DEVICE, 1], [PROFILE_DEVICE, 1], [fresh, 0]]);
-  assert.equal(vaultStorage.rows.size, 2, 'the new namespace seals its channel state with a vault of its own');
+  assert.equal(new Set(runtime.calls.vaults).size, 2, 'the new namespace seals its channel state with a vault of its own');
   assert.equal((await peer.mountDesktop('target', {app: 'desktop'})).device, fresh, 'its desktops mount there too');
   await peer.dispose();
 
@@ -407,7 +407,7 @@ test('a device the workspace let go asks to join again under the certificate it 
   // its person was removed or pruned after an absence, and refuses the same
   // device under another one: a certificate made anew would never get back in.
   const runtime = fakeRuntime();
-  const {values, handles, desktop, namespaces, vaultStorage} = profileFakes(runtime);
+  const {values, handles, desktop, namespaces} = profileFakes(runtime);
   const profile = 'tilo-identity:ee@host.example:8443';
   const identity = person();
   const host = hostCertOf(1, 2);
@@ -421,7 +421,7 @@ test('a device the workspace let go asks to join again under the certificate it 
     runtime.calls.askedAs = {held, token: token && new TextDecoder().decode(token)};
     return JSON.stringify({reply: {kind: 'admitted', room: WORKSPACE, workspaceId: '7', name: 'Acme', role: 'Editor'}, cert: JSON.parse(held).cert});
   };
-  const common = {origin: 'https://host.example:8443', identity, runtime, custody, desktop, namespaces, vaultStorage, profile,
+  const common = {origin: 'https://host.example:8443', identity, runtime, custody, desktop, namespaces, profile,
     fetch: async () => { throw new Error('no network in tests'); }};
   const peer = await joinWorkspace({...common, invitation: Uint8Array.from([1, 2, 3]), admissionToken: 'one-time-token', storage: null});
   assert.equal(runtime.calls.askedAs.held, kept, 'asked under the certificate the device holds');
@@ -441,7 +441,7 @@ test('a device the workspace let go asks to join again under the certificate it 
     fresh.hostInfo = runtime.hostInfo;
     fresh.askToJoinAs = async () => assert.fail('another device\'s or person\'s certificate is never presented');
     const joined = await joinWorkspace({...common, runtime: fresh, desktop: fakes.desktop, namespaces: fakes.namespaces,
-      vaultStorage: fakes.vaultStorage, invitation: Uint8Array.from([1, 2, 3]), admissionToken: 'one-time-token', storage: null});
+      invitation: Uint8Array.from([1, 2, 3]), admissionToken: 'one-time-token', storage: null});
     assert.equal(fresh.calls.asked.root, identity);
     await joined.dispose();
   }
@@ -511,14 +511,12 @@ test('with a profile the peer keeps its state in the profile storage and mounts 
     },
     async mountDesktop(target, mountOptions) { mounts.push(mountOptions); return {target}; },
   };
-  const vaultStorage = vaultMemory();
-  const peer = await connect(options(runtime, undefined, {profile: 'work', device: 'laptop', displayName: 'Ada', desktop, vaultStorage}));
+  const peer = await connect(options(runtime, undefined, {profile: 'work', device: 'laptop', displayName: 'Ada', desktop}));
   assert.equal(opened.length, 1);
   assert.equal(runtime.peer.namespace, JSON.stringify({profile: 'work', device: 'laptop'}));
   const vault = runtime.peer.channelVault;
   assert.equal(vault.length, 32, 'the runtime gets the unsealed channel vault');
-  assert.equal(vaultStorage.rows.size, 1);
-  for (const [, stored] of vaultStorage.rows) assert.equal(stored.wrapKey.extractable, false);
+  assert.deepEqual(runtime.calls.vaults, [`page:work/laptop:${'bb'.repeat(32)}`], 'the vault is the profile-and-device one');
   for (const [, bytes] of values) {
     assert.ok(!Buffer.from(bytes).toString('hex').includes(Buffer.from(vault).toString('hex')),
       'the profile storage never holds the vault');
@@ -538,7 +536,7 @@ test('with a profile the peer keeps its state in the profile storage and mounts 
   await peer.dispose();
   assert.equal(opened[0].released, 1);
 
-  const again = await connect(options(runtime, undefined, {profile: 'work', device: 'laptop', desktop, vaultStorage}));
+  const again = await connect(options(runtime, undefined, {profile: 'work', device: 'laptop', desktop}));
   assert.equal(runtime.calls.certify.length, 1, 'the profile certificate is reused');
   assert.deepEqual(runtime.peer.channelVault, vault, 'the same vault opens the stored channel state');
   await again.dispose();
@@ -651,7 +649,7 @@ test('retry-saving commits the store again, then every mount, and clears the sto
     async flush() { storage.flushed++; if (flushFails) throw new Error('AbortError: commit aborted'); },
     async release() {}};
   desktop.openProfileStorage = async () => storage;
-  const peer = await connect(options(runtime, undefined, {profile: 'work', device: 'laptop', desktop, vaultStorage: vaultMemory()}));
+  const peer = await connect(options(runtime, undefined, {profile: 'work', device: 'laptop', desktop}));
   const mount = await peer.mountDesktop('target');
 
   storageListener({persistence: 'failed', pendingWrites: 2, error: 'QuotaExceededError: the quota has been exceeded'});
@@ -1025,7 +1023,7 @@ for (const attachSignal of [false, true]) test(`leaving a page joins peer storag
     },
   };
   const peer = await connect(options(runtime, undefined, {profile: 'overlap', device: 'owned', desktop,
-    vaultStorage: vaultMemory(),...(attachSignal ? {signal: controller.signal} : {})}));
+    ...(attachSignal ? {signal: controller.signal} : {})}));
   let completed = false;
   controller.abort();
   const closing = peer.dispose().then(() => { completed = true; });
@@ -1055,7 +1053,7 @@ test('every disposal caller observes storage release failure', async () => {
     async flush() {}, async release() { releases++; throw failure; },
   }; }};
   const peer = await connectPeer(options(runtime, undefined, {
-    profile: 'release-failure', device: 'owned', desktop, vaultStorage: vaultMemory(), live: false,
+    profile: 'release-failure', device: 'owned', desktop, live: false,
   }));
   const first = peer.dispose(), second = peer.dispose();
   assert.equal(first, second);

@@ -17831,6 +17831,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-browser-peer",
+ "tilo-channels",
  "tilo-clock",
  "tilo-content",
  "tilo-cpu-raster",

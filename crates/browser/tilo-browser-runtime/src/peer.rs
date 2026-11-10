@@ -32,6 +32,7 @@ use tilo_browser_peer::{
     DeviceSigner, FailureSubject, Host, HttpClient, HttpFuture, LocalState, PeerConfig, PeerEvent,
     PeerEvents, PeerHandle, PeerRecord, PeerSnapshot, PeerStore, SignError, SignFuture, Track,
 };
+use tilo_channels::VAULT_SECRET_APP as CHANNEL_VAULT_APP;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveRecord, OpsFrame, PreviewOp};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList, RevocationReason};
@@ -141,9 +142,8 @@ struct DurablePeerStore {
     channels_key: durable_store::StorageKey,
     /// The workspaces the peer holds, beside the record.
     workspaces_key: durable_store::StorageKey,
-    /// Seals the member state in `channels_key`. The page keeps it wrapped
-    /// by a non-extractable `WebCrypto` key (`channel-vault.mjs`), never in
-    /// this store.
+    /// Seals the member state in `channels_key`. The page keeps it in the
+    /// platform secret store ([`channel_vault`]), never in this one.
     channel_vault: [u8; 32],
 }
 
@@ -448,6 +448,32 @@ pub(crate) fn device_key(text: &str) -> Result<[u8; 32], JsError> {
         .map_err(js_error)?
         .try_into()
         .map_err(|_| js_error("device public key must be 32 bytes"))
+}
+
+/// The key that seals the profile's channel state at rest, kept by the platform
+/// secret store: the same store the session's MLS vault keeps its master key
+/// in, so a page that runs the session finds its vault already open.
+///
+/// `namespace` names the profile and the device it belongs to.
+///
+/// # Errors
+/// The secret store is unavailable, or the stored key is not 32 bytes.
+#[wasm_bindgen]
+pub async fn channel_vault(namespace: String) -> Result<Vec<u8>, JsError> {
+    let mut candidate = [0_u8; 32];
+    getrandom::fill(&mut candidate).map_err(|error| js_error(error.to_string()))?;
+    let stored = tilo_secrets::web::get_or_create(
+        CHANNEL_VAULT_APP,
+        &format!("mls-master-{namespace}"),
+        Some(&candidate),
+    )
+    .await
+    .map_err(|error| js_error(error.to_string()))?;
+    let bytes = stored.expose();
+    if bytes.len() != 32 {
+        return Err(js_error("the stored channel vault has the wrong length"));
+    }
+    Ok(bytes.to_vec())
 }
 
 /// Certify `devicePublicKeyHex` with the user root the page holds (`root`:
@@ -1510,8 +1536,8 @@ impl WasmPeer {
     /// peer record lives in that profile's durable store; otherwise `record`
     /// is the stored record bytes (or `undefined`) and `save(bytes)` writes
     /// it. `post(path, session, body)` reaches the host origin.
-    /// `channelVault` (32 bytes, from `channel-vault.mjs`) seals the
-    /// profile's channel state at rest; a peer with a namespace needs it.
+    /// `channelVault` (32 bytes, from [`channel_vault`]) seals the profile's
+    /// channel state at rest; a peer with a namespace needs it.
     ///
     /// # Errors
     ///
