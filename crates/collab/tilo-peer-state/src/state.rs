@@ -2782,7 +2782,7 @@ impl StatePeer {
             .map(|mut doc| {
                 doc.get_changes(&[])
                     .into_iter()
-                    .map(|change| change.raw_bytes().to_vec())
+                    .map(crate::workspace::sent_change)
                     .collect()
             })
             .unwrap_or_default();
@@ -3841,7 +3841,7 @@ impl PeerPublicationMut<'_> {
         let changes = workspace
             .get_changes(&before_heads)
             .into_iter()
-            .map(|change| change.raw_bytes().to_vec())
+            .map(crate::workspace::sent_change)
             .collect::<Vec<_>>();
         let mut messages = Vec::new();
         if !changes.is_empty() {

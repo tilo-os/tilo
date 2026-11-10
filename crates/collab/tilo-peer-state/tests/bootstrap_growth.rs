@@ -33,7 +33,17 @@ fn workspace_stats(message: &NeighbourMsg) -> WorkspaceStats {
     };
     WorkspaceStats {
         changes: changes.len(),
-        bytes: changes.iter().map(Vec::len).sum(),
+        // The history's own size: a change goes out compressed, and what it
+        // compresses to varies with its random content.
+        bytes: changes
+            .iter()
+            .map(|bytes| {
+                automerge::Change::try_from(bytes.as_slice())
+                    .expect("a workspace change")
+                    .raw_bytes()
+                    .len()
+            })
+            .sum(),
     }
 }
 

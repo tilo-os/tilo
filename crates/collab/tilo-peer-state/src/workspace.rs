@@ -272,6 +272,17 @@ pub fn extract_governed_fields(
 }
 /// Parse the complete batch and apply to a disposable candidate, never the owner.
 /// Changes with absent dependencies remain queued, as with `apply_changes`.
+/// A workspace document's change as the workspace sends it: compressed, once it
+/// is large enough to gain from it. Governance holds certificates and receipts
+/// as JSON text, which compresses several times over, and a workspace's base
+/// carries all of it in one change: sent raw, a newcomer to a workspace of
+/// hundreds downloaded megabytes before it saw anything. Every reader takes a
+/// compressed change as it takes a raw one, and its hash is the raw change's.
+#[must_use]
+pub fn sent_change(mut change: automerge::Change) -> Vec<u8> {
+    change.bytes().into_owned()
+}
+
 pub fn candidate(before: Option<&AutoCommit>, changes: &[Vec<u8>]) -> Result<AutoCommit, String> {
     // Each entry is one complete change chunk; their concatenation is ordinary
     // storage, admitted like any other untrusted document mutation.

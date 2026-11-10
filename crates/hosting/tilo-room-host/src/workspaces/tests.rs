@@ -596,7 +596,15 @@ async fn governor_application_authoring_survives_publication_tail_rollover() {
     };
     let caller =
         tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key);
+    let due = || async {
+        let current = workspaces.workspace(&created.workspace).await.unwrap();
+        let due = starts_over(&current.lock().await.record.outgoing);
+        due
+    };
     for index in 1..=MAX_PUBLICATION_TAIL {
+        if due().await {
+            break;
+        }
         let app = std::collections::BTreeSet::from([format!("so.tilo.rollover-fixture-{index}")]);
         assert!(
             workspaces
@@ -610,20 +618,7 @@ async fn governor_application_authoring_survives_publication_tail_rollover() {
                 .unwrap()
         );
     }
-    let current = workspaces.workspace(&created.workspace).await.unwrap();
-    let tail = current
-        .lock()
-        .await
-        .record
-        .outgoing
-        .iter()
-        .rev()
-        .take_while(|publication| !publication.checkpoint)
-        .count();
-    assert!(
-        tail >= MAX_PUBLICATION_TAIL,
-        "real governance writes reach rollover"
-    );
+    assert!(due().await, "real governance writes reach rollover");
     workspaces
         .author_application(
             &created.workspace,
@@ -841,6 +836,41 @@ fn a_long_tail_compacts_into_a_fresh_checkpoint() {
         "the fresh checkpoint is republished"
     );
     assert_eq!(workspace.record.generation, 2);
+}
+
+/// A few changes heavier than the workspace's base start it over, however few
+/// they are; many light ones do not until they weigh as much.
+#[test]
+fn a_heavy_tail_compacts_and_a_light_one_does_not() {
+    let base = Publication {
+        bytes: vec![0; 2 * MIN_PUBLICATION_TAIL_BYTES],
+        checkpoint: true,
+    };
+    let change = |len: usize| Publication {
+        bytes: vec![1; len],
+        checkpoint: false,
+    };
+    let light: Vec<Publication> = std::iter::once(base.clone())
+        .chain((0..100).map(|_| change(1024)))
+        .collect();
+    assert!(!starts_over(&light), "100 KiB of changes on a 128 KiB base");
+    let heavy = vec![
+        base,
+        change(MIN_PUBLICATION_TAIL_BYTES),
+        change(MIN_PUBLICATION_TAIL_BYTES),
+    ];
+    assert!(starts_over(&heavy), "two changes as heavy as the base");
+    let small = vec![
+        Publication {
+            bytes: vec![0; 1024],
+            checkpoint: true,
+        },
+        change(2048),
+    ];
+    assert!(
+        !starts_over(&small),
+        "a small workspace starts over no more often than its floor"
+    );
 }
 
 #[tokio::test]
@@ -2670,26 +2700,47 @@ async fn a_member_with_a_renewed_certificate_stays_the_same_member() {
     relay.shutdown().await;
 }
 
-/// Whether `workspace`'s publication was just started over (every entry a
-/// checkpoint) rather than added to (its last entry a change), and how
-/// many entries it holds.
-async fn publication_shape(workspaces: &Workspaces, workspace: &str) -> (bool, usize) {
+/// `workspace`'s publication as it stands: whether it was just started over
+/// (every entry a checkpoint) rather than added to (its last entry a change),
+/// how many entries it holds, and the bytes of its base and of the changes
+/// after it.
+struct Shape {
+    started_over: bool,
+    entries: usize,
+    base_bytes: usize,
+    tail_bytes: usize,
+}
+
+async fn publication_shape(workspaces: &Workspaces, workspace: &str) -> Shape {
     let governed = workspaces.workspace(workspace).await.unwrap();
     let governed = governed.lock().await;
     let outgoing = &governed.record.outgoing;
-    let shape = (
-        outgoing.iter().all(|publication| publication.checkpoint),
-        outgoing.len(),
-    );
+    let (base, changes) = based(outgoing);
+    let bytes = |publications: &[Publication]| -> usize {
+        publications
+            .iter()
+            .map(|publication| publication.bytes.len())
+            .sum()
+    };
+    let shape = Shape {
+        started_over: changes.is_empty(),
+        entries: outgoing.len(),
+        base_bytes: bytes(base),
+        tail_bytes: bytes(changes),
+    };
     drop(governed);
     shape
 }
 
 /// A crowd arriving through the door costs the workspace one change each, added
 /// to what it publishes, not the whole workspace rebuilt, written and sent to
-/// every member once per arrival. Anything other than an arrival in between
-/// starts the workspace over at the next one, as before: a newcomer is never
-/// given what was taken back before they came.
+/// every member once per arrival. A change that takes something back starts
+/// the workspace over at the next arrival, so a newcomer is never given what
+/// was withdrawn before they came. Otherwise the workspace starts over from a
+/// fresh base only once the changes since its last one weigh as much as that
+/// base, and the base holds its state in one compressed change: what a
+/// newcomer fetches stays near the size of the workspace as it stands, not of
+/// its history.
 #[allow(
     clippy::significant_drop_tightening,
     reason = "the relay stays held through the assertions; Relay::shutdown consumes it"
@@ -2703,42 +2754,90 @@ async fn a_crowd_joining_adds_to_the_room_rather_than_starting_it_over() {
     let created = workspaces.create("Lounge").await.unwrap();
     let workspace = created.workspace.clone();
 
-    // The first arrival starts the workspace over: nothing says yet that what it
-    // published since its last start holds only arrivals.
+    // The first arrival starts the workspace over: nothing says yet that what
+    // it published since its last start takes nothing back.
+    let mut arrivals = Vec::new();
     let (first, first_cert) = guest_device();
     door_join(&workspaces, &cert, &workspace, (&first, &first_cert), 1).await;
-    let (started_over, mut entries) = publication_shape(&workspaces, &workspace).await;
-    assert!(started_over, "the first arrival starts the room over");
-
+    arrivals.push(first_cert);
+    let shape = publication_shape(&workspaces, &workspace).await;
+    assert!(shape.started_over, "the first arrival starts the room over");
+    let mut entries = shape.entries;
     for seed in 2..=8 {
         let (guest, guest_cert) = guest_device();
         door_join(&workspaces, &cert, &workspace, (&guest, &guest_cert), seed).await;
-        let (started_over, now) = publication_shape(&workspaces, &workspace).await;
+        arrivals.push(guest_cert);
+        let shape = publication_shape(&workspaces, &workspace).await;
         assert!(
-            !started_over,
+            !shape.started_over,
             "arrival {seed} after only arrivals adds to the publication"
         );
-        assert!(now > entries, "arrival {seed} added its change");
-        entries = now;
+        assert!(shape.entries > entries, "arrival {seed} added its change");
+        entries = shape.entries;
     }
 
-    // A change that is not an arrival: the next arrival starts over.
+    // A change that takes something back (the room's name) is added, and the
+    // next arrival starts over.
     workspaces.rename(&workspace, "Lounge II").await.unwrap();
+    let renamed = publication_shape(&workspaces, &workspace).await;
+    assert!(!renamed.started_over && renamed.entries > entries);
     let (late, late_cert) = guest_device();
     door_join(&workspaces, &cert, &workspace, (&late, &late_cert), 30).await;
+    arrivals.push(late_cert);
     assert!(
-        publication_shape(&workspaces, &workspace).await.0,
-        "an arrival after another kind of change starts the room over"
+        publication_shape(&workspaces, &workspace)
+            .await
+            .started_over,
+        "an arrival after a change that took something back starts the room over"
     );
+    let mut before = publication_shape(&workspaces, &workspace).await;
 
-    // And arrivals after that start add to it again.
-    let (next, next_cert) = guest_device();
-    door_join(&workspaces, &cert, &workspace, (&next, &next_cert), 31).await;
-    assert!(!publication_shape(&workspaces, &workspace).await.0);
+    // Arrivals go on until the changes since the base outweigh it.
+    let mut started = None;
+    for seed in 31..=250 {
+        let (guest, guest_cert) = guest_device();
+        door_join(&workspaces, &cert, &workspace, (&guest, &guest_cert), seed).await;
+        arrivals.push(guest_cert);
+        let shape = publication_shape(&workspaces, &workspace).await;
+        if shape.started_over {
+            started = Some(before);
+            break;
+        }
+        before = shape;
+    }
+    let before = started.expect("the room starts over once its changes outweigh its base");
+    assert!(
+        before.tail_bytes >= before.base_bytes.max(MIN_PUBLICATION_TAIL_BYTES),
+        "the room started over before its changes outweighed its base: {} B of changes on a {} B base",
+        before.tail_bytes,
+        before.base_bytes
+    );
+    let governed = workspaces.workspace(&workspace).await.unwrap();
+    let base = governed
+        .lock()
+        .await
+        .record
+        .outgoing
+        .iter()
+        .find_map(|publication| {
+            match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&publication.bytes) {
+                Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, .. }) => Some(changes),
+                _ => None,
+            }
+        })
+        .expect("the base carries the workspace's document");
+    // Its state in one change, and the receipts a start over records in one more.
+    assert!(base.len() <= 2, "the base is {} changes", base.len());
+    let state = base.iter().max_by_key(|change| change.len()).unwrap();
+    assert_eq!(
+        state.get(8),
+        Some(&2),
+        "the base's state is sent as a compressed change chunk"
+    );
 
     // Every arrival is a member.
     let members = workspaces.summary(&workspace).await.unwrap().members;
-    for device in [&first_cert, &late_cert, &next_cert] {
+    for device in &arrivals {
         assert!(
             members
                 .iter()

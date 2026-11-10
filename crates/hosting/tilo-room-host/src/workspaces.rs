@@ -60,6 +60,10 @@ mod memberships;
 mod own;
 mod pages;
 mod peer_parts;
+mod publication;
+use publication::{Change, SinceBase, starts_over, withdraws};
+#[cfg(test)]
+use publication::{MAX_PUBLICATION_TAIL, MIN_PUBLICATION_TAIL_BYTES, based};
 mod publisher;
 mod record_format;
 #[cfg(feature = "agents")]
@@ -122,9 +126,6 @@ use tilo_lock::RwLockRecover as _;
 /// record's grants in the invitation layout they were written in (see
 /// [`record_format`]).
 const RECORD_VERSION: u32 = 3;
-/// Governance publications kept after the last full checkpoint before the
-/// workspace's publication is compacted into a fresh one.
-const MAX_PUBLICATION_TAIL: usize = 256;
 /// How long members' writes the governor took in may wait to be written
 /// through to the workspace file. A hard stop loses at most these; replaying
 /// what the relay retains brings them back.
@@ -159,16 +160,6 @@ struct WorkspaceRecord {
     /// workspace republishes what it published since, which members tolerate.
     published: usize,
     collaboration: collaboration::CollaborationState,
-}
-
-/// What a governance change of a workspace is, as far as starting the workspace's
-/// document over for newcomers goes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Change {
-    /// It only admits people ([`GovernedRoom::commit_admission`]).
-    Admission,
-    /// Anything else.
-    Other,
 }
 
 /// A workspace this relay governs.
@@ -214,19 +205,16 @@ struct GovernedWorkspace {
     /// what the relay retains of it from before is still to be archived,
     /// ahead of the base's publication ([`Workspaces::settle`]).
     rebased: bool,
-    /// Every change published since the workspace's document last started over
-    /// at an admission was itself an admission ([`Self::commit_admission`]):
-    /// a person let in, perhaps named by their own choice, and nothing
-    /// changed or taken back. A newcomer may then be given that tail as it
-    /// is, since it shows nothing withdrawn before they joined, and the
-    /// workspace need not start over for them. Only kept in memory: a workspace read
-    /// back from its file starts over at its next admission, as before.
-    ///
-    /// Held as the workspace document's heads when that was last true, so a
-    /// write that reached the document any other way (a member's write the
-    /// governor took in) leaves them behind, and the next admission starts
-    /// over.
-    admissions_since_base: Option<Vec<automerge::ChangeHash>>,
+    /// Whether something the workspace published since its document last
+    /// started over overwrote or deleted a value ([`withdraws`]): a shared
+    /// window closed, a member removed, a name changed. A newcomer replayed
+    /// that history would read what was taken back before they came, so the
+    /// next arrival starts the workspace over. Arrivals and other changes that
+    /// only add are appended, and the publication then starts over only on its
+    /// cadence ([`starts_over`]). Kept in memory: a workspace just made or read
+    /// back from its file counts as having withdrawn something until it next
+    /// starts over.
+    since_base: SinceBase,
     /// The session each of those hosts last opened here that this host
     /// answered ([`Workspaces::answer_host`]), by the host's device.
     answered: HashMap<[u8; 32], hosts::Answer>,
@@ -348,7 +336,7 @@ impl GovernedWorkspace {
             #[cfg(any(feature = "agents", feature = "web"))]
             asking: std::collections::BTreeSet::new(),
             rebased: false,
-            admissions_since_base: None,
+            since_base: SinceBase::Withdrew,
             answered: HashMap::new(),
         };
         this.persist()?;
@@ -435,7 +423,7 @@ impl GovernedWorkspace {
             #[cfg(any(feature = "agents", feature = "web"))]
             asking: std::collections::BTreeSet::new(),
             rebased: false,
-            admissions_since_base: None,
+            since_base: SinceBase::Withdrew,
             answered: HashMap::new(),
         })
     }
@@ -530,9 +518,6 @@ impl GovernedWorkspace {
         {
             return Err("a room change cannot replace the room".into());
         }
-        // A member admitted from now on is given the workspace as it stands, not
-        // what was withdrawn before they joined.
-        let joined = !member_roots(&candidate, now).is_subset(&member_roots(replica, now));
         let preparing = crate::timing::start();
         prepare_governance(&mut candidate, key, now)?;
         crate::timing::window("room.commit.prepare", preparing);
@@ -544,25 +529,13 @@ impl GovernedWorkspace {
         let copying = crate::timing::start();
         let mut record = self.record.clone();
         crate::timing::window("room.commit.record", copying);
-        let tail = record
-            .outgoing
-            .iter()
-            .rev()
-            .take_while(|publication| !publication.checkpoint)
-            .count();
+        // A member admitted from now on is given the workspace as it stands,
+        // not what was withdrawn before they joined.
+        let started_over = starts_over(&record.outgoing)
+            || (self.since_base == SinceBase::Withdrew
+                && !member_roots(&candidate, now).is_subset(&member_roots(replica, now)));
+        let mut since_base = self.since_base;
         let mut rebased = false;
-        // Newcomers whose arrival only adds to a tail of earlier arrivals
-        // see nothing in it that was withdrawn before them: the workspace's
-        // document need not start over for them. Anything else since the
-        // last start, or a long tail, starts it over as before.
-        let appended_admission = joined
-            && change == Change::Admission
-            && tail < MAX_PUBLICATION_TAIL
-            && self
-                .admissions_since_base
-                .as_ref()
-                .is_some_and(|clean| replica.workspace_heads().as_ref() == Some(clean));
-        let started_over = (tail >= MAX_PUBLICATION_TAIL || joined) && !appended_admission;
         if started_over {
             // Keep unchanged record checkpoints on their own channels; replacing
             // those baselines could discard member writes. A record changed by
@@ -577,7 +550,10 @@ impl GovernedWorkspace {
                         _ => None,
                     })
                     .collect::<std::collections::BTreeSet<_>>();
-            rebased = joined && candidate.rebase_workspace()?;
+            // The workspace's document starts over from a base holding its
+            // state as it stands, with none of the history that led there.
+            rebased = candidate.rebase_workspace()?;
+            since_base = SinceBase::Added;
             record.outgoing = candidate
                 .publication_mut()
                 .durable_bootstrap_messages(key, now, generation)?
@@ -596,6 +572,9 @@ impl GovernedWorkspace {
             let diffing = crate::timing::start();
             let messages = durable_messages(&mut candidate, replica, (key, now), generation)?;
             for message in messages.iter().filter(|message| for_members(message)) {
+                if change == Change::Other && withdraws(message) {
+                    since_base = SinceBase::Withdrew;
+                }
                 record.outgoing.push(publication(message, false)?);
             }
             crate::timing::window("room.commit.messages", diffing);
@@ -617,14 +596,7 @@ impl GovernedWorkspace {
         }
         *replica = candidate;
         self.rebased |= rebased;
-        // Clean from a start made at an admission; kept clean only by
-        // admissions appended to it; anything else spoils it until the next.
-        let clean = if started_over {
-            joined
-        } else {
-            appended_admission
-        };
-        self.admissions_since_base = clean.then(|| replica.workspace_heads()).flatten();
+        self.since_base = since_base;
         crate::timing::event(
             "room.governance_commit",
             committing,
@@ -2794,6 +2766,7 @@ impl Workspaces {
         if self.forget_expired_devices(workspace)? {
             tracing::debug!(workspace = %workspace.workspace(), "room settled without the devices whose certificates expired");
         }
+        let accessing = crate::timing::start();
         let now = SystemTime::now();
         let access: GovernedAccess = workspace.peer().governance().governed_access(now)?;
         // Who is in the workspace is what its governance just said: the person
@@ -2807,6 +2780,8 @@ impl Workspaces {
             .replace(workspace.workspace_id(), true, access)
             .await
             .map_err(|error| error.to_string())?;
+        crate::timing::event("room.settle.access", accessing, 0);
+        let standing = crate::timing::start();
         let standings = workspace
             .peer()
             .governance()
@@ -2815,6 +2790,8 @@ impl Workspaces {
             .replace_standings(workspace.workspace_id(), true, standings)
             .await
             .map_err(|error| error.to_string())?;
+        crate::timing::event("room.settle.standings", standing, 0);
+        let publishing = crate::timing::start();
         let publisher = Arc::clone(&workspace.publisher);
         if workspace.rebased {
             publisher.flushed().await;
@@ -2843,8 +2820,11 @@ impl Workspaces {
             epoch,
             publications,
         );
+        crate::timing::event("room.settle.publish", publishing, 0);
+        let observing = crate::timing::start();
         self.observe_calls(workspace);
         self.governance_moved(workspace);
+        crate::timing::event("room.settle.observe", observing, 0);
         Ok(())
     }
 
