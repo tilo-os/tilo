@@ -136,6 +136,47 @@ fn a_search_from_inside_a_book_is_the_books_until_its_chip_is_cleared() {
     );
 }
 
+/// The Book chip's × is the chip's published control: invoking it, as an
+/// agent, a script or a screen reader reaches it, clears the filter and
+/// widens the search to the library.
+#[test]
+fn the_book_chips_clear_control_widens_the_search() {
+    let mut app = TestApp::<EbookShell>::drive("search-in-book").unwrap();
+    let address = ui::tilo_actions::ActionAddress::new("tilo.control:view-chip:book", "remove");
+    let resources = app.harness().resources();
+    assert!(
+        ui::tilo_actions::door::resolve(&resources, &address).is_some(),
+        "{address:?} is published"
+    );
+    let inside = found(&mut app, PASSAGE);
+    assert!(!inside.is_empty(), "the book's words are found");
+
+    app.harness()
+        .invoke_action(
+            &address,
+            &serde_json::Map::from_iter([("value".to_owned(), serde_json::json!(false))]),
+            true,
+            None,
+        )
+        .unwrap_or_else(|error| panic!("{address:?}: {error}"));
+    app.settle();
+    books(&mut app).settle_query();
+    assert!(
+        books(&mut app)
+            .query
+            .engine
+            .results()
+            .query
+            .chips
+            .is_empty(),
+        "the chip is cleared"
+    );
+    assert!(
+        found(&mut app, BOOK).len() + found(&mut app, PASSAGE).len() > inside.len(),
+        "the library answers"
+    );
+}
+
 #[test]
 fn closing_the_search_returns_to_the_page_it_began_on() {
     let mut app = TestApp::<EbookShell>::capture(Some("search-in-book")).unwrap();

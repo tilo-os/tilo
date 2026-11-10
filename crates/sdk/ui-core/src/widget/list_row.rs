@@ -3382,9 +3382,18 @@ impl crate::widget::ResourceOperations for ListRow {
 
 impl crate::resources::PublishesResources for ListRow {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        let mut resources = self.activation.native_resources();
-        resources.extend(self.check_verb.iter().map(|verb| verb.resource()));
-        resources
+        // The row is one resource however many verbs it publishes: a host
+        // keeps one spec per id, so a second spec under the same id would
+        // shadow the first and the verb it holds would answer nothing.
+        let mut resource = self.activation.native_resources().into_iter().next();
+        if let Some(verb) = &self.check_verb {
+            let mut verb = verb.resource();
+            match resource.as_mut() {
+                Some(resource) => resource.actions.append(&mut verb.actions),
+                None => resource = Some(verb),
+            }
+        }
+        resource.into_iter().collect()
     }
 }
 

@@ -1541,14 +1541,21 @@ const CHIP_OPERATIONS: [&[&str]; 8] = {
 
 impl crate::resources::PublishesResources for Chip {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        let mut resources = self.activation.native_resources();
-        resources.extend(
-            [self.toggle_verb.as_ref(), self.remove_verb.as_ref()]
-                .into_iter()
-                .flatten()
-                .map(super::control_verb::ControlVerb::resource),
-        );
-        resources
+        // The chip is one resource however many verbs it publishes: a host
+        // keeps one spec per id, so a second spec under the same id would
+        // shadow the first and the verb it holds would answer nothing.
+        let mut resource = self.activation.native_resources().into_iter().next();
+        for verb in [self.toggle_verb.as_ref(), self.remove_verb.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            let mut verb = verb.resource();
+            match resource.as_mut() {
+                Some(resource) => resource.actions.append(&mut verb.actions),
+                None => resource = Some(verb),
+            }
+        }
+        resource.into_iter().collect()
     }
 }
 #[cfg(test)]
@@ -2010,6 +2017,46 @@ mod activation_tests {
                 );
             }
         }
+    }
+
+    /// A chip that both runs a press and offers its own removal publishes one
+    /// resource for its control: the host keeps one spec per id, so the
+    /// remove would be shadowed by the press's spec and answer nothing.
+    #[test]
+    fn a_chip_with_a_press_and_a_remove_publishes_one_resource_both_reach() {
+        let removed = Rc::new(Cell::new(0));
+        let counted = Rc::clone(&removed);
+        let chip = Chip::new("Book: The Tideglass")
+            .with_id("view-chip:book")
+            .on_view(|| {})
+            .on_remove_view(move || counted.set(counted.get() + 1));
+        let mut harness = crate::headless::FrameHarness::new(
+            crate::State::new(),
+            Box::new(crate::widget::Row::new().push(Box::new(chip))),
+            (400, 100),
+        );
+        let resources = harness.resources();
+        let published: Vec<&tilo_actions::ResourceSpec> = resources
+            .iter()
+            .filter(|resource| resource.id.as_str() == "tilo.control:view-chip:book")
+            .collect();
+        assert_eq!(published.len(), 1, "one resource for the control");
+        let actions: Vec<&str> = published
+            .first()
+            .expect("the chip publishes its control")
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        assert_eq!(actions, ["invoke", "remove"]);
+        harness
+            .invoke_published(
+                "tilo.control:view-chip:book",
+                "remove",
+                &serde_json::Map::from_iter([("value".to_owned(), serde_json::json!(false))]),
+            )
+            .expect("the remove answers");
+        assert_eq!(removed.get(), 1, "the chip's own handler ran");
     }
 
     #[test]
