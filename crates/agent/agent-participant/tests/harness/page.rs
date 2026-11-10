@@ -37,7 +37,7 @@ use tilo_session_host::session_actions::Heard;
 use tilo_session_host::{Host, PeerEvent, PeerEvents, PeerHandle};
 
 use super::hosted::Hosted;
-use crate::support::{Device, WORKSPACE, ready, start_peer};
+use crate::support::{Device, WORKSPACE, admitted_to, ready, start_peer};
 
 /// A checkpoint a record's change left: its author and its bytes.
 pub type Checkpoint = ([u8; 32], Vec<u8>);
@@ -113,7 +113,9 @@ impl Page {
             ));
             peer.join(workspace).unwrap();
         }
-        ready(&[&peer]).await;
+        // The page acts as soon as it is open, and an action the host has not
+        // subscribed the session to yet is refused and never answered.
+        admitted_to(&peer, workspace).await;
         Self::joined((peer, events), device, host, cluster_id)
     }
 

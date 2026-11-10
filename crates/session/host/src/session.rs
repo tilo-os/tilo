@@ -801,6 +801,7 @@ impl PeerHandle {
             rooms_next: 0,
             agent_runs_pending: BTreeMap::new(),
             agent_runs_next: 0,
+            held_actions: Vec::new(),
         };
         task.update(|status| {
             status.outgoing_pending = task.outbox.len();
@@ -948,7 +949,10 @@ impl PeerHandle {
     }
 
     /// Send one remote-action frame to device `to` of the workspace (the host's
-    /// own device reaches its app-serving plane). Dropped while
+    /// own device reaches its app-serving plane). A workspace this session
+    /// has joined but not been admitted to yet holds the frame until it is:
+    /// the host takes no action from a session it has not subscribed, and the
+    /// request would be refused and never answered. Dropped while
     /// disconnected: an action that ran late is worse than one that did not
     /// run, so the caller retries with the same invocation id.
     pub fn send_remote_action(
@@ -1368,16 +1372,33 @@ struct Task {
     agent_runs_pending: BTreeMap<u64, AgentRunCompletion>,
     /// The id the next agent run is declared with.
     agent_runs_next: u64,
+    /// Action frames owed to workspaces the host has not admitted this session
+    /// to yet, oldest first, with the workspace each is for: sent before the
+    /// admission, they are refused by the host and the request they carry is
+    /// never answered.
+    held_actions: Vec<HeldAction>,
 }
 
-/// An open compaction request: workspace, route and the entries it covers.
+/// An open compaction request: workspace, route, and the entries it covers.
 type Compaction = (u64, DocumentRoute, Vec<[u8; 32]>);
+
+/// One action frame held until the host admits this session to its workspace.
+struct HeldAction {
+    workspace_id: u64,
+    to: [u8; 32],
+    frame: Vec<u8>,
+}
 
 /// Entry ids a route remembers for compaction. Past it, later entries are
 /// left out of statements and simply stay retained.
 const MAX_DELIVERED_ENTRIES: usize = 1 << 17;
 /// Open compaction requests kept; the oldest goes first.
 const MAX_COMPACTIONS: usize = 16;
+
+/// Action frames held for a workspace's admission. Past it, the oldest is
+/// given up: an action that waited for a session's admission longer than this
+/// many actions is better refused than delivered late.
+const MAX_HELD_ACTIONS: usize = 64;
 
 impl Task {
     fn note_delivered(&mut self, route: &DocumentRoute, entries: &[[u8; 32]]) {
@@ -1956,28 +1977,80 @@ impl Task {
     }
 
     /// Send a remote-action frame to device `to`, or say it cannot go.
+    ///
+    /// A frame for a workspace this session asked to join and the host has
+    /// not admitted it to yet waits for the admission
+    /// ([`Self::admitted`]): sent now, the host refuses it as a subscription
+    /// it does not hold, and the request it carries is never answered. One
+    /// for a workspace this session did not join goes as it is — the host's
+    /// refusal is the answer, and the caller need not wait for it.
     fn remote_action(
-        &self,
+        &mut self,
         workspace_id: u64,
         to: [u8; 32],
         frame: Vec<u8>,
         client: Option<&RelayClient>,
     ) {
-        if let Some(client) = client {
-            let _ = client.send(Envelope::RemoteAction {
-                workspace_id,
-                version: tilo_relay_protocol::transport::REMOTE_ACTION_ENVELOPE_VERSION,
-                to_device_public_key: to,
-                from_device_public_key: self.config.cert.device_public_key,
-                from_user_public_key: self.config.cert.user_public_key,
-                frame,
-            });
-        } else {
+        let Some(client) = client else {
             self.emit(&PeerEvent::Remote(Heard::Undeliverable {
                 workspace_id,
                 to,
                 reason: "not connected to the host".into(),
             }));
+            return;
+        };
+        if self.admitted_to(workspace_id) == Some(false) {
+            if self.held_actions.len() >= MAX_HELD_ACTIONS {
+                let dropped = self.held_actions.remove(0);
+                self.emit(&PeerEvent::Remote(Heard::Undeliverable {
+                    workspace_id: dropped.workspace_id,
+                    to: dropped.to,
+                    reason: "too many actions waited for the workspace's admission".into(),
+                }));
+            }
+            self.held_actions.push(HeldAction {
+                workspace_id,
+                to,
+                frame,
+            });
+            return;
+        }
+        self.send_action(client, workspace_id, to, frame);
+    }
+
+    /// Whether the host admitted this session to `workspace_id`: `None` for a
+    /// workspace it did not ask to join, `Some(false)` while the host has not
+    /// admitted it yet, and `Some(true)` once it has.
+    fn admitted_to(&self, workspace_id: u64) -> Option<bool> {
+        lock(&self.shared)
+            .status
+            .workspaces
+            .get(&workspace_id)
+            .copied()
+    }
+
+    fn send_action(&self, client: &RelayClient, workspace_id: u64, to: [u8; 32], frame: Vec<u8>) {
+        let _ = client.send(Envelope::RemoteAction {
+            workspace_id,
+            version: tilo_relay_protocol::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+            to_device_public_key: to,
+            from_device_public_key: self.config.cert.device_public_key,
+            from_user_public_key: self.config.cert.user_public_key,
+            frame,
+        });
+    }
+
+    /// Send the action frames that waited for `workspace_id`'s admission, in
+    /// the order they were made. What this session owes another workspace
+    /// waits for that one.
+    fn flush_held_actions(&mut self, workspace_id: u64, client: &RelayClient) {
+        let (due, waiting): (Vec<HeldAction>, Vec<HeldAction>) =
+            std::mem::take(&mut self.held_actions)
+                .into_iter()
+                .partition(|held| held.workspace_id == workspace_id);
+        self.held_actions = waiting;
+        for held in due {
+            self.send_action(client, held.workspace_id, held.to, held.frame);
         }
     }
 
@@ -3162,9 +3235,11 @@ impl Task {
 
     /// The host answered `Ready` for `workspace_id`: what the replay brought
     /// before it and a full hold let go of is paged again, where the route
-    /// now opens it.
+    /// now opens it, and the action frames that waited for the admission go
+    /// out in the order they were made.
     fn admitted(&mut self, workspace_id: u64, client: &RelayClient) {
         self.check_admission();
+        self.flush_held_actions(workspace_id, client);
         for route in self.held_routes(workspace_id) {
             let opens = self.ciphers.contains_key(&route)
                 // What the host replays is the record's history, whose

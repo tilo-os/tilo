@@ -25,7 +25,9 @@ use tilo_relay::workspaces::PreAdmitRequest;
 use tilo_relay_client::{Approver, Carrier};
 use tilo_relay_protocol::workspaces::{JoinReply, PreAdmission, WorkspaceRole};
 use tilo_session_host::invite::ask_to_join_pre_admitted;
-use tilo_session_host::{Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle, PeerSnapshot};
+use tilo_session_host::{
+    Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle, PeerSnapshot, TransportPhase,
+};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, issue_device_cert,
@@ -591,6 +593,23 @@ pub async fn ready(peers: &[&PeerHandle]) {
             .iter()
             .all(|peer| PeerSnapshot::from_status(&peer.status()).phase == "ready")
             .then_some(())
+    })
+    .await;
+}
+
+/// Wait until the host admitted `peer` to `workspace`: connected, subscribed
+/// and replayed. A session that has joined no workspace yet is
+/// [`ready`] too, so a page that is about to act in one waits on that one
+/// rather than on the session: an action sent before the host subscribed the
+/// page is refused by the relay and never answered.
+pub async fn admitted_to(peer: &PeerHandle, workspace: u64) {
+    wait_for("the session admitted to its workspace", || {
+        let status = peer.status();
+        async move {
+            (status.phase == TransportPhase::Connected
+                && status.workspaces.get(&workspace) == Some(&true))
+            .then_some(())
+        }
     })
     .await;
 }

@@ -57,6 +57,9 @@ mod harness;
 #[path = "workspace_actions/hosted_documents.rs"]
 pub mod hosted_documents;
 #[cfg(test)]
+#[path = "workspace_actions/joining.rs"]
+mod joining;
+#[cfg(test)]
 #[path = "workspace_actions/member_own.rs"]
 mod member_own;
 #[cfg(test)]
