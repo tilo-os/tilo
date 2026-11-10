@@ -1,7 +1,8 @@
 // The web page boots for real: the built bundle in headless Chromium, served
 // beside a running relay, as a person's browser loads it. The tab arrives,
 // joins the Lounge's workspace, opens Notes from the search, and Notes'
-// window shows.
+// window shows. Then a sideways swipe over Sheets, whose grid scrolls
+// sideways, scrolls Sheets and leaves the strip of windows where it is.
 //
 // What it catches is what compiles and passes every unit test yet stops a
 // real page: the page's scripts calling a runtime function the wasm module
@@ -169,29 +170,74 @@ const box = JSON.parse(await tab.evaluate(`JSON.stringify((() => {
 for (const type of ['mousePressed', 'mouseReleased']) {
   await tab.send('Input.dispatchMouseEvent', {type, x: box.x, y: box.y, button: 'left', clickCount: 1});
 }
-await key('k', mac ? 4 : 2);
-await until('!!globalThis.tiloMount?.state()?.searchOpen', 'the search opening');
-await type('notes');
-// The rows shown right after typing can be the previous query's: Enter waits
-// until two reads agree that Notes is the first result.
-const first = rows => (rows ? rows[rows.indexOf('Results') + 1] ?? null : null);
-const deadline = Date.now() + 120_000;
-for (;;) {
-  await checkPage('searching for Notes');
-  const rows = await paletteRows();
-  await sleep(300);
-  const again = await paletteRows();
-  if (first(rows) === 'Notes' && JSON.stringify(rows) === JSON.stringify(again)) break;
-  if (Date.now() > deadline) await fail(`the search offers no Notes first: ${JSON.stringify(again)}`);
-}
-await key('Enter');
-await until(`(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === 'so.tilo.notes')`,
-  'Notes\' window showing');
+// Open `name` from the search, as a person does, and wait for its window.
+const open = async (name, app) => {
+  await key('k', mac ? 4 : 2);
+  await until('!!globalThis.tiloMount?.state()?.searchOpen', `the search opening for ${name}`);
+  await type(name.toLowerCase());
+  // The rows shown right after typing can be the previous query's: Enter
+  // waits until two reads agree that the app is the first result.
+  const first = rows => (rows ? rows[rows.indexOf('Results') + 1] ?? null : null);
+  const deadline = Date.now() + 120_000;
+  for (;;) {
+    await checkPage(`searching for ${name}`);
+    const rows = await paletteRows();
+    await sleep(300);
+    const again = await paletteRows();
+    if (first(rows) === name && JSON.stringify(rows) === JSON.stringify(again)) break;
+    if (Date.now() > deadline) await fail(`the search offers no ${name} first: ${JSON.stringify(again)}`);
+  }
+  await key('Enter');
+  await until(`(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(app)})`,
+    `${name}'s window showing`);
+};
+await open('Notes', 'so.tilo.notes');
 console.log('ok: Notes opened from the search');
 
 // 4. Notes stays up a moment, as a person would look at it, and nothing the
 // page did meanwhile failed.
 await sleep(3000);
 await checkPage('showing Notes');
-report.frames = await tab.evaluate('globalThis.tiloMount?.state()?.frames ?? 0').catch(() => 0);
+
+// 5. A sideways swipe over an app whose content scrolls sideways is the
+// app's: Sheets' grid scrolls and the strip of windows stays where it is. The
+// strip overflows first (a few more windows), so it could pan; Sheets is
+// opened last, from the search, and swiped right after, as the Lounge gate
+// does it.
+const frames = () => tab.evaluate('globalThis.tiloMount?.state()?.frames ?? 0').catch(() => 0);
+const settled = async (by = 2) => {
+  const from = await frames();
+  await until(`(globalThis.tiloMount?.state()?.frames ?? 0) >= ${from + by}`, `the desk drawing ${by} more frame(s)`);
+};
+const panOf = async () => JSON.parse(await tab.evaluate(
+  'JSON.stringify(globalThis.tiloMount?.navigation?.getSnapshot?.()?.desktopPan ?? null)').catch(() => 'null'));
+for (const [name, app] of [['Calculator', 'so.tilo.calculator'], ['Clocks', 'so.tilo.clocks'], ['Weather', 'so.tilo.weather']]) {
+  await open(name, app);
+}
+await open('Sheets', 'so.tilo.sheets');
+await settled(2);
+const centre = JSON.parse(await tab.evaluate(`JSON.stringify((() => {
+  const r = globalThis.tiloMount?.canvas?.getBoundingClientRect();
+  return {x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2)};
+})())`));
+const before = await panOf();
+if (!before || !(before.max > 0)) await fail(`the strip does not overflow, so a pan could not show: ${JSON.stringify(before)}`);
+const swipe = [];
+for (const step of [6, 12, 18, 24, 18, 12, 6]) {
+  await tab.send('Input.dispatchMouseEvent', {type: 'mouseWheel', x: centre.x, y: centre.y, deltaX: step, deltaY: 0});
+  swipe.push((await panOf())?.offset ?? null);
+}
+await settled(2);
+const after = await panOf();
+// Where the strip goes with no input at all: a strip still settling from
+// Sheets' opening moves here too, and that is no wheel's doing.
+await sleep(1500);
+const resting = await panOf();
+report.sheets = {before, swipe, after, resting};
+if (after?.offset !== before.offset) {
+  await fail(`a sideways swipe over Sheets panned the strip from ${before.offset} to ${after?.offset} (each event: ${swipe.join(', ')}; at rest: ${resting?.offset})`);
+}
+await checkPage('swiping over Sheets');
+console.log('ok: a sideways swipe over Sheets scrolls Sheets and leaves the strip');
+report.frames = await frames();
 await finish(0);
