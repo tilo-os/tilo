@@ -2561,7 +2561,10 @@ id_token = ["registry.tilo.so"]
 # built on the x86_64 node (aarch64 cross-compiles, so a node of that architecture is not needed);
 # their SHA256SUMS; its signature by the release key. It is released with the relay, on release
 # tags: sign-cli alone holds the release key, publish-cli alone the package token, and neither
-# runs anywhere else. cli-rehearsal signs the same release with a throwaway key the same way,
+# runs anywhere else. Either may also be dispatched, on a release tag whose own run did not
+# publish it (`t dispatch publish-cli --ref tag:vX.Y.Z`): the release key's token is issued for
+# tags only and cli-release.sh refuses any other ref, so a dispatch elsewhere publishes nothing.
+# cli-rehearsal signs the same release with a throwaway key the same way,
 # publishes it into a directory laid out as tilo.sh serves it, and installs it from there with the
 # installer.
 #
@@ -2629,7 +2632,7 @@ env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/til
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/cli/release/SHA256SUMS.sig", "/target/publish/cli/release/SHA256SUMS.bundle", "/target/publish/cli/release/dry-run.pub"]
 cache = false
-on = ["tag:v[0-9]*.[0-9]*.[0-9]*"]
+on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
 id_token = ["sts.amazonaws.com"]
 
 [[check]]
@@ -2639,7 +2642,7 @@ setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf 
 needs = ["cli-release", "sign-cli"]
 requires = ["arch=x86_64"]
 cache = false
-on = ["tag:v[0-9]*.[0-9]*.[0-9]*"]
+on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
 secrets = ["TILO_PACKAGES_TOKEN"]
 
 [[check]]
