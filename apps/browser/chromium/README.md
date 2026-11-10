@@ -416,6 +416,16 @@ outline reads, so a secret's value is found by neither. Words on either side
 of a link, or in two paragraphs, are on separate lines. `find` names controls
 and headings only; its refusal says words are found by searching.
 
+`action: "reader"` with `enabled` shows the document's article alone and puts
+the page back when turned off. The article is the `article`, `main` or
+article-body element whose paragraphs hold the most text, else the block whose
+own paragraphs do. A page without paragraph elements is read by the text its
+blocks hold themselves, outside their links: an essay set in the cells of a
+layout table is its table, and one run on in a single block (line breaks
+between its paragraphs, font tags around it) is that block. What an old page
+says of its looks in attributes is left behind. A page with less than 500
+characters of such text answers `no_article`.
+
 ### Several actors in one tab
 
 A tab may be worked in by more than one actor at once: two agents, agents on

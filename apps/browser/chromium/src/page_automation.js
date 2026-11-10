@@ -2160,6 +2160,63 @@ globalThis.__tiloPage ||= (() => {
     for (const p of element.querySelectorAll('p')) total += p.textContent.trim().length;
     return total;
   };
+  // An article as old pages write it: no article and no paragraph elements,
+  // the text set in the cells of a layout table, or run on in one block with
+  // line breaks between its paragraphs and font tags around it. What counts
+  // is the text a block holds itself, outside its links: navigation is
+  // links, an essay is not.
+  const READER_BLOCKS = new Set(['address', 'article', 'aside', 'blockquote', 'body', 'center', 'dd', 'details',
+    'dialog', 'div', 'dl', 'dt', 'fieldset', 'figcaption', 'figure', 'footer', 'form', 'h1', 'h2', 'h3', 'h4', 'h5',
+    'h6', 'header', 'hgroup', 'li', 'main', 'nav', 'ol', 'p', 'pre', 'section', 'table', 'tbody', 'td', 'tfoot',
+    'th', 'thead', 'tr', 'ul']);
+  const READER_ROWS = new Set(['tr', 'tbody', 'thead', 'tfoot']);
+  const READER_OUTSIDE = 'nav,aside,footer,form,dialog,[hidden],[aria-hidden=true],[role=navigation],' +
+    '[role=complementary],[role=contentinfo],[role=dialog]';
+  const READER_MIN_RUN = 25;
+  // What an old page says of its looks in attributes, which the reading
+  // layout does not take over; a picture keeps its size.
+  const READER_LOOKS = ['bgcolor', 'background', 'align', 'valign', 'face', 'size', 'color', 'cellpadding',
+    'cellspacing', 'border', 'nowrap'];
+  const READER_SIZED = new Set(['img', 'video', 'canvas', 'svg', 'picture']);
+  function runningText(block) {
+    let total = 0;
+    const walk = node => {
+      for (const child of node.childNodes) {
+        if (child.nodeType === 3) total += child.data.trim().length;
+        else if (child.nodeType === 1 && child.localName !== 'a' && !SKIP.has(child.localName) &&
+            !READER_BLOCKS.has(child.localName)) walk(child);
+      }
+    };
+    walk(block);
+    return total;
+  }
+  function runningArticle() {
+    if (!document.body) return null;
+    const scores = new Map();
+    const add = (element, text) => scores.set(element, (scores.get(element) || 0) + text);
+    let visited = 0;
+    for (const block of [document.body, ...document.body.querySelectorAll('*')]) {
+      if (++visited > MAX_VISITED) break;
+      const tag = block.localName;
+      if (!READER_BLOCKS.has(tag) || READER_ROWS.has(tag) || tag === 'table') continue;
+      const text = runningText(block);
+      if (text < READER_MIN_RUN || block.closest(READER_OUTSIDE)) continue;
+      if (block.checkVisibility && !block.checkVisibility()) continue;
+      // A block that holds a whole essay as running text is the article
+      // itself; shorter blocks are the article their holder gathers, and a
+      // cell's holder is its table, not its row.
+      if (text >= READER_MIN_TEXT) add(block, text);
+      let holder = block.parentElement;
+      while (holder && (READER_ROWS.has(holder.localName) || !READER_BLOCKS.has(holder.localName))) holder = holder.parentElement;
+      if (holder) add(holder, text);
+    }
+    let best = null, bestText = 0;
+    for (const [block, text] of scores) {
+      // Of a block and the holder that gathers nothing but it, the block.
+      if (text > bestText || (text === bestText && best && best.contains(block))) { best = block; bestText = text; }
+    }
+    return bestText >= READER_MIN_TEXT ? best : null;
+  }
   function articleRoot() {
     let best = null, bestText = 0;
     for (const candidate of document.querySelectorAll('article, main, [role=main], [itemprop=articleBody]')) {
@@ -2175,7 +2232,7 @@ globalThis.__tiloPage ||= (() => {
       }
       for (const [block, text] of blocks) if (text > bestText) { best = block; bestText = text; }
     }
-    return bestText >= READER_MIN_TEXT ? best : null;
+    return bestText >= READER_MIN_TEXT ? best : runningArticle();
   }
   function reader(enabled) {
     if (!enabled) {
@@ -2189,11 +2246,20 @@ globalThis.__tiloPage ||= (() => {
     if (readerSaved && document.body === readerSaved.shown) return {ok: true, message: 'Reader view', data: {reader: true}};
     const root = articleRoot();
     if (!root) throw failure('no_article', 'This page has no article to read');
-    const article = root.cloneNode(true);
+    let article = root.cloneNode(true);
+    // A body or a table cell is the article's block only where it stood: in
+    // the reading layout what it held stands in a block of its own.
+    if (['body', 'td', 'th'].includes(root.localName)) {
+      const block = document.createElement('div');
+      block.append(...article.childNodes);
+      article = block;
+    }
     for (const dropped of article.querySelectorAll(READER_DROP)) dropped.remove();
     for (const element of [article, ...article.querySelectorAll('*')]) {
       element.removeAttribute('style');
       element.removeAttribute('class');
+      for (const look of READER_LOOKS) element.removeAttribute(look);
+      if (!READER_SIZED.has(element.localName)) { element.removeAttribute('width'); element.removeAttribute('height'); }
       // Lazily loaded images keep their address in a data attribute.
       if (element.localName === 'img' && !element.getAttribute('src')) {
         const lazy = element.getAttribute('data-src') || element.getAttribute('data-lazy-src');

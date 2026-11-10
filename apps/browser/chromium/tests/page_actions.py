@@ -1100,6 +1100,37 @@ class PageActions(unittest.TestCase):
         refused = self.page('reader', enabled=True)
         self.assertEqual((refused['ok'], refused['code']), (False, 'no_article'), refused)
 
+    def test_reader_view_reads_an_essay_laid_out_as_old_pages_lay_them_out(self):
+        # An old page has no article and no paragraph elements. One sets its
+        # essay in the cells of a table: reader view shows every row of it.
+        self.h.navigate(self.url + '/old')
+        shown = self.ok('reader', enabled=True)
+        self.assertTrue(shown['data']['reader'], shown)
+        self.assertEqual(shown['data']['title'], 'Old page')
+        self.assertGreater(shown['data']['words'], 2500, shown)
+        outline = self.outline()
+        self.assertIn('heading "Old page" level=1', outline)
+        rows = re.findall(r'Row (\d+) of an essay laid out in a table\.', outline)
+        self.assertEqual(rows, [str(number) for number in range(1, 301)], 'the whole essay, in its order')
+        self.assertFalse(self.ok('reader', enabled=False)['data']['reader'])
+        self.assertEqual(len(re.findall(r'Row \d+ of an essay laid out in a table\.', self.outline())), 300,
+                         'the page comes back as it was')
+        # Another runs its text on in one block, font tags around it and two
+        # line breaks between its paragraphs: reader view shows it to its
+        # last word.
+        self.h.navigate(self.url + '/run')
+        shown = self.ok('reader', enabled=True)
+        self.assertTrue(shown['data']['reader'], shown)
+        outline = self.outline()
+        self.assertIn('First paragraph, a short one.', outline)
+        for sentence in RUN_SENTENCES:
+            self.assertIn(sentence, outline)
+        self.assertIn('Last paragraph: the point of it all.', outline)
+        # A page of controls and little text is still no article.
+        self.h.navigate(self.url + '/form')
+        refused = self.page('reader', enabled=True)
+        self.assertEqual((refused['ok'], refused['code']), (False, 'no_article'), refused)
+
     def test_fill_select_and_click_operate_the_page_like_a_person(self):
         self.h.navigate(self.url + '/form')
         outline = self.outline()
