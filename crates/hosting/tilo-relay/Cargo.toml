@@ -297,6 +297,13 @@ path = "tests/held_memory.rs"
 name = "relay_load"
 test = true
 
+# A one-off: moves a host's content into one store per workspace at the
+# upgrade that gave each workspace its own.
+[[example]]
+name = "move_relay_content"
+required-features = ["web"]
+test = true
+
 [lints]
 workspace = true
 
