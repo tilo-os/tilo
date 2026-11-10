@@ -1898,6 +1898,12 @@ impl DesktopSurface {
                 }
             }
         }
+        // A row takes changes of its own while these land — the share a window
+        // that opened beside another asks of the strip — and the record takes
+        // them now: the pass that opened the window is the last until
+        // something else moves, and the tree would keep the widths the strip
+        // had before, which peers and the next session read as the desk's.
+        self.harvest();
     }
 
     /// Record what the shown strip and focused window present beside the tree, for the navigation
