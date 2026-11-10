@@ -1,8 +1,8 @@
 //! The ask about the person themselves, put to them from their own avatar
 //! ([`crate::chrome::AvatarAsk`]).
 //!
-//! Open, it is a small popover in the bar's own band, hanging left from the
-//! avatar and sized to its words: the question, what answering brings where
+//! Open, it is a small popover in the bar's own band, left of the avatar and
+//! of the faces, people button and notices beside it, sized to its words: the question, what answering brings where
 //! there is room, "Not now" and the answer. Where it does not fit beside the
 //! clock's lane it takes that lane too, over the glance value it covers.
 //! Where the band cannot hold its words at all (a narrow bar, a compact one),
@@ -62,8 +62,8 @@ impl TopBarChrome {
         self.ask.answer
     }
 
-    /// The open ask, hanging left from the avatar's left edge at `right_x` inside the bar's band;
-    /// returns where the controls before it end.
+    /// The open ask in the bar's band, ending at `right_x`: left of the avatar and of everything
+    /// else the bar draws on its right, so it never stands over them.
     pub(super) fn draw_avatar_ask(
         &mut self,
         scene: &mut Scene,
@@ -103,7 +103,9 @@ impl TopBarChrome {
         let Some(words) = words else {
             // A bar too narrow for the words beside the avatar: the ask opens under the band, where
             // a card holds them.
-            self.draw_avatar_ask_below(scene, transform, theme, text_renderer, right_x);
+            // The card hangs from the avatar itself: under the band nothing stands in its way.
+            let avatar_left_x = self.own_avatar_rect.x0 - f64::from(theme.tokens.spacing.s3);
+            self.draw_avatar_ask_below(scene, transform, theme, text_renderer, avatar_left_x);
             return;
         };
         let pad = f64::from(theme.tokens.spacing.s2);
@@ -578,6 +580,9 @@ mod tests {
                     rgb: (0xe0, 0x7a, 0x5f),
                     identity: String::new(),
                 }),
+                // The person may invite, as on the hosted page: the bar's right side carries the
+                // invite button too.
+                invite: crate::chrome::Invite::Offered,
                 ..DesktopChromeSnapshot::default()
             }
         }
@@ -638,8 +643,15 @@ mod tests {
 
     /// The real chrome over a desk with one window, at `viewport` .
     fn asking_desktop(viewport: (u32, u32)) -> (Framed<DesktopChrome>, Rc<Asking>) {
+        asking_desktop_over(viewport, &tree())
+    }
+
+    /// The real chrome over `tree` , at `viewport` , the ask open.
+    fn asking_desktop_over(
+        viewport: (u32, u32),
+        tree: &DesktopTree,
+    ) -> (Framed<DesktopChrome>, Rc<Asking>) {
         ui::i18n::I18nManager::init("en-US");
-        let tree = tree();
         let host = Rc::new(Asking {
             tree: tree.clone(),
             ask: RefCell::new(Some(AvatarAsk {
@@ -652,7 +664,7 @@ mod tests {
         });
         let (_desk, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(Notices));
         let chrome: crate::chrome::Chrome = host.clone();
-        let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+        let bar = TopBarChrome::from_tree(tree).with_chrome(chrome);
         let chrome = DesktopChrome::new(
             handle.clone(),
             "g".into(),
@@ -678,6 +690,58 @@ mod tests {
 
     fn bar_rect(frame: &Framed<DesktopChrome>) -> Rect {
         ui::widget::Widget::get_rect(frame.bar())
+    }
+
+    /// With others here, the ask stands clear of their faces, the people button, the invite button
+    /// and the person's own avatar at every width: it yields room to them, or opens under the band.
+    /// The clock in turn keeps clear of the faces and the buttons beside them.
+    #[test]
+    fn the_open_ask_never_stands_over_the_faces_or_the_people_button() {
+        let mut crowded = tree();
+        crowded.workspaces[0].collaborators = vec![
+            tilo_desktop_model::Collaborator::new("agent", "Claude Code"),
+            tilo_desktop_model::Collaborator::new("ada", "Ada Lovelace"),
+        ];
+        for viewport in [(1280, 800), (1024, 768), (720, 900), (390, 844), (360, 780)] {
+            let (frame, _) = asking_desktop_over(viewport, &crowded);
+            let bar = frame.bar();
+            let ask = [bar.ask.pill, bar.ask.answer, bar.ask.later];
+            assert!(!ask[0].is_zero_area(), "{viewport:?}: the ask is open");
+            let others = [
+                ("faces", bar.avatar_stack_rect),
+                ("people button", bar.people_button_rect),
+                ("invite", bar.invite_rect),
+                ("own avatar", bar.own_avatar_rect),
+            ];
+            assert!(
+                !bar.people_button_rect.is_zero_area(),
+                "{viewport:?}: who is here has its button"
+            );
+            // The clock and the bar's right side stand apart: the faces that do not fit join the
+            // badge, and the clock moves left of the buttons, or aside.
+            for (name, rect) in others {
+                assert!(
+                    rect.intersect(bar.center_rect).is_zero_area(),
+                    "{viewport:?}: the {name} {rect:?} stands over the clock {:?}",
+                    bar.center_rect
+                );
+            }
+            for part in ask {
+                assert!(
+                    part.intersect(bar.ws_pill_rect).is_zero_area(),
+                    "{viewport:?}: the ask's {part:?} stands over the workspace {:?}",
+                    bar.ws_pill_rect
+                );
+            }
+            for part in ask {
+                for (name, rect) in others {
+                    assert!(
+                        part.intersect(rect).is_zero_area(),
+                        "{viewport:?}: the ask's {part:?} stands over the {name} {rect:?}"
+                    );
+                }
+            }
+        }
     }
 
     /// Open beside the avatar in a bar with room, the ask stands in the bar's band, its words and

@@ -374,7 +374,6 @@ impl TopBarChrome {
                 chip,
             );
         self.own_avatar_rect = chip;
-        self.draw_avatar_ask_dot(scene, transform, theme);
         chip.x0 - f64::from(theme.tokens.spacing.s3)
     }
 

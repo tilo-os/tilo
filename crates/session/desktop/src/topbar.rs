@@ -648,14 +648,14 @@ impl TopBarChrome {
 
     /// The full bar's session side: the tray, application tray, media and sharing indicators,
     /// collaborators and the continuity offer. A compact bar on another display carries none of
-    /// these.
+    /// these. Returns where the person's own avatar leaves room beside it, for the ask.
     fn draw_session_clusters(
         &mut self,
         scene: &mut Scene,
         theme: &Theme,
         text_renderer: &mut TextRenderer,
         center_y: f64,
-    ) {
+    ) -> f64 {
         let transform = Affine::IDENTITY;
         // The status cluster paints the pill and its glyphs in one pass.
         let tray_w = self.draw_tray_pill_body(scene, transform, theme, text_renderer, center_y);
@@ -665,17 +665,6 @@ impl TopBarChrome {
             - f64::from(theme.tokens.spacing.s3)
             - tray_w
             - f64::from(theme.tokens.spacing.s4);
-        // The ask hangs left of the avatar, so it is laid out before it: the dot the avatar draws
-        // knows whether the ask's words stand beside it this frame.
-        let avatar_left_x = stack_right_x - BAR_CONTROL_PX - f64::from(theme.tokens.spacing.s3);
-        self.draw_avatar_ask(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            center_y,
-            avatar_left_x,
-        );
         let stack_right_x = self.draw_own_avatar(
             scene,
             transform,
@@ -684,6 +673,7 @@ impl TopBarChrome {
             center_y,
             stack_right_x,
         );
+        let beside_avatar_x = stack_right_x;
         let stack_right_x = self.draw_app_tray(
             scene,
             transform,
@@ -751,16 +741,82 @@ impl TopBarChrome {
                 self.notices_painted(people_left_x)
             },
         );
+        beside_avatar_x
+    }
+
+    /// The ask about the person, beside the bar's right side as [`Self::draw_session_clusters`]
+    /// left it, and the dot the avatar wears for it. It stands left of everything else there: the
+    /// faces, the people button and the notices keep their places, and the ask takes the room left
+    /// of them, or opens under the band where that room cannot hold its words. Drawn after the
+    /// clock, whose lane it may take.
+    fn draw_ask_beside(
+        &mut self,
+        scene: &mut Scene,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+        beside_avatar_x: f64,
+    ) {
+        let transform = Affine::IDENTITY;
+        let taken_x = self.right_side_x();
+        let ask_right_x = if taken_x < beside_avatar_x {
+            taken_x - f64::from(theme.tokens.spacing.s3)
+        } else {
+            beside_avatar_x
+        };
+        self.draw_avatar_ask(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            center_y,
+            ask_right_x,
+        );
+        // The dot the avatar wears knows whether the ask's words stand on the bar this frame.
+        self.draw_avatar_ask_dot(scene, transform, theme);
+    }
+
+    /// Where what the bar's right side drew begins: the faces, the people and invite buttons, the
+    /// notices beside them and the continuity offer.
+    fn right_side_x(&self) -> f64 {
+        if self.continuity_rect.is_zero_area() {
+            self.people_left_x
+        } else {
+            self.people_left_x.min(self.continuity_rect.x0)
+        }
+    }
+
+    /// How far left the clock moves to stand clear of what the bar's right side drew (zero where it
+    /// already does), or `None` when there is no room for it between that and the workspace and
+    /// strip names: it is then not drawn, and nothing points at it.
+    fn center_yield(&mut self, theme: &Theme) -> Option<f64> {
+        if self.center_rect.is_zero_area() || self.is_compact() {
+            return Some(0.0);
+        }
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let taken = self.right_side_x();
+        let dx = (taken - gap - self.center_rect.x1).min(0.0);
+        if dx == 0.0 {
+            return Some(0.0);
+        }
+        let left = self.ws_pill_rect.x1.max(self.ws_strip_rect.x1) + gap;
+        if self.center_rect.x0 + dx < left {
+            // Its lane closes up where the names end: what yields to the clock (the ask) still
+            // stops there.
+            self.center_lane = Rect::new(left, self.center_lane.y0, left, self.center_lane.y1);
+            self.center_rect = Rect::ZERO;
+            return None;
+        }
+        let moved = Affine::translate((dx, 0.0));
+        self.center_rect = moved.transform_rect_bbox(self.center_rect);
+        self.center_lane = moved.transform_rect_bbox(self.center_lane);
+        Some(dx)
     }
 
     /// Where the notices left of the faces that start at `faces_x` are painted: the arrival and
     /// wave notices and the continuity offer, the bar's height across.
     fn notices_painted(&self, faces_x: f64) -> Vec<Rect> {
-        let left = if self.continuity_rect.is_zero_area() {
-            self.people_left_x
-        } else {
-            self.people_left_x.min(self.continuity_rect.x0)
-        };
+        let left = self.right_side_x();
         (left < faces_x)
             .then(|| {
                 Rect::new(
@@ -1684,9 +1740,18 @@ impl TopBarChrome {
                 },
             );
 
-            self.draw_center_widget(scene, transform, theme, text_renderer, center_y);
-            if !self.is_compact() {
-                self.draw_session_clusters(scene, theme, text_renderer, center_y);
+            // The clock is laid out first, where the bar's centre is, and painted once the bar's
+            // right side is: on a narrow bar it moves left of the faces and buttons there, and
+            // with no room left of them it stands aside rather than under them.
+            let mut centre = Scene::new();
+            self.draw_center_widget(&mut centre, transform, theme, text_renderer, center_y);
+            let beside_avatar_x = (!self.is_compact())
+                .then(|| self.draw_session_clusters(scene, theme, text_renderer, center_y));
+            if let Some(dx) = self.center_yield(theme) {
+                scene.append(&centre, Some(Affine::translate((dx, 0.0))));
+            }
+            if let Some(beside_avatar_x) = beside_avatar_x {
+                self.draw_ask_beside(scene, theme, text_renderer, center_y, beside_avatar_x);
             }
             self.draw_focus_indicator(scene, transform, theme);
         });

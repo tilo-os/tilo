@@ -200,10 +200,28 @@ impl TopBarChrome {
                 }
             })
             .collect();
-        let (rects, badge) = ui::presence::FaceStack::BAR.paint(
+        // The faces keep right of the clock's lane: on a narrow bar the ones that do not fit join
+        // the "+N" badge, and with no room for even the badge the people button beside them is
+        // who is here.
+        let stack = ui::presence::FaceStack::BAR;
+        let room = if self.center_lane.is_zero_area() {
+            f64::INFINITY
+        } else {
+            stack_right_x - self.center_lane.x1 - f64::from(theme.tokens.spacing.s2)
+        };
+        let mut faces = faces;
+        let mut more = self.collaborator_overflow;
+        while !faces.is_empty() && stack.width_of(faces.len(), more) > room {
+            faces.pop();
+            more = more.saturating_add(1);
+        }
+        if stack.width_of(0, more) > room {
+            more = 0;
+        }
+        let (rects, badge) = stack.paint(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             (stack_right_x, center_y),
-            (&faces, self.collaborator_overflow),
+            (&faces, more),
             // The bar's own ground (`draw_overlay_surface`), so the gap between faces and their
             // rings is the bar, not a grey halo.
             colors.surfaces.base,
@@ -212,7 +230,7 @@ impl TopBarChrome {
         if faces.is_empty() && badge.is_none() {
             return Rect::ZERO;
         }
-        let width = ui::presence::FaceStack::BAR.width_of(faces.len(), self.collaborator_overflow);
+        let width = stack.width_of(faces.len(), more);
         Rect::new(
             stack_right_x - width,
             center_y - BAR_CONTROL_PX / 2.0,
