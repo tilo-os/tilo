@@ -148,6 +148,9 @@ struct Inner {
     described_heads: RefCell<Vec<automerge::ChangeHash>>,
     /// When a model was last looked for.
     looked_for_model: Cell<Option<Instant>>,
+    /// What [`Activity::own_actions`] read of each record, by its origin: a tick reads only the
+    /// changes made since the last, and a record that did not move is not read at all.
+    own_reads: RefCell<HashMap<String, OwnRead>>,
     /// What wakes the session's loop when a model answered off this thread.
     wake: Option<tilo_service::Wake>,
 }
@@ -257,6 +260,7 @@ impl Activity {
             describing: Arc::default(),
             described_heads: RefCell::default(),
             looked_for_model: Cell::default(),
+            own_reads: RefCell::default(),
             wake,
         }))
     }
@@ -492,14 +496,19 @@ impl Activity {
     /// The records `workspace_id` holds: read when the change stream says one of them moved, on a
     /// worker where this host has threads, so a workspace's records never hold up a frame.
     fn records_of(&self, workspace_id: WorkspaceId) -> Vec<DetachedRecordHistory> {
+        self.records_held(workspace_id).as_ref().clone()
+    }
+
+    /// The records `workspace_id` holds as last read, shared rather than copied.
+    fn records_held(&self, workspace_id: WorkspaceId) -> Arc<Vec<DetachedRecordHistory>> {
         let Some(store) = self.0.store.clone() else {
-            return Vec::new();
+            return Arc::default();
         };
         let key = workspace_id.to_string();
         let watch = crate::platform::records::Watch::Workspace(key.clone());
         if let Some(known) = self.0.records.borrow().get(&key) {
             let known = Rc::clone(known);
-            return known.following(&self.0.changes, &watch).as_ref().clone();
+            return known.following(&self.0.changes, &watch);
         }
         let reading = store.clone();
         let by_workspace = key.clone();
@@ -526,7 +535,7 @@ impl Activity {
             &watch,
             read,
         ));
-        let value = known.get().as_ref().clone();
+        let value = known.get();
         self.0.records.borrow_mut().insert(key, Rc::clone(&known));
         value
     }
@@ -875,6 +884,36 @@ pub struct OwnAction {
 /// The most of its own steps a device reports as what its person is doing.
 const MAX_OWN_ACTIONS: usize = 16;
 
+/// What [`Activity::own_actions`] read of one record: its newest steps, as of the committed heads
+/// and the authors they were read under, and the log a later read continues from.
+#[derive(Default)]
+struct OwnRead {
+    heads: Vec<automerge::ChangeHash>,
+    authors: Option<ui::AuthorDirectory>,
+    log: ui::history_source::HistoryLog,
+    entries: Vec<ui::widget::HistoryEntry>,
+}
+
+impl OwnRead {
+    /// Bring the steps up to `doc` as `authors` name them: nothing is read while neither moved,
+    /// and only the changes made since otherwise.
+    fn follow(&mut self, doc: &automerge::AutoCommit, authors: &ui::AuthorDirectory) {
+        let heads = ui::history_source::committed_heads(doc);
+        if heads == self.heads && self.authors.as_ref() == Some(authors) {
+            return;
+        }
+        // The held record is shared with every other reader of it; the copy is this read's.
+        let mut doc = doc.clone();
+        self.entries = ui::HistorySource::new()
+            .without_record_genesis()
+            .with_authors(authors.clone())
+            .with_max_entries(MAX_OWN_ACTIONS)
+            .entries_since(&mut doc, &mut self.log);
+        self.heads = heads;
+        self.authors = Some(authors.clone());
+    }
+}
+
 /// The bound, in characters, of each title reported.
 const MAX_OWN_TITLE_CHARS: usize = 96;
 
@@ -908,15 +947,20 @@ impl Activity {
         (self.0.writers.register)(&mut authors);
         authors.set_reader(author);
         let mut actions = Vec::new();
-        for record in self.records_of(workspace_id) {
-            let Some(mut doc) = record.document else {
+        let records = self.records_held(workspace_id);
+        let mut reads = self.0.own_reads.borrow_mut();
+        let mut kept = HashMap::with_capacity(records.len());
+        for record in records.iter() {
+            let Some(doc) = record.document.as_ref() else {
                 continue;
             };
-            let entries = ui::HistorySource::new()
-                .without_record_genesis()
-                .with_authors(authors.clone())
-                .with_max_entries(MAX_OWN_ACTIONS)
-                .entries(&mut doc);
+            let key = record.origin().key();
+            let mut read = reads.remove(&key).unwrap_or_default();
+            read.follow(doc, &authors);
+            kept.insert(key.clone(), read);
+            let Some(entries) = kept.get(&key).map(|read| read.entries.as_slice()) else {
+                continue;
+            };
             let app_name = self
                 .0
                 .apps
@@ -931,7 +975,7 @@ impl Activity {
                     .timestamp
                     .duration_since(ui::time::UNIX_EPOCH)
                     .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
-                if !mine || at_ms < since_ms || !is_doing(&entry) {
+                if !mine || at_ms < since_ms || !is_doing(entry) {
                     continue;
                 }
                 let (action, resource) = match &entry.context {
@@ -965,6 +1009,9 @@ impl Activity {
                 });
             }
         }
+        // A record no longer held is forgotten with it.
+        *reads = kept;
+        drop(reads);
         actions.sort_by(|a, b| a.at_ms.cmp(&b.at_ms).then_with(|| a.id.cmp(&b.id)));
         actions.dedup_by(|a, b| a.id == b.id);
         actions.reverse();
@@ -976,6 +1023,17 @@ impl Activity {
         actions.reverse();
         actions.truncate(MAX_OWN_ACTIONS);
         actions
+    }
+
+    /// How many changes [`Self::own_actions`] read, across every call: what a test holds a tick to.
+    #[cfg(test)]
+    fn own_changes_read(&self) -> usize {
+        self.0
+            .own_reads
+            .borrow()
+            .values()
+            .map(|read| read.log.changes_read())
+            .sum()
     }
 }
 
@@ -1557,6 +1615,7 @@ mod tests {
             panic!("one action, in the notebook: {run:?}");
         };
         assert_eq!(action.app_id, "so.tilo.notes", "{action:?}");
+        assert_eq!(action.changes, 2, "its two writes: {action:?}");
         assert_eq!(
             action.record,
             ui::record::RecordId::package_primary().as_str(),
@@ -1569,14 +1628,90 @@ mod tests {
         };
         assert_eq!(
             finished.summary(&first).map(|summary| summary.changes),
-            Some(1),
-            "the finished notice counts the notebook it changed"
+            Some(2),
+            "the finished notice counts the two changes it made in the notebook"
         );
 
         // It writes again: the run ends at what it added, its fifth change.
         write(&mut notebook, 3);
         let again = runs_until(&|run| run.last_ms == 5_000);
         assert_eq!(again.runs.len(), 1, "still the agent's one run: {again:?}");
+    }
+
+    /// What the person is doing is read off their newest steps on every tick, across every record of
+    /// the workspace: a tick reads the changes made since the last one, however long a record's
+    /// history is, and a tick after nothing moved reads none.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn what_the_person_is_doing_reads_each_change_once() {
+        use ui::automerge::transaction::Transactable as _;
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(app_state::FsStore::new(dir.path())) as Store;
+        let workspace = "7c307c8d-bfa5-46fa-ae08-fa2fe4790bd3";
+        let desk = Desk::seeded(|minter, notes| {
+            tilo_desktop_surface::seed_tree_in(
+                minter,
+                WorkspaceId::parse(workspace).expect("a workspace id"),
+                "Workspace",
+                vec![notes],
+            )
+        });
+        let mut notebook = ui::automerge::AutoCommit::new();
+        let body = notebook
+            .put_object(ui::automerge::ROOT, "body", ui::automerge::ObjType::Text)
+            .unwrap();
+        notebook.commit();
+        let key = StorageKey::workspace_index("so.tilo.notes", workspace);
+        let _lease = store.lease(&key).unwrap();
+        let changes = crate::platform::records::Changes::default();
+        let mut time = 0;
+        let mut write = |notebook: &mut ui::automerge::AutoCommit, lines: usize| {
+            agent_appends(notebook, &body, &mut time, lines);
+            store
+                .write(&key, WriteOp::Replace(notebook.save()), None)
+                .unwrap();
+            changes.note(workspace, "so.tilo.notes", "", false);
+        };
+        write(&mut notebook, 2_000);
+        let activity = Activity::over(Given {
+            desk: DeskDoc::load(None, None, "ada"),
+            person: "ada".into(),
+            store: Some(Arc::clone(&store)),
+            state: None,
+            apps: None,
+            people: crate::platform::authors::unnamed(),
+            writers: Writers::untracked(),
+            pane: Rc::new(crate::platform::pane::Linked),
+            models: None,
+            changes: changes.clone(),
+            wake: None,
+        });
+        let tree = desk.handle.read(Clone::clone);
+        let tick = || {
+            activity.own_actions(&tree, tree.active, "ada", 0);
+            activity.own_changes_read()
+        };
+        let first = tick();
+        assert!(first > 0, "the notebook is read");
+        assert!(first <= 2_002, "the notebook is read once: {first} changes");
+        assert_eq!(tick(), first, "a tick after nothing moved reads nothing");
+
+        write(&mut notebook, 3);
+        // The records are read again on a worker once the stream says they moved.
+        let mut now = first;
+        for _ in 0..300 {
+            now = tick();
+            if now != first {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            now - first,
+            3,
+            "a tick reads the three changes made since, and no more"
+        );
+        assert_eq!(tick(), now, "and then nothing");
     }
 
     /// The activity opens from its command and lists the workspace's real changes.
