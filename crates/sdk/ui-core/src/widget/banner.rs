@@ -1021,13 +1021,17 @@ impl Banner {
         let scale = self.device_scale;
         let place = |button: &mut Option<Button>, at: Option<Rect>| {
             if let (Some(button), Some(at)) = (button, at) {
-                // On device pixels: centring the controls in the line leaves fractions.
+                // On device pixels: centring the controls in the line leaves fractions, and a
+                // control whose trailing edge kept one is drawn blurred across two pixels —
+                // both edges are snapped, so the box stands on the grid whole.
                 let at = at + origin;
-                let corner = Point::new(
-                    (at.x0 * scale).round() / scale,
-                    (at.y0 * scale).round() / scale,
-                );
-                button.apply_layout_external(Rect::from_origin_size(corner, at.size()));
+                let snap = |edge: f64| (edge * scale).round() / scale;
+                button.apply_layout_external(Rect::new(
+                    snap(at.x0),
+                    snap(at.y0),
+                    snap(at.x1),
+                    snap(at.y1),
+                ));
             }
         };
         place(&mut self.secondary, g.secondary_action);

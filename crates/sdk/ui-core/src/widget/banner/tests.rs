@@ -700,12 +700,18 @@ fn on_touch_a_banners_controls_are_a_fingers_target_inside_it() {
             banner.contains(rect.origin()) && banner.contains(Point::new(rect.x1, rect.y1)),
             "{control} {rect:?} stands inside the banner {banner:?}"
         );
-        let device = rect.y0 * 1.5;
-        assert!(
-            (device - device.round()).abs() < 1e-3,
-            "{control}'s top edge {} is on a device pixel at 1.5x",
-            rect.y0
-        );
+        for (side, edge) in [
+            ("top", rect.y0),
+            ("left", rect.x0),
+            ("right", rect.x1),
+            ("bottom", rect.y1),
+        ] {
+            let device = edge * 1.5;
+            assert!(
+                (device - device.round()).abs() < 1e-3,
+                "{control}'s {side} edge {edge} is on a device pixel at 1.5x"
+            );
+        }
     }
 }
 

@@ -528,7 +528,7 @@ fn a_troubled_account_says_so_in_its_window_and_clears_when_the_server_answers()
         "the mark and the banner say why, in the server's own words: {said:#?}"
     );
     assert!(
-        said.iter().any(|text| text == "Try again"),
+        said.iter().any(|text| text == "Check now"),
         "the window offers to ask the server again: {said:#?}"
     );
     // Nothing asks the server again on its own: the window keeps saying it.
