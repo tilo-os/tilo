@@ -9,13 +9,15 @@ use automerge::AutoCommit;
 #[cfg(feature = "record")]
 use tilolang_runtime::ViewEvent;
 use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, MAX_CHOSEN, SaveRequest};
-use tilolang_runtime::{UiNode, Value, ViewInstance};
+use tilolang_runtime::run::WebRequest;
+use tilolang_runtime::web::{WebReply, WebTransport};
+use tilolang_runtime::{InvokeOutcome, Principal, UiNode, Value, ViewInstance};
 
 use crate::fixtures::Replica;
 
 const APP: &str = "so.tilo.lang.pictures";
 
-const PICTURES: &str = r##"app so.tilo.lang.pictures "Pictures"
+const PICTURES: &str = r##"app so.tilo.lang.pictures "Pictures" (web: ["example.test"])
 
 type Page {
     words: Text
@@ -44,6 +46,39 @@ action take(p: Page, file: File) {
 /// The page's words, as a Markdown file.
 action export(p: Page) -> Text {
     "# {p.words}"
+}
+
+/// The page's words, as a file an action makes of them.
+action make_text(p: Page) -> File {
+    File.of_text("made.md", "# {p.words}")
+}
+
+/// An archive an action makes of two files it holds, one of them under a folder.
+action make_zip(p: Page) -> File {
+    File.zip(
+        "made.zip",
+        [File.of_text("words.md", "# {p.words}"), File.of_text("images/fox.png", "{p.bytes}")],
+    )
+}
+
+/// An archive holding a file no folder may have.
+action make_unsafe(p: Page) -> File {
+    File.zip("bad.zip", [File.of_text("../outside.md", p.words)])
+}
+
+/// The picture the page holds, by the address its own record names.
+action again(p: Page) -> File {
+    File.at("again.png", p.picture?.url ?? "")
+}
+
+/// A file of the content an address no device holds.
+action missing(p: Page) -> File {
+    File.at("missing.png", "tilo-blob://not-a-hash-anyone-stored")
+}
+
+/// The answer a service gave, as a file.
+action fetch(p: Page) -> File uses web {
+    File.of_bytes("page.html", web.get("https://example.test/page").body)
 }
 
 view sheet(p: Page) {
@@ -104,6 +139,25 @@ impl Device {
     fn saved(&self) -> Vec<(String, Vec<u8>)> {
         self.saved.borrow().clone()
     }
+
+    /// `bytes` kept as a file called `name`: what an action that makes a file of what it holds
+    /// leaves in the content store, under the content's own address.
+    fn keeping(&self, name: &str, media: &str, bytes: &[u8]) -> FileValue {
+        let mut digest = 0xcbf2_9ce4_8422_2325_u64;
+        for byte in bytes {
+            digest = (digest ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        let hash = format!("k{digest:x}");
+        self.content
+            .borrow_mut()
+            .insert(hash.clone(), bytes.to_vec());
+        FileValue::new(
+            name,
+            media,
+            i64::try_from(bytes.len()).unwrap_or(i64::MAX),
+            hash,
+        )
+    }
 }
 
 impl BlobHost for Device {
@@ -130,6 +184,10 @@ impl BlobHost for Device {
             .borrow_mut()
             .push((request.name.clone(), content.to_vec()));
         Ok(())
+    }
+
+    fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
+        Ok(self.keeping(name, media, bytes))
     }
 }
 
@@ -452,4 +510,146 @@ fn undoing_the_step_takes_the_picture_back_out() {
         "the step took the picture back out"
     );
     assert_eq!(field(&ada, &at, "bytes"), Value::Int(0));
+}
+
+/// The id of the action `action` of the pictures app.
+fn action_id(r: &Replica, action: &str) -> String {
+    r.host
+        .package(APP)
+        .expect("the pictures package")
+        .meta
+        .actions
+        .iter()
+        .find(|declared| declared.name == action)
+        .unwrap_or_else(|| panic!("the action `{action}`"))
+        .id
+        .clone()
+}
+
+/// What `action` of the pictures app answered, on the page at `at`.
+fn asked(r: &Replica, action: &str, at: &tilolang_runtime::ResourceRef) -> Result<Value, String> {
+    let id = action_id(r, action);
+    let who = Principal::new(r.name.clone());
+    let outcome = r
+        .host
+        .runtime()
+        .invoke_action(&who, (id.as_str(), vec![Value::resource(at)]))
+        .map_err(|error| error.to_string())?;
+    match outcome {
+        InvokeOutcome::Done(value) => Ok(value),
+        other => Err(format!("`{action}` answered {other:?}")),
+    }
+}
+
+/// The file `action` made of the page at `at`.
+fn made(r: &Replica, action: &str, at: &tilolang_runtime::ResourceRef) -> FileValue {
+    match asked(r, action, at) {
+        Ok(Value::File(file)) => (*file).clone(),
+        other => panic!("`{action}` makes a file: {other:?}"),
+    }
+}
+
+/// An answer from outside Tilo, as a host's transport hands it on: the page `fetch` asks for.
+struct Page(Vec<u8>);
+
+impl WebTransport for Page {
+    fn fetch(&self, request: &WebRequest) -> WebReply {
+        assert_eq!(request.url, "https://example.test/page");
+        WebReply {
+            status: 200,
+            status_text: "OK".to_owned(),
+            headers: Vec::new(),
+            body: self.0.clone(),
+        }
+    }
+}
+
+/// An action makes a file of what it holds — the text, the bytes an answer brought — and the
+/// device keeps its bytes under the name and media type it is made as.
+#[test]
+fn an_action_makes_a_file_of_the_text_and_the_bytes_it_holds() {
+    let device = Device::default();
+    let (mut ada, _loaded) = page(&device);
+    ada.host
+        .runtime()
+        .set_web(Page(b"<h1>a page</h1>".to_vec()));
+    let at = target(&Value::resource(&ada.host.root_of(APP).unwrap()));
+
+    let text = made(&ada, "make_text", &at);
+    assert_eq!(text.name, "made.md");
+    assert_eq!(text.media, "text/markdown");
+    assert_eq!(text.size, 2);
+    assert_eq!(
+        device.content(&text.hash).as_deref(),
+        Some(b"# ".as_slice())
+    );
+
+    let bytes = made(&ada, "fetch", &at);
+    assert_eq!(bytes.name, "page.html");
+    assert_eq!(bytes.media, "text/html");
+    assert_eq!(
+        device.content(&bytes.hash).as_deref(),
+        Some(b"<h1>a page</h1>".as_slice()),
+        "the answer's bytes are kept as they came"
+    );
+    ada.commit();
+}
+
+/// An action makes an archive of the files it holds, each under its own name, and a name no
+/// folder may have is refused rather than written.
+#[test]
+fn an_action_makes_an_archive_of_the_files_it_holds() {
+    let device = Device::default();
+    let (mut ada, _loaded) = page(&device);
+    let at = target(&Value::resource(&ada.host.root_of(APP).unwrap()));
+
+    let zip = made(&ada, "make_zip", &at);
+    assert_eq!(zip.name, "made.zip");
+    assert_eq!(zip.media, "application/zip");
+    let bytes = device.content(&zip.hash).expect("the archive is kept");
+    let files = bounded_zip::read_zip_parts(&bytes, &bounded_zip::ZipLimits::default())
+        .expect("the archive reads");
+    assert_eq!(
+        files,
+        [
+            ("words.md".to_owned(), b"# ".to_vec()),
+            ("images/fox.png".to_owned(), b"0".to_vec()),
+        ],
+        "each file under the name it was made as, in the order it was given"
+    );
+
+    let refused = asked(&ada, "make_unsafe", &at).expect_err("a name outside the folder");
+    assert!(
+        refused.contains("../outside.md"),
+        "it says which name: {refused}"
+    );
+    ada.commit();
+}
+
+/// An action names the content an address holds: the picture its record shows, and none a device
+/// does not hold.
+#[test]
+fn an_action_names_the_content_an_address_holds() {
+    let device = Device::with(vec![Pick {
+        name: "Ferns.png",
+        media: "image/png",
+        bytes: PIXELS.to_vec(),
+    }]);
+    let (mut ada, _loaded) = page(&device);
+    let at = target(&Value::resource(&ada.host.root_of(APP).unwrap()));
+    let view = ada.view(APP);
+    view.press(&button(&view, "Choose a picture")).unwrap();
+    ada.commit();
+
+    let again = made(&ada, "again", &at);
+    assert_eq!(again.name, "again.png");
+    assert_eq!(again.media, "image/png");
+    assert_eq!(again.size, i64::try_from(PIXELS.len()).expect("a size"));
+    assert_eq!(device.content(&again.hash).as_deref(), Some(PIXELS));
+
+    let missing = asked(&ada, "missing", &at).expect_err("content no device holds");
+    assert!(
+        missing.contains("is not on this device"),
+        "it says what is missing: {missing}"
+    );
 }

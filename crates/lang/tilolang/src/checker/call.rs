@@ -2289,12 +2289,16 @@ impl Checker<'_> {
 
     /// A method that stands on a type instead of a value: `Date.parse(text, near: now)` and
     /// `Time.parse(text, near: now)`, the day or the moment a text names when people type it
-    /// ("tomorrow", "fri 10am", "in 2 weeks"), read at a moment in the person's zone; and
-    /// `RichText.from_markdown(text)`, the document a Markdown text says.
+    /// ("tomorrow", "fri 10am", "in 2 weeks"), read at a moment in the person's zone;
+    /// `RichText.from_markdown(text)`, the document a Markdown text says; and `File`'s, which
+    /// make a file of what an action holds (`File.of_text(name, text)`).
     fn type_method(&mut self, ty: Ty, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         let t = self.show(&ty);
         if ty == Ty::RichText {
             return self.rich_type_method(name, args, span);
+        }
+        if ty == Ty::File {
+            return self.file_type_method(name, args, span);
         }
         if name.name != "parse" {
             self.err(
@@ -2385,6 +2389,80 @@ impl Checker<'_> {
         }
         let text = self.expr_as(&text.value, &Ty::Text);
         Ex::host(Imp::RichFromMarkdown, vec![text], Ty::RichText)
+    }
+
+    /// `File`'s methods, which make a file of what an action holds:
+    /// `File.of_text(name, text)` the file `name` holding `text`, `File.of_bytes(name, bytes)`
+    /// the file holding `bytes`, `File.at(name, address)` the file whose content the device
+    /// holds at `address` (a `tilo-blob://` address, as a picture of a record reads), and
+    /// `File.zip(name, files)` the archive `name` holding each of `files` under its own name.
+    fn file_type_method(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        let (held, imp, what, of) = match name.name.as_str() {
+            "of_text" => (Ty::Text, Imp::FileOfText, "the text it holds", "text"),
+            "of_bytes" => (Ty::Bytes, Imp::FileOfBytes, "the bytes it holds", "bytes"),
+            "at" => (
+                Ty::Text,
+                Imp::FileAt,
+                "the address of the content it holds",
+                "a `tilo-blob://` address",
+            ),
+            "zip" => (
+                Ty::List(Box::new(Ty::File)),
+                Imp::FileZip,
+                "the files it holds",
+                "files",
+            ),
+            other => {
+                self.err(
+                    "E027",
+                    name.span,
+                    format!(
+                        "`File` has `of_text`, `of_bytes`, `at` and `zip`, not `{other}`: a file is made of what an action holds, as `File.of_text(\"Notes.md\", text)`"
+                    ),
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Ex::error();
+            }
+        };
+        let [named, content] = args else {
+            self.err(
+                "E022",
+                span,
+                format!(
+                    "`.{}` takes the file's name and {}: `File.{}(\"{}\", {})`",
+                    name.name,
+                    what,
+                    name.name,
+                    if name.name == "zip" {
+                        "Notes.zip"
+                    } else {
+                        "Notes.md"
+                    },
+                    of
+                ),
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        };
+        for arg in [named, content] {
+            if let Some(named) = &arg.name {
+                self.err(
+                    "E022",
+                    named.span,
+                    format!(
+                        "`.{}` takes the name and {} by position: `File.{}(…, …)`",
+                        name.name, what, name.name
+                    ),
+                );
+            }
+        }
+        let named = self.expr_as(&named.value, &Ty::Text);
+        let content = self.expr_as(&content.value, &held);
+        Ex::host(imp, vec![named, content], Ty::File)
     }
 
     pub(super) fn value_method(
@@ -2653,12 +2731,13 @@ impl Checker<'_> {
 }
 
 /// The type a text names, where it is written before a method instead of a value:
-/// `Date.parse(...)`, `Time.parse(...)`, `RichText.from_markdown(...)`.
+/// `Date.parse(...)`, `Time.parse(...)`, `RichText.from_markdown(...)`, `File.of_text(...)`.
 fn parse_ty(name: &str) -> Option<Ty> {
     match name {
         "Date" => Some(Ty::Date),
         "Time" => Some(Ty::Time),
         "RichText" => Some(Ty::RichText),
+        "File" => Some(Ty::File),
         _ => None,
     }
 }

@@ -12,6 +12,12 @@
 //! where the person wants it ([`BlobHost::save`]). A host that holds no content store answers
 //! that it holds no files; the types and the records work all the same.
 //!
+//! An action makes a file of what it holds (`File.of_text`, `File.of_bytes`, `File.at`,
+//! `File.zip`): its bytes are kept in the content store, under a name the app chooses, and the
+//! `File` value answers that name, media type, size and address. What is made is bounded like
+//! what is read: a file the action holds by [`MAX_CHOSEN`], an archive by [`MAX_ARCHIVE_BYTES`],
+//! under the names [`bounded_zip::is_safe_name`] admits.
+//!
 //! Reading a file is a read, not an effect: its content is what its address names and never
 //! changes, so an invocation that reads one is computed again from the same bytes. A device
 //! that does not hold the content answers a value saying so.
@@ -28,7 +34,8 @@ pub const SCHEME: &str = "tilo-blob://";
 
 /// The most a file a person chooses may be, as the size a `File` value reads it. A picture a note takes in is well under it, and a
 /// record's content is not what the store is for: what is larger is refused as a value, with
-/// the size it had.
+/// the size it had. It is also the most a file an action holds may be made into
+/// (`File.of_text`, `File.of_bytes`, `File.at`): a file made here is one a person could choose.
 pub const MAX_CHOSEN: usize = 1024 * 1024;
 
 /// [`MAX_CHOSEN`] as a file's size reads it: what a chosen file's `size` is compared with
@@ -42,8 +49,9 @@ pub const MAX_TEXT: usize = 256 * 1024;
 /// [`MAX_TEXT`] as a file's size reads it.
 pub const MAX_TEXT_BYTES: i64 = 256 * 1024;
 
-/// The most files one archive an action reads (`.files()`) may hold.
-pub const MAX_ARCHIVE_FILES: usize = 256;
+/// The most files one archive an action reads (`.files()`) or writes (`File.zip`) may hold: the
+/// notes of a notebook and the pictures they show, which is what an export writes whole.
+pub const MAX_ARCHIVE_FILES: usize = 4096;
 
 /// The most bytes one file in an archive may be, and all of them together: a person chooses an
 /// archive of documents, never a disk image, and what it holds is read into memory.
@@ -256,6 +264,128 @@ impl Core {
             other => trap(format!("expected a file, got {}", other.kind_name())),
         }
     }
+
+    /// A file an action makes of what it holds: the text, the bytes, the content an address
+    /// names, or an archive of the files it holds, each under the name the file has. Its bytes
+    /// are kept in the device's content store, under the name it is made as, and the `File` it
+    /// answers has that name, its media type, its size and the address of its content.
+    pub(crate) fn file_make(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let name = self.text(a.h(0)?)?;
+        let held = match imp {
+            Imp::FileOfText => Held::Text(self.text(a.h(1)?)?),
+            Imp::FileOfBytes => match self.val(a.h(1)?)? {
+                Value::Bytes(bytes) => Held::Bytes((*bytes).clone()),
+                other => {
+                    return trap(format!(
+                        "`File.of_bytes` holds bytes, and this is a {}",
+                        other.kind_name()
+                    ));
+                }
+            },
+            Imp::FileAt => Held::At(self.text(a.h(1)?)?),
+            Imp::FileZip => match self.val(a.h(1)?)? {
+                Value::List(items) => Held::Files(files_of_list(&items)?),
+                other => {
+                    return trap(format!(
+                        "`File.zip` holds files, and this is a {}",
+                        other.kind_name()
+                    ));
+                }
+            },
+            _ => return trap("not a file an action makes"),
+        };
+        let answer = match self.blobs.borrow().as_ref() {
+            Some(blobs) => made(blobs.as_ref(), &name, held),
+            None => Err("this host keeps no files".to_owned()),
+        };
+        match answer {
+            Ok(file) => self.ret_h(Value::file(file)),
+            Err(why) => trap(why),
+        }
+    }
+}
+
+/// What an action holds that it makes a file of.
+enum Held {
+    /// The text the file holds, as its bytes.
+    Text(String),
+    /// The bytes it holds.
+    Bytes(Vec<u8>),
+    /// The address (`tilo-blob://<hash>`) of content the device holds.
+    At(String),
+    /// The files, each under the name it is called: the parts of an archive.
+    Files(Vec<FileValue>),
+}
+
+/// The files `items` holds, or why one of them is not a file.
+fn files_of_list(items: &[Value]) -> HResult<Vec<FileValue>> {
+    let mut files = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            Value::File(file) => files.push((**file).clone()),
+            other => {
+                return trap(format!(
+                    "`File.zip` holds files, and this list holds a {}",
+                    other.kind_name()
+                ));
+            }
+        }
+    }
+    Ok(files)
+}
+
+/// The file `name`, of what `held` is: the text or the bytes kept in the content store, the
+/// content an address names, or an archive written of `files`, each part stored under its own
+/// name and safe to extract ([`bounded_zip::is_safe_name`]).
+fn made(blobs: &dyn BlobHost, name: &str, held: Held) -> Result<FileValue, String> {
+    match held {
+        Held::Text(text) => kept(blobs, name, text.as_bytes(), MAX_CHOSEN),
+        Held::Bytes(bytes) => kept(blobs, name, &bytes, MAX_CHOSEN),
+        // The content is the store's already, under the address the action named: the file only
+        // says what it is called and which media type it is.
+        Held::At(address) => {
+            let Some(hash) = address.strip_prefix(SCHEME) else {
+                return Err(format!(
+                    "`{address}` is not the address of a file's content: they read `{SCHEME}<hash>`"
+                ));
+            };
+            let bytes = blobs
+                .read(hash)
+                .ok_or_else(|| format!("the content of `{name}` is not on this device"))?;
+            let size = within(name, bytes.len(), MAX_CHOSEN)?;
+            Ok(FileValue::new(name, media_of(name), size, hash))
+        }
+        Held::Files(files) => {
+            let mut entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(files.len());
+            for file in files {
+                let bytes = blobs.read(&file.hash).ok_or_else(|| {
+                    format!("the content of `{}` is not on this device", file.name)
+                })?;
+                entries.push((file.name, bytes));
+            }
+            let bytes = bounded_zip::write_zip(&entries, &ARCHIVE)
+                .map_err(|why| format!("`{name}` is not an archive that writes: {why}"))?;
+            let limit = usize::try_from(MAX_ARCHIVE_BYTES).unwrap_or(usize::MAX);
+            kept(blobs, name, &bytes, limit)
+        }
+    }
+}
+
+/// `bytes` kept in the content store as a file called `name`, of the media type its name tells,
+/// when it holds no more than `limit` bytes.
+fn kept(blobs: &dyn BlobHost, name: &str, bytes: &[u8], limit: usize) -> Result<FileValue, String> {
+    within(name, bytes.len(), limit)?;
+    blobs.keep(name, &media_of(name), bytes)
+}
+
+/// How many bytes a file of that size holds, or why a file of `name` may not hold them.
+fn within(name: &str, len: usize, limit: usize) -> Result<i64, String> {
+    if len > limit {
+        return Err(format!(
+            "`{name}` is {len} bytes: more than the {limit} a file it makes may hold"
+        ));
+    }
+    Ok(i64::try_from(len).unwrap_or(i64::MAX))
 }
 
 /// The file's content as text, or why it is not: nothing this device holds, more than
@@ -281,9 +411,9 @@ fn read_text(blobs: &dyn BlobHost, file: &FileValue) -> Result<String, String> {
 /// reads names and nesting from. A file is read within [`ARCHIVE`]'s bounds: an archive is a
 /// person's, and one that holds more than an importer reads is refused with why.
 fn files_of(blobs: &dyn BlobHost, file: &FileValue) -> Result<Vec<Value>, String> {
-    if file.size > MAX_CHOSEN_BYTES {
+    if u64::try_from(file.size).unwrap_or(u64::MAX) > MAX_ARCHIVE_BYTES {
         return Err(format!(
-            "`{}` is {} bytes: more than the {MAX_CHOSEN} a file may be",
+            "`{}` is {} bytes: more than the {MAX_ARCHIVE_BYTES} an archive may be",
             file.name, file.size
         ));
     }

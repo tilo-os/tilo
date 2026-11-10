@@ -62,6 +62,8 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 # The fake broker a workspace's committed read is served from in the tests.
 collaboration = { version = "0.1.0", path = "../../collab/collaboration", features = ["test-support", "broker-transport", "native"] }
+# The archives an app exports, read back as a person who unzips them finds them.
+bounded-zip = { path = "../../doc/bounded-zip" }
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 tempfile.workspace = true

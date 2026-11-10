@@ -22922,6 +22922,7 @@ dependencies = [
 name = "tilolang-tilo"
 version = "0.1.0"
 dependencies = [
+ "bounded-zip",
  "chrono",
  "collab-types",
  "collaboration",

@@ -6,6 +6,10 @@ use so.tilo.lang.discussion as discussion
 type Note (untitled: "Untitled") {
     title: Text
     body: RichText
+    /// The pictures the note shows, by the address of their content: the name each was taken in
+    /// as. The body says where a picture is and no more, and an export writes it beside the note
+    /// under the name it came in as, which only this says.
+    images: Map<Text>
     parent: Option<Note>
     pinned: Bool = false
     tags: Set<Text>
@@ -138,28 +142,37 @@ action untag(n: Note, t: Text) (label: "Untag", group: "Tags") {
 }
 
 /// Puts a picture in a note, where its words end: the person picks the file, and the note
-/// keeps the address of its content rather than the picture.
+/// keeps the address of its content rather than the picture, and the name it came in as.
 action insert_image(n: Note, image: File) (icon: .image, did: "added an image") {
     n.body = RichText(n.body, "\n![]({image.url})")
+    n.images.put(image.url, base_name(image.name))
 }
 
-/// A note as Markdown: its title, then its body. What `file.save` writes as the file the
-/// person names. Its pictures stand as the address of their bytes, which every device of the
-/// workspace holds.
+/// A note as Markdown: its title, then its body, each picture it shows standing beside it as
+/// `<note>/images/<name>` — a path another reader of the file follows, and this app reads again
+/// as the address of the picture's bytes.
 action export_markdown(n: Note) -> Text (icon: .download) {
-    let title = n.title.trim()
-    let body = n.body.markdown.trim()
-    if body.starts_with("# {title}") or title == "" { body } else { "# {title}\n\n{body}" }
+    note_markdown(n, file_name(n))
 }
 
-/// The notebook as one Markdown file, in the tree's order: each note's title a heading one level
-/// under the note it stands in.
-action export_notebook(nb: Notebook) -> Text (icon: .download) {
-    let out = ""
-    for n in nb.notes {
-        out = "{out}{heading_of(nb, n)} {n.title}\n\n{n.body.markdown.trim()}\n\n"
+/// A note as a file: its Markdown, and the pictures it shows beside it. A note that shows a
+/// picture is one zip — `Q3 plan.md` and `Q3 plan/images/fox.png` — because Markdown reaches a
+/// picture by a path and by nothing else; a note of words alone is that Markdown itself.
+action export_note(n: Note) -> File (icon: .download) {
+    if n.images.keys().is_empty() {
+        File.of_text("{file_name(n)}.md", export_markdown(n))
+    } else {
+        File.zip("{file_name(n)}.zip", note_files(n, file_name(n), ""))
     }
-    out.trim()
+}
+
+/// The notebook as a zip, one Markdown file for each note: a note's own under the folder of the
+/// note it stands in, and the pictures it shows in its own `images` folder beside it. That is the
+/// shape the import reads, so the notebook comes back as the tree it is, titles, bodies and
+/// pictures alike.
+action export_notebook(nb: Notebook) -> File (icon: .download) {
+    let files: List<File> = nb.notes.flat_map(n -> page_files(nb, n))
+    File.zip("Notes.zip", files)
 }
 
 /// Imports a Markdown file as a note at the top of the tree, or opens the note that file already
@@ -196,12 +209,12 @@ action import_markdown(nb: Notebook, file: File) -> Note (
     }
 }
 
-/// Imports a Notion export — the zip of a page's Markdown and its pictures — as notes under the
-/// notebook, a page under the page that held it, in one change: undo takes the whole import
+/// Imports a zip of Markdown — a notebook this app exported, or a Notion export — as notes under
+/// the notebook, a page under the page that held it, in one change: undo takes the whole import
 /// back. Each page's title is its first heading, or its file's name; the pictures a page shows
-/// are the ones the export kept beside it, found among the archive's files. A page that is
+/// are the files it stands beside, a reference read from the page's own folder. A page that is
 /// imported already keeps the note it made.
-action import_notion(nb: Notebook, file: File) (icon: .file_plus, did: "imported a notebook") {
+action import_archive(nb: Notebook, file: File) (icon: .file_plus, did: "imported a notebook") {
     match file.files() {
         .ok(files) => {
             let pictures = files.filter(f -> f.media.starts_with("image/"))
@@ -216,7 +229,11 @@ action import_notion(nb: Notebook, file: File) (icon: .file_plus, did: "imported
                     let at = match page.text() {
                         .ok(text) => {
                             let title = first_heading(text) ?? named
-                            let shown = pictures_shown(without_heading(text, title), pictures)
+                            let shown = pictures_shown(
+                                without_heading(text, title),
+                                page.name,
+                                pictures,
+                            )
                             Note(
                                 title: title,
                                 body: RichText.from_markdown(shown),
@@ -236,6 +253,14 @@ action import_notion(nb: Notebook, file: File) (icon: .file_plus, did: "imported
                         }
                     }
                     let made = nb.notes.insert(at)
+                    // The pictures the page shows are the note's own, by the name each stood
+                    // under: what an export of it writes beside it again.
+                    let shown = made.body.markdown
+                    for picture in pictures {
+                        if shown.contains(picture.url) {
+                            made.images.put(picture.url, base_name(picture.name))
+                        }
+                    }
                     if let p = parent {
                         if let last = nb.notes.filter(x -> x.parent == p and x != made).last() {
                             nb.notes.move(made, after: last)
@@ -285,17 +310,17 @@ view notebook(nb: Notebook) {
 }
 
 /// The notebook's own file commands, beside the control that makes a note: a Markdown file or a
-/// Notion export in, the whole notebook out.
+/// zip of them in, the whole notebook out.
 view notebook_menu(nb: Notebook) {
     ui.MenuButton("File", icon: .file_plus) {
         ui.MenuItem("Import Markdown…", icon: .file_plus) {
             on choose: file.choose(import_markdown(nb), accept: ["text/markdown"])
         }
-        ui.MenuItem("Import a Notion export…", icon: .file_plus) {
-            on choose: file.choose(import_notion(nb), accept: ["application/zip"])
+        ui.MenuItem("Import a zip of Markdown…", icon: .file_plus) {
+            on choose: file.choose(import_archive(nb), accept: ["application/zip"])
         }
         ui.MenuItem("Export the notebook…", icon: .download) {
-            on choose: file.save(export_notebook(nb), name: "Notes.md")
+            on choose: file.save(export_notebook(nb), name: "Notes.zip")
         }
     }
 }
@@ -358,7 +383,7 @@ view note_page(n: Note) {
     std.history(n)
 }
 
-/// A note's own file commands: a picture in, the note out as a Markdown file.
+/// A note's own file commands: a picture in, the note out as a file of its own.
 view note_menu(n: Note) {
     ui.MenuButton("File", icon: .file_plus) {
         ui.MenuItem("Insert an image…", icon: .image) {
@@ -367,17 +392,89 @@ view note_menu(n: Note) {
                 accept: ["image/png", "image/jpeg", "image/webp"],
             )
         }
-        ui.MenuItem("Export as Markdown…", icon: .download) {
-            on choose: file.save(export_markdown(n), name: "{file_name(n)}.md")
+        ui.MenuItem("Export…", icon: .download) {
+            on choose: file.save(export_note(n), name: export_name(n))
         }
     }
 }
 
-/// The heading a note's title takes in the notebook's Markdown: one level under the note it
-/// stands in, at most six deep.
-fn heading_of(nb: Notebook, n: Note) -> Text {
-    let marks = if let p = n.parent { "{heading_of(nb, p)}#" } else { "#" }
-    if marks.len() > 6 { marks.slice(0, 6) } else { marks }
+/// The name a note's file is offered as: the Markdown's own while the note shows no picture, and
+/// the zip's when it does.
+fn export_name(n: Note) -> Text {
+    if n.images.keys().is_empty() { "{file_name(n)}.md" } else { "{file_name(n)}.zip" }
+}
+
+/// The files one note's export holds: its Markdown at `folder`/`name`, and each picture it shows
+/// under that note's own `images` folder, beside the note as a reader of it finds them.
+fn note_files(n: Note, name: Text, folder: Text) -> List<File> {
+    let page = File.of_text("{folder}{name}.md", note_markdown(n, name))
+    let pictures: List<File> = n.images
+        .keys()
+        .map(
+            address -> {
+                File.at("{folder}{name}/images/{picture_name(n, address)}", address)
+            },
+        )
+    [[page], pictures].flat_map(files -> files)
+}
+
+/// The files one note of the notebook's export holds, where the tree puts it.
+fn page_files(nb: Notebook, n: Note) -> List<File> {
+    note_files(n, note_name(nb.notes, n), note_folder(nb.notes, n))
+}
+
+/// A note as Markdown: its title, then its body, each picture it shows standing under `name`'s own
+/// `images` folder — a path relative to the note, as a reader of the file follows it.
+fn note_markdown(n: Note, name: Text) -> Text {
+    let body = n.body.markdown.trim()
+    for address in n.images.keys() {
+        body = body.replace("]({address})", "]({name}/images/{picture_name(n, address)})")
+    }
+    let title = n.title.trim()
+    if title == "" {
+        return body
+    }
+    if body.starts_with("# {title}") {
+        return body
+    }
+    if body == "" {
+        return "# {title}"
+    }
+    "# {title}\n\n{body}"
+}
+
+/// The name a picture of `n` stands under in an export: the name it was taken in as, and — while
+/// another picture of the note is called that too — its place among them (`fox-2.png`).
+fn picture_name(n: Note, address: Text) -> Text {
+    let name = base_name(n.images.get(address) ?? "image")
+    let keys = n.images.keys()
+    let same = keys
+        .take(keys.index_of(address) ?? 0)
+        .filter(k -> base_name(n.images.get(k) ?? "image") == name)
+    if same.is_empty() {
+        name
+    } else {
+        "{stem_of(name)}-{same.len() + 1}{extension_of(name)}"
+    }
+}
+
+/// Where a note's own file stands in the notebook's export, without the extension: the folder of
+/// each note it is under, and its own name last (`Q3 plan/Standups/Monday`).
+fn note_path(items: List<Note>, n: Note) -> Text {
+    "{note_folder(items, n)}{note_name(items, n)}"
+}
+
+/// The folder a note's own file stands in: what the export calls the note it is under.
+fn note_folder(items: List<Note>, n: Note) -> Text {
+    if let p = n.parent { "{note_path(items, p)}/" } else { "" }
+}
+
+/// The name a note's file takes: its title, and the place it holds among the notes of one title
+/// under the same note (`Monday`, `Monday (2)`), so two notes of one title are two files.
+fn note_name(items: List<Note>, n: Note) -> Text {
+    let titled = items.filter(x -> x.parent == n.parent and file_name(x) == file_name(n))
+    let at = titled.index_of(n) ?? 0
+    if at == 0 { file_name(n) } else { "{file_name(n)} ({at + 1})" }
 }
 
 fn within(items: List<Note>, place: Option<Note>, top: Note) -> Bool {
@@ -391,11 +488,28 @@ fn copied(n: Note, parent: Option<Note>) -> Note {
     Note(title: n.title, body: n.body, parent: parent, pinned: n.pinned)
 }
 
-/// The name a note is offered to be saved as: its title, a dash for each character a file name
-/// cannot keep, and "Note" while it has no title.
+/// The name a note is saved as: its title, a dash for each character a file name cannot keep, and
+/// "Note" while its title is nothing a file can be called.
 fn file_name(n: Note) -> Text {
-    let safe = n.title.trim().replace("/", "-")
-    if safe == "" { "Note" } else { safe }
+    let safe = n.title
+        .trim()
+        .replace("/", "-")
+        .replace("\\", "-")
+        .replace(":", "-")
+        .replace("\n", "-")
+    if safe == "" or safe == "." or safe == ".." { "Note" } else { safe }
+}
+
+/// A file's name without its extension: `fox.png` is `fox`.
+fn stem_of(name: Text) -> Text {
+    let parts = base_name(name).split(".")
+    if parts.len() <= 1 { base_name(name) } else { parts.take(parts.len() - 1).join(".") }
+}
+
+/// The extension a file's name gives it, the dot included: `.png` for `fox.png`, and nothing.
+fn extension_of(name: Text) -> Text {
+    let parts = base_name(name).split(".")
+    if parts.len() <= 1 { "" } else { ".{parts.last() ?? ""}" }
 }
 
 /// The name at the end of a path: a file's own name, not the folders it stands in.
@@ -442,14 +556,32 @@ fn without_heading(markdown: Text, title: Text) -> Text {
 }
 
 /// `markdown` with each picture it shows found among `pictures`, the files an export kept beside
-/// the page: a name the export wrote becomes the address of the file, which every device holds.
-fn pictures_shown(markdown: Text, pictures: List<File>) -> Text {
+/// the page: a path a reader of the file follows becomes the address of the picture's bytes, which
+/// every device of the workspace holds.
+fn pictures_shown(markdown: Text, page: Text, pictures: List<File>) -> Text {
     let shown = markdown
+    let folder = folder_of(page)
     for picture in pictures {
-        shown = shown.replace("]({base_name(picture.name)})", "]({picture.url})")
-        shown = shown.replace("]({picture.name})", "]({picture.url})")
+        if let at = page_ref(folder, picture.name) {
+            if shown.contains("]({at})") {
+                shown = shown.replace("]({at})", "]({picture.url})")
+            }
+        }
     }
     shown
+}
+
+/// `path` as a page in `folder` names it: the files beside it by their own name, and those under
+/// it by the path from it (`images/fox.png` for a page standing in `Q3 plan`). What a page cannot
+/// reach from where it stands it does not name.
+fn page_ref(folder: Text, path: Text) -> Option<Text> {
+    if folder == "" {
+        return path
+    }
+    if path.starts_with("{folder}/") {
+        return path.slice(folder.len() + 1, path.len())
+    }
+    .none
 }
 
 /// The note that ends the run `t` begins: the last note under it, or `t` itself.

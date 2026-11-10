@@ -301,6 +301,13 @@ imports! {
     FileSize = "file_size" ([H] -> [I64]);
     FileText = "file_text" ([H] -> [H]);
     FileFiles = "file_files" ([H] -> [H]);
+    // A file an action makes of what it holds: the text, the bytes, or the content an address
+    // names, as a file called by its name; and an archive of the files it holds, each under its
+    // own name.
+    FileOfText = "file_of_text" ([H, H] -> [H]);
+    FileOfBytes = "file_of_bytes" ([H, H] -> [H]);
+    FileAt = "file_at" ([H, H] -> [H]);
+    FileZip = "file_zip" ([H, H] -> [H]);
     ActChoose = "act_choose" ([H, H] -> [H]);
     ActSave = "act_save" ([H, H] -> [H]);
 

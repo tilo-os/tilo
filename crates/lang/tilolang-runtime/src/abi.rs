@@ -283,6 +283,10 @@ imports! {
     (FileSize, "file_size", "i", "l"),
     (FileText, "file_text", "i", "i"),
     (FileFiles, "file_files", "i", "i"),
+    (FileOfText, "file_of_text", "ii", "i"),
+    (FileOfBytes, "file_of_bytes", "ii", "i"),
+    (FileAt, "file_at", "ii", "i"),
+    (FileZip, "file_zip", "ii", "i"),
     (ActChoose, "act_choose", "ii", "i"),
     (ActSave, "act_save", "ii", "i"),
 

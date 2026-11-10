@@ -1,5 +1,6 @@
 //! The notes app's documents: a note exported as Markdown and imported again is the same note,
-//! the file a note came from is remembered, and a Notion export becomes notes in one change.
+//! the file a note came from is remembered, a notebook exported as a zip comes back as the tree
+//! it is, with its pictures, and a Notion export becomes notes in one change.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -149,10 +150,42 @@ fn body(r: &Replica, note: &ResourceRef) -> RichValue {
     }
 }
 
+/// A note's body, as the words of each block that holds any: what a person reads, and what being
+/// a blank line first or last does not change.
+fn said(r: &Replica, note: &ResourceRef) -> Vec<String> {
+    body(r, note)
+        .blocks
+        .iter()
+        .map(|block| block.text.clone())
+        .filter(|text| !text.is_empty())
+        .collect()
+}
+
+/// A note's body, as the words of each block.
+fn words(r: &Replica, note: &ResourceRef) -> Vec<String> {
+    body(r, note)
+        .blocks
+        .iter()
+        .map(|block| block.text.clone())
+        .collect()
+}
+
 fn title(r: &Replica, note: &ResourceRef) -> String {
     match r.host.runtime().read(note, "title") {
         Ok(Value::Text(title)) => title,
         other => panic!("a note's title: {other:?}"),
+    }
+}
+
+/// The note `note` stands under, or nothing at the top of the tree.
+fn parent_of(r: &Replica, note: &ResourceRef) -> Option<ResourceRef> {
+    match r.host.runtime().read(note, "parent") {
+        Ok(Value::Opt(Some(held))) => match *held {
+            Value::Ref(at) => Some((*at.target).clone()),
+            other => panic!("a note: {other:?}"),
+        },
+        Ok(Value::Opt(None)) => None,
+        other => panic!("a note's parent: {other:?}"),
     }
 }
 
@@ -166,12 +199,82 @@ fn imported(r: &mut Replica, device: &Device, name: &str, text: &str) -> Resourc
     all.last().cloned().expect("the note it imported")
 }
 
+/// A note the app makes, under `parent`, titled `title`.
+fn note(r: &mut Replica, parent: Option<&ResourceRef>, titled: &str) -> ResourceRef {
+    let nb = r.host.root_of(APP).unwrap();
+    let made = match parent {
+        Some(p) => call(
+            r,
+            "new_child",
+            vec![Value::resource(&nb), Value::resource(p)],
+        ),
+        None => call(r, "new_note", vec![Value::resource(&nb)]),
+    };
+    let made = match made {
+        Value::Ref(at) => (*at.target).clone(),
+        other => panic!("a note: {other:?}"),
+    };
+    call(
+        r,
+        "retitle",
+        vec![Value::resource(&made), Value::text(titled)],
+    );
+    r.commit();
+    made
+}
+
+/// `bytes` put in `note` as the picture `name`, as a person choosing it would.
+fn picture_in(r: &mut Replica, device: &Device, note: &ResourceRef, name: &str, bytes: &[u8]) {
+    let file = Value::file(device.keeping(name, "image/png", bytes));
+    call(r, "insert_image", vec![Value::resource(note), file]);
+    r.commit();
+}
+
+/// What `action` made of `args`, as the file it is.
+fn made_file(r: &Replica, action: &str, args: Vec<Value>) -> FileValue {
+    match call(r, action, args) {
+        Value::File(file) => (*file).clone(),
+        other => panic!("`{action}` makes a file, not {other:?}"),
+    }
+}
+
 /// The Markdown the app exports for `note`.
 fn exported(r: &Replica, note: &ResourceRef) -> String {
     match call(r, "export_markdown", vec![Value::resource(note)]) {
         Value::Text(text) => text,
         other => panic!("an export: {other:?}"),
     }
+}
+
+/// The files an archive holds, in the order it holds them: what a person who opens the export in
+/// their own file manager finds.
+fn entries(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
+    bounded_zip::read_zip_parts(bytes, &bounded_zip::ZipLimits::default())
+        .expect("the archive reads")
+}
+
+/// What an exported archive `file` holds, from the device's content store.
+fn held(device: &Device, file: &FileValue) -> Vec<(String, Vec<u8>)> {
+    let bytes = device.read(&file.hash).expect("the export's bytes");
+    entries(&bytes)
+}
+
+/// The content of the entry `name` of an archive.
+fn entry(archive: &[(String, Vec<u8>)], name: &str) -> Vec<u8> {
+    archive.iter().find(|(held, _)| held == name).map_or_else(
+        || {
+            panic!(
+                "`{name}` among {:?}",
+                archive.iter().map(|(held, _)| held).collect::<Vec<_>>()
+            )
+        },
+        |(_, bytes)| bytes.clone(),
+    )
+}
+
+/// The content of the entry `name` as text.
+fn entry_text(archive: &[(String, Vec<u8>)], name: &str) -> String {
+    String::from_utf8(entry(archive, name)).expect("a text file")
 }
 
 #[test]
@@ -337,7 +440,7 @@ fn a_notion_export_becomes_notes_in_one_change() {
     let file = Value::file(device.keeping("Reading list.zip", "application/zip", &exported));
     let nb = ada.host.root_of(APP).unwrap();
     let before = ada.log.len();
-    call(&ada, "import_notion", vec![Value::resource(&nb), file]);
+    call(&ada, "import_archive", vec![Value::resource(&nb), file]);
     ada.commit();
     assert_eq!(
         ada.log.len(),
@@ -371,4 +474,188 @@ fn a_notion_export_becomes_notes_in_one_change() {
         Some(PIXELS),
         "the picture's bytes are in the content store"
     );
+}
+
+const ARCH: &[u8] = b"\x89PNG\r\n\x1a\n-an-arch";
+
+/// The notebook's export: the file the app made of it.
+fn exported_notebook(r: &Replica) -> FileValue {
+    let nb = r.host.root_of(APP).unwrap();
+    let file = made_file(r, "export_notebook", vec![Value::resource(&nb)]);
+    assert_eq!(file.name, "Notes.zip");
+    assert_eq!(file.media, "application/zip");
+    file
+}
+
+/// The notebook's export, read back: the files it holds, in the order it holds them.
+fn notebook_export(r: &Replica, device: &Device) -> Vec<(String, Vec<u8>)> {
+    held(device, &exported_notebook(r))
+}
+
+/// A notebook with notes three deep and pictures in two of them: exported as a zip, the zip is a
+/// folder of Markdown a reader follows, and importing it gives the notebook back — the tree, the
+/// titles, the words and the pictures, their bytes equal.
+#[test]
+fn a_notebook_exported_and_imported_again_is_the_same_notebook() {
+    let device = Device::default();
+    let (mut ada, _loaded) = notebook(&device);
+    let plan = note(&mut ada, None, "Q3 plan");
+    picture_in(&mut ada, &device, &plan, "arch.png", ARCH);
+    let standups = note(&mut ada, Some(&plan), "Standups");
+    let monday = note(&mut ada, Some(&standups), "Monday");
+    picture_in(&mut ada, &device, &monday, "fox.png", PIXELS);
+    let _home = note(&mut ada, None, "Home");
+
+    let file = exported_notebook(&ada);
+    let exported = held(&device, &file);
+    let names: Vec<&str> = exported.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "Q3 plan.md",
+            "Q3 plan/images/arch.png",
+            "Q3 plan/Standups.md",
+            "Q3 plan/Standups/Monday.md",
+            "Q3 plan/Standups/Monday/images/fox.png",
+            "Home.md",
+        ],
+        "a note under the folder of the note it stands in, its pictures beside it"
+    );
+    for name in &names {
+        assert!(
+            bounded_zip::is_safe_name(name),
+            "`{name}` names a file inside the archive, nowhere else"
+        );
+    }
+    // Each page reaches its picture by the path its own folder gives it, which a reader of the
+    // file follows.
+    assert!(
+        entry_text(&exported, "Q3 plan.md").contains("](Q3 plan/images/arch.png)"),
+        "{}",
+        entry_text(&exported, "Q3 plan.md")
+    );
+    assert!(
+        entry_text(&exported, "Q3 plan/Standups/Monday.md").contains("](Monday/images/fox.png)"),
+        "{}",
+        entry_text(&exported, "Q3 plan/Standups/Monday.md")
+    );
+    assert_eq!(
+        entry(&exported, "Q3 plan/Standups/Monday/images/fox.png"),
+        PIXELS,
+        "a picture's bytes are in the export as they were taken in"
+    );
+
+    // The notebook the export makes, imported into an empty one: the tree comes back.
+    let (mut ben, _loaded) = notebook(&device);
+    let nb = ben.host.root_of(APP).unwrap();
+    call(
+        &ben,
+        "import_archive",
+        vec![Value::resource(&nb), Value::file(file)],
+    );
+    ben.commit();
+
+    let all = written(&ben, &nb);
+    assert_eq!(all.len(), 4, "a note for each page");
+    let titles: Vec<String> = all.iter().map(|n| title(&ben, n)).collect();
+    assert_eq!(titles, ["Q3 plan", "Standups", "Monday", "Home"]);
+    assert_eq!(parent_of(&ben, &all[0]), None);
+    assert_eq!(
+        parent_of(&ben, &all[1]).map(|p| p.id_string()),
+        Some(all[0].id_string()),
+        "Standups stands under Q3 plan"
+    );
+    assert_eq!(
+        parent_of(&ben, &all[2]).map(|p| p.id_string()),
+        Some(all[1].id_string()),
+        "Monday stands under Standups"
+    );
+    assert_eq!(parent_of(&ben, &all[3]), None);
+    for (was, now) in [(&plan, &all[0]), (&monday, &all[2])] {
+        assert_eq!(
+            said(&ada, was),
+            said(&ben, now),
+            "a body comes back as it went in"
+        );
+    }
+
+    // The pictures come back too: each body names the address of its bytes again, and the
+    // device holds them.
+    let shown = words(&ben, &all[2]).join("\n");
+    let kept = device.keeping("fox.png", "image/png", PIXELS);
+    assert!(
+        shown.contains(&kept.url()),
+        "the imported page shows its picture: {shown}"
+    );
+    assert_eq!(device.read(&kept.hash).as_deref(), Some(PIXELS));
+
+    // Exporting what was imported gives the same files again, under the same names.
+    assert_eq!(
+        notebook_export(&ben, &device),
+        exported,
+        "the notebook exports as it imported"
+    );
+}
+
+/// Two notes of one title under one note are two files, and no title can name a file outside the
+/// folder the export is read into.
+#[test]
+fn an_export_names_its_files_safely_wherever_the_titles_point() {
+    let device = Device::default();
+    let (mut ada, _loaded) = notebook(&device);
+    let plan = note(&mut ada, None, "Plan");
+    note(&mut ada, Some(&plan), "Monday");
+    note(&mut ada, Some(&plan), "Monday");
+    note(&mut ada, None, "../../etc/passwd");
+    note(&mut ada, None, "..");
+
+    let exported = notebook_export(&ada, &device);
+    let names: Vec<&str> = exported.iter().map(|(name, _)| name.as_str()).collect();
+    for name in &names {
+        assert!(
+            bounded_zip::is_safe_name(name),
+            "`{name}` names a file inside the archive, nowhere else: {names:?}"
+        );
+        assert!(
+            !name.starts_with('/') && name.split('/').all(|part| part != ".." && part != "."),
+            "`{name}` does not lead out of the folder it is read into: {names:?}"
+        );
+    }
+    assert!(names.contains(&"Plan/Monday.md"), "{names:?}");
+    assert!(
+        names.contains(&"Plan/Monday (2).md"),
+        "the second note of one title is a file of its own: {names:?}"
+    );
+}
+
+/// A note's own export: its Markdown while it shows no picture, and a zip of the Markdown and its
+/// pictures when it does.
+#[test]
+fn a_note_exports_as_markdown_and_its_pictures_go_with_it() {
+    let device = Device::default();
+    let (mut ada, _loaded) = notebook(&device);
+    let groceries = note(&mut ada, None, "Groceries");
+
+    let plain = made_file(&ada, "export_note", vec![Value::resource(&groceries)]);
+    assert_eq!(plain.name, "Groceries.md");
+    assert_eq!(plain.media, "text/markdown");
+    assert_eq!(
+        device.read(&plain.hash).as_deref(),
+        Some(b"# Groceries".as_slice()),
+        "a note of words alone is the Markdown itself"
+    );
+
+    picture_in(&mut ada, &device, &groceries, "fox.png", PIXELS);
+    let zipped = made_file(&ada, "export_note", vec![Value::resource(&groceries)]);
+    assert_eq!(zipped.name, "Groceries.zip");
+    assert_eq!(zipped.media, "application/zip");
+    let files = held(&device, &zipped);
+    let names: Vec<&str> = files.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["Groceries.md", "Groceries/images/fox.png"]);
+    assert!(
+        entry_text(&files, "Groceries.md").contains("](Groceries/images/fox.png)"),
+        "{}",
+        entry_text(&files, "Groceries.md")
+    );
+    assert_eq!(entry(&files, "Groceries/images/fox.png"), PIXELS);
 }

@@ -15,6 +15,9 @@ d-dpj7scfe = Title
 
 d-olsyp3aw = Body
 
+d-pmjerv63 = Images
+    .doc = The pictures the note shows, by the address of their content: the name each was taken in as.
+
 d-ssu2tbnf = Parent
 
 d-gfk6rqxp = Pinned
@@ -72,21 +75,24 @@ d-3u3bevec = Untag
     .doc = Untags a note.
 
 d-4s5iqnfo = Insert image
-    .doc = Puts a picture in a note, where its words end: the person picks the file, and the note keeps the address of its content rather than the picture.
+    .doc = Puts a picture in a note, where its words end: the person picks the file, and the note keeps the address of its content rather than the picture, and the name it came in as.
     .did = added an image
 
 d-xptsjaii = Export markdown
-    .doc = A note as Markdown: its title, then its body.
+    .doc = A note as Markdown: its title, then its body, each picture it shows standing beside it as `<note>/images/<name>` — a path another reader of the file follows, and this app reads again as the address of the picture's bytes.
+
+d-2e5dloct = Export note
+    .doc = A note as a file: its Markdown, and the pictures it shows beside it.
 
 d-cdjz7d5y = Export notebook
-    .doc = The notebook as one Markdown file, in the tree's order: each note's title a heading one level under the note it stands in.
+    .doc = The notebook as a zip, one Markdown file for each note: a note's own under the folder of the note it stands in, and the pictures it shows in its own `images` folder beside it.
 
 d-t4nxxtng = Import markdown
     .doc = Imports a Markdown file as a note at the top of the tree, or opens the note that file already made: a note keeps the address of the file it came from, so importing the same file twice makes one note.
     .did = imported a note
 
-d-web4zfz5 = Import notion
-    .doc = Imports a Notion export — the zip of a page's Markdown and its pictures — as notes under the notebook, a page under the page that held it, in one change: undo takes the whole import back.
+d-h3zczsen = Import archive
+    .doc = Imports a zip of Markdown — a notebook this app exported, or a Notion export — as notes under the notebook, a page under the page that held it, in one change: undo takes the whole import back.
     .did = imported a notebook
 
 d-m6rqg3kf = Pin~present
@@ -98,7 +104,7 @@ d-akcqjax3 = Notebook
 d-qrsfr4a5 = Notebook menu
     .w-file = File
     .w-import-markdown = Import Markdown…
-    .w-import-a-notion-export = Import a Notion export…
+    .w-import-a-zip-of-markdown = Import a zip of Markdown…
     .w-export-the-notebook = Export the notebook…
 
 d-ojfhuiuf = Add child
@@ -116,4 +122,4 @@ d-osyh3odz = Note page
 d-x7x7sbtj = Note menu
     .w-file = File
     .w-insert-an-image = Insert an image…
-    .w-export-as-markdown = Export as Markdown…
+    .w-export = Export…
