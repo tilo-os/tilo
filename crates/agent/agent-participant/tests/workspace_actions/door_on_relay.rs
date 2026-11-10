@@ -425,7 +425,11 @@ pub async fn serve(command: &[std::ffi::OsString]) -> std::process::ExitCode {
         .env("TILO_API_KEY", &key)
         .env("TILO_INVITEE", &invitee_url);
     let status = tokio::select! {
-        status = run.status() => status,
+        status = async {
+            use tilo_test_env::SpawnUnderEnvLockAsync as _;
+            let mut child = run.spawn_locked()?;
+            child.wait().await
+        } => status,
         () = reviewing => Err(std::io::Error::other("the reviewer stopped answering")),
     };
     drop(on_relay);

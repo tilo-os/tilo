@@ -12,6 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
+use tilo_test_env::SpawnUnderEnvLock as _;
 use tilolang_cli::package::{self, BuildOptions};
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::upgrade::{Upgrade, compare};
@@ -129,7 +130,7 @@ impl Loop {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let reported = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         for stream in [
