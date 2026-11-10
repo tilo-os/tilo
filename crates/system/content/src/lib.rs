@@ -333,7 +333,7 @@ impl ContentStore {
             return Self::in_dir(PathBuf::from(shared));
         }
         if !tilo_files::available(tilo_files::Feature::NativePaths) {
-            return Self::in_page_files();
+            return Self::page_files();
         }
         let Some(data) = tilo_paths::data_dir() else {
             tracing::warn!("no data directory; binary content is kept in memory only");
@@ -351,8 +351,13 @@ impl ContentStore {
     /// app of the profile shares the one store, as native apps share `tilo/content`. The page
     /// holds those files in memory, so the store is bounded: an item or store past the bound is
     /// refused, never dropped, and nothing collects what the page stored on its own.
+    ///
+    /// This is the store a page host lends each window it opens, as the framework's native
+    /// process host lends `tilo_content_device::for_app`'s: a window keeps content in the store
+    /// its host lent it (`cx.content()`), never in one it opens itself.
     #[cfg(feature = "dir")]
-    fn in_page_files() -> Self {
+    #[must_use]
+    pub fn page_files() -> Self {
         let Ok(content) = tilo_files::VPath::new("content") else {
             return Self::memory();
         };

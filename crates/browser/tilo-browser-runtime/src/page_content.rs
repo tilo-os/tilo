@@ -29,12 +29,12 @@ thread_local! {
     static PAGE_CONTENT: ContentStore = page_store();
 }
 
-/// The store the page keeps content in: the profile's app files, which
-/// outlive the page (`tilo_content`'s store for a host whose files have no
-/// native path), or memory when the host loaded none.
+/// The store the page, as its windows' host, lends each of them: the
+/// profile's app files, which outlive the page ([`ContentStore::page_files`]),
+/// or memory when the host loaded none.
 fn page_store() -> ContentStore {
     if tilo_files::web::is_mirrored(&tilo_paths::default_profile()) {
-        return ContentStore::local_for_app();
+        return ContentStore::page_files();
     }
     ContentStore::new(MemoryBackend::new(ContentLimits {
         max_total_bytes: MAX_MEMORY_BYTES,
