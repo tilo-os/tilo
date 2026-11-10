@@ -20,8 +20,6 @@
 //!   the page to a call, and the pictures and voice it publishes and shows.
 //!
 //! [`health`] derives `PeerSnapshot` and `SessionHealth` v1 from it.
-//! [`presence_anchors`] carries an editor's ranges on the live plane as every
-//! native device does.
 //!
 //! The identity layer's device side is [`tilo_relay_client`]: this crate enters
 //! the workspace a signed-in computer's link names ([`device::Device::enter`])
@@ -46,7 +44,6 @@ pub mod health;
 mod held_live;
 pub mod narration;
 pub mod presence;
-pub mod presence_anchors;
 mod replica;
 pub mod session;
 /// Another device's actions, asked through this device's session.

@@ -1176,4 +1176,16 @@ fn a_host_that_names_its_workspaces_says_and_pumps_each_of_them() {
         "nothing is owed before the rate ceiling passes"
     );
     assert!(sync.take_said().is_empty());
+
+    // A workspace this host no longer shows hears this device leave it.
+    sync.follow_workspaces(
+        &[(topic(WORKSPACE), WORKSPACE.to_owned())],
+        Some(topic(WORKSPACE)),
+    );
+    let left = sync.take_said();
+    assert!(
+        left.iter().any(|frame| frame.cluster == OTHER_WORKSPACE
+            && matches!(frame.payload, Payload::Left)),
+        "the workspace this host stopped showing hears it leave: {left:?}"
+    );
 }

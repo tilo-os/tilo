@@ -10,7 +10,7 @@ use std::rc::Rc;
 use std::time::Duration;
 use tilo_clock::Instant;
 
-use collab_types::presence::{Presence, ShellPresence, Shown};
+use collab_types::presence::{Payload, Presence, ShellPresence, Shown};
 use iroh::{EndpointAddr, EndpointId};
 use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::{DesktopTree, WorkspaceId as DeskWorkspaceId};
@@ -347,7 +347,7 @@ impl Client {
     /// and remember `active` as the one in front. Whether that changed anything.
     pub fn follow_workspaces(&self, live: &[(Topic, String)], active: Option<Topic>) -> bool {
         let mut joined = Vec::new();
-        let mut left = Vec::new();
+        let mut left: Vec<(Topic, String)> = Vec::new();
         let mut changed = false;
         let mut front_changed = false;
         {
@@ -363,10 +363,12 @@ impl Client {
             }
             for workspace in &plane.workspaces {
                 if live.iter().all(|(ws, _)| *ws != workspace.ws) {
-                    left.push(workspace.ws);
+                    left.push((workspace.ws, workspace.id.clone()));
                 }
             }
-            plane.workspaces.retain(|held| !left.contains(&held.ws));
+            plane
+                .workspaces
+                .retain(|held| left.iter().all(|(ws, _)| *ws != held.ws));
             if plane.active != active {
                 plane.active = active;
                 front_changed = true;
@@ -386,7 +388,11 @@ impl Client {
             }
             changed = true;
         }
-        for ws in left {
+        for (ws, id) in left {
+            // The members take this device down where it was.
+            if let Some(workspace) = DeskWorkspaceId::parse(&id) {
+                self.say_frames(workspace, vec![(0, Presence::desktop(&id, Payload::Left))]);
+            }
             let _ = self.outgoing.send(Cmd::Leave(ws));
             changed = true;
         }
@@ -536,12 +542,6 @@ impl Client {
     /// Say `msg` on the topic of the workspace `ws`, addressed as `command` says.
     pub fn say(&self, command: Cmd) -> bool {
         self.outgoing.send(command)
-    }
-
-    /// Send this device's word to `workspace`'s presence track: what the host's own paths say when
-    /// they changed something this person shows.
-    pub fn resay(&self, workspace: &str) {
-        self.say_into(workspace);
     }
 
     /// The workspace on `topic`, while this session takes part in it.

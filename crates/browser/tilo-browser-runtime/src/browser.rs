@@ -2748,8 +2748,7 @@ impl Mount {
             PresencePayload::Selection { start, end } => (start, end),
             _ => return None,
         };
-        let (anchor, head) =
-            tilo_session_host::presence_anchors::presence_anchors(&key, start, end)?;
+        let (anchor, head) = tilo_relay_protocol::live::presence_anchors(&key, start, end)?;
         Some(
             serde_json::json!({"anchor": hex::encode(anchor.cursor), "head": hex::encode(head.cursor)}),
         )

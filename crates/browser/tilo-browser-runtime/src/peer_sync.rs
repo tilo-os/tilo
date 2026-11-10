@@ -10,12 +10,12 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use collab_types::presence::{
-    Payload, Presence, ShellChat, ShellPresence, ShellReaction, ShellSelection, ShellWindow, Shown,
+    Presence, ShellChat, ShellPresence, ShellReaction, ShellSelection, ShellWindow, Shown,
     ShownLayout, ShownWave,
 };
 use iroh::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
-use tilo_session::sync::{Client, Cmd, Device, OwnPresence, SayPresence, Topic, Transport};
+use tilo_session::sync::{Client, Device, Outbox, OwnPresence, SayPresence, Topic, Transport};
 use tilo_session_host::PeerHandle;
 use tilo_session_host::session_actions::SessionActions;
 use tilo_user_identity::DeviceCert;
@@ -206,6 +206,17 @@ impl SayPresence for PagePlane {
     }
 }
 
+/// What this page has no carrier for: the client's commands to the plane, which this session says
+/// through its host — the mount that shows a workspace opens its live plane.
+#[derive(Debug)]
+struct NoCarrier;
+
+impl Outbox for NoCarrier {
+    fn send(&self, _command: tilo_session::sync::Cmd) -> bool {
+        false
+    }
+}
+
 /// The most narrated work a workspace holds for its mounts between two frames: a burst past it is
 /// older than what the frame shows anyway.
 const MAX_HELD_INTERACTIONS: usize = 32;
@@ -220,10 +231,6 @@ struct Page {
     user: String,
     /// The session's sync, saying this page's word on each workspace's presence track.
     client: Rc<Client>,
-    /// What the session says to the plane that this page has no carrier for yet: the live plane a
-    /// workspace's presence rides is opened by the mount that shows it, so a join or a leave has
-    /// nothing here to do. Draining it keeps a session that says them from queueing.
-    said: RefCell<tokio::sync::mpsc::UnboundedReceiver<Cmd>>,
     /// The workspaces the page shows, by topic.
     workspaces: HashMap<Topic, String>,
     /// The wave this page said last, so the same one said again is the same wave.
@@ -267,12 +274,11 @@ pub(crate) fn register(
     let Ok(publisher) = EndpointId::from_bytes(&cert.device_public_key) else {
         return;
     };
-    let (outgoing, said) = tokio::sync::mpsc::unbounded_channel();
     let (_heard, arrived) = std::sync::mpsc::channel();
     let (_landed, enrolled) = std::sync::mpsc::channel();
     let client = Rc::new(Client::over(
         Transport {
-            outgoing: Rc::new(outgoing),
+            outgoing: Rc::new(NoCarrier),
             arrived,
             enrolled,
             saying: Some(Rc::new(PagePlane {
@@ -299,7 +305,6 @@ pub(crate) fn register(
                 handle: handle.clone(),
                 user: hex::encode(cert.user_public_key),
                 client,
-                said: RefCell::new(said),
                 workspaces: HashMap::new(),
                 waved: None,
                 interactions: HashMap::new(),
@@ -358,7 +363,6 @@ pub(crate) fn set_label(id: u32, name: &str) {
         let mut own = page.client.own();
         name.clone_into(&mut own.label);
         page.client.set_own(own);
-        page.take_said();
     });
 }
 
@@ -371,13 +375,7 @@ impl Page {
             .map(|(topic, workspace)| (*topic, workspace.clone()))
             .collect();
         self.client.follow_workspaces(&live, front);
-        self.take_said();
         self.client.follow();
-    }
-
-    /// What the session said to the plane, which this page has no carrier for yet.
-    fn take_said(&self) {
-        while self.said.borrow_mut().try_recv().is_ok() {}
     }
 }
 
@@ -406,7 +404,6 @@ pub(crate) fn say(peer: u32, workspace: &str, value: &JsPresence) -> Result<f64,
         own.following.clone_from(&value.following);
         page.client.set_own(own);
         page.client.follow();
-        page.take_said();
         Ok(page.client.next_due_in(workspace).unwrap_or(0.0))
     })
 }
@@ -422,7 +419,6 @@ pub(crate) fn due(peer: u32, workspace: &str) -> Result<f64, JsError> {
         if !page.workspaces.values().any(|shown| shown == workspace) {
             return Ok(0.0);
         }
-        page.take_said();
         // What this workspace's board owes, whether or not it is the one in front: a page shows
         // each of its workspaces at once, and each keeps its own schedule.
         page.client.due_in(workspace);
@@ -532,10 +528,8 @@ pub(crate) fn leave(peer: u32, workspace: &str) -> Result<(), JsError> {
         let page = pages
             .get_mut(&peer)
             .ok_or_else(|| js_error("not a started peer"))?;
-        // Said before the board that numbers this device's frames is gone.
-        page.handle
-            .publish_presence(number, vec![Presence::desktop(workspace, Payload::Left)])
-            .map_err(js_error)?;
+        // The client says this device left on the workspace's track, before the board that would
+        // number its later words is gone.
         page.workspaces.remove(&number);
         let front = page.workspaces.keys().next().copied();
         page.follow(front);

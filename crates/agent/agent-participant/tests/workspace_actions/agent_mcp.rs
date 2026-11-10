@@ -277,7 +277,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     // What it wrote is its selection in the document, which every window
     // showing the document highlights in its colour.
     let selected = selected.expect("where the agent left off");
-    let (key, _, _) = tilo_session_host::presence_anchors::read_presence_anchors(
+    let (key, _, _) = tilo_relay_protocol::live::read_presence_anchors(
         &tilo_relay_protocol::live::LiveAnchor {
             cursor: hex::decode(&selected.anchor).unwrap(),
         },
