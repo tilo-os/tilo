@@ -2503,10 +2503,9 @@ fn choices_of(node: &patch::Node) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The palette runs "New task", which still needs the title: its form asks for it, and the
-/// person types it. Returns the task the form made.
-fn a_task_typed_into_the_palettes_form(host: &mut TilolangHost, window: &mut Window) -> Value {
-    // The palette takes "New task", which still needs the title: its form asks for it.
+/// The palette runs "New task", which asks for nothing: a task needs no title to be made, so no
+/// form stands for it and the press makes one there and then. Returns the task the press made.
+fn a_task_added_from_the_palette(host: &mut TilolangHost, window: &mut Window) -> Value {
     let new_task = host
         .instances()
         .next()
@@ -2522,25 +2521,35 @@ fn a_task_typed_into_the_palettes_form(host: &mut TilolangHost, window: &mut Win
         argument: None,
     }]);
     settle(host, window);
-    assert_eq!(
-        window.form.as_ref().map(|form| form.title.as_str()),
-        Some("New task…"),
-        "the form stands for the action, asking what it was not given"
-    );
-    type_into(window, "form~title", "Call Ada");
-    settle(host, window);
-    assert_eq!(form_text(window, "form~title").as_deref(), Some("Call Ada"));
-    submit_form(window);
-    settle(host, window);
     assert!(
         window.form.is_none(),
-        "the form closes once the action runs: {:?}",
-        window.form.as_ref().map(|form| form.error.clone())
+        "every argument it takes has a default, so nothing is asked: {:?}",
+        window.form.as_ref().map(|form| form.title.clone())
     );
-    tasks_of(host.instances().next().expect("the instance runs"))
+    let task = tasks_of(host.instances().next().expect("the instance runs"))
         .first()
         .cloned()
-        .expect("the task it made")
+        .expect("the press made a task");
+    let Value::Ref(made) = &task else {
+        panic!("a task is a resource: {task:?}")
+    };
+    // The person has not said what it does yet, and the task is still named: a name every surface
+    // that names it shows, so it is not blank in a window, a menu or a screen reader.
+    let named = host
+        .instances()
+        .next()
+        .expect("the instance runs")
+        .instance()
+        .host()
+        .expect("the runtime")
+        .runtime()
+        .title(&made.target)
+        .expect("the task is named");
+    assert_eq!(
+        named, "Task",
+        "an untitled task is named by what it is until the person says what it does"
+    );
+    task
 }
 
 /// "Remind me…" asks when, the moments a person names offered to pick from, and one way into the
@@ -2663,17 +2672,17 @@ fn the_moment_picked_answers_the_reminder(
     );
 }
 
-/// The palette runs an action whose arguments it does not give, and the form asks for them by
-/// their types: a task is added by typing its title, and its reminder set by picking the moment
-/// it names, both through the invocation the palette sends for any command
+/// The palette runs an action whose arguments it does not give: "New task" takes a title whose
+/// default is empty, so the task is made on the press and reads as its type names an untitled one,
+/// and "Remind me…" asks its moment in a form, the person picking it in one press
 /// (forms-and-diagrams.md §1).
 #[test]
-fn the_palette_asks_the_form_for_a_title_and_a_moment() {
+fn the_palette_makes_a_task_and_asks_the_form_for_a_moment() {
     let (app, bundle) = shipped(&shipped_dir().join("tasks"));
     assert_eq!(app, TASKS);
     let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", &app, bundle);
     settle(&mut host, &mut window);
-    let task = a_task_typed_into_the_palettes_form(&mut host, &mut window);
+    let task = a_task_added_from_the_palette(&mut host, &mut window);
     a_reminder_asks_when(&mut host, &mut window);
     the_moment_picked_answers_the_reminder(&mut host, &mut window, &task);
 }
