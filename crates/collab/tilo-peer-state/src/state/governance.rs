@@ -85,6 +85,33 @@ impl PeerGovernance<'_> {
         })
     }
 
+    /// Whether the workspace's governance names `device` as a device of a
+    /// person it no longer has as a member: one it removed, or whose part
+    /// ended. A device it never named is not one; neither is any while no
+    /// governance is held here.
+    pub fn removed_device(self, device: [u8; 32]) -> bool {
+        let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
+            return false;
+        };
+        let policy = doc.policy();
+        let workspace_policy = policy.workspace_policy(&self.peer.core.workspace);
+        let mut named = false;
+        for bytes in policy.identities.values() {
+            let Ok(identity) = serde_json::from_slice::<GovernedIdentity>(bytes) else {
+                continue;
+            };
+            if identity.device_cert.device_public_key != device {
+                continue;
+            }
+            let person = hex::encode(identity.device_cert.user_public_key);
+            if workspace_policy.active_role(&person).is_some() {
+                return false;
+            }
+            named = true;
+        }
+        named
+    }
+
     /// Whether `key`'s device may issue an invitation into the workspace at
     /// `now`: a current member whose part there grants inviting. What the
     /// surfaces that offer inviting show; an invitation's write path asks it

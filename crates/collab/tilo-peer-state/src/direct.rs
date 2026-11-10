@@ -516,7 +516,7 @@ impl DirectSync {
             .open_uni()
             .await
             .map_err(|error| error.to_string())?;
-        let sending = send_authored(send, remote, self.device(), catch_up, live);
+        let sending = send_authored(self, send, remote, catch_up, live);
         let receiving = self.receive_all(connection);
         let history = async {
             let done = if dialing {
@@ -585,9 +585,19 @@ impl DirectSync {
         self.read(store::cursors)
     }
 
+    /// Whether the workspace removed `device`'s person: it reads nothing the
+    /// workspace says from then on, and what it sends is no longer taken.
+    fn removed(&self, device: [u8; 32]) -> bool {
+        self.0.replica.lock().governance().removed_device(device)
+    }
+
     /// Whether `device` may sync with this replica: a certified device of
-    /// its roster, unrevoked and unexpired.
+    /// its roster, unrevoked and unexpired, of a person the workspace has
+    /// not removed.
     fn admits(&self, device: [u8; 32]) -> Result<(), String> {
+        if self.removed(device) {
+            return Err(REMOVED.into());
+        }
         let replica = self.0.replica.lock();
         let certificate = replica
             .certificates()
@@ -1086,6 +1096,10 @@ async fn forward(
     }
 }
 
+/// Why a link to a device ends, or is refused: the workspace removed its
+/// person.
+const REMOVED: &str = "the workspace removed the device's person";
+
 /// Why a channel's governance is never admitted into the workspace: what a
 /// [`Heard`] carrying it reports.
 const NOT_WORKSPACE_STATE: &str =
@@ -1112,21 +1126,30 @@ fn already_theirs(authored: &Authored, remote: [u8; 32], own: [u8; 32]) -> bool 
 }
 
 /// Write `catch_up`, then every frame published live, to `send`, under the
-/// name of the device that authored each.
+/// name of the device that authored each, until the workspace removes
+/// `remote`: the governance that removes it is the last frame it is sent,
+/// and the link ends there.
 async fn send_authored(
+    link: &DirectSync,
     mut send: SendStream,
     remote: [u8; 32],
-    own: [u8; 32],
     catch_up: Vec<Authored>,
     mut live: broadcast::Receiver<Authored>,
 ) -> Result<(), String> {
+    let own = link.device();
     for authored in &catch_up {
         write_authored(&mut send, authored).await?;
     }
     loop {
         match live.recv().await {
             Ok(authored) if already_theirs(&authored, remote, own) => {}
-            Ok(authored) => write_authored(&mut send, &authored).await?,
+            Ok(authored) => {
+                write_authored(&mut send, &authored).await?;
+                if matches!(authored.message, NeighbourMsg::SyncResp { .. }) && link.removed(remote)
+                {
+                    return Err(REMOVED.into());
+                }
+            }
             Err(broadcast::error::RecvError::Lagged(_)) => {
                 return Err("the link fell behind the device's changes".into());
             }

@@ -514,6 +514,52 @@ mod retention_tests {
         crate::workspace::governance_of(Some(&crate::workspace::candidate(None, &changes).unwrap()))
     }
 
+    /// A device the workspace removed the person of is told apart from one it
+    /// never named: its host's links end at the removal and refuse it after.
+    #[test]
+    fn a_removed_members_device_is_told_apart() {
+        let (mut peer, authority, _, _, now) = crate::admission_tests::seeded();
+        let now_ns: u64 = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .try_into()
+            .unwrap();
+        let guest = device(&SigningKey::from_bytes(&[71; 32]), 72);
+        let stranger = device(&SigningKey::from_bytes(&[73; 32]), 74);
+        let owner = peer.owner_certificates()[0].device_public_key;
+        let admitted = redemption(&peer, &authority, 75, &guest, now_ns);
+        assert!(
+            peer.governance_mut()
+                .admit_invited_member(&admitted, &authority, now)
+                .unwrap()
+        );
+        let device = guest.1.device_public_key;
+        assert!(
+            !peer.governance().removed_device(device),
+            "a member's device"
+        );
+        assert!(
+            peer.governance_mut()
+                .remove_member(guest.1.user_public_key, &authority, now)
+                .unwrap()
+        );
+        assert!(
+            peer.governance().removed_device(device),
+            "a removed member's device"
+        );
+        assert!(
+            !peer.governance().removed_device(owner),
+            "the owner's device"
+        );
+        assert!(
+            !peer
+                .governance()
+                .removed_device(stranger.1.device_public_key),
+            "a device the workspace never named"
+        );
+    }
+
     #[test]
     fn identity_admissions_are_bounded_and_a_pruned_admission_cannot_readmit() {
         let (mut peer, authority, _, _, now) = crate::admission_tests::seeded();
