@@ -319,25 +319,32 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     );
 
     // An agent that idles between calls restates itself, so a member that came in after its last
-    // call still draws it within one restatement.
+    // call still draws it within one restatement. What it says again is the word it already said,
+    // so the cadence is its board's schedule, and what a reader proves is that the idle loop keeps
+    // that schedule armed and says each word it owes. Timing the arrivals here measured this
+    // machine instead: a loaded suite starved the reader past a keepalive and handed it the frames
+    // in one burst, and an agent that had said every one of them read as silent.
     let _ = heard(&mut browser);
-    let (idle, mut last, mut longest) = (Instant::now(), Instant::now(), Duration::ZERO);
-    while idle.elapsed() < Duration::from_secs(10) {
-        let (frames, _) = heard(&mut browser);
-        if frames
+    let keepalive = Duration::from_secs_f64(tilo_live::presence::KEEPALIVE_MS / 1_000.0);
+    let mut restated = 0;
+    while restated < 2 {
+        restated += heard(&mut browser)
+            .0
             .iter()
-            .any(|frame| matches!(frame.payload, collab_types::PeerPresencePayload::Shell(_)))
-        {
-            longest = longest.max(last.elapsed());
-            last = Instant::now();
-        }
+            .filter(|frame| matches!(frame.payload, collab_types::PeerPresencePayload::Shell(_)))
+            .count();
+        let due = presence.restates_in();
+        assert!(
+            due.is_some_and(|due| due <= keepalive + Duration::from_secs(1)),
+            "an idle agent's next word is due in {due:?}, past a keepalive: it said itself again \
+             {restated} times"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "an idle agent said itself again only {restated} times"
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    longest = longest.max(last.elapsed());
-    assert!(
-        longest <= Duration::from_secs(4),
-        "an idle agent went {longest:?} without a word"
-    );
 
     // And it leaves with the connection, rather than standing there.
     presence.leave();

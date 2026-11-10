@@ -171,6 +171,17 @@ impl Presence {
         })
     }
 
+    /// How long until the agent's board next owes its workspace a word: the
+    /// interval the idle loop above keeps, whatever [`LONGEST_WAIT`] caps its
+    /// sleeps at. `None` while the board owes none, which is an agent whose
+    /// board holds no workspace to say itself in.
+    #[must_use]
+    pub fn restates_in(&self) -> Option<Duration> {
+        self.board()
+            .next_deadline()
+            .map(|due| due.saturating_duration_since(tilo_clock::Instant::now()))
+    }
+
     /// Say what the call `request` made is doing now, and the record it
     /// worked in (`acted`): the line the person reads under the agent's
     /// face, and where following it brings them. A record it moved into is
