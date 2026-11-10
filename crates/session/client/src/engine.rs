@@ -1162,9 +1162,11 @@ impl Engine {
             .workspaces()
             .into_iter()
             .filter_map(|workspace| {
+                // The hint itself, as the device that reads it decodes it: not the answer
+                // whether this device has one, whose tag would lead the bytes.
                 let hint = self
                     .owner
-                    .with_current(workspace, |view| Ok(view.transport_hint().cloned()))
+                    .with_current(workspace, |view| view.transport_hint().cloned())
                     .ok()?;
                 let bytes = postcard::to_stdvec(&hint).ok()?;
                 Some((workspace.to_string(), bytes))
@@ -1565,6 +1567,28 @@ mod tests {
         engine
             .check_custody(&engine.owner, workspace)
             .expect("its own member acts there, its host being in this process");
+    }
+
+    /// What this device tells its siblings of where its workspaces are hosted reads back as the
+    /// hint itself: a sibling decodes a `TransportHint` from each, and enters the workspace at the
+    /// host it names.
+    #[test]
+    fn the_host_hints_a_device_tells_decode_as_hints() {
+        let state = tempfile::tempdir().expect("a state directory");
+        let (identity, _) = identity(DeviceCapabilities::member());
+        let at = endpoint(&identity);
+        let host = identity.device_cert.device_public_key;
+        let engine = engine(state.path(), identity);
+        let workspace = WorkspaceId::new();
+        engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at));
+
+        let hints = engine.host_hints();
+        assert_eq!(hints.len(), 1, "one hint for the one workspace held");
+        let (named, bytes) = &hints[0];
+        assert_eq!(named, &workspace.to_string());
+        let hint = postcard::from_bytes::<tilo_peer_state::join::TransportHint>(bytes)
+            .expect("the hint decodes as the device that reads it decodes it");
+        assert_eq!(hint.host.device_public_key, host);
     }
 
     #[test]
