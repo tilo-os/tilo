@@ -190,7 +190,9 @@ def verify_artifact(path, entry):
 # The CI builder image's read-only copy of every pinned font (os/Containerfile.builder), laid
 # out as an artifact cache by `seed`. A job in that image reads its fonts here instead of
 # fetching 56 MB from the release store, so it sends nothing over the network for them.
-IMAGE_SEED = Path("/usr/share/tilo/font-artifacts")
+# TILO_FONT_IMAGE_SEED names another directory, or one that is not there: what a machine without
+# the fonts is told can then be tested in that image by a caller that runs this tool as a program.
+IMAGE_SEED = Path(os.environ.get("TILO_FONT_IMAGE_SEED") or "/usr/share/tilo/font-artifacts")
 
 # How a fetch answers a release store that is busy. Every job on a build node fetches from the
 # same host, so a burst of them can meet its rate limit (429) or a 5xx while it recovers; those
