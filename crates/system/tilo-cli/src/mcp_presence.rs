@@ -30,8 +30,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use collab_types::PeerPresencePayload;
 use collab_types::presence::{
-    MAX_ACTIVITY_BYTES, Presence as Frame, PresenceKey, ShellPresence, ShellSelection, ShellWindow,
-    user_color,
+    MAX_ACTIVITY_BYTES, Presence as Frame, PresenceKey, ShellSelection, user_color,
 };
 use serde_json::Value;
 use tilo_actions::InvocationId;
@@ -321,13 +320,14 @@ impl Presence {
                 said.selection.clone(),
             )
         };
-        let mut view = frame(
+        let mut view = tilo_session_host::presence::view(
             seq,
             now_ms(),
             &self.label,
-            self.colour,
-            activity.as_deref(),
+            self.colour.into(),
+            activity,
             focus.as_ref(),
+            None,
         );
         view.selection = selection;
         self.send(Frame::desktop(
@@ -340,43 +340,6 @@ impl Presence {
     /// leave is no authority: the next one says the same.
     fn send(&self, frame: Frame) {
         let _ = self.peer.publish_presence(self.workspace_id, vec![frame]);
-    }
-}
-
-/// The frame the agent says of itself: its face, what it is doing, and the
-/// record it acts in, as the window a receiver brings the person to. Its
-/// selection is what its last change left ([`Presence::acting`]).
-fn frame(
-    seq: u32,
-    sent_at_ms: u64,
-    label: &str,
-    colour: (u8, u8, u8),
-    activity: Option<&str>,
-    focus: Option<&LiveRecord>,
-) -> ShellPresence {
-    ShellPresence {
-        seq,
-        sent_at_ms,
-        label: label.to_owned(),
-        agent: true,
-        colour: format!("#{:02x}{:02x}{:02x}", colour.0, colour.1, colour.2),
-        activity: activity.map(str::to_owned),
-        place: None,
-        // An agent has no screen: a receiver draws its face in the window it
-        // names, whose rect is what that window's is, never the agent's.
-        size: [0, 0],
-        windows: focus
-            .map(|focus| ShellWindow {
-                app: focus.app.clone(),
-                record: focus.short_digest(),
-                rect: [0, 0, 10_000, 10_000],
-                focused: true,
-            })
-            .into_iter()
-            .collect(),
-        selection: None,
-        chat: None,
-        reaction: None,
     }
 }
 
@@ -707,13 +670,14 @@ mod tests {
             app: "so.tilo.sheets".into(),
             record: "uuid:7".into(),
         };
-        let view = frame(
+        let view = tilo_session_host::presence::view(
             4,
             1_700_000_000_000,
             "Claude Code",
-            (0x81, 0xa8, 0xff),
-            Some("Editing sheets/Budget"),
+            [0x81, 0xa8, 0xff],
+            Some("Editing sheets/Budget".to_owned()),
             Some(&focus),
+            None,
         );
         assert!(view.agent);
         assert_eq!(view.label, "Claude Code");
@@ -723,7 +687,8 @@ mod tests {
         assert!(view.selection.is_none(), "the agent names no caret");
         // An agent that acts nowhere yet names no window: a receiver still
         // draws its face, with its line and nothing to follow.
-        let nowhere = frame(5, 1, "Claude Code", (1, 2, 3), None, None);
+        let nowhere =
+            tilo_session_host::presence::view(5, 1, "Claude Code", [1, 2, 3], None, None, None);
         assert_eq!(nowhere.focus(), None);
         assert!(nowhere.windows.is_empty());
         assert!(nowhere.activity.is_none());

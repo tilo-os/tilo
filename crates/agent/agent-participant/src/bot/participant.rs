@@ -305,10 +305,12 @@ impl BotParticipant {
             app: route.app_id.clone(),
             record: route.record.clone(),
         });
-        let view = crate::presence::shell(
+        let view = tilo_session_host::presence::view(
+            0,
+            tilo_clock::unix_now_ms(),
             &self.identity.delegation.label,
             self.identity.delegation.color,
-            activity.map(|activity| crate::presence::activity(&activity)),
+            activity.map(|activity| tilo_session_host::presence::activity(&activity)),
             focus.as_ref(),
             None,
         );

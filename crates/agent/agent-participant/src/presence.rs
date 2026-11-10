@@ -2,65 +2,10 @@
 //! workspace's presence track by the board every host keeps ([`tilo_live::presence::Board`]), so
 //! every desktop draws it beside the people.
 
-use collab_types::presence::{Presence, ShellPresence, ShellSelection, ShellWindow};
+use collab_types::presence::{Presence, ShellPresence};
 use tilo_live::presence::{Board, Own};
-use tilo_relay_protocol::live::{LiveAnchor, LiveRecord};
 use tilo_session_host::PeerHandle;
 use tilo_user_identity::DeviceCert;
-
-/// The view an agent states: its face, what it is doing, and the record it acts in with its caret
-/// where its last operation left it. The board numbers it as it says it.
-#[must_use]
-pub fn shell(
-    label: &str,
-    colour: [u8; 3],
-    activity: Option<String>,
-    focus: Option<&LiveRecord>,
-    selection: Option<&(LiveAnchor, LiveAnchor)>,
-) -> ShellPresence {
-    ShellPresence {
-        seq: 0,
-        sent_at_ms: tilo_clock::unix_now_ms(),
-        label: label.to_owned(),
-        agent: true,
-        colour: format!("#{:02x}{:02x}{:02x}", colour[0], colour[1], colour[2]),
-        activity,
-        place: None,
-        size: [0, 0],
-        // A receiver draws the agent's face in the window it names; its rect
-        // is not the agent's screen, which it does not have.
-        windows: focus.map(window).into_iter().collect(),
-        selection: selection.map(|(anchor, head)| ShellSelection {
-            anchor: hex::encode(&anchor.cursor),
-            head: hex::encode(&head.cursor),
-        }),
-        chat: None,
-        reaction: None,
-    }
-}
-
-/// The window showing `focus`, by the record's short digest: what a receiver matches against its
-/// own windows.
-fn window(focus: &LiveRecord) -> ShellWindow {
-    ShellWindow {
-        app: focus.app.clone(),
-        record: focus.short_digest(),
-        rect: [0, 0, 10_000, 10_000],
-        focused: true,
-    }
-}
-
-/// What a member says it is doing, cut to what a presence frame carries, on a character edge.
-#[must_use]
-pub fn activity(activity: &str) -> String {
-    let mut end = activity
-        .len()
-        .min(collab_types::presence::MAX_ACTIVITY_BYTES);
-    while !activity.is_char_boundary(end) {
-        end = end.saturating_sub(1);
-    }
-    activity.get(..end).unwrap_or_default().to_owned()
-}
 
 /// The word a device certified to `label` says of itself, with `view` for the record it acts in.
 #[must_use]
@@ -108,6 +53,7 @@ mod tests {
 
     use super::*;
     use tilo_live::presence::{Board, Own};
+    use tilo_relay_protocol::live::LiveRecord;
 
     const WORKSPACE: &str = "6b3f9a10-0000-4000-8000-00000000000c";
 
@@ -122,7 +68,9 @@ mod tests {
             app: "so.tilo.notes".into(),
             record: "file:/workspace/Notes/brief.md".into(),
         };
-        let view = shell(
+        let view = tilo_session_host::presence::view(
+            0,
+            tilo_clock::unix_now_ms(),
             "Writer helper",
             [0x7c, 0x3a, 0xed],
             Some("New note".into()),

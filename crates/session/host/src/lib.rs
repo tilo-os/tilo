@@ -45,6 +45,7 @@ pub mod document;
 pub mod health;
 mod held_live;
 pub mod narration;
+pub mod presence;
 pub mod presence_anchors;
 mod replica;
 pub mod session;

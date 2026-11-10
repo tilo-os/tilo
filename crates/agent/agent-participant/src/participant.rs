@@ -2146,7 +2146,7 @@ impl AgentParticipant {
     fn activity(&self) -> Option<String> {
         self.control
             .activity()
-            .map(|activity| crate::presence::activity(&activity))
+            .map(|activity| tilo_session_host::presence::activity(&activity))
     }
 
     /// Put the view of the record at `route` on the workspace's shared desktop
@@ -2217,7 +2217,9 @@ impl AgentParticipant {
     }
 
     fn publish_presence(&mut self) {
-        let view = crate::presence::shell(
+        let view = tilo_session_host::presence::view(
+            0,
+            tilo_clock::unix_now_ms(),
             &self.identity.delegation.label,
             self.identity.delegation.color,
             self.activity(),
