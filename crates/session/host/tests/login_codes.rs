@@ -4,6 +4,10 @@
 //! claims a sign-in code, and the root keeps and retires its stand-in.
 
 #![allow(
+    clippy::significant_drop_tightening,
+    reason = "the test holds its host for the length of the test, and shuts it down at the end"
+)]
+#![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
