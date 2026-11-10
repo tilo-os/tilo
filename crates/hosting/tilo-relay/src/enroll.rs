@@ -162,6 +162,10 @@ enum Command {
         #[arg(long, requires = "expected_device")]
         approved_cert: Option<PathBuf>,
     },
+    /// Withdraw a device the root certified: sign a revocation with a root key
+    /// kept in a file and append it to a relay's revocation log, so that host
+    /// refuses the device as it connects from its next start on.
+    Revoke(RevokeArgs),
     #[command(flatten)]
     OutOfBand(OutOfBand),
 }
@@ -215,6 +219,25 @@ enum OutOfBand {
         #[arg(long)]
         cert: PathBuf,
     },
+}
+
+/// `tilo-enroll revoke`: withdraw a device a root certified.
+#[derive(clap::Args)]
+struct RevokeArgs {
+    /// The user root signing key (32 bytes, owner-only).
+    #[arg(long)]
+    root_key: PathBuf,
+    /// The device's public key, hex.
+    #[arg(long)]
+    device: String,
+    /// The relay's state directory, whose revocation log the host reads: the
+    /// `relay` directory under `tilo-relay room --state`, or the plain
+    /// daemon's configured state root.
+    #[arg(long)]
+    state: PathBuf,
+    /// lost, stolen, retired or compromised.
+    #[arg(long, default_value = "compromised")]
+    reason: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2822,6 +2845,42 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Withdraw a device the root certified, so a host of that root refuses it as
+/// it connects from its next start on.
+fn revoke(options: &RevokeArgs) -> anyhow::Result<()> {
+    let RevokeArgs {
+        root_key,
+        device,
+        state,
+        reason,
+    } = options;
+    let reason = match reason.as_str() {
+        "lost" => tilo_user_identity::RevocationReason::Lost,
+        "stolen" => tilo_user_identity::RevocationReason::Stolen,
+        "retired" => tilo_user_identity::RevocationReason::Retired,
+        "compromised" => tilo_user_identity::RevocationReason::Compromised,
+        other => bail!("reason must be lost, stolen, retired or compromised, not {other}"),
+    };
+    let device: [u8; 32] = hex::decode(device.trim())
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .context("--device must be a 32-byte hex public key")?;
+    let root = tilo_user_identity::persist::read_owned_signing_key(root_key)
+        .with_context(|| format!("read {}", root_key.display()))?;
+    let (entry, changed) = tilo_relay::root_signer::revoke_device(state, &root, device, reason)?;
+    let device = hex::encode(entry.revoked_device_public_key);
+    if changed {
+        println!(
+            "revoked ({:?}) device {device} in {}",
+            entry.reason,
+            state.display()
+        );
+    } else {
+        println!("already revoked device {device} in {}", state.display());
+    }
+    Ok(())
+}
+
 fn install_cert(
     identity_root: &std::path::Path,
     identity_dir: &std::path::Path,
@@ -3053,6 +3112,7 @@ fn run() -> anyhow::Result<()> {
                 .context("read the approved certificate")?
                 .as_ref(),
         }),
+        Command::Revoke(options) => revoke(&options),
         Command::OutOfBand(command) => out_of_band(command),
     }
 }

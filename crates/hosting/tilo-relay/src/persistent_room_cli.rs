@@ -530,6 +530,27 @@ fn parse_keys(flag: &str, keys: &[String]) -> anyhow::Result<BTreeSet<[u8; 32]>>
         .collect()
 }
 
+/// The identity this workspace hosts as: the operator's root file, the host
+/// device it keeps in its state, and the revocations its state's log holds.
+/// `tilo-enroll revoke` writes that log, so a device the root withdrew is
+/// refused when it connects, as on the plain daemon.
+fn hosted_identity(
+    root: &SigningKey,
+    host: SigningKey,
+    host_cert: DeviceCert,
+    relay_state: &Path,
+) -> anyhow::Result<RelayIdentity> {
+    tilo_relay::daemon::with_persisted_revocations(
+        RelayIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: host,
+            device_cert: host_cert,
+            revocations: RevocationList::new(),
+        },
+        relay_state,
+    )
+}
+
 /// The host's own device key, kept beside the relay's state. The root is
 /// never written here.
 fn host_key(state: &Path) -> anyhow::Result<SigningKey> {
@@ -1386,14 +1407,10 @@ pub(crate) async fn run(
             .unwrap_or_else(|| tilo_relay::RelayConfig::default().iroh_listen),
         ..Default::default()
     };
+    let identity = hosted_identity(&root, host, host_cert, &config.state_root)?;
     let hosted = start_relay_lending(
         config,
-        RelayIdentity {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_signing_key: host,
-            device_cert: host_cert.clone(),
-            revocations: RevocationList::new(),
-        },
+        identity,
         &args.web,
         &state,
         crate::web_cli::Lent { feedback_reviewer },
@@ -2146,6 +2163,113 @@ mod tests {
         .unwrap();
         let workspaces = relay.workspaces().unwrap().clone();
         (relay, workspaces, host_cert)
+    }
+
+    /// A host started as `tilo-relay room` starts one: the operator's root
+    /// file, the host device it keeps in its state, and the revocation log
+    /// under that state.
+    async fn start_room(
+        root: &SigningKey,
+        host: &SigningKey,
+        host_cert: &DeviceCert,
+        relay_state: &Path,
+        state: &Path,
+    ) -> tilo_relay::daemon::Relay {
+        let identity = hosted_identity(root, host.clone(), host_cert.clone(), relay_state).unwrap();
+        tilo_relay::daemon::Relay::start(
+            tilo_relay::RelayConfig {
+                state_root: relay_state.to_path_buf(),
+                identity_root: state.join("identity"),
+                ..Default::default()
+            },
+            identity,
+        )
+        .await
+        .unwrap()
+    }
+
+    /// A workspace host reads its state's revocation log when it starts: a
+    /// device the operator's root withdrew is refused as it connects, while
+    /// another device of the same root still gets in.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "each host serves until the test is done with it"
+    )]
+    async fn a_revoked_device_is_refused_at_connect_and_its_sibling_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        let relay_state = tilo_relay_protocol::metrics::room_relay_root(&state);
+        let root = SigningKey::from_bytes(&[0x11; 32]);
+        let host = SigningKey::from_bytes(&[0x22; 32]);
+        let host_cert = enrol(&root, &host, "host", DeviceCapabilities::host()).unwrap();
+        let leaked = SigningKey::from_bytes(&[0x33; 32]);
+        let leaked_cert = enrol(&root, &leaked, "leaked", DeviceCapabilities::member()).unwrap();
+        let sibling = SigningKey::from_bytes(&[0x44; 32]);
+        let sibling_cert = enrol(&root, &sibling, "sibling", DeviceCapabilities::member()).unwrap();
+        let user = root.verifying_key().to_bytes();
+        let endpoint = || async {
+            iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
+                .bind()
+                .await
+                .unwrap()
+        };
+
+        // Before the operator withdraws it, the device connects: what the
+        // refusal below is the log's doing, not the device's.
+        let relay = start_room(&root, &host, &host_cert, &relay_state, &state).await;
+        let addr = relay.node_addr();
+        let admitted = tilo_relay::RelayClient::connect(
+            endpoint().await,
+            addr,
+            user,
+            leaked_cert.clone(),
+            leaked.clone(),
+            RevocationList::new(),
+        )
+        .await;
+        assert!(admitted.is_ok(), "an unrecognised device connects");
+        relay.shutdown().await;
+
+        // The operator's revocation, written where the host reads it.
+        let (_, changed) = tilo_relay::root_signer::revoke_device(
+            &relay_state,
+            &root,
+            leaked_cert.device_public_key,
+            tilo_user_identity::RevocationReason::Compromised,
+        )
+        .unwrap();
+        assert!(changed, "a first revocation changes the log");
+
+        let relay = start_room(&root, &host, &host_cert, &relay_state, &state).await;
+        let addr = relay.node_addr();
+        let refused = tilo_relay::RelayClient::connect(
+            endpoint().await,
+            addr.clone(),
+            user,
+            leaked_cert,
+            leaked,
+            RevocationList::new(),
+        )
+        .await;
+        assert!(
+            refused.is_err(),
+            "the restarted host refuses the device its root revoked"
+        );
+        let admitted = tilo_relay::RelayClient::connect(
+            endpoint().await,
+            addr,
+            user,
+            sibling_cert,
+            sibling,
+            RevocationList::new(),
+        )
+        .await;
+        assert!(
+            admitted.is_ok(),
+            "another device of the same root still connects"
+        );
     }
 
     /// Ask for an invitation to `workspace` as `device`, as a member's page does.

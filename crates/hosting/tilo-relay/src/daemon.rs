@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Context as _;
 use iroh::endpoint::{Endpoint, presets};
 use iroh::protocol::{AcceptError, DynProtocolHandler, ProtocolHandler, Router};
 use iroh_base::EndpointAddr;
@@ -111,6 +112,37 @@ impl From<crate::host::HostError> for RelayError {
 
 /// The identity a relay runs with: a host's.
 pub use crate::host::HostIdentity as RelayIdentity;
+
+/// `identity` with the root-signed revocations persisted at `state_root`
+/// applied, each verified: what a host reads when it starts, so a device its
+/// root revoked is refused as it connects instead of only after it is in.
+///
+/// # Errors
+///
+/// Returns an error if the log cannot be read, or holds an entry that does
+/// not verify or contradicts one already in `identity`.
+pub fn with_persisted_revocations(
+    identity: RelayIdentity,
+    state_root: &std::path::Path,
+) -> anyhow::Result<RelayIdentity> {
+    let RelayIdentity {
+        user_public_key,
+        device_signing_key,
+        device_cert,
+        mut revocations,
+    } = identity;
+    for entry in crate::store::load_revocations(state_root)? {
+        revocations
+            .insert(entry)
+            .context("verify persisted relay revocation")?;
+    }
+    Ok(RelayIdentity {
+        user_public_key,
+        device_signing_key,
+        device_cert,
+        revocations,
+    })
+}
 
 /// What an embedder plugs into a relay it starts.
 struct Planes {

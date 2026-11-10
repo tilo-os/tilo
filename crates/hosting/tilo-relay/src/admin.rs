@@ -652,18 +652,7 @@ fn cmd_revoke_device(
         _ => anyhow::bail!("reason must be lost, stolen, retired, or compromised"),
     };
     let root = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)?;
-    let mut entry = tilo_user_identity::RevocationEntry {
-        user_public_key: root.verifying_key().to_bytes(),
-        revoked_device_public_key: pk,
-        revoked_at_ns: tilo_clock::unix_now_ns(),
-        reason,
-        signature: [0; 64],
-    };
-    tilo_user_identity::sign_revocation_entry(&mut entry, &root)?;
-    let mut entries = tilo_relay::store::load_revocations(&cfg.state_root)?;
-    entries.retain(|existing| existing.revoked_device_public_key != pk);
-    entries.push(entry);
-    tilo_relay::store::save_revocations(&cfg.state_root, &entries)?;
+    tilo_relay::root_signer::revoke_device(&cfg.state_root, &root, pk, reason)?;
     println!("revoked device {} ({reason:?})", hex::encode(pk));
     println!("a running tilo-relay disconnects the device within one second");
     Ok(())

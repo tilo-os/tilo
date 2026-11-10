@@ -214,18 +214,15 @@ fn load_identity(
         .with_context(|| format!("read device secret {}", paths.device_privkey.display()))?;
     let device_cert = persist::read_device_cert(&paths.device_cert)
         .with_context(|| format!("read device cert {}", paths.device_cert.display()))?;
-    let mut revocations = RevocationList::new();
-    for entry in tilo_relay::store::load_revocations(state_root)? {
-        revocations
-            .insert(entry)
-            .context("verify persisted relay revocation")?;
-    }
-    Ok(RelayIdentity {
-        user_public_key,
-        device_signing_key,
-        device_cert,
-        revocations,
-    })
+    tilo_relay::daemon::with_persisted_revocations(
+        RelayIdentity {
+            user_public_key,
+            device_signing_key,
+            device_cert,
+            revocations: RevocationList::new(),
+        },
+        state_root,
+    )
 }
 
 async fn wait_for_shutdown() -> anyhow::Result<()> {
