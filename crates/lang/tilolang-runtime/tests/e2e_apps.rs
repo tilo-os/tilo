@@ -1127,7 +1127,7 @@ mod cases {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let nb = w.create("Notebook");
-        let mut titled = |title: &str| {
+        let titled = |title: &str| {
             let note = returned_ref(w.call(&apps.notes, "new_note", vec![res(&nb)]));
             w.call(&apps.notes, "retitle", vec![res(&note), Value::text(title)]);
             note
