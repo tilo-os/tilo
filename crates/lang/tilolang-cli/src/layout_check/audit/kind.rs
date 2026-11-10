@@ -131,10 +131,14 @@ pub enum Kind {
     /// section gap: the two read as one block, and a list pressed against a notice says the
     /// notice is a row of it.
     CrampedCard,
+    /// A sidebar standing beside content narrower than a column: the pane beside it is a phone's
+    /// screen, so the sidebar folds behind the bar's toggle there and the content takes the
+    /// window.
+    ContentBesideSidebar,
 }
 
 impl Kind {
-    pub const ALL: [Self; 41] = [
+    pub const ALL: [Self; 42] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -176,6 +180,7 @@ impl Kind {
         Self::DockedColumn,
         Self::RoundedOnEdge,
         Self::CrampedCard,
+        Self::ContentBesideSidebar,
     ];
 
     pub fn name(self) -> &'static str {
@@ -221,6 +226,7 @@ impl Kind {
             Self::DockedColumn => "docked-column",
             Self::RoundedOnEdge => "rounded-on-edge",
             Self::CrampedCard => "cramped-card",
+            Self::ContentBesideSidebar => "content-beside-sidebar",
         }
     }
 }

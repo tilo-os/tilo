@@ -348,10 +348,10 @@ fn a_header_row_reports_what_it_settled_on() {
         );
     let mut h = harness(shell, 280, 700, Theme::dark());
     settle(&mut h, 280, 700);
-    let Some(crate::widget::LayoutInfo::Headers(rows)) = h.root::<NavShell>().layout_info() else {
-        panic!("the shell reports its header rows");
+    let Some(crate::widget::LayoutInfo::Shell(shell)) = h.root::<NavShell>().layout_info() else {
+        panic!("the shell reports its columns");
     };
-    let row = rows.rows[Column::Content.index()].expect("the content column's row");
+    let row = shell.rows.rows[Column::Content.index()].expect("the content column's row");
     assert_eq!(row.column, "content");
     let title = part_rect(&h, Part::Title(Column::Content));
     assert!((f64::from(row.title_has) - title.width()).abs() < 0.5);

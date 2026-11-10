@@ -39,6 +39,11 @@ enum = "Role"
 reason = "write-only: an accessibility node's role goes out to AT-SPI and the screen reader as a JSON name, and nothing deserializes it back, so its place in the enum carries no bytes"
 
 [[break]]
+file = "crates/sdk/ui-core/src/widget/layout_info.rs"
+enum = "LayoutInfo"
+reason = "a widget's resolved layout decisions reach the window's own inspection as newline-delimited JSON by name, read in the process that made them and never kept, so no stored bytes point at a variant position"
+
+[[break]]
 file = "apps/file-explorer/src/file_ops.rs"
 enum = "FileOp"
 reason = "the journal and the Files document keep it as JSON text in the record (`json_model!`), where a variant is named; the queue is replayed within one version, not read back from a positional frame"

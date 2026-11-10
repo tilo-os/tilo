@@ -3,6 +3,12 @@
 //! `theme.tokens.metrics`. The app hands it columns and headers; the shell owns the geometry,
 //! the responsive layout (docked sidebar, push stack or floating drawer — never a modal one),
 //! motion and semantics. An app reads [`NavGeometry::size_class`], never a width.
+//!
+//! A column stands beside the content only while the content keeps a column's width
+//! ([`crate::widget::arrange::column_min_width`], the `medium` class's start): a pane narrower
+//! than that is a phone's screen of its own, so the sidebar folds behind the bar's toggle (or
+//! floats over a content-primary app) and takes its room back. The window's own width decides it,
+//! never the display's, so a window in a strip, a tiled window and a phone follow one rule.
 
 use crate::num::f64_of_usize;
 use std::cell::RefCell;
@@ -345,6 +351,10 @@ struct Metrics {
     scale: f64,
     /// One line of body text: the unit of a page column's width.
     body_line: f64,
+    /// One `rem` in logical pixels ([`crate::widget::arrange::rem_of`]): the unit the width
+    /// classes are measured in, so the content beside a sidebar keeps a column's width at every
+    /// text size.
+    rem: f32,
     /// The line a document's body runs to, past which the page centres it.
     reading_measure: f64,
     /// What a page scroller keeps free for its bar on its trailing edge.
@@ -354,6 +364,27 @@ struct Metrics {
 }
 
 impl Metrics {
+    /// The narrowest content of `kind` still works at.
+    fn content_min(&self, kind: ContentKind) -> f64 {
+        match kind {
+            ContentKind::List => self.list_min,
+            ContentKind::Reading | ContentKind::Document => self.reading_min,
+            ContentKind::Page => self.page_min,
+            ContentKind::Grid | ContentKind::Canvas => self.grid_min,
+        }
+    }
+
+    /// The narrowest content of `kind` stands at beside a sidebar: its own minimum, and never
+    /// less than a column ([`crate::widget::arrange::column_min_width`]). A pane narrower than a
+    /// column is a phone's screen, so the sidebar folds behind the bar's toggle instead of
+    /// squeezing it (`layout.md`, "Responding to space").
+    fn beside_sidebar_min(&self, kind: ContentKind) -> f64 {
+        self.content_min(kind)
+            .max(f64::from(crate::widget::arrange::column_min_width(
+                self.rem,
+            )))
+    }
+
     fn resolve(theme: &Theme) -> Self {
         let m = theme.tokens.metrics;
         let s = theme.tokens.spacing;
@@ -389,6 +420,7 @@ impl Metrics {
             pointer: f64::from(m.min_pointer_target),
             scale: theme.responsive_scale(),
             body_line: f64::from(theme.text(crate::TextRole::Body).line_height_px()),
+            rem: crate::widget::arrange::rem_of(theme),
             reading_measure: f64::from(m.reading_measure) * growth,
             scroll_gutter: f64::from(m.scrollbar_gutter),
             page_pad: f64::from(s.s6),
@@ -598,13 +630,16 @@ impl Inputs {
         if !self.has_content {
             return 0.0;
         }
-        let m = &self.metrics;
-        match self.kind {
-            ContentKind::List => m.list_min,
-            ContentKind::Reading | ContentKind::Document => m.reading_min,
-            ContentKind::Page => m.page_min,
-            ContentKind::Grid | ContentKind::Canvas => m.grid_min,
+        self.metrics.content_min(self.kind)
+    }
+
+    /// The narrowest the content stands at beside a sidebar: a column of the window's own, never
+    /// a phone's screen ([`Metrics::beside_sidebar_min`]).
+    fn content_beside_sidebar_min(&self) -> f64 {
+        if !self.has_content {
+            return 0.0;
         }
+        self.metrics.beside_sidebar_min(self.kind)
     }
 
     /// The narrowest window the compact layout works at: one column at a time (or the content under
@@ -3404,7 +3439,10 @@ impl Widget for NavShell {
     }
 
     /// Each column's header row as the last layout left it: what its title says against what the
-    /// row gave it, and what its actions kept of their labels and their place in the row.
+    /// row gave it, and what its actions kept of their labels and their place in the row. Beside
+    /// it, where the sidebar stood and how wide the pane beside it is: the shell stands a sidebar
+    /// beside content of a column's width, and folds it behind the bar's toggle where the content
+    /// would be a phone's screen.
     fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
         let inputs = self.inputs.borrow();
         let fit = inputs.fit.borrow();
@@ -3412,11 +3450,44 @@ impl Widget for NavShell {
         for (row, slot) in rows.iter_mut().zip(fit.iter()) {
             *row = slot.header;
         }
-        rows.iter()
-            .any(Option::is_some)
-            .then_some(crate::widget::LayoutInfo::Headers(
-                crate::widget::HeaderRows { rows },
+        let m = inputs.metrics;
+        let beside = self.beside_sidebar();
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a window's width in logical pixels, far inside f32's range"
+        )]
+        let (beside_rem, beside_width) =
+            ((beside / f64::from(m.rem.max(1.0))) as f32, beside as f32);
+        Some(crate::widget::LayoutInfo::Shell(
+            crate::widget::ShellLayout {
+                sidebar: match self.geometry.sidebar {
+                    SidebarPlacement::None => crate::widget::SidebarStanding::None,
+                    SidebarPlacement::Docked => crate::widget::SidebarStanding::Docked,
+                    SidebarPlacement::Drawer => crate::widget::SidebarStanding::Over,
+                    SidebarPlacement::Screen => crate::widget::SidebarStanding::Alone,
+                },
+                beside: crate::widget::arrange::WidthClass::of(beside_rem),
+                beside_width,
+                rows: crate::widget::HeaderRows { rows },
+            },
+        ))
+    }
+
+    /// How wide the pane beside the sidebar stands: the window without the columns that dock
+    /// beside it (the sidebar's own and the inspector's).
+    fn beside_sidebar(&self) -> f64 {
+        let g = &self.geometry;
+        let docked = |placement: bool, width: f64| if placement { width } else { 0.0 };
+        (g.size.x
+            - docked(
+                g.sidebar == SidebarPlacement::Docked,
+                g.sidebar_column.width(),
+            )
+            - docked(
+                g.inspector == InspectorPlacement::Docked,
+                g.inspector_column.width(),
             ))
+        .max(0.0)
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {

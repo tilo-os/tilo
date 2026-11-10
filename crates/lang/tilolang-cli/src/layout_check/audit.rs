@@ -612,6 +612,7 @@ impl Walk<'_> {
             self.counts(node, keys, own, inner_clip);
             self.titles(node, keys, own);
             self.header_rows(node, keys);
+            self.content_beside_sidebar(node, keys);
             self.navigation(node, keys, own.intersect(inner_clip));
         }
         self.cramped_card(node, keys);
@@ -1219,14 +1220,39 @@ impl Walk<'_> {
     /// a label for its icon and then a place in the row for the menu's door, and the row never
     /// drops the app's primary action.
     fn header_rows(&mut self, node: &InspectionNode, keys: &[String]) {
-        let Some(ui::widget::LayoutInfo::Headers(rows)) = &node.layout else {
+        let Some(ui::widget::LayoutInfo::Shell(shell)) = &node.layout else {
             return;
         };
-        for row in rows.rows.iter().flatten() {
+        for row in shell.rows.rows.iter().flatten() {
             if let Some(detail) = header_row_problem(row) {
                 self.push(Kind::TitleClippedWithRoom, node, keys, detail);
             }
         }
+    }
+
+    /// A sidebar standing beside content narrower than a column
+    /// ([`ui::widget::arrange::column_min_width`]): the pane beside it is a phone's screen, where
+    /// the sidebar folds behind the bar's toggle and the content takes the window instead.
+    fn content_beside_sidebar(&mut self, node: &InspectionNode, keys: &[String]) {
+        let Some(ui::widget::LayoutInfo::Shell(shell)) = &node.layout else {
+            return;
+        };
+        if shell.sidebar != ui::widget::SidebarStanding::Docked
+            || shell.beside != ui::widget::arrange::WidthClass::Compact
+            || shell.beside_width <= 0.0
+        {
+            return;
+        }
+        self.push(
+            Kind::ContentBesideSidebar,
+            node,
+            keys,
+            format!(
+                "the content stands {:.0} wide beside the sidebar, a phone's screen: the sidebar \
+                 folds behind the bar's toggle there, and the content takes the window",
+                shell.beside_width
+            ),
+        );
     }
 
     /// A column's header count that a place beside it, to its left, draws too: the same number

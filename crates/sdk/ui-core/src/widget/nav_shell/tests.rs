@@ -171,19 +171,25 @@ fn document_shell() -> NavShell {
 }
 
 /// At any width the shell picks the layout in which everything shown is
-/// usable: docked while the sidebar fits beside the content's real minimum,
-/// one column at a time below that, and a drawer only for a content-primary
-/// app. No automatic width ever darkens the content.
+/// usable: docked while the sidebar fits beside a column of content, one
+/// column at a time below that, and a drawer only for a content-primary app.
+/// No automatic width ever darkens the content.
 #[test]
 fn the_sidebar_docks_while_the_contents_real_minimum_fits() {
     let theme = Theme::dark();
     let m = Metrics::resolve(&theme);
     use SidebarPlacement::{Docked, Drawer, Screen};
-    for (name, make, min, narrow) in [
-        ("files", files_shell as fn() -> NavShell, m.list_min, Screen),
-        ("settings", settings_shell, m.page_min, Screen),
-        ("notes", document_shell, m.reading_min, Drawer),
+    for (name, make, kind, narrow) in [
+        (
+            "files",
+            files_shell as fn() -> NavShell,
+            ContentKind::List,
+            Screen,
+        ),
+        ("settings", settings_shell, ContentKind::Page, Screen),
+        ("notes", document_shell, ContentKind::Document, Drawer),
     ] {
+        let min = m.beside_sidebar_min(kind);
         for width in [320_u32, 360, 480, 520, 560, 600, 720, 840, 900, 1400] {
             let mut h = harness(make(), width, 700, theme.clone());
             settle(&mut h, width, 700);
@@ -191,7 +197,7 @@ fn the_sidebar_docks_while_the_contents_real_minimum_fits() {
             let w = f64::from(width);
             assert!(
                 (g.breakpoint - (m.sidebar_min + min)).abs() < 1e-6,
-                "{name} {width}: the sidebar at its minimum plus the content's"
+                "{name} {width}: the sidebar at its minimum plus a column of content"
             );
             let docked = w >= m.sidebar_min + min;
             assert_eq!(
@@ -245,8 +251,12 @@ fn the_sidebar_docks_while_the_contents_real_minimum_fits() {
             assert_eq!(g.open_drawer(), None, "{name} {width}");
         }
     }
-    // A docked Files sidebar works down to 600 instead of 840.
-    assert!(m.sidebar_min + m.list_min <= 600.0);
+    // A docked Files sidebar works down to a column of content, under the
+    // breakpoint a painted app guesses at (840).
+    assert!(
+        m.sidebar_min + m.beside_sidebar_min(ContentKind::List)
+            < f64::from(Metrics::BASE.compact_breakpoint)
+    );
 }
 
 /// The narrowest window is the compact layout's: one column at a time at
@@ -296,7 +306,7 @@ fn the_minimum_window_width_is_the_compact_layouts() {
 fn layout_changes_have_hysteresis() {
     let theme = Theme::dark();
     let m = Metrics::resolve(&theme);
-    let threshold = m.sidebar_min + m.list_min;
+    let threshold = m.sidebar_min + m.beside_sidebar_min(ContentKind::List);
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -537,8 +547,9 @@ fn the_shell_follows_the_window_and_the_text_scale() {
             settle(&mut h, width, 800);
             let g = geometry(&h);
             let w = f64::from(width);
+            let beside = m.overview + m.beside_sidebar_min(ContentKind::Page);
             let pair = m.overview + m.page_min;
-            let breakpoint = m.sidebar_min + pair;
+            let breakpoint = m.sidebar_min + beside;
             assert!((g.breakpoint - breakpoint).abs() < 1e-6, "{scale}x {width}");
             let expect_docked = w >= breakpoint;
             assert_eq!(
@@ -557,7 +568,7 @@ fn the_shell_follows_the_window_and_the_text_scale() {
             );
             assert!(g.header_height >= f64::from(theme.tokens.metrics.header_height));
             if expect_docked {
-                assert!((g.sidebar_column.width() - m.sidebar.min(w - pair)).abs() < 0.5);
+                assert!((g.sidebar_column.width() - m.sidebar.min(w - beside)).abs() < 0.5);
                 assert_eq!(g.sidebar_column.x0, 0.0);
             } else {
                 // A fresh window has no place to keep: it opens on the

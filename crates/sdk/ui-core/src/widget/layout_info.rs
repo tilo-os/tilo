@@ -128,6 +128,39 @@ pub struct HeaderRows {
     pub rows: [Option<HeaderRowLayout>; 4],
 }
 
+/// Where a window's shell stood its sidebar against the content (`layout.md`, "Responding to
+/// space").
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SidebarStanding {
+    /// The window shows no sidebar.
+    None,
+    /// Beside the content, as a column of the window's own.
+    Docked,
+    /// Over the content, as a drawer the bar's toggle brings forward.
+    Over,
+    /// As a screen of the window's own, taking turns with the content.
+    Alone,
+}
+
+/// One window's shell as its last layout left it: where its sidebar stood, the class of the
+/// content beside it, and how the shell held each column's header row.
+///
+/// An audit reads this to hold the shell to the rule that decides it: a sidebar stands beside
+/// content of a column's width ([`crate::widget::arrange::column_min_width`]) and folds behind the
+/// bar's toggle where the content beside it would be a phone's screen instead.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
+pub struct ShellLayout {
+    /// How the sidebar stood.
+    pub sidebar: SidebarStanding,
+    /// The class of the pane standing beside the sidebar, by its own width.
+    pub beside: crate::widget::arrange::WidthClass,
+    /// That pane's width in logical pixels; zero where the window shows none.
+    pub beside_width: f32,
+    /// Each column's header row, `[sidebar, overview, content, inspector]`.
+    pub rows: HeaderRows,
+}
+
 /// Concrete layout policies. Manual layout information can extend this enum.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 pub enum LayoutInfo {
@@ -138,7 +171,7 @@ pub enum LayoutInfo {
     Manual(ManualLayout),
     Scroll(ScrollLayout),
     Row(RowLayout),
-    Headers(HeaderRows),
+    Shell(ShellLayout),
 }
 
 /// Which way a scroll view lets its content go on past its own box.

@@ -351,13 +351,16 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     let band = m.hysteresis;
     let content_min = inputs.content_min();
     let content_need = ow + content_min;
+    // The sidebar stands beside content of the window's own: a pane narrower than a column is a
+    // phone's screen, so the sidebar folds behind the bar's toggle there instead.
+    let beside_need = ow + inputs.content_beside_sidebar_min();
     let rail_sidebar = inputs.mode == NavMode::Docked;
 
     g.size = Vec2::new(w, h);
 
-    // The sidebar docks while it fits beside the content's real minimum, shrinking toward its own
-    // first; below that the window shows one column at a time, or floats the sidebar over a
-    // content-primary app.
+    // The sidebar docks while it fits beside a column of content, shrinking toward its own
+    // minimum first; below that the window shows one column at a time, or floats the sidebar over
+    // a content-primary app.
     let preferred = inputs.sidebar_width().min(w);
     let narrowest = if rail_sidebar {
         preferred
@@ -365,7 +368,7 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         m.sidebar_min.min(preferred)
     };
     g.breakpoint = if inputs.has_sidebar && !rail_sidebar {
-        narrowest + content_need
+        narrowest + beside_need
     } else {
         0.0
     };
@@ -379,7 +382,7 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         SidebarPlacement::Screen
     };
     let sw = if g.sidebar == SidebarPlacement::Docked && !rail_sidebar {
-        preferred.min(w - content_need).max(narrowest)
+        preferred.min(w - beside_need).max(narrowest)
     } else {
         preferred
     };
@@ -397,13 +400,13 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         0.0
     };
 
-    // 2. The inspector docks while the content keeps its minimum beside it;
+    // 2. The inspector docks while the content keeps a column's width beside it;
     //    narrower, it is a sheet up from the window's foot.
     g.inspector = if !inputs.has_inspector {
         InspectorPlacement::None
     } else if reaches(
         w - docked_target,
-        content_need + iw,
+        beside_need + iw,
         held.inspector_docked,
         band,
     ) {

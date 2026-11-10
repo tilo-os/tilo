@@ -79,17 +79,35 @@ fn a_header_row_gives_up_its_labels_before_its_title() {
     assert!(dropped.contains("primary"), "{dropped}");
 }
 
+fn shell_layout(
+    sidebar: ui::widget::SidebarStanding,
+    beside: ui::widget::arrange::WidthClass,
+    width: f32,
+) -> ui::widget::ShellLayout {
+    ui::widget::ShellLayout {
+        sidebar,
+        beside,
+        beside_width: width,
+        rows: ui::widget::HeaderRows { rows: [None; 4] },
+    }
+}
+
 /// The shell reports how it held each header row, and the check holds it to the rule there.
 #[test]
 fn a_header_row_the_shell_reports_is_checked_where_it_stands() {
     let mut shell = node("NavShell", "shell", [0.0, 0.0, 400.0, 300.0], None);
-    shell.layout = Some(ui::widget::LayoutInfo::Headers(ui::widget::HeaderRows {
-        rows: [
-            None,
-            Some(header_row(120.0, 120.0, 0.0, false, false)),
-            None,
-            None,
-        ],
+    shell.layout = Some(ui::widget::LayoutInfo::Shell(ui::widget::ShellLayout {
+        sidebar: ui::widget::SidebarStanding::None,
+        beside: ui::widget::arrange::WidthClass::Compact,
+        beside_width: 400.0,
+        rows: ui::widget::HeaderRows {
+            rows: [
+                None,
+                Some(header_row(120.0, 120.0, 0.0, false, false)),
+                None,
+                None,
+            ],
+        },
     }));
     let found: Vec<Problem> = inspect(&shell, (400, 300), None, 1.0)
         .into_iter()
@@ -98,6 +116,40 @@ fn a_header_row_the_shell_reports_is_checked_where_it_stands() {
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(found[0].keys.first().map(String::as_str), Some("shell"));
     assert!(found[0].detail.contains("primary"), "{}", found[0].detail);
+}
+
+/// A sidebar stands beside content of the window's own: a pane narrower than a column is a
+/// phone's screen, so the sidebar folds behind the bar's toggle there instead. The shell reports
+/// where its sidebar stood and how wide the pane beside it is, and the check holds it to it.
+#[test]
+fn a_sidebar_beside_a_phone_screen_is_caught() {
+    use ui::widget::SidebarStanding;
+    use ui::widget::arrange::WidthClass;
+    let with = |sidebar, beside, width| {
+        let mut shell = node("NavShell", "shell", [0.0, 0.0, 616.0, 700.0], None);
+        shell.layout = Some(ui::widget::LayoutInfo::Shell(shell_layout(
+            sidebar, beside, width,
+        )));
+        inspect(&shell, (616, 700), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::ContentBesideSidebar)
+            .collect::<Vec<Problem>>()
+    };
+    let found = with(SidebarStanding::Docked, WidthClass::Compact, 336.0);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].detail.contains("336"), "{}", found[0].detail);
+    assert!(
+        with(SidebarStanding::Docked, WidthClass::Medium, 420.0).is_empty(),
+        "content of a column's width stands beside the sidebar"
+    );
+    assert!(
+        with(SidebarStanding::Alone, WidthClass::Compact, 336.0).is_empty(),
+        "a sidebar that folded beside a phone-width pane is what the rule asks for"
+    );
+    assert!(
+        with(SidebarStanding::Over, WidthClass::Compact, 336.0).is_empty(),
+        "a drawer stands over the content, not beside it"
+    );
 }
 
 fn overlaps(children: Vec<InspectionNode>) -> Vec<Problem> {

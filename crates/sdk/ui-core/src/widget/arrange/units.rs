@@ -321,7 +321,8 @@ impl Fit {
 
 /// The width classes of a view's container (layout.md, "Responding to space"): in `rem`, so
 /// enlarged text moves a window to a narrower class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum WidthClass {
     Compact,
     Medium,
@@ -379,6 +380,16 @@ impl WidthClass {
             Self::Wide => (EXPANDED_BELOW, f32::INFINITY),
         }
     }
+}
+
+/// The narrowest a column of content stands at, in logical pixels: the width at which a space
+/// stops being [`WidthClass::Compact`]. A pane narrower than a column is a phone's screen of its
+/// own, so a sidebar does not stand beside it — it folds behind the bar's toggle instead
+/// ([`crate::widget::NavShell`], [`crate::widget::SidebarDrawer`]). `rem` is the theme's body
+/// size ([`rem_of`]), so enlarged text asks for a wider column.
+#[must_use]
+pub fn column_min_width(rem: f32) -> f32 {
+    WidthClass::Medium.band().0 * rem
 }
 
 /// The shape of the space a view is offered.
