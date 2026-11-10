@@ -52,12 +52,15 @@ DATA_DIR = "research/data"
 BULK_MB = 256
 SMALL_FILES = 400
 SMALL_KB = 64
-# How long a branch of that may take before the check gives up on it, and how long one answer of
-# the desk may take while a branch runs before the branch blocks the desk.
+# How long a branch of that may take before the check gives up on it.
 BRANCH_S = 600
+# How long one answer of the desk may take while a branch runs before the branch blocks the desk:
+# this many seconds, or four times the slowest answer just before it. A desk the copy held would
+# not answer for as long as the copy runs, a minute and more; the busy VM, drawing in software
+# beside the copy, answers a state dump in 0.3-1 s and now and then in 3-4 s.
+DESK_STALL_S = 5.0
 # How long an app may take to open a window while the box is busy copying and drawing in software.
 TERMINAL_S = 120
-DESK_STALL_S = 3.0
 # The desk's own Branch workspace entry, as the person reads it, and the action's names.
 BRANCH_ENTRY = "Branch workspace"
 WORKSPACE_BRANCH = "workspace.branch"
@@ -243,7 +246,14 @@ def note_titles(ctx, ws: dict) -> list[str]:
 
 def new_note(ctx, ws: dict, title: str) -> None:
     ensure_notes(ctx, ws)
-    ae.person_note(ctx, {"name": ws.get("name"), "workspace": ws}, title)
+    try:
+        ae.person_note(ctx, {"name": ws.get("name"), "workspace": ws}, title)
+    except VmError as exc:
+        # What the job ended with (action_jobs.PendingJob keeps it), and what Notes said.
+        status = ctx.out / "data" / f"{ws.get('name')}-person-note-status.json"
+        ended = status.read_text()[-1500:] if status.exists() else "no status kept"
+        raise CheckFailed(f"{ws.get('name')}: Notes' new-note {title!r} did not succeed: {exc.reason()}; "
+                          f"it ended {ended}; {app_evidence(ctx, ae.NOTES)}") from exc
 
 
 # -- the trees ---------------------------------------------------------------------------------
@@ -460,8 +470,10 @@ def set_up(ctx, res):
     # The person's files and their environment's tool, written from the environment's shell as
     # they would: a question, a tool on PATH, a git checkout where the environment has git.
     terminal.bash(
-        f"mkdir -p ~/{DATA_DIR} ~/.local/bin && printf '%s\\n' 'Question {run}' 'first line of thought' "
-        f"> ~/{QUESTION} && printf '%s\\n' '#!/bin/bash' 'echo e2e-tool {run} source' > ~/{TOOL} "
+        # A line each, with no escapes for the typing to carry.
+        f"mkdir -p ~/{DATA_DIR} ~/.local/bin && echo 'Question {run}' > ~/{QUESTION} "
+        f"&& echo 'first line of thought' >> ~/{QUESTION} && echo '#!/bin/bash' > ~/{TOOL} "
+        f"&& echo 'echo e2e-tool {run} source' >> ~/{TOOL} "
         f"&& chmod +x ~/{TOOL}")
     terminal.bash(
         f"if command -v git >/dev/null; then mkdir -p ~/{CHECKOUT} && cd ~/{CHECKOUT} && git init -q "
@@ -628,9 +640,9 @@ def branch(ctx, res):
                              f"{scene['files']} data files {BRANCH_S} s after the branch")
         problems.want(made.get("name") == name, f"the branch is named {made.get('name')!r}, not {name!r}")
         base = max(timing["desk_baseline_s"])
-        stalls = [t for t in during if t > max(DESK_STALL_S, 3 * base)]
+        stalls = [t for t in during if t > max(DESK_STALL_S, 4 * base)]
         problems.want(not stalls, f"branching {name} blocked the desk: {len(stalls)} of {len(during)} answers "
-                                  f"took over {max(DESK_STALL_S, 3 * base):.1f} s (longest {max(stalls or [0]):.1f} s, "
+                                  f"took over {max(DESK_STALL_S, 4 * base):.1f} s (longest {max(stalls or [0]):.1f} s, "
                                   f"{base:.2f} s before the branch)")
         problems.want(not timing["desk_errors"], f"the desk did not answer while branching {name}: "
                                                  f"{timing['desk_errors'][:3]}")
@@ -745,12 +757,14 @@ def post_chat(ctx, ws: dict, text: str) -> None:
 def app_evidence(ctx, app: str) -> str:
     """What the session said about `app` lately, and what the desk says of it: for a failure where
     `app` did not open."""
-    said = ctx.vm.exec(
-        f"sed 's/\\x1b\\[[0-9;]*m//g' \"{core.SESSION_LOG}\" | grep -a {shlex.quote(app)} "
-        "| grep -avE 'FRAME-LIFECYCLE|paint-stats|landlock|Landlock' | tail -n 25 | cut -c1-400", check=False)
+    said = ctx.vm.root_exec(
+        "journalctl --no-pager -o cat | sed 's/\\x1b\\[[0-9;]*m//g' "
+        f"| grep -a {shlex.quote(app)} | grep -aE 'ERROR|WARN|refus|fail|stopp|denied' "
+        "| grep -avE 'FRAME-LIFECYCLE|paint-stats|andlock|realtime events unavailable|no instance route' "
+        "| tail -n 30 | cut -c1-500", timeout=180, check=False)
     shown = sorted({str(t.get("name")) for t in ctx.vm.targets()
                     if "/" not in str(t.get("name")) and ("stopped" in str(t.get("name")) or "ended" in str(t.get("name")))})
-    return f"the desk shows {shown}; the session said: {said[-2500:]}"
+    return f"the desk shows {shown}; the session said: {said[-6000:]}"
 
 
 def contents(ctx, scene: dict, ws: dict, label: str) -> tuple[dict, list[str]]:
@@ -853,7 +867,7 @@ def edit(ctx, scene: dict, ws: dict, who: str) -> dict:
     terminal = ws.get("terminal") or shell_in(ctx, ws, f"terminal-{who}-edit", ENVIRONMENT, scene["source"]["record"])[0]
     ws["terminal"] = terminal
     terminal.bash(f"echo 'finding of {mark}' >> ~/{QUESTION} && echo {mark} > ~/{who}-{run}.txt "
-                  f"&& printf '%s\\n' '#!/bin/bash' 'echo e2e-tool {run} {who}' > ~/{TOOL}")
+                  f"&& echo '#!/bin/bash' > ~/{TOOL} && echo 'echo e2e-tool {run} {who}' >> ~/{TOOL}")
     terminal.call("create-environment", {"name": f"Env {mark}", "confirm": True})
     return {"note": f"Only in {mark}", "line": f"finding of {mark}", "file": f"{who}-{run}.txt",
             "tool": f"e2e-tool {run} {who}", "environment": f"Env {mark}"}
