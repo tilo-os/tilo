@@ -6,8 +6,16 @@
 //! takes it back. Neither the key nor the invitation is ever written down;
 //! the delete secret is kept as a digest, so what a site holds cannot be used
 //! to read an invitation even by the site itself.
+//!
+//! What a site keeps waits on its state disk, one file per handle beside its
+//! other state, because a link is pasted into a message and read days later:
+//! an invitation survives the relay being restarted, replaced or deployed
+//! over, and is taken off the disk when it lapses. Each file is written
+//! whole, by a rename into place, so a crash mid-write leaves the invitation
+//! it replaced or the one it wrote, never half of either.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use hyper::{Method, Request, Response, StatusCode};
@@ -23,6 +31,8 @@ const MAX_ENTRIES: usize = 4096;
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 /// Characters a delete secret is spelled in, as the inviter's device draws it.
 const DELETE_CHARS: usize = 43;
+/// Characters a handle is spelled in, as the link's path carries it.
+const HANDLE_CHARS: usize = 16;
 /// Nanoseconds in a second, for the window an invitation may be kept for.
 const NS: u64 = 1_000_000_000;
 
@@ -38,6 +48,44 @@ struct Kept {
     delete: [u8; 32],
 }
 
+/// What a site keeps, as the file under `dir` holds it: what a restart reads.
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct Written {
+    /// The sealed signed invitation, base64url.
+    sealed: String,
+    /// The origin the invitation admits into, when the inviter named one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host: Option<String>,
+    /// When the invitation it holds lapses, in Unix nanoseconds.
+    expires_at_ns: u64,
+    /// The digest of the secret that takes it back, hex. No site holds the
+    /// secret itself: a file read by anyone else still takes nothing back.
+    delete: String,
+}
+
+impl Written {
+    fn of(kept: &Kept) -> Self {
+        Self {
+            sealed: kept.sealed.clone(),
+            host: kept.host.clone(),
+            expires_at_ns: kept.expires_at_ns,
+            delete: hex::encode(kept.delete),
+        }
+    }
+
+    /// What was written down, unless it is not one the site wrote.
+    fn kept(self) -> Option<Kept> {
+        let digest: [u8; 32] = hex::decode(&self.delete).ok()?.try_into().ok()?;
+        Some(Kept {
+            sealed: self.sealed,
+            host: self.host,
+            expires_at_ns: self.expires_at_ns,
+            delete: digest,
+        })
+    }
+}
+
 #[derive(Default)]
 struct Inner {
     kept: HashMap<String, Kept>,
@@ -45,15 +93,85 @@ struct Inner {
 }
 
 impl Inner {
-    /// Drop what has lapsed: a site keeps nothing past an invitation's life.
-    fn sweep(&mut self, now_ns: u64) {
-        self.kept.retain(|_, kept| {
-            let live = kept.expires_at_ns > now_ns;
-            if !live {
-                self.bytes = self.bytes.saturating_sub(kept.sealed.len());
+    /// Read what `dir` holds from before this start: the invitations a link
+    /// pasted into a message may still name. What lapsed while nothing was
+    /// running is collected here, as it is on every other pass.
+    fn opening(&mut self, dir: &Path, now_ns: u64) {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => {
+                tracing::warn!(%error, dir = %dir.display(), "the shelf's invitations were not read");
+                return;
             }
-            live
-        });
+        };
+        for entry in entries {
+            let Ok(entry) = entry else { continue };
+            let name = entry.file_name();
+            let Some(handle) = name
+                .to_str()
+                .and_then(|name| name.strip_suffix(".json"))
+                .filter(|handle| handle_spelled(handle))
+            else {
+                // A rename's own file, left by a crash mid-write: it names no
+                // invitation, and the one it would have replaced is untouched.
+                continue;
+            };
+            let Some(kept) = std::fs::read(entry.path())
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Written>(&bytes).ok())
+                .and_then(Written::kept)
+            else {
+                tracing::warn!(handle, "a file in the shelf is not an invitation");
+                continue;
+            };
+            if kept.expires_at_ns <= now_ns {
+                collecting(dir, handle);
+                continue;
+            }
+            if self.kept.len() >= MAX_ENTRIES
+                || self.bytes.saturating_add(kept.sealed.len()) > MAX_BYTES
+            {
+                tracing::warn!(
+                    handle,
+                    "the shelf holds as much as it will: an invitation is left for a later start"
+                );
+                continue;
+            }
+            self.bytes = self.bytes.saturating_add(kept.sealed.len());
+            self.kept.insert(handle.to_owned(), kept);
+        }
+    }
+
+    /// Drop what has lapsed: a site keeps nothing past an invitation's life,
+    /// on its disk as in its memory.
+    fn sweep(&mut self, dir: &Path, now_ns: u64) {
+        let lapsed: Vec<String> = self
+            .kept
+            .iter()
+            .filter(|(_, kept)| kept.expires_at_ns <= now_ns)
+            .map(|(handle, _)| handle.clone())
+            .collect();
+        for handle in lapsed {
+            if let Some(kept) = self.kept.remove(&handle) {
+                self.bytes = self.bytes.saturating_sub(kept.sealed.len());
+                collecting(dir, &handle);
+            }
+        }
+    }
+}
+
+/// Take what `handle` named off the disk. A file that is already gone is what
+/// was asked for; one that will not go is said, and left for the next pass:
+/// the invitation it holds is out of memory either way, so nothing answers
+/// with it — a restart reads it, finds it lapsed, and tries again.
+fn collecting(dir: &Path, handle: &str) {
+    match std::fs::remove_file(dir.join(format!("{handle}.json"))) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            tracing::warn!(%error, handle, "an invitation that lapsed could not be taken off the shelf");
+        }
     }
 }
 
@@ -70,19 +188,56 @@ pub(super) enum Refused {
     Gone,
     /// The secret is not the one the invitation was kept with.
     Forbidden,
+    /// The shelf's disk could not be written or read.
+    Storage,
 }
 
 /// The invitations a site keeps, and nothing it can read.
-#[derive(Default)]
 pub(super) struct Shelf {
+    /// Where what is kept waits across a restart.
+    dir: PathBuf,
     inner: Mutex<Inner>,
 }
 
 impl Shelf {
+    /// The shelf kept in `dir`, with what an earlier start left there.
+    pub(super) fn opening(dir: PathBuf, now_ns: u64) -> Self {
+        let mut inner = Inner::default();
+        inner.opening(&dir, now_ns);
+        Self {
+            dir,
+            inner: Mutex::new(inner),
+        }
+    }
+
     fn inner(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Where an invitation is written down: one file per handle, named by it.
+    fn path(&self, handle: &str) -> PathBuf {
+        self.dir.join(format!("{handle}.json"))
+    }
+
+    /// Write `kept` down, whole, before answering for it: an invitation a
+    /// link names is one a restart still finds.
+    fn writing(&self, handle: &str, kept: &Kept) -> Result<(), Refused> {
+        std::fs::create_dir_all(&self.dir).map_err(|error| {
+            tracing::warn!(%error, handle, "the shelf's dir could not be made");
+            Refused::Storage
+        })?;
+        let bytes = serde_json::to_vec(&Written::of(kept)).map_err(|error| {
+            tracing::warn!(%error, handle, "an invitation could not be written down");
+            Refused::Storage
+        })?;
+        tilo_files::native::atomic::write_with_mode(&self.path(handle), &bytes, 0o600).map_err(
+            |error| {
+                tracing::warn!(%error, handle, "an invitation could not be written down");
+                Refused::Storage
+            },
+        )
     }
 
     /// Keep `stored` under `handle`, unless the shelf cannot hold it.
@@ -91,6 +246,9 @@ impl Shelf {
         reason = "the guard holds the shelf for the whole of one operation"
     )]
     pub(super) fn put(&self, handle: &str, stored: Stored, now_ns: u64) -> Result<(), Refused> {
+        if !handle_spelled(handle) {
+            return Err(Refused::Malformed("a handle is 16 characters of base64url"));
+        }
         if stored.sealed.is_empty() || stored.sealed.len() > MAX_SEALED_BYTES {
             return Err(Refused::Malformed("a sealed invitation is at most 8 KiB"));
         }
@@ -112,23 +270,23 @@ impl Shelf {
         }
         let bytes = stored.sealed.len();
         let mut inner = self.inner();
-        inner.sweep(now_ns);
+        inner.sweep(&self.dir, now_ns);
         if inner.kept.contains_key(handle) {
             return Err(Refused::Taken);
         }
         if inner.kept.len() >= MAX_ENTRIES || inner.bytes.saturating_add(bytes) > MAX_BYTES {
             return Err(Refused::Full);
         }
+        let kept = Kept {
+            sealed: stored.sealed,
+            host: stored.host,
+            expires_at_ns: stored.expires_at_ns,
+            delete: digest(&stored.delete),
+        };
+        // The disk first: an invitation answered for is one a restart finds.
+        self.writing(handle, &kept)?;
         inner.bytes = inner.bytes.saturating_add(bytes);
-        inner.kept.insert(
-            handle.to_owned(),
-            Kept {
-                sealed: stored.sealed,
-                host: stored.host,
-                expires_at_ns: stored.expires_at_ns,
-                delete: digest(&stored.delete),
-            },
-        );
+        inner.kept.insert(handle.to_owned(), kept);
         Ok(())
     }
 
@@ -139,26 +297,43 @@ impl Shelf {
     )]
     fn get(&self, handle: &str, now_ns: u64) -> Option<Fetched> {
         let mut inner = self.inner();
-        inner.sweep(now_ns);
-        inner.kept.get(handle).map(|kept| Fetched {
-            sealed: kept.sealed.clone(),
-            host: kept.host.clone(),
-        })
+        inner.sweep(&self.dir, now_ns);
+        inner
+            .kept
+            .get(handle)
+            .filter(|kept| kept.expires_at_ns > now_ns)
+            .map(|kept| Fetched {
+                sealed: kept.sealed.clone(),
+                host: kept.host.clone(),
+            })
     }
 
     /// Take an invitation back, if `delete` is the secret it was kept with.
+    /// The disk lets go of it before the answer: a link its inviter took back
+    /// names nothing, a restart included.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the guard holds the shelf for the whole of one operation"
     )]
     fn take(&self, handle: &str, delete: &str, now_ns: u64) -> Result<(), Refused> {
         let mut inner = self.inner();
-        inner.sweep(now_ns);
+        inner.sweep(&self.dir, now_ns);
         let Some(kept) = inner.kept.get(handle) else {
             return Err(Refused::Gone);
         };
         if !same(&kept.delete, &digest(delete)) {
             return Err(Refused::Forbidden);
+        }
+        // A file already gone (a state directory restored from before the
+        // invitation was left, say) names nothing either: it is not a failure
+        // to take back what is not there.
+        match std::fs::remove_file(self.path(handle)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                tracing::warn!(%error, handle, "a taken-back invitation could not be taken off the shelf");
+                return Err(Refused::Storage);
+            }
         }
         if let Some(kept) = inner.kept.remove(handle) {
             inner.bytes = inner.bytes.saturating_sub(kept.sealed.len());
@@ -226,6 +401,10 @@ fn refused(refusal: &Refused) -> Response<Body> {
         Refused::Full => status(StatusCode::SERVICE_UNAVAILABLE, "the shelf is full"),
         Refused::Gone => gone(),
         Refused::Forbidden => status(StatusCode::FORBIDDEN, "that is not its delete secret"),
+        Refused::Storage => status(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "the invitation could not be kept",
+        ),
     }
 }
 
@@ -269,6 +448,16 @@ fn spelled(text: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// Whether `text` is a handle as a link spells one ([`HANDLE_CHARS`]
+/// characters of base64url): the name its invitation's file goes by, so one
+/// that could name a file elsewhere is never one.
+fn handle_spelled(text: &str) -> bool {
+    text.chars().count() == HANDLE_CHARS
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 fn digest(secret: &str) -> [u8; 32] {
     *blake3::hash(secret.as_bytes()).as_bytes()
 }
@@ -290,6 +479,7 @@ mod tests {
 
     const NOW: u64 = 1_700_000_000 * NS;
     const HANDLE: &str = "abcdefghijklmnop";
+    const OTHER: &str = "ponmlkjihgfedcba";
     const DELETE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     fn stored(sealed: &str, expires_in_s: u64) -> Stored {
@@ -308,9 +498,17 @@ mod tests {
         }
     }
 
+    /// A shelf kept in a directory of its own, as a site keeps one, and the
+    /// state directory a restart would find it in.
+    fn shelf_at(now_ns: u64) -> (tempfile::TempDir, Shelf) {
+        let state = tempfile::tempdir().unwrap();
+        let shelf = Shelf::opening(state.path().to_path_buf(), now_ns);
+        (state, shelf)
+    }
+
     #[test]
     fn what_is_kept_is_handed_back_until_it_lapses() {
-        let shelf = Shelf::default();
+        let (_state, shelf) = shelf_at(NOW);
         shelf
             .put(HANDLE, stored(&"a".repeat(1200), 60), NOW)
             .unwrap();
@@ -327,8 +525,88 @@ mod tests {
     }
 
     #[test]
+    fn an_invitation_left_before_a_restart_waits_for_whoever_follows_the_link() {
+        let state = tempfile::tempdir().unwrap();
+        let disk = state.path().to_path_buf();
+        let sealed = "a".repeat(1200);
+        let before = Shelf::opening(disk.clone(), NOW);
+        before
+            .put(
+                HANDLE,
+                Stored {
+                    host: Some("https://relay.example".to_owned()),
+                    ..stored(&sealed, 3600)
+                },
+                NOW,
+            )
+            .unwrap();
+        drop(before);
+
+        // The relay that comes up next on the same state disk finds it, as
+        // whoever the link reached needs it to.
+        let after = Shelf::opening(disk.clone(), NOW + 60 * NS);
+        assert_eq!(
+            after.get(HANDLE, NOW + 60 * NS),
+            Some(Fetched {
+                sealed,
+                host: Some("https://relay.example".to_owned()),
+            })
+        );
+        // The secret it was left with still takes it back, off the disk too.
+        let wrong = "b".repeat(DELETE_CHARS);
+        assert!(matches!(
+            after.take(HANDLE, &wrong, NOW + 60 * NS),
+            Err(Refused::Forbidden)
+        ));
+        after.take(HANDLE, DELETE, NOW + 60 * NS).unwrap();
+        assert!(!disk.join(format!("{HANDLE}.json")).is_file());
+        assert!(
+            Shelf::opening(disk, NOW + 60 * NS)
+                .get(HANDLE, NOW)
+                .is_none(),
+            "a link its inviter took back names nothing, a restart included"
+        );
+    }
+
+    #[test]
+    fn an_invitation_that_lapsed_while_nothing_ran_is_collected() {
+        let (state, before) = shelf_at(NOW);
+        before.put(HANDLE, stored("c2VhbGVk", 60), NOW).unwrap();
+        before.put(OTHER, stored("b3RoZXI", 3600), NOW).unwrap();
+        drop(before);
+
+        // Two minutes later the relay is back: one invitation lapsed while it
+        // was down, the other did not.
+        let after = Shelf::opening(state.path().to_path_buf(), NOW + 120 * NS);
+        assert_eq!(after.get(HANDLE, NOW + 120 * NS), None);
+        assert_eq!(
+            after.get(OTHER, NOW + 120 * NS),
+            Some(kept("b3RoZXI")),
+            "one that has not lapsed is still there"
+        );
+        assert!(
+            !state.path().join(format!("{HANDLE}.json")).exists(),
+            "what lapsed is taken off the disk"
+        );
+        assert!(state.path().join(format!("{OTHER}.json")).exists());
+    }
+
+    #[test]
+    fn a_file_that_is_not_an_invitation_is_not_one() {
+        let (state, _shelf) = shelf_at(NOW);
+        // What a crash mid-write leaves: a rename's own file, which names no
+        // handle, beside the invitation it would have replaced.
+        std::fs::write(state.path().join(".tmpQx7f"), b"half a record").unwrap();
+        // What nothing of this site wrote, under a handle it could have: no
+        // invitation, and none handed out.
+        std::fs::write(state.path().join(format!("{HANDLE}.json")), b"{ not one").unwrap();
+        let shelf = Shelf::opening(state.path().to_path_buf(), NOW);
+        assert_eq!(shelf.get(HANDLE, NOW), None);
+    }
+
+    #[test]
     fn an_invitation_is_taken_back_only_with_its_own_secret() {
-        let shelf = Shelf::default();
+        let (_state, shelf) = shelf_at(NOW);
         shelf.put(HANDLE, stored("c2VhbGVk", 60), NOW).unwrap();
         let wrong = "b".repeat(DELETE_CHARS);
         assert!(matches!(
@@ -349,7 +627,7 @@ mod tests {
 
     #[test]
     fn a_handle_is_kept_once_and_only_for_a_while_worth_keeping() {
-        let shelf = Shelf::default();
+        let (_state, shelf) = shelf_at(NOW);
         shelf.put(HANDLE, stored("c2VhbGVk", 60), NOW).unwrap();
         assert!(matches!(
             shelf.put(HANDLE, stored("b3RoZXI", 60), NOW),
@@ -386,16 +664,23 @@ mod tests {
             },
         ] {
             assert!(matches!(
-                shelf.put("ponmlkjihgfedcba", refused, NOW),
+                shelf.put(OTHER, refused, NOW),
                 Err(Refused::Malformed(_))
             ));
         }
-        assert!(shelf.get("ponmlkjihgfedcba", NOW).is_none());
+        assert!(shelf.get(OTHER, NOW).is_none());
+        // A handle that is not one names no file, wherever it points.
+        for handle in ["../../../etc/passwd", "short", &format!("{HANDLE}x")] {
+            assert!(matches!(
+                shelf.put(handle, stored("c2VhbGVk", 60), NOW),
+                Err(Refused::Malformed(_))
+            ));
+        }
     }
 
     #[test]
     fn what_it_admits_into_comes_back_with_the_invitation() {
-        let shelf = Shelf::default();
+        let (_state, shelf) = shelf_at(NOW);
         shelf
             .put(
                 HANDLE,
@@ -417,7 +702,7 @@ mod tests {
 
     #[test]
     fn the_shelf_holds_only_so_much() {
-        let shelf = Shelf::default();
+        let (_state, shelf) = shelf_at(NOW);
         for i in 0..MAX_ENTRIES {
             let handle = format!("{i:016}");
             shelf

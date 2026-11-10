@@ -293,7 +293,13 @@ impl Relay {
             grants: Arc::default(),
             presence: plane.authority(),
             page_errors: page_errors::PageErrors::default(),
-            shelf: shelf::Shelf::default(),
+            // A link is read days after it was made, so what it names waits on
+            // this host's disk: a restart, an upgrade or a deploy over this
+            // relay leaves it there.
+            shelf: shelf::Shelf::opening(
+                self.state_root().join("invitations"),
+                tilo_clock::unix_now_ns(),
+            ),
             login_codes: Arc::new(login_codes::LoginCodes::new(public_origin.clone())),
             stand_ins: Arc::new(stand_in::StandIns::new(self.state_root().join("stand-ins"))),
         });

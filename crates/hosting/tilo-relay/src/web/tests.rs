@@ -102,7 +102,10 @@ fn web_of(relay: &Relay, host: &Host) -> Web {
         grants: Arc::default(),
         presence: Arc::new(plane::Authority::new(relay.web_context().relay.clone())),
         page_errors: page_errors::PageErrors::default(),
-        shelf: shelf::Shelf::default(),
+        shelf: shelf::Shelf::opening(
+            relay.state_root().join("invitations"),
+            tilo_clock::unix_now_ns(),
+        ),
         login_codes: Arc::new(login_codes::LoginCodes::new(None)),
         stand_ins: Arc::new(stand_in::StandIns::new(
             relay.state_root().join("stand-ins"),
@@ -516,6 +519,118 @@ async fn a_sealed_invitation_is_left_fetched_and_taken_back() {
     );
 
     stop(relay, serving).await;
+}
+
+/// A link is pasted into a message and read days later, so what it names
+/// outlives the relay that was handed it: an invitation left before a restart
+/// is fetched back, and taken back, on the relay that comes up next on the same
+/// state — and one that lapsed while nothing was running says so.
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the first relay holds the shelf until it shuts down halfway"
+)]
+async fn a_sealed_invitation_outlives_the_relay_it_was_left_on() {
+    use tilo_relay_protocol::sealed_invitations::{Fetched, Stored, TakeBack};
+
+    let root = SigningKey::from_bytes(&[133; 32]);
+    let signer = host(
+        &root,
+        134,
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    );
+    let state = tempfile::tempdir().unwrap();
+    let keeping = "abcdefghijklmnop";
+    let lapsing = "ponmlkjihgfedcba";
+    let delete = "a".repeat(43);
+    let sealed = "c2VhbGVkIGludml0YXRpb24";
+    let now = tilo_clock::unix_now_ns();
+    let lapse_at = now + 1_000_000_000;
+
+    let leaving = |expires_at_ns| {
+        serde_json::to_vec(&Stored {
+            sealed: sealed.to_owned(),
+            expires_at_ns,
+            delete: delete.clone(),
+            host: Some("https://relay.example".to_owned()),
+        })
+        .unwrap()
+    };
+    let post = |handle: &str, body: &[u8]| {
+        format!(
+            "POST /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+    };
+    let get = |handle: &str| {
+        format!("GET /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+    };
+
+    // The relay this site reached first, with one invitation that outlasts it
+    // and one that lapses while it is down.
+    let first = relay_at(&state, signer.identity(), RelayConfig::default()).await;
+    let (addr, serving) = serve_web(Arc::new(web_of(&first, &signer))).await;
+    for (handle, expires_at_ns) in [(keeping, now + 600_000_000_000), (lapsing, lapse_at)] {
+        let body = leaving(expires_at_ns);
+        let (status, head, _) = exchange(addr, &post(handle, &body), &body).await;
+        assert_eq!(status, 204, "{head}");
+    }
+    stop(first, serving).await;
+
+    // The relay that comes up next, on the state the first one kept.
+    let next = relay_at(&state, signer.identity(), RelayConfig::default()).await;
+    let (addr, serving) = serve_web(Arc::new(web_of(&next, &signer))).await;
+
+    let (status, head, body) = exchange(addr, &get(keeping), b"").await;
+    assert_eq!(status, 200, "{head}");
+    let fetched: Fetched = serde_json::from_slice(&body).unwrap();
+    assert_eq!(fetched.sealed, sealed);
+    assert_eq!(fetched.host.as_deref(), Some("https://relay.example"));
+    assert!(
+        !String::from_utf8_lossy(&body).contains(&delete),
+        "the site gives back no delete secret"
+    );
+
+    // The secret it was left with still takes it back, and the disk lets go.
+    let take_back = serde_json::to_vec(&TakeBack {
+        delete: delete.clone(),
+    })
+    .unwrap();
+    let head = format!(
+        "DELETE /i/{keeping} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+        take_back.len()
+    );
+    let (status, head, _) = exchange(addr, &head, &take_back).await;
+    assert_eq!(status, 204, "{head}");
+    assert!(
+        !state
+            .path()
+            .join("invitations")
+            .join(format!("{keeping}.json"))
+            .exists(),
+        "a taken-back invitation is off the state disk"
+    );
+
+    // What lapsed while the relay was down is gone, and gone from the disk.
+    while tilo_clock::unix_now_ns() <= lapse_at {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let (status, head, body) = exchange(addr, &get(lapsing), b"").await;
+    assert_eq!(status, 410, "{head}");
+    assert!(
+        String::from_utf8_lossy(&body).contains("gone"),
+        "the refusal says the invitation is gone"
+    );
+    assert!(
+        !state
+            .path()
+            .join("invitations")
+            .join(format!("{lapsing}.json"))
+            .exists(),
+        "a lapsed invitation is collected"
+    );
+
+    stop(next, serving).await;
 }
 
 /// One request to the listener at `addr`: its status, its header block
