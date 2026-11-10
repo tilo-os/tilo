@@ -351,15 +351,20 @@ python3 apps/browser/chromium/tests/native_regressions.py \
 
 ## Page actions
 
-`page` reads or operates the main document for the browser's `browser.page`
-actions and answers with exactly one `page_result` carrying its `request_id`.
+`page` reads or operates the page's own document, or a frame's (see
+"Frames"), for the browser's `browser.page` actions and answers with exactly
+one `page_result` carrying its `request_id`.
 `action` is `outline`, `click`, `fill`, `select`, `press` or `submit`.
 `src/page_automation.js` runs in a DevTools-created isolated world of the main
 frame: it shares the DOM, but page script cannot see or call it (the regression
 suite checks this from the main world). An outline lists landmarks, headings,
 text and interactive elements; interactive elements carry refs
 `d<document>e<element>`. Documents are numbered across the host's tabs, so a ref
-never resolves in a later document or another tab. Password and card-number
+never resolves in a later document or another tab. Nothing a page action kept
+of a document (its script world, its refs, its frames) outlives it: when the
+page commits a new document all of it is dropped, so a script context of the
+document before is never taken for one of the next, whose renderer may be
+another that numbers its contexts from the start again. Password and card-number
 values are reported by length only. Clicks and keys go through CEF's own input
 path, so pages see trusted events with user activation; fill, select and submit
 edit the DOM and dispatch the page's input, change and submit events.
@@ -374,8 +379,8 @@ navigation is not the action's answer: it arrives in the `network` log as its
 document request, marked `navigation` with Chromium's `user_gesture`. `none`:
 the action ran none of the page's code (reading, reader view).
 
-Not yet covered: cross-origin and same-origin iframe content (listed as
-`iframe` lines), file inputs, and drag gestures.
+Not yet covered inside a frame: `hover`, `drag`, `path` and `at`, which act in
+the page's own document.
 
 ```sh
 python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromium-host
@@ -414,7 +419,8 @@ lines that hold those words in any letter case: `data.total`, and up to 30
 `line: text`. A match's line is a `from` to read on from. It reads what the
 outline reads, so a secret's value is found by neither. Words on either side
 of a link, or in two paragraphs, are on separate lines. `find` names controls
-and headings only; its refusal says words are found by searching.
+and headings only; its refusal says words are found by searching. A search or
+a find that comes up empty on a page with frames names the frames to look in.
 
 `action: "reader"` with `enabled` shows the document's article alone and puts
 the page back when turned off. The article is the `article`, `main` or
@@ -425,6 +431,52 @@ layout table is its table, and one run on in a single block (line breaks
 between its paragraphs, font tags around it) is that block. What an old page
 says of its looks in attributes is left behind. A page with less than 500
 characters of such text answers `no_article`.
+
+### Frames
+
+A frame is its own document, and often the one that matters: a site puts its
+cookie question, its payment form or its sign-in in a frame, usually of
+another site. A frame of another site runs in a renderer of its own, and
+nothing reaches it from the page around it. The host asks the engine which
+frame an `iframe` element holds (`DOM.describeNode`) and runs the same
+isolated-world script in that frame's own process, on the connection the
+page's inspector hands out for it (`Target.setAutoAttach`, flattened, frames
+only, never holding a frame's document back). Web security, site isolation
+and the sandbox are as they were.
+
+- **A frame has a number.** A read lists a frame as
+  `iframe "Privacy choices" [frame=3] src="…"`. The number is the tab's: a
+  frame is given it when a read first lists it, and keeps it while its own
+  document moves on and while other frames come and go around it. It is the
+  element that holds the frame that is numbered, so a frame the page takes
+  out and puts back is another frame with another number. A number is not
+  passed on to another frame; only after 999 are the numbers of pages long
+  gone given again. `frame` takes the number, `frame=3` or `[frame=3]`.
+- **A ref carries its frame.** A ref says which document it was read in, so
+  an action on an element of a frame (`click`, `fill`, `select`, `press`,
+  `submit`, `fill_files`, `scroll`, `capture`, a `pointer` step) runs in that
+  frame without `frame`. `outline`, `changes`, `find`, `search`, `fields`,
+  `forms`, `fill_form` and `settle` take `frame` to read or answer a frame's
+  document. A `frame` named beside a ref is the document the action runs in.
+- **The page's read shows what its frames hold.** An `outline` of the page's
+  own document reads up to 6 of the frames the page shows (visible, and at
+  least 40 by 20 CSS pixels), 40 lines of each, under the line that lists the
+  frame, with refs that act in it. The message says how many lines came from
+  frames (`Read 12 lines, and 6 lines of frame 3`), and a frame with more
+  says to read the rest by its number. A frame nobody sees (a tracker's
+  pixel) is listed and not read. A frame inside a frame is listed among its
+  holder's lines and read by its own number.
+- **Gone is said.** `frame_gone`: the number was given and its frame has left
+  the page, with its element or with the page it was on. `no_frame`: no read
+  of this tab printed that number. `not_ready`: the frame is between two
+  documents; ask again. A ref read in a frame document that is gone is
+  `stale_element`, as on the page.
+- **What is done in a frame is done to the frame.** An action in a frame
+  answers `navigation: "none"` unless the page itself left. A click or a sent
+  form there answers once the frame has settled or gone on to its next
+  document.
+- **The record and the review cover frames.** See "Several actors in one
+  tab".
 
 ### Several actors in one tab
 
@@ -453,6 +505,10 @@ may act and passes the name of the invoker it admitted.
   the page left it), `navigation`, the `target` it acted on as `role`, `name`
   and `nth` (what `find` takes, so it still names the element after the
   document's refs are gone), the `text` it wrote and the `values` it chose.
+  An action in a frame carries `frame` (the number the tab called the frame
+  by then), `frame_name` (the title or name the page gave it) and `frame_url`
+  (the origin and path of the frame's own document), which still say which
+  frame it was once the number names nothing.
   A secret fill's text is never recorded, and nor is text the page refused.
   Reads take no place in it. `page` with `action: "ledger"` and `since`
   answers with the entries after that place, `next`, `more`, `dropped`, the
@@ -469,7 +525,10 @@ may act and passes the name of the invoker it admitted.
   `seq`, `next`, `dropped` and `time_ms` are numbers that may arrive written
   as doubles (`3.0`); they are whole.
 - **A form is reviewed by who set each field.** `action: "fields"` lists every
-  field of the document (or of a named `frame`) with what it holds now and
+  field of the page's own document, and of up to 8 frames this tab has read
+  or acted in (each such field carries `frame`, and its line stands under the
+  frame's `iframe` line), or of one named `frame` alone, with what it holds
+  now and
   `set`: `how` is `action` (with `by` and `seq`), `input` (typed straight into
   the page, as a person does) or `page` (the page's own script), and
   `changed` when the field no longer holds what was set. Secrets are listed
@@ -514,8 +573,8 @@ most 64 strings of at most 1024 units for `choices`) and optionally `submit`
 (`true` for the form's first submit button, a button's label of 1 to 200
 units, or `false`, which is the same as leaving it out) and `cross_origin`
 (a boolean, as on `submit`: a form that sends its data to another site is
-sent only with it). It takes no `frame`: a form in a frame is answered with
-its fields' own actions. Answers are placed in the form's own order, and
+sent only with it). With `frame` it answers a form of that frame's document,
+as `forms` with the same `frame` read it. Answers are placed in the form's own order, and
 the form is read again after each, so an answer that opens a question is
 placed before the answer to it. A name matches exactly, or in any letter case
 when only one field is like it. The answer's `data` carries `results` (one per
@@ -535,8 +594,9 @@ sends nothing fails with the first refusal's code. A form named by a signature
 it no longer has fails with `no_form`. `fill_form` takes a place in the tab's
 record with its `answers` as placed; `forms` is a read and takes none.
 
-Fields inside open shadow roots and in frames of another site are not read as
-part of a form; they stay reachable by the outline and their own actions.
+Fields inside open shadow roots are not read as part of a form; they stay
+reachable by the outline and their own actions. A frame's forms are its own
+document's: `forms` and `fill_form` read and answer them with `frame`.
 
 ### Private guarded text input
 

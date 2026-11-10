@@ -435,9 +435,139 @@ RUN = ('<title>Run</title><font>First paragraph, a short one.<br><br>' + ' '.joi
        '<br><br>Last paragraph: the point of it all.</font>').encode()
 
 
+# A site and the other sites it brings in. `{OTHER}` is another site (another
+# host and port, so its frames run in a process of their own) and `{NEAR}`
+# another origin of this site (the same host on another port).
+#
+# A news page as sites serve them: a tracker's frame nobody sees, and the
+# cookie question in a frame of another site, put there by script after the
+# page loaded and taken away once it is answered.
+NEWS = b"""<!doctype html><title>The Daily Fixture</title>
+<h1>The Daily Fixture</h1>
+<p>Rain is expected by the weekend.</p>
+<iframe src="{OTHER}/tracker" title="pixel" width="1" height="1" style="border:0"></iframe>
+<div id="slot"></div>
+<p id="said"></p>
+<script>
+const slot = document.getElementById('slot');
+addEventListener('message', event => {
+  if (event.origin !== '{OTHER}') return;
+  document.getElementById('said').textContent = 'consent ' + event.data;
+  slot.replaceChildren();
+});
+setTimeout(() => {
+  const frame = document.createElement('iframe');
+  frame.title = 'Privacy choices';
+  frame.src = '{OTHER}/consent';
+  frame.style.cssText = 'position:fixed;left:100px;top:200px;width:600px;height:300px;border:2px solid #000;background:#fff';
+  slot.append(frame);
+}, 100);
+</script>"""
+
+CONSENT = b"""<!doctype html><title>Privacy</title>
+<div role="dialog" aria-label="We value your privacy">
+<h2>We value your privacy</h2>
+<p>We and our 87 partners store information on your device.</p>
+<button id="yes">Yes, I'm happy</button> <button id="no">No, thank you</button>
+<a href="/consent-options">Manage options</a>
+</div>
+<script>
+document.getElementById('yes').onclick = () => parent.postMessage('accepted', '*');
+document.getElementById('no').onclick = () => parent.postMessage('refused', '*');
+</script>"""
+
+# The cookie question before it is ready: its document moves on to the
+# question by itself.
+CONSENT_LOADING = b"""<!doctype html><title>Privacy</title>
+<p>Loading your choices</p>
+<script>setTimeout(() => location.replace('/consent'), 200);</script>"""
+
+# A page whose frames come and go while it loads: the frame that holds the
+# cookie question is taken out and another put in its place, and an advert's
+# frame arrives before it in the document and leaves again.
+CHURN = b"""<!doctype html><title>Churn</title>
+<h1>Still loading</h1>
+<div id="ads"></div><div id="slot"></div>
+<p id="said"></p>
+<script>
+const ads = document.getElementById('ads'), slot = document.getElementById('slot');
+const frame = (title, path) => {
+  const made = document.createElement('iframe');
+  made.title = title;
+  made.src = '{NEAR}' + path;
+  made.style.cssText = 'display:block;width:600px;height:200px;border:0';
+  return made;
+};
+addEventListener('message', event => {
+  if (event.origin === '{NEAR}') document.getElementById('said').textContent = 'consent ' + event.data;
+});
+slot.append(frame('Privacy choices', '/consent-loading'));
+window.churn = () => { ads.append(frame('Advert', '/advert')); slot.replaceChildren(frame('Privacy choices', '/consent')); return 1; };
+window.calm = () => { ads.replaceChildren(); return 1; };
+</script>"""
+
+# A page with a field of its own and a form another site serves in a frame.
+EMBEDDER = b"""<!doctype html><title>Letters</title>
+<h1>Our letters</h1>
+<label>Note <input name="note"></label>
+<iframe src="{OTHER}/signup" title="Newsletter sign-up" style="width:600px;height:320px;border:0"></iframe>"""
+
+SIGNUP = b"""<!doctype html><title>Sign up</title>
+<h2>Newsletter</h2>
+<form action="/signed" method="get">
+  <label>Email <input name="email" type="email" required></label>
+  <label>Edition <select name="edition"><option value="">Choose</option><option>Morning</option><option>Evening</option></select></label>
+  <label>Promo code <input name="code" type="password"></label>
+  <label><input type="checkbox" name="terms" value="yes"> Accept terms</label>
+  <button>Sign up</button>
+</form>
+<label>Search the letters <input id="q"></label>
+<p id="found"></p>
+<script>
+document.getElementById('q').onkeydown = event => {
+  if (event.key === 'Enter') document.getElementById('found').textContent = 'searched ' + event.target.value;
+};
+</script>"""
+
+# A long document another site serves in a frame, with a form at its end.
+TERMS = b"""<!doctype html><title>Terms</title>
+<h2>Terms of the letters</h2>
+<div style="height:1500px">Scroll for the rest of the terms.</div>
+<form action="/agreed" method="get"><label>Initials <input name="initials"></label><button>I agree</button></form>"""
+
+TERMS_HOLDER = b"""<!doctype html><title>Before you read</title>
+<h1>Before you read</h1>
+<div style="height:120px"></div>
+<iframe src="{OTHER}/terms" title="Terms" style="margin-left:150px;width:600px;height:300px;border:0"></iframe>"""
+
+# Another site's page that starts with frames of its own before its content.
+BLANKS = b"""<!doctype html><title>Second site</title>
+<iframe src="/blank"></iframe><iframe src="/blank"></iframe><iframe src="/blank"></iframe>
+<h1>Second site</h1>
+<p>The page that loaded.</p>"""
+
+TWO_SITES = {'/news': NEWS, '/consent': CONSENT, '/consent-loading': CONSENT_LOADING, '/churn': CHURN,
+             '/embedder': EMBEDDER, '/signup': SIGNUP, '/blanks': BLANKS,
+             '/terms': TERMS, '/terms-holder': TERMS_HOLDER,
+             '/blank': b'<!doctype html><title>blank</title>'}
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
+    def answer(self, body, kind='text/html'):
+        self.send_response(200)
+        self.send_header('Content-Type', kind)
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         path = urlparse(self.path).path
+        if path in TWO_SITES:
+            return self.answer(TWO_SITES[path].replace(b'{OTHER}', self.server.other.encode())
+                               .replace(b'{NEAR}', self.server.near.encode()))
+        # What the sign-up form of another site's frame sent.
+        if path == '/signed':
+            self.server.signed = parse_qs(urlparse(self.path).query)
         body = FORM if path == '/form' else AGENT if path == '/agent' else ARTICLE if path == '/article' \
             else APPLY if path == '/apply' else ESSAY if path == '/essay' else OLD if path == '/old' else RUN if path == '/run' \
             else LATER if path == '/later' \
@@ -468,14 +598,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
 class PageActions(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # Two servers on two loopback ports: the page's own site, and what it
+        # brings in from elsewhere. Under another host name the second is
+        # another site, whose frames run in a process of their own; under the
+        # same one it is another origin of the page's site.
         cls.server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        cls.other = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        for server, peer in ((cls.server, cls.other), (cls.other, cls.server)):
+            server.other = f'http://localhost:{peer.server_port}'
+            server.near = f'http://127.0.0.1:{peer.server_port}'
+            server.signed = None
+            threading.Thread(target=server.serve_forever, daemon=True).start()
         cls.url = f'http://127.0.0.1:{cls.server.server_port}'
 
     @classmethod
     def tearDownClass(cls):
-        cls.server.shutdown()
-        cls.server.server_close()
+        for server in (cls.server, cls.other):
+            server.shutdown()
+            server.server_close()
 
     def setUp(self):
         self.h = Host()
@@ -501,6 +641,17 @@ class PageActions(unittest.TestCase):
 
     def outline(self):
         return self.ok('outline')['outline']
+
+    def reads(self, wanted, what, **fields):
+        # The read that says `wanted`: a page still putting itself together,
+        # or a frame between two documents, is read again until it does.
+        deadline = time.monotonic() + HANG_BOUND
+        while True:
+            read = self.page('outline', **fields)
+            if read['ok'] and wanted in read['outline']:
+                return read
+            self.assertLess(time.monotonic(), deadline, f'{what}: {read}')
+            time.sleep(0.1)
 
     def begin(self, action, **fields):
         # A request sent without waiting for its answer, as a second actor's
@@ -917,32 +1068,49 @@ class PageActions(unittest.TestCase):
         iban = self.ref(inside['outline'], 'textbox "IBAN"')
         self.ok('fill', element=iban, text='EX89370400440532013000', frame='1')
         self.assertIn('value="EX89370400440532013000"', self.ok('outline', frame='1')['outline'])
-        # A frame's element belongs to the frame: the main document cannot name it.
-        wrong = self.page('click', element=iban)
-        self.assertEqual((wrong['ok'], wrong['code']), (False, 'stale_element'), wrong)
+        # A ref says which document it was read in: an action on an element of
+        # a frame runs in that frame without naming it.
+        self.ok('fill', element=iban, text='EX11')
+        self.assertIn('value="EX11"', self.ok('outline', frame='1')['outline'])
+        # The page's own read shows what the frame holds under the line that
+        # lists it, with the refs the frame's own read gives.
+        self.assertRegex(self.outline(), r'iframe "Payment form" \[frame=1\][^\n]*\n(?:  [^\n]*\n)*?  +- textbox "IBAN" \[ref=' + iban + r'\]')
         # A frame id the outline never printed is refused, not read as the page.
         invented = self.page('outline', frame='7')
         self.assertEqual((invented['ok'], invented['code']), (False, 'no_frame'), invented)
 
-    def test_a_frame_of_a_frame_is_numbered_inside_the_frame_that_holds_it(self):
+    def test_a_frame_of_a_frame_has_a_number_of_its_own(self):
         self.h.navigate(self.url + '/nested')
-        # Each document numbers the frames it holds, so the page's frame is 1
-        # and the frame inside it is 1.1 wherever it sits in the page's numbering.
-        self.assertRegex(self.outline(), r'iframe "Outer frame" \[frame=1\]')
+        # Every frame a read lists is given a number, whichever document holds
+        # it: the page's frame, and the frame inside that one. The page's read
+        # shows what its own frame holds, and that frame's line for the frame
+        # inside it says how that one is read: by its number.
+        outline = self.outline()
+        self.assertRegex(outline, r'iframe "Outer frame" \[frame=1\]')
+        self.assertRegex(outline, r'\n  - text "Outer document"\n  - iframe "Payment form" \[frame=2\]')
+        self.assertNotIn('IBAN', outline, 'a frame inside a frame is read by its own number')
         outer = self.ok('outline', frame='1')['outline']
         self.assertNotIn('Nested frames', outer, 'the frame reads its own document alone')
-        self.assertRegex(outer, r'iframe "Payment form" \[frame=1\]')
-        # A frame of a frame is named by both numbers, joined: the same id the
-        # page printed to reach its own frame, then the one inside it.
-        inner = self.ok('outline', frame='1.1')['outline']
+        self.assertRegex(outer, r'iframe "Payment form" \[frame=2\]')
+        inner = self.ok('outline', frame='2')['outline']
         self.assertRegex(inner, r'textbox "IBAN" \[ref=d\d+e\d+\]')
         self.assertNotIn('Outer document', inner, 'the inner frame reads its own document alone')
         iban = self.ref(inner, 'textbox "IBAN"')
-        self.ok('fill', element=iban, text='EX89370400440532013000', frame='1.1')
-        self.assertIn('value="EX89370400440532013000"', self.ok('outline', frame='1.1')['outline'])
-        # The outer frame holds no IBAN of its own: the dotted id is the address.
+        self.ok('fill', element=iban, text='EX89370400440532013000')
+        self.assertIn('value="EX89370400440532013000"', self.ok('outline', frame='2')['outline'])
+        # A frame named beside a ref is the document the action runs in, and
+        # the outer frame holds no IBAN of its own.
         held = self.page('fill', element=iban, text='EX11', frame='1')
         self.assertEqual((held['ok'], held['code']), (False, 'stale_element'), held)
+        # A path of numbers names no frame: every frame has one number.
+        path = self.page('outline', frame='1.1')
+        self.assertEqual((path['ok'], path['code']), (False, 'no_frame'), path)
+        # A click in the frame inside the frame lands where the two frames
+        # put it: the form is sent, and the inner frame goes on alone.
+        self.ok('click', element=self.ref(inner, 'button "Save bank details"'))
+        after = self.reads('text "/done"', 'the inner frame never went on', frame='2')
+        self.assertNotIn('Save bank details', after['outline'])
+        self.assertIn('Nested frames', self.outline(), 'the page stayed where it was')
 
     def test_a_frame_the_page_adds_later_is_named_and_operated_in(self):
         self.h.navigate(self.url + '/late')
@@ -1027,6 +1195,206 @@ class PageActions(unittest.TestCase):
         self.assertTrue(documents, every)
         self.assertEqual([e for e in documents if e.get('state') == 'pending'], [], documents)
 
+    def test_a_consent_dialog_in_another_site_s_frame_is_read_and_answered(self):
+        # A site asks its cookie question in a frame of another site, which
+        # runs in a process of its own. The page's read shows the question
+        # under the line that lists the frame, with refs that act in it, so
+        # it is answered without the frame being named at all.
+        self.h.navigate(self.url + '/news')
+        read = self.reads('We value your privacy', 'the consent frame was never read with the page')
+        outline = read['outline']
+        listed = re.search(r'^- iframe "Privacy choices" \[frame=(\d+)\] src="http://localhost:\d+/consent"\n'
+                           r'  - dialog "We value your privacy"\n', outline, re.M)
+        self.assertIsNotNone(listed, outline)
+        frame = listed.group(1)
+        self.assertRegex(read['message'], rf'^Read \d+ lines, and \d+ lines of frame {frame}$')
+        # A frame nobody sees is listed and not read.
+        self.assertRegex(outline, r'iframe "pixel" \[frame=\d+\]')
+        self.assertNotIn('/tracker"\n  ', outline)
+        yes = self.ref(outline, 'button "Yes, I\'m happy"')
+        # The frame's own document is read by the frame's number: the whole of
+        # it, found in, searched and compared as the page's own is.
+        inside = self.ok('outline', frame=frame, actor='ada')
+        self.assertEqual(inside['message'], f'Read 6 lines in frame {frame}')
+        self.assertRegex(inside['outline'], r'^- dialog "We value your privacy"\n'
+                         r'  - heading "We value your privacy" level=2\n'
+                         r'  - text "We and our 87 partners store information on your device\."\n'
+                         r'  - button "Yes, I\'m happy" \[ref=d\d+e\d+\]\n'
+                         r'  - button "No, thank you" \[ref=d\d+e\d+\]\n'
+                         r'  - link "Manage options" \[ref=d\d+e\d+\] -> http://localhost:\d+/consent-options$')
+        self.assertNotIn('The Daily Fixture', inside['outline'])
+        self.assertEqual(self.ref(inside['outline'], 'button "Yes, I\'m happy"'), yes)
+        no = self.find(role='button', name='No, thank you', frame=frame)
+        self.assertEqual(no['data']['element'], self.ref(outline, 'button "No, thank you"'))
+        said = self.ok('search', text='87 partners', frame=frame)
+        self.assertEqual(said['data']['total'], 1, said)
+        self.assertEqual(self.ok('changes', frame=frame, actor='ada')['message'], 'Nothing changed')
+        # The page's own document holds none of the frame's words, and says
+        # which frame to look in.
+        absent = self.ok('search', text='87 partners')
+        self.assertEqual(absent['data']['total'], 0, absent)
+        self.assertIn(f'frame={frame} ("Privacy choices")', absent['message'])
+        # The question is answered by the ref alone, and the page hears it:
+        # it takes the frame away.
+        clicked = self.ok('click', element=yes, actor='ada')
+        self.assertEqual((clicked['navigation'], clicked['navigated']), ('none', False), clicked)
+        after = self.reads('consent accepted', 'the page never heard the answer')['outline']
+        self.assertNotIn('Privacy choices', after)
+        # The tab's record says who answered, what, and in which frame, by
+        # the name and the address that still say which frame it was.
+        entry = self.ok('ledger', since=0)['data']['entries'][-1]
+        self.assertEqual((entry['actor'], entry['action'], entry['ok']), ('ada', 'click', True), entry)
+        self.assertEqual(entry['target'], {'role': 'button', 'name': "Yes, I'm happy"})
+        self.assertEqual((entry['frame'], entry['frame_name'], entry['frame_url']),
+                         (frame, 'Privacy choices', self.server.other + '/consent'), entry)
+        # The frame has left: its number names nothing now and says so, and a
+        # ref read in it is stale.
+        gone = self.page('outline', frame=frame)
+        self.assertEqual((gone['ok'], gone['code']), (False, 'frame_gone'), gone)
+        self.assertIn(f'Frame {frame} "Privacy choices" has left the page', gone['message'])
+        stale = self.page('click', element=yes)
+        self.assertEqual((stale['ok'], stale['code']), (False, 'stale_element'), stale)
+
+    def test_a_frame_replaced_while_the_page_loads_keeps_no_number_of_the_one_before(self):
+        # Frames come and go while a page loads. A frame keeps its number
+        # while its own document moves on and while other frames arrive and
+        # leave around it; a frame taken out is gone, and the one put in its
+        # place is another frame with another number.
+        self.h.navigate(self.url + '/churn')
+        first = re.search(r'iframe "Privacy choices" \[frame=(\d+)\]', self.outline()).group(1)
+        # The frame's document moves on to the question by itself: the number
+        # names the frame, never one document of it.
+        question = self.reads('We value your privacy', 'the frame never reached its question', frame=first)['outline']
+        old = self.ref(question, 'button "Yes, I\'m happy"')
+        # The page takes that frame out, puts another in its place and adds
+        # an advert's frame before it in the document.
+        self.assertEqual(self.main_world('churn()'), 1)
+        gone = self.page('outline', frame=first)
+        self.assertEqual((gone['ok'], gone['code']), (False, 'frame_gone'), gone)
+        acted = self.page('click', element=old)
+        self.assertEqual((acted['ok'], acted['code']), (False, 'stale_element'), acted)
+        self.assertEqual(self.main_world('document.getElementById("said").textContent'), '',
+                         'nothing was answered in a frame that is gone')
+        # Read again, the page lists the frames it has now, each with a number
+        # of its own: the one put in is not the one taken out.
+        outline = self.reads('We value your privacy', 'the frame put in was never read')['outline']
+        numbers = dict(re.findall(r'iframe "(Privacy choices|Advert)" \[frame=(\d+)\]', outline))
+        self.assertEqual(len({first, numbers['Privacy choices'], numbers['Advert']}), 3, outline)
+        # The advert's frame leaves again: the frame after it in the document
+        # keeps its number, and a ref read in it still acts in it.
+        yes = self.ref(outline, 'button "Yes, I\'m happy"')
+        self.assertEqual(self.main_world('calm()'), 1)
+        self.assertNotIn('Advert', self.outline())
+        self.assertIn('We value your privacy', self.ok('outline', frame=numbers['Privacy choices'])['outline'])
+        left = self.page('outline', frame=numbers['Advert'])
+        self.assertEqual((left['ok'], left['code']), (False, 'frame_gone'), left)
+        self.ok('click', element=yes)
+        self.assertIn('consent accepted', self.reads('consent accepted', 'the page never heard the answer')['outline'])
+
+    def test_reading_and_acting_reach_a_form_in_another_site_s_frame(self):
+        self.h.navigate(self.url + '/embedder')
+        outline = self.reads('textbox "Email"', 'the frame was never read with the page')['outline']
+        frame = re.search(r'iframe "Newsletter sign-up" \[frame=(\d+)\] src="http://localhost:', outline).group(1)
+        email, edition, query, note = (self.ref(outline, name) for name in (
+            'textbox "Email"', 'combobox "Edition"', 'textbox "Search the letters"', 'textbox "Note"'))
+        # Every action on an element of the frame runs in the frame: a fill, a
+        # choice and a key, each by the ref alone.
+        filled = self.ok('fill', element=email, text='ada@example.org', actor='ada')
+        self.ok('select', element=edition, values=['Evening'], actor='ada')
+        searched = self.ok('fill', element=query, text='budget', actor='ben')
+        pressed = self.ok('press', element=query, key='Enter', ctrl=False, shift=False, alt=False, meta=False, actor='ben')
+        self.assertEqual(pressed['navigation'], 'none', pressed)
+        inside = self.reads('searched budget', 'the key never reached the frame', frame=frame)
+        self.assertIn(f'in frame {frame}', inside['message'])
+        self.assertIn('value="ada@example.org"', inside['outline'])
+        self.assertNotIn('Our letters', inside['outline'], 'the frame reads its own document alone')
+        noted = self.ok('fill', element=note, text='ask about the weekend edition', actor='ben')
+        # The frame's form is read as what it asks and answered by its
+        # questions' names, the frame named; its secret goes the secret's way.
+        asked = self.ok('forms', frame=frame)['data']['forms'][0]
+        self.assertEqual([(field['name'], field['kind']) for field in asked['fields']],
+                         [('Email', 'email'), ('Edition', 'choice'), ('Promo code', 'secret'), ('Accept terms', 'flag')])
+        answered = self.ok('fill_form', form=asked['form'], frame=frame, actor='ada',
+                           answers={'Email': 'ada@lovelace.example', 'Accept terms': True})
+        self.assertEqual([result['ok'] for result in answered['data']['results']], [True, True], answered)
+        code = next(field['element'] for field in asked['fields'] if field['name'] == 'Promo code')
+        self.ok('fill', element=code, text='LETTERS-2026', secret=True, actor='ada')
+        # A review of the page covers the frame: each field with what it holds
+        # now and who set it, the frame's by the frame they are in.
+        review = self.ok('fields')
+        held = {(field.get('frame'), field['name']): field for field in review['data']['fields']}
+        self.assertEqual(held[(None, 'Note')]['set'], {'how': 'action', 'by': 'ben', 'seq': noted['seq']})
+        self.assertEqual((held[(frame, 'Email')]['value'], held[(frame, 'Email')]['set']),
+                         ('ada@lovelace.example', {'how': 'action', 'by': 'ada', 'seq': answered['seq']}))
+        self.assertEqual(held[(frame, 'Search the letters')]['set'], {'how': 'action', 'by': 'ben', 'seq': searched['seq']})
+        self.assertEqual(held[(frame, 'Accept terms')]['set']['by'], 'ada')
+        self.assertIn(f'\n- iframe "Newsletter sign-up" [frame={frame}]\n  - ', review['outline'])
+        self.assertIn(f'in frame {frame}', review['message'])
+        self.assertNotIn('LETTERS-2026', json.dumps(review))
+        alone = self.ok('fields', frame=frame)
+        self.assertEqual([field['name'] for field in alone['data']['fields']],
+                         ['Email', 'Edition', 'Promo code', 'Accept terms', 'Search the letters'])
+        # The tab's record sets each action in the frame down with the frame,
+        # and the secret is nowhere in it.
+        entries = self.ok('ledger', since=0)['data']['entries']
+        there = [entry for entry in entries if entry.get('frame') == frame]
+        self.assertEqual([(entry['actor'], entry['action'], entry['ok']) for entry in there],
+                         [('ada', 'fill', True), ('ada', 'select', True), ('ben', 'fill', True), ('ben', 'press', True),
+                          ('ada', 'fill_form', True), ('ada', 'fill', True)])
+        self.assertEqual(there[0]['seq'], filled['seq'])
+        self.assertEqual(there[0]['target'], {'role': 'textbox', 'name': 'Email'})
+        for entry in there:
+            self.assertEqual((entry['frame_name'], entry['frame_url']),
+                             ('Newsletter sign-up', self.server.other + '/signup'), entry)
+        self.assertEqual([entry['action'] for entry in entries if 'frame' not in entry], ['fill'])
+        self.assertNotIn('LETTERS-2026', json.dumps(entries))
+        # Sending the form takes the frame to another document, never the page.
+        sent = self.ok('fill_form', form=asked['form'], frame=frame, answers={'Edition': 'Morning'}, submit=True, actor='ada')
+        self.assertTrue(sent['data']['submitted'], sent)
+        self.assertEqual((sent['navigation'], urlparse(sent['url']).path), ('none', '/embedder'), sent)
+        self.reads('text "/signed"', 'the frame never went on', frame=frame)
+        self.assertEqual(self.other.signed, {'email': ['ada@lovelace.example'], 'edition': ['Morning'],
+                                             'code': ['LETTERS-2026'], 'terms': ['yes']})
+        self.assertIn('value="ask about the weekend edition"', self.outline(), 'the page kept what it held')
+
+    def test_a_frame_of_another_site_is_scrolled_pictured_and_its_form_submitted(self):
+        self.h.navigate(self.url + '/terms-holder')
+        outline = self.reads('textbox "Initials"', 'the frame was never read with the page')['outline']
+        frame = re.search(r'iframe "Terms" \[frame=(\d+)\]', outline).group(1)
+        initials = self.ref(outline, 'textbox "Initials"')
+        # The wheel turns at a point of the page, where the frame sits: the
+        # frame's own document goes down and up, and the page around it stays.
+        down = self.ok('scroll', frame=frame, to='bottom')
+        self.assertRegex(down['message'], r'^Scrolled \d+px down, to \d+ of \d+')
+        up = self.ok('scroll', frame=frame, to='top')
+        self.assertRegex(up['message'], r'^Scrolled \d+px up, to 0 of \d+')
+        self.assertEqual(self.main_world('scrollY'), 0, 'the page around the frame did not move')
+        # A picture of an element of the frame is that element's own box.
+        shot = self.ok('capture', element=initials)
+        self.assertTrue(base64.b64decode(shot['data']['capture'], validate=True).startswith(b'\x89PNG\r\n\x1a\n'))
+        self.assertTrue(50 < shot['data']['width'] < 600 and 10 < shot['data']['height'] < 100, shot['data']['width'])
+        # The frame's form is sent from one of its fields, and the frame goes
+        # on to the next document alone.
+        self.ok('fill', element=initials, text='AL')
+        sent = self.ok('submit', element=initials)
+        self.assertEqual((sent['navigation'], urlparse(sent['url']).path), ('none', '/terms-holder'), sent)
+        self.reads('text "/agreed"', 'the frame never went on', frame=frame)
+        self.assertIn('heading "Before you read" level=1', self.outline())
+
+    def test_the_first_read_after_moving_to_another_site_reads_that_site(self):
+        # A page that was read keeps a script world of this side's. The next
+        # site runs in another process, which numbers its script contexts
+        # from the start again: the world kept from the page before must not
+        # be taken for one of them, a frame's or the page's own.
+        self.h.navigate(self.url + '/agent')
+        self.assertIn('heading "Agent fixture" level=1', self.outline())
+        self.h.navigate(self.server.other + '/blanks')
+        outline = self.outline()
+        self.assertIn('heading "Second site" level=1', outline)
+        self.assertIn('text "The page that loaded."', outline)
+        self.assertEqual(self.main_world('[window, ...Array.from(frames)].map(each => typeof each.__tiloPage).join()'),
+                         'undefined,undefined,undefined,undefined', 'no page script sees the automation world')
+
     def test_a_frame_is_named_the_way_its_outline_writes_it(self):
         self.h.navigate(self.url + '/framed')
         printed = re.search(r'iframe "Payment form" \[frame=(\d+)\]', self.outline()).group(1)
@@ -1039,7 +1407,7 @@ class PageActions(unittest.TestCase):
                 self.assertRegex(inside['outline'], r'textbox "IBAN" \[ref=d\d+e\d+\]')
         # A frame the outline never printed is still refused, however it is
         # written: an id is a number, never a selector or a script.
-        for named in ('7', 'frame=7', '[frame=7]', 'iframe', '1.e', 'top'):
+        for named in ('7', 'frame=7', '[frame=7]', 'iframe', '1.e', '1.1', 'top'):
             with self.subTest(frame=named):
                 refused = self.page('outline', frame=named)
                 self.assertEqual((refused['ok'], refused['code']), (False, 'no_frame'), refused)
@@ -1047,6 +1415,8 @@ class PageActions(unittest.TestCase):
 
     def test_a_click_inside_a_frame_is_a_click_in_the_page(self):
         self.h.navigate(self.url + '/framed')
+        # A frame is given its number by the read that lists it.
+        self.assertIn('[frame=1]', self.outline())
         inside = self.ok('outline', frame='1')
         button = self.ref(inside['outline'], 'button "Save bank details"')
         self.ok('click', element=button, frame='1')
@@ -1057,6 +1427,8 @@ class PageActions(unittest.TestCase):
 
     def test_a_pointer_step_in_a_frame_lands_where_the_frame_sits(self):
         self.h.navigate(self.url + '/framed')
+        # A frame is given its number by the read that lists it.
+        self.assertIn('[frame=1]', self.outline())
         inside = self.ok('outline', frame='1')
         pad = self.ref(inside['outline'], 'canvas')
         # A step naming an element of a frame is placed by the box the frame
@@ -1073,6 +1445,10 @@ class PageActions(unittest.TestCase):
         # starts at the frame's own client origin, so a point 5 by 5 into the
         # canvas is 13 by 34 of the view, as the frame's own element reads it.
         self.assertEqual(pressed, 'pressed 13,34', 'the press reached the frame\'s own element')
+        # The ref says which frame it was read in, so a step need not name it.
+        self.pointer([dict(kind='down', element=pad, x=7, y=9), dict(kind='up', element=pad, x=7, y=9)])
+        self.assertEqual(self.main_world('document.querySelector("iframe").contentDocument'
+                                         '.getElementById("pressed").textContent'), 'pressed 15,38')
         wrong = self.page('pointer', button='left', steps=[dict(kind='down', element=pad, frame='2', x=5, y=5)])
         self.assertEqual((wrong['ok'], wrong['code']), (False, 'no_frame'), wrong)
 
@@ -1961,9 +2337,9 @@ class PageActions(unittest.TestCase):
                                                            'textbox "Security code"'))
         self.ok('fill', element=found['data']['element'], text='123', frame=frame)
         self.assertIn('value="123"', self.ok('outline', frame=frame)['outline'])
-        # The frame's element belongs to the frame: the page cannot name it.
-        wrong = self.page('fill', element=found['data']['element'], text='456')
-        self.assertEqual((wrong['ok'], wrong['code']), (False, 'stale_element'), wrong)
+        # The ref says which frame it was found in: it needs no frame named.
+        self.ok('fill', element=found['data']['element'], text='456')
+        self.assertIn('value="456"', self.ok('outline', frame=frame)['outline'])
         # The page itself holds none of the frame's words, and a caller
         # looking in the wrong document is told which frame holds them.
         absent = self.find(name='Security code')

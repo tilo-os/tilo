@@ -900,6 +900,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   void OnLoadStart(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,TransitionType) override {
     if(!frame->IsMain()) return;
     tilo::ForgetBootstrap(browser);
+    // A new document: no script context a page action kept is one of its own.
+    if(page_automation_) page_automation_->DocumentCommitted();
     // A new document has no field focused yet.
     {auto field=CefDictionaryValue::Create();field->SetBool("editable",false);PublishTextField(field);}
     // A document in a new renderer has a widget of its own, which Chromium

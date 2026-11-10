@@ -358,24 +358,21 @@ globalThis.__tiloPage ||= (() => {
     for (const [id, ref] of refs) if (!ref.deref()?.isConnected) refs.delete(id);
   }
 
-  // Frame 1 is the first frame in this document, and a frame of a frame is
-  // addressed `1.2`: the number is the frame's place in the document now,
-  // counted the way an action counts it, so the first frame a page shows is
-  // frame 1 however many frames the page has had, and a number printed is a
-  // number the actions take.
-  const framesByNumber = new Map();
-  // The number a frame has in this document now: counted over every frame
-  // element the document holds, in document order, whether or not a frame
-  // whose mark-up is here has a document this one may read. The address the
-  // engine resolves a frame by is that number, so the number printed and the
-  // number taken are the same count.
-  function frameNumber(element) {
-    if (!element.isConnected) return 1;
-    if (framesByNumber.size >= 4096) framesByNumber.clear();
-    const root = document.contains(element) ? document : element.getRootNode();
-    const number = [...root.querySelectorAll('iframe,frame')].indexOf(element) + 1;
-    framesByNumber.set(number, new WeakRef(element));
-    return Math.max(1, number);
+  // A frame is named by the element that holds it. The page prints that
+  // element's ref between two marks, and the browser process, which keeps
+  // the tab's frame numbers, writes the frame's number in its place. The ref
+  // is this document's own, so a frame keeps its name while the frames
+  // around it come and go and while its own document moves on, and a name
+  // never passes to another frame.
+  const FRAME_MARK = '\u0001';
+  const frameMark = element => `${FRAME_MARK}${refOf(element)}${FRAME_MARK}`;
+  // Whether a frame shows enough of itself to be read with the page around
+  // it: a frame nobody sees (a tracker's, an ad slot's before it is filled)
+  // is listed and not read.
+  function frameShown(element) {
+    if (element.checkVisibility && !element.checkVisibility({checkOpacity: true, checkVisibilityCSS: true})) return false;
+    const box = element.getBoundingClientRect();
+    return box.width >= 40 && box.height >= 20;
   }
 
   const type = element => (element.getAttribute('type') || 'text').toLowerCase();
@@ -679,96 +676,42 @@ globalThis.__tiloPage ||= (() => {
     return false;
   }
 
-  // How the caller addresses this frame's document: the dotted ids its
-  // ancestors' outlines printed, '' for the main document itself.
+  // The number the tab calls this document's frame by, '' for the page's own
+  // document. The browser process says it with each command: a frame of
+  // another site cannot see the element that holds it.
   let frameAddress = '';
-  const frameId = () => (window.frameElement ? frameAddress : '');
+  const frameId = () => frameAddress;
 
-  // The frame an action named, by the number the page prints for it: the frame
-  // element this document holds it in, or the frame element the page numbered.
-  // The frame element this document numbers `number`: its frames are the ones
-  // it holds, numbered in the order it holds them, whether or not this document
-  // may read what a frame shows. A frame inside another one is numbered by that
-  // frame's own document, which is where a place with more parts is read.
-  function numberedFrame(number) {
-    if (!/^\d+$/.test(number || '')) return null;
-    const known = framesByNumber.get(String(Number(number)))?.deref?.();
-    if (known && known.isConnected) return known;
-    // A frame this document is held in is numbered from the document that
-    // holds it, so a document asked for a number above its own answers with
-    // the frame it is itself in.
-    if (document.frameElement && Number(number) === frameNumber(document.frameElement)) return document.frameElement;
-    return [...document.querySelectorAll('iframe,frame')].slice(0, 4096)[Number(number) - 1] || null;
+  // The frame element a ref of this document names, which the browser
+  // process asks the engine about (which frame it holds); nothing once the
+  // element has left the page.
+  function frameNode(ref) {
+    try {
+      const element = resolve(ref);
+      return element.localName === 'iframe' || element.localName === 'frame' ? element : null;
+    } catch (_) { return null; }
   }
 
-  // Where a frame this document lists sits in it now, in this document's
-  // coordinates with its scrolling: a point read in the frame's own document
-  // moves by this to become a point in this one.
-  function frameOffset(number, anchored) {
-    if (!/^\d+$/.test(number || '')) throw failure('invalid_request', 'A frame of this document is named by its number');
-    // Measuring a frame's place can be the first thing this document is asked,
-    // so the numbering is read from the document rather than from an outline
-    // that may never have run here.
-    const element = numberedFrame(number);
-    if (!element)
-      throw failure('no_frame', `Frame ${number} has left the page; read the page again`);
+  // Where a frame this document holds sits in it now, in this document's
+  // viewport: a point read in the frame's own document moves by this to
+  // become a point in this one.
+  function frameOffset(ref, anchored) {
+    const element = frameNode(ref);
+    if (!element) throw failure('frame_gone', 'The frame has left the page; read the page again');
     // The click is a pointer event in the top document, at a point the caller
     // never saw: the frame is brought into view so that point is reachable.
     // A gesture stands where its step is, though: the box the step resolves to
     // is read in the frame's own document against coordinates the frame's
     // place then has to match, so it is measured where the page put it.
     if (anchored !== true) element.scrollIntoView({block: 'nearest', inline: 'nearest'});
-    const rect = element.localName === 'frame'
-      ? {x: Number(element.getAttribute('x')) || 0, y: Number(element.getAttribute('y')) || 0}
-      // An iframe is a replaced element: its content view starts inside its
-      // border, and a point placed in it is that view's own.
-      : (() => { const box = element.getBoundingClientRect(), style = getComputedStyle(element);
-        return {x: box.x + (parseFloat(style.borderLeftWidth) || 0), y: box.y + (parseFloat(style.borderTopWidth) || 0)}; })();
-    // A point read in the frame's document is a point in the frame's viewport,
-    // and a click is placed from the page's viewport, so the frame's own
-    // viewport position is the whole of the offset: no scroll is added.
-    return {ok: true, message: `Frame ${number}`, x: rect.x, y: rect.y};
-  }
-
-  // The frame element this document numbers `part`, and the document a frame
-  // of that number holds: a frame whose mark-up is here is one this document
-  // can name even when the frame's own document belongs to another site, so a
-  // place that walks through it is answered here and continued there.
-  function frameElement(part) {
-    if (!/^\d+$/.test(part || '')) throw failure('invalid_request', 'A frame of this document is named by its number, such as 1 or 2');
-    const element = numberedFrame(part);
-    if (!element) throw failure('no_frame', `This document holds no frame ${part} now; read the page again`);
+    // A frame is a replaced element: its content view starts inside its
+    // border and its padding, and a point placed in it is that view's own. A
+    // point read in the frame's document is a point in the frame's viewport,
+    // so the frame's own viewport position is the whole of the offset: no
+    // scroll is added.
     const box = element.getBoundingClientRect(), style = getComputedStyle(element);
-    // The place a frame's own document is moved by is the view's corner, inside
-    // the frame's border, and the doc gives the document a frame of its own.
-    const x = box.x + (parseFloat(style.borderLeftWidth) || 0), y = box.y + (parseFloat(style.borderTopWidth) || 0);
-    const held = element.contentWindow ? (() => { try { return element.contentWindow.document; } catch { return null; } })() : null;
-    return {ok: true, message: `Frame ${part}`, data: {x, y, frame: windowFrameId(part), same_origin: !!held}};
-  }
-
-  // The engine's name for the document a frame of one number holds: it belongs
-  // to the frame of this document, and is named by the number this document
-  // gives it.
-  function windowFrameId(part) {
-    const frame = windowFrame();
-    return frame ? `${frame}.${part}` : String(part);
-  }
-
-  // The engine's id of this document's frame, which a frame inside it is named
-  // under: the address the page calls this frame by, or nothing for the page.
-  function windowFrame() {
-    const element = window.frameElement;
-    if (!element) return '';
-    return frameAddress || internalId(element);
-  }
-
-  function internalId(element) {
-    const root = document.contains(element) ? document : element.getRootNode?.();
-    const frames = root?.querySelectorAll ? [...root.querySelectorAll('iframe,frame')] : [];
-    const part = frames.indexOf(element) + 1;
-    if (part < 1) return '';
-    const outer = window.frameElement ? internalId(window.frameElement) : '';
-    return outer ? `${outer}.${part}` : String(part);
+    const inset = side => (parseFloat(style[`border${side}Width`]) || 0) + (parseFloat(style[`padding${side}`]) || 0);
+    return {ok: true, message: 'Frame', x: box.x + inset('Left'), y: box.y + inset('Top')};
   }
 
   // A point in a frame's own document means nothing in the page: the caller
@@ -777,7 +720,7 @@ globalThis.__tiloPage ||= (() => {
     return failure('invalid_request', `Read the element at a point in the page itself, not in frame ${frameId()}`);
   }
 
-  function outline(from) {
+  function outline(from, most) {
     const {lines, frames: listed, cut, first, last} = outlineLines(from);
     // What `changes` compares with is a read from the top: reading on leaves
     // it as it was.
@@ -790,8 +733,14 @@ globalThis.__tiloPage ||= (() => {
     // believe it has seen the whole page, when what it was asked to check may
     // be in the part it never saw.
     const read = onward ? `Read lines ${first} to ${last}${where}` : `Read ${lines.length} lines${where}`;
+    // The page around a frame reads the frame's first lines with its own:
+    // the answer says when the frame goes on, and the rest is read with the
+    // frame's number.
+    if (typeof most === 'number' && most > 0 && lines.length > most)
+      return {ok: true, message: read, outline: lines.slice(0, most).join('\n'),
+        data: {frames: listed.filter(frame => frame.at < most), more: true}};
     return {ok: true, message: cut ? `${read}, and stopped there: ${cut}` : read,
-      outline: lines.join('\n'), data: {frames: listed}};
+      outline: lines.join('\n'), data: {frames: listed, more: false}};
   }
 
   // Lines added and removed since the last read, by longest common
@@ -1009,22 +958,8 @@ globalThis.__tiloPage ||= (() => {
       throw failure('cross_origin_submit', `This form sends its data to ${target}, another site than ${location.origin}; submit it with cross_origin to allow that`);
   }
 
-  // Where each frame this document lists sits in it, so the browser process can
-  // turn a point in a frame's document into a point in the page.
-  function frames() {
-    const out = [];
-    for (const [number, frame] of framesByNumber) {
-      const element = frame.deref?.();
-      if (!element || !element.isConnected) continue;
-      const x = element.localName === 'frame' ? Number(element.getAttribute('x')) || 0 : element.getBoundingClientRect().x + scrollX;
-      const y = element.localName === 'frame' ? Number(element.getAttribute('y')) || 0 : element.getBoundingClientRect().y + scrollY;
-      out.push({number: String(number), x, y});
-    }
-    return out;
-  }
-
   function walkLines(maxLines, maxChars) {
-    const lines = [];
+    const lines = [], frames = [];
     let chars = 0, visited = 0, truncated = false, pending = '', pendingDepth = 0;
     const emit = (depth, text) => {
       if (lines.length >= maxLines || chars >= maxChars) { truncated = true; return false; }
@@ -1137,16 +1072,16 @@ globalThis.__tiloPage ||= (() => {
         // A frame is its own document: the line names the id an action takes to
         // run there, and the address, so the caller knows what it would reach.
         // A frame whose mark-up this document holds is listed here even when
-        // its document is another site's: it is a frame of this page, and one
-        // the page numbered, so the id is one an action can take to it.
+        // its document is another site's: it is a frame of this page, and the
+        // id its line carries is one an action can take to it.
         const label = clean(element.title || element.name, MAX_NAME);
-        const id = frameNumber(element);
         const parts = [kind];
         if (label) parts.push(quote(label));
-        parts.push(`[frame=${id}]`);
+        parts.push(`[frame=${frameMark(element)}]`);
         const src = element.src ? `src=${quote(clean(element.src, 300))}` : '';
         if (src) parts.push(src);
-        emit(depth, parts.join(' '));
+        const line = lines.length;
+        if (emit(depth, parts.join(' '))) frames.push({ref: refOf(element), line, shown: frameShown(element), label});
         return;
       }
       if (INTERACTIVE.has(kind) || kind === 'heading') {
@@ -1200,7 +1135,7 @@ globalThis.__tiloPage ||= (() => {
     if (document.body) visit(document.body, 0, {inside: false, pointer: false, visible: true});
     flush();
     prune();
-    return {lines, truncated, frames: frames()};
+    return {lines, truncated, frames};
   }
 
   // The outline is read a part at a time: as much as one read carries, from
@@ -1226,7 +1161,10 @@ globalThis.__tiloPage ||= (() => {
       : beyond ? `this read ends at line ${end}, as far as a page is read, and the page goes on past them: ` +
         'name an element by where it is on the screen with read-page-element-at' : '';
     if (cut) lines.push(`- text "… ${cut}"`);
-    return {lines, cut, frames: listed, first: first + 1, last: end, total: all.length};
+    // The frames the lines of this read list, each by the line that names it.
+    const held = listed.filter(frame => frame.line >= first && frame.line < end)
+      .map(frame => ({ref: frame.ref, at: frame.line - first, shown: frame.shown, label: frame.label}));
+    return {lines, cut, frames: held, first: first + 1, last: end, total: all.length};
   }
 
   // Where the page says something: the outline lines that hold the words,
@@ -1253,7 +1191,8 @@ globalThis.__tiloPage ||= (() => {
     const where = frameId() ? ` in frame ${frameId()}` : '';
     if (!total)
       return {ok: true, message: `Nothing on the page${where} says ${quote(wanted)}${beyond ? ', as far as a page is read' : ''}. ` +
-        'Words on either side of a link, or in two paragraphs, are on separate lines: search for fewer of them',
+        'Words on either side of a link, or in two paragraphs, are on separate lines: search for fewer of them' +
+        (framesNote() ? '.' + framesNote() : ''),
         outline: '', data: {matches: [], total: 0}};
     const listed = total > hits.length ? `, the first ${hits.length} listed` : '';
     return {ok: true, message: `${total} ${total === 1 ? 'line says' : 'lines say'} ${quote(wanted)}${where}${listed}; ` +
@@ -1388,20 +1327,25 @@ globalThis.__tiloPage ||= (() => {
     return row[right.length] - shared / (Math.max(left.length, right.length) + 1);
   }
 
+  // A find and a search read one document. A frame holds its own, so a
+  // caller told nothing matches is told where else to look, by the numbers
+  // those frames' own reads take, rather than left believing the page holds
+  // none of it.
+  function framesNote() {
+    const elsewhere = [...document.querySelectorAll('iframe,frame')].filter(frameShown).slice(0, 8).map(element => {
+      const label = clean(element.title || element.name, MAX_NAME);
+      return `frame=${frameMark(element)}${label ? ` (${quote(label)})` : ''}`;
+    });
+    return elsewhere.length
+      ? ` A frame is its own document: read it with read-page {${elsewhere.join(', ')}} or name it with frame, such as ${elsewhere[0].split(' ')[0]}`
+      : '';
+  }
+
   // What the page holds, so a caller who described nothing it has is told
   // what it nearly said instead of being sent looking again.
   function findsNothing(role, name, all) {
     const asked = described(role, name);
-    // A find reads one document. A frame holds its own, so a caller told
-    // nothing matches is told where else to look rather than left believing
-    // the page holds none of it.
-    const elsewhere = [...document.querySelectorAll('iframe,frame')].map((element, index) => {
-      const label = clean(element.title || element.name, MAX_NAME);
-      return `frame=${index + 1}${label ? ` (${quote(label)})` : ''}`;
-    });
-    const frames = elsewhere.length
-      ? ` A frame is its own document: read it with read-page {${elsewhere.join(', ')}} or name it with frame, such as ${elsewhere[0].split(' ')[0]}`
-      : '';
+    const frames = framesNote();
     if (!all.length)
       return failure('not_found', `Nothing on the page is ${asked}; the page shows no element an action can act on.${frames}`);
     const scored = all.map(candidate => ({candidate, near: name ? closeness(candidate.label, name)
@@ -2797,9 +2741,10 @@ globalThis.__tiloPage ||= (() => {
       data: {form: surface.id, signature: surface.signature, results, set, submitted, now_asks: opened, unanswered: empty}};
   }
 
-  return {
-    nativeTextInputElement, configureNativeTextEditor, fillFilesElement, fence, typed,
-    run(command) {
+  const page = {
+    nativeTextInputElement, configureNativeTextEditor, fillFilesElement, fence, typed, frameNode,
+    // One command of the browser process, answered as its action answers.
+    answer(command) {
       try {
         if (!doc) doc = command.doc;
         frameAddress = typeof command.frame === 'string' ? command.frame : '';
@@ -2864,7 +2809,7 @@ globalThis.__tiloPage ||= (() => {
         switch (command.action) {
           case 'prepare_text_input': case 'start_text_input': case 'check_text_input': case 'commit_text_input': case 'cancel_text_input': case 'undo_text_input': case 'redo_text_input':
             return guardedTextInput(command);
-          case 'outline': return outline(command.from);
+          case 'outline': return outline(command.from, command.most);
           // The ref of the element a stable description names, read from the
           // page as it is now.
           case 'find': return find(command);
@@ -2882,8 +2827,7 @@ globalThis.__tiloPage ||= (() => {
           case 'scroll_target': return scrollTarget(command);
           case 'scroll_left': return scrollLeft();
           case 'at': return frameId() ? atInFrame() : at(command.x, command.y);
-          case 'frame_offset': return frameOffset(command.frame, command.anchored);
-          case 'frame_element': return frameElement(command.frame);
+          case 'frame_offset': return frameOffset(command.element, command.anchored);
           case 'frame_fence': return fence();
           case 'settle': return settle(command.quiet_ms, command.timeout_ms);
           case 'locate': arm('pointer'); return acted(command.element, locate(command.element, command.cross_origin));
@@ -2957,4 +2901,19 @@ globalThis.__tiloPage ||= (() => {
       }
     },
   };
+  // Every answer says which document gave it: the number its refs carry and,
+  // from a frame, the address of the frame's own document, which the tab's
+  // record keeps beside the frame's number.
+  const located = result => {
+    if (result && typeof result === 'object') {
+      result.doc = doc;
+      if (frameAddress) result.document_url = clean(location.origin + location.pathname, 300);
+    }
+    return result;
+  };
+  page.run = command => {
+    const result = page.answer(command);
+    return result && typeof result.then === 'function' ? result.then(located) : located(result);
+  };
+  return page;
 })();
