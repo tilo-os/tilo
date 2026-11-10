@@ -8,7 +8,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(target_os = "linux")]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -36,7 +38,6 @@ use crate::platform::apps::Apps;
 use crate::platform::authors::{People, Writers};
 use crate::platform::pane::Pane;
 #[cfg(target_os = "linux")]
-use crate::platform::watched::Watched;
 #[cfg(target_os = "linux")]
 use tilo_actions::remote::workspace_activity as wire;
 
@@ -77,8 +78,8 @@ pub struct Given {
     pub pane: Rc<dyn Pane>,
     /// The model the desk's changes are described by, while this host answers one.
     pub models: Option<Arc<dyn crate::platform::Models>>,
-    /// What moves when the records did, for a host that drives its own store.
-    pub stamp: Option<Rc<dyn Fn() -> u64>>,
+    /// The one stream of record changes this host feeds.
+    pub changes: crate::platform::records::Changes,
     pub wake: Option<tilo_service::Wake>,
 }
 
@@ -113,16 +114,15 @@ struct Inner {
     content: RefCell<Option<Arc<crate::content::Plane>>>,
     #[cfg(target_os = "linux")]
     undos: crate::task_undo::Undos,
-    /// The records each workspace holds, read on a worker of its own.
-    #[cfg(target_os = "linux")]
-    records: RefCell<HashMap<String, Rc<Watched<Vec<DetachedRecordHistory>>>>>,
+    /// The records each workspace holds, read on a worker of its own, told by the change stream
+    /// when one of them moved.
+    records: RefCell<HashMap<String, Rc<Reading>>>,
     store: Option<Store>,
-    /// Moves whenever the records read for a workspace moved.
-    records_moved: Arc<AtomicU64>,
-    /// What a host whose store it drives itself answers for "the records moved".
-    stamp: Option<Rc<dyn Fn() -> u64>>,
-    /// The stamp last read, and the read it made.
-    read_at: Cell<Option<(u64, Rc<Vec<DetachedRecordHistory>>)>>,
+    /// The one stream of record changes: what tells this session a workspace's records moved.
+    changes: crate::platform::records::Changes,
+    /// The stream's count and the reads that landed, as the last frame saw them: a change the
+    /// person has not been shown asks for the frame that shows it.
+    seen: Cell<(u64, u64)>,
     /// The desk a change the model wrote back leaves, for the next pass.
     restored: RefCell<Option<DesktopTree>>,
     /// The resources the person opened from the history.
@@ -171,6 +171,7 @@ impl Activity {
         old_desk: Option<&std::path::Path>,
         person: String,
         store: Option<Store>,
+        changes: crate::platform::records::Changes,
         apps: Option<Arc<dyn Apps>>,
         wake: Option<tilo_service::Wake>,
     ) -> Self {
@@ -186,7 +187,7 @@ impl Activity {
             writers: Writers::untracked(),
             pane: Rc::new(crate::platform::pane::Linked),
             models: None,
-            stamp: None,
+            changes,
             wake,
         };
         Self::assemble(given, unlock)
@@ -214,11 +215,12 @@ impl Activity {
             writers,
             pane,
             models,
-            stamp,
+            changes,
             wake,
         } = given;
         let woken = Arc::new(AtomicBool::new(false));
         let requests = activity_requests(Arc::clone(&woken));
+        let seen = (changes.moved(), 0);
         Self(Rc::new(Inner {
             desk,
             #[cfg(target_os = "linux")]
@@ -238,12 +240,10 @@ impl Activity {
             #[cfg(target_os = "linux")]
             undos: crate::task_undo::Undos::default(),
             person,
-            #[cfg(target_os = "linux")]
             records: RefCell::default(),
             store,
-            records_moved: Arc::default(),
-            stamp,
-            read_at: Cell::default(),
+            changes,
+            seen: Cell::new(seen),
             restored: RefCell::default(),
             openings: RefCell::default(),
             requests,
@@ -401,9 +401,11 @@ impl Activity {
         std::mem::take(&mut *self.0.openings.borrow_mut())
     }
 
-    /// Whether a window asked, or what the history reads moved, since last taken.
+    /// Whether a window asked, or a record moved and was read again, since last taken.
     pub fn take_woken(&self) -> bool {
-        self.0.woken.swap(false, Ordering::AcqRel)
+        let now = (self.0.changes.moved(), self.reads());
+        let moved = self.0.seen.replace(now) != now;
+        self.0.woken.swap(false, Ordering::AcqRel) || moved
     }
 
     /// When this session next looks for a model.
@@ -487,63 +489,171 @@ impl Activity {
             .map(Workspace::id)
     }
 
-    /// The records `workspace_id` holds, as read for the workspace and, on a desktop, followed.
+    /// The records `workspace_id` holds: read when the change stream says one of them moved, on a
+    /// worker where this host has threads, so a workspace's records never hold up a frame.
     fn records_of(&self, workspace_id: WorkspaceId) -> Vec<DetachedRecordHistory> {
         let Some(store) = self.0.store.clone() else {
             return Vec::new();
         };
         let key = workspace_id.to_string();
-        // A host that drives its own store says when it moved: the read is made there and then,
-        // and kept until it moves again.
-        if let Some(stamp) = &self.0.stamp {
-            let now = stamp();
-            if let Some((at, read)) = self.0.read_at.take() {
-                let held = Rc::clone(&read);
-                self.0.read_at.set(Some((at, read)));
-                if at == now {
-                    return held.as_ref().clone();
-                }
-            }
-            let read = Rc::new(read_workspace_records(
-                store.as_ref(),
-                &key,
-                &self.0.writers.noted,
-            ));
-            self.0.read_at.set(Some((now, Rc::clone(&read))));
-            return read.as_ref().clone();
-        }
-        #[cfg(target_os = "linux")]
         if let Some(known) = self.0.records.borrow().get(&key) {
-            return known.get().as_ref().clone();
+            let known = Rc::clone(known);
+            return known.following(&self.0.changes, &key).as_ref().clone();
         }
+        let reading = store.clone();
+        let by_workspace = key.clone();
+        let noted = crate::platform::authors::new_noted({
+            let noted = self.0.writers.noted.clone();
+            move |actor| noted(actor)
+        });
+        let read = move || read_workspace_records(reading.as_ref(), &by_workspace, &noted);
         #[cfg(target_os = "linux")]
-        {
-            let directories = record_paths(store.as_ref(), &key);
-            let reading = store.clone();
-            let by_workspace = key.clone();
-            let noted = crate::platform::authors::new_noted({
-                let noted = self.0.writers.noted.clone();
-                move |actor| noted(actor)
-            });
-            let read = move || read_workspace_records(reading.as_ref(), &by_workspace, &noted);
-            let Ok(watch) = Watched::start("tilo-activity-records", directories, read) else {
-                return read_workspace_records(store.as_ref(), &key, &self.0.writers.noted);
-            };
-            let moved = Arc::clone(&self.0.records_moved);
-            // The record was read again because it changed: the model reading it is told, so an
-            // open history lists the change with no one asking.
-            let woken = Arc::clone(&self.0.woken);
-            let wake = self.0.wake.clone();
-            watch.on_change(move || {
-                moved.fetch_add(1, Ordering::AcqRel);
-                ask_for_frame(&woken, wake.as_ref());
-            });
-            let watch = Rc::new(watch);
-            self.0.records.borrow_mut().insert(key, Rc::clone(&watch));
-            watch.get().as_ref().clone()
-        }
+        let known = Rc::new(Reading::start(
+            "tilo-activity-records",
+            self.0.changes.clone(),
+            key.clone(),
+            read,
+            {
+                let woken = Arc::clone(&self.0.woken);
+                let wake = self.0.wake.clone();
+                move || ask_for_frame(&woken, wake.as_ref())
+            },
+        ));
         #[cfg(not(target_os = "linux"))]
-        Vec::new()
+        let known = Rc::new(Reading::read(self.0.changes.clone(), key.clone(), read));
+        let value = known.get().as_ref().clone();
+        self.0.records.borrow_mut().insert(key, Rc::clone(&known));
+        value
+    }
+
+    /// The reads of the workspaces' records that landed: their count tells a frame that what the
+    /// history reads changed since it was last served.
+    fn reads(&self) -> u64 {
+        self.0
+            .records
+            .borrow()
+            .values()
+            .map(|known| known.reads())
+            .sum()
+    }
+}
+
+/// The records one workspace holds, as this session last read them: kept current by a worker
+/// where the host has threads, and read where the change stream says they moved where it has one.
+struct Reading {
+    #[cfg(target_os = "linux")]
+    held: Arc<Mutex<(u64, Arc<Vec<DetachedRecordHistory>>)>>,
+    #[cfg(target_os = "linux")]
+    landed: Arc<AtomicU64>,
+    #[cfg(not(target_os = "linux"))]
+    held: RefCell<(u64, Arc<Vec<DetachedRecordHistory>>)>,
+    #[cfg(not(target_os = "linux"))]
+    read: Box<dyn Fn() -> Vec<DetachedRecordHistory>>,
+}
+
+#[cfg(target_os = "linux")]
+impl Reading {
+    /// Read `read` now, and again on a worker whenever `changes` says the records of `workspace`
+    /// moved, telling `moved` so the frame that shows them is drawn.
+    fn start(
+        name: &str,
+        changes: crate::platform::records::Changes,
+        workspace: String,
+        read: impl Fn() -> Vec<DetachedRecordHistory> + Send + Sync + 'static,
+        moved: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        let held = Arc::new(Mutex::new((changes.moved_in(&workspace), Arc::new(read()))));
+        let landed = Arc::new(AtomicU64::new(1));
+        let reader = changes.reader();
+        let (shared, counted) = (Arc::clone(&held), Arc::clone(&landed));
+        let worker = std::thread::Builder::new()
+            .name(name.to_owned())
+            .spawn(move || {
+                // Ends when the stream does: the session is gone.
+                while let Ok(moved_workspace) = reader.recv() {
+                    // A burst of changes is read once.
+                    let mut mine = moved_workspace == workspace;
+                    while let Ok(other) = reader.try_recv() {
+                        mine |= other == workspace;
+                    }
+                    if !mine {
+                        continue;
+                    }
+                    let at = changes.moved_in(&workspace);
+                    let fresh = Arc::new((read)());
+                    *shared
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = (at, fresh);
+                    counted.fetch_add(1, Ordering::AcqRel);
+                    moved();
+                }
+            });
+        if let Err(error) = worker {
+            tracing::warn!(%error, "a workspace's records are not followed");
+        }
+        Self { held, landed }
+    }
+
+    fn get(&self) -> Arc<Vec<DetachedRecordHistory>> {
+        Arc::clone(
+            &self
+                .held
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .1,
+        )
+    }
+
+    /// The records as this session last read them: the worker keeps them current.
+    fn following(
+        &self,
+        _changes: &crate::platform::records::Changes,
+        _workspace: &str,
+    ) -> Arc<Vec<DetachedRecordHistory>> {
+        self.get()
+    }
+
+    fn reads(&self) -> u64 {
+        self.landed.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl Reading {
+    /// Read `read` now: this host has one thread, and reads the records on it.
+    fn read(
+        changes: crate::platform::records::Changes,
+        workspace: String,
+        read: impl Fn() -> Vec<DetachedRecordHistory> + 'static,
+    ) -> Self {
+        Self {
+            held: RefCell::new((changes.moved_in(&workspace), Arc::new(read()))),
+            read: Box::new(read),
+        }
+    }
+
+    fn get(&self) -> Arc<Vec<DetachedRecordHistory>> {
+        Arc::clone(&self.held.borrow().1)
+    }
+
+    /// The records of `workspace`, read again where the stream says they moved: this host has one
+    /// thread, and nothing may hold it.
+    fn following(
+        &self,
+        changes: &crate::platform::records::Changes,
+        workspace: &str,
+    ) -> Arc<Vec<DetachedRecordHistory>> {
+        let at = changes.moved_in(workspace);
+        let mut held = self.held.borrow_mut();
+        if held.0 != at {
+            held.0 = at;
+            held.1 = Arc::new((self.read)());
+        }
+        Arc::clone(&held.1)
+    }
+
+    fn reads(&self) -> u64 {
+        self.held.borrow().0
     }
 }
 
@@ -628,13 +738,10 @@ impl HistorySource for Activity {
         self.0.desk.heads().hash(&mut hasher);
         #[cfg(target_os = "linux")]
         self.0.unlock.heads().hash(&mut hasher);
-        if let Some(stamp) = &self.0.stamp {
-            stamp().hash(&mut hasher);
-        }
-        self.0
-            .records_moved
-            .load(Ordering::Acquire)
-            .hash(&mut hasher);
+        // What the records say moved, and the reads of them that landed since: a history open on
+        // this device is served again.
+        self.0.changes.moved().hash(&mut hasher);
+        self.reads().hash(&mut hasher);
         hasher.finish()
     }
 
@@ -663,26 +770,6 @@ impl HistorySource for Activity {
     }
 }
 
-/// The directories a workspace's records change in: its index and each record's.
-#[cfg(target_os = "linux")]
-fn record_paths(store: &dyn DurableStore, workspace: &str) -> Vec<PathBuf> {
-    let mut directories = BTreeSet::new();
-    for (package, index_room) in workspace_packages(store, workspace) {
-        for key in [StorageKey::workspace_index(&package, &index_room)]
-            .into_iter()
-            .chain(record_keys(store, &package, &index_room))
-        {
-            if let Some(directory) = store
-                .local_path(&key)
-                .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
-            {
-                directories.insert(directory);
-            }
-        }
-    }
-    directories.into_iter().collect()
-}
-
 /// The packages that hold records in `workspace` , as their apps' indexes name them.
 fn workspace_packages(store: &dyn DurableStore, workspace: &str) -> Vec<(String, String)> {
     match store.workspace_indexes() {
@@ -692,21 +779,6 @@ fn workspace_packages(store: &dyn DurableStore, workspace: &str) -> Vec<(String,
             .collect(),
         Err(error) => {
             tracing::warn!(%error, "the workspace indexes of this device are not listed");
-            Vec::new()
-        }
-    }
-}
-
-/// Every record `package` holds in `workspace`, as the store has it.
-#[cfg(target_os = "linux")]
-fn record_keys(store: &dyn DurableStore, package: &str, workspace: &str) -> Vec<StorageKey> {
-    match store.records(package, workspace) {
-        Ok(records) => records
-            .into_iter()
-            .map(|record| StorageKey::record(package, workspace, record))
-            .collect(),
-        Err(error) => {
-            tracing::warn!(%error, package, %workspace, "a workspace's records are not listed");
             Vec::new()
         }
     }
@@ -1221,7 +1293,15 @@ mod tests {
             let tree = seed_tree(&mut minter, "Studio", vec![notes]);
             let workspace = tree.active;
             let (mut surface, handle) = DesktopSurface::new(tree, 7, Box::new(Tiles));
-            let activity = Activity::new(None, None, "ada".to_string(), None, None, None);
+            let activity = Activity::new(
+                None,
+                None,
+                "ada".to_string(),
+                None,
+                crate::platform::records::Changes::default(),
+                None,
+                None,
+            );
             surface.set_history_source(Box::new(activity.clone()));
             surface.serve_activity(activity.requests());
             Self {

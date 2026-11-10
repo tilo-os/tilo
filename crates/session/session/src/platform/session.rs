@@ -223,17 +223,27 @@ impl Session {
         // its apps keep in the store. The desk records into it, the model
         // reads it, and the apps this session runs reach the same model.
         // This device's records, as its store keeps them: the workspaces' app records, which the
-        // activity's history reads and the person's mentions are looked for in.
-        let records_store: Option<crate::platform::Store> =
-            options.search.records.as_ref().map(|records| {
-                std::sync::Arc::new(app_state::FsStore::new(records.root()))
-                    as crate::platform::Store
+        // activity's history reads and the person's mentions are looked for in. Every write that
+        // lands in that store is noted in the one change stream the roles that follow records
+        // read, so neither of them watches the records itself.
+        let records_store: Option<crate::platform::Store> = options
+            .search
+            .records
+            .as_ref()
+            .map(crate::records::Records::store);
+        let changes = options
+            .search
+            .records
+            .as_ref()
+            .map_or_else(crate::platform::records::Changes::default, |records| {
+                records.changes()
             });
         let activity = crate::activity::Activity::new(
             options.state.as_deref(),
             options.old_desk.as_deref(),
             options.person.clone(),
             records_store.clone(),
+            crate::platform::records::Changes::clone(&changes),
             Some(std::sync::Arc::new(options.lists.clone())
                 as std::sync::Arc<dyn crate::platform::apps::Apps>),
             Some(options.wake.handle()),
@@ -493,17 +503,18 @@ impl Session {
         // Search reads the workspaces' records off the records themselves,
         // with no window of their app running: what this device holds is
         // found before anything changes, and every change after it. The same
-        // changes are what the person's mentions are looked for in
-        // (`crate::mentions`): one record of them here, read by both.
-        let touched = crate::platform::records::Touched::default();
-        touched.waking(options.wake.handle());
+        // changes are what the person's mentions and the activity follow
+        // (`crate::platform::records`): one stream of them here, read by both,
+        // and noted where every write lands — the records' store, and the
+        // index of what the broker receives from the apps and from peers.
+        changes.waking(options.wake.handle());
         let record_index = engine.as_ref().map(|engine| {
             crate::record_index::RecordIndex::start(
                 std::sync::Arc::clone(engine)
                     as std::sync::Arc<dyn crate::record_index::RecordSource>,
                 std::sync::Arc::new(crate::record_index::AppReader::of_device()),
                 Some(std::sync::Arc::clone(&options.content)),
-                touched.clone(),
+                crate::platform::records::Changes::clone(&changes),
             )
         });
         let record_changes = record_index.clone().map(|index| {
@@ -1249,7 +1260,7 @@ impl Session {
                 store: Some(store.clone()),
                 records: Some(Rc::new(crate::platform::records::Linked::over(
                     store,
-                    touched.clone(),
+                    crate::platform::records::Changes::clone(&changes),
                 ))),
                 notices: Some(Rc::new(crate::notifications::RoleNotices::over(Rc::clone(
                     &session_notifications,

@@ -31,7 +31,7 @@ fn name(id: &str) -> String {
 /// The records a host reads: the documents it holds, the kinds their apps keep, and what changed.
 #[derive(Default)]
 struct Recorder {
-    changed: RefCell<(bool, Vec<Changed>)>,
+    changed: RefCell<Vec<Changed>>,
     docs: RefCell<BTreeMap<(String, String), AutoCommit>>,
     kinds: RefCell<BTreeMap<String, String>>,
 }
@@ -50,11 +50,11 @@ impl Recorder {
     /// A change reached `record` of `app`; `replayed` for one the workspace already held when this
     /// device first followed it.
     fn reached(&self, app: &str, record: &str, replayed: bool) {
-        self.changed.borrow_mut().0 |= replayed;
-        self.changed.borrow_mut().1.push(Changed {
+        self.changed.borrow_mut().push(Changed {
             workspace: WORKSPACE.to_owned(),
             app: app.to_owned(),
             record: record.to_owned(),
+            replayed,
         });
     }
 
@@ -66,7 +66,7 @@ impl Recorder {
 }
 
 impl Records for Recorder {
-    fn take_changed(&self) -> (bool, Vec<Changed>) {
+    fn take_changed(&self) -> Vec<Changed> {
         std::mem::take(&mut *self.changed.borrow_mut())
     }
 

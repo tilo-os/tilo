@@ -5,7 +5,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::future::Future;
-use std::hash::{Hash as _, Hasher as _};
 use std::pin::Pin;
 use std::rc::Rc;
 
@@ -104,30 +103,6 @@ pub(super) fn person_of(
         here.person(user)
             .or_else(|| people.borrow().get(user).cloned())
             .or_else(|| (user == own).then(|| crate::shell::own_identity(&here)))
-    })
-}
-
-/// What moves when a record of the workspace did: the page drives its own store, so this is how its
-/// activity learns that what it read is stale.
-pub(super) fn records_moved(shared: &crate::desktop::Shared) -> Rc<dyn Fn() -> u64> {
-    let shared = shared.clone();
-    Rc::new(move || {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        let mut records = shared.bound_records();
-        records.sort_unstable_by_key(|(tab, _)| *tab);
-        let stores = shared.stores.borrow();
-        for (_, checkout) in records {
-            checkout.id.as_str().hash(&mut hasher);
-            for store in stores.iter() {
-                if let Some(heads) = store.read(
-                    &checkout.id,
-                    ui::automerge::transaction::Transactable::base_heads,
-                ) {
-                    heads.hash(&mut hasher);
-                }
-            }
-        }
-        hasher.finish()
     })
 }
 

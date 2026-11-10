@@ -1,9 +1,9 @@
 //! Telling this page's person when someone mentions them, wherever in the workspace.
 //!
-//! The records are what this page's replication took in from the workspace
-//! ([`crate::replication::take_touched`], [`crate::replication::record_document`]), so a record
-//! open in a window or not is looked at as the change reaches it, and the notices are the
-//! session's own role ([`tilo_session::mentions`]) shown through this host's notifications
+//! The records are what this page's replication took in from the workspace and wrote
+//! ([`crate::replication::changes`], [`crate::replication::record_document`]), so a record open in
+//! a window or not is looked at as the change reaches it, and the notices are the session's own
+//! role ([`tilo_session::mentions`]) shown through this host's notifications
 //! ([`tilo_session::platform::notice::Toolkit`]). Choosing one opens the place the mention is in,
 //! as any open goes: through the desktop's session, as this person.
 
@@ -24,26 +24,15 @@ use super::Desktop;
 struct Taken {
     /// The workspace's peer on this page, as replication names it.
     peer: u32,
+    /// The stream of record changes the page's replication feeds.
+    changes: Changes,
     /// The kind of the records an app keeps, as the page's own bundle declares it.
     kind: Rc<dyn Fn(&str) -> String>,
 }
 
 impl Records for Taken {
-    fn take_changed(&self) -> (bool, Vec<Changed>) {
-        let (ready, touched) = crate::replication::take_touched(self.peer);
-        (
-            // What reached the record before the workspace finished replaying what it held is
-            // what the device already had.
-            !ready,
-            touched
-                .into_iter()
-                .map(|(app, record)| Changed {
-                    workspace: String::new(),
-                    app,
-                    record,
-                })
-                .collect(),
-        )
+    fn take_changed(&self) -> Vec<Changed> {
+        self.changes.take()
     }
 
     fn document(&self, app: &str, _workspace: &str, record: &str) -> Option<AutoCommit> {
@@ -69,6 +58,7 @@ pub(super) fn role(
         store: Some(store),
         records: Some(Rc::new(Taken {
             peer,
+            changes: crate::replication::changes(),
             kind: Rc::new(|app| {
                 crate::desktop::application(app)
                     .map(|definition| definition.record_kind.as_str().to_owned())

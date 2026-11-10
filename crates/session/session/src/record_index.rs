@@ -150,10 +150,10 @@ pub(crate) struct RecordIndex {
     queued: Mutex<BTreeSet<(String, String, String)>>,
     /// Wakes the worker: a record is waiting.
     wake: std::sync::mpsc::Sender<()>,
-    /// What a change of a record reaches besides the index: the roles that follow records, such as
-    /// the person's mentions. The queue is where the session already learns of every change, so no
-    /// role watches the store itself.
-    touched: crate::platform::records::Touched,
+    /// What a change of a record reached besides the index: the one stream the roles that follow
+    /// records read, such as the person's mentions. The queue is where the session already learns
+    /// of every change an app or a peer made, so no role watches the store itself.
+    changes: crate::platform::records::Changes,
 }
 
 impl RecordIndex {
@@ -163,7 +163,7 @@ impl RecordIndex {
         source: Arc<dyn RecordSource>,
         reader: Arc<dyn RecordReader>,
         content: Option<Arc<AppContentIndex>>,
-        touched: crate::platform::records::Touched,
+        changes: crate::platform::records::Changes,
     ) -> Arc<Self> {
         let (wake, woken) = std::sync::mpsc::channel();
         let index = Arc::new(Self {
@@ -172,7 +172,7 @@ impl RecordIndex {
             content,
             queued: Mutex::new(BTreeSet::new()),
             wake,
-            touched,
+            changes,
         });
         // The worker reads the owner and the app's reader, neither of which may hold up the
         // session's frame: it wakes only when a record is waiting, and reads each one once.
@@ -195,13 +195,14 @@ impl RecordIndex {
     }
 
     /// Read what this device already holds, once: the records of every workspace it keeps, so
-    /// search finds them before anything changes.
+    /// search finds them before anything changes. What it holds is not news to the roles
+    /// following records: these reached them with the workspace's own replay.
     pub(crate) fn sweep(&self) {
         for workspace in self.source.workspaces() {
             match self.source.records(&workspace) {
                 Ok(records) => {
                     for (app, record) in records {
-                        self.changed(&workspace, &app, &record);
+                        self.reached(&workspace, &app, &record, true);
                     }
                 }
                 Err(error) => tracing::warn!(
@@ -213,13 +214,19 @@ impl RecordIndex {
         }
     }
 
-    /// Queue `record` for the next pass, once, however often it changed, and tell the roles that
-    /// follow records that it did.
+    /// Queue `record` for the next pass, once, however often it changed, and note the change in
+    /// the stream the roles following records read.
     pub(crate) fn changed(&self, workspace: &str, app: &str, record: &str) {
+        self.reached(workspace, app, record, false);
+    }
+
+    /// Note that `record` of `app` changed in `workspace`, as `replayed` where it is what the
+    /// device already held, and queue it for the next pass.
+    fn reached(&self, workspace: &str, app: &str, record: &str, replayed: bool) {
         if record.is_empty() || app.is_empty() {
             return;
         }
-        self.touched.note(workspace, app, record);
+        self.changes.note(workspace, app, record, replayed);
         self.queued.lock_recover().insert((
             workspace.to_owned(),
             app.to_owned(),

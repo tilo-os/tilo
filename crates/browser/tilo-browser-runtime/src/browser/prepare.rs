@@ -96,7 +96,7 @@ pub(super) fn serve_history(
             desktop: shared.clone(),
         }),
         models,
-        stamp: Some(crate::page_activity::records_moved(shared)),
+        changes: crate::replication::changes(),
         wake: None,
     });
     surface.set_history_source(Box::new(activity.clone()));

@@ -107,7 +107,7 @@ fn index(held: &Arc<Held>, content: &Arc<AppContentIndex>) -> RecordIndex {
         content: Some(Arc::clone(content)),
         queued: Mutex::new(BTreeSet::new()),
         wake,
-        touched: crate::platform::records::Touched::default(),
+        changes: crate::platform::records::Changes::default(),
     }
 }
 

@@ -172,9 +172,9 @@ pub(crate) struct Joined {
     /// Content the open records' windows lacked and the page asked the
     /// workspace for, by the wire `(app, record)` that references it.
     content: ContentWants<(String, String)>,
-    /// Records a peer's change reached since the desktop last looked for
-    /// mentions in them ([`take_touched`]), as wire `(app, record)`.
-    touched: BTreeSet<(String, String)>,
+    /// The one stream of record changes this page feeds: what the session's activity and the
+    /// person's mentions follow.
+    changes: tilo_session::platform::records::Changes,
 }
 
 /// The page's storage key of wire record `record` of `app` in `workspace`.
@@ -227,7 +227,7 @@ pub(crate) fn open(
         members: None,
         in_flight: HashMap::new(),
         content: ContentWants::default(),
-        touched: BTreeSet::new(),
+        changes: changes(),
     };
     JOINED.with_borrow_mut(|replicas| replicas.insert(id, Rc::new(RefCell::new(joined))));
     pump(id);
@@ -288,16 +288,16 @@ pub(crate) fn records(id: u32) -> Vec<(String, String)> {
     records.into_iter().collect()
 }
 
-/// The records a peer's change reached since this was last taken, as wire
-/// `(app, record)`, and whether the workspace had replayed what it held by then:
-/// before that, what arrives is what the workspace already held.
-pub(crate) fn take_touched(id: u32) -> (bool, Vec<(String, String)>) {
-    let Some(joined) = replica_of(id) else {
-        return (false, Vec::new());
-    };
-    let mut joined = joined.borrow_mut();
-    let touched = std::mem::take(&mut joined.touched);
-    (joined.ready, touched.into_iter().collect())
+thread_local! {
+    /// The one stream of record changes this page feeds.
+    static CHANGES: tilo_session::platform::records::Changes =
+        tilo_session::platform::records::Changes::default();
+}
+
+/// The one stream of record changes this page feeds, as the session's activity and the person's
+/// mentions read it: every record this page's replication takes in or sends is noted there.
+pub(crate) fn changes() -> tilo_session::platform::records::Changes {
+    CHANGES.with(Clone::clone)
 }
 
 /// Wire record `record` of `app` as peer `id` holds it now: the open
@@ -1242,7 +1242,9 @@ impl Joined {
         let app = route.app_id.clone();
         let record = route.record.clone();
         let key = (app.clone(), record.clone());
-        self.touched.insert(key.clone());
+        // What reaches the record is news only once the workspace has replayed what it already
+        // held: before that it is what the device had.
+        self.changes.note(&self.uuid, &app, &record, !self.ready);
         // What waited for the changes it builds on goes with what arrived:
         // after it, so a snapshot that may hold those changes comes first.
         let mutations = snapshots_first(
@@ -1494,6 +1496,10 @@ impl Joined {
                     };
                     match replica.take_outbound(store, &checkout.id) {
                         Ok(Some(next)) => {
+                            // A window here wrote the record: the session's activity and the
+                            // person's mentions read it as any other change of it.
+                            self.changes
+                                .note(&self.uuid, &route.app_id, &route.record, false);
                             outgoing.push((route, next.mutation, (id, key, next.heads)));
                         }
                         Ok(None) => {}

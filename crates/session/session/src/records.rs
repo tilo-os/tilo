@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
+use crate::platform::Store;
 use crate::platform::watched::Watched;
 use app_state::DocStore;
 use durable_store::{DurableStore, StorageKey};
@@ -51,6 +52,11 @@ struct Held {
 pub struct Records {
     /// Where the indexes are, and where this session's own references are written.
     root: PathBuf,
+    /// The store the records are in, noting every write of one in the change stream: the session's
+    /// one store for the workspaces' records, read by the activity and the person's mentions.
+    store: Store,
+    /// The one stream of record changes this device's store feeds.
+    changes: crate::platform::records::Changes,
     /// The indexes as last read.
     reading: Reading,
     /// The name the desk gives each workspace, as of its last frame: a record held elsewhere is
@@ -79,7 +85,12 @@ impl Records {
     /// state somewhere else.
     #[must_use]
     pub fn of(root: PathBuf) -> Self {
-        let store: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(&root));
+        let changes = crate::platform::records::Changes::default();
+        #[cfg(target_os = "linux")]
+        let plain: Store = std::sync::Arc::new(app_state::FsStore::new(&root));
+        #[cfg(not(target_os = "linux"))]
+        let plain: Store = std::rc::Rc::new(app_state::FsStore::new(&root));
+        let store = crate::platform::records::noting(plain, changes.clone());
         let indexes = store.workspace_indexes().unwrap_or_else(|error| {
             tracing::warn!(%error, "the workspace indexes of this device are not listed");
             Vec::new()
@@ -117,6 +128,8 @@ impl Records {
         };
         Self {
             root,
+            store,
+            changes,
             reading,
             names: RefCell::default(),
         }
@@ -126,6 +139,18 @@ impl Records {
     #[must_use]
     pub fn root(&self) -> PathBuf {
         self.root.clone()
+    }
+
+    /// The store the workspaces' records are kept in, as this session reads them.
+    #[must_use]
+    pub fn store(&self) -> Store {
+        Store::clone(&self.store)
+    }
+
+    /// The one stream of record changes this device's store feeds.
+    #[must_use]
+    pub fn changes(&self) -> crate::platform::records::Changes {
+        self.changes.clone()
     }
 
     /// The workspaces this device shows, by id and the name the desk gives it: what a row says of a
@@ -172,32 +197,29 @@ impl Records {
 
     /// Name `record` in the workspace `workspace` , in the index of `package` : the reference it
     /// holds from then on, and the whole of what bringing a record here does. Written away from the
-    /// loop, since the workspace may be one whose index no app of this process has opened yet; the
-    /// index directory changing is what makes search read the indexes again.
+    /// loop, through the one store the records are in, whose write notes the change in the stream
+    /// the activity and the mentions follow.
     pub fn bring_here(&self, workspace: &str, package: &str, record: RecordCheckout) {
-        let data_home = self.root.clone();
         let (workspace, package) = (workspace.to_owned(), package.to_owned());
-        let named = std::thread::Builder::new()
-            .name("tilo-search-bring".into())
-            .spawn(move || {
-                let store: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(&data_home));
-                let key = StorageKey::workspace_index(&package, &workspace);
-                let mut index = match DocStore::shared(store, key) {
-                    Ok(index) => index,
-                    Err(error) => {
-                        tracing::warn!(%error, package, %workspace, "a record is not brought here");
-                        return;
+        #[cfg(target_os = "linux")]
+        {
+            let root = self.root.clone();
+            let changes = self.changes.clone();
+            let (keeping, held) = (workspace.clone(), package.clone());
+            let named = std::thread::Builder::new()
+                .name("tilo-search-bring".into())
+                .spawn(move || {
+                    if name_in(&root, &workspace, &package, &record) {
+                        changes.note(&keeping, &held, "", false);
                     }
-                };
-                let mut doc = index.load_or_new();
-                if ui::record::index::reference(&mut doc, &record.id, &record.kind)
-                    && let Err(error) = index.append(&mut doc)
-                {
-                    tracing::warn!(%error, package, %workspace, "a record's reference is not kept");
-                }
-            });
-        if let Err(error) = named {
-            tracing::warn!(%error, "a record is not brought here");
+                });
+            if let Err(error) = named {
+                tracing::warn!(%error, "a record is not brought here");
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        if name_in(&self.root, &workspace, &package, &record) {
+            self.changes.note(&workspace, &package, "", false);
         }
     }
 
@@ -206,6 +228,30 @@ impl Records {
         match &self.reading {
             Reading::Followed(watched) => watched.get(),
             Reading::Once(held) => Arc::clone(held),
+        }
+    }
+}
+
+/// Name `record` in the index of `package` in `workspace` , as its app would. Whether it is named.
+fn name_in(root: &Path, workspace: &str, package: &str, record: &RecordCheckout) -> bool {
+    let store: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(root.to_path_buf()));
+    let key = StorageKey::workspace_index(package, workspace);
+    let mut index = match DocStore::shared(store, key) {
+        Ok(index) => index,
+        Err(error) => {
+            tracing::warn!(%error, package, %workspace, "a record is not brought here");
+            return false;
+        }
+    };
+    let mut doc = index.load_or_new();
+    if !ui::record::index::reference(&mut doc, &record.id, &record.kind) {
+        return true;
+    }
+    match index.append(&mut doc) {
+        Ok(_) => true,
+        Err(error) => {
+            tracing::warn!(%error, package, %workspace, "a record's reference is not kept");
+            false
         }
     }
 }

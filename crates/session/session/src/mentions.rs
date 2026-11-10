@@ -232,9 +232,8 @@ struct Inner {
     wake: Option<tilo_service::Wake>,
     held: RefCell<Held>,
     lease: RefCell<Option<durable_store::Lease>>,
-    /// The records a change reached since the last look, each with whether it came in the
-    /// workspace's replay.
-    pending: RefCell<BTreeMap<Changed, bool>>,
+    /// The records a change reached since the last look.
+    pending: RefCell<BTreeMap<Changed, ()>>,
     /// The places the person chose and the host has not opened yet.
     chosen: RefCell<Vec<Place>>,
     /// When the records were last looked at.
@@ -287,9 +286,8 @@ impl Mentions {
         let Some(records) = &self.0.records else {
             return;
         };
-        let (replayed, changed) = records.take_changed();
-        for record in changed {
-            *self.0.pending.borrow_mut().entry(record).or_insert(true) &= replayed;
+        for record in records.take_changed() {
+            self.0.pending.borrow_mut().insert(record, ());
         }
         if self.0.pending.borrow().is_empty() {
             return;
@@ -308,7 +306,7 @@ impl Mentions {
         self.0.looked_at.set(Some(now));
         let pending = std::mem::take(&mut *self.0.pending.borrow_mut());
         let mut kept = false;
-        for (changed, replayed) in pending {
+        for (changed, ()) in pending {
             let Some(doc) = records.document(&changed.app, &changed.workspace, &changed.record)
             else {
                 continue;
@@ -325,7 +323,7 @@ impl Mentions {
                 .unwrap_or_default();
             let mut held = self.0.held.borrow_mut();
             // What the workspace held before this device followed the record is not news.
-            let quiet = replayed && !held.knows(&changed.app, &changed.record);
+            let quiet = changed.replayed && !held.knows(&changed.app, &changed.record);
             let told = held.look(
                 &Look {
                     app: &changed.app,
