@@ -93,6 +93,14 @@ pub enum FilesCmd {
     /// Upload a file into a workspace: prints its reference, which actions
     /// take (`pdf-viewer#import-pdf-content content=tilo.content:…`).
     Put { file: PathBuf },
+    /// Download a file of a workspace by its reference (an export's
+    /// answer, `tilo.content:…`) into `--output`, or to standard output.
+    Get {
+        content: String,
+        /// Where to write it; standard output when absent.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
 }
 
 /// Where and as whom: the door, the key, and whether to answer JSON.
@@ -493,7 +501,12 @@ pub fn account(door: Option<&str>, json: bool, cmd: AccountCmd) -> ExitCode {
 pub fn files(door: Option<&str>, json: bool, workspace: &str, cmd: FilesCmd) -> ExitCode {
     run(async {
         let client = Client::from_env(door, json)?;
-        let FilesCmd::Put { file } = cmd;
+        let file = match cmd {
+            FilesCmd::Put { file } => file,
+            FilesCmd::Get { content, output } => {
+                return download(&client, workspace, &content, output.as_deref()).await;
+            }
+        };
         let bytes = std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
         let workspace = client.workspace(workspace).await?;
         let response = client
@@ -534,6 +547,74 @@ pub fn files(door: Option<&str>, json: bool, workspace: &str, cmd: FilesCmd) -> 
         }
         Ok(ExitCode::SUCCESS)
     })
+}
+
+/// The bytes of `content` in `workspace`, a piece per `tilo_get`, written
+/// to `output` or standard output.
+async fn download(
+    client: &Client,
+    workspace: &str,
+    content: &str,
+    output: Option<&Path>,
+) -> Result<ExitCode> {
+    use base64::Engine as _;
+    use std::io::Write as _;
+    let workspace = client.workspace(workspace).await?;
+    let session = client.session(&format!("/w/{workspace}/mcp")).await?;
+    let mut bytes = Vec::new();
+    let fetched: Result<()> = async {
+        loop {
+            let offset = bytes.len();
+            let result = session
+                .call("tilo_get", json!({"content": content, "offset": offset}))
+                .await?;
+            let piece = result.get("structuredContent").unwrap_or(&Value::Null);
+            if result.get("isError").and_then(Value::as_bool) == Some(true) {
+                bail!(
+                    "{}",
+                    piece
+                        .pointer("/error/message")
+                        .and_then(Value::as_str)
+                        .or_else(|| result.pointer("/content/0/text").and_then(Value::as_str))
+                        .unwrap_or("the workspace refused the download")
+                );
+            }
+            let (Some(encoded), Some(size)) = (
+                piece.get("bytes").and_then(Value::as_str),
+                piece.get("size").and_then(Value::as_u64),
+            ) else {
+                bail!("the door answered no bytes for {content}");
+            };
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .context("the door's bytes are not base64")?;
+            if decoded.is_empty() && (bytes.len() as u64) < size {
+                bail!("the download stopped at {} of {size} bytes", bytes.len());
+            }
+            bytes.extend_from_slice(&decoded);
+            if bytes.len() as u64 >= size {
+                return Ok(());
+            }
+        }
+    }
+    .await;
+    session.close().await;
+    fetched?;
+    match output {
+        Some(path) => {
+            std::fs::write(path, &bytes).with_context(|| format!("writing {}", path.display()))?;
+            if client.json {
+                println!(
+                    "{}",
+                    json!({"content": content, "size": bytes.len(), "file": path})
+                );
+            }
+        }
+        None => std::io::stdout()
+            .write_all(&bytes)
+            .context("writing to standard output")?,
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// `tilo keys …`.

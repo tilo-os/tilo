@@ -16,6 +16,8 @@ path = "src/main.rs"
 # library, so this builds on a host with no development headers, which is the
 # constraint that shaped tilo-rollback the same way.
 anyhow.workspace = true
+# A hosted workspace's files come down in base64 pieces (`tilo files get`).
+base64.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 # Reads the session's GPU health record for `tilo system health --gpu`.
