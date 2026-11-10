@@ -19,8 +19,10 @@ class SourcePinTests(unittest.TestCase):
                 root = pathlib.Path(temp)
                 shutil.copyfile(ROOT / 'build_native.py', root / 'build_native.py')
                 shutil.copyfile(ROOT / 'source_artifact.py', root / 'source_artifact.py')
-                (root / 'vendor').mkdir()
-                with tarfile.open(root / 'vendor/ntfs-3g-source.tar.gz', 'w:gz') as archive:
+                sys.path.insert(0, str(ROOT))
+                from source_artifact import NAME, SHA
+                (root / 'vendor' / SHA).mkdir(parents=True)
+                with tarfile.open(root / 'vendor' / SHA / NAME, 'w:gz') as archive:
                     marker = tarfile.TarInfo('extraction-must-not-happen')
                     marker.size = 1
                     archive.addfile(marker, io.BytesIO(b'x'))

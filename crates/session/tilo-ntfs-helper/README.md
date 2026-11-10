@@ -11,7 +11,6 @@ Install the explicit build prerequisites in vendor/README.md, then:
 
 ```
 python3 crates/session/tilo-ntfs-helper/source_artifact.py
-export TILO_NTFS_SOURCE_OFFLINE=1
 python3 crates/session/tilo-ntfs-helper/tests/build_native_fixtures.py --output /tmp/ntfs-new-fixtures
 TILO_NTFS_FIXTURES=/tmp/ntfs-new-fixtures cargo +1.97.1 test -p tilo-ntfs-helper --tests --offline
 cargo +1.97.1 clippy -p tilo-ntfs-helper --all-targets --offline -- -D warnings

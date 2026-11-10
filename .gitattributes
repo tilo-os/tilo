@@ -11,6 +11,7 @@ crates/sdk/font-catalog/manifest.toml text eol=lf
 
 # Content-addressed pinned bytes: stored exactly, never normalised.
 tools/test-assets/seed/** -text
+crates/session/tilo-ntfs-helper/vendor/*/** -text
 
 # Media license notices retain the bytes verified by sources.json.
 tools/windows/gstreamer-licenses/*.txt -text

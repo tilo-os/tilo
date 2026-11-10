@@ -1,18 +1,15 @@
 Pinned NTFS-3G source, not a system ABI fallback
 =============================================
 
-`ntfs-3g-source.tar.gz` is the unmodified GitHub codeload archive for
+`<sha256>/ntfs-3g-source.tar.gz` is the unmodified GitHub codeload archive for
 `d327833ec1d5eb1358b6f2c37139f10a3460944d`. Its SHA-256 is
 `b90caed8fade648f119c767bd310419be56a2b0014b16e6b2c68b50bc6c7e9cd`
 and its length is 905743 bytes. `ntfs-3g.lock` records the original URL.
-The identical archive is published at the immutable SHA-256 URL in
-`../source_artifact.py`. Run `python3 crates/session/tilo-ntfs-helper/source_artifact.py`
-from the repository root to prewarm `target/ntfs-source`; set
-`TILO_NTFS_SOURCE_OFFLINE=1` for builds without network access. Override the
-cache location with `TILO_NTFS_SOURCE_CACHE`. Without it, a Cargo build reads a
-prewarmed `target/ntfs-source` and otherwise downloads into its own `OUT_DIR`, the
-only place Cargo lets a build script write. Missing offline content and corrupt
-cached content fail. A standalone distribution prefers its included archive.
+Builds read it only from here, so they never reach the network; a missing or
+corrupt archive fails. To move the pin, download the new commit's archive from
+the URL form in `ntfs-3g.lock`, put it in a directory named by its SHA-256, and
+update `PIN`, `SHA` and `SIZE` in `../source_artifact.py`, this file and the lock;
+remove the old directory.
 `build_native.py` checks the entire archive before extraction and requires both
 expected parser symbols and absence of the default
 Unix/Windows device adapter in the produced archive.

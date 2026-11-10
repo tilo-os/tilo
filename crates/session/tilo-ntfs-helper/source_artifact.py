@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""Resolve the exact upstream source; builds and redistribution can run offline."""
-import hashlib
-import os
+"""The exact upstream source, from the tree; builds and redistribution never reach the network.
+
+The archive is stored content-addressed, at vendor/<sha256>/ntfs-3g-source.tar.gz, and
+verified by length and SHA-256 before anything reads it. A new pin is a new archive in a
+new directory (vendor/README.md).
+"""
 import pathlib
-import tempfile
-import urllib.request
+import hashlib
 
 ROOT = pathlib.Path(__file__).resolve().parent
 PIN = "d327833ec1d5eb1358b6f2c37139f10a3460944d"
 SHA = "b90caed8fade648f119c767bd310419be56a2b0014b16e6b2c68b50bc6c7e9cd"
 SIZE = 905743
 NAME = "ntfs-3g-source.tar.gz"
-URL = "https://code.tilo.so/api/packages/tilo/generic/source-evidence/" + SHA + "/" + NAME
 
 
 def verified(data):
@@ -20,42 +21,11 @@ def verified(data):
     return data
 
 
-def cache_dirs():
-    """Where the source may already be, the first also where a download goes."""
-    explicit = os.environ.get("TILO_NTFS_SOURCE_CACHE")
-    if explicit:
-        return [pathlib.Path(explicit)]
-    shared = ROOT.parents[2] / "target/ntfs-source"
-    # Cargo lets a build script write only below OUT_DIR; the workspace's target/ may be
-    # read-only (or not where the build directory is), so it is only read, for a prewarmed copy.
-    out_dir = os.environ.get("OUT_DIR")
-    return [pathlib.Path(out_dir) / "ntfs-source", shared] if out_dir else [shared]
-
-
 def source_bytes():
-    bundled = ROOT / "vendor" / NAME
-    if bundled.exists():
-        return verified(bundled.read_bytes())
-    caches = [directory / SHA / NAME for directory in cache_dirs()]
-    for cache in caches:
-        if cache.exists():
-            return verified(cache.read_bytes())
-    cache = caches[0]
-    if os.environ.get("TILO_NTFS_SOURCE_OFFLINE") == "1" or os.environ.get("CARGO_NET_OFFLINE", "").lower() == "true":
-        raise RuntimeError("NTFS source is not cached; prewarm with source_artifact.py before offline builds")
-    with urllib.request.urlopen(URL, timeout=60) as response:
-        data = verified(response.read(SIZE + 1))
-    cache.parent.mkdir(parents=True, exist_ok=True)
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(dir=cache.parent, prefix=".source-", delete=False) as target:
-            temporary = pathlib.Path(target.name)
-            target.write(data)
-        temporary.replace(cache)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-    return data
+    archive = ROOT / "vendor" / SHA / NAME
+    if not archive.exists():
+        raise RuntimeError(f"NTFS source is not in the tree: {archive}")
+    return verified(archive.read_bytes())
 
 
 if __name__ == "__main__":

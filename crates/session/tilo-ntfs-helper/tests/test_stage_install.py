@@ -11,7 +11,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from source_artifact import source_bytes
+from source_artifact import NAME, SHA, source_bytes
 
 
 class StandaloneBundle(unittest.TestCase):
@@ -51,7 +51,7 @@ class StandaloneBundle(unittest.TestCase):
                                 '--manifest-path', str(crate / 'Cargo.toml')], check=True,
                                stdout=subprocess.DEVNULL)
             self.assertFalse((protocol / 'build.rs').exists())
-            self.assertEqual((helper / 'vendor/ntfs-3g-source.tar.gz').read_bytes(),
+            self.assertEqual((helper / 'vendor' / SHA / NAME).read_bytes(),
                              source_bytes())
             subprocess.run(['cargo', '+1.97.1', 'build', '--offline', '--manifest-path',
                             str(helper / 'Cargo.toml'), '--bin', 'tilo-ntfs-probe'], check=True)

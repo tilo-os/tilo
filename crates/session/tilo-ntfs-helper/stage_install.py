@@ -23,7 +23,6 @@ items={
  'usr/share/tilo-ntfs-helper/ntfs-3g.lock':((ROOT/'vendor/ntfs-3g.lock').read_bytes(),0o644),
  'usr/share/doc/tilo-ntfs-helper/README.md':((ROOT/'README.md').read_bytes(),0o644),
 }
-items['usr/share/tilo-ntfs-helper/source/vendor/ntfs-3g-source.tar.gz']=(source_archive,0o644)
 # Keep the existing source/ helper location and its sibling relative dependency.
 # Each crate also builds independently, without inheriting the Tilo workspace.
 for crate, destination in [(ROOT, 'source'), (ROOT.parent / 'tilo-ntfs-protocol', 'tilo-ntfs-protocol'), (ROOT.parents[1] / 'system/wire-frame', 'wire-frame')]:
