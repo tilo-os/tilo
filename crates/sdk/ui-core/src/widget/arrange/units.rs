@@ -379,17 +379,6 @@ impl WidthClass {
             Self::Wide => (EXPANDED_BELOW, f32::INFINITY),
         }
     }
-
-    /// The page gutter of the class, in steps of the native page gutter (`Rhythm::Group`): one
-    /// on a phone, more around the content as there is more room.
-    #[must_use]
-    pub const fn gutter_steps(self) -> f32 {
-        match self {
-            Self::Compact => 1.0,
-            Self::Medium => 1.5,
-            Self::Expanded | Self::Wide => 2.0,
-        }
-    }
 }
 
 /// The shape of the space a view is offered.

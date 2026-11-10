@@ -76,6 +76,11 @@ Logical units with edges snapped to device pixels (layout rounds every edge to t
 pixel grid, at fractional scales too); layouts reflow at 200 % text; sensible on portrait, phone
 and ultrawide; hit targets never shrink; leading and trailing instead of left and right.
 
+A page keeps one content gutter, `rhythm.group`, at its sides and its ends at every width: what a
+page holds stands one gutter in from the column, the same gutter separates it from what stands
+over and under it, and every app's page keeps the same one, so a notice over a list has as much
+room above it as below at a phone's width and a monitor's alike.
+
 ## 6. Checking
 
 `tilolang layout-check` renders every view headlessly across sizes from 320×568 to 3440×1440,

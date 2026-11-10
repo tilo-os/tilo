@@ -1478,6 +1478,17 @@ mod tests {
         );
     }
 
+    /// The nodes of the window `node`, each before what it holds.
+    fn preorder<'a>(
+        node: &'a ui::headless::InspectionNode,
+        out: &mut Vec<&'a ui::headless::InspectionNode>,
+    ) {
+        out.push(node);
+        for child in &node.children {
+            preorder(child, out);
+        }
+    }
+
     /// The window says it stands on `label`, a form the press opened.
     fn shows_dialog(node: &ui::headless::InspectionNode, label: &str) -> bool {
         fn within(access: &ui::a11y::AccessNode, label: &str) -> bool {
@@ -2521,5 +2532,73 @@ mod tests {
             "a check box a finger cannot reach:\n  {}",
             short.join("\n  ")
         );
+    }
+
+    /// A service that cannot be reached says so in the page's one content gutter: the notice
+    /// stands as far under the window's bar as the list under it stands below the notice, in
+    /// every app and at every width. A page whose gutter grew with the window (48 at a desktop
+    /// width, 24 on a phone) put 48 over the notice and 24 under it beside Mail's 24, so one app
+    /// said a thing and its neighbour said another.
+    #[test]
+    fn a_service_notice_keeps_one_gutter_over_and_under_it() {
+        tilo_ui_host::i18n::ensure();
+        let gaps = |app: &str, scenario: &str, (width, height): (u32, u32)| -> (f64, f64) {
+            let packages = app_packages(app);
+            let id = packages.0.last().expect("the app").meta.app.clone();
+            let theme = ui::Theme::light();
+            let mut staged = Staged::over(
+                &id,
+                &packages,
+                scenario,
+                (width, height),
+                theme.clone(),
+                None,
+                &[],
+            )
+            .expect("the scenario stages");
+            staged
+                .lay_out(
+                    (width, height),
+                    theme,
+                    ui::interaction::InteractionEnvironment::POINTER,
+                    1.0,
+                )
+                .expect("the window lies out");
+            let root = &staged.harness().inspection().root;
+            let mut order = Vec::new();
+            preorder(root, &mut order);
+            let at = order
+                .iter()
+                .position(|node| node.widget == "Banner")
+                .expect("the notice shows");
+            let notice = order[at];
+            // What stands under the notice: the first box after it that starts below it.
+            let below = order[at..]
+                .iter()
+                .find(|node| {
+                    let [_, y, w, h] = node.rect;
+                    w > 0.0 && h > 0.0 && y >= notice.rect[1] + notice.rect[3] - 0.5
+                })
+                .map(|node| node.rect[1] - (notice.rect[1] + notice.rect[3]))
+                .expect("the list under the notice stands");
+            (notice.rect[1], below)
+        };
+        let gutter = f64::from(ui::Theme::light().tokens.spacing.rhythm.group);
+        for size in [(390, 844), (1280, 800)] {
+            for (app, scenario) in [
+                ("mail", "an account that cannot be reached"),
+                ("tube", "YouTube cannot be reached"),
+            ] {
+                let (over, under) = gaps(app, scenario, size);
+                assert!(
+                    (over - gutter).abs() < 0.5,
+                    "{app} at {size:?}: {over} over the notice, where the page's gutter is {gutter}"
+                );
+                assert!(
+                    (under - gutter).abs() < 0.5,
+                    "{app} at {size:?}: {under} under the notice, where the page's gutter is {gutter}"
+                );
+            }
+        }
     }
 }
