@@ -313,17 +313,18 @@ fn painted(staged: &stage::Staged, rect: Rect, viewport: (usize, usize)) -> usiz
 }
 
 /// The frame `staged` painted at `viewport`, and how many device pixels one point covers.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::arithmetic_side_effects,
+    reason = "frame and band sizes are small counts, far inside usize and f64"
+)]
 fn frame(staged: &stage::Staged, viewport: (usize, usize)) -> (Vec<u8>, usize) {
     let rgba = staged.harness().render_rgba();
     let (wide, tall) = viewport;
     assert!(!rgba.is_empty(), "the frame renders");
     let device = rgba.len() / 4;
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "frame sizes are small counts, far inside usize and f64"
-    )]
     let scale = ((device / (wide * tall)) as f64).sqrt().round().max(1.0) as usize;
     (rgba, scale)
 }
@@ -336,6 +337,13 @@ fn frame(staged: &stage::Staged, viewport: (usize, usize)) -> (Vec<u8>, usize) {
 /// the conversation's ground — is a pixel the ground's own colour, so nothing but the frame
 /// tells it from a divider drawn as bare text; a step's geometry, or a scene the tests built,
 /// says everything is there.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::arithmetic_side_effects,
+    reason = "frame and band sizes are small counts, far inside usize and f64"
+)]
 fn unruled_dividers(staged: &stage::Staged, viewport: (usize, usize)) -> Vec<String> {
     let (wide, _) = viewport;
     let (rgba, scale) = frame(staged, viewport);
@@ -356,13 +364,6 @@ fn unruled_dividers(staged: &stage::Staged, viewport: (usize, usize)) -> Vec<Str
         if divider.width() < 200.0 {
             continue;
         }
-        #[allow(
-            clippy::cast_precision_loss,
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            clippy::arithmetic_side_effects,
-            reason = "band and rule sizes are small counts, far inside usize and f64"
-        )]
         let (row, scale) = (
             (divider.center().y.round() as usize).saturating_mul(scale),
             scale,
@@ -372,7 +373,6 @@ fn unruled_dividers(staged: &stage::Staged, viewport: (usize, usize)) -> Vec<Str
             divider.x1.round() as usize * scale,
         );
         // The ground the band is painted on: the column beside it, outside the band itself.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let ground = pixel((divider.x0.round() as usize).saturating_sub(2) * scale, row);
         // The rule runs from the column's edge in to its words: the first 16 points on either
         // side stand clear of any label a band this wide centres.
