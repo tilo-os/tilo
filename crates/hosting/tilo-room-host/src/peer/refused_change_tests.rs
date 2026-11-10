@@ -127,8 +127,8 @@ impl Lounge {
     }
 
     /// `message`, the member's write of the record, as its session commits it.
-    fn commit(&self, message: NeighbourMsg, op: [u8; 16]) -> Envelope {
-        let (channel, _) = neighbour_wire::retention(&message, false).expect("a retained write");
+    fn commit(&self, message: &NeighbourMsg, op: [u8; 16]) -> Envelope {
+        let (channel, _) = neighbour_wire::retention(message, false).expect("a retained write");
         Envelope::Commit {
             workspace_id: self.workspace_id,
             op,
@@ -136,7 +136,7 @@ impl Lounge {
             authored_at_ns: unix_now_ns(),
             delta: crate::coedit::CoeditPayload::RetainedDelta {
                 channel,
-                body: postcard::to_stdvec(&message).unwrap(),
+                body: postcard::to_stdvec(message).unwrap(),
             }
             .encode()
             .unwrap(),
@@ -309,6 +309,10 @@ fn peer_of(cert: &DeviceCert, user: [u8; 32]) -> AuthenticatedPeer {
 /// history, so the writer's next change, numbering the refused one's sequence
 /// again, is kept and the record reads on past where it would have been.
 #[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the host a test binds has to outlive every step it drives, and its shutdown takes it by value"
+)]
 async fn a_refused_change_is_never_kept_and_the_same_sequence_still_applies() {
     let lounge = lounge().await;
     let (runtime, doors) = lounge.publishing().await;
@@ -322,7 +326,7 @@ async fn a_refused_change_is_never_kept_and_the_same_sequence_still_applies() {
         &peer,
         &session,
         &[lounge.workspace_id],
-        lounge.commit(lounge.in_the_clear(1, "in the clear"), [1; 16]),
+        lounge.commit(&lounge.in_the_clear(1, "in the clear"), [1; 16]),
     )
     .await
     .unwrap();
@@ -358,7 +362,7 @@ async fn a_refused_change_is_never_kept_and_the_same_sequence_still_applies() {
     // carries them there.
     lounge.publishing_again(&runtime, &doors).await;
     project_standings(&lounge.workspaces, &lounge.workspace).await;
-    let (_, sealed) = lounge.writer.seal(&lounge.workspace, |document| {
+    let ((), sealed) = lounge.writer.seal(&lounge.workspace, |document| {
         document
             .put(automerge::ROOT, "title", "sealed")
             .expect("the fixture's write");
@@ -372,7 +376,7 @@ async fn a_refused_change_is_never_kept_and_the_same_sequence_still_applies() {
         &peer,
         &session,
         &[lounge.workspace_id],
-        lounge.commit(sealed, [2; 16]),
+        lounge.commit(&sealed, [2; 16]),
     )
     .await
     .unwrap();

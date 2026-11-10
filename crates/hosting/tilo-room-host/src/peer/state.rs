@@ -715,34 +715,8 @@ pub(super) async fn handle_delta_prefix(
         }));
     };
     trace_all(&envelopes, "server_authorized");
-    for envelope in &envelopes {
-        let Envelope::Delta {
-            author_device_public_key,
-            ..
-        } = envelope
-        else {
-            continue;
-        };
-        let author = deciding_author(
-            peer,
-            workspace.lock().await.attached(&peer.device_public_key),
-            session.own_device_public_key,
-            author_device_public_key,
-        );
-        if desktop_refusal(&workspace, author, envelope)
-            .await
-            .is_some()
-        {
-            // The prefix is kept whole or not at all.
-            return Ok(None);
-        }
-        if governor_refusal(&workspace, author, envelope)
-            .await
-            .is_some()
-        {
-            // As above: the prefix is kept whole or not at all.
-            return Ok(None);
-        }
+    if refused_prefix(&workspace, peer, session, &envelopes).await {
+        return Ok(None);
     }
     let governor_tap = workspace.lock().await.governor_tap.clone();
     // Every change of the prefix reaches the workspace's governor once it is
@@ -770,6 +744,43 @@ pub(super) async fn handle_delta_prefix(
         }
     }
     Ok(None)
+}
+
+/// Whether the relay keeps none of `envelopes`, a checkpoint prefix: a change
+/// of it the workspace refuses decides the whole prefix, which is kept whole
+/// or not at all.
+async fn refused_prefix(
+    workspace: &SharedWorkspace,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    envelopes: &[Envelope],
+) -> bool {
+    let attached = workspace.lock().await.attached(&peer.device_public_key);
+    for envelope in envelopes {
+        let Envelope::Delta {
+            author_device_public_key,
+            ..
+        } = envelope
+        else {
+            continue;
+        };
+        let author = deciding_author(
+            peer,
+            attached,
+            session.own_device_public_key,
+            author_device_public_key,
+        );
+        if desktop_refusal(workspace, author, envelope).await.is_some() {
+            return true;
+        }
+        if governor_refusal(workspace, author, envelope)
+            .await
+            .is_some()
+        {
+            return true;
+        }
+    }
+    false
 }
 
 pub(super) async fn authorized_state_source(
