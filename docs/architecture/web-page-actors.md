@@ -98,6 +98,17 @@ and tokens go. Three rules keep it honest and cheap.
 A search reads what the outline reads. What the outline hides, such as the
 value of a secret, a search does not find.
 
+A frame is its own document, of the page's site or of another. The page's
+read shows what the frames it shows hold, under the line that lists each,
+and a frame is read whole by its number. A frame keeps its number while
+frames around it come and go, and an element read in a frame is acted on in
+that frame, so a consent question a site shows in a frame of another site
+is read and answered like any other. The frame's document is read in the
+frame's own process; nothing reaches into it from the page around it.
+
+The reader view reads an article by the text its blocks hold, so an essay
+set in a table or run on in one block is an article too.
+
 ## Review
 
 A form several actors filled is reviewed by its fields, not by an account of
@@ -264,12 +275,13 @@ reason under "Not built yet".
   their first line, and several machines in one tab are checked only in
   parts: the actors and their record on one machine with the real engine,
   the door's naming of a remote agent, and the shared window's viewers.
-- **Dialogs in another site's frame.** A consent dialog a site shows in a
-  frame of another site reads as empty, so an agent cannot answer it. Real
-  shops and news sites put their cookie question there.
-- **Reader view of old layouts.** An article laid out in a table without an
-  article element is refused by the reader view; its text is read in full by
-  the ordinary read.
+- **Gestures in a frame.** Hover, drag, a drawn path and reading the element
+  at a point still act in the page's own document only, and choosing files
+  in a frame is not checked. A find and a search read one document and name
+  the frames to look in rather than looking in them.
+- **Paragraphs in the reader view of old layouts.** An essay set in a table
+  or run on in one block is read as an article. Its paragraphs, parted by
+  line breaks, are shown with those breaks rather than as paragraphs.
 
 ## Checked against the principles
 
