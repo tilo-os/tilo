@@ -59,6 +59,8 @@ mod pages;
 mod peer_parts;
 mod publisher;
 mod record_format;
+#[cfg(feature = "agents")]
+pub mod repaired_records;
 mod revocations;
 pub use own::OwnWorkspaceOffer;
 #[cfg(any(feature = "agents", feature = "web"))]
@@ -1177,6 +1179,8 @@ impl Workspaces {
         }
         this.follow_activity();
         this.follow_missing_surfaces();
+        #[cfg(feature = "agents")]
+        this.follow_repaired_records();
         this.inner.hosting.resume().await;
         Ok(this)
     }

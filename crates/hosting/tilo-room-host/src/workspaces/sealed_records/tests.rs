@@ -1482,3 +1482,103 @@ async fn a_record_that_does_not_read_whole_leaves_the_others_read() {
     );
     lounge.relay.shutdown().await;
 }
+
+/// The value at `key` in the record as the node reads it.
+async fn read_key(workspaces: &Workspaces, workspace: &str, key: &str) -> Option<String> {
+    automerge::AutoCommit::load(
+        &workspaces
+            .record_document(workspace, APP, RECORD)
+            .await
+            .unwrap()?,
+    )
+    .ok()?
+    .get(ROOT, key)
+    .ok()
+    .flatten()
+    .and_then(|(value, _)| value.into_string().ok())
+}
+
+/// A record's repair kept a change it left out, one that builds on a change
+/// the node never got. Once a member's write brings that change, the node
+/// writes the kept one into the record by itself, and it leaves the archive.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_change_a_repair_kept_is_taken_in_once_what_it_builds_on_arrives() {
+    let lounge = Box::new(lounge().await);
+    let (workspaces, workspace) = (&lounge.workspaces, lounge.workspace.as_str());
+    // The member's write the node never got, and the change it wrote on top
+    // of it, which the repair took out of the record and kept.
+    let before = lounge.member.document().get_heads();
+    let _never_sent = lounge.member.seal(workspace, |document| {
+        document.put(ROOT, "lost", "on the way").unwrap();
+        document.commit_edit("fixture", "lost");
+    });
+    let lost = lounge.member.document().save_after(&before);
+    let after_lost = lounge.member.document().get_heads();
+    let _kept_out = lounge.member.seal(workspace, |document| {
+        document.put(ROOT, "kept", "by the repair").unwrap();
+        document.commit_edit("fixture", "kept");
+    });
+    let kept = lounge.member.document().get_changes(&after_lost);
+    let [kept] = kept.as_slice() else {
+        panic!("one change kept: {kept:?}");
+    };
+    // The relay's state root, which holds the governed records' `rooms`.
+    let root = workspaces
+        .workspace(workspace)
+        .await
+        .unwrap()
+        .lock()
+        .await
+        .path
+        .parent()
+        .and_then(std::path::Path::parent)
+        .unwrap()
+        .to_path_buf();
+    let archive =
+        crate::workspaces::repaired_records::repaired_record_dir(&root, workspace, APP, RECORD);
+    std::fs::create_dir_all(&archive).unwrap();
+    let kept_at = archive.join(format!("{}.change", kept.hash()));
+    std::fs::write(&kept_at, kept.raw_bytes()).unwrap();
+
+    // The member's next write carries the change the node never got.
+    lounge
+        .member
+        .sends_changes(workspaces, workspace, lost)
+        .await;
+    tilo_test_env::within("the kept change is taken in", async {
+        while kept_at.exists() || read_key(workspaces, workspace, "kept").await.is_none() {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+    assert_eq!(
+        read_key(workspaces, workspace, "lost").await.as_deref(),
+        Some("on the way")
+    );
+    assert_eq!(
+        read_key(workspaces, workspace, "kept").await.as_deref(),
+        Some("by the repair")
+    );
+    assert!(
+        !archive.exists(),
+        "a record with nothing kept leaves no directory behind"
+    );
+    // What the node wrote, a member that lacks the kept change opens, and
+    // holds it then.
+    let own = governor_published(workspaces, workspace, RECORD, &lounge.governor)
+        .await
+        .expect("the node published the kept change");
+    let mut lacking = lounge.member.document().fork_at(&after_lost).unwrap();
+    assert!(lacking.get(ROOT, "kept").unwrap().is_none());
+    lounge.member.open_into(&own, &mut lacking);
+    assert_eq!(
+        lacking
+            .get(ROOT, "kept")
+            .unwrap()
+            .and_then(|(value, _)| value.into_string().ok())
+            .as_deref(),
+        Some("by the repair"),
+        "a member reads the kept change from the node's write"
+    );
+    lounge.relay.shutdown().await;
+}

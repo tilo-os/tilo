@@ -45,8 +45,8 @@
 //! The compaction replaces the writes it covers in the host's state, as any
 //! compaction does. Every change the repaired record leaves out (the other
 //! branches' and the ones waiting on missing changes) is first kept, as it was
-//! written, under `<state>/repaired-records/`, so none is lost: one a missing
-//! change turns up for can be taken in again.
+//! written, under `<state>/repaired-records/`, so none is lost: the host takes
+//! one in again by itself once the change it waits for turns up.
 //!
 //! Build it for the host, and run it as the user that owns the state, after
 //! a fresh backup and with the host stopped, first with `--dry-run`, which
@@ -78,7 +78,8 @@ use tilo_user_identity::{DeviceCert, RevocationList, sign_device_cert};
 const CHAT: &str = "so.tilo.chat";
 /// Where the changes a repaired record leaves out are kept, under the host's
 /// state: `<workspace>/<app>/<record>/<hash>.change`, each as it was written.
-const ARCHIVE: &str = "repaired-records";
+/// The host takes each in again once its record holds what it builds on.
+const ARCHIVE: &str = tilo_room_host::workspaces::repaired_records::REPAIRED_RECORDS;
 
 struct Args {
     state: PathBuf,
@@ -520,7 +521,7 @@ async fn apply(
         .join(workspace)
         .join(app)
         .join(if record.is_empty() {
-            "(primary)"
+            tilo_room_host::workspaces::repaired_records::PRIMARY
         } else {
             record
         });

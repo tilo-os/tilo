@@ -263,14 +263,32 @@ impl SealingMember {
         workspace: &str,
         change: impl FnOnce(&mut automerge::AutoCommit) -> R,
     ) -> (R, NeighbourMsg) {
-        let (app, record) = (self.route.0.as_str(), self.route.1.as_str());
         let mut document = self.document();
         let heads = document.get_heads();
         let result = change(&mut document);
-        let plaintext = collab_types::DocumentMutation::Incremental(document.save_after(&heads))
+        let changes = document.save_after(&heads);
+        *self.document.lock().unwrap() = document;
+        (result, self.seal_changes(workspace, changes))
+    }
+
+    /// The member's next write of the record carrying `changes`, whichever
+    /// they are, sealed and signed as its page publishes it, and handed to the
+    /// workspace the way the relay hands it every member write.
+    pub async fn sends_changes(&self, workspaces: &Workspaces, workspace: &str, changes: Vec<u8>) {
+        let message = self.seal_changes(workspace, changes);
+        let body = postcard::to_stdvec(&message).unwrap();
+        workspaces
+            .absorb(workspace, self.key.verifying_key().to_bytes(), &body)
+            .await
+            .unwrap();
+    }
+
+    /// `changes` as the member's next write of the record, sealed and signed.
+    fn seal_changes(&self, workspace: &str, changes: Vec<u8>) -> NeighbourMsg {
+        let (app, record) = (self.route.0.as_str(), self.route.1.as_str());
+        let plaintext = collab_types::DocumentMutation::Incremental(changes)
             .encode()
             .unwrap();
-        *self.document.lock().unwrap() = document;
         let artifact = collab_types::document_artifact_id(app, workspace, record);
         let (metadata, payload) = self
             .keys
@@ -294,14 +312,13 @@ impl SealingMember {
         )
         .with_surface(self.surface);
         collab_types::sign_op(&mut envelope, &self.key).unwrap();
-        let message = NeighbourMsg::AppDocument {
+        NeighbourMsg::AppDocument {
             peer: tilo_peer_state::peer_handle(author.as_bytes()),
             app_id: app.into(),
             cluster_id: workspace.into(),
             record_id: record.into(),
             envelope: Box::new(envelope),
-        };
-        (result, message)
+        }
     }
 }
 
