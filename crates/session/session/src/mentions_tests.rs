@@ -28,7 +28,7 @@ fn name(id: &str) -> String {
     }
 }
 
-/// The records a host reads: the documents it holds and what changed.
+/// The records a host reads: the documents it holds, the kinds their apps keep, and what changed.
 #[derive(Default)]
 struct Recorder {
     changed: RefCell<(bool, Vec<Changed>)>,
@@ -47,9 +47,10 @@ impl Recorder {
         held
     }
 
-    /// A change reached `record` of `app`, as a host that had not replayed the workspace reports
-    /// it.
-    fn reached(&self, app: &str, record: &str) {
+    /// A change reached `record` of `app`; `replayed` for one the workspace already held when this
+    /// device first followed it.
+    fn reached(&self, app: &str, record: &str, replayed: bool) {
+        self.changed.borrow_mut().0 |= replayed;
         self.changed.borrow_mut().1.push(Changed {
             workspace: WORKSPACE.to_owned(),
             app: app.to_owned(),
@@ -57,10 +58,10 @@ impl Recorder {
         });
     }
 
-    /// A change reached `record` of `app` in what the workspace replayed: what it already held.
-    fn replayed(&self, app: &str, record: &str) {
-        self.changed.borrow_mut().0 = true;
-        self.reached(app, record);
+    fn holds(&self, app: &str, record: &str, doc: &AutoCommit) {
+        self.docs
+            .borrow_mut()
+            .insert((app.to_owned(), record.to_owned()), AutoCommit::clone(doc));
     }
 }
 
@@ -86,7 +87,7 @@ impl Records for Recorder {
 #[derive(Default)]
 struct Shown {
     up: RefCell<BTreeMap<String, Notice>>,
-    chosen: RefCell<Vec<(String, Place)>>,
+    chosen: RefCell<Vec<Place>>,
 }
 
 impl Notices for Shown {
@@ -100,25 +101,20 @@ impl Notices for Shown {
         self.up.borrow_mut().remove(tag);
     }
 
-    fn take_chosen(&self) -> Vec<(String, Place)> {
+    fn take_chosen(&self) -> Vec<Place> {
         std::mem::take(&mut *self.chosen.borrow_mut())
     }
 }
 
-fn role(records: &Rc<Recorder>, shown: &Rc<Shown>, store: Option<Store>) -> Mentions {
+fn role(records: &Rc<Recorder>, shown: &Rc<Shown>, store: Store) -> Mentions {
     Mentions::over(Given {
         person: vec![BEA.to_owned()],
-        store,
+        store: Some(store),
         records: Some(Rc::clone(records) as Rc<dyn Records>),
         notices: Some(Rc::clone(shown) as Rc<dyn Notices>),
         name: Rc::new(name),
         wake: None,
     })
-}
-
-/// The first look of a session, and the next one after the pause between looks.
-fn later(now: ui::time::Instant) -> ui::time::Instant {
-    now + ui::time::Duration::from_millis(LOOK_EVERY_MS)
 }
 
 /// A device's store to keep what was told in.
@@ -180,16 +176,21 @@ fn notebook_block(doc: &AutoCommit) -> ObjId {
         .unwrap()
 }
 
-#[test]
-fn a_mention_in_a_record_is_one_notice_for_the_reader_it_names() {
+/// The role over a notebook that mentions Bea, and the notices it told.
+fn beas_notebook() -> (Rc<Recorder>, Rc<Shown>, Mentions, Store, tempfile::TempDir) {
     let written = notebook("Ask @Bea about the date", Some((4, 8, BEA)), ADA);
     let records = Recorder::holding(&[(NOTES, NOTE, &written)]);
     let shown = Rc::new(Shown::default());
-    let (_dir, store) = kept_store();
-    let mentions = role(&records, &shown, Some(store));
-    records.reached(NOTES, NOTE);
+    let (dir, store) = kept_store();
+    let mentions = role(&records, &shown, store.clone());
+    records.reached(NOTES, NOTE, false);
     mentions.step();
+    (records, shown, mentions, store, dir)
+}
 
+#[test]
+fn a_mention_in_a_record_is_one_notice_for_the_reader_it_names() {
+    let (_records, shown, _mentions, _store, _dir) = beas_notebook();
     let up = shown.up.borrow();
     assert_eq!(up.len(), 1, "{up:?}");
     let notice = up.values().next().unwrap();
@@ -208,9 +209,12 @@ fn a_mention_in_a_record_is_one_notice_for_the_reader_it_names() {
         Place::from_activation(&notice.place.activation()),
         Some(notice.place.clone())
     );
-    drop(up);
+}
 
-    // Someone else in the workspace, and the author, are told nothing.
+#[test]
+fn nobody_else_in_the_workspace_is_told() {
+    let written = notebook("Ask @Bea about the date", Some((4, 8, BEA)), ADA);
+    let records = Recorder::holding(&[(NOTES, NOTE, &written)]);
     for other in [CAI, ADA] {
         let theirs = Rc::new(Shown::default());
         let (_dir, store) = kept_store();
@@ -222,7 +226,7 @@ fn a_mention_in_a_record_is_one_notice_for_the_reader_it_names() {
             name: Rc::new(name),
             wake: None,
         });
-        records.reached(NOTES, NOTE);
+        records.reached(NOTES, NOTE, false);
         mentions.step();
         assert!(theirs.up.borrow().is_empty(), "{other}");
     }
@@ -230,35 +234,19 @@ fn a_mention_in_a_record_is_one_notice_for_the_reader_it_names() {
 
 #[test]
 fn reopening_or_reloading_tells_nothing_again() {
-    let written = notebook("Ask @Bea", Some((4, 8, BEA)), ADA);
-    let records = Recorder::holding(&[(NOTES, NOTE, &written)]);
-    let shown = Rc::new(Shown::default());
-    let (_dir, store) = kept_store();
-    let mentions = role(&records, &shown, Some(store.clone()));
-    records.reached(NOTES, NOTE);
-    mentions.step();
-    assert_eq!(shown.up.borrow().len(), 1);
-
-    // The record changed again, elsewhere.
-    records.reached(NOTES, NOTE);
+    let (records, shown, mentions, store, _dir) = beas_notebook();
+    records.reached(NOTES, NOTE, false);
     mentions.step();
     assert_eq!(shown.up.borrow().len(), 1, "nothing is told twice");
 
     // The device restarted: what it told is kept in its store.
     let after = Rc::new(Shown::default());
-    let restarted = Mentions::over(Given {
-        person: vec![BEA.to_owned()],
-        store: Some(store),
-        records: Some(Rc::clone(&records) as Rc<dyn Records>),
-        notices: Some(Rc::clone(&after) as Rc<dyn Notices>),
-        name: Rc::new(name),
-        wake: None,
-    });
-    records.reached(NOTES, NOTE);
+    let restarted = role(&records, &after, store);
+    records.reached(NOTES, NOTE, false);
     restarted.step();
     assert!(
         after.up.borrow().is_empty(),
-        "the device that restarted tells nothing again"
+        "a restart tells nothing again"
     );
 }
 
@@ -268,8 +256,8 @@ fn a_mention_edited_away_is_withdrawn() {
     let records = Recorder::holding(&[(NOTES, NOTE, &written)]);
     let shown = Rc::new(Shown::default());
     let (_dir, store) = kept_store();
-    let mentions = role(&records, &shown, Some(store));
-    records.reached(NOTES, NOTE);
+    let mentions = role(&records, &shown, store);
+    records.reached(NOTES, NOTE, false);
     mentions.step();
     assert_eq!(shown.up.borrow().len(), 1);
 
@@ -278,11 +266,8 @@ fn a_mention_edited_away_is_withdrawn() {
         .unmark(&block, MARK, 0, 8, ExpandMark::None)
         .unwrap();
     written.commit();
-    records
-        .docs
-        .borrow_mut()
-        .insert((NOTES.to_owned(), NOTE.to_owned()), written);
-    records.reached(NOTES, NOTE);
+    records.holds(NOTES, NOTE, &written);
+    records.reached(NOTES, NOTE, false);
     mentions.step();
     assert!(
         shown.up.borrow().is_empty(),
@@ -291,56 +276,69 @@ fn a_mention_edited_away_is_withdrawn() {
 }
 
 #[test]
-fn a_mention_the_workspace_already_held_when_this_device_came_is_not_news() {
+fn a_mention_the_workspace_held_before_this_device_followed_it_is_not_news() {
     let written = notebook("Ask @Bea", Some((4, 8, BEA)), ADA);
     let records = Recorder::holding(&[(NOTES, NOTE, &written)]);
     let shown = Rc::new(Shown::default());
     let (_dir, store) = kept_store();
-    let mentions = role(&records, &shown, Some(store));
-    records.replayed(NOTES, NOTE);
+    let mentions = role(&records, &shown, store);
+    records.reached(NOTES, NOTE, true);
     mentions.step();
     assert!(shown.up.borrow().is_empty(), "{:?}", shown.up.borrow());
 
-    // What it already held is taken as seen: a later change of it is news only if it mentions
-    // them anew.
-    let mut changed = written.clone();
+    // The record changes again: the same mention is not told twice.
+    let mut changed = written;
     let block = notebook_block(&changed);
     changed.put(&block, "title", "Launch plan v2").unwrap();
     changed.commit();
-    records
-        .docs
-        .borrow_mut()
-        .insert((NOTES.to_owned(), NOTE.to_owned()), changed);
-    records.reached(NOTES, NOTE);
+    records.holds(NOTES, NOTE, &changed);
+    records.reached(NOTES, NOTE, false);
     mentions.step();
-    assert!(
-        shown.up.borrow().is_empty(),
-        "the same mention is not told twice"
-    );
+    assert!(shown.up.borrow().is_empty());
 }
 
 #[test]
-fn a_message_in_a_chat_part_opens_the_message_in_the_chat() {
-    chat_part_mention(&|part, span| {
-        let value = part.put_object(span, "value", ObjType::Map).unwrap();
-        part.put(&value, "$variant", "str").unwrap();
-        part.put(&value, "$field/str/0", BEA).unwrap();
-    });
+fn choosing_a_notice_gives_the_place_the_host_opens() {
+    let (_records, shown, mentions, _store, _dir) = beas_notebook();
+    let place = shown
+        .up
+        .borrow()
+        .values()
+        .next()
+        .map(|notice| notice.place.clone())
+        .unwrap();
+    shown.chosen.borrow_mut().push(place.clone());
+    mentions.step();
+    assert_eq!(mentions.take_chosen(), vec![place]);
+    assert!(mentions.take_chosen().is_empty(), "a place is opened once");
 }
 
 #[test]
-fn a_mark_value_of_the_older_flat_layout_still_names_its_person() {
-    chat_part_mention(&|part, span| {
-        let value = part.put_object(span, "value", ObjType::Map).unwrap();
-        part.put(&value, "$variant", "str").unwrap();
-        part.put(&value, "0", BEA).unwrap();
-    });
+fn changes_arriving_in_a_burst_are_looked_at_together() {
+    let written = notebook("Ask @Bea", Some((4, 8, BEA)), ADA);
+    let records = Recorder::holding(&[(NOTES, NOTE, &written)]);
+    let shown = Rc::new(Shown::default());
+    let (_dir, store) = kept_store();
+    let mentions = role(&records, &shown, store);
+    let first = ui::time::now();
+    records.reached(NOTES, NOTE, false);
+    mentions.step_at(first);
+    assert_eq!(shown.up.borrow().len(), 1);
+
+    let mut changed = written;
+    let block = notebook_block(&changed);
+    changed.put(&block, "title", "Launch plan v2").unwrap();
+    changed.commit();
+    records.holds(NOTES, NOTE, &changed);
+    records.reached(NOTES, NOTE, false);
+    mentions.step_at(first + ui::time::Duration::from_millis(10));
+    mentions.step_at(first + ui::time::Duration::from_millis(LOOK_EVERY_MS));
+    assert_eq!(shown.up.borrow().len(), 1, "one record, one notice");
 }
 
 /// A chat part whose message mentions Bea, its mark's value written by `write_value` into the
 /// span: the record names no identity of its own, as a chat's part does not.
 fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
-    // The chat record names its channels; its messages are in a part.
     let mut chat = AutoCommit::new();
     let channels = chat.put_object(ROOT, "channels", ObjType::Map).unwrap();
     let entry = chat
@@ -366,15 +364,15 @@ fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
     part.put(&span, "name", MARK).unwrap();
     write_value(&mut part, &span);
 
-    let records = Recorder::holding(&[(CHAT, &part_route, &part), (CHAT, "", &chat)]);
+    let records = Recorder::holding(&[(CHAT, &part_route, &part)]);
     records
         .kinds
         .borrow_mut()
         .insert(CHAT.to_owned(), "chat.workspace".to_owned());
     let shown = Rc::new(Shown::default());
     let (_dir, store) = kept_store();
-    let mentions = role(&records, &shown, Some(store));
-    records.reached(CHAT, &part_route);
+    let mentions = role(&records, &shown, store);
+    records.reached(CHAT, &part_route, false);
     mentions.step();
 
     let up = shown.up.borrow();
@@ -393,78 +391,35 @@ fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
 }
 
 #[test]
-fn choosing_a_notice_gives_the_place_the_host_opens() {
-    let written = notebook("Ask @Bea", Some((4, 8, BEA)), ADA);
-    let records = Recorder::holding(&[(NOTES, NOTE, &written)]);
-    let shown = Rc::new(Shown::default());
-    let (_dir, store) = kept_store();
-    let mentions = role(&records, &shown, Some(store));
-    records.reached(NOTES, NOTE);
-    mentions.step();
-    let place = shown
-        .up
-        .borrow()
-        .values()
-        .next()
-        .map(|notice| notice.place.clone())
-        .unwrap();
-
-    shown
-        .chosen
-        .borrow_mut()
-        .push((format!("mention:{}", "tag"), place.clone()));
-    mentions.step();
-    assert_eq!(mentions.take_chosen(), vec![place]);
-    assert!(mentions.take_chosen().is_empty(), "a place is opened once");
+fn a_message_in_a_chat_part_opens_the_message_in_the_chat() {
+    chat_part_mention(&|part, span| {
+        let value = part.put_object(span, "value", ObjType::Map).unwrap();
+        part.put(&value, "$variant", "str").unwrap();
+        part.put(&value, "$field/str/0", BEA).unwrap();
+    });
 }
 
 #[test]
-fn changes_arriving_in_a_burst_are_looked_at_together() {
-    let written = notebook("Ask @Bea", Some((4, 8, BEA)), ADA);
-    let records = Recorder::holding(&[(NOTES, NOTE, &written)]);
-    let shown = Rc::new(Shown::default());
-    let (_dir, store) = kept_store();
-    let mentions = role(&records, &shown, Some(store));
-    let first = ui::time::now();
-    records.reached(NOTES, NOTE);
-    mentions.step_at(first);
-    assert_eq!(shown.up.borrow().len(), 1);
-
-    // The second change lands before the pause is over: it is looked at once it is.
-    let mut changed = written;
-    let block = notebook_block(&changed);
-    changed.put(&block, "title", "Launch plan v2").unwrap();
-    changed.commit();
-    records
-        .docs
-        .borrow_mut()
-        .insert((NOTES.to_owned(), NOTE.to_owned()), changed);
-    records.reached(NOTES, NOTE);
-    mentions.step_at(first + ui::time::Duration::from_millis(10));
-    mentions.step_at(later(first));
-    assert_eq!(
-        shown.up.borrow().len(),
-        1,
-        "one record, one notice, whatever the burst"
-    );
+fn a_mark_value_of_the_older_flat_layout_still_names_its_person() {
+    chat_part_mention(&|part, span| {
+        let value = part.put_object(span, "value", ObjType::Map).unwrap();
+        part.put(&value, "$variant", "str").unwrap();
+        part.put(&value, "0", BEA).unwrap();
+    });
 }
 
-/// The tags of what one record told, as the role's state holds them: the document a record's
-/// mentions are known by.
 #[test]
 fn a_records_tags_are_known_by_its_app_and_route() {
     let mut held = Held::default();
-    assert!(!held.knows(NOTES, NOTE));
     let written = notebook("Ask @Bea", Some((4, 8, BEA)), ADA);
     let mut me = BTreeSet::new();
     me.insert(BEA.to_owned());
-    let doc = AutoCommit::clone(&written);
     let told = held.look(
         &Look {
             app: NOTES,
             record: NOTE,
             kind: "notes.notebook",
-            doc: &doc,
+            doc: &written,
             tree: None,
             quiet: false,
             read: &reading_nothing,

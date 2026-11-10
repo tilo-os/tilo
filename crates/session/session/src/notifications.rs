@@ -381,7 +381,7 @@ const OPEN_NOTICE_ACTION: &str = "open";
 type Places = Rc<RefCell<BTreeMap<u64, (String, crate::platform::notice::Place)>>>;
 
 /// The places the person chose from a role's notices since the last look.
-type PlacesChosen = Rc<RefCell<Vec<(String, crate::platform::notice::Place)>>>;
+type PlacesChosen = Rc<RefCell<Vec<crate::platform::notice::Place>>>;
 
 /// Which notification shows a notice a role told.
 #[derive(Clone, Copy)]
@@ -478,8 +478,8 @@ impl SessionNotifications {
             } => {
                 // A notice a role told: the person went where it named, and it leaves with the
                 // banner they chose.
-                if let Some((tag, place)) = showing_places.borrow_mut().remove(&notification.id) {
-                    telling_places.borrow_mut().push((tag, place));
+                if let Some((_, place)) = showing_places.borrow_mut().remove(&notification.id) {
+                    telling_places.borrow_mut().push(place);
                 }
                 // A notification another device projected is answered there: the action the person
                 // chose, or the end of it here when they only opened it. The origins that device's
@@ -903,7 +903,7 @@ impl SessionNotifications {
 
     /// The places the person chose from a role's notices since this was last taken, each with its
     /// tag.
-    pub(crate) fn take_places_chosen(&self) -> Vec<(String, crate::platform::notice::Place)> {
+    pub(crate) fn take_places_chosen(&self) -> Vec<crate::platform::notice::Place> {
         std::mem::take(&mut *self.places_chosen.borrow_mut())
     }
 
@@ -1407,7 +1407,7 @@ impl crate::platform::notice::Notices for RoleNotices {
         self.0.borrow().withdraw_notice(tag);
     }
 
-    fn take_chosen(&self) -> Vec<(String, crate::platform::notice::Place)> {
+    fn take_chosen(&self) -> Vec<crate::platform::notice::Place> {
         self.0.borrow().take_places_chosen()
     }
 }

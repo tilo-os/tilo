@@ -1,14 +1,16 @@
 //! What a role reads of the workspaces' records, and what changed in them.
 //!
-//! A role that follows the records — a mention of the person in one of them — asks this seam which
-//! records a change reached since it last looked, and reads those records' documents. The event
-//! is the host's own: on a Linux desktop it is the change the session's record index and its
-//! broker's commit path already hear of, queued for whoever reads them next; on the web it is what
-//! the page's replication took in from the workspace. Neither role watches a directory itself.
+//! A role that follows the records asks this seam which records a change reached since it last
+//! looked, and reads their documents. The event is the host's own: on a Linux desktop the change
+//! the session's record index already hears of, on the web what the page's replication took in.
+//! Neither role watches a directory itself.
 
 use automerge::{AutoCommit, LoadOptions, OnPartialLoad};
 use durable_store::{DurableStore, StorageKey};
 use ui::record::RecordCheckout;
+
+/// Ceiling on an index document a role reads.
+const MAX_INDEX_BYTES: u64 = 16 * 1024 * 1024;
 
 /// A record a change reached: whose app keeps it, in which workspace, and its route.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -21,13 +23,11 @@ pub struct Changed {
 /// What a host reads of its records.
 pub trait Records {
     /// The records a change reached since this was last taken, and whether the host had replayed
-    /// what its workspaces held by then: a mention that predates this device following a record is
-    /// no news.
+    /// what its workspaces held by then: what predates this device following a record is no news.
     fn take_changed(&self) -> (bool, Vec<Changed>);
     /// The document of `app`'s `record` in `workspace`, as this host holds it now.
     fn document(&self, app: &str, workspace: &str, record: &str) -> Option<AutoCommit>;
-    /// The kind of the records `app` keeps in `workspace` (`notes.notebook`), empty when this host
-    /// does not know it.
+    /// The kind of the records `app` keeps in `workspace` (`notes.notebook`), empty when unknown.
     fn kind(&self, app: &str, workspace: &str) -> String {
         let _ = (app, workspace);
         String::new()
@@ -51,11 +51,15 @@ pub fn checkouts(
             return None;
         }
     };
-    if stored.bytes.is_empty() {
+    // Automerge cannot read a document in part, and a workspace index is a list of names rather
+    // than the records' own content: a file past this is not one a workspace wrote.
+    if stored.bytes.is_empty()
+        || u64::try_from(stored.bytes.len()).unwrap_or(u64::MAX) > MAX_INDEX_BYTES
+    {
         return None;
     }
-    // An app keeping the index appends to it, and this read may land on a tail it has not
-    // finished writing: the changes before it are the index as of the last write that completed.
+    // An app keeping the index appends to it, and this read may land on a tail it has not finished
+    // writing: the changes before it are the index as of the last write that completed.
     AutoCommit::load_with_options(
         &stored.bytes,
         LoadOptions::new().on_partial_load(OnPartialLoad::Ignore),
@@ -104,17 +108,15 @@ mod native {
     use super::{Changed, Records};
     use crate::platform::Store;
 
-    /// The records a change reached, as this session already learns of them: the search index and
-    /// the broker's commit path note every record they took in, and what reaches them next is read
-    /// by the roles that follow records.
+    /// The records a change reached, as this session already learns of them: the record index and
+    /// the broker's commit path note every record they take in.
     #[derive(Clone, Default)]
     pub struct Touched(Arc<Inner>);
 
     #[derive(Default)]
     struct Inner {
         reached: Mutex<Vec<Changed>>,
-        /// What wakes the session's loop when a record changed: the pass that reads the queue runs
-        /// then, not at the next frame something else asked for.
+        /// What wakes the session's loop when a record changed, so the pass reads the queue then.
         wake: Mutex<Option<tilo_service::Wake>>,
     }
 
@@ -170,8 +172,8 @@ mod native {
     pub struct Linked {
         store: Store,
         touched: Touched,
-        /// Whether the first read of the changes happened: what the device already held was noted
-        /// before any role looked, so the first look is the workspace's replay of it.
+        /// Whether the changes were read before: what the device already held was noted before any
+        /// role looked, so the first look is the workspace's replay of it.
         read: std::cell::Cell<bool>,
         /// The checkouts each workspace index named when this session last read it: the kind of
         /// record an app keeps, which the index is the workspace's own word for.
@@ -190,8 +192,7 @@ mod native {
             }
         }
 
-        /// The checkouts the index of `app`'s records in `workspace` names, as this session last
-        /// read it: an index that did not change since is read once.
+        /// The checkouts of `app`'s index in `workspace`, read once per session.
         fn checkouts(&self, app: &str, workspace: &str) -> Arc<Vec<RecordCheckout>> {
             let key = (app.to_owned(), workspace.to_owned());
             if let Some(known) = self.indexes.borrow().get(&key) {

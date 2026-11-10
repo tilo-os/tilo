@@ -74,7 +74,6 @@ impl Held {
     }
 
     /// Look at a record again: new mentions of `me` are told, ones no longer there withdrawn.
-    /// `name` gives a participant's name.
     pub fn look(
         &mut self,
         look: &Look<'_>,
@@ -228,8 +227,8 @@ struct Inner {
     wake: Option<tilo_service::Wake>,
     held: RefCell<Held>,
     lease: RefCell<Option<durable_store::Lease>>,
-    /// The records a change reached since the last look, each with whether every change that
-    /// reached it came before the workspace had replayed what it held.
+    /// The records a change reached since the last look, each with whether it came in the
+    /// workspace's replay.
     pending: RefCell<BTreeMap<Changed, bool>>,
     /// The places the person chose and the host has not opened yet.
     chosen: RefCell<Vec<Place>>,
@@ -367,11 +366,7 @@ impl Mentions {
         let Some(notices) = &self.0.notices else {
             return;
         };
-        let chosen: Vec<Place> = notices
-            .take_chosen()
-            .into_iter()
-            .map(|(_, place)| place)
-            .collect();
+        let chosen = notices.take_chosen();
         if !chosen.is_empty() {
             self.0.chosen.borrow_mut().extend(chosen);
         }

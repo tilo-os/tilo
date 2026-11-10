@@ -30,17 +30,9 @@ use std::sync::Arc;
 
 use crate::platform::watched::Watched;
 use app_state::DocStore;
-use automerge::{AutoCommit, LoadOptions, OnPartialLoad};
 use durable_store::{DurableStore, StorageKey};
 use tilo_desktop_search::providers::records::HeldRecord;
 use ui::record::RecordCheckout;
-
-/// Ceiling on an index document this session reads. Automerge cannot read a
-/// document in part, and a workspace index is a list of names rather than the
-/// records' own content: a file past this is not an index a workspace wrote,
-/// and skipping it costs a search row instead of the worker's time on every
-/// change.
-const MAX_INDEX_BYTES: u64 = 16 * 1024 * 1024;
 
 /// A record one or more workspaces on this device hold: what search offers,
 /// without the names of the workspaces, which only the desk knows.
@@ -253,33 +245,8 @@ fn read_indexes(root: &Path) -> Vec<Held> {
     held.into_values().collect()
 }
 
-/// The records `package` 's index for `workspace` names, as the store holds it. Read without taking
-/// a writer: an app of the workspace owns the index, and a lane of search opening must not wait for
-/// it.
+/// The records `package` 's index for `workspace` names, as the store holds it: read without taking
+/// a writer, since an app of the workspace owns the index.
 fn named_in(store: &dyn DurableStore, package: &str, workspace: &str) -> Vec<RecordCheckout> {
-    let key = StorageKey::workspace_index(package, workspace);
-    let stored = match store.read(&key) {
-        Ok(Some(stored))
-            if !stored.bytes.is_empty()
-                && u64::try_from(stored.bytes.len()).unwrap_or(u64::MAX) <= MAX_INDEX_BYTES =>
-        {
-            stored
-        }
-        Ok(_) => return Vec::new(),
-        Err(error) => {
-            tracing::warn!(%error, package, %workspace, "a workspace's records are not read");
-            return Vec::new();
-        }
-    };
-    // An app keeping the index appends to it, and this read may land on a tail it has not finished
-    // writing: the changes before it are the index as of the last write that completed, which is
-    // what the app itself loads.
-    let options = LoadOptions::new().on_partial_load(OnPartialLoad::Ignore);
-    match AutoCommit::load_with_options(&stored.bytes, options) {
-        Ok(doc) => ui::record::index::discoverable_references(&doc),
-        Err(error) => {
-            tracing::warn!(%error, package, %workspace, "a workspace's index does not load");
-            Vec::new()
-        }
-    }
+    crate::platform::records::checkouts(store, package, workspace).unwrap_or_default()
 }

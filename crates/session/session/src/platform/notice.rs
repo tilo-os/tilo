@@ -10,7 +10,6 @@
 //! never reads a platform's notification log. Opening the place is the host's own door, as any
 //! other open is: [`open_target`] is the address it is opened at.
 
-use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use tilo_actions::remote::{
@@ -72,64 +71,47 @@ pub trait Notices {
     fn show(&self, notice: &Notice);
     /// Take the notice under `tag` back: what it told is gone.
     fn withdraw(&self, tag: &str);
-    /// The notices the person chose since this was last taken, each with its tag.
-    fn take_chosen(&self) -> Vec<(String, Place)>;
+    /// The places the person chose since this was last taken.
+    fn take_chosen(&self) -> Vec<Place>;
 }
 
 /// A host's notifier as a role's notices: the notification platform the toolkit serves, which is
 /// the page's `ui::host::current().notifications`.
 pub struct Toolkit {
     notifier: Arc<dyn ui::notify::Notifier>,
-    /// What is showing, by tag: the place a click on it names.
-    showing: Arc<Mutex<BTreeMap<String, Place>>>,
-    /// What the person chose since this was last taken.
-    chosen: Arc<Mutex<Vec<(String, Place)>>>,
+    /// The places the person chose since this was last taken.
+    chosen: Arc<Mutex<Vec<Place>>>,
 }
 
 impl Toolkit {
     /// The notices `notifier` shows, reporting every place the person chooses from one.
     #[must_use]
     pub fn new(notifier: Arc<dyn ui::notify::Notifier>) -> Self {
-        let showing: Arc<Mutex<BTreeMap<String, Place>>> = Arc::default();
-        let chosen: Arc<Mutex<Vec<(String, Place)>>> = Arc::default();
-        let held = Arc::clone(&showing);
+        let chosen: Arc<Mutex<Vec<Place>>> = Arc::default();
         let reporting = Arc::clone(&chosen);
         ui::notify::set_activation_handler(SCHEME, move |uri| {
-            let Some(place) = Place::from_activation(uri) else {
-                return;
-            };
-            let tag = lock(&held)
-                .iter()
-                .find(|(_, shown)| **shown == place)
-                .map(|(tag, _)| tag.clone())
-                .unwrap_or_default();
-            lock(&reporting).push((tag, place));
+            if let Some(place) = Place::from_activation(uri) {
+                lock(&reporting).push(place);
+            }
         });
-        Self {
-            notifier,
-            showing,
-            chosen,
-        }
+        Self { notifier, chosen }
     }
 }
 
 impl Notices for Toolkit {
     fn show(&self, notice: &Notice) {
-        // The tag first: a click may be reported before the platform confirms the show.
-        lock(&self.showing).insert(notice.tag.clone(), notice.place.clone());
         if let Err(error) = self.notifier.show(&notice.notification()) {
             tracing::warn!(%error, tag = %notice.tag, "a notice was not shown");
         }
     }
 
     fn withdraw(&self, tag: &str) {
-        lock(&self.showing).remove(tag);
         if let Err(error) = self.notifier.withdraw(tag) {
             tracing::warn!(%error, %tag, "a notice was not taken back");
         }
     }
 
-    fn take_chosen(&self) -> Vec<(String, Place)> {
+    fn take_chosen(&self) -> Vec<Place> {
         std::mem::take(&mut *lock(&self.chosen))
     }
 }

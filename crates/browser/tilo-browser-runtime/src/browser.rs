@@ -1252,6 +1252,24 @@ fn present_desktop(
             }),
         },
     );
+    // The person's mentions: the session's role over what this page replicated, told through the
+    // host's notifications.
+    let mentions = mention_notices::role(
+        mentions_store,
+        // A page with no workspace accepted yet follows no record: nothing is told.
+        config.peer.unwrap_or_default(),
+        &config.author(),
+        {
+            let seen = Rc::clone(&here);
+            let known = Rc::clone(&people);
+            Rc::new(move |user: &str| {
+                seen.borrow()
+                    .person(user)
+                    .or_else(|| known.borrow().get(user).cloned())
+                    .map_or_else(tilo_desktop::here::guest_label, |(name, _)| name)
+            })
+        },
+    );
     let search_wake = proxy()?;
     let search = crate::page_search::mount(
         &handle,
@@ -1287,22 +1305,8 @@ fn present_desktop(
             asks: session_asks::Asks::new(config.peer),
             search,
             search_seen: Cell::default(),
-            mentions: RefCell::new(mention_notices::role(
-                mentions_store,
-                // A page with no workspace accepted yet follows no record: nothing is told.
-                config.peer.unwrap_or_default(),
-                &config.author(),
-                {
-                    let seen = Rc::clone(&here);
-                    let known = Rc::clone(&people);
-                    Rc::new(move |user: &str| {
-                        seen.borrow()
-                            .person(user)
-                            .or_else(|| known.borrow().get(user).cloned())
-                            .map_or_else(tilo_desktop::here::guest_label, |(name, _)| name)
-                    })
-                },
-            )),
+            mentions: RefCell::new(mentions),
+
             permissions: opening_permissions,
             workspace: config.workspace.clone(),
             finishing: RefCell::default(),
