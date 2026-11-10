@@ -266,7 +266,7 @@ fn show(session: &Arc<Session>, request: &Value, answer: &Value) {
     let said = Arc::clone(session);
     let (call, acted) = (request.clone(), session.server.acted());
     tokio::spawn(async move { said.presence.called(&call, failed, acted).await });
-    let Some((title, resource)) = described(request) else {
+    let Some((title, resource, app)) = described(request) else {
         return;
     };
     let title = if failed {
@@ -279,7 +279,7 @@ fn show(session: &Arc<Session>, request: &Value, answer: &Value) {
             .shown
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        shown.push(action(&title, &resource, "Tilo MCP"));
+        shown.push(action(&title, &resource, &app));
         let excess = shown.len().saturating_sub(SHOWN_ACTIONS);
         shown.drain(..excess);
         shown.clone()
@@ -298,7 +298,7 @@ fn show(session: &Arc<Session>, request: &Value, answer: &Value) {
 }
 
 /// A tool call as the person reads it: what the agent did and on what.
-fn described(request: &Value) -> Option<(String, String)> {
+fn described(request: &Value) -> Option<(String, String, String)> {
     let params = request.get("params")?;
     let tool = params.get("name")?.as_str()?;
     let arguments = params.get("arguments").cloned().unwrap_or_default();
@@ -307,28 +307,76 @@ fn described(request: &Value) -> Option<(String, String)> {
             .get(key)
             .and_then(Value::as_str)
             .unwrap_or_default()
+            .trim()
             .to_owned()
     };
+    // A path names the app first and the record last (`notes/Notebook#append`):
+    // the person reads it as the record in the app, never as the tool's path.
+    let placed = |title: &str, path: &str| {
+        let (app, record) = path_place(path);
+        (title.to_owned(), record, app)
+    };
     Some(match tool {
-        "tilo_ls" => ("Looked at".to_owned(), text("path")),
-        "tilo_read" => ("Read".to_owned(), text("path")),
-        "tilo_find" => ("Searched for".to_owned(), text("query")),
+        "tilo_ls" => match text("path") {
+            path if path.is_empty() => (
+                "Looked at the apps".to_owned(),
+                String::new(),
+                String::new(),
+            ),
+            path => placed("Looked at", &path),
+        },
+        "tilo_read" => placed("Read", &text("path")),
+        "tilo_find" => ("Searched for".to_owned(), text("query"), String::new()),
         "tilo_do" => {
             let path = text("path");
-            let path = if path.is_empty() {
-                arguments
+            if path.is_empty() {
+                let calls = arguments
                     .get("calls")
                     .and_then(Value::as_array)
-                    .map(|calls| format!("{} actions", calls.len()))
-                    .unwrap_or_default()
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                match calls {
+                    [one] => placed(
+                        "Ran",
+                        one.get("path").and_then(Value::as_str).unwrap_or_default(),
+                    ),
+                    calls => (
+                        "Ran".to_owned(),
+                        format!("{} actions", calls.len()),
+                        String::new(),
+                    ),
+                }
             } else {
-                path
-            };
-            ("Ran".to_owned(), path)
+                placed("Ran", &path)
+            }
         }
-        "tilo" => ("Ran a program".to_owned(), text("program")),
+        "tilo" => ("Ran a program".to_owned(), text("program"), String::new()),
         _ => return None,
     })
+}
+
+/// The app and the record a tool path names, as a person reads them:
+/// `notes/Launch notes#append-to-note` is "Launch notes" in "Notes", and
+/// `terminal#run` is the Terminal itself.
+fn path_place(path: &str) -> (String, String) {
+    let path = path.split('#').next().unwrap_or_default().trim();
+    let mut parts = path
+        .split('/')
+        .map(str::trim)
+        .filter(|part| !part.is_empty());
+    let app = parts
+        .next()
+        .map(|app| app.split('@').next().unwrap_or(app))
+        .map(|app| {
+            let mut letters = app.chars();
+            letters
+                .next()
+                .map(|first| first.to_uppercase().chain(letters).collect())
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+    let record = parts.next_back().unwrap_or_default().to_owned();
+    (app, record)
 }
 
 #[cfg(test)]
@@ -396,20 +444,39 @@ mod tests {
                 &json!({"method": "tools/call", "params": {"name": name, "arguments": arguments}}),
             )
         };
+        let shown = |title: &str, record: &str, app: &str| {
+            Some((title.to_owned(), record.to_owned(), app.to_owned()))
+        };
+        // The record in its app, never the tool's path or the tool's name.
         assert_eq!(
             call("tilo_do", json!({"path": "docs/Plan#append-paragraph"})),
-            Some(("Ran".into(), "docs/Plan#append-paragraph".into()))
+            shown("Ran", "Plan", "Docs")
+        );
+        assert_eq!(
+            call("tilo_do", json!({"path": "terminal#run"})),
+            shown("Ran", "", "Terminal")
+        );
+        assert_eq!(
+            call(
+                "tilo_do",
+                json!({"calls": [{"path": "notes/Notebook/Launch notes#append-to-note"}]})
+            ),
+            shown("Ran", "Launch notes", "Notes")
         );
         assert_eq!(
             call(
                 "tilo_do",
                 json!({"calls": [{"path": "a#b"}, {"path": "c#d"}]})
             ),
-            Some(("Ran".into(), "2 actions".into()))
+            shown("Ran", "2 actions", "")
+        );
+        assert_eq!(
+            call("tilo_ls", json!({})),
+            shown("Looked at the apps", "", "")
         );
         assert_eq!(
             call("tilo_find", json!({"query": "budget"})),
-            Some(("Searched for".into(), "budget".into()))
+            shown("Searched for", "budget", "")
         );
         assert_eq!(call("tilo_status", json!({})), None);
     }
