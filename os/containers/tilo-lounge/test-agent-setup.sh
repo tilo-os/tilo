@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # A person sets Tilo up through their agent, against the Lounge's own
 # programs run directly: the image's entrypoint with the gate's environment,
-# a development build of tilo-relay on its PATH, the web entry served beside
-# it, the tilo command an agent runs, and real headless Chromium tabs.
+# the tilo-relay the image carries on its PATH, the web entry served beside
+# it, the tilo command a release publishes, and real headless Chromium tabs.
 #
 # This is the gate's agent step (integration/agent-setup.mjs) without the
 # image and its micro-VM around it, so a change to the page, the relay or the
@@ -13,7 +13,8 @@
 # BUNDLE is the web desktop bundle (tools/ci/publish/web-desktop-bundle.sh);
 # WORK is where it keeps what it found: each tab's snapshot and console, the
 # report, the site's and the Lounge's logs. Needs node, chromium, curl, and
-# TILO_RELAY_BIN, TILO_CLI_BIN and TILO_CRYPTO_BIN naming built programs.
+# TILO_RELAY_BIN, TILO_CLI_BIN and TILO_CRYPTO_BIN naming built programs (the
+# agent-setup check hands it the lounge-binaries and cli-x86_64 outputs).
 set -euo pipefail
 usage='usage: test-agent-setup.sh BUNDLE WORK'
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)

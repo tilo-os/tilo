@@ -4536,15 +4536,14 @@ isolation = "vm"
 git = true
 default = false
 
-# The gate's own programs, built for the node's architecture as development builds: the
-# certificate mint the site's TLS needs, and the tilo command the workspace's agent runs. Neither
-# is a release build; the gate is about the image and the pages, not about a published artifact.
-# A selection of two packages resolves fewer features than the whole workspace's build does, so
-# the warnings-as-errors flags are off here (as they are for the other checks that only build a
-# program to run it): the lints themselves are `clippy`'s, over every package at once.
+# The gate's own certificate mint, built for the node's architecture as a development build: the
+# site's TLS needs it, and it is no published artifact. A one-package selection resolves fewer
+# features than the whole workspace's build does, so the warnings-as-errors flags are off here (as
+# they are for the other checks that only build a program to run it): the lints themselves are
+# `clippy`'s, over every package at once.
 [[check]]
 name = "lounge-gate-tools"
-run = "cargo build --locked -p tilo-crypto --bin tilo-crypto -p tilo-cli --bin tilo\nrm -rf /target/publish/lounge/gate-tools\nmkdir -p /target/publish/lounge/gate-tools\ncp \"$CARGO_TARGET_DIR/debug/tilo-crypto\" \"$CARGO_TARGET_DIR/debug/tilo\" /target/publish/lounge/gate-tools/\n"
+run = "cargo build --locked -p tilo-crypto --bin tilo-crypto\nrm -rf /target/publish/lounge/gate-tools\nmkdir -p /target/publish/lounge/gate-tools\ncp \"$CARGO_TARGET_DIR/debug/tilo-crypto\" /target/publish/lounge/gate-tools/\n"
 env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/lounge/gate-tools/**"]
@@ -4557,10 +4556,10 @@ default = false
 # in its log what the pages said as they failed.
 [[check]]
 name = "lounge-gate"
-run = "bash os/containers/tilo-lounge/test-integration.sh /target/publish/lounge/image.oci.tar /target/publish/web-desktop/bundle /target/lounge-gate"
+run = "mkdir -p /target/lounge-gate-cli\ntar -xzf /target/publish/cli/linux-x86_64/tilo-linux-x86_64.tar.gz -C /target/lounge-gate-cli tilo\nbash os/containers/tilo-lounge/test-integration.sh /target/publish/lounge/image.oci.tar /target/publish/web-desktop/bundle /target/lounge-gate"
 setup = { run = "dnf install -y --setopt=install_weak_deps=False buildah && dnf clean all" }
-needs = ["image-lounge", "web-desktop-bundle", "lounge-gate-tools"]
-env = { TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge/gate-tools/tilo" }
+needs = ["image-lounge", "web-desktop-bundle", "lounge-gate-tools", "cli-x86_64"]
+env = { TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/lounge-gate-cli/tilo" }
 requires = ["arch=x86_64"]
 isolation = "vm"
 outputs = ["/target/lounge-gate/**"]
@@ -4569,15 +4568,15 @@ default = false
 
 # The gate's agent step on its own, in minutes: a person sets Tilo up through their agent, comes
 # back to their workspace on a reload, and signs in again on a fresh browser through the agent.
-# The Lounge's entrypoint runs a development build of tilo-relay directly, beside the web entry
-# and the tilo command, with no image or micro-VM around them, so a change to the page, the relay
-# or the command is tried without building the image. The Lounge gate runs the same step against
-# the built image.
+# The Lounge's entrypoint runs the relay the image carries (lounge-binaries) directly, beside the
+# web entry and the tilo command a release publishes (cli-x86_64), with no image or micro-VM
+# around them. It builds nothing itself: a change to the page or the test reruns only the test,
+# and a change to the relay or the command rebuilds that one output, which the gate shares.
 [[check]]
 name = "agent-setup"
-run = "cargo build --locked -p tilo-relay --features tilo-relay/agents --bin tilo-relay -p tilo-crypto --bin tilo-crypto -p tilo-cli --bin tilo\nTILO_RELAY_BIN=\"$CARGO_TARGET_DIR/debug/tilo-relay\" TILO_CRYPTO_BIN=\"$CARGO_TARGET_DIR/debug/tilo-crypto\" TILO_CLI_BIN=\"$CARGO_TARGET_DIR/debug/tilo\" bash os/containers/tilo-lounge/test-agent-setup.sh /target/publish/web-desktop/bundle /target/agent-setup"
-needs = ["web-desktop-bundle"]
-env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+run = "mkdir -p /target/agent-setup-cli\ntar -xzf /target/publish/cli/linux-x86_64/tilo-linux-x86_64.tar.gz -C /target/agent-setup-cli tilo\nbash os/containers/tilo-lounge/test-agent-setup.sh /target/publish/web-desktop/bundle /target/agent-setup"
+needs = ["lounge-binaries", "cli-x86_64", "lounge-gate-tools", "web-desktop-bundle"]
+env = { TILO_RELAY_BIN = "/target/publish/lounge/binaries/tilo-relay", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/agent-setup-cli/tilo" }
 requires = ["arch=x86_64"]
 outputs = ["/target/agent-setup/**"]
 timeout_secs = 1800
