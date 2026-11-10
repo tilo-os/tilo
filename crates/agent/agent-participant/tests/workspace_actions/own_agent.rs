@@ -313,3 +313,213 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
+
+/// The resources a `tilo_ls` listing names, by the name a path takes: a row
+/// is `Notebook  notes.notebook  [26 actions]`; the app's own head row
+/// (`notes  (so.tilo.notes)`) and its actions name none.
+fn listed_resources(listing: &str) -> Vec<String> {
+    listing
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| {
+            let columns: Vec<&str> = line
+                .split("  ")
+                .filter(|column| !column.is_empty())
+                .collect();
+            (columns.len() >= 2 && !columns[1].trim().starts_with('('))
+                .then(|| columns[0].trim().trim_end_matches('/').to_owned())
+        })
+        .collect()
+}
+
+/// The work group each entry the agent's changes open carries (a write
+/// continuing the one before it, as a batch's later steps do, says it once).
+fn agent_groups(changes: &[([u8; 32], Vec<u8>)]) -> Vec<Option<tilo_actions::WorkGroup>> {
+    let mut doc = automerge::AutoCommit::new();
+    for (_, bytes) in changes {
+        let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes);
+    }
+    doc.get_changes(&[])
+        .iter()
+        .filter_map(|change| change.message())
+        .filter_map(tilo_actions::ActionContext::from_change_message)
+        .filter(|context| {
+            context
+                .invoker
+                .as_ref()
+                .is_some_and(|invoker| invoker.kind == tilo_actions::ActorKind::Agent)
+        })
+        .map(|context| context.group)
+        .collect()
+}
+
+/// The agent as the workspace's listing leads it, on an app nobody started:
+/// it starts the app as the listing says to (and asking again once it runs
+/// still answers), writes in a note with one batched call and then one more,
+/// reads the note back, and everything it wrote is one run of the agent's,
+/// the connection's, which History lists with its changes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_persons_own_agent_starts_a_stopped_app_writes_and_reads_as_one_run() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let computer = enrol(
+        &root,
+        "Claude Code on build-box",
+        DeviceCapabilities::member(),
+    );
+    let state = support::scratch_dir();
+    let hosted = harness::hosted::start(
+        &root,
+        &host,
+        state.path(),
+        Options::offering(common::catalogue, ModelChoice::Scripted),
+    )
+    .await;
+    let _participant = participant::Participant::start(&hosted.relay, &root).await;
+    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    let agent = Browser::open(&hosted, &computer, &host).await;
+    let _ = tilo_session_host::device::say_here(
+        &agent.peer,
+        agent.workspace,
+        "Claude Code",
+        Vec::new(),
+        true,
+    )
+    .await;
+    let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
+        collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
+    ) else {
+        panic!("a key names a person")
+    };
+    let server = McpServer::new(
+        SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
+        WORKSPACE.into(),
+        person,
+    )
+    .with_surface(Surface::Agent)
+    .with_agent_run("run-7", "Claude Code");
+
+    // Nobody started Notes: the listing says how to, and that works.
+    let (stopped, failed) = tool(&server, "tilo_ls", json!({"path": "notes"})).await;
+    assert!(
+        !failed && stopped.contains("not running") && stopped.contains("notes#open"),
+        "{stopped}"
+    );
+    let (opened, failed) = tool(&server, "tilo_do", json!({"path": "notes#open"})).await;
+    assert!(!failed, "notes#open as the listing said: {opened}");
+    // Said again once it runs, the same call still answers what is there.
+    let (again, failed) = tool(&server, "tilo_do", json!({"path": "notes#open"})).await;
+    assert!(!failed, "notes#open on running notes: {again}");
+
+    // A note, found down the app's listing as an agent reads it.
+    let (made, failed) = tool(
+        &server,
+        "tilo_do",
+        json!({"path": "notes#new-note", "args": {"title": "Launch notes"}}),
+    )
+    .await;
+    assert!(!failed, "notes#new-note: {made}");
+    let (listing, failed) = tool(&server, "tilo_ls", json!({"path": "notes"})).await;
+    assert!(!failed, "{listing}");
+    let notebook = listed_resources(&listing)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("notes lists a notebook: {listing}"));
+    let (pages, failed) = tool(
+        &server,
+        "tilo_ls",
+        json!({"path": format!("notes/{notebook}")}),
+    )
+    .await;
+    assert!(!failed, "{pages}");
+    let page = listed_resources(&pages)
+        .into_iter()
+        .find(|page| page.contains("Launch notes"))
+        .unwrap_or_else(|| panic!("the notebook lists the note: {pages}"));
+    let note = format!("notes/{notebook}/{page}");
+    let (parts, failed) = tool(&server, "tilo_ls", json!({"path": note})).await;
+    assert!(!failed, "{parts}");
+    let mut write_at = None;
+    for at in std::iter::once(note.clone()).chain(
+        listed_resources(&parts)
+            .into_iter()
+            .map(|part| format!("{note}/{part}")),
+    ) {
+        let (actions, _) = tool(&server, "tilo_ls", json!({"path": at, "kind": "actions"})).await;
+        if listed_actions(&actions)
+            .iter()
+            .any(|action| action == "append-paragraph")
+        {
+            write_at = Some(at);
+            break;
+        }
+    }
+    let write_at = write_at.unwrap_or_else(|| panic!("the note publishes a write: {parts}"));
+    let write = format!("{write_at}#append-paragraph");
+
+    // One batched call writing three paragraphs, then one more call.
+    let lines = [
+        "Launch notes, from Claude Code.",
+        "Each line lands in the workspace as I write it.",
+        "Following me puts this window in front of you.",
+    ];
+    let (batched, failed) = tool(
+        &server,
+        "tilo_do",
+        json!({"calls": lines
+            .iter()
+            .map(|text| json!({"path": write, "args": {"text": text}}))
+            .collect::<Vec<_>>()}),
+    )
+    .await;
+    assert!(!failed, "the batched write: {batched}");
+    let (single, failed) = tool(
+        &server,
+        "tilo_do",
+        json!({"path": write, "args": {"text": "A second invocation, a moment later."}}),
+    )
+    .await;
+    assert!(!failed, "the single write: {single}");
+    let (read, failed) = tool(&server, "tilo_read", json!({"path": note})).await;
+    assert!(!failed, "the note read back: {read}");
+    for line in lines
+        .iter()
+        .copied()
+        .chain(["A second invocation, a moment later."])
+    {
+        assert!(read.contains(line), "the note reads {line:?}: {read}");
+    }
+
+    // Every change it made is the connection's run, as History groups an
+    // agent's runs.
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        browser.pump();
+        let groups: Vec<_> = browser
+            .documents
+            .iter()
+            .filter(|(route, _)| route.app_id == NOTES)
+            .flat_map(|(_, changes)| agent_groups(changes))
+            .collect();
+        if groups.len() >= 3 {
+            assert!(
+                groups
+                    .iter()
+                    .all(|group| group.as_ref().is_some_and(|group| {
+                        group.kind == "agent-run"
+                            && group.id == "run-7"
+                            && group.label == "Claude Code"
+                    })),
+                "every change the agent made is its run: {groups:?}"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the agent's writes never arrived: {groups:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}

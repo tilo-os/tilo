@@ -2602,31 +2602,37 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             };
         }
         self.acted_in(&resolved);
-        let (named_at, descriptor) =
-            if let Some(descriptor) = self.action_named(&resolved, &action).await? {
-                (resolved.path.clone(), descriptor)
-            } else {
-                // Not one of the target's actions by its id: what the target
-                // offers decides (a label, the start of an id), as listing it
-                // shows. A path naming the app alone means the app's own
-                // actions and those it publishes on its resources.
-                if let Some(node) = resolved.node.clone() {
-                    let mut levels = std::mem::take(&mut resolved.levels);
-                    let here = self
-                        .level(&resolved.provider, &node.id, &mut levels)
-                        .await?;
-                    resolved.actions = if here.own.is_empty() {
-                        node.actions.clone()
-                    } else {
-                        here.own
-                    };
+        let (named_at, descriptor) = if let Some(descriptor) =
+            self.action_named(&resolved, &action).await?
+        {
+            (resolved.path.clone(), descriptor)
+        } else {
+            // Not one of the target's actions by its id: what the target
+            // offers decides (a label, the start of an id), as listing it
+            // shows. A path naming the app alone means the app's own
+            // actions and those it publishes on its resources.
+            if let Some(node) = resolved.node.clone() {
+                let mut levels = std::mem::take(&mut resolved.levels);
+                let here = self
+                    .level(&resolved.provider, &node.id, &mut levels)
+                    .await?;
+                resolved.actions = if here.own.is_empty() {
+                    node.actions.clone()
+                } else {
+                    here.own
+                };
+            }
+            // `notes#open` is what the listing of a stopped app says to
+            // call; once the app runs, it answers what is in it.
+            let opens = parsed.segments.is_empty() && arguments.is_empty();
+            match self.pick_action_in(&action, &resolved).await {
+                Ok(found) => found,
+                Err(_) if opens && action == tilo_actions::remote::APPLICATION_OPEN_ACTION => {
+                    return Ok(self.running(&resolved.app_id).await);
                 }
-                let (named_at, descriptor) = self
-                    .pick_action_in(&action, &resolved)
-                    .await
-                    .map_err(|error| format!("{error}; tilo_ls {} lists them", resolved.path))?;
-                (named_at, descriptor)
-            };
+                Err(error) => return Err(format!("{error}; tilo_ls {} lists them", resolved.path)),
+            }
+        };
         let value = Box::pin(self.invoke_one(OneCall {
             provider: Addressed {
                 provider: resolved.provider.clone(),
@@ -2754,10 +2760,25 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let value = self
             .open_in_workspace(app_id, arguments, invocation, wait_ms)
             .await?;
-        let mut reply = outcome(&value);
-        if reply.failed {
+        if outcome(&value).failed {
+            let reply = outcome(&value);
             return Ok((value, reply));
         }
+        let reply = self.opened_reply(app_id, &value).await;
+        Ok((value, reply))
+    }
+
+    /// `open` of `app_id`, which runs already: it is there, and what is in it.
+    async fn running(&self, app_id: &str) -> Done {
+        let value = json!({"update": {"state": "succeeded", "output": {}}});
+        let reply = self.opened_reply(app_id, &value).await;
+        Done::Launched { value, reply }
+    }
+
+    /// What starting `app_id` answers once it runs: that it does, and what
+    /// is in it.
+    async fn opened_reply(&self, app_id: &str, value: &Value) -> Reply {
+        let mut reply = outcome(value);
         let name = app_names(&[app_id.to_owned()]).join("");
         reply.text = format!("ok: {name} is running");
         if let Some(error) = value.pointer("/opened/error").and_then(Value::as_str) {
@@ -2776,7 +2797,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             reply.text.push('\n');
             reply.text.push_str(&listing.text);
         }
-        Ok((value, reply))
+        reply
     }
 
     /// The workspace's `open` of the app `app_id`, with `arguments` for the files it opens
