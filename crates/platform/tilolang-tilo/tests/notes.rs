@@ -279,6 +279,60 @@ fn a_notes_own_follow_their_titles_when_a_person_sorts_them() {
     );
 }
 
+/// The tree's page is the notebook's own: a row pressed opens the note beside the tree and
+/// nothing of the window's, and the tree highlights the note its page shows.
+#[test]
+fn a_pressed_row_shows_the_note_beside_the_tree() {
+    let (mut ada, notebook) = workspace();
+    let plan = note(&mut ada, &notebook, "Q3 plan");
+    let groceries = note(&mut ada, &notebook, "Groceries");
+    let mut window = ada.view(NOTES_APP);
+    window.poll_patches().unwrap();
+    let tree = find(window.tree(), "ui.TreeView").expect("the notebook's tree");
+    let list = tree.key.clone();
+    // No row opens anything of the window's own: the page beside the tree is the view's.
+    let len = window.list_len(&list).unwrap_or(0);
+    assert!(len >= 2, "the tree shows the notebook's notes");
+    for index in 0..len {
+        let row = window.row(&list, index).unwrap().cloned().expect("a row");
+        let node = find(&row, "ui.TreeViewNode").expect("the row is a tree node");
+        assert_eq!(
+            node.props.get("navigates"),
+            Some(&Value::Bool(false)),
+            "a row opens the note where the tree already shows it"
+        );
+    }
+    // The first note is open until a person chooses another, and the tree says so.
+    let chosen = |window: &mut ViewInstance| {
+        window.poll_patches().unwrap();
+        let tree = find(window.tree(), "ui.TreeView").expect("the notebook's tree");
+        match tree.props.get("selection") {
+            Some(Value::List(items)) => items.iter().map(target).collect::<Vec<_>>(),
+            other => panic!("the tree says which note is chosen: {other:?}"),
+        }
+    };
+    assert_eq!(
+        chosen(&mut window)
+            .iter()
+            .map(ResourceRef::id_string)
+            .collect::<Vec<_>>(),
+        [plan.id_string()],
+        "the note the window opened with stands chosen"
+    );
+    // A press on another row moves the tree's choice with the page beside it.
+    window
+        .fire_with(&list, "select", Some(&Value::resource(&groceries)))
+        .unwrap();
+    assert_eq!(
+        chosen(&mut window)
+            .iter()
+            .map(ResourceRef::id_string)
+            .collect::<Vec<_>>(),
+        [groceries.id_string()],
+        "the row the person pressed is the one the page shows"
+    );
+}
+
 /// The first node of `kind` in `tree`.
 fn find<'a>(tree: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
     if tree.kind == kind {

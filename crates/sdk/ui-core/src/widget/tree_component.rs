@@ -111,6 +111,11 @@ pub struct TreeViewNodeProps {
     /// Whether it opens to show the nodes under it. A node with children says so unless it
     /// says otherwise.
     pub branch: bool,
+    /// Whether activating the row opens the item it stands for in the window's own page, as a
+    /// list's row does. `Some(false)` where the window draws the open item itself — a tree
+    /// beside its page — and answers the activation: the row reports its events and opens
+    /// nothing of the host's own, so the page the tree shows is the only one.
+    pub navigates: Option<bool>,
     /// What the row shows besides its label.
     #[component(slot)]
     pub row: Option<TreeViewRowProps>,

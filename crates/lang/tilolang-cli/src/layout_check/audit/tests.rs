@@ -820,6 +820,81 @@ fn a_heading_with_nothing_in_it_is_caught() {
     );
 }
 
+fn crowded_headings(root: &InspectionNode) -> Vec<Problem> {
+    inspect(root, (1280, 800), None, 1.0)
+        .into_iter()
+        .filter(|p| p.kind == Kind::CrowdedHeading)
+        .collect()
+}
+
+/// A section's heading belongs to what follows it: it keeps clearly more room under the block
+/// over it than over its own content, or it reads as that block's last line.
+#[test]
+fn a_heading_keeps_more_room_over_it_than_over_its_content() {
+    let page = |above: f64, below: f64| {
+        let top = 200.0 + above;
+        let header = node(
+            HEADING,
+            "heading",
+            [304.0, top, 320.0, 29.0],
+            Some(Role::Heading { level: 2 }),
+        );
+        let item = node(
+            "ListRow",
+            "row",
+            [304.0, top + 29.0 + below, 320.0, 36.0],
+            None,
+        );
+        let section = holding(
+            node(
+                "Section",
+                "section",
+                [304.0, top, 320.0, 29.0 + below + 36.0],
+                None,
+            ),
+            vec![header, item],
+        );
+        holding(
+            node("Stack", "page", [304.0, 100.0, 320.0, 600.0], None),
+            vec![
+                node("Text", "body", [304.0, 150.0, 320.0, 50.0], None),
+                section,
+            ],
+        )
+    };
+    assert!(
+        crowded_headings(&page(24.0, 8.0)).is_empty(),
+        "a group's gutter over the heading, its content a step under it"
+    );
+    assert!(
+        crowded_headings(&page(16.0, 8.0)).is_empty(),
+        "a section gap over the heading reads as more than its content's step"
+    );
+    let crowded = crowded_headings(&page(8.0, 16.0));
+    assert_eq!(crowded.len(), 1, "{crowded:?}");
+    assert!(
+        crowded[0].detail.contains("8 px") && crowded[0].detail.contains("16 px"),
+        "{crowded:?}"
+    );
+    // A heading first in its box has nothing over it to stand apart from.
+    let first = holding(
+        node("Stack", "page", [304.0, 100.0, 320.0, 600.0], None),
+        vec![holding(
+            node("Section", "section", [304.0, 100.0, 320.0, 100.0], None),
+            vec![
+                node(
+                    HEADING,
+                    "heading",
+                    [304.0, 100.0, 320.0, 29.0],
+                    Some(Role::Heading { level: 2 }),
+                ),
+                node("ListRow", "row", [304.0, 140.0, 320.0, 36.0], None),
+            ],
+        )],
+    );
+    assert!(crowded_headings(&first).is_empty());
+}
+
 fn empty_surfaces(root: &InspectionNode) -> Vec<Problem> {
     inspect(root, (800, 600), None, 1.0)
         .into_iter()

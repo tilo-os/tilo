@@ -148,10 +148,17 @@ pub enum Kind {
     /// An item the grouping put in another group stands at the group's first level and names the
     /// item it belongs to instead.
     OrphanedRow,
+    /// A section's heading with no more room over it than under it: nothing tells it from the
+    /// block it follows, so a person reads it as that block's last line rather than as the title
+    /// of what comes next.
+    CrowdedHeading,
+    /// A list standing beside the page it opens that highlights another row than the one the page
+    /// shows: the tree says where the person is, and the page says it somewhere else.
+    DetailRowNotChosen,
 }
 
 impl Kind {
-    pub const ALL: [Self; 45] = [
+    pub const ALL: [Self; 47] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -197,6 +204,8 @@ impl Kind {
         Self::ItemShownTwice,
         Self::HeadingRoom,
         Self::OrphanedRow,
+        Self::CrowdedHeading,
+        Self::DetailRowNotChosen,
     ];
 
     pub fn name(self) -> &'static str {
@@ -246,6 +255,8 @@ impl Kind {
             Self::ItemShownTwice => "item-shown-twice",
             Self::HeadingRoom => "heading-room",
             Self::OrphanedRow => "orphaned-row",
+            Self::CrowdedHeading => "crowded-heading",
+            Self::DetailRowNotChosen => "detail-row-not-chosen",
         }
     }
 }

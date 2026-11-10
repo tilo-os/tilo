@@ -107,6 +107,9 @@ pub fn inspect(
     cards(root, &mut Vec::new(), false, &mut out);
     opens(root, None, &mut BTreeSet::new(), &mut Vec::new(), &mut out);
     repeated_row_titles(root, &mut Vec::new(), &mut out);
+    let mut titled = Vec::new();
+    headings(root, &mut titled);
+    listed_detail(&titled, root, &mut Vec::new(), &mut out);
     gutter(root, f64::from(viewport.0), &mut Vec::new(), &mut out);
     out
 }
@@ -687,6 +690,75 @@ pub(super) fn is_list(node: &InspectionNode) -> bool {
     matches!(role(node), Some(Role::List | Role::Tree | Role::Table))
         || node.widget.to_ascii_lowercase().ends_with("list")
         || node.widget.to_ascii_lowercase().ends_with("lane")
+}
+
+// --- the row a page beside a list shows --------------------------------------------------------
+
+/// The heading a box over a list is titled with: the words of the page the list stands beside.
+fn headings(node: &InspectionNode, out: &mut Vec<(String, Rect)>) {
+    if matches!(role(node), Some(Role::Heading { .. }))
+        && let Some(name) = semantics_name(node)
+        && !name.trim().is_empty()
+    {
+        out.push((one_line(name), rect(node)));
+    }
+    for child in &node.children {
+        headings(child, out);
+    }
+}
+
+/// A list standing beside the page it opens highlights the row that page shows. The page's title
+/// is the heading standing to the right of the list, over it; where it names a row of the list,
+/// that row is the chosen one, and a list that highlights another says the person is somewhere
+/// else than where they are. A list of several chosen rows says a choice of its own, and one
+/// whose page is titled with words none of its rows carry (a title the rows do not say) names no
+/// row to highlight; neither is held to the rule.
+fn listed_detail(
+    titled: &[(String, Rect)],
+    node: &InspectionNode,
+    keys: &mut Vec<String>,
+    out: &mut Vec<Problem>,
+) {
+    if is_list(node)
+        && let Some(semantics) = &node.semantics
+    {
+        let rows: Vec<(String, bool)> = semantics
+            .children
+            .iter()
+            .filter(|item| matches!(item.role, Role::ListItem | Role::TreeItem))
+            .filter_map(|item| {
+                let name = one_line(item.name.as_deref()?);
+                (!name.is_empty()).then_some((name, item.state.selected))
+            })
+            .collect();
+        let selected: Vec<&(String, bool)> = rows.iter().filter(|(_, chosen)| *chosen).collect();
+        if let [chosen] = selected.as_slice() {
+            let boxed = rect(node);
+            if let Some((words, _)) = titled.iter().find(|(words, at)| {
+                at.x0 >= boxed.x1 - SLACK && rows.iter().any(|(name, _)| name == words)
+            }) && words != &chosen.0
+            {
+                push(
+                    out,
+                    Kind::DetailRowNotChosen,
+                    node,
+                    keys,
+                    format!(
+                        "the page beside it shows \"{words}\" while \"{}\" stands chosen: the \
+                         row a list highlights is the one the page beside it shows",
+                        chosen.0
+                    ),
+                );
+            }
+        }
+    }
+    let pushed = node.test_id.clone().map(|id| keys.push(id)).is_some();
+    for child in &node.children {
+        listed_detail(titled, child, keys, out);
+    }
+    if pushed {
+        keys.pop();
+    }
 }
 
 fn starts_with_any(name: &str, verbs: &[&str]) -> bool {
@@ -1919,6 +1991,83 @@ mod tests {
             row(Role::TreeItem, [16.0, 160.0, 584.0, 36.0]),
         ]);
         assert!(found(Kind::OpenOutsideList, &branch, (1280, 800)).is_empty());
+    }
+
+    /// The row a list highlights is the one the page beside it shows: a tree that says "Q3 plan"
+    /// while the page reads "Groceries" puts the person somewhere else than where they are, and
+    /// one that highlights nothing leaves the page beside it unattached to its rows.
+    #[test]
+    fn a_list_beside_its_page_highlights_the_row_the_page_shows() {
+        fn title(words: &str) -> InspectionNode {
+            named(
+                "Text",
+                "title",
+                [320.0, 12.0, 300.0, 24.0],
+                Role::Heading { level: 2 },
+                words,
+            )
+        }
+        fn tree(rows: Vec<(&str, bool)>) -> InspectionNode {
+            let mut list = holding(
+                "VirtualList",
+                "tree",
+                Some(Role::Tree),
+                vec![title("Groceries")],
+            );
+            list.rect = [0.0, 100.0, 280.0, 600.0];
+            list.semantics = Some(
+                AccessNode::new(Role::Tree).with_children(
+                    rows.into_iter()
+                        .enumerate()
+                        .map(|(at, (name, chosen))| {
+                            let y = 110.0 + 36.0 * f64::from(u32::try_from(at).unwrap());
+                            AccessNode::new(Role::TreeItem)
+                                .with_name(name)
+                                .with_state(ui::a11y::AccessState::new().selected(chosen))
+                                .with_bounds(Rect::new(16.0, y, 264.0, y + 28.0))
+                        })
+                        .collect(),
+                ),
+            );
+            list
+        }
+        let wrong = found(
+            Kind::DetailRowNotChosen,
+            &tree(vec![("Q3 plan", true), ("Groceries", false)]),
+            (1280, 800),
+        );
+        assert_eq!(wrong.len(), 1, "{wrong:?}");
+        assert!(
+            wrong[0].detail.contains("Groceries") && wrong[0].detail.contains("Q3 plan"),
+            "{wrong:?}"
+        );
+        assert!(
+            found(
+                Kind::DetailRowNotChosen,
+                &tree(vec![("Q3 plan", false), ("Groceries", true)]),
+                (1280, 800)
+            )
+            .is_empty(),
+            "the page's own row stands chosen"
+        );
+        assert!(
+            found(
+                Kind::DetailRowNotChosen,
+                &tree(vec![("Q3 plan", false), ("Groceries", false)]),
+                (1280, 800)
+            )
+            .is_empty(),
+            "a list that highlights nothing says nothing of where the person is"
+        );
+        assert!(
+            found(
+                Kind::DetailRowNotChosen,
+                &tree(vec![("Q3 plan", true), ("Groceries", true)]),
+                (1280, 800)
+            )
+            .is_empty(),
+            "a list of several chosen rows says a choice of its own"
+        );
     }
 
     /// A row that opened into its item writes its title once: in the field that edits it, not

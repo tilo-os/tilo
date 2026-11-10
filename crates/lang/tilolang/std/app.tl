@@ -449,6 +449,7 @@ template view tree_rows<T>(
                         depth: depth(x),
                         branch: branch(x),
                         above: above,
+                        navigates: false,
                     ) {
                         toolbar: {
                             add(x)
@@ -475,6 +476,7 @@ template view tree_rows<T>(
                         depth: depth(x),
                         branch: branch(x),
                         above: above,
+                        navigates: false,
                     ) {
                         toolbar: {
                             add(x)
@@ -490,8 +492,10 @@ template view tree_rows<T>(
 }
 
 /// A window that is a tree of items: the tree down its sidebar and the item open beside it, as
-/// the page `doc` draws, with `head` the control that makes a new one standing in the sidebar's
-/// header — where what a person adds then stands, so the window's bar does not offer it again.
+/// the page `doc` draws, with `head` the controls standing in the sidebar's header — the one
+/// that makes a new item, where what a person adds then stands, so the window's bar does not
+/// offer it again, and what can be done with the item open (`head(opened)`), so a page's own
+/// commands stand in the header at every width rather than on a line of the page.
 /// The bar over the page names where the open item stands (`path`: "Plans / Meetings", nothing
 /// at the top level) and keeps the window's own actions.
 ///
@@ -518,7 +522,7 @@ template view tree<R, T>(
     path: (T) -> Text,
     above: List<Filter<T>> = [],
     empty: Text = phrase("tilolang-empty-kind", kind: meta(T).plural),
-    head: View,
+    head: (Option<T>) -> View,
     row: (T) -> View,
     doc: (T) -> View,
 ) {
@@ -527,14 +531,16 @@ template view tree<R, T>(
     state open_item: Option<T> = items.first()
     // What the bar's search holds: the tree narrows to the items it finds.
     state found: Text = ""
+    // A reading column: wide, the tree docks beside the page it opens; narrow, the tree is the
+    // window's first screen and the page is pushed in front of it, with the way back to it.
     ui.NavShell(
-        content_kind: .document,
+        content_kind: .reading,
         sidebar_title: meta(of).title,
         title: if let x = opened { path(x) },
     ) {
         on search(t: Text): set(found, t)
         sidebar_actions: {
-            head
+            head(opened)
         }
         sidebar: {
             stack {
@@ -586,7 +592,10 @@ template view tree<R, T>(
             if let x = opened {
                 ui.Scroll {
                     page {
-                        stack(gap: .section) {
+                        // A page's blocks are groups of their own: the gutter between groups
+                        // stands over each section's heading, which keeps its own content a
+                        // step under it, so a heading reads with what it opens.
+                        stack(gap: .group) {
                             doc(x)
                         }
                     }
@@ -617,7 +626,10 @@ view document<R>(of: R, content: View) {
         content: {
             ui.Scroll {
                 page {
-                    stack(gap: .section) {
+                    // A document's blocks are groups of their own: the gutter between groups
+                    // stands over each section's heading, which keeps its content a step under
+                    // it, so a heading reads with what it opens.
+                    stack(gap: .group) {
                         content
                     }
                 }
@@ -662,13 +674,13 @@ view page<R>(
                 ui.Scroll {
                     if canvas {
                         page(full, fill: fill) {
-                            stack(gap: .section, fill: fill) {
+                            stack(gap: .group, fill: fill) {
                                 content
                             }
                         }
                     } else {
                         page {
-                            stack(gap: .section) {
+                            stack(gap: .group) {
                                 content
                             }
                         }

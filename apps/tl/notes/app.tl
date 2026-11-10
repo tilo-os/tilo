@@ -355,21 +355,29 @@ view notebook(nb: Notebook) {
         add: add_child,
         path: n -> meta(n).title,
         doc: note_page,
+        head: open -> notebook_head(nb, open),
     ) { n ->
+        // The bar's controls, and — while a note is open — the note's own file commands.
         // A note with no title yet is called what its type calls it, as in every list of it.
         note_node(n)
-        head: {
-            row(gap: .related) {
-                button(new_note(nb))
-                notebook_menu(nb)
-            }
-        }
     }
 }
 
-/// The notebook's own file commands, beside the control that makes a note: a Markdown file or a
-/// zip of them in, the whole notebook out.
-view notebook_menu(nb: Notebook) {
+/// The notebook's controls in the window's bar: the one that makes a note, and the file commands
+/// — the notebook's own, and those of the note open beside the tree.
+view notebook_head(nb: Notebook, open: Option<Note>) {
+    row(gap: .related) {
+        button(new_note(nb))
+        notebook_menu(nb, open)
+    }
+}
+
+/// The notebook's file commands beside the control that makes a note: a Markdown file or a zip
+/// of them in, the whole notebook out, and — while a note is open — a picture into it and the
+/// note out as a file of its own. They stand in the window's bar, where the controls of the
+/// page beside the tree stand, so the page keeps no file control of its own and every command
+/// has one place at every width.
+view notebook_menu(nb: Notebook, open: Option<Note>) {
     ui.MenuButton("File", icon: .file_plus) {
         ui.MenuItem("Import Markdown…", icon: .file_plus) {
             on choose: file.choose(import_markdown(nb), accept: ["text/markdown"])
@@ -379,6 +387,17 @@ view notebook_menu(nb: Notebook) {
         }
         ui.MenuItem("Export the notebook…", icon: .download) {
             on choose: file.save(export_notebook(nb), name: "Notes.zip")
+        }
+        if let n = open {
+            ui.MenuItem("Insert an image…", icon: .image) {
+                on choose: file.choose(
+                    insert_image(n),
+                    accept: ["image/png", "image/jpeg", "image/webp"],
+                )
+            }
+            ui.MenuItem("Export this note…", icon: .download) {
+                on choose: file.save(export_note(n), name: export_name(n))
+            }
         }
     }
 }
@@ -414,19 +433,20 @@ view note_page(n: Note) {
     let nb = root Notebook
     state linking: Bool = false
     state link_text: Text = ""
-    ui.TextInput(bind: n.title, title: true)
-    note_details(n)
-    if not n.tags.is_empty() {
-        row(gap: .related, wrap: true) {
-            for t in n.tags {
-                ui.Chip(t) {
-                    on remove: untag(n, t)
+    // The title, where the note stands and what it holds are one header: the page's blocks
+    // under it stand a group gutter apart.
+    stack(gap: .related) {
+        ui.TextInput(bind: n.title, title: true)
+        note_details(n)
+        if not n.tags.is_empty() {
+            row(gap: .related, wrap: true) {
+                for t in n.tags {
+                    ui.Chip(t) {
+                        on remove: untag(n, t)
+                    }
                 }
             }
         }
-    }
-    row(distribute: .end) {
-        note_menu(n)
     }
     // What `[[` offers: the notebook's notes that hold what is typed in it, asked of the store
     // as it is typed and handed a page at a time, and none at all while the picker is closed.
@@ -454,6 +474,8 @@ view note_details(n: Note) {
     let made = created(n)?.at
     let edited = updated(n)?.at
     let count = n.body.text.words()
+    // Written since it was made: one moment says both when it was not.
+    let shows_edited = edited != .none and edited != made
     row(gap: .related, align: .center) {
         // The trail takes the room the facts leave, a line under the title rather than the
         // window's own: what the page says of the note stands with the note.
@@ -471,7 +493,9 @@ view note_details(n: Note) {
         }
         // The facts are as wide as their words (`fill: 0`), so the trail takes the room they
         // leave and elides its middle where that is not enough, never the other way round.
-        row(gap: .related, align: .center, fill: 0.0) {
+        // One fact follows the next after the separator every caption line uses, as history
+        // writes "You created it · Jun 22".
+        row(gap: .tight, align: .center, fill: 0.0) {
             // When it was made, and when it was written since: one moment says both.
             if let at = made {
                 row(gap: .tight) {
@@ -479,7 +503,10 @@ view note_details(n: Note) {
                     ui.Time(at, role: .caption, secondary: true)
                 }
             }
-            if edited != made {
+            if shows_edited {
+                if made != .none {
+                    ui.Text("·", role: .caption, secondary: true)
+                }
                 if let at = edited {
                     row(gap: .tight) {
                         text("Edited", role: .caption, secondary: true)
@@ -488,10 +515,15 @@ view note_details(n: Note) {
                 }
             }
             // A note nobody has written yet holds no words to count.
-            if count == 1 {
-                text("1 word", role: .caption, secondary: true)
-            } else if count > 1 {
-                text("{count} words", role: .caption, secondary: true)
+            if count > 0 {
+                if made != .none or shows_edited {
+                    ui.Text("·", role: .caption, secondary: true)
+                }
+                if count == 1 {
+                    text("1 word", role: .caption, secondary: true)
+                } else {
+                    text("{count} words", role: .caption, secondary: true)
+                }
             }
         }
     }
@@ -500,21 +532,6 @@ view note_details(n: Note) {
 /// The notes `n` stands under, the one it stands under first: the path its page shows above it.
 fn above(n: Note) -> List<Note> {
     if let p = n.parent { [[p], above(p)].flat_map(notes -> notes) } else { [] }
-}
-
-/// A note's own file commands: a picture in, the note out as a file of its own.
-view note_menu(n: Note) {
-    ui.MenuButton("File", icon: .file_plus) {
-        ui.MenuItem("Insert an image…", icon: .image) {
-            on choose: file.choose(
-                insert_image(n),
-                accept: ["image/png", "image/jpeg", "image/webp"],
-            )
-        }
-        ui.MenuItem("Export…", icon: .download) {
-            on choose: file.save(export_note(n), name: export_name(n))
-        }
-    }
 }
 
 /// The name a note's file is offered as: the Markdown's own while the note shows no picture, and

@@ -374,6 +374,10 @@ fn rounds_its_corners(widget: &str) -> bool {
 /// rhythm cards and rows of a list stand by (`rhythm.sibling` on the stock theme).
 const CARD_GAP: f64 = 12.0;
 
+/// How much more room a heading keeps over it than over its content: the toolkit's tightest step
+/// (`rhythm.tight`), the least that tells a title from the block above it.
+const HEADING_LEAD: f64 = 4.0;
+
 /// Whether a node is one control a person presses: its own role says so, or it is a box (a
 /// header action's frame) around exactly one.
 fn is_control(node: &InspectionNode) -> bool {
@@ -731,6 +735,7 @@ impl Walk<'_> {
         }
         self.cramped_card(node, keys);
         self.shown_twice(node, keys);
+        self.heading_rhythm(node, keys);
         for child in &node.children {
             if floats(&child.widget) {
                 continue;
@@ -1061,6 +1066,55 @@ impl Walk<'_> {
                     ),
                 );
             }
+    /// A section's heading standing no further from the block over it than from the content it
+    /// opens: a heading belongs to what follows it, so it keeps clearly more room under the
+    /// block it stands below than over its own content. The gaps are the layout's own, whatever
+    /// boxes hold them.
+    fn heading_rhythm(&mut self, node: &InspectionNode, keys: &[String]) {
+        let standing: Vec<&InspectionNode> = node
+            .children
+            .iter()
+            .filter(|child| has_area(rect(child.rect)) && !floats(&child.widget))
+            .collect();
+        for (index, section) in standing.iter().enumerate() {
+            let Some(header) = section
+                .children
+                .first()
+                .filter(|child| child.widget == HEADING)
+            else {
+                continue;
+            };
+            let Some(first) = section
+                .children
+                .iter()
+                .skip(1)
+                .find(|child| has_area(rect(child.rect)) && !floats(&child.widget))
+            else {
+                continue;
+            };
+            // A heading first in its box has nothing over it to stand apart from.
+            let Some(over) = index.checked_sub(1).and_then(|before| standing.get(before)) else {
+                continue;
+            };
+            let above = rect(section.rect).y0 - rect(over.rect).y1;
+            let below = rect(first.rect).y0 - rect(header.rect).y1;
+            if above >= below + HEADING_LEAD - EPSILON {
+                continue;
+            }
+            let mut told = keys.to_vec();
+            if let Some(id) = section.test_id.clone() {
+                told.push(id);
+            }
+            self.push(
+                Kind::CrowdedHeading,
+                header,
+                &told,
+                format!(
+                    "it stands {above:.0} px under what comes before it and {below:.0} px over \
+                     its own content: a heading keeps clearly more room over it than under it, \
+                     so it reads with what it opens"
+                ),
+            );
         }
     }
 

@@ -253,8 +253,18 @@ fn bound<'a>(
     }
 }
 
-/// The resource `node` presents, when its component presents one.
+/// The resource `node` presents, when its component presents one and the view leaves opening
+/// it to the host: a view that draws the open item itself (a tree beside its page) says the row
+/// opens nothing (`navigates: false`), and answers the activation with its own event.
 fn presented(node: &UiNode, description: &Description) -> Option<ResourceRef> {
+    if description.prop("navigates").is_some()
+        && matches!(
+            node.props.get("navigates"),
+            Some(Value::Bool(false) | Value::Int(0))
+        )
+    {
+        return None;
+    }
     let prop = description.semantics.presents.as_ref()?;
     match node.props.get(prop) {
         Some(Value::Ref(reference)) => Some(reference.clone()),
@@ -953,6 +963,33 @@ mod tests {
         assert!(
             source.event("press").is_none(),
             "no event the view did not give"
+        );
+    }
+
+    /// A row whose window draws the open item itself opens nothing: it says so
+    /// (`navigates: false`), and its activation is the view's to answer, so the page beside the
+    /// list is the only one.
+    #[test]
+    fn a_row_that_says_it_opens_nothing_presents_no_resource() {
+        let mut reconciler = reconciler();
+        let note = ResourceRef {
+            id: "doc".to_owned(),
+            ty: "note".to_owned(),
+        };
+        let row = node(
+            "TreeViewNode",
+            "t",
+            &[
+                ("label", Value::text("Groceries")),
+                ("item", Value::Ref(note)),
+                ("navigates", Value::Bool(false)),
+            ],
+        );
+        let description = description_of(&row).expect("described");
+        let mut source = NodeSource::new(&row, description, &mut reconciler);
+        assert!(
+            source.event("activate").is_none(),
+            "the row opens nothing of the host's own"
         );
     }
 
