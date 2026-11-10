@@ -8,6 +8,16 @@
 //! desktop see one desk. What is this device's alone — which strip it shows, how wide its windows
 //! are, which window is in front — is never written, and folding keeps it
 //! ([`tilo_desktop_model::shared_record::device::Kept`]).
+
+// Nothing compiled for the web reads this module's roles yet: the page's session wires them with
+// its own host.
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "the page's session reads these with its own wiring"
+    )
+)]
 //! The record is read from the engine's copy of the workspace, which admits every member's writes
 //! as its governance lets them and holds what they wrote before this device joined. Nothing here
 //! decides whether a write may land: that is the workspace's, decided where the engine takes it in.
@@ -403,7 +413,7 @@ impl SharedDesktops {
                         DESKTOP_RECORD,
                         changes.clone(),
                         &key,
-                        std::time::SystemTime::now(),
+                        tilo_clock::SystemTime::now(),
                     )?,
                     Some(keys) => {
                         sealed_write(view.peer(), keys, artifact, &changes, founding, &key)?
@@ -421,7 +431,7 @@ impl SharedDesktops {
                     },
                 })
             },
-            std::time::SystemTime::now(),
+            tilo_clock::SystemTime::now(),
         );
         match committed {
             Ok(_receipt) => {
@@ -600,7 +610,7 @@ fn sealed_write(
     key: &ed25519_dalek::SigningKey,
 ) -> Result<neighbour_wire::NeighbourMsg, String> {
     let mut write = peer.clone();
-    let now = std::time::SystemTime::now();
+    let now = tilo_clock::SystemTime::now();
     let publication = write.publication_mut();
     if !founding {
         return publication.publish_sealed_incremental(

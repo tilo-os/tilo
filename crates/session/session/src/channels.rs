@@ -10,6 +10,16 @@
 //! Nothing here decides who may read what: the workspace's governance does, and
 //! this device only follows it.
 
+// Nothing compiled for the web reads this module's roles yet: the page's session wires them with
+// its own host.
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "the page's session reads these with its own wiring"
+    )
+)]
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

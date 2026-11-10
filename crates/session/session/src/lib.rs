@@ -288,7 +288,6 @@ pub mod session_package;
 mod setup;
 #[cfg(target_os = "linux")]
 mod shared;
-#[cfg(target_os = "linux")]
 mod shared_desktop;
 #[cfg(target_os = "linux")]
 mod shared_displays;

@@ -23,6 +23,9 @@ pub(crate) mod plane;
 /// What a host lists as apps.
 pub mod apps;
 
+/// Whether this device still holds custody of a workspace, as its host checks it.
+pub mod custody;
+
 /// The identity this device signs with, as its host keeps it.
 #[cfg(target_os = "linux")]
 pub mod identity;

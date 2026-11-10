@@ -8,6 +8,16 @@
 //! and a late joiner reads the whole history, not only what is recorded from now
 //! on. The engine keeps the id each workspace on the desk is held under
 //! ([`Slots`]), because an enrollment installs into the workspace made for it.
+
+// Nothing compiled for the web reads this module's roles yet: the page's session wires them with
+// its own host.
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "the page's session reads these with its own wiring"
+    )
+)]
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -161,6 +171,8 @@ pub struct Engine {
     /// the session opens the workspaces before it opens the service, and every reader of a sealed
     /// record goes through this.
     keys: ChannelKeyProvider,
+    /// How this host proves this device still has custody of a workspace before it commits there.
+    custody: Arc<dyn crate::platform::custody::Custody>,
     /// The workspace transport of this session's collaboration plane, once it runs: a record the
     /// workspace's hosts send only once asked is asked for here, and the plane is gone while this
     /// is `None` .
@@ -201,12 +213,14 @@ impl Engine {
         owner: NativeWorkspaceOwner,
         slots: Arc<Slots>,
         identity: HostIdentity,
+        custody: Arc<dyn crate::platform::custody::Custody>,
     ) -> Self {
         Self {
             owner,
             slots,
             identity,
             keys: ChannelKeyProvider::default(),
+            custody,
             link: std::sync::Mutex::new(None),
             unfounded: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             #[cfg(not(target_arch = "wasm32"))]
@@ -235,7 +249,12 @@ impl Engine {
             &owner_file_of(&path),
             Arc::clone(&slots) as Arc<dyn FileHost>,
         )?;
-        let mut engine = Self::holding(owner.clone(), slots, identity);
+        let mut engine = Self::holding(
+            owner.clone(),
+            slots,
+            identity,
+            Arc::new(crate::platform::custody::Signed),
+        );
         // What the workspaces' other devices reach this one at, keeping the frames each brings: a
         // device that holds a workspace is a store device of it.
         engine.directed = match tilo_peer_state::store::Store::open(frames_path(state), FRAMES_KEPT)
@@ -1125,7 +1144,6 @@ impl Engine {
 /// What the broker's owner commits ask of this device's workspaces: the engine's owner is the
 /// canonical copy of every workspace it holds, and what it commits leaves on the plane's session
 /// with the workspace's host.
-#[cfg(target_os = "linux")]
 impl tilo_broker_core::custody::OwnerCustody for Engine {
     /// A held workspace whose host takes part in no channels: its records are documents the owner
     /// commits, never sealed channels.
@@ -1160,9 +1178,7 @@ impl tilo_broker_core::custody::OwnerCustody for Engine {
         owner: &NativeWorkspaceOwner,
         workspace_id: WorkspaceId,
     ) -> Result<(), String> {
-        tilo_network_actor::native_ingress::Connect::new(owner.clone(), workspace_id)?
-            .custody(&self.identity)
-            .map(drop)
+        self.custody.check(owner, workspace_id, &self.identity)
     }
 
     fn signing_key(

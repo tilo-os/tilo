@@ -13,6 +13,16 @@
 //! a projection of its governance, written by [`crate::Shared::project_governance`]
 //! whenever the governance this device holds moves, so what this device admits
 //! and how its apps judge a person follow the same source the sheet shows.
+
+// Nothing compiled for the web reads this module's roles yet: the page's session wires them with
+// its own host.
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "the page's session reads these with its own wiring"
+    )
+)]
 //!
 //! A package the person opens belongs there too: the workspace's governance
 //! gives it authorship of its own records when they may change the workspace
