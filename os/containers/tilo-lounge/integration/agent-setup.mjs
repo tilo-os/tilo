@@ -232,10 +232,8 @@ report.claude = registered;
 if (!/mcp add .*tilo .*-- \S*tilo mcp/.test(registered)) await fail(`tilo login did not add its MCP server to Claude Code: ${registered || 'never asked'}`);
 if (steps.length < 2) await fail(`the tab showed no steps as the agent went: ${JSON.stringify(steps)}`);
 
-// The screen leaves for the person's own workspace, the agent present there.
+// The screen leaves for the person's own workspace.
 await until(first, `document.documentElement.dataset.firstRun === undefined`, 'the first screen leaving', 60_000);
-await until(first, `(() => { const people = JSON.stringify(globalThis.tiloMount?.people?.() ?? null); return people.includes('Claude Code'); })()`,
-  'Claude Code present in the workspace');
 // Titled after the person's own workspace once it says its name, never the Lounge's.
 const ownTitle = `/^Tilo · /.test(document.title) && !/lounge/i.test(document.title)`;
 for (const deadline = Date.now() + 30_000; !await first.evaluate(ownTitle).catch(() => false);) {
@@ -244,9 +242,11 @@ for (const deadline = Date.now() + 30_000; !await first.evaluate(ownTitle).catch
 }
 report.workspace = await first.evaluate('document.title');
 
-// What the agent does shows beside its name: one tool call through its MCP
-// server, as Claude Code would make it once restarted, said as the workspace
-// says it ("Looking at the apps" for a look at its apps).
+// The agent is present once its MCP server connects, as Claude Code starts it
+// once restarted, and what it does shows beside its name: one tool call, said
+// as the workspace says it ("Looking at the apps" for a look at its apps).
+// Who is here is live presence alone: the agent's own, on the workspace's
+// live plane.
 const doing = 'Looking at the apps';
 // The agent's MCP server stays up as a restarted agent keeps it, while the
 // tab is looked at; its answers are kept for the report.
@@ -259,18 +259,19 @@ for (const line of [
   {jsonrpc: '2.0', method: 'notifications/initialized'},
   {jsonrpc: '2.0', id: 2, method: 'tools/call', params: {name: 'tilo_ls', arguments: {}}},
 ]) server.stdin.write(`${JSON.stringify(line)}\n`);
-await until(first, `JSON.stringify(globalThis.tiloMount?.people?.() ?? null).includes(${JSON.stringify(doing)})`,
-  `the agent's action "${doing}" beside its name`, 90_000);
+const beside = `(() => { const row = (globalThis.tiloMount?.people?.() ?? []).find(person => person.agent && /Claude Code/.test(person.label ?? '')); return !!row && JSON.stringify(row).includes(${JSON.stringify(doing)}); })()`;
+await until(first, beside, `Claude Code present, with "${doing}" beside its name`, 90_000);
 report.mcp = answers.slice(0, 2000);
-server.stdin.end();
 const signedUp = await person(first);
 report.person = signedUp;
 
-// Loaded again, the tab is the same person in the same workspace, titled
-// after it, with the agent still there.
+// Loaded again while the agent's MCP server is still connected, the tab is the
+// same person in the same workspace, titled after it, with the agent still
+// there.
 await first.reload();
 await until(first, `!!globalThis.tiloMount && JSON.stringify(globalThis.tiloMount.people?.() ?? null).includes('Claude Code')`,
   'Claude Code present in the workspace after a reload', 60_000);
+server.stdin.end();
 const reloaded = await person(first);
 report.reloaded = reloaded;
 if (!signedUp.user || reloaded.user !== signedUp.user) {
