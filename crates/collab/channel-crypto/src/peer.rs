@@ -24,9 +24,19 @@
 //!   committed the winner publishes it again when it sees the loser, so a
 //!   host that keeps only a channel's newest frame keeps the winner. Two
 //!   commits for one epoch that followed different frames compete the same
-//!   way, by the digest each branch reached: the device holding the higher
-//!   one cannot follow the other from where it stands, so it starts over and
-//!   asks again (below).
+//!   way, at the point where they diverged: of the two children of the last
+//!   frame both branches share, the lower digest wins. Each device keeps the
+//!   newest frames of its own branch (at most [`MAX_BRANCH`] of them, and
+//!   [`MAX_BRANCH_BYTES`] of commits), so it finds that point however many
+//!   commits either side went on by. A device whose branch lost there cannot
+//!   follow the winner from where it stands, so it starts over and asks again
+//!   (below). A device on the winning branch remembers the commits that lost
+//!   against it, and the ones that went on from them, and publishes its
+//!   branch again from the point of divergence whenever one reaches it: the
+//!   device that went on hears the winner's commit at that point and starts
+//!   over. A commit whose branch split off below the frames a device holds
+//!   decides nothing there; the device publishes its own branch again for
+//!   the other side to decide on.
 //! - **Any participant creates the group, once.** A participant that holds
 //!   no state for a channel waits and asks; one that sees no genesis
 //!   ([`ChannelPeer::found`]) creates the group, and one that has seen a
@@ -99,10 +109,21 @@ pub fn backs(frame: &MlsGovernanceFrame, allowed: &BTreeSet<Ed25519PublicKey>) -
 
 /// Requests one channel keeps, one per device.
 const MAX_REQUESTS: usize = 4096;
+/// Frames below the head a peer keeps of its own branch, to find where an
+/// incoming commit's branch diverged from it. A branch that went on by more
+/// commits than this before the other side's reached it can no longer be
+/// placed: such a commit is ignored here, and the device that holds the
+/// point of divergence decides.
+pub const MAX_BRANCH: usize = 32;
+/// The MLS bytes the kept branch frames may hold together; the oldest go
+/// first beyond it.
+pub const MAX_BRANCH_BYTES: usize = 8 * 1024 * 1024;
+/// Commits a peer remembers as having lost against its branch.
+const MAX_LOST: usize = 64;
 /// Sealed peer state larger than this is refused when read.
 const MAX_PEER_STATE: usize = 320 * 1024 * 1024;
 const PEER_RECORD: &[u8] = b"channel-crypto/channel-peer";
-const PEER_VERSION: u8 = 2;
+const PEER_VERSION: u8 = 3;
 
 /// What the device can do with the channel's content right now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,6 +187,14 @@ pub struct ChannelPeer {
     /// The last frame applied here, as held (with its join material when
     /// this device had it). For a waiting device, `None`.
     head: Option<MlsGovernanceFrame>,
+    /// The frames `head` follows on this device's branch, oldest first and
+    /// with their join material withheld, bounded by [`MAX_BRANCH`] and
+    /// [`MAX_BRANCH_BYTES`].
+    branch: Vec<MlsGovernanceFrame>,
+    /// Commits that lost against this branch, and those that went on from
+    /// them, each with the epoch this branch diverged from it at (the epoch
+    /// of the winning child), newest last.
+    lost: Vec<([u8; 32], u64)>,
     /// This device's place before `head`, sealed: the group before `head`'s
     /// commit, or the member key `head`'s Welcome admitted. A lower sibling
     /// of `head` then replaces it.
@@ -202,6 +231,8 @@ struct PeerFile {
     record: Vec<u8>,
     parent: Option<Vec<u8>>,
     head: Option<MlsGovernanceFrame>,
+    branch: Vec<MlsGovernanceFrame>,
+    lost: Vec<([u8; 32], u64)>,
     genesis: Option<[u8; 32]>,
     seen_epoch: Option<u64>,
     requests: Vec<MlsAccessRequestV1>,
@@ -332,6 +363,8 @@ impl ChannelPeer {
             signer,
             record: MemberRecord::Waiting(Box::new(MemberKey::for_device(&device)?)),
             head: None,
+            branch: Vec::new(),
+            lost: Vec::new(),
             parent: None,
             genesis: None,
             genesis_frame: None,
@@ -426,7 +459,7 @@ impl ChannelPeer {
         self.parent = None;
         self.genesis = Some(digest(&genesis)?);
         self.genesis_frame = Some(genesis.clone());
-        self.head = Some(genesis.clone());
+        self.restart_branch(genesis.clone());
         self.outbox.push(genesis);
         self.settle_orphaned();
         self.save(vault)?;
@@ -455,6 +488,8 @@ impl ChannelPeer {
             record: self.record.seal(vault)?,
             parent: self.parent.clone(),
             head: self.head.clone(),
+            branch: self.branch.clone(),
+            lost: self.lost.clone(),
             genesis: self.genesis,
             seen_epoch: self.seen_epoch,
             requests: self.requests.values().cloned().collect(),
@@ -535,6 +570,8 @@ impl ChannelPeer {
             signer,
             record,
             head: file.head,
+            branch: file.branch,
+            lost: file.lost,
             parent: file.parent,
             genesis: file.genesis,
             genesis_frame: file.genesis_frame,
@@ -648,6 +685,95 @@ impl ChannelPeer {
             self.outbox
                 .extend(head.clone().into_deliveries().unwrap_or_default());
         }
+    }
+
+    /// Queue this device's branch again from `epoch` up to the head, when
+    /// this device signed any of those frames: a device on a branch that
+    /// diverged there then hears this branch's frame at that point and can
+    /// tell which one won. Ending with the head keeps a host that keeps a
+    /// channel's newest frame on it. Only a device that committed on the
+    /// branch since then publishes it, so not every member repeats it.
+    fn republish_from(&mut self, epoch: u64) {
+        let signed = self
+            .held()
+            .any(|frame| frame.epoch >= epoch && frame.signed_by == self.device);
+        if !signed {
+            return;
+        }
+        for frame in &self.branch {
+            if frame.epoch >= epoch && !self.outbox.contains(frame) {
+                self.outbox.push(frame.clone());
+            }
+        }
+        self.republish_head();
+    }
+
+    /// The frames of this device's branch it holds, oldest first, the head
+    /// last.
+    fn held(&self) -> impl Iterator<Item = &MlsGovernanceFrame> {
+        self.branch.iter().chain(&self.head)
+    }
+
+    /// The frame this device's branch holds at `epoch`.
+    fn held_at(&self, epoch: u64) -> Option<&MlsGovernanceFrame> {
+        self.held().find(|frame| frame.epoch == epoch)
+    }
+
+    /// Make `frame` the head, on top of the one held now.
+    fn advance(&mut self, frame: MlsGovernanceFrame) {
+        let Some(previous) = self.head.replace(frame) else {
+            return;
+        };
+        let previous = previous.withheld().ok().flatten().unwrap_or(previous);
+        self.branch.push(previous);
+        let size = |frame: &MlsGovernanceFrame| match &frame.action {
+            MlsGovernanceAction::Commit {
+                commit, history, ..
+            } => commit
+                .len()
+                .saturating_add(history.as_ref().map_or(0, Vec::len)),
+            MlsGovernanceAction::Genesis => 0,
+        };
+        // Keep the newest frames that fit both bounds.
+        let mut bytes = 0_usize;
+        let kept = self
+            .branch
+            .iter()
+            .rev()
+            .take(MAX_BRANCH)
+            .take_while(|frame| {
+                bytes = bytes.saturating_add(size(frame));
+                bytes <= MAX_BRANCH_BYTES
+            })
+            .count();
+        let drop = self.branch.len().saturating_sub(kept);
+        self.branch.drain(..drop);
+    }
+
+    /// Start this device's branch over at `frame`: a genesis, or the commit
+    /// whose Welcome admitted it.
+    fn restart_branch(&mut self, frame: MlsGovernanceFrame) {
+        self.forget_branch();
+        self.head = Some(frame);
+    }
+
+    /// Hold no branch: this device left the group.
+    fn forget_branch(&mut self) {
+        self.head = None;
+        self.branch.clear();
+        self.lost.clear();
+    }
+
+    /// Remember that the commit `digest` lost against this branch, which
+    /// diverged from it at `epoch`.
+    fn lost_against(&mut self, digest: [u8; 32], epoch: u64) {
+        if self.lost.iter().any(|(known, _)| *known == digest) {
+            return;
+        }
+        if self.lost.len() >= MAX_LOST {
+            self.lost.remove(0);
+        }
+        self.lost.push((digest, epoch));
     }
 
     /// An access request carrying a fresh key package, still to be signed by
@@ -974,7 +1100,7 @@ impl ChannelPeer {
         }
         self.settle_orphaned();
         self.parent = Some(parent);
-        self.head = Some(frame.clone());
+        self.advance(frame.clone());
         self.outbox.extend(
             frame
                 .into_deliveries()
@@ -1150,103 +1276,116 @@ impl ChannelPeer {
             return self.desynchronise(vault);
         };
         let head_digest = digest(head)?;
-        if incoming == head_digest {
-            return Ok(PeerEvent::Duplicate);
-        }
         let head_epoch = head.epoch;
-        if frame.epoch == head_epoch && frame.previous_frame_digest == head.previous_frame_digest {
-            if incoming > head_digest {
-                // The sibling lost. Whoever wrote the head publishes it again,
-                // so a host keeping the newest frame keeps the winner.
-                if head.signed_by == self.device {
-                    self.republish_head();
-                    self.save(vault)?;
-                }
-                return Ok(PeerEvent::Ignored);
+        for held in self.held() {
+            if digest(held)? == incoming {
+                return Ok(PeerEvent::Duplicate);
             }
-            let Some(parent) = &self.parent else {
-                return self.desynchronise(vault);
-            };
-            let parent = MemberRecord::open_sealed(parent, vault)?;
-            let joins_from_welcome = matches!(parent, MemberRecord::Waiting(_));
-            if joins_from_welcome && frame.join_material().is_none() {
-                // The copy carrying the Welcome for this device follows.
-                return Ok(PeerEvent::Ignored);
-            }
-            let replaced = std::mem::replace(&mut self.record, parent);
-            let applied = if joins_from_welcome {
-                self.receive_welcome(frame, incoming, vault)
-            } else {
-                self.apply_commit(frame, allowed, vault)
-            };
-            return match applied {
-                Ok(PeerEvent::Ignored | PeerEvent::Desynchronised) | Err(_) => {
-                    self.record = replaced;
-                    self.desynchronise(vault)
-                }
-                Ok(event) => {
-                    // What this device sealed under the branch that lost is
-                    // handed to the members with its next commit.
-                    self.orphan(&replaced);
-                    self.settle_orphaned();
-                    self.save(vault)?;
-                    Ok(event)
-                }
-            };
         }
-        if frame.epoch == head_epoch {
-            // Participants committed this epoch each on their own head, so the
-            // two commits never met again. They compete like siblings, by the
-            // lower digest of the branch they reached; this device holds the
-            // lower one and publishes it again for a host that kept the other,
-            // or the higher one and cannot reach the frame from where it
-            // stands, so it starts over and asks again.
-            if incoming > head_digest {
-                if head.signed_by == self.device {
-                    self.republish_head();
-                    self.save(vault)?;
-                }
+        if let Some(&(_, from)) = self
+            .lost
+            .iter()
+            .find(|(lost, _)| *lost == frame.previous_frame_digest)
+        {
+            // It went on from a commit that lost against this branch, so it
+            // lost too. Its author hears this branch's frame at the point of
+            // divergence again and starts over.
+            self.lost_against(incoming, from);
+            self.republish_from(from);
+            self.save(vault)?;
+            return Ok(PeerEvent::Ignored);
+        }
+        let sibling = match self.held_at(frame.epoch) {
+            Some(ours) if ours.previous_frame_digest == frame.previous_frame_digest => {
+                Some(digest(ours)?)
+            }
+            _ => None,
+        };
+        if let Some(ours) = sibling {
+            // The two branches diverged right below this frame: the lower
+            // of the two children of their last shared frame wins.
+            if incoming > ours {
+                // Whoever committed on this branch since publishes it again,
+                // so a host keeping the newest frame keeps the winner and
+                // the device that went on from the loser hears it.
+                self.lost_against(incoming, frame.epoch);
+                self.republish_from(frame.epoch);
+                self.save(vault)?;
                 return Ok(PeerEvent::Ignored);
             }
+            if frame.epoch == head_epoch {
+                return self.replace_head(frame, incoming, allowed, vault);
+            }
+            // This device went on from a commit that lost. It cannot follow
+            // the winner from where it stands, so it starts over and asks
+            // again, handing over what it sealed on its branch once it is
+            // back. Ignoring the winner as old would leave it on a branch no
+            // other participant follows, sealing under keys none of them
+            // hold.
             return self.desynchronise(vault);
         }
-        if frame.epoch.saturating_add(1) == head_epoch && incoming != head.previous_frame_digest {
-            // A commit for the epoch this device's head was committed on, and
-            // not the frame the head follows: this device committed on top of
-            // its own commit before the other one reached it. The two compete
-            // like siblings; when the other is lower, everything this device
-            // built on its own lost, and it cannot reach the winner from where
-            // it stands, so it starts over and asks again. Ignoring it as old
-            // would leave this device on a branch no other participant
-            // follows, sealing what it writes under keys none of them hold.
-            if incoming < head.previous_frame_digest {
-                return self.desynchronise(vault);
-            }
+        if frame.epoch == head_epoch.saturating_add(1) && frame.previous_frame_digest == head_digest
+        {
+            return self.apply_commit(frame, allowed, vault);
+        }
+        if frame.epoch > head_epoch.saturating_add(1) {
+            // The commits between are gone: a host keeps only the newest.
+            return self.desynchronise(vault);
+        }
+        // The frame's branch split from this one below the frames held here
+        // that it can be compared with: the frame it follows is not one this
+        // device holds, though it holds that epoch's. Which branch won is
+        // decided at the point of divergence, by a device that holds both
+        // children there; publishing this branch again lets the other side
+        // decide. A frame older than anything held here is of no concern.
+        let oldest = self.held().next().map_or(head_epoch, |frame| frame.epoch);
+        if frame.epoch > oldest {
+            self.republish_from(oldest);
+            self.save(vault)?;
+        }
+        Ok(PeerEvent::Ignored)
+    }
+
+    /// A commit for the head's epoch, following the frame the head follows,
+    /// with a lower digest: it replaces the head.
+    fn replace_head(
+        &mut self,
+        frame: MlsGovernanceFrame,
+        incoming: [u8; 32],
+        allowed: Option<&BTreeSet<Ed25519PublicKey>>,
+        vault: &VaultKey,
+    ) -> Result<PeerEvent> {
+        let Some(parent) = &self.parent else {
+            return self.desynchronise(vault);
+        };
+        let parent = MemberRecord::open_sealed(parent, vault)?;
+        let joins_from_welcome = matches!(parent, MemberRecord::Waiting(_));
+        if joins_from_welcome && frame.join_material().is_none() {
+            // The copy carrying the Welcome for this device follows.
             return Ok(PeerEvent::Ignored);
         }
-        if frame.epoch < head_epoch {
-            return Ok(PeerEvent::Ignored);
-        }
-        if frame.epoch == head_epoch.saturating_add(1) {
-            if frame.previous_frame_digest == head_digest {
-                return self.apply_commit(frame, allowed, vault);
+        let replaced = std::mem::replace(&mut self.record, parent);
+        let lost = self.head.take();
+        let applied = if joins_from_welcome {
+            self.receive_welcome(frame, incoming, vault)
+        } else {
+            self.apply_commit(frame, allowed, vault)
+        };
+        match applied {
+            Ok(PeerEvent::Ignored | PeerEvent::Desynchronised) | Err(_) => {
+                self.record = replaced;
+                self.head = lost;
+                self.desynchronise(vault)
             }
-            // It follows a sibling of the head: this branch lost when that
-            // sibling's digest is lower, and the frame's when it is higher.
-            if frame.previous_frame_digest < head_digest {
-                return self.desynchronise(vault);
-            }
-            // The frame's author went on from a sibling that lost: whoever
-            // wrote the head publishes it again, so that author hears the
-            // winner and starts over.
-            if head.signed_by == self.device {
-                self.republish_head();
+            Ok(event) => {
+                // What this device sealed under the branch that lost is
+                // handed to the members with its next commit.
+                self.orphan(&replaced);
+                self.settle_orphaned();
                 self.save(vault)?;
+                Ok(event)
             }
-            return Ok(PeerEvent::Ignored);
         }
-        // The commits between are gone: a host keeps only the newest.
-        self.desynchronise(vault)
     }
 
     /// Apply `frame`'s commit to the group held now, after checking its MLS
@@ -1319,7 +1458,7 @@ impl ChannelPeer {
         })?;
         if removes_me {
             self.record = MemberRecord::Removed;
-            self.head = None;
+            self.forget_branch();
             self.parent = None;
             self.seen_epoch = Some(frame.epoch);
             self.save(vault)?;
@@ -1338,7 +1477,7 @@ impl ChannelPeer {
             !added.contains(device) || admitted_with(group, device, request)
         });
         self.parent = Some(parent);
-        self.head = Some(frame);
+        self.advance(frame);
         self.settle_orphaned();
         self.save(vault)?;
         Ok(PeerEvent::Advanced { epoch })
@@ -1375,7 +1514,7 @@ impl ChannelPeer {
                 let epoch = group.epoch();
                 debug_assert_eq!(epoch, frame.epoch, "{incoming:?}");
                 self.record = MemberRecord::Joined(Box::new(group));
-                self.head = Some(frame);
+                self.restart_branch(frame);
                 self.parent = Some(parent);
                 self.settle_orphaned();
                 self.save(vault)?;
@@ -1397,7 +1536,7 @@ impl ChannelPeer {
             MemberRecord::Waiting(Box::new(MemberKey::for_device(&self.device)?)),
         );
         self.orphan(&left);
-        self.head = None;
+        self.forget_branch();
         self.parent = None;
         self.save(vault)?;
         Ok(PeerEvent::Desynchronised)

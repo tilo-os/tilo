@@ -436,11 +436,13 @@ fn concurrent_commits_on_one_epoch_converge_on_the_lower_digest() {
     }
 }
 
-/// Two participants commit a later change on the epoch each holds, so the
-/// commits follow different frames and neither can be applied on the other.
-/// They compete by the digest each reached: the device holding the lower one
-/// keeps it and publishes it again, the other starts over and is admitted
-/// again, and what it sealed under the branch it left stays readable.
+/// Two participants each commit twice on the epoch they share, neither
+/// hearing the other, so their commits for epoch 3 follow different frames
+/// and neither can be applied on the other. Neither decides on those: the
+/// branches compete where they diverged, at their commits for epoch 2. Each
+/// publishes its branch again, and the device whose commit there is the
+/// higher starts over on hearing the other's; what it sealed under the
+/// branch it left stays readable.
 #[test]
 fn commits_for_one_epoch_on_different_heads_keep_the_lower_digest() {
     let channel = ChannelId::new();
@@ -462,7 +464,10 @@ fn commits_for_one_epoch_on_different_heads_keep_the_lower_digest() {
     bob.peer.learn_request(request, &vault()).unwrap();
     alice.peer.reconcile_now(&everyone, &vault()).unwrap();
     bob.peer.reconcile_now(&everyone, &vault()).unwrap();
-    assert_eq!((alice.take()[0].epoch, bob.take()[0].epoch), (2, 2));
+    let (alice_2, bob_2) = (alice.take(), bob.take());
+    assert_eq!((alice_2[0].epoch, bob_2[0].epoch), (2, 2));
+    let head = |frames: &[MlsGovernanceFrame]| frames[0].digest().unwrap();
+    let alice_won = head(&alice_2) < head(&bob_2);
 
     // A second change, committed by both on the epoch each holds: two commits
     // for epoch 3 that followed different frames.
@@ -473,51 +478,49 @@ fn commits_for_one_epoch_on_different_heads_keep_the_lower_digest() {
     bob.peer.reconcile_now(&everyone, &vault()).unwrap();
     let from_alice = alice.take();
     let from_bob = bob.take();
-    let head = |frames: &[MlsGovernanceFrame]| frames[0].digest().unwrap();
     assert_eq!((from_alice[0].epoch, from_bob[0].epoch), (3, 3));
     assert_ne!(
         from_alice[0].previous_frame_digest,
         from_bob[0].previous_frame_digest
     );
-    let alice_won = head(&from_alice) < head(&from_bob);
     let sealed = if alice_won {
         bob.seal("under the branch that lost")
     } else {
         alice.seal("under the branch that lost")
     };
 
-    if alice_won {
-        assert_eq!(
-            bob.receive(&from_alice[0], &everyone).unwrap(),
-            PeerEvent::Desynchronised
-        );
-        assert_eq!(bob.peer.access(), Access::Waiting);
-        assert_eq!(
-            alice.receive(&from_bob[0], &everyone).unwrap(),
-            PeerEvent::Ignored
-        );
-        assert!(
-            alice
-                .take()
-                .iter()
-                .any(|frame| frame.digest().unwrap() == head(&from_alice))
-        );
+    // The commits for epoch 3 decide nothing; each device publishes its
+    // branch again, its commit for epoch 2 included.
+    assert_eq!(
+        alice.receive(&from_bob[0], &everyone).unwrap(),
+        PeerEvent::Ignored
+    );
+    assert_eq!(
+        bob.receive(&from_alice[0], &everyone).unwrap(),
+        PeerEvent::Ignored
+    );
+    let again_from_alice = alice.take();
+    let again_from_bob = bob.take();
+    let carries = |frames: &[MlsGovernanceFrame], ours: &[MlsGovernanceFrame]| {
+        frames
+            .iter()
+            .any(|frame| frame.digest().unwrap() == head(ours))
+    };
+    assert!(carries(&again_from_alice, &alice_2));
+    assert!(carries(&again_from_bob, &bob_2));
+    let (loser, winning) = if alice_won {
+        (&mut bob, &again_from_alice)
     } else {
-        assert_eq!(
-            alice.receive(&from_bob[0], &everyone).unwrap(),
-            PeerEvent::Desynchronised
-        );
-        assert_eq!(alice.peer.access(), Access::Waiting);
-        assert_eq!(
-            bob.receive(&from_alice[0], &everyone).unwrap(),
-            PeerEvent::Ignored
-        );
-        assert!(
-            bob.take()
-                .iter()
-                .any(|frame| frame.digest().unwrap() == head(&from_bob))
-        );
-    }
+        (&mut alice, &again_from_bob)
+    };
+    let events: Vec<PeerEvent> = winning
+        .iter()
+        .filter(|frame| frame.join_material().is_none())
+        .map(|frame| loser.receive(frame, &everyone).unwrap())
+        .collect();
+    assert!(events.contains(&PeerEvent::Desynchronised), "{events:?}");
+    assert_eq!(loser.peer.access(), Access::Waiting);
+
     // The device that started over is admitted again and hands the members
     // what it sealed under the branch it left.
     settle(&mut [&mut alice, &mut bob], &everyone);
@@ -1010,4 +1013,109 @@ fn the_founder_is_in_the_group_with_the_key_it_asked_with() {
     assert!(bob.peer.asking(&both).is_empty());
     assert!(!bob.peer.reconcile_now(&both, &vault()).unwrap().changed());
     assert!(bob.take().is_empty());
+}
+
+/// Two participants admit a device on one epoch at once, and the one whose
+/// commit loses goes on by `depth` more commits on top of its own, sealing
+/// content at each, before anything of the winner reaches it. Every frame of
+/// the loser reaches the winner, which stays where it is and publishes its
+/// commit at the point of divergence again; that reaches the loser, a whole
+/// `depth` epochs below its head, and it starts over. Once it is back it is
+/// on the winning branch with the keys every other member holds, and all it
+/// sealed on its own branch opens for them.
+fn a_device_that_went_on_from_a_lost_commit_by(depth: u8) {
+    let channel = ChannelId::new();
+    let mut alice = Device::creating(1, channel);
+    let mut bob = Device::waiting(2, channel);
+    let mut dave = Device::waiting(4, channel);
+    let mut joiners: Vec<Device> = (0..depth)
+        .map(|seed| Device::waiting(10 + seed, channel))
+        .collect();
+    let both = allowed(&[&alice, &bob]);
+    alice.peer.learn_request(bob.ask(false), &vault()).unwrap();
+    alice.peer.reconcile_now(&both, &vault()).unwrap();
+    deliver(&alice.take(), &mut [&mut bob], &both);
+
+    let mut named: Vec<&Device> = vec![&alice, &bob, &dave];
+    named.extend(joiners.iter());
+    let everyone = allowed(&named);
+    let request = dave.ask(false);
+    alice.peer.learn_request(request.clone(), &vault()).unwrap();
+    bob.peer.learn_request(request, &vault()).unwrap();
+    alice.peer.reconcile_now(&everyone, &vault()).unwrap();
+    bob.peer.reconcile_now(&everyone, &vault()).unwrap();
+    let from_alice = alice.take();
+    let from_bob = bob.take();
+    let head = |frames: &[MlsGovernanceFrame]| frames[0].digest().unwrap();
+    let alice_won = head(&from_alice) < head(&from_bob);
+    let (winner, loser, mut went_on) = if alice_won {
+        (&mut alice, &mut bob, from_bob)
+    } else {
+        (&mut bob, &mut alice, from_alice)
+    };
+
+    // The loser admits one device after another on its own branch, and seals
+    // content under every epoch it reaches there.
+    let mut sealed = vec![loser.seal("at the lost commit")];
+    for joiner in &mut joiners {
+        loser
+            .peer
+            .learn_request(joiner.ask(false), &vault())
+            .unwrap();
+        loser.peer.reconcile_now(&everyone, &vault()).unwrap();
+        went_on.extend(loser.take());
+        sealed.push(loser.seal("further on the branch that lost"));
+    }
+    assert_eq!(loser.epoch(), Some(2 + u64::from(depth)));
+
+    // Everything the loser published reaches the winner, which keeps its
+    // branch and publishes the frame the branches diverged at again.
+    for frame in went_on
+        .iter()
+        .filter(|frame| frame.join_material().is_none())
+    {
+        assert_eq!(
+            winner.receive(frame, &everyone).unwrap(),
+            PeerEvent::Ignored
+        );
+        assert_eq!(winner.epoch(), Some(2));
+    }
+    let republished = winner.take();
+    let at_divergence = republished
+        .iter()
+        .find(|frame| frame.epoch == 2 && frame.join_material().is_none())
+        .expect("the winner publishes its commit at the point of divergence again");
+
+    // That reaches the loser, `depth` epochs below its head.
+    assert_eq!(
+        loser.receive(at_divergence, &everyone).unwrap(),
+        PeerEvent::Desynchronised
+    );
+    assert_eq!(loser.peer.access(), Access::Waiting);
+
+    settle(&mut [&mut alice, &mut bob], &everyone);
+    assert_eq!(alice.epoch(), bob.epoch());
+    let (alice_keys, bob_keys) = (alice.peer.keyring().unwrap(), bob.peer.keyring().unwrap());
+    assert!(alice_keys.missing_from(bob_keys).is_empty());
+    assert!(bob_keys.missing_from(alice_keys).is_empty());
+    let fresh = alice.seal("after it settled");
+    assert_eq!(bob.opens(&fresh).as_deref(), Some("after it settled"));
+    for device in [&alice, &bob] {
+        for sealed in &sealed {
+            assert!(
+                device.opens(sealed).is_some(),
+                "content sealed on the branch that lost opens for every member"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_device_that_went_on_two_commits_from_a_lost_commit_starts_over() {
+    a_device_that_went_on_from_a_lost_commit_by(2);
+}
+
+#[test]
+fn a_device_that_went_on_three_commits_from_a_lost_commit_starts_over() {
+    a_device_that_went_on_from_a_lost_commit_by(3);
 }
