@@ -2501,19 +2501,14 @@ impl Worker {
                 let policy = self
                     .policy_for(workspace_id, who, workspace, None)
                     .map_err(Outcome::Rejected)?;
-                let permissions = bounded::bounded_permissions(&policy, who.agent.as_deref());
+                let permissions =
+                    bounded::bounded_permissions(&policy, who).map_err(Outcome::Rejected)?;
                 if permissions.answer(&TreePath::root().app(app), ActionKind::Undoable)
                     != Answer::Allow
                 {
                     return Err(Outcome::Rejected(ActionHostError::NotPermitted));
                 }
-                let actor = crate::ReplicaActor::Member {
-                    standing: policy.standing,
-                    sandbox: policy.sandbox,
-                    unix_time: policy.unix_time,
-                    agent: who.agent.clone(),
-                    agent_name: who.agent_name.clone(),
-                };
+                let actor = bounded::member_actor(&policy, who).map_err(Outcome::Rejected)?;
                 (who.person.clone(), actor, Some(permissions))
             }
         };

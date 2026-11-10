@@ -43,6 +43,9 @@ const STANDING_FRESHNESS_SECS: u64 = 30;
 /// person's device is admitted, and the agent acting for them, if one is.
 #[derive(Clone)]
 pub(super) struct Bounded {
+    /// The caller as the transport admitted it: what decides whom the host
+    /// acts for ([`Caller::invoker`]).
+    pub(super) caller: Caller,
     /// The person, on the device the request came from: what the workspace's
     /// policy is asked about.
     pub(super) person_caller: Caller,
@@ -279,21 +282,46 @@ pub(super) fn question(
     })
 }
 
-/// The person's permissions as `policy` gives them, bounded as an agent's are
-/// when `agent` acts for them.
+/// `who`'s standing as the host decides for them: the person's standing as
+/// `policy` gives it now, held to the bounds the one reading of a caller
+/// gives ([`Caller::invoker`]): for an agent, the delegation a device gives
+/// its agents. Refused when the policy is someone else's.
+pub(super) fn bounded_standing(
+    policy: &super::ViewReadPolicy,
+    who: &Bounded,
+) -> Result<policy::Standing, ActionHostError> {
+    policy
+        .standing
+        .clone()
+        .bounded_as(&who.caller.invoker(&policy.workspace))
+        .ok_or(ActionHostError::NotPermitted)
+}
+
+/// `who`'s permissions under `policy` ([`bounded_standing`]).
 pub(super) fn bounded_permissions(
     policy: &super::ViewReadPolicy,
-    agent: Option<&str>,
-) -> ui::permissions::PermissionContext {
-    let permissions = policy.permissions();
-    match agent {
-        Some(agent) => {
-            let bound =
-                policy::roles::agent_turn(&policy.workspace, agent, &policy.standing.person, &[]);
-            permissions.acting_as(bound.subject, bound.grants)
-        }
-        None => permissions,
+    who: &Bounded,
+) -> Result<ui::permissions::PermissionContext, ActionHostError> {
+    Ok(super::ViewReadPolicy {
+        standing: bounded_standing(policy, who)?,
+        ..policy.clone()
     }
+    .permissions())
+}
+
+/// The replica actor the host runs `who`'s actions as, on their standing
+/// under `policy` ([`bounded_standing`]).
+pub(super) fn member_actor(
+    policy: &super::ViewReadPolicy,
+    who: &Bounded,
+) -> Result<crate::ReplicaActor, ActionHostError> {
+    Ok(crate::ReplicaActor::Member {
+        standing: bounded_standing(policy, who)?,
+        sandbox: policy.sandbox.clone(),
+        unix_time: policy.unix_time,
+        agent: who.agent.clone(),
+        agent_name: who.agent_name.clone(),
+    })
 }
 
 impl Worker {
@@ -305,6 +333,7 @@ impl Worker {
         match caller.principal() {
             CallerPrincipal::Person(person) if *person == self.participant => None,
             CallerPrincipal::Person(person) => Some(Bounded {
+                caller: caller.clone(),
                 person_caller: caller.clone(),
                 person: person.clone(),
                 agent: None,
@@ -316,6 +345,7 @@ impl Worker {
                     return None;
                 };
                 Some(Bounded {
+                    caller: caller.clone(),
                     person: person.clone(),
                     agent: Some(agent.clone()),
                     agent_name: caller.agent_name().map(str::to_owned),
@@ -391,11 +421,8 @@ impl Worker {
             .link
             .get()
             .and_then(|link| link.workspace_policy(workspace_id, &who.person_caller))
-            .filter(|policy| policy.standing.person == who.person)
-            .is_some_and(|policy| {
-                bounded_permissions(&policy, who.agent.as_deref()).answer(&TreePath::root(), kind)
-                    == Answer::Allow
-            })
+            .and_then(|policy| bounded_permissions(&policy, &who).ok())
+            .is_some_and(|permissions| permissions.answer(&TreePath::root(), kind) == Answer::Allow)
     }
 
     /// Whether a governance on this host answers for who is in `workspace_id`.
@@ -468,13 +495,7 @@ impl Worker {
                 &holder.app_id,
                 &holder.cluster_id,
                 &who.person,
-                &crate::ReplicaActor::Member {
-                    standing: policy.standing.clone(),
-                    sandbox: policy.sandbox.clone(),
-                    unix_time: policy.unix_time,
-                    agent: who.agent.clone(),
-                    agent_name: who.agent_name.clone(),
-                },
+                &member_actor(&policy, who)?,
                 Seed::Existing {
                     record: reads::record_id(&holder.record).map_err(unavailable)?,
                     changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
@@ -632,7 +653,7 @@ impl Worker {
         let policy = self
             .policy_at(workspace_id, who, route)
             .map_err(Outcome::Rejected)?;
-        let permissions = bounded_permissions(&policy, who.agent.as_deref());
+        let permissions = bounded_permissions(&policy, who).map_err(Outcome::Rejected)?;
         for (changed, mutation) in &taken {
             let before = state.records.get(changed).map_or(&[][..], Vec::as_slice);
             let refused = refused_writes(

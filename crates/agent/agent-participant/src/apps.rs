@@ -188,12 +188,13 @@ pub enum ReplicaActor {
     },
     /// A person whose action the host runs for them, or an agent acting for
     /// them: their own current standing and the workspace's sandbox, as the
-    /// workspace's policy gave them to the host. An agent holds that standing
-    /// bounded as every agent's is ([`policy::roles::agent_turn`]: the
-    /// editor preset at most), is offered only what reaches agents, and is
-    /// who the changes it makes are by, for the person.
+    /// workspace's policy gave them to the host, bounded as the host reads
+    /// the caller ([`tilo_actions::remote::Caller::invoker`]: an agent's by
+    /// the editor preset at most). An agent is offered only what reaches
+    /// agents, and is who the changes it makes are by, for the person.
     Member {
-        /// The person's current standing in the workspace.
+        /// The person's current standing in the workspace, bounded by
+        /// whoever acts for them.
         standing: policy::Standing,
         /// The workspace's sandbox capabilities.
         sandbox: Vec<collab_types::caps::CapOverride>,
@@ -246,16 +247,20 @@ pub struct Replica {
     /// reads go through the record's mounted component.
     offers_reads: bool,
     /// It also runs the record's effects that answer ([`offered_to_agents`]),
-    /// waiting for what they end as: an agent's, and the host's for its own
-    /// person, whose callers there (an agent's session through one of their
-    /// devices, a script) have no window to run them in. The answer is the
-    /// same as a window's.
+    /// waiting for what they end as: whoever the host runs a record for, a
+    /// person or an agent acting for one, has no window of it there (a
+    /// script, an agent's session, a key), and is offered what a window
+    /// offers them, as the desktop's broker does. The answer is the same as
+    /// a window's. A bot's steps read through [`Self::offers_reads`].
     runs_effects: bool,
     /// An agent's or a bot's: offered only what reaches agents. An agent's
-    /// also runs the record's views that answer and the effects its host
-    /// renders; a view moves a window, which the host's person has their
-    /// own of.
+    /// also runs the effects its host renders.
     automated: bool,
+    /// It also runs the record's views that answer: for whoever has no
+    /// window of the record there, an agent or a member reaching the host
+    /// with no page of theirs open. A view moves a window, which the host's
+    /// own person has their own of.
+    runs_views: bool,
 }
 
 /// The parameter an effect is told where on a device to write by. An agent
@@ -422,9 +427,10 @@ impl Replica {
             .ok_or_else(|| AppError::UnknownApp(app_id.to_owned()))?;
         let offers_reads = matches!(actor, ReplicaActor::Bot { .. });
         let for_agent = matches!(actor, ReplicaActor::Member { agent: Some(_), .. });
-        let runs_effects = for_agent || matches!(actor, ReplicaActor::Agent | ReplicaActor::Owner);
+        let runs_effects = !matches!(actor, ReplicaActor::Bot { .. });
         let automated =
             for_agent || matches!(actor, ReplicaActor::Agent | ReplicaActor::Bot { .. });
+        let runs_views = matches!(actor, ReplicaActor::Agent | ReplicaActor::Member { .. });
         let (invoker, permissions) = replica_standing(actor, workspace, participant);
         let (checkout, bytes, created) = seeded(definition, kind, workspace, participant, seed)?;
         let opening = AttachedView::opening(definition, workspace, checkout, bytes)
@@ -445,6 +451,7 @@ impl Replica {
             offers_reads,
             runs_effects,
             automated,
+            runs_views,
         })
     }
 
@@ -545,9 +552,7 @@ impl Replica {
                     || (self.offers_reads && descriptor.contract.kind == policy::ActionKind::Read)
                     || (self.runs_effects && offered_to_agents(descriptor))
             }
-            tilo_actions::OperationKind::View => {
-                self.runs_effects && self.automated && offered_to_agents(descriptor)
-            }
+            tilo_actions::OperationKind::View => self.runs_views && offered_to_agents(descriptor),
         }
     }
 
@@ -573,7 +578,7 @@ impl Replica {
             return Ok(false);
         };
         if descriptor.kind == tilo_actions::OperationKind::Document
-            || (descriptor.kind == tilo_actions::OperationKind::View && !self.automated)
+            || (descriptor.kind == tilo_actions::OperationKind::View && !self.runs_views)
         {
             return Ok(false);
         }
@@ -1002,9 +1007,19 @@ fn replica_standing(
     let mut invoker = tilo_actions::ActionInvoker::actor(participant);
     let permissions = match actor {
         ReplicaActor::Agent => {
-            let bound = policy::roles::agent_turn(workspace, participant, participant, &[]);
-            PermissionContext::member_of(workspace, participant, Role::Editor)
-                .acting_as(policy::Subject::agent(participant), bound.grants)
+            let member = PermissionContext::member_of(workspace, participant, Role::Editor);
+            let standing = member
+                .standing()
+                .clone()
+                .bounded_as(&policy::Invoker::session_agent(
+                    workspace,
+                    participant,
+                    participant,
+                ));
+            match standing {
+                Some(standing) => member.with_standing(standing),
+                None => member.read_only(),
+            }
         }
         ReplicaActor::Owner => PermissionContext::member_of(workspace, participant, Role::Owner),
         ReplicaActor::Bot {
@@ -1025,25 +1040,25 @@ fn replica_standing(
             agent_name,
         } => {
             let person = standing.person.clone();
+            // The host bounded the standing as it reads the caller
+            // (`Caller::invoker`), and puts an ask to the person on their own
+            // devices when their agent acts.
             let permissions = PermissionContext::new(
                 ui::permissions::Actor::person(person.clone()).in_workspace(workspace),
                 sandbox,
                 standing,
             )
-            .at_unix_time(unix_time);
-            match agent {
-                Some(agent) => {
-                    let bound = policy::roles::agent_turn(workspace, &agent, &person, &[]);
-                    // Named as the host admitted it (`Caller::actor`), so
-                    // History reads the agent, for the person.
-                    invoker = tilo_actions::ActionInvoker::actor(format!("agent:{agent}"))
-                        .with_kind(tilo_actions::ActorKind::Agent)
-                        .acting_for(person)
-                        .named(agent_name);
-                    permissions.acting_as(bound.subject, bound.grants)
-                }
-                None => permissions,
+            .at_unix_time(unix_time)
+            .reaching_person();
+            if let Some(agent) = agent {
+                // Named as the host admitted it (`Caller::actor`), so
+                // History reads the agent, for the person.
+                invoker = tilo_actions::ActionInvoker::actor(format!("agent:{agent}"))
+                    .with_kind(tilo_actions::ActorKind::Agent)
+                    .acting_for(person)
+                    .named(agent_name);
             }
+            permissions
         }
     };
     (invoker, permissions)

@@ -357,6 +357,9 @@ pub(crate) enum Outcome {
     Failed(ActionFailure),
 }
 
+/// The code a door refuses an invocation the grants do not admit with.
+const PERMISSION_DENIED: &str = "permission_denied";
+
 pub(crate) fn door_outcome(error: &DoorError) -> Outcome {
     match error {
         DoorError::Unknown(_) | DoorError::UnregisteredType(_) => {
@@ -370,6 +373,10 @@ pub(crate) fn door_outcome(error: &DoorError) -> Outcome {
             Outcome::Rejected(ActionHostError::InvalidRequest {
                 reason: error.to_string(),
             })
+        }
+        // The grants refused it: not the caller's, whenever they ask again.
+        DoorError::Unavailable { code, .. } if code == PERMISSION_DENIED => {
+            Outcome::Rejected(ActionHostError::NotPermitted)
         }
         DoorError::Unavailable { reason, .. } => Outcome::Rejected(ActionHostError::Unavailable {
             reason: reason.clone(),
