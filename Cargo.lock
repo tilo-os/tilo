@@ -18988,6 +18988,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-formats"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "tilo-resource",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-frame-metrics"
 version = "0.1.0"
 dependencies = [
@@ -20917,17 +20928,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-formats"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
- "tilo-resource",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-resource"
 version = "0.1.0"
 dependencies = [
@@ -22187,9 +22187,9 @@ dependencies = [
  "tilo-doc",
  "tilo-engine-loader",
  "tilo-face",
- "tilo-formats",
  "tilo-files",
  "tilo-font-catalog",
+ "tilo-formats",
  "tilo-headless-schema",
  "tilo-highlight",
  "tilo-highlight-grammars",
