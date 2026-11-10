@@ -666,6 +666,43 @@ pub async fn inspect_invitation(post: Function, invitation: Vec<u8>) -> Result<S
     Ok(join_reply_json(reply).to_string())
 }
 
+/// Which certificate the page's session starts with as it comes back to the host whose own
+/// certificate is `hostCert` (JSON), through the one rule every device keeps
+/// ([`tilo_session_host::device::reconnecting`]): `kept` is the `{cert, hostCert}` this device
+/// kept, `admitted` the one an entry just admitted it under, and `withRoot` whether the page holds
+/// the person's root to certify anew. Answers `admitted`, `adopt-host`, `kept`, `certify` or
+/// `host-changed`. Kept text that is no certificate is no certificate kept.
+///
+/// # Errors
+///
+/// Throws for a host certificate that is none, or an admitted certificate that is none.
+#[wasm_bindgen(js_name = reconnectCertificate)]
+pub fn reconnect_certificate(
+    kept: Option<String>,
+    admitted: Option<String>,
+    host_cert: &str,
+    with_root: bool,
+) -> Result<String, JsError> {
+    use tilo_session_host::device::{Held, reconnecting};
+    let host: DeviceCert = serde_json::from_str(host_cert).map_err(js_error)?;
+    let kept: Option<Held> = kept.and_then(|text| serde_json::from_str(&text).ok());
+    let admitted: Option<Held> = admitted
+        .map(|text| serde_json::from_str(&text))
+        .transpose()
+        .map_err(js_error)?;
+    let answer = reconnecting(
+        kept.as_ref(),
+        admitted.as_ref(),
+        &host,
+        with_root,
+        ui::time::unix_now_ns(),
+    );
+    serde_json::to_value(answer)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .ok_or_else(|| js_error("the answer has no name"))
+}
+
 /// What a page says as it accepts an invitation ([`accept_invitation`]): the certificate this
 /// device holds (`{cert, hostCert}` as the page keeps it, or as pairing certified it), the label a
 /// certificate made now carries, the name the workspace's people see, and the pre-admission's

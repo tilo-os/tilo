@@ -414,6 +414,65 @@ pub struct Held {
     pub host_cert: Option<DeviceCert>,
 }
 
+/// Whether `kept` and `current` are one host's certificates: the same person's same device.
+#[must_use]
+pub fn same_host(kept: &DeviceCert, current: &DeviceCert) -> bool {
+    kept.user_public_key == current.user_public_key
+        && kept.device_public_key == current.device_public_key
+}
+
+/// Whether `cert` lasts past the next day from `now_ns`, so it is not certified anew yet.
+fn lasting(cert: &DeviceCert, now_ns: u64) -> bool {
+    cert.expires_at_ns
+        .is_none_or(|end| end > now_ns.saturating_add(RENEWING_NS))
+}
+
+/// Which certificate a device's session starts with, as it comes back to a host it was in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Reconnecting {
+    /// The one the host just admitted it under (an invitation, its door, a pairing): kept from now
+    /// on.
+    Admitted,
+    /// As [`Self::Admitted`], after moving what the device kept for the host before it (set up
+    /// again since) aside, never handing it to this one.
+    AdoptHost,
+    /// The one it kept.
+    Kept,
+    /// One certified now: by the person's root where the device holds it, else by pairing.
+    Certify,
+    /// None: another host answers where the kept one did, and nothing admitted this device to it.
+    /// What was kept stays for the host it belongs to.
+    HostChanged,
+}
+
+/// How a device comes back to the host whose own certificate is `host`: with what it `kept`, what
+/// an entry just `admitted` it under, or one certified now. A certificate a root renews (`with_root`)
+/// is certified anew within a day of its end; one certified by pairing serves until the host
+/// refuses it.
+#[must_use]
+pub fn reconnecting(
+    kept: Option<&Held>,
+    admitted: Option<&Held>,
+    host: &DeviceCert,
+    with_root: bool,
+    now_ns: u64,
+) -> Reconnecting {
+    let answering = admitted
+        .and_then(|admitted| admitted.host_cert.as_ref())
+        .unwrap_or(host);
+    let kept_elsewhere = kept
+        .and_then(|kept| kept.host_cert.as_ref())
+        .is_some_and(|kept| !same_host(kept, answering));
+    match (kept, admitted) {
+        (_, Some(_)) if kept_elsewhere => Reconnecting::AdoptHost,
+        (_, Some(_)) => Reconnecting::Admitted,
+        (Some(_), None) if kept_elsewhere => Reconnecting::HostChanged,
+        (Some(kept), None) if !with_root || lasting(&kept.cert, now_ns) => Reconnecting::Kept,
+        _ => Reconnecting::Certify,
+    }
+}
+
 /// The certificate `device` enters a workspace of the host `host` with: the one it `held` from that
 /// same host where it still serves (it certifies this very key, as `root`'s person when a root is
 /// at hand, and does not end within a day), else one `root` certifies now, labeled `label`. A
@@ -433,16 +492,15 @@ pub async fn entering_certificate(
     now_ns: u64,
 ) -> Result<DeviceCert, HostRefusal> {
     let serves = |held: &&Held| {
-        let same_host = held.host_cert.as_ref().is_some_and(|kept| {
-            kept.user_public_key == host.user_public_key
-                && kept.device_public_key == host.device_public_key
-        });
+        let same_host = held
+            .host_cert
+            .as_ref()
+            .is_some_and(|kept| same_host(kept, host));
         let person = root.is_none_or(|root| held.cert.user_public_key == root.device_public_key());
-        let lasting = held
-            .cert
-            .expires_at_ns
-            .is_none_or(|end| end > now_ns.saturating_add(RENEWING_NS));
-        held.cert.device_public_key == device.device_public_key() && same_host && person && lasting
+        held.cert.device_public_key == device.device_public_key()
+            && same_host
+            && person
+            && lasting(&held.cert, now_ns)
     };
     if let Some(held) = held.filter(serves) {
         return Ok(held.cert.clone());
@@ -720,6 +778,78 @@ mod tests {
         assert_eq!(
             HostRefusal::of(&ActionHostError::StaleRevision).code,
             "stale_revision"
+        );
+    }
+
+    fn cert(device: u8, expires_at_ns: Option<u64>) -> DeviceCert {
+        DeviceCert {
+            user_public_key: [1; 32],
+            device_public_key: [device; 32],
+            device_label: "device".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns,
+            signature: [0; 64],
+            issuer: None,
+        }
+    }
+
+    fn held(device: u8, host: u8, expires_at_ns: Option<u64>) -> Held {
+        Held {
+            cert: cert(device, expires_at_ns),
+            host_cert: Some(cert(host, None)),
+        }
+    }
+
+    #[test]
+    fn a_device_comes_back_with_what_it_kept_from_that_host_alone() {
+        let host = cert(9, None);
+        let day = RENEWING_NS;
+        let now = 10 * day;
+        let kept = held(2, 9, None);
+        assert_eq!(
+            reconnecting(Some(&kept), None, &host, true, now),
+            Reconnecting::Kept
+        );
+        assert_eq!(
+            reconnecting(None, None, &host, true, now),
+            Reconnecting::Certify
+        );
+        // Another host answers where the kept one did: nothing kept is handed to it.
+        let elsewhere = held(2, 8, None);
+        assert_eq!(
+            reconnecting(Some(&elsewhere), None, &host, true, now),
+            Reconnecting::HostChanged
+        );
+        // Unless that host just admitted this device: what was kept moves aside.
+        let admitted = held(2, 9, None);
+        assert_eq!(
+            reconnecting(Some(&elsewhere), Some(&admitted), &host, true, now),
+            Reconnecting::AdoptHost
+        );
+        assert_eq!(
+            reconnecting(Some(&kept), Some(&admitted), &host, true, now),
+            Reconnecting::Admitted
+        );
+        // A root renews what ends within a day; a paired device goes on until refused.
+        let ending = held(2, 9, Some(now + day / 2));
+        assert_eq!(
+            reconnecting(Some(&ending), None, &host, true, now),
+            Reconnecting::Certify
+        );
+        assert_eq!(
+            reconnecting(Some(&ending), None, &host, false, now),
+            Reconnecting::Kept
+        );
+        assert_eq!(
+            reconnecting(
+                Some(&held(2, 9, Some(now + 3 * day))),
+                None,
+                &host,
+                true,
+                now
+            ),
+            Reconnecting::Kept
         );
     }
 

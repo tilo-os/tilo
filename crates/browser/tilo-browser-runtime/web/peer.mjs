@@ -140,12 +140,6 @@ const hostNamespace = (hostCert, slot) => {
 };
 /** The wasm runtime, loaded through the page host. */
 const pageRuntime = async desktop => (desktop ?? await import('./host.mjs')).loadRuntime?.();
-/** Whether a stored `{cert}` expires within a day (a page holding the root
- * then certifies itself anew). */
-function expiresWithinADay(stored) {
-  const expires = JSON.parse(stored)?.cert?.expires_at_ns;
-  return typeof expires === 'number' && expires / 1e6 < Date.now() + 86_400_000;
-}
 /** Ask for a new live grant this long before the current one expires. */
 const GRANT_RENEW_MS = 60_000;
 /** Rejoining the live plane: the first wait and the longest, exponential
@@ -477,6 +471,10 @@ async function connect({
   let channelVault = storage ? await vaultOf() : undefined;
   const post = httpsPost(origin, fetcher);
   const custodyForWasm = custody.kind === 'sealed-seed' ? await custody.unseal() : custody;
+  /** How this device comes back to the host answering as `hostCert` (JSON
+   * text), with what it `kept` and what an entry just `admitted` it under. */
+  const reconnecting = (kept, admitted, hostCert) =>
+    runtime.reconnectCertificate(kept ?? undefined, admitted ?? undefined, hostCert, Boolean(identity));
   // The colour this person's presence names, the runtime's for who they are
   // (their user root): the same one a native desktop draws them in. A
   // desktop settles everyone here over the whole workspace instead, so people
@@ -658,22 +656,22 @@ async function connect({
     }
     const admitted = deviceCertificate;
     deviceCertificate = undefined;
-    const answering = admitted ? JSON.parse(admitted).hostCert : host.hostCert;
-    if (existing && !sameHost(JSON.parse(existing).hostCert, answering)) {
-      // What this browser kept was certified by, and its record is pinned
-      // to, another host than the one answering at this origin now (it was
-      // set up again). Kept state is never handed to it, nor renewed for it.
-      // Only a device that host has just admitted (an invitation redeemed,
-      // its door, a pairing) goes on, in a namespace of its own.
-      if (!admitted) throw new AdmissionError('host-changed', HOST_CHANGED);
-      await adoptHost(answering);
-      existing = undefined;
+    // The one rule every device keeps as it comes back (`reconnectCertificate`
+    // in wasm): what this browser kept is never handed to another host than
+    // the one it was certified by, and only a device that host has just
+    // admitted (an invitation redeemed, its door, a pairing) goes on there,
+    // in a namespace of its own.
+    switch (reconnecting(existing, admitted, JSON.stringify((admitted && JSON.parse(admitted).hostCert) ?? host.hostCert))) {
+      case 'host-changed': throw new AdmissionError('host-changed', HOST_CHANGED);
+      case 'adopt-host':
+        await adoptHost(JSON.parse(admitted).hostCert);
+        // Falls through: the admitted certificate is kept in the new namespace.
+      case 'admitted':
+        await store.put(CERTIFICATE, admitted);
+        return admitted;
+      case 'kept': return existing;
+      default: break;
     }
-    if (admitted) {
-      await store.put(CERTIFICATE, admitted);
-      return admitted;
-    }
-    if (existing && !(identity && expiresWithinADay(existing))) return existing;
     const issued = identity
       ? await runtime.certifyWithRoot(post, identity, custodyForWasm, label)
       : await runtime.certifyDevice(userPublicKey, label, null, custodyForWasm, code => onPairingCode?.(code),
@@ -686,7 +684,7 @@ async function connect({
     // Kept as text: the peer starts from the exact certificate, whose
     // nanosecond timestamps a JavaScript number would round.
     const certified = await certificate();
-    if (!sameHost(JSON.parse(certified).hostCert, host.hostCert)) {
+    if (reconnecting(certified, undefined, JSON.stringify(host.hostCert)) === 'host-changed') {
       // Certified by another host than the one answering at this origin
       // now: that host would refuse the session, and the state kept for the
       // other one is never handed to it.
@@ -1240,7 +1238,7 @@ async function connect({
         // kept certificate left as it is.
         const answering = JSON.parse(await runtime.hostInfo(post));
         const kept = await store.get(CERTIFICATE);
-        if (kept && !sameHost(JSON.parse(kept).hostCert, answering.hostCert)) {
+        if (reconnecting(kept, undefined, JSON.stringify(answering.hostCert)) === 'host-changed') {
           if (!globalThis.location) throw new AdmissionError('host-changed', HOST_CHANGED);
           globalThis.location.reload();
           return {operationId: 'reauthenticate'};
@@ -1266,12 +1264,6 @@ async function connect({
 /** What a person is told when the host at an origin is no longer the one
  * this browser's kept state belongs to. */
 export const HOST_CHANGED = 'This workspace was reset since this browser last opened it. Reload the page to join it again.';
-/** Whether two host certificates name the same host (its person and device),
- * as the peer's saved record pins it; unknown when either is missing. */
-const sameHost = (kept, current) => !kept || !current
-  || (hexKey(kept.user_public_key) === hexKey(current.user_public_key)
-    && hexKey(kept.device_public_key) === hexKey(current.device_public_key));
-
 /** What a person is told when the host will not honour an invitation. */
 export const UNUSABLE_INVITATION = 'This invitation can’t be used: it was used already, expired or was withdrawn. Ask whoever sent it for a new one.';
 /** What a person is told when the host refuses to admit them with one. */

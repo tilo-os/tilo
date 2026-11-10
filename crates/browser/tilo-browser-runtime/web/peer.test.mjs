@@ -59,6 +59,20 @@ function fakeRuntime({phase = 'ready'} = {}) {
       return JSON.stringify({kind: 'invitation', room: WORKSPACE, workspaceId: '7', name: 'Acme', role: 'Editor', expiresAtNs: '9',
         members: 4, inviter: {name: 'Ada', userPublicKey: 'aa'.repeat(32)}});
     },
+    /** The shared rule of how a device comes back (tilo-session-host's
+     * `reconnecting`, tested there), as far as these tests lean on it. */
+    reconnectCertificate(kept, admitted, hostCert, withRoot) {
+      const same = (a, b) => !a || !b || (String(a.user_public_key) === String(b.user_public_key)
+        && String(a.device_public_key) === String(b.device_public_key));
+      const host = JSON.parse(hostCert);
+      const keptCert = kept ? JSON.parse(kept) : null;
+      const elsewhere = Boolean(keptCert) && !same(keptCert.hostCert, host);
+      if (admitted) return elsewhere ? 'adopt-host' : 'admitted';
+      if (elsewhere) return 'host-changed';
+      const ends = keptCert?.cert?.expires_at_ns;
+      const ending = withRoot && typeof ends === 'number' && ends / 1e6 < Date.now() + 86_400_000;
+      return keptCert && !ending ? 'kept' : 'certify';
+    },
     /** The shared entry: admits at once, under the certificate the page
      * held when it held one (as text, so its nanoseconds stay exact), else
      * under a guest certificate of the root's. */
