@@ -68,11 +68,14 @@ impl Fixture {
     fn install_identity(&self, paths: &IdentityPaths) {
         let cert = &self.joined.custody.device_cert;
         let id = hex::encode(cert.user_public_key);
+        // Both copies a provisioned device holds: the identity's own and the
+        // device's, which reading the custody looks through.
         tilo_user_identity::persist::write_device_cert(
             &paths.device_cert_for_user(&cert.user_public_key),
             cert,
         )
         .unwrap();
+        tilo_user_identity::persist::write_device_cert(&paths.device_cert, cert).unwrap();
         let store = tilo_identity_host::registry::IdentityRegistryStore::from_env().unwrap();
         let mut registry = store.load_reconciled().unwrap();
         registry.default_identity = Some(id.clone());

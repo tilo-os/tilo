@@ -43,16 +43,13 @@ impl Custody for Files {
         let store =
             crate::registry::IdentityRegistryStore::from_env().map_err(|e| e.to_string())?;
         let registry = store.load_reconciled_cached().map_err(|e| e.to_string())?;
+        // The certificate these paths hold names the person whose device this is: the registry
+        // knows that person, and their fleet holds the revocations.
+        let cert = tilo_user_identity::persist::read_device_cert(&self.paths.device_cert)
+            .map_err(|e| e.to_string())?;
         let profile = registry
-            .certified_identity()
+            .identity_of(&cert.user_public_key)
             .ok_or("this device has no identity to sign in with")?;
-        let cert = tilo_user_identity::persist::read_device_cert(
-            &self.paths.device_cert_for_user(&profile.user_public_key),
-        )
-        .map_err(|e| e.to_string())?;
-        if cert.user_public_key != profile.user_public_key {
-            return Err("native certificate root differs from the person it names".into());
-        }
         let fleet =
             crate::device_fleet::DeviceFleetStore::at(store.identity_dir(), self.paths.clone())
                 .load(&profile.id)

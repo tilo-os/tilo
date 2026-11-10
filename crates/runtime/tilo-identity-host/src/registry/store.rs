@@ -96,7 +96,10 @@ impl IdentityRegistry {
         self.identity_of(&cert.user_public_key)
     }
 
-    fn identity_of(&self, user_public_key: &[u8; 32]) -> Option<IdentityProfile> {
+    /// The person `user_public_key` names, with the record that key keeps here: registered in
+    /// this registry, or found among the record files this login has (a launcher-bound record, or
+    /// one a setup wrote after this registry's last read).
+    pub(crate) fn identity_of(&self, user_public_key: &[u8; 32]) -> Option<IdentityProfile> {
         let id = hex::encode(user_public_key);
         if let Some(profile) = self.identities.get(&id) {
             return Some(profile.clone());
