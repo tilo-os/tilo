@@ -25,9 +25,9 @@ use ui::ControllerFamily;
 
 use tilo_compositor::InputEvent;
 
+use crate::Error;
 use crate::controller_nav::{ControllerNavMapper, NavDirection, NavIntent};
 use crate::{Invocation, Session};
-use tilo_compositor::Error;
 use ui::shortcut_table::ShortcutAction;
 
 /// Raw events read per controller per pass; the rest wait for the next one.

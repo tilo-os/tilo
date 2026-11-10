@@ -8,7 +8,9 @@
 use std::time::{Duration, Instant};
 
 use crate::{Session, import_readiness, quick_settings};
-use tilo_compositor::{Compositor, Error};
+use tilo_compositor::Compositor;
+
+use crate::Error;
 
 /// How long the desk's own bookkeeping may wait for a turn that draws nothing: a desk that keeps
 /// drawing is read this often all the same.

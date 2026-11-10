@@ -28,6 +28,8 @@
 // workspaces — what every host runs, the web page included.
 mod assembly;
 pub use assembly::Session;
+mod error;
+pub use error::Error;
 // Nothing compiled for the web reads this state yet: the roles that do land
 // with the batches that ungate them.
 #[cfg_attr(

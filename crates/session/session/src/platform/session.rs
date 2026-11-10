@@ -87,6 +87,13 @@ pub(crate) struct Unlocking {
     pub(crate) wake: std::task::Waker,
 }
 
+/// The compositor failing is this session's host failing.
+impl From<Error> for crate::Error {
+    fn from(error: Error) -> Self {
+        Self::host(error)
+    }
+}
+
 impl Session {
     /// A session on the compositor `start` makes with the desktop's window
     /// policy.
@@ -100,7 +107,7 @@ impl Session {
     pub fn new(
         mut options: Options,
         start: impl FnOnce(Box<dyn WindowPolicy>) -> Result<Compositor, Error>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, crate::Error> {
         tilo_startup_metrics::mark("session-build-start");
         // The words a notice or a query resolves later, in the person's
         // language, are read now: the loop that shows them reads no file.
@@ -937,7 +944,8 @@ impl Session {
             .worker_threads(1)
             .thread_name("tilo-automation")
             .enable_all()
-            .build()?;
+            .build()
+            .map_err(crate::Error::host)?;
         let (shortcut_library, saved_shortcuts) =
             crate::plane::ShortcutLibrary::new(automation_runtime.handle().clone());
         // What each of this device's workspaces revokes, read from the
@@ -1636,7 +1644,7 @@ impl Session {
     ///
     /// # Errors
     /// The compositor or an output did not start.
-    pub fn headless(options: Options, outputs: &[OutputConfig]) -> Result<Self, Error> {
+    pub fn headless(options: Options, outputs: &[OutputConfig]) -> Result<Self, crate::Error> {
         let mut session = Self::new(options, Compositor::headless)?;
         for output in outputs {
             session.compositor.add_output(output)?;
@@ -1649,7 +1657,7 @@ impl Session {
     ///
     /// # Errors
     /// The compositor did not start.
-    pub fn drm(options: Options, config: DisplayConfig) -> Result<Self, Error> {
+    pub fn drm(options: Options, config: DisplayConfig) -> Result<Self, crate::Error> {
         let mut session = Self::new(options, |policy| Compositor::drm(policy, config))?;
         session.warm()?;
         Ok(session)
@@ -1660,7 +1668,7 @@ impl Session {
     ///
     /// # Errors
     /// The compositor or its window did not start.
-    pub fn nested(options: Options, config: &NestedConfig) -> Result<Self, Error> {
+    pub fn nested(options: Options, config: &NestedConfig) -> Result<Self, crate::Error> {
         // The desktop this session runs inside hands it over as one
         // connection the window takes once, so the window opens before the
         // session builds anything of its own: the desk builds the surface

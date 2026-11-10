@@ -785,7 +785,7 @@ fn start_session(
     headless: HeadlessPanel,
     connector: &str,
     outputs: &[NamedOutput],
-) -> Result<tilo_session::Session, tilo_compositor::Error> {
+) -> Result<tilo_session::Session, tilo_session::Error> {
     use tilo_compositor::{DisplayConfig, NestedConfig, OutputConfig};
 
     use tilo_session::Session;
