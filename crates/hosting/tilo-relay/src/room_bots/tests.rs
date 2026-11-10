@@ -1055,6 +1055,83 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     );
 }
 
+/// A member's own record is theirs alone: sealed under a channel only their
+/// devices hold, it is nobody else's to read, the governor's included. A bot
+/// whose pass follows the workspace's records leaves it out and goes on
+/// answering what it does hold, rather than stopping at it every pass.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bot_pass_goes_on_past_a_record_it_holds_no_keys_of() {
+    use crate::workspaces::sealed_fixtures::{SealingMember, member_device, plaintext_record};
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = crate::workspaces::fixtures::governor_with(
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    );
+    let relay = bot_host_taking_part(scratch.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, general) = chat_room(&workspaces, &cert).await;
+    let (guest_key, _guest_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
+    let guest = SealingMember::join(&workspaces, &workspace, (CHAT, ""), guest_key).await;
+    // The guest's own drafts: a record of the chat only their devices read.
+    // One of their devices wrote it before its channel existed, and what
+    // another of them seals onto it now the workspace keeps but cannot open.
+    let drafts_id =
+        tilo_action_policy::member_record_id(&hex::encode(cert.user_public_key), "chat.drafts");
+    let (other_key, _other_cert) = member_device(&workspaces, &workspace, (&key, &cert), 4).await;
+    plaintext_record(
+        &workspaces,
+        &workspace,
+        &other_key,
+        (CHAT, &drafts_id),
+        |doc| {
+            use automerge::transaction::Transactable as _;
+            doc.put(automerge::ROOT, "drafts", "half a message")
+                .unwrap();
+        },
+    )
+    .await;
+    guest
+        .apart(&workspaces, &workspace, &drafts_id)
+        .await
+        .writes(&workspaces, &workspace, |doc| {
+            use automerge::transaction::Transactable as _;
+            doc.put(automerge::ROOT, "drafts", "half a message, sealed")
+                .unwrap();
+        })
+        .await;
+    let unread = workspaces
+        .record_document(&workspace, CHAT, &drafts_id)
+        .await;
+    assert!(
+        unread.is_err(),
+        "the workspace holds a record it cannot read: {unread:?}"
+    );
+
+    // A post in the chat still reaches the bot, which answers it.
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        greeter(general.as_str()),
+        scratch.path().join("greeter.json"),
+    )
+    .await;
+    assert!(runner.step().await.unwrap().is_empty());
+    ada_says(&workspaces, &workspace, &cert, &general, "hello").await;
+    let reports = runner.step().await.unwrap();
+    assert!(
+        matches!(reports[..], [ref report] if report.outcome == tilo_automation::RunOutcome::Completed),
+        "the pass goes on past the record it holds no keys of: {reports:?}"
+    );
+    assert!(
+        posts(&workspaces, &workspace)
+            .await
+            .iter()
+            .any(|message| message.text == "welcome!"),
+        "the bot answered the post beside it"
+    );
+    assert!(runner.dead_letters().next().is_none(), "nothing buried");
+}
+
 /// The files the chat's first part references, as the workspace holds it.
 async fn referenced_in(workspaces: &Workspaces, workspace: &str) -> Vec<attachments::Referenced> {
     attachments::referenced(

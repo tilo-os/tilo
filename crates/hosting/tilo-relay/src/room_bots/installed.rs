@@ -201,6 +201,9 @@ pub struct BotRunner {
     state_file: PathBuf,
     /// The emoji pictures already kept for the connectors, by address.
     kept: Mutex<BTreeSet<String>>,
+    /// Records of the workspace the bot follows that this host could not read
+    /// as last tried, said in the log as they appear, not on every pass.
+    unreadable: Mutex<BTreeSet<(String, String)>>,
     /// How many more changes are published before the workspace is made to
     /// refuse one, for a test.
     #[cfg(test)]
@@ -291,6 +294,7 @@ impl BotRunner {
             progress,
             state_file,
             kept: Mutex::new(BTreeSet::new()),
+            unreadable: Mutex::new(BTreeSet::new()),
             #[cfg(test)]
             refuse_after: Mutex::new(None),
         })
@@ -460,7 +464,7 @@ impl BotRunner {
             }
         }
         for (app, record) in self.routes().await? {
-            let Some(saved) = self.read(&app, &record).await? else {
+            let Some(saved) = self.reads(&app, &record).await else {
                 continue;
             };
             let key = format!("{app}/{record}");
@@ -572,7 +576,7 @@ impl BotRunner {
             ui::record::RecordId::parse(record).is_some_and(|record| record.chain_part().is_some())
         });
         for (app, record) in routes {
-            if let Some(saved) = self.read(&app, &record).await? {
+            if let Some(saved) = self.reads(&app, &record).await {
                 let route = DocumentRoute {
                     app_id: app.clone(),
                     cluster_id: self.workspace.clone(),
@@ -733,7 +737,11 @@ impl BotRunner {
         Ok(serde_json::json!({ "emoji": listed }))
     }
 
-    /// The workspace's readable records of the apps the bot works with.
+    /// The workspace's readable records of the apps the bot works with. A
+    /// member's own record — what they are writing and have not sent, their
+    /// browsing history — is that person's alone, sealed under a channel only
+    /// their devices hold: it is no record of the workspace's, and the bot
+    /// never follows one.
     async fn routes(&self) -> Result<Vec<(String, String)>, String> {
         Ok(self
             .workspaces
@@ -742,6 +750,7 @@ impl BotRunner {
             .map_err(|error| error.to_string())?
             .into_iter()
             .filter(|(app, _)| self.apps.contains(app))
+            .filter(|(_, record)| tilo_action_policy::member_record(record).is_none())
             .collect())
     }
 
@@ -750,6 +759,38 @@ impl BotRunner {
             .record_document(&self.workspace, app, record)
             .await
             .map_err(|error| error.to_string())
+    }
+
+    /// `record` of `app` as the governor's copy reads it now, or `None` when it
+    /// is not this host's to read: a record this device takes no part in the
+    /// channel of (yet), whose keys have not reached it, or which was written
+    /// before its channel was sealed and can no longer be opened. Such a
+    /// record is left out of the work the bot does and said once, so what the
+    /// bot does hold is not held up every pass by a record it never will. A
+    /// record shut because its channel has not admitted this device yet is
+    /// asked for, on the same path every member takes, and reads once it is.
+    async fn reads(&self, app: &str, record: &str) -> Option<Vec<u8>> {
+        match self.read(app, record).await {
+            Ok(saved) => {
+                self.unreadable.lock_recover().remove(&named(app, record));
+                saved
+            }
+            Err(error) => {
+                if self.unreadable.lock_recover().insert(named(app, record)) {
+                    tracing::warn!(
+                        installation = %self.bot.installation,
+                        %app,
+                        %record,
+                        %error,
+                        "a record the bot follows cannot be read here; the pass goes on without it"
+                    );
+                }
+                self.workspaces
+                    .ask_to_open(&self.workspace, app, record)
+                    .await;
+                None
+            }
+        }
     }
 
     /// Put a run's changes into the workspace's record, signed by the bot's
@@ -787,6 +828,11 @@ impl BotRunner {
         tilo_files::native::atomic::write(&self.state_file, &bytes)
             .map_err(|error| error.to_string())
     }
+}
+
+/// `record` of `app`, as the runner names one record across passes.
+fn named(app: &str, record: &str) -> (String, String) {
+    (app.to_owned(), record.to_owned())
 }
 
 fn read_progress(path: &Path) -> Result<Progress, String> {

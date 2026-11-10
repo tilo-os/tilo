@@ -36,6 +36,56 @@ pub async fn member_device(
     (member_key, member)
 }
 
+/// The write `device`, a member of `workspace`, founds `record` of `app` with,
+/// in the clear: a record written before its channel was sealed, which the
+/// workspace keeps as any other, so what a member seals onto it later is
+/// kept too — and stays shut to a host holding no keys of that channel.
+pub async fn plaintext_record(
+    workspaces: &Workspaces,
+    workspace: &str,
+    device: &SigningKey,
+    (app, record): (&str, &str),
+    change: impl FnOnce(&mut automerge::AutoCommit),
+) {
+    let surface = workspaces
+        .workspace(workspace)
+        .await
+        .unwrap()
+        .lock()
+        .await
+        .peer()
+        .signed_surface(app);
+    let mut document = automerge::AutoCommit::new();
+    change(&mut document);
+    let plaintext = collab_types::DocumentMutation::Snapshot(document.save())
+        .encode()
+        .unwrap();
+    let author = collab_types::Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
+    let mut envelope = SignedOp::new_unsigned(
+        plaintext,
+        collab_types::document_artifact_id(app, workspace, record),
+        author,
+        collab_types::document_attestation_id(app, workspace, record),
+        collab_types::OpKind::Change,
+        SystemTime::now(),
+        1,
+    )
+    .with_surface(surface);
+    collab_types::sign_op(&mut envelope, device).unwrap();
+    let message = NeighbourMsg::AppDocument {
+        peer: tilo_peer_state::peer_handle(author.as_bytes()),
+        app_id: app.into(),
+        cluster_id: workspace.into(),
+        record_id: record.into(),
+        envelope: Box::new(envelope),
+    };
+    let body = postcard::to_stdvec(&message).unwrap();
+    workspaces
+        .absorb(workspace, device.verifying_key().to_bytes(), &body)
+        .await
+        .unwrap();
+}
+
 /// A member device that holds one record's channel keys and writes the
 /// record sealed, as a page does once a participant admitted it.
 pub struct SealingMember {
@@ -111,6 +161,30 @@ impl SealingMember {
             seq: std::sync::atomic::AtomicU64::new(0),
             document: std::sync::Mutex::new(automerge::AutoCommit::new()),
         }
+    }
+
+    /// The same device taking part in a channel of its own founding for
+    /// `record` of the same app: keys it made and nobody else was given, as a
+    /// record read by one person alone is sealed (a member's own).
+    pub async fn apart(&self, workspaces: &Workspaces, workspace: &str, record: &str) -> Self {
+        let named = collab_types::ChannelRoute::new(&self.route.0, record);
+        let keys = channel_crypto::ChannelGroup::create(
+            named.channel(workspace),
+            channel_crypto::MemberKey::generate("a member's own record").unwrap(),
+        )
+        .unwrap()
+        .content_keys()
+        .unwrap();
+        let member = Self {
+            key: self.key.clone(),
+            keys,
+            route: (self.route.0.clone(), record.into()),
+            surface: self.surface,
+            seq: std::sync::atomic::AtomicU64::new(0),
+            document: std::sync::Mutex::new(automerge::AutoCommit::new()),
+        };
+        member.catch_up(workspaces, workspace).await;
+        member
     }
 
     /// Take in the record as the workspace reads it now.
