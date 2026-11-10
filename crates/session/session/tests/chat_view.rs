@@ -46,7 +46,7 @@ fn session(root: &std::path::Path) -> Session {
             collab: false,
             services: vec![
                 Box::new(apps),
-                Box::new(tilo_session::dev_rust_views::RustApps::new()),
+                Box::new(tilo_session::dev_rust_views::RustApps::new().unwrap()),
             ],
             questions: Some(tilo_service::Questions::new()),
             action_plane: ActionPlane::At(root.join("plane.sock")),
@@ -396,12 +396,12 @@ fn typing_in_the_composer_and_pressing_send_posts_to_the_channel() {
 
 #[test]
 fn pressing_an_attachment_places_the_resource_it_holds() {
-    let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
-    let mut session = session(root.path());
     // The small demo channel holds one message and a message sharing a sample video, whose
     // row is what the page draws for the attachment: both stand within a place's view.
     const SHARED: &str = "I rewrote my window compositor in Rust and it changed EVERYTHING!!!";
+    let _settled = ui::motion::testing::settled();
+    let root = common::private_home();
+    let mut session = session(root.path());
     place(&mut session, "chat.workspace.channels:c_general");
     common::until(&mut session, "the channel's page", |session| {
         session.shell_says(SHARED)

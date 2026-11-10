@@ -1024,17 +1024,14 @@ impl Workspaces {
         let listings = listing::Listings::open(&dir);
         let workspaces = Arc::new(device_plane::WorkspacesMap::default());
         let (plane, jobs) = device_plane::plane(Arc::clone(&workspaces), host.key.clone());
+        let store =
+            tilo_peer_state::store::Store::open(store, tilo_peer_state::store::Appetite::StoreAll)
+                .map_err(|error| error.to_string())?;
         let this = Self {
             inner: Arc::new(WorkspacesInner {
                 #[cfg(test)]
                 link_heard_capacity: std::sync::atomic::AtomicUsize::new(0),
-                store: Arc::new(
-                    tilo_peer_state::store::Store::open(
-                        store,
-                        tilo_peer_state::store::Appetite::StoreAll,
-                    )
-                    .map_err(|error| error.to_string())?,
-                ),
+                store: Arc::new(store),
                 direct: tilo_peer_state::direct::Serving::new(),
                 dir: dir.clone(),
                 plane,

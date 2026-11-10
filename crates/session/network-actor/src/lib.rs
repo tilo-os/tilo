@@ -67,7 +67,7 @@ use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use tilo_relay_session::{Inbound as HostInbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCert, RevocationList};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 
 use neighbour_wire::{NeighbourMsg, SurfaceId};
 use neighbour_wire::{Retention, retention};

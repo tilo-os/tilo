@@ -32,14 +32,17 @@ pub struct RustApps {
 
 impl RustApps {
     /// The apps' sample catalogue, and the views this crate links registered with the shell.
-    #[must_use]
-    pub fn new() -> Self {
+    ///
+    /// # Errors
+    ///
+    /// The demo chat could not be written.
+    pub fn new() -> Result<Self, tilo_actions::DoorError> {
         let mut apps = Self {
             model: tube::sample::model(),
-            chat: chat::demo::Workspace::demo().expect("the demo chat"),
+            chat: chat::demo::Workspace::demo()?,
         };
         apps.share_a_record();
-        apps
+        Ok(apps)
     }
 
     /// The demo conversation's page, as its place draws it.
@@ -70,12 +73,14 @@ impl RustApps {
     /// which the session publishes (Tube's own). A development fixture, so a shot of an
     /// attachment's press has one to press, in a transcript short enough to reach it.
     fn share_a_record(&mut self) {
-        let video = self
+        let Some(video) = self
             .model
             .videos
             .iter()
             .find(|video| video.id == "vid_rust_async")
-            .expect("the sample video");
+        else {
+            return;
+        };
         let at = tilo_reference::ResourceAt {
             app: "so.tilo.tube".to_owned(),
             record: None,
@@ -93,12 +98,6 @@ impl RustApps {
                 mentions: None,
             });
         let _ = self.chat.apply_part_as(chat::model::ME, invoke);
-    }
-}
-
-impl Default for RustApps {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -148,7 +147,7 @@ impl Service for RustApps {
                 )
                 .with_view(tilo_actions::ResourceViewSpec::new(
                     "page",
-                    conversation.name.clone(),
+                    conversation.name,
                     "open",
                 ))
                 .with_type(tilo_actions::ResourceType {
@@ -230,7 +229,7 @@ mod tests {
 
     #[test]
     fn the_chat_channel_service_publishes_its_messages_and_their_people() {
-        let apps = RustApps::new();
+        let apps = RustApps::new().unwrap();
         let published: Vec<String> = apps
             .resources()
             .into_iter()
