@@ -177,6 +177,8 @@ echo "GIT-NAME=$(git config --global user.name)"
 echo "GIT-EMAIL=$(git config --global user.email)"
 [ -f ~/.ssh/id_ed25519 ] && echo "SSH-KEY=$(ssh-keygen -lf ~/.ssh/id_ed25519 | awk '{print $2}')"
 [ -f ~/.ssh/id_ed25519 ] && echo "SSH-KEY-READABLE=$(head -c 35 ~/.ssh/id_ed25519)"
+t="${XDG_CONFIG_HOME:-$HOME/.config}/t/config.toml"
+[ -f "$t" ] && echo "T-CONFIG=$(sha256sum < "$t" | cut -c1-16) $(stat -c %a "$t")"
 """
 
 # The Secret Service as libsecret and secret-tool speak it (org.freedesktop.secrets, plain
@@ -525,10 +527,8 @@ def keep_session(run: Run, name: str, label: str) -> None:
 def keep_actions(run: Run, name: str, label: str) -> None:
     """What the desktop lists, by provider and id, for steps that address its actions."""
     try:
-        listed = run.vm(name).control_json("actions", "list", "--json", "--programmatic",
-                                           "--wait=8000", "--limit", "2000")
         rows = [f"{r.get('provider')}  {str(r.get('id')).replace(chr(31), ' | ')}  {r.get('title')}"
-                for r in listed.get("actions", [])]
+                for r in listed_actions(run.vm(name))]
         run.write(f"{label}-{name}-actions.txt", "\n".join(rows))
     except VmError as exc:
         run.write(f"{label}-{name}-actions.txt", f"could not list: {exc}")
@@ -581,8 +581,14 @@ def configure(facts: dict, run: Run) -> None:
     box.exec(f"git config --global user.name {shlex.quote(GIT_NAME)} && "
              f"git config --global user.email {shlex.quote(GIT_EMAIL)} && "
              "mkdir -p -m 700 ~/.ssh && ssh-keygen -q -t ed25519 -N '' -C ada@box -f ~/.ssh/id_ed25519")
+    # Their t client's server and token, where t reads them (`dirs::config_dir()/t`): a token
+    # made for this run, never a real one.
+    token = "e2e-branch-" + os.urandom(16).hex()
+    box.exec('d="${XDG_CONFIG_HOME:-$HOME/.config}/t" && mkdir -p -m 700 "$d" && umask 077 && '
+             f'printf \'server = "https://t.tilo.so"\\ntoken = "{token}"\\n\' > "$d/config.toml"')
     p = person_facts(run, SOURCE, "S03-box")
-    facts["person"] = {k: p.get(k) for k in ("SECRET-DIGEST", "GIT-NAME", "SSH-KEY")}
+    facts["person"] = {k: p.get(k) for k in ("SECRET-DIGEST", "GIT-NAME", "SSH-KEY", "T-CONFIG")}
+    expect(p.get("T-CONFIG", "").endswith(" 600"), f"the t config is not the person's alone: {p.get('T-CONFIG')}")
     expect(p.get("SECRET-DIGEST") not in (None, EMPTY_DIGEST),
            f"the stored secret does not read back: store said {facts['store']!r}; "
            f"reading said {facts['read_back']!r}")
@@ -602,46 +608,31 @@ def configure_provider(facts: dict, run: Run) -> None:
 
 
 def configure_passwords(facts: dict, run: Run) -> None:
-    """A login in their passwords vault, through Passwords' own controls."""
+    """A login in their passwords vault, saved through Passwords' own save-login action."""
     box = run.vm(SOURCE)
     open_passwords(box)
     before = password_items(box)
-    app_action(box, "", "add", None, PASSWORDS)
-    # The editor's name field, by the name its window gives it (its label, or its id).
-    for target in ("passwords.field.name", "Name", "Title"):
-        try:
-            box.control("click", target)
-            break
-        except VmError as exc:
-            facts.setdefault("click", []).append(str(exc)[-200:])
-    else:
-        raise Failed(f"Passwords' editor shows no name field to type in: {facts.get('click')}")
-    box.input("type", PASSWORD_TITLE)
-    app_action(box, "", "generate", None, PASSWORDS)
-    app_action(box, "", "save", None, PASSWORDS)
+    app_action(box, "", "save-login", {"name": PASSWORD_TITLE, "origin": "https://branch.example",
+                                       "username": "ada@branch.example",
+                                       "password": "e2e-" + os.urandom(12).hex()}, PASSWORDS)
     new = wait_until(lambda: password_items(box) - before, 30, interval=1.0)
-    expect(new, "Passwords lists no new item after the save")
+    expect(new, "Passwords lists no new item after save-login")
     facts["password_items"] = sorted(new)
 
 
 def open_passwords(vm: TiloVm) -> None:
-    if not [r for r in app_rows(vm, "", "add") if PASSWORDS in r["id"]]:
+    if not [r for r in app_rows(vm, "", "save-login") if PASSWORDS in r["id"]]:
         open_app(vm, PASSWORDS)
-    if not wait_until(lambda: [r for r in app_rows(vm, "", "add") if PASSWORDS in r["id"]], 60,
-                      interval=1.0):
+    if not wait_until(lambda: [r for r in app_rows(vm, "", "save-login") if PASSWORDS in r["id"]],
+                      60, interval=1.0):
         keep_actions(run_of[vm.vm], vm.vm, "S03d")
-        raise Unscriptable(f"Passwords is open on {vm.vm}, but the desktop lists none of its "
+        raise Failed(f"Passwords is open on {vm.vm}, but the desktop lists none of its "
                            "actions, so no login can be saved without a person's hands")
-    expect(wait_until(lambda: [r for r in app_rows(vm, "", "add") if PASSWORDS in r["id"]], 1,
-                      interval=1.0),
-           f"Passwords on {vm.vm} offers no add")
 
 
 def password_items(vm: TiloVm) -> set[str]:
     """The vault items Passwords publishes rows for, by their resource ids."""
-    listed = vm.control_json("actions", "list", "--json", "--programmatic", "--wait=8000",
-                             "--limit", "2000")
-    return {part for row in listed.get("actions", []) if row.get("provider") == "app-actions"
+    return {part for row in listed_actions(vm) if row.get("provider") == "app-actions"
             for part in row["id"].split("\x1f") if part.startswith("passwords:item:")}
 
 
@@ -666,18 +657,9 @@ def act(vm: TiloVm, provider: str, name: str, args: dict | None = None, wait: bo
     """Invoke the desktop action `name` of `provider`, addressed as `tilo-control actions list`
     prints it (`resource␟action`): the listed row whose id is `name` or ends in it."""
     keep_awake(vm)
-    # Every page: each window a desk shows lists actions of its own, and a desk that kept
-    # several lists more than one page holds.
-    rows, cursor, pages = [], None, 0
-    while not rows and pages < 20:
-        page = ["--cursor", cursor] if cursor else []
-        listed = vm.control_json("actions", "list", "--json", "--programmatic", "--wait=8000",
-                                 "--limit", "2000", *page)
-        rows = [r for r in listed.get("actions", []) if r.get("provider") == provider
-                and (r["id"] == name or r["id"].endswith("\x1f" + name))]
-        cursor, pages = listed.get("next_cursor"), pages + 1
-        if not cursor:
-            break
+    rows = [r for r in listed_actions(vm) if r.get("provider") == provider
+            and (r["id"] == name or r["id"].endswith("\x1f" + name))]
+    pages = "every"
     expect(rows, f"{vm.vm} lists no {provider} action {name!r} in {pages} page(s)")
     argv = ["actions", "invoke", provider, rows[0]["id"]]
     if wait:
@@ -698,12 +680,25 @@ def serve_model(vm: TiloVm, key_digest: str) -> None:
                  f"2>/dev/null; systemd-run --unit e2e-model --quiet python3 -I /run/e2e-model.py {MODEL_PORT}")
 
 
+def listed_actions(vm: TiloVm, *query: str) -> list[dict]:
+    """Every row the desktop lists for `query`, page after page: a page holds at most 256 rows
+    (`MAX_CATALOGUE_PAGE`), and the desk's own chrome fills most of the first."""
+    keep_awake(vm)
+    rows, cursor = [], None
+    for _ in range(40):
+        page = ["--cursor", cursor] if cursor else []
+        listed = vm.control_json("actions", "list", *query, "--json", "--programmatic",
+                                 "--wait=8000", "--limit", "256", *page)
+        rows.extend(listed.get("actions", []))
+        cursor = listed.get("next_cursor")
+        if not cursor:
+            break
+    return rows
+
+
 def app_rows(vm: TiloVm, query: str, action: str) -> list[dict]:
     """The app actions named `action` (the last part of a row's id) the desktop lists."""
-    keep_awake(vm)
-    listed = vm.control_json("actions", "list", *([query] if query else []), "--json", "--programmatic",
-                             "--wait=8000", "--limit", "2000")
-    return [row for row in listed.get("actions", [])
+    return [row for row in listed_actions(vm, *([query] if query else []))
             if row.get("provider") == "app-actions" and row["id"].split("\x1f")[-1] == action]
 
 
@@ -741,7 +736,7 @@ def open_provider_settings(vm: TiloVm) -> None:
         open_app(vm, "so.tilo.model-providers")
     if not wait_until(lambda: app_rows(vm, "", "add-provider"), 60, interval=1.0):
         keep_actions(run_of[vm.vm], vm.vm, "S03b")
-        raise Unscriptable(f"the model providers' window is open on {vm.vm}, but the desktop lists "
+        raise Failed(f"the model providers' window is open on {vm.vm}, but the desktop lists "
                            "none of its actions (an open app's own actions are not among them), so "
                            "no key can be saved without a person's hands")
 
@@ -1065,7 +1060,8 @@ def judge_person(facts: dict, run: Run, name: str, source_person: dict, source_i
     ident = p.get("identity") or {}
     this = ident.get("this_device") or {}
     facts["identity"] = {"id": (ident.get("identity") or {}).get("id"), "this_device": this}
-    facts["person"] = {k: p.get(k) for k in ("SECRET-DIGEST", "GIT-NAME", "SSH-KEY", "STORE")}
+    facts["person"] = {k: p.get(k) for k in ("SECRET-DIGEST", "GIT-NAME", "SSH-KEY", "T-CONFIG",
+                                             "STORE")}
     problems = []
     if (ident.get("identity") or {}).get("id") != (source_ident.get("identity") or {}).get("id"):
         problems.append(f"the person is {ident.get('identity')}, not the source's "
@@ -1079,7 +1075,7 @@ def judge_person(facts: dict, run: Run, name: str, source_person: dict, source_i
                             f"{devices[name]['DEVICE-PUBLIC']}")
         if name != SOURCE and mine == (source_ident.get("this_device") or {}).get("device"):
             problems.append("the branch's certificate is the source's")
-    for key in ("SECRET-DIGEST", "GIT-NAME", "SSH-KEY"):
+    for key in ("SECRET-DIGEST", "GIT-NAME", "SSH-KEY", "T-CONFIG"):
         if p.get(key) != source_person.get(key):
             problems.append(f"{key}: {p.get(key)!r}, on the source {source_person.get(key)!r}")
     if key_digest:
