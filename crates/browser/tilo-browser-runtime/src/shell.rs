@@ -496,6 +496,8 @@ pub(crate) struct BrowserShell {
     /// The shortcut guide, over the page while it is up: the session's own,
     /// explaining and changing the table this page's desk answers.
     guide: crate::over_page::OverPage<PageGuide>,
+    /// The window menu a secondary click on a window's bar opens, over everything.
+    window_menu: crate::window_menu::PageWindowMenu,
     /// The linked accounts' revision the card last showed.
     linked_seen: Cell<u64>,
     /// Asks again while the card shows a code, until the account links.
@@ -543,11 +545,16 @@ pub struct ChromeSources {
 
 impl BrowserShell {
     /// The children the page draws in order: the desk, the bar, this person's own card, the
-    /// session's layers over them, and the sheets above everything.
+    /// session's layers over them, the sheets above everything, and a window's menu over those.
     fn drawn_children(&self) -> Vec<&dyn Widget> {
         let mut children: Vec<&dyn Widget> = vec![&self.desk, &self.top, &self.profile];
         children.extend(self.layers.iter().map(|layer| layer as &dyn Widget));
-        children.extend([&self.invite as &dyn Widget, &self.directory, &self.guide]);
+        children.extend([
+            &self.invite as &dyn Widget,
+            &self.directory,
+            &self.guide,
+            &self.window_menu,
+        ]);
         children
     }
 
@@ -692,6 +699,7 @@ impl BrowserShell {
             directory,
             invite,
             guide,
+            window_menu: crate::window_menu::PageWindowMenu::new(),
             linked_seen: Cell::new(0),
             linking: tilo_app::linked_accounts::LinkingRecheck::default(),
             profile_links: None,
@@ -730,6 +738,22 @@ impl BrowserShell {
             }
         }
         false
+    }
+
+    /// An open window menu takes what it covers, the keyboard and the press that dismisses it, as
+    /// the bar's menus do. Whether it took `event`.
+    fn window_menu_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut EventCtx<'_>,
+        node: NodeId,
+    ) -> bool {
+        if !self.window_menu.is_open() {
+            return false;
+        }
+        self.window_menu
+            .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        *ctx.handled
     }
 
     /// Whose view this page follows, as the person's own presence says it: the roster's banner
@@ -1598,6 +1622,8 @@ impl Widget for BrowserShell {
         changed |= self.take_person_card_ask();
         changed |= self.follow_people();
         changed |= self.follow_arrived_agents();
+        // A window's bar asked for its menu, or the person chose one of its rows.
+        changed |= self.window_menu.follow(&self.handle);
         changed |= self.follow_followed();
         // Whether the person may invite someone here, as the roster's footer offers it, and whom
         // they follow, which the windows they are in come forward with.
@@ -1687,6 +1713,7 @@ impl Widget for BrowserShell {
         let directory = self.directory.build_layout(taffy, theme, map);
         let invite = self.invite.build_layout(taffy, theme, map);
         let guide = self.guide.build_layout(taffy, theme, map);
+        let window_menu = self.window_menu.build_layout(taffy, theme, map);
         let style = Style {
             display: Display::Flex,
             flex_direction: FlexDirection::Column,
@@ -1695,7 +1722,7 @@ impl Widget for BrowserShell {
         };
         let mut children = vec![desk, top, profile];
         children.extend(layers);
-        children.extend([invite, directory, guide]);
+        children.extend([invite, directory, guide, window_menu]);
         taffy.widget_node(style, &children, map, self)
     }
 
@@ -1703,7 +1730,8 @@ impl Widget for BrowserShell {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
         let children = taffy.children(node).unwrap_or_default();
-        let sheets = children.len().saturating_sub(3);
+        // The three sheets, then the window menu, last of the children.
+        let sheets = children.len().saturating_sub(4);
         if let (Some(&desk), Some(&top), Some(&profile)) =
             (children.first(), children.get(1), children.get(2))
         {
@@ -1721,6 +1749,7 @@ impl Widget for BrowserShell {
                 &mut self.invite as &mut dyn Widget,
                 &mut self.directory,
                 &mut self.guide,
+                &mut self.window_menu,
             ]
             .into_iter()
             .zip(children.get(sheets..).unwrap_or_default())
@@ -1755,6 +1784,9 @@ impl Widget for BrowserShell {
         self.directory.draw(scene, transform, text, theme, presence);
         // Over everything, while the person reads or changes the keys.
         self.guide.draw(scene, transform, text, theme, presence);
+        // A window's menu, where its bar was clicked.
+        self.window_menu
+            .draw(scene, transform, text, theme, presence);
         // Over everything, while picking what to report.
         self.picker.draw(scene, transform, text, theme, self.rect);
         let built = ui::time::now().saturating_duration_since(started);
@@ -1764,13 +1796,13 @@ impl Widget for BrowserShell {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
-        let sheets = children.len().saturating_sub(3);
+        let sheets = children.len().saturating_sub(4);
         let (Some(&desk), Some(&top), Some(&profile)) =
             (children.first(), children.get(1), children.get(2))
         else {
             return;
         };
-        let Some([invite, directory, guide]) = children.get(sheets..) else {
+        let Some(&[invite, directory, guide, window_menu]) = children.get(sheets..) else {
             return;
         };
         if let WindowEvent::CursorMoved { position, .. } = event {
@@ -1791,6 +1823,9 @@ impl Widget for BrowserShell {
                     .handle_event(event, self.cursor, modifiers, self.desk.area(), &windows);
             return;
         }
+        if self.window_menu_event(event, ctx, window_menu) {
+            return;
+        }
         // Alt+Shift+Tab's walk comes before anything on the page, as Alt+Tab's does on a desktop:
         // while it is up every key is its own.
         if let WindowEvent::KeyboardInput { event: key, .. } = event
@@ -1803,7 +1838,7 @@ impl Widget for BrowserShell {
         // keyboard and the press that dismisses it.
         if self.invite.is_open() {
             self.invite
-                .handle_event(event, &mut ctx.reborrow(ctx.path, *invite));
+                .handle_event(event, &mut ctx.reborrow(ctx.path, invite));
             if *ctx.handled {
                 self.invite.follow();
                 return;
@@ -1813,7 +1848,7 @@ impl Widget for BrowserShell {
         // covers, the keyboard and the press that dismisses it.
         if self.directory.is_open() {
             self.directory
-                .handle_event(event, &mut ctx.reborrow(ctx.path, *directory));
+                .handle_event(event, &mut ctx.reborrow(ctx.path, directory));
             if *ctx.handled {
                 self.directory.follow();
                 return;
@@ -1827,7 +1862,7 @@ impl Widget for BrowserShell {
                 return;
             }
             self.guide
-                .handle_event(event, &mut ctx.reborrow(ctx.path, *guide));
+                .handle_event(event, &mut ctx.reborrow(ctx.path, guide));
             if *ctx.handled {
                 self.guide.follow();
                 return;
@@ -1885,6 +1920,7 @@ impl Widget for BrowserShell {
             && !self.invite.is_open()
             && !self.directory.is_open()
             && !self.guide.is_open()
+            && !self.window_menu.is_open()
             && !self.top.menu_open()
             && !self.profile.is_open()
             && !self.top.overview_open()
@@ -1930,6 +1966,7 @@ impl Widget for BrowserShell {
             &mut self.invite as &mut (dyn Widget + '_),
             &mut self.directory,
             &mut self.guide,
+            &mut self.window_menu,
         ]);
         children
     }
