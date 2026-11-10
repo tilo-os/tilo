@@ -3,8 +3,9 @@
 //!
 //! A host used to keep content in three places:
 //!
-//! - `<state>/relay/blobs/<hash>`: one flat directory for every workspace it
-//!   governs (Chat attachments, bridged avatars, the files members wrote);
+//! - `<state>/relay/blobs/<hash>`, and `<state>/blobs/<hash>` where an earlier
+//!   build kept it: one flat directory for every workspace it governs (Chat
+//!   attachments, bridged avatars, the files members wrote);
 //! - `<state>/relay/workspace-content/<workspace>/<xx>/<hash>`: what apps and
 //!   uploads kept in a workspace's records;
 //! - `<state>/agents/content/<workspace>/<xx>/<hash>`: what its hosted agents
@@ -185,7 +186,7 @@ fn run(args: &Args) -> anyhow::Result<Report> {
         }
     }
     let unassigned = relay_root.join(UNASSIGNED);
-    for (hash, source) in flat(&relay_root.join(BLOBS)) {
+    for (hash, source) in flat_blobs(args, &relay_root) {
         let mut targets: Vec<PathBuf> = named
             .iter()
             .filter(|(_, found)| found.names.contains(&hash))
@@ -199,6 +200,24 @@ fn run(args: &Args) -> anyhow::Result<Report> {
         one(args, &mut report, &source, &hash, &targets);
     }
     Ok(report)
+}
+
+/// The flat blob directories a host kept: under its relay's root, and, as an
+/// earlier build kept them, beside it in the state directory itself.
+fn flat_dirs(args: &Args, relay_root: &Path) -> Vec<PathBuf> {
+    let mut dirs = vec![relay_root.join(BLOBS), args.state.join(BLOBS)];
+    dirs.dedup();
+    dirs
+}
+
+/// Every item of the flat blob directories ([`flat_dirs`]), each hash once.
+fn flat_blobs(args: &Args, relay_root: &Path) -> Vec<(String, PathBuf)> {
+    let mut seen = std::collections::BTreeSet::new();
+    flat_dirs(args, relay_root)
+        .iter()
+        .flat_map(|dir| flat(dir))
+        .filter(|(hash, _)| seen.insert(hash.clone()))
+        .collect()
 }
 
 /// What the records of each workspace the host governs name, by workspace,
@@ -246,7 +265,7 @@ async fn named_by_workspace(
         .workspaces()
         .context("the host governs no workspaces")?
         .clone();
-    let blobs = relay_root.join(BLOBS);
+    let blobs = flat_dirs(args, relay_root);
     let mut named = BTreeMap::new();
     for summary in workspaces.list().await {
         let workspace = summary.workspace;
@@ -259,7 +278,9 @@ async fn named_by_workspace(
         // workspace's own old stores, or the flat blobs.
         let read = move |hash: &str| {
             let shard = hash.get(..2)?;
-            std::iter::once(blobs.join(hash))
+            blobs
+                .iter()
+                .map(|dir| dir.join(hash))
                 .chain(own.iter().map(|dir| dir.join(shard).join(hash)))
                 .find_map(|path| std::fs::read(path).ok())
         };
@@ -561,6 +582,11 @@ mod tests {
         let blobs = relay_root.join(BLOBS);
         let picture = kept(&blobs, b"a picture the lounge's notes show");
         let stray = kept(&blobs, b"an upload no record ever named");
+        // Where an earlier build kept its flat blobs: beside the relay's root.
+        let earlier = kept(
+            &state.path().join(BLOBS),
+            b"an avatar an earlier build kept",
+        );
         let (lounge, other) = tilo_rt::app()
             .block_on(Box::pin(async {
                 let relay = tilo_relay::Relay::start(
@@ -588,6 +614,8 @@ mod tests {
                 workspaces
                     .author_room_record(&lounge, &governor, ("so.tilo.notes", ""), |doc| {
                         doc.put(automerge::ROOT, "picture", picture.as_str())
+                            .map_err(|error| error.to_string())?;
+                        doc.put(automerge::ROOT, "avatar", earlier.as_str())
                             .map_err(|error| error.to_string())
                     })
                     .await
@@ -630,6 +658,10 @@ mod tests {
             &upload_hash
         ));
         assert!(intact(&relay_root.join(UNASSIGNED).join(&stray), &stray));
+        assert!(
+            intact(&sharded_in(&content.join(&lounge), &earlier), &earlier),
+            "a blob an earlier build kept beside the relay's root moves too"
+        );
         assert!(!sharded_in(&content.join(&lounge), &stray).exists());
         assert!(!sharded_in(&content.join(&other), &stray).exists());
         assert_eq!(report.unassigned.len(), 1);
