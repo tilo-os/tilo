@@ -346,6 +346,23 @@ pub struct ListRowFace<'a> {
 }
 
 impl<'a> ListRowFace<'a> {
+    /// Who else is at the item, when the row shows them: the identity its presence dot stands
+    /// for ([`ListRow::presence`]).
+    #[cfg(test)]
+    pub(crate) fn presence_identity(&self) -> Option<&'a str> {
+        match self.status {
+            Some(RowStatus::Presence(identity)) => Some(identity),
+            _ => None,
+        }
+    }
+
+    /// Whether the row stands in for an item that was removed ([`ListRow::struck`]): its title
+    /// struck through.
+    #[cfg(test)]
+    pub(crate) fn title_struck(&self) -> bool {
+        self.struck
+    }
+
     /// Say which item of its collection the row shows
     /// ([`AccessNode::item`](crate::a11y::AccessNode::item)).
     #[must_use]
@@ -2219,7 +2236,8 @@ impl ListRow {
         ))
     }
 
-    fn with_face<R>(&self, f: impl FnOnce(&ListRowFace<'_>) -> R) -> R {
+    /// The row as the face it draws, read by the list that builds it and by its tests.
+    pub(crate) fn with_face<R>(&self, f: impl FnOnce(&ListRowFace<'_>) -> R) -> R {
         let actions: Vec<RowAction<'_>> = self
             .actions
             .iter()

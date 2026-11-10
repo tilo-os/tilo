@@ -313,6 +313,7 @@ view outline<T>(
 /// its parent (`parent`), its row the one `row` draws and its words `label`. A row says how deep
 /// it stands (`depth`) and whether it holds any (`branch`), so the rows a person does not see
 /// cost nothing: the tree builds the rows the window shows, of ten notes as of ten thousand.
+/// Each row says who else is at its item, as a list of them does (`std.list`).
 ///
 /// The row chosen is the one the window has open (`opened`), and the tree keeps which branches a
 /// person opened. A move — a drag before, after or inside a row, `Tab` and `Shift-Tab`, `Alt-Up`
@@ -363,6 +364,7 @@ template view tree_rows<T>(
                 x,
                 label(x),
                 parent: p,
+                presence: lenses(x).find(l -> not l.mine)?.who,
                 depth: depth(x),
                 branch: branch(x),
                 above: above,

@@ -3,7 +3,7 @@
 //! person takes back at once, and a note's own follow their titles when the person asks it.
 
 use automerge::AutoCommit;
-use tilolang_runtime::{ResourceRef, Value};
+use tilolang_runtime::{Principal, ResourceRef, UiNode, Value, ViewInstance};
 
 use crate::fixtures::Replica;
 use crate::legibility::call;
@@ -277,4 +277,54 @@ fn a_notes_own_follow_their_titles_when_a_person_sorts_them() {
         Some(plan),
         "and they stay under the note they are of"
     );
+}
+
+/// The first node of `kind` in `tree`.
+fn find<'a>(tree: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
+    if tree.kind == kind {
+        return Some(tree);
+    }
+    tree.children.iter().find_map(|child| find(child, kind))
+}
+
+/// Who else is at a note shows on its tree row, as it does on a list's: the notebook's tree reads
+/// the lenses on each note and the row says them.
+#[test]
+fn a_tree_row_says_who_else_is_at_the_note() {
+    let (mut ada, notebook) = workspace();
+    let plan = note(&mut ada, &notebook, "Q3 plan");
+    let mut window = ada.view(NOTES_APP);
+    window.poll_patches().unwrap();
+    // Who the tree's row for the note says is at it, as the tree builds its rows.
+    let presence_of = |window: &mut ViewInstance, at: &ResourceRef| {
+        window.poll_patches().unwrap();
+        let tree = find(window.tree(), "ui.TreeView").expect("the notebook's tree");
+        let key = tree.key.clone();
+        let len = window.list_len(&key).unwrap_or(0);
+        for index in 0..len {
+            let Some(row) = window.row(&key, index).unwrap().cloned() else {
+                continue;
+            };
+            if let Some(node) = find(&row, "ui.TreeViewNode")
+                && matches!(node.props.get("item"), Some(Value::Ref(r)) if r.target.id_string() == at.id_string())
+            {
+                return node.props.get("presence").cloned();
+            }
+        }
+        None
+    };
+    assert_eq!(
+        presence_of(&mut window, &plan),
+        None,
+        "nobody else is at it"
+    );
+    // Ben has the note open: the tree says so.
+    ada.host
+        .runtime()
+        .set_lenses(&plan.id_string(), &[(Principal::new("ben"), false, false)]);
+    let shown = presence_of(&mut window, &plan).expect("the row says who is at the note");
+    match shown {
+        Value::Principal(who) => assert_eq!(who.0, "ben"),
+        other => panic!("the row says who, as a person: {other:?}"),
+    }
 }

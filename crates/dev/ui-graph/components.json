@@ -4133,7 +4133,7 @@
         },
         {
           "name": "speakers",
-          "doc": "Who spoke last in what it writes into, newest first: whom its `@` drawer offers first, under \"In this conversation\". The system gives it to every rich input.",
+          "doc": "The people of the conversation it writes into, newest first: whom its `@` drawer offers first, under \"In this conversation\". The view gives them, from the items the conversation holds; the drawer reads nothing of what the conversation is about to say who is in it.",
           "type": {
             "list": "principal"
           }
@@ -5328,6 +5328,14 @@
           },
           "many": true,
           "default": true
+        },
+        {
+          "name": "removed",
+          "doc": "The rows standing in for nodes someone else removed that the person has not seen go: they stand after the nodes, struck, each with its mark. The UI host places them.",
+          "accepts": {
+            "component": "TreeViewNode"
+          },
+          "many": true
         }
       ],
       "events": [
@@ -7282,6 +7290,18 @@
           "type": {
             "option": "resource"
           }
+        },
+        {
+          "name": "presence",
+          "doc": "Who else is at the item now (a collaborator's or an agent's lens on it), shown on the row as a list row shows it ([`crate::widget::ListItemProps::presence`]).",
+          "type": {
+            "option": "principal"
+          }
+        },
+        {
+          "name": "removed",
+          "doc": "The item was removed and the person has not seen it go: the row stands in for it, its title struck through, at the row's own height. The UI host places such rows.",
+          "type": "bool"
         },
         {
           "name": "depth",

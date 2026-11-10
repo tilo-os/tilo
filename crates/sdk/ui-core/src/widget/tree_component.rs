@@ -23,7 +23,7 @@ use std::ops::Deref;
 use std::rc::Rc;
 
 use crate::component::{
-    Accepts, Component, Described, Event, ResourceId, SharedRows, SlotType, Source, Value,
+    Accepts, Component, Described, Event, Person, ResourceId, SharedRows, SlotType, Source, Value,
 };
 use crate::icons::Icon;
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
@@ -97,6 +97,12 @@ pub struct TreeViewNodeProps {
     pub label: String,
     /// The resource of the node it stands under; without one it is a top-level node.
     pub parent: Option<ResourceId>,
+    /// Who else is at the item now (a collaborator's or an agent's lens on it), shown on the
+    /// row as a list row shows it ([`crate::widget::ListItemProps::presence`]).
+    pub presence: Option<Person>,
+    /// The item was removed and the person has not seen it go: the row stands in for it, its
+    /// title struck through, at the row's own height. The UI host places such rows.
+    pub removed: bool,
     /// How deep it stands, when the view says it: 0 at the top level. Given, the tree indents
     /// the row by it rather than by the rows over it, so a row whose parent stands off screen
     /// keeps its place, and a tree whose rows the host renders as it shows them indents rows it
@@ -227,6 +233,39 @@ impl SlotType for TreeViewRows {
     }
 }
 
+/// The rows of a tree that stand in for nodes removed unseen
+/// ([`TreeViewNodeProps::removed`]), in order.
+#[derive(Default)]
+pub struct RemovedNodes(Vec<TreeViewNodeProps>);
+
+impl From<Vec<TreeViewNodeProps>> for RemovedNodes {
+    fn from(nodes: Vec<TreeViewNodeProps>) -> Self {
+        Self(nodes)
+    }
+}
+
+impl SlotType for RemovedNodes {
+    const MANY: bool = true;
+
+    fn accepts() -> Accepts {
+        Accepts::Component(TreeViewNodeProps::NAME.into())
+    }
+
+    fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String> {
+        let mut nodes: Vec<TreeViewNodeProps> = Vec::new();
+        source.components(slot, &mut |child| {
+            let node = TreeViewNodeProps::from_source(child).map_err(|error| error.to_string())?;
+            if !node.removed {
+                return Err("the removed rows of a tree stand for removed nodes".to_owned());
+            }
+            nodes.push(node);
+            Ok(())
+        })?;
+        self.0 = nodes;
+        Ok(())
+    }
+}
+
 /// A tree of nodes: a file explorer, a project's files, the layers of a drawing, a book's
 /// pages. Each node is the resource it stands for; opening a branch shows the nodes under it,
 /// and selecting or activating a node reports its resource.
@@ -261,6 +300,10 @@ pub struct TreeViewProps {
     /// The nodes, in order, parents before their children.
     #[component(slot(default))]
     pub nodes: TreeViewRows,
+    /// The rows standing in for nodes someone else removed that the person has not seen go:
+    /// they stand after the nodes, struck, each with its mark. The UI host places them.
+    #[component(slot)]
+    pub removed: RemovedNodes,
     /// The nodes open now, by the resource each stands for. Given, it is where the view says
     /// the tree is; without it the tree keeps what a person opened.
     #[component(state)]
@@ -315,6 +358,10 @@ struct Node {
     depth: Option<u32>,
     /// Whether it opens to show nodes under it, whether or not any of them stands in the list.
     branch: bool,
+    /// Who else is at the item now, shown on the row.
+    presence: Option<Person>,
+    /// It stands in for an item someone removed, its title struck through.
+    removed: bool,
     row: Option<TreeViewRowProps>,
     progress: Option<String>,
     menu: Vec<Command>,
@@ -351,8 +398,7 @@ struct Inner {
     children: HashMap<String, Vec<String>>,
     /// The rows that open to show subtasks.
     branches: HashSet<String>,
-    /// The resource each node stands for, by its key, and the key each resource stands at.
-    items: HashMap<String, ResourceId>,
+    /// The key each resource stands at.
     keys: HashMap<String, String>,
     /// A node was dropped at the end of the top level.
     root_drop: Event,
@@ -368,6 +414,8 @@ struct Part {
     parent: Option<String>,
     depth: Option<u32>,
     branch: bool,
+    presence: Option<Person>,
+    removed: bool,
     row: Option<TreeViewRowProps>,
     progress: Option<String>,
     menu: Vec<MenuItemProps>,
@@ -461,6 +509,8 @@ fn part_of(node: TreeViewNodeProps) -> Part {
         parent: node.parent.map(|parent| parent.0),
         depth: node.depth.and_then(|depth| u32::try_from(depth).ok()),
         branch: node.branch,
+        presence: node.presence,
+        removed: node.removed,
         row: node.row,
         progress: node.progress,
         menu: node.menu,
@@ -493,7 +543,6 @@ impl Nodes {
         let mut index = HashMap::new();
         let mut children: HashMap<String, Vec<String>> = HashMap::new();
         let mut branches = HashSet::new();
-        let mut items = HashMap::new();
         let mut item_keys = HashMap::new();
         if root_shown {
             index.insert(TOP_LEVEL.to_owned(), 0);
@@ -506,6 +555,8 @@ impl Nodes {
                 parent: None,
                 depth: Some(0),
                 branch: true,
+                presence: None,
+                removed: false,
                 row: None,
                 progress: None,
                 menu: Vec::new(),
@@ -563,6 +614,8 @@ impl Nodes {
                 },
                 depth: part.depth,
                 branch: part.branch,
+                presence: part.presence,
+                removed: part.removed,
                 row: part.row,
                 progress: part.progress,
                 menu: part.menu.into_iter().map(Command::of).collect(),
@@ -574,7 +627,6 @@ impl Nodes {
                 check: part.check,
             });
             item_keys.insert(part.item.0.clone(), part.key.clone());
-            items.insert(part.key, part.item);
         }
         // A row with nodes under it opens them, whether or not it says it is a branch.
         let mut with_children = HashSet::new();
@@ -599,7 +651,6 @@ impl Nodes {
                 index,
                 children,
                 branches,
-                items,
                 keys: item_keys,
                 root_drop,
                 has_menu,
@@ -616,17 +667,10 @@ impl Nodes {
         self.keys.get(id).cloned()
     }
 
-    /// The resource the node at `key` stands for, as an event carries it.
-    fn value_of(&self, key: &str) -> Option<Value> {
-        self.items
-            .get(key)
-            .map(|item| Value::Resource(item.0.clone()))
-    }
-
-    /// The kind of node the rows ask for.
+    /// The resource the node at `key` stands for.
     #[cfg(test)]
     fn resource_of(&self, key: &str) -> Option<&ResourceId> {
-        self.items.get(key)
+        self.node(key).map(|node| &node.item)
     }
 
     /// The rows standing under `parent`, the top level's under `None`.
@@ -699,10 +743,14 @@ impl ListModel for Nodes {
 }
 
 /// The rows of a tree, as its list reads them: the nodes the view gave whole, or the rows a
-/// host renders as the list shows them.
+/// host renders as the list shows them, and after them the rows standing in for nodes someone
+/// else removed that the person has not seen go.
 #[derive(Clone)]
 struct TreeRows {
     rows: Rows,
+    /// The struck rows of removed nodes, which the host gives whole: they stand after the rows,
+    /// at the top level.
+    removed: Rc<Vec<Node>>,
 }
 
 /// Where a tree's rows come from.
@@ -776,6 +824,8 @@ impl Remote {
             parent,
             depth: part.depth,
             branch: part.branch,
+            presence: part.presence,
+            removed: part.removed,
             row: part.row,
             progress: part.progress,
             menu: part.menu.into_iter().map(Command::of).collect(),
@@ -843,9 +893,11 @@ impl Deref for NodeRef<'_> {
 impl TreeRows {
     /// The rows of `nodes`: the tree's own name over them when it shows one, or the rows the
     /// host renders as the list shows them, with the rows the view says stand open — `expanded`,
-    /// mapped to the rows of the items it names by `keyed`.
+    /// mapped to the rows of the items it names by `keyed` — and the struck rows of `removed`
+    /// nodes after them.
     fn of(
         nodes: TreeViewRows,
+        removed: RemovedNodes,
         hide_root: bool,
         name: Option<String>,
         expanded: Option<&[ResourceId]>,
@@ -878,11 +930,60 @@ impl TreeRows {
                 menu: std::cell::Cell::new(true),
             })),
         };
-        Self { rows }
+        // A struck row stands at the top level, after every other row: the row it stood under
+        // is one the tree may never have built, and its branch may be folded away.
+        let struck: Vec<Node> = removed
+            .0
+            .into_iter()
+            .map(|props| {
+                let key = format!("{}~removed", props.item.0);
+                Node {
+                    key,
+                    item: props.item,
+                    label: props.label,
+                    parent: (!hide_root).then(|| TOP_LEVEL.to_owned()),
+                    depth: Some(0),
+                    branch: false,
+                    presence: props.presence,
+                    removed: true,
+                    row: props.row,
+                    progress: props.progress,
+                    menu: props.menu.into_iter().map(Command::of).collect(),
+                    toolbar: props.toolbar,
+                    change: props.change.map(Rc::new),
+                    // What it stood under no longer holds it: no row of the tree moves it, and
+                    // its mark says who removed it.
+                    drop: Event::None,
+                    into: Event::None,
+                    after: Event::None,
+                    check: props.check,
+                }
+            })
+            .collect();
+        Self {
+            rows,
+            removed: Rc::new(struck),
+        }
+    }
+
+    /// How many rows the tree holds before the struck rows of removed nodes.
+    fn held_len(&self) -> usize {
+        match &self.rows {
+            Rows::Given(nodes) => nodes.len(),
+            Rows::Rendered(remote) => remote.source.try_borrow().map_or(0, |rows| rows.len()),
+        }
+    }
+
+    /// The struck row standing at `index`, when it is one of the rows after the nodes.
+    fn removed_at(&self, index: usize) -> Option<&Node> {
+        self.removed.get(index.checked_sub(self.held_len())?)
     }
 
     /// The row `key`, or none when the tree does not hold it.
     fn node(&self, key: &str) -> Option<NodeRef<'_>> {
+        if let Some(node) = self.removed.iter().find(|node| node.key == key) {
+            return Some(NodeRef::Given(node));
+        }
         match &self.rows {
             Rows::Given(nodes) => nodes.node(key).map(NodeRef::Given),
             Rows::Rendered(remote) => remote.node(key).map(NodeRef::Rendered),
@@ -899,6 +1000,9 @@ impl TreeRows {
 
     /// Whether the tree holds the row `key`.
     fn holds(&self, key: &str) -> bool {
+        if self.removed.iter().any(|node| node.key == key) {
+            return true;
+        }
         match &self.rows {
             Rows::Given(nodes) => nodes.index.contains_key(key),
             Rows::Rendered(remote) => remote
@@ -910,12 +1014,8 @@ impl TreeRows {
 
     /// The resource the row at `key` stands for, as an event carries it.
     fn value_of(&self, key: &str) -> Option<Value> {
-        match &self.rows {
-            Rows::Given(nodes) => nodes.value_of(key),
-            Rows::Rendered(remote) => remote
-                .node(key)
-                .map(|node| Value::Resource(node.item.0.clone())),
-        }
+        self.node(key)
+            .map(|node| Value::Resource(node.item.0.clone()))
     }
 
     /// Whether any row offers a menu, which the list offers of its rows only then.
@@ -1027,13 +1127,13 @@ impl ListModel for TreeRows {
     type Key = String;
 
     fn len(&self) -> usize {
-        match &self.rows {
-            Rows::Given(nodes) => nodes.len(),
-            Rows::Rendered(remote) => remote.source.try_borrow().map_or(0, |rows| rows.len()),
-        }
+        self.held_len() + self.removed.len()
     }
 
     fn key_at(&self, index: usize) -> Option<Self::Key> {
+        if let Some(node) = self.removed_at(index) {
+            return Some(node.key.clone());
+        }
         match &self.rows {
             Rows::Given(nodes) => nodes.key_at(index),
             Rows::Rendered(remote) => remote.source.try_borrow().ok()?.key_at(index),
@@ -1041,6 +1141,9 @@ impl ListModel for TreeRows {
     }
 
     fn index_of(&self, key: &Self::Key) -> Option<usize> {
+        if let Some(at) = self.removed.iter().position(|node| node.key == *key) {
+            return Some(self.held_len() + at);
+        }
         match &self.rows {
             Rows::Given(nodes) => nodes.index_of(key),
             Rows::Rendered(remote) => remote.source.try_borrow().ok()?.index_of(key),
@@ -1048,6 +1151,12 @@ impl ListModel for TreeRows {
     }
 
     fn request_range(&mut self, range: std::ops::Range<usize>, open: Option<&String>) {
+        // The struck rows of removed nodes are whole, not the host's to render.
+        let held = self.held_len();
+        let range = range.start.min(held)..range.end.min(held);
+        if range.is_empty() {
+            return;
+        }
         if let Rows::Rendered(remote) = &self.rows
             && let Ok(mut rows) = remote.source.try_borrow_mut()
         {
@@ -1097,6 +1206,14 @@ impl ListModel for TreeRows {
     }
 
     fn tree_at(&self, index: usize) -> Option<TreeRow<Self::Key>> {
+        if let Some(node) = self.removed_at(index) {
+            // A struck row stands at the top level, where the row it left is no longer: the
+            // list holds its place without a branch to fold it away.
+            return Some(TreeRow {
+                parent: node.parent.clone(),
+                depth: node.depth,
+            });
+        }
         match &self.rows {
             Rows::Given(nodes) => Some(TreeRow {
                 parent: nodes.nodes.get(index)?.parent.clone(),
@@ -1118,6 +1235,9 @@ impl ListModel for TreeRows {
     }
 
     fn has_subtasks(&self, index: usize) -> bool {
+        if self.removed_at(index).is_some() {
+            return false;
+        }
         match &self.rows {
             Rows::Given(nodes) => nodes.has_subtasks(index),
             Rows::Rendered(remote) => {
@@ -1138,6 +1258,9 @@ impl ListModel for TreeRows {
     }
 
     fn label(&self, index: usize) -> Option<String> {
+        if let Some(node) = self.removed_at(index) {
+            return Some(node.label.clone());
+        }
         match &self.rows {
             Rows::Given(nodes) => nodes.label(index),
             Rows::Rendered(remote) => {
@@ -1205,11 +1328,20 @@ fn row_of(
         if let Some(text) = &props.description {
             row = row.description(text.clone());
         }
-        // What someone else changed of it, at the row's own height: on the trailing edge their
-        // face, and their colour under it, as a list row says it.
-        if let Some(mark) = node.change.as_ref().and_then(|mark| mark.again().row()) {
-            row = row.change(mark.identity, mark.name, mark.spoken, mark.said, mark.show);
-        }
+    }
+    // It stands in for an item someone removed: its title struck through, as a list row of one
+    // says it.
+    if node.removed {
+        row = row.struck();
+    }
+    // What someone else changed of it, at the row's own height: on the trailing edge their
+    // face, and their colour under it, as a list row says it.
+    if let Some(mark) = node.change.as_ref().and_then(|mark| mark.again().row()) {
+        row = row.change(mark.identity, mark.name, mark.spoken, mark.said, mark.show);
+    }
+    // Who else is at the item, in their colour, as a list row shows them.
+    if let Some(person) = &node.presence {
+        row = row.presence(person.identity.clone());
     }
     let row = Box::new(row) as Element;
     // A row's quick actions ride over its trailing corner while the row is hovered or holds
@@ -1283,6 +1415,7 @@ impl DescribedTreeView {
             reorder,
             tab_indents,
             nodes,
+            removed,
             expanded,
             selection,
             motion,
@@ -1298,6 +1431,7 @@ impl DescribedTreeView {
         // says nothing leaves what a person folded to the list.
         let rows = TreeRows::of(
             nodes,
+            removed,
             hide_root,
             name.clone(),
             expanded.as_deref(),
@@ -2028,6 +2162,92 @@ mod tests {
             heard,
             [("a".to_owned(), "check".to_owned())],
             "the tick reaches the row's box, and the owner hears it"
+        );
+    }
+
+    /// The list row the tree builds for the node `key`, read as the list row it is.
+    fn row_face<R>(tree: &DescribedTreeView, key: &str, read: impl FnOnce(&ListRow) -> R) -> R {
+        let element = row_of(tree.rows(), key, crate::motion::Feel::Standard, &tree.marks);
+        let row = element
+            .as_any()
+            .and_then(|any| any.downcast_ref::<ListRow>())
+            .unwrap_or_else(|| panic!("the row of {key} is a list row"));
+        read(row)
+    }
+
+    /// A tree row shows who else is at the item it stands for, as a list row shows it.
+    #[test]
+    fn a_tree_row_says_who_else_is_at_the_item() {
+        let queue = crate::Intents::default();
+        let mut props = node("a", None, false, &queue);
+        props.presence = Some(Person {
+            identity: "bo".to_owned(),
+            name: "Bo".to_owned(),
+        });
+        let tree = tree_of(vec![props], true, Event::None);
+        assert_eq!(
+            row_face(&tree, "a", |row| row
+                .with_face(|face| face.presence_identity().map(str::to_owned))),
+            Some("bo".to_owned()),
+            "the row says who else is at the item"
+        );
+        let plain = tree_of(vec![node("b", None, false, &queue)], true, Event::None);
+        assert_eq!(
+            row_face(&plain, "b", |row| row
+                .with_face(|face| face.presence_identity().map(str::to_owned))),
+            None,
+            "and says nothing while nobody else is"
+        );
+    }
+
+    /// A node someone removed that the person has not seen go stands struck, after the nodes,
+    /// at the top level: the row it stood under is one the tree may never have built.
+    #[test]
+    fn a_removed_node_stands_struck_after_the_nodes() {
+        let queue = crate::Intents::default();
+        let kept = node("a", None, false, &queue);
+        let gone = TreeViewNodeProps {
+            item: ResourceId("gone".to_owned()),
+            label: "Gone".to_owned(),
+            removed: true,
+            ..TreeViewNodeProps::default()
+        };
+        let tree = DescribedTreeView::from_props(
+            "tree",
+            TreeViewProps {
+                hide_root: true,
+                nodes: vec![kept].into(),
+                removed: vec![gone].into(),
+                ..TreeViewProps::default()
+            },
+        );
+        let rows = tree.rows();
+        assert_eq!(rows.len(), 2, "the node and the row standing in for it");
+        let struck = rows.key_at(1).expect("the removed row");
+        assert_eq!(
+            rows.label(1).as_deref(),
+            Some("Gone"),
+            "the row says what it was called"
+        );
+        assert_eq!(
+            rows.tree_at(1).and_then(|row| row.parent),
+            None,
+            "it stands at the top level"
+        );
+        assert!(
+            !rows.has_subtasks(1),
+            "a row standing in for what left holds nothing"
+        );
+        assert!(
+            row_face(&tree, &struck, |row| row
+                .with_face(|face| face.title_struck())),
+            "its title is struck through"
+        );
+        let kept = rows.key_at(0).expect("the node");
+        assert!(
+            !row_face(&tree, &kept, |row| row
+                .with_face(|face| face.title_struck())),
+            "a row the person still has is not struck"
         );
     }
 }

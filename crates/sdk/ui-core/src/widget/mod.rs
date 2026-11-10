@@ -3619,7 +3619,7 @@ mod tree_component;
 #[cfg(test)]
 pub(crate) use tree_component::items_tree;
 pub use tree_component::{
-    DescribedTreeView, TREE_ROW_HEIGHT, TreeTone, TreeViewNodeProps, TreeViewProps,
+    DescribedTreeView, RemovedNodes, TREE_ROW_HEIGHT, TreeTone, TreeViewNodeProps, TreeViewProps,
     TreeViewRowProps,
 };
 mod row_selection;

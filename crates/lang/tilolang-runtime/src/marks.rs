@@ -10,6 +10,8 @@
 //!   folds away as done with stands with the rows above while the change is unseen, so the mark
 //!   is read where it happened. A row in the unseen part of a list that stands a divider where
 //!   it starts (`unseen_from:`) takes no mark: the divider says it is new;
+//! - a list or a tree stands a struck row in for each item someone else removed that the person
+//!   has not seen go, with who removed it;
 //! - a bound text field takes the changer's colour (`changed_by`), and says what it held before
 //!   the change (`previous`);
 //! - a window's header holds a mark with how many changes of what it shows are unseen, and by
@@ -49,6 +51,8 @@ const ACTIONS: &str = "actions";
 const OVERVIEW_ACTIONS: &str = "overview_actions";
 /// The node kind of a list of any length, whose rows are its items'.
 const VIRTUAL_LIST: &str = "ui.VirtualList";
+/// The node kind of a tree, whose rows are its nodes.
+const TREE_VIEW: &str = "ui.TreeView";
 /// The node kind of a list row.
 const LIST_ROW: &str = "ui.ListRow";
 /// How many resources of a window's document a window's mark reads changes of: one page of
@@ -79,7 +83,7 @@ impl Core {
         acc: &mut Acc,
     ) -> Result<(), RuntimeError> {
         match node.kind.as_str() {
-            VIRTUAL_LIST => match listed {
+            VIRTUAL_LIST | TREE_VIEW => match listed {
                 Some(coll) => self.mark_removed(node, viewer, coll, acc),
                 None => Ok(()),
             },
@@ -148,9 +152,10 @@ impl Core {
         Ok(())
     }
 
-    /// A list of the collection `coll`: a row after its items for each item someone else
-    /// removed from it that `viewer` has not seen go, its title as it was struck through, its
-    /// mark saying who removed it in which run and showing that run.
+    /// A list or a tree of the collection `coll`: a row after its items for each item someone
+    /// else removed from it that `viewer` has not seen go, its title as it was struck through,
+    /// its mark saying who removed it in which run and showing that run. A tree's row is a node
+    /// of its own, standing after the nodes at the top level.
     fn mark_removed(
         &self,
         node: &mut UiNode,
@@ -205,17 +210,27 @@ impl Core {
                 None => None,
             };
             let key = format!("{}~removed~{resource}", node.key);
-            let mut row = UiNode::empty(LIST_ROW, &format!("{key}~row"));
-            row.props
-                .insert("title".to_owned(), Value::Text(said.unwrap_or_default()));
-            let mut item = UiNode::empty(LIST_ITEM, &key);
-            item.props.insert("removed".to_owned(), Value::Bool(true));
-            item.children.push(row);
+            let name = Value::Text(said.unwrap_or_default());
             let mut mark = UiNode::empty(CHANGE_MARK, &format!("{key}~change"));
             mark.props.insert("of".to_owned(), Value::resource(&at));
             self.fill_mark(&mut mark, &at, &unseen, viewer, acc);
-            item.children.push(slot("change", &key, mark));
-            rows.push(item);
+            // A row of a list stands for the item in a list row; a node of a tree is a row of
+            // its own, which says what it stood for.
+            let mut row = if node.kind == TREE_VIEW {
+                let mut struck = UiNode::empty(TREE_NODE, &key);
+                struck.props.insert("item".to_owned(), Value::resource(&at));
+                struck.props.insert("label".to_owned(), name);
+                struck
+            } else {
+                let mut line = UiNode::empty(LIST_ROW, &format!("{key}~row"));
+                line.props.insert("title".to_owned(), name);
+                let mut item = UiNode::empty(LIST_ITEM, &key);
+                item.children.push(line);
+                item
+            };
+            row.props.insert("removed".to_owned(), Value::Bool(true));
+            row.children.push(slot("change", &key, mark));
+            rows.push(row);
         }
         if !rows.is_empty() {
             let mut removed = UiNode::empty(SLOT, &format!("{}~slot-removed", node.key));
