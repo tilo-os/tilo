@@ -1042,8 +1042,12 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       // ending was seen to carry its box one page and no further, and the
       // turns sent after it nothing at all for a while. So a turn begins
       // well inside the run before it, or once that run is well over.
+      // After a turn the box did not show in full though it had room to go
+      // on, the next waits for that run to be over wherever it falls: the
+      // turns sent on its heels were seen to carry nothing.
+      const bool rest=value->GetType("rest")==VTYPE_BOOL && value->GetBool("rest");
       const double since=Now()-last_wheel_;
-      if(last_wheel_>0 && since>kWheelWithinMs && since<kWheelAfterMs) hold=static_cast<int64_t>(kWheelAfterMs-since);
+      if(last_wheel_>0 && since<kWheelAfterMs && (rest || since>kWheelWithinMs)) hold=static_cast<int64_t>(kWheelAfterMs-since);
       // The wheel turns at a point of the page: a point of a frame's
       // document is moved by where the frame sits.
       const double x=scroll_.x+world_frame_.x,y=scroll_.y+world_frame_.y;

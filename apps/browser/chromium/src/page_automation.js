@@ -230,7 +230,11 @@ globalThis.__tiloPage ||= (() => {
     const most = scrolling.reach || MAX_WHEEL_TURN;
     scrolling.owed = Math.max(-most, Math.min(most, left));
     scrolling.turned = 0;
-    return scrollAnswer(scrolling.owed, false);
+    const turn = scrollAnswer(scrolling.owed, false);
+    // After a turn the box did not show in full though it had room to go
+    // on, the wheel is let come to rest before it is turned again.
+    if (scrolling.rest) { turn.rest = true; scrolling.rest = false; }
+    return turn;
   }
   function beginScroll(box, point, goal, where) {
     scrolling = {box, x: point.x, y: point.y, goal, start: scrollYOffset(box), still: 0, owed: 0, unshown: 0,
@@ -269,6 +273,7 @@ globalThis.__tiloPage ||= (() => {
         const room = scrolling.owed > 0 ? scrollable(box) - now : now;
         scrolling.owed = 0;
         scrolling.still = 0;
+        scrolling.rest = room > 1;
         if (carried >= MIN_WHEEL_REACH && room > 1) { scrolling.reach = carried; scrolling.unshown = 0; }
         else if (++scrolling.unshown > MAX_SCROLL_UNSHOWN) return scrollAnswer(0, false);
       }
