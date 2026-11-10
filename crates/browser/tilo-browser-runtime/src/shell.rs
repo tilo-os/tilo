@@ -500,6 +500,8 @@ pub(crate) struct BrowserShell {
     /// What the person's agents ask them, over everything while a question
     /// waits: the session's own question sheet.
     questions: crate::over_page::OverPage<crate::agent_questions::PageQuestions>,
+    /// The window menu a secondary click on a window's bar opens, over everything.
+    window_menu: crate::window_menu::PageWindowMenu,
     /// The linked accounts' revision the card last showed.
     linked_seen: Cell<u64>,
     /// Asks again while the card shows a code, until the account links.
@@ -528,8 +530,9 @@ pub(crate) struct BrowserShell {
 }
 
 /// How many sheets the page draws over everything, last among its children:
-/// the invite sheet, the directory, the shortcut guide and an agent's question.
-const SHEETS: usize = 4;
+/// the invite sheet, the directory, the shortcut guide, an agent's question and
+/// a window's menu.
+const SHEETS: usize = 5;
 
 /// What the top bar's chrome reads from the page besides the desktop tree.
 pub struct ChromeSources {
@@ -551,7 +554,7 @@ pub struct ChromeSources {
 
 impl BrowserShell {
     /// The children the page draws in order: the desk, the bar, this person's own card, the
-    /// session's layers over them, and the sheets above everything.
+    /// session's layers over them, the sheets above everything, and a window's menu over those.
     fn drawn_children(&self) -> Vec<&dyn Widget> {
         let mut children: Vec<&dyn Widget> = vec![&self.desk, &self.top, &self.profile];
         children.extend(self.layers.iter().map(|layer| layer as &dyn Widget));
@@ -560,6 +563,7 @@ impl BrowserShell {
             &self.directory,
             &self.guide,
             &self.questions,
+            &self.window_menu,
         ]);
         children
     }
@@ -724,6 +728,7 @@ impl BrowserShell {
             invite,
             guide,
             questions: crate::over_page::OverPage::new(crate::agent_questions::PageQuestions::new()),
+            window_menu: crate::window_menu::PageWindowMenu::new(),
             linked_seen: Cell::new(0),
             linking: tilo_app::linked_accounts::LinkingRecheck::default(),
             profile_links: None,
@@ -762,6 +767,31 @@ impl BrowserShell {
             }
         }
         false
+    }
+
+    /// Where the pointer stands on the page, in its logical pixels, as `event` moves it.
+    fn track_cursor(&mut self, event: &WindowEvent, scale: f64) {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.cursor = Some(Point::new(position.x / scale, position.y / scale));
+        } else if matches!(event, WindowEvent::CursorLeft { .. }) {
+            self.cursor = None;
+        }
+    }
+
+    /// An open window menu takes what it covers, the keyboard and the press that dismisses it, as
+    /// the bar's menus do. Whether it took `event`.
+    fn window_menu_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut EventCtx<'_>,
+        node: NodeId,
+    ) -> bool {
+        if !self.window_menu.is_open() {
+            return false;
+        }
+        self.window_menu
+            .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        *ctx.handled
     }
 
     /// Whose view this page follows, as the person's own presence says it: the roster's banner
@@ -1630,6 +1660,8 @@ impl Widget for BrowserShell {
         changed |= self.take_person_card_ask();
         changed |= self.follow_people();
         changed |= self.follow_arrived_agents();
+        // A window's bar asked for its menu, or the person chose one of its rows.
+        changed |= self.window_menu.follow(&self.handle);
         changed |= self.follow_followed();
         // Whether the person may invite someone here, as the roster's footer offers it, and whom
         // they follow, which the windows they are in come forward with.
@@ -1721,6 +1753,7 @@ impl Widget for BrowserShell {
         let invite = self.invite.build_layout(taffy, theme, map);
         let guide = self.guide.build_layout(taffy, theme, map);
         let questions = self.questions.build_layout(taffy, theme, map);
+        let window_menu = self.window_menu.build_layout(taffy, theme, map);
         let style = Style {
             display: Display::Flex,
             flex_direction: FlexDirection::Column,
@@ -1729,7 +1762,7 @@ impl Widget for BrowserShell {
         };
         let mut children = vec![desk, top, profile];
         children.extend(layers);
-        children.extend([invite, directory, guide, questions]);
+        children.extend([invite, directory, guide, questions, window_menu]);
         taffy.widget_node(style, &children, map, self)
     }
 
@@ -1756,6 +1789,7 @@ impl Widget for BrowserShell {
                 &mut self.directory,
                 &mut self.guide,
                 &mut self.questions,
+                &mut self.window_menu,
             ]
             .into_iter()
             .zip(children.get(sheets..).unwrap_or_default())
@@ -1792,6 +1826,9 @@ impl Widget for BrowserShell {
         self.guide.draw(scene, transform, text, theme, presence);
         // Over everything, while an agent waits on the person's answer.
         self.questions.draw(scene, transform, text, theme, presence);
+        // A window's menu, where its bar was clicked.
+        self.window_menu
+            .draw(scene, transform, text, theme, presence);
         // Over everything, while picking what to report.
         self.picker.draw(scene, transform, text, theme, self.rect);
         let built = ui::time::now().saturating_duration_since(started);
@@ -1807,17 +1844,11 @@ impl Widget for BrowserShell {
         else {
             return;
         };
-        let Some([invite, directory, guide, questions]) = children.get(sheets..) else {
+        let Some(&[invite, directory, guide, questions, window_menu]) = children.get(sheets..)
+        else {
             return;
         };
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Some(Point::new(
-                position.x / ctx.scale_factor,
-                position.y / ctx.scale_factor,
-            ));
-        } else if matches!(event, WindowEvent::CursorLeft { .. }) {
-            self.cursor = None;
-        }
+        self.track_cursor(event, ctx.scale_factor);
         // Picking what to report takes every event: nothing underneath
         // reacts to a pick.
         if self.picker.is_open() {
@@ -1828,6 +1859,9 @@ impl Widget for BrowserShell {
                     .handle_event(event, self.cursor, modifiers, self.desk.area(), &windows);
             return;
         }
+        if self.window_menu_event(event, ctx, window_menu) {
+            return;
+        }
         // Alt+Shift+Tab's walk comes before anything on the page, as Alt+Tab's does on a desktop:
         // while it is up every key is its own.
         if let WindowEvent::KeyboardInput { event: key, .. } = event
@@ -1836,14 +1870,14 @@ impl Widget for BrowserShell {
             *ctx.handled = true;
             return;
         }
-        if self.question_event(event, ctx, *questions) {
+        if self.question_event(event, ctx, questions) {
             return;
         }
         // The invite sheet, like the directory: it takes what it covers, the
         // keyboard and the press that dismisses it.
         if self.invite.is_open() {
             self.invite
-                .handle_event(event, &mut ctx.reborrow(ctx.path, *invite));
+                .handle_event(event, &mut ctx.reborrow(ctx.path, invite));
             if *ctx.handled {
                 self.invite.follow();
                 return;
@@ -1853,7 +1887,7 @@ impl Widget for BrowserShell {
         // covers, the keyboard and the press that dismisses it.
         if self.directory.is_open() {
             self.directory
-                .handle_event(event, &mut ctx.reborrow(ctx.path, *directory));
+                .handle_event(event, &mut ctx.reborrow(ctx.path, directory));
             if *ctx.handled {
                 self.directory.follow();
                 return;
@@ -1867,7 +1901,7 @@ impl Widget for BrowserShell {
                 return;
             }
             self.guide
-                .handle_event(event, &mut ctx.reborrow(ctx.path, *guide));
+                .handle_event(event, &mut ctx.reborrow(ctx.path, guide));
             if *ctx.handled {
                 self.guide.follow();
                 return;
@@ -1925,6 +1959,7 @@ impl Widget for BrowserShell {
             && !self.invite.is_open()
             && !self.directory.is_open()
             && !self.guide.is_open()
+            && !self.window_menu.is_open()
             && !self.top.menu_open()
             && !self.profile.is_open()
             && !self.top.overview_open()
@@ -1971,6 +2006,7 @@ impl Widget for BrowserShell {
             &mut self.directory,
             &mut self.guide,
             &mut self.questions,
+            &mut self.window_menu,
         ]);
         children
     }
