@@ -59,7 +59,8 @@ pub(super) fn open(
         ChannelEncryptionConfig {
             state: Arc::new(ChannelsDir::new(profile.join(CHANNEL_STATE))),
             vault: vault_key(profile, profile_workspace, storage)?,
-            device_key,
+            signer: Arc::new(device_key),
+            role: tilo_action_broker::channel_encryption::Role::Participant,
         },
         Box::new(Directory {
             joined: Arc::clone(&joined),

@@ -39,7 +39,6 @@ use tilo_peer_state::owner::{
 use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
 
-use crate::channels::{Channels, RecordPolicy};
 use crate::custody::PeerStore;
 use tilo_peer_state::document_frame::DocumentRoute;
 
@@ -221,46 +220,9 @@ impl Replicas {
         .ok()
     }
 
-    /// What the workspace's governance says now about `route`'s content: the
-    /// group whose keys carry it and the devices that group admits. The group
-    /// is the key scope the workspace's governance names for the route
-    /// ([`tilo_peer_state::PeerGovernance::unit_scope`]), the decision a
-    /// native device makes, and the devices are that group's readers, the host
-    /// the workspace was joined through and this device. `None` while the
-    /// workspace's governance does not answer for the route.
-    pub(crate) fn policy(&self, route: &DocumentRoute) -> Option<RecordPolicy> {
-        let workspace_id = route.workspace_id().ok()?;
-        let unit = Channels::channel(route);
-        let named = collab_types::ChannelRoute::new(route.app_id.as_str(), route.record.as_str());
-        self.with_workspace(workspace_id, |view| {
-            let peer = view.peer();
-            let now = SystemTime::now();
-            let governance = peer.governance();
-            let scope = governance.unit_scope(now, &named)?;
-            // A unit with readers of its own is carried by its own group,
-            // whose record this page decides Read on; the workspace's scope is
-            // read by the workspace's participants, and needs no record.
-            let readers = governance
-                .channel_readers(now, scope, (scope == unit).then_some(&named))?
-                .ok_or_else(|| {
-                    "the workspace's governance names no readers of the route".to_owned()
-                })?;
-            let mut allowed: BTreeSet<Ed25519PublicKey> = readers
-                .into_iter()
-                .map(Ed25519PublicKey::from_bytes)
-                .collect();
-            allowed.insert(Ed25519PublicKey::from_bytes(
-                view.workspace_host().device_public_key,
-            ));
-            allowed.insert(Ed25519PublicKey::from_bytes(self.device.device_public_key));
-            Ok(Some(RecordPolicy {
-                unit,
-                scope,
-                allowed,
-            }))
-        })?
-        .ok()
-        .flatten()
+    /// The workspaces' governance, as the channels' directory reads it.
+    pub(crate) fn owner(&self) -> NativeWorkspaceOwner {
+        self.owner.clone()
     }
 
     /// Where `workspace_id`'s host listens, read off the signed hint the
@@ -294,11 +256,18 @@ impl Replicas {
         ))
     }
 
-    /// The devices that may sign and be added to `route`'s group: those
-    /// [`Self::policy`] names. `None` while the workspace's governance does
-    /// not answer for the route.
+    /// The devices that read the group carrying `route`'s keys, as the
+    /// channels' directory names them; `None` while the workspace's
+    /// governance does not answer for the route.
     pub(crate) fn participants(&self, route: &DocumentRoute) -> Option<BTreeSet<Ed25519PublicKey>> {
-        self.policy(route).map(|policy| policy.allowed)
+        use tilo_channels::ChannelDirectory as _;
+        let workspace = WorkspaceId::parse(&route.cluster_id)?;
+        let directory = tilo_session_client::channels::OwnerDirectory::reader(self.owner());
+        let now = tilo_clock::unix_now();
+        let named = collab_types::ChannelRoute::new(route.app_id.as_str(), route.record.as_str());
+        let scope = directory.unit_scope(workspace, &named, now)?;
+        let routed = (scope == named.channel(&route.cluster_id)).then_some(&named);
+        directory.allowed_devices(workspace, scope, routed, now)
     }
 
     /// One line per workspace for diagnostics: the host it was joined through.

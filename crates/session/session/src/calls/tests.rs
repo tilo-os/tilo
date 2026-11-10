@@ -176,7 +176,8 @@ fn keys(device: u8, vault: u8, admitted: &[u8]) -> (ChannelKeyProvider, tempfile
                 directory.path().join("channels"),
             )),
             vault: VaultKey::new([vault; 32]),
-            device_key: ed25519_dalek::SigningKey::from_bytes(&[device; 32]),
+            signer: std::sync::Arc::new(ed25519_dalek::SigningKey::from_bytes(&[device; 32])),
+            role: tilo_channels::Role::Participant,
         },
         Box::new(Directory {
             admitted: admitted.iter().copied().map(key).collect(),

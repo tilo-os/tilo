@@ -42,6 +42,7 @@ use tilo_identity_host::policy_change;
 use tilo_lock::MutexRecover as _;
 
 use crate::engine::Engine;
+use tilo_peer_state::owner::NativeWorkspaceOwner;
 
 mod vault;
 pub use vault::MlsVault;
@@ -94,16 +95,15 @@ impl Channels {
         link: Arc<ChannelLink>,
         broker: Arc<Mutex<BrokerChannels>>,
     ) -> std::io::Result<Self> {
-        let directory = Box::new(Directory {
-            engine: Arc::clone(engine),
-        });
+        let directory = Box::new(OwnerDirectory::participant(engine.owner().clone()));
         let gates: Arc<dyn ChannelGates> = Arc::new(BrokerGates(broker));
         let service = match MlsVault::open_for_session() {
             Ok(vault) => ChannelEncryption::open(
                 ChannelEncryptionConfig {
                     state: vault.channel_state(),
                     vault: vault.channel_state_key(),
-                    device_key: engine.identity().device_signing_key.clone(),
+                    signer: Arc::new(engine.identity().device_signing_key.clone()),
+                    role: tilo_channels::Role::Participant,
                 },
                 directory,
                 Arc::clone(&gates),
@@ -449,11 +449,34 @@ impl Rosters {
 
 /// The workspace's access policy as this device's own workspaces hold it: which devices the
 /// workspace lets read each channel.
-struct Directory {
-    engine: Arc<Engine>,
+pub struct OwnerDirectory {
+    owner: NativeWorkspaceOwner,
+    /// A reader also follows what the host it joined a workspace through and it itself sign: the
+    /// host vouched for the workspace it was let into.
+    reader: bool,
 }
 
-impl ChannelDirectory for Directory {
+impl OwnerDirectory {
+    /// The directory of a device that settles its groups.
+    #[must_use]
+    pub fn participant(owner: NativeWorkspaceOwner) -> Self {
+        Self {
+            owner,
+            reader: false,
+        }
+    }
+
+    /// The directory of a [`tilo_channels::Role::Reader`] device.
+    #[must_use]
+    pub fn reader(owner: NativeWorkspaceOwner) -> Self {
+        Self {
+            owner,
+            reader: true,
+        }
+    }
+}
+
+impl ChannelDirectory for OwnerDirectory {
     /// The member devices the workspace's governance lets read `channel` at `now` (Unix seconds):
     /// the same projection the workspace's doors apply to the record, so a person's device is in a
     /// channel exactly when it may read the record that channel carries.
@@ -465,11 +488,21 @@ impl ChannelDirectory for Directory {
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
         let at = UNIX_EPOCH.checked_add(Duration::from_secs(now))?;
+        let reader = self.reader;
         let readers = self
-            .engine
-            .owner()
+            .owner
             .with_current(workspace, |view| {
-                view.peer().governance().channel_readers(at, channel, route)
+                Ok(view
+                    .peer()
+                    .governance()
+                    .channel_readers(at, channel, route)?
+                    .map(|mut readers| {
+                        if reader {
+                            readers.insert(view.workspace_host().device_public_key);
+                            readers.insert(view.device().device_public_key);
+                        }
+                        readers
+                    }))
             })
             // A workspace whose governance cannot be read says nothing of who reads it.
             .ok()
@@ -492,8 +525,7 @@ impl ChannelDirectory for Directory {
         now: u64,
     ) -> Option<ChannelId> {
         let at = UNIX_EPOCH.checked_add(Duration::from_secs(now))?;
-        self.engine
-            .owner()
+        self.owner
             .with_current(workspace, |view| {
                 view.peer().governance().unit_scope(at, route)
             })
@@ -512,8 +544,7 @@ impl ChannelDirectory for Directory {
     fn next_policy_change(&self, workspace: ModelWorkspaceId, now: u64) -> Option<u64> {
         let second = tilo_channels::schedule::second_at_or_after;
         let (certificates, capabilities) = self
-            .engine
-            .owner()
+            .owner
             .with_current(workspace, |view| {
                 let document = view
                     .peer()

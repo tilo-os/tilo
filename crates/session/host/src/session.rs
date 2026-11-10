@@ -769,17 +769,14 @@ impl PeerHandle {
         lock(&shared).queues.push(Arc::downgrade(&events));
         let record = store.load().unwrap_or_default();
         let vault = store.channel_vault().unwrap_or_else(rand::random);
-        let mut channels = crate::channels::Channels::new(config.cert.device_public_key, vault);
-        let saved = store
-            .load_channels()
-            .and_then(|bytes| SavedPeerChannels::decode(&bytes))
-            .unwrap_or_default();
-        channels.restore(saved.channels);
-        channels.restore_requests(saved.requests);
+        let replicas = crate::replica::Replicas::new(config.cert.clone(), Arc::clone(&store));
+        let channel_state = crate::custody::StoredChannels::load(store.as_ref());
+        let gates = Arc::new(tilo_channels::Gates::default());
+        let channels = open_channels(&replicas, &channel_state, vault, &signer, &gates);
         #[cfg(feature = "toolkit")]
         crate::surfaces::decide_with_kept_surfaces();
         let task = Task {
-            replicas: crate::replica::Replicas::new(config.cert.clone(), Arc::clone(&store)),
+            replicas,
             commands: commands.downgrade(),
             config,
             signer,
@@ -795,7 +792,13 @@ impl PeerHandle {
             record,
             ciphers: Ciphers::new(),
             channels,
-            channel_changes: crate::channels::Changes::default(),
+            governance: HostGovernance::default(),
+            held_outbound: channel_state.held().into_iter().collect(),
+            channel_state,
+            gates,
+            route_keys: BTreeMap::new(),
+            new_keys: Vec::new(),
+            keys_generation: 0,
             opened: BTreeMap::new(),
             refused: (0, String::new()),
             held_inbound: BTreeMap::new(),
@@ -803,7 +806,6 @@ impl PeerHandle {
             surfaces_arrived: false,
             owed_replays: BTreeMap::new(),
             held_live: crate::held_live::HeldLive::new(),
-            held_outbound: saved.held.into_iter().collect(),
             reassembly: Reassembly::default(),
             positions: BTreeMap::new(),
             opened_records: BTreeMap::new(),
@@ -1304,10 +1306,21 @@ struct Task {
     resending: BTreeSet<[u8; 16]>,
     record: PeerRecord,
     ciphers: Ciphers,
-    /// This device's membership of the workspaces' encrypted channels.
-    channels: crate::channels::Channels,
-    /// What channel state changed since the session last acted on it.
-    channel_changes: crate::channels::Changes,
+    /// This device's side of the workspaces' encrypted channels: the engine every participant runs,
+    /// here as a reader that asks for access and follows the participants' commits.
+    channels: tilo_channels::ChannelEncryption,
+    /// What the channels say to and hear from the host.
+    governance: HostGovernance,
+    /// The channels' state and the writes held for their keys, in the store.
+    channel_state: crate::custody::StoredChannels,
+    /// The gate of every channel this device knows has a group.
+    gates: Arc<tilo_channels::Gates>,
+    /// Every route this session opened, and the keys it holds for it.
+    route_keys: BTreeMap<DocumentRoute, RouteKeys>,
+    /// Keys installed since the session last acted on them.
+    new_keys: Vec<(DocumentRoute, channel_crypto::ChannelContentKeys)>,
+    /// The channels' generation the keys were last read at.
+    keys_generation: u64,
     /// Documents opened per route, and those refused with the last reason,
     /// for the diagnostics.
     opened: BTreeMap<(DocumentRoute, [u8; 4]), u64>,
@@ -1930,8 +1943,7 @@ impl Task {
                     self.check_admission();
                 }
                 _ = channel_tick.tick() => {
-                    let changes = self.channels.tick(tilo_clock::unix_now_ms());
-                    self.absorb(changes);
+                    self.pump_channels(false);
                     // A plane that ended or is due to be asked again.
                     self.planes_due.extend(self.workspaces.iter().copied());
                 }
@@ -2075,11 +2087,9 @@ impl Task {
                 // channel's records are sealed with them, and so is a call on
                 // one of them while this device holds no channel state of its
                 // own.
-                self.channels.install_handed(&route, keys.clone());
-                self.absorb(crate::channels::Changes {
-                    keys: vec![(route, keys)],
-                    ..crate::channels::Changes::default()
-                });
+                self.route_keys
+                    .insert(route.clone(), RouteKeys::Handed(keys.clone()));
+                self.new_keys.push((route, keys));
                 true
             }
             Command::OpenRoute(route) => {
@@ -2442,7 +2452,7 @@ impl Task {
             app: route.app_id.clone(),
             record: route.record.clone(),
         };
-        let channel = crate::channels::Channels::channel(route).0.into_bytes();
+        let channel = unit(route).0.into_bytes();
         let released: Vec<_> = self
             .held_live
             .release(workspace_id, record, channel)
@@ -2486,9 +2496,8 @@ impl Task {
         };
         let channel = sealed.channel_id();
         let bound = self.ciphers.iter_mut().find_map(|(route, cipher)| {
-            (crate::channels::Channels::channel(route) == channel
-                && route.workspace_id().ok() == Some(workspace_id))
-            .then_some((route, cipher))
+            (unit(route) == channel && route.workspace_id().ok() == Some(workspace_id))
+                .then_some((route, cipher))
         });
         let Some((route, cipher)) = bound else {
             return Opening::NoKeys(sealed.channel);
@@ -2760,13 +2769,91 @@ impl Task {
     /// Take this device into `route`'s channel, with the participants its
     /// workspace's governance admits.
     fn open_channel(&mut self, route: &DocumentRoute) {
-        let replicas = &self.replicas;
-        let changes = self.channels.open(
-            route,
-            &|route| replicas.policy(route),
-            tilo_clock::unix_now_ms(),
-        );
-        self.absorb(changes);
+        if !self.route_keys.contains_key(route) {
+            self.route_keys.insert(route.clone(), RouteKeys::Waiting);
+        }
+        // A channel taken up now asks for access in this pass.
+        if matches!(self.route_keys.get(route), Some(RouteKeys::Waiting))
+            && !self.read_keys(route, tilo_clock::Instant::now())
+        {
+            self.pump_channels(false);
+        }
+    }
+
+    /// Run the channels' protocol once, then take up the keys it changed;
+    /// `all` first reads every waiting route's again, as after the
+    /// workspace's governance moved, so what it now names asks in this pass.
+    fn pump_channels(&mut self, all: bool) {
+        let now = tilo_clock::Instant::now();
+        if all {
+            self.read_all_keys(now);
+        }
+        self.channels
+            .pump(&self.governance, now, tilo_clock::unix_now());
+        if self.channels.generation() != self.keys_generation {
+            self.read_all_keys(now);
+        }
+    }
+
+    fn read_all_keys(&mut self, now: tilo_clock::Instant) {
+        self.keys_generation = self.channels.generation();
+        let routes: Vec<DocumentRoute> = self
+            .route_keys
+            .iter()
+            .filter(|(_, keys)| !matches!(keys, RouteKeys::Handed(_)))
+            .map(|(route, _)| route.clone())
+            .collect();
+        for route in routes {
+            self.read_keys(&route, now);
+        }
+    }
+
+    /// Take up `route`'s keys when the channels hold newer ones than the
+    /// session; answers whether the route has keys.
+    fn read_keys(&mut self, route: &DocumentRoute, now: tilo_clock::Instant) -> bool {
+        let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) else {
+            return false;
+        };
+        let named = collab_types::ChannelRoute::new(route.app_id.as_str(), route.record.as_str());
+        let (unit, access) = self.channels.access_record(workspace, &named, now);
+        let tilo_channels::ChannelAccess::Ready(keys) = access else {
+            return false;
+        };
+        let change = self.channels.channel_change(unit);
+        let installed = match self.route_keys.get(route) {
+            Some(RouteKeys::Engine { change: held, .. }) => *held == change,
+            Some(RouteKeys::Handed(_)) => true,
+            Some(RouteKeys::Waiting) | None => false,
+        };
+        if !installed {
+            self.route_keys.insert(
+                route.clone(),
+                RouteKeys::Engine {
+                    change,
+                    keys: keys.clone(),
+                },
+            );
+            self.new_keys.push((route.clone(), keys));
+        }
+        true
+    }
+
+    /// The verdict on an op for `route` from the gate of the group carrying it
+    /// ([`crate::document_admission`], or [`crate::document_history_admission`] for what the host
+    /// replays).
+    fn admission(
+        &self,
+        route: &DocumentRoute,
+        (governance_known, sealed): (bool, bool),
+        retained: bool,
+        encryption: Option<&collab_types::EncryptionMetadata>,
+    ) -> collab_types::inbound::OpAdmission {
+        let gate = self.gates.gate_for(&route.cluster_id, unit(route));
+        if retained {
+            crate::document_history_admission(gate, governance_known, sealed, route, encryption)
+        } else {
+            crate::document_admission(gate, governance_known, sealed, route, encryption)
+        }
     }
 
     /// Follow what `workspace_id`'s governance says now: who its members are,
@@ -2781,11 +2868,7 @@ impl Task {
                 None => _ = status.room_members.remove(&workspace),
             });
         }
-        let replicas = &self.replicas;
-        let changes = self
-            .channels
-            .retry(&|route| replicas.policy(route), tilo_clock::unix_now_ms());
-        self.absorb(changes);
+        self.pump_channels(true);
         // A record opened before the governance admitted it waits with its
         // channel unopened: opening it here asks the participants for the keys
         // the writes it holds wait on.
@@ -2844,19 +2927,14 @@ impl Task {
         author: [u8; 32],
         retained: bool,
     ) {
-        let now = tilo_clock::unix_now_ms();
         match message {
-            neighbour_wire::NeighbourMsg::MlsGovernance {
-                workspace, frame, ..
-            } => {
-                let replicas = &self.replicas;
-                let changes = self.channels.receive_frame(
-                    &workspace,
-                    *frame,
-                    &|route| replicas.policy(route),
-                    now,
-                );
-                self.absorb(changes);
+            message @ neighbour_wire::NeighbourMsg::MlsGovernance { .. } => {
+                if let Some(inbound) =
+                    tilo_channels::InboundChannelGovernance::from_message(message)
+                {
+                    self.governance.inbound.lock_recover().push(inbound);
+                    self.pump_channels(false);
+                }
             }
             ref message @ neighbour_wire::NeighbourMsg::AppDocument {
                 ref app_id,
@@ -2961,7 +3039,7 @@ impl Task {
         retained: bool,
     ) -> Result<Option<HoldReason>, &'static str> {
         let Some(metadata) = &envelope.encryption else {
-            let admission = self.channels.admission(
+            let admission = self.admission(
                 route,
                 (
                     self.governance_known(route),
@@ -3077,17 +3155,11 @@ impl Task {
     /// now opens it.
     fn admitted(&mut self, workspace_id: u64, client: &RelayClient) {
         self.check_admission();
-        // What this session could not ask before the workspace admitted it.
-        let asked = self
-            .channels
-            .ask_now(workspace_id, tilo_clock::unix_now_ms());
-        self.absorb(asked);
         for route in self.held_routes(workspace_id) {
             let opens = self.ciphers.contains_key(&route)
+                // What the host replays is the record's history, whose
+                // cleartext base opens where a live write would wait.
                 || self
-                    .channels
-                    // What the host replays is the record's history, whose
-                    // cleartext base opens where a live write would wait.
                     .admission(&route, (true, false), true, None)
                     .admits_cleartext()
                     == Some(true);
@@ -3194,107 +3266,47 @@ impl Task {
         }
     }
 
-    fn absorb(&mut self, changes: crate::channels::Changes) {
-        self.channel_changes.extend(changes);
-    }
-
     /// Store channel state and held edits when either changed, so a
     /// reloaded page keeps its access and what it wrote before the keys.
-    fn persist_channels(&mut self, held_changed: bool) {
-        let Some(channels) = self.channels.export_if_changed().or_else(|| {
-            held_changed.then(|| {
-                self.channels.mark_changed();
-                self.channels.export_if_changed().unwrap_or_default()
-            })
-        }) else {
-            return;
-        };
-        let saved = SavedPeerChannels {
-            channels,
-            requests: self.channels.pending_requests(),
-            held: self
-                .held_outbound
-                .iter()
-                .map(|(route, frames)| (route.clone(), frames.clone()))
-                .collect(),
-        };
-        let result = saved
-            .encode()
-            .and_then(|bytes| self.store.save_channels(&bytes));
-        if let Err(error) = result {
+    fn persist_channels(&self, held_changed: bool) {
+        if held_changed {
+            self.channel_state.hold(
+                self.held_outbound
+                    .iter()
+                    .map(|(route, frames)| (route.clone(), frames.clone()))
+                    .collect(),
+            );
+        }
+        if let Err(error) = self.channel_state.save(self.store.as_ref()) {
             self.fail_on(FailureSubject::Storage, "storage-transaction-failed", error);
         }
     }
 
-    /// Act on channel changes: install new keys, open what waited for them,
-    /// seal and commit what was held, and sign and send governance. Returns
-    /// `false` when the session could not take an envelope.
+    /// Act on channel changes: await what the device's custody signs, send
+    /// the governance the channels said, install new keys, open what waited
+    /// for them, and seal and commit what was held. Returns `false` when the
+    /// session could not take an envelope.
     async fn settle_channels(&mut self, client: Option<&RelayClient>) -> bool {
         let mut delivered = true;
+        if self.channels.signing() {
+            self.channels.signatures().await;
+            self.pump_channels(false);
+        }
+        if let Some(client) = client {
+            delivered &= self.send_governance(client);
+        }
         loop {
-            let changes = std::mem::take(&mut self.channel_changes);
-            if changes.keys.is_empty()
-                && changes.outgoing.is_empty()
-                && self.channel_changes.is_empty()
-            {
+            let keys = std::mem::take(&mut self.new_keys);
+            if keys.is_empty() {
                 self.persist_channels(false);
-                let mut channels = self.replicas.describe();
-                channels.push('\n');
-                channels.push_str(&self.channels.describe());
-                let planes = self.planes.describe();
-                if !planes.is_empty() {
-                    channels.push('\n');
-                    channels.push_str(&planes);
-                }
-                for ((route, from), count) in &self.opened {
-                    let _ = write!(
-                        channels,
-                        "\nopened {}/{} from {}: {count}",
-                        route.app_id,
-                        route.record,
-                        hex::encode(from)
-                    );
-                }
-                for (route, held) in &self.held_inbound {
-                    let mut reasons = Vec::new();
-                    let mut waiting = [0_usize; 3];
-                    for (_, frame) in held.held() {
-                        let counted = match frame.reason {
-                            HoldReason::Keys => &mut waiting[0],
-                            HoldReason::Surface(_) => &mut waiting[1],
-                            HoldReason::Governance => &mut waiting[2],
-                        };
-                        *counted = counted.saturating_add(1);
-                    }
-                    for (count, reason) in
-                        waiting
-                            .into_iter()
-                            .zip(["its keys", "its app surface", "governance"])
-                    {
-                        if count > 0 {
-                            reasons.push(format!("{count} for {reason}"));
-                        }
-                    }
-                    if !reasons.is_empty() {
-                        let _ = write!(
-                            channels,
-                            "\nheld {}/{}: {}",
-                            route.app_id,
-                            route.record,
-                            reasons.join(", ")
-                        );
-                    }
-                }
-                if self.refused.0 > 0 {
-                    let _ = write!(channels, "\nrefused {}: {}", self.refused.0, self.refused.1);
-                }
+                let channels = self.describe_channels();
                 if lock(&self.shared).status.channels != channels {
                     self.update(|status| status.channels = channels);
                 }
                 return delivered;
             }
             let held_before = self.held_outbound.len();
-            for (route, keys) in changes.keys {
+            for (route, keys) in keys {
                 if let Ok(workspace_id) = route.workspace_id() {
                     self.planes_due.insert(workspace_id);
                 }
@@ -3314,100 +3326,197 @@ impl Task {
                 self.persist_channels(true);
                 self.release_barriers();
             }
-            for outgoing in changes.outgoing {
-                let Some(client) = client else {
-                    // Offline: overdue requests are sent again after the
-                    // reconnect; acknowledgements go with the next frame.
-                    continue;
+        }
+    }
+
+    /// The channels' diagnostics: each workspace, route, plane and held write.
+    fn describe_channels(&self) -> String {
+        let mut channels = self.replicas.describe();
+        for (route, keys) in &self.route_keys {
+            let state = match keys {
+                RouteKeys::Waiting => "waiting",
+                RouteKeys::Engine { .. } => "ready",
+                RouteKeys::Handed(_) => "handed",
+            };
+            let _ = write!(
+                channels,
+                "\nroute {}/{} {:?}: {state};",
+                route.app_id,
+                route.record,
+                unit(route)
+            );
+        }
+        let planes = self.planes.describe();
+        if !planes.is_empty() {
+            channels.push('\n');
+            channels.push_str(&planes);
+        }
+        for ((route, from), count) in &self.opened {
+            let _ = write!(
+                channels,
+                "\nopened {}/{} from {}: {count}",
+                route.app_id,
+                route.record,
+                hex::encode(from)
+            );
+        }
+        for (route, held) in &self.held_inbound {
+            let mut reasons = Vec::new();
+            let mut waiting = [0_usize; 3];
+            for (_, frame) in held.held() {
+                let counted = match frame.reason {
+                    HoldReason::Keys => &mut waiting[0],
+                    HoldReason::Surface(_) => &mut waiting[1],
+                    HoldReason::Governance => &mut waiting[2],
                 };
-                let crate::channels::Outgoing::Request { workspace_id, .. } = &outgoing;
-                if lock(&self.shared).status.workspaces.get(workspace_id) != Some(&true) {
-                    // The host takes a workspace's governance only from a session
-                    // it admitted to the workspace: this is asked again the
-                    // moment it does (`admitted`).
-                    continue;
-                }
-                let signer = Arc::clone(&self.signer);
-                let device = self.config.cert.device_public_key;
-                for envelope in sign_governance(signer.as_ref(), device, outgoing).await {
-                    delivered &= client.send(envelope).is_ok();
+                *counted = counted.saturating_add(1);
+            }
+            for (count, reason) in
+                waiting
+                    .into_iter()
+                    .zip(["its keys", "its app surface", "governance"])
+            {
+                if count > 0 {
+                    reasons.push(format!("{count} for {reason}"));
                 }
             }
+            if !reasons.is_empty() {
+                let _ = write!(
+                    channels,
+                    "\nheld {}/{}: {}",
+                    route.app_id,
+                    route.record,
+                    reasons.join(", ")
+                );
+            }
+        }
+        if self.refused.0 > 0 {
+            let _ = write!(channels, "\nrefused {}: {}", self.refused.0, self.refused.1);
+        }
+        channels
+    }
+
+    /// Send the governance the channels said for every workspace the host
+    /// admitted this session to; the rest waits until it does. Returns
+    /// `false` when the session could not take an envelope.
+    fn send_governance(&self, client: &RelayClient) -> bool {
+        let admitted = |workspace_id: u64| {
+            lock(&self.shared).status.workspaces.get(&workspace_id) == Some(&true)
+        };
+        let device = self.config.cert.device_public_key;
+        let mut delivered = true;
+        for (workspace_id, message) in self.governance.take_for(admitted) {
+            if let Some(envelope) = governance_envelope(device, workspace_id, &message) {
+                delivered &= client.send(envelope).is_ok();
+            }
+        }
+        delivered
+    }
+}
+
+/// This device's channels as a reader: its state in `state`, sealed under
+/// `vault`, signed by its custody, and their readers its workspaces'.
+fn open_channels(
+    replicas: &crate::replica::Replicas,
+    state: &crate::custody::StoredChannels,
+    vault: [u8; 32],
+    signer: &Arc<dyn DeviceSigner>,
+    gates: &Arc<tilo_channels::Gates>,
+) -> tilo_channels::ChannelEncryption {
+    let directory = || {
+        Box::new(tilo_session_client::channels::OwnerDirectory::reader(
+            replicas.owner(),
+        ))
+    };
+    tilo_channels::ChannelEncryption::open(
+        tilo_channels::ChannelEncryptionConfig {
+            state: Arc::new(state.clone()),
+            vault: channel_crypto::VaultKey::new(vault),
+            signer: Arc::clone(signer),
+            role: tilo_channels::Role::Reader,
+        },
+        directory(),
+        Arc::clone(gates) as Arc<dyn tilo_channels::ChannelGates>,
+    )
+    .unwrap_or_else(|_| {
+        tilo_channels::ChannelEncryption::without_store(directory(), Arc::clone(gates) as _)
+    })
+}
+
+/// The keys this session holds for a route it opened.
+enum RouteKeys {
+    /// No keys yet.
+    Waiting,
+    /// The keys the channels hold, as of the channel's `change`.
+    Engine {
+        change: u64,
+        keys: channel_crypto::ChannelContentKeys,
+    },
+    /// Keys a host device handed over for a record whose group this device
+    /// is not admitted to itself: the workspace's own keys for the record.
+    Handed(channel_crypto::ChannelContentKeys),
+}
+
+impl RouteKeys {
+    fn keys(&self) -> Option<&channel_crypto::ChannelContentKeys> {
+        match self {
+            Self::Waiting => None,
+            Self::Engine { keys, .. } | Self::Handed(keys) => Some(keys),
         }
     }
 }
 
-/// A page's channel state and the edits it holds for the durable store,
-/// beside its [`PeerRecord`].
-#[derive(Default, serde::Serialize, serde::Deserialize)]
-struct SavedPeerChannels {
-    channels: crate::channels::SavedChannels,
-    requests: Vec<collab_types::MlsAccessRequestV1>,
-    held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
+/// The storage unit of `route`: the channel its content is sealed under.
+fn unit(route: &DocumentRoute) -> collab_types::ChannelId {
+    collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record)
 }
 
-/// Tags stored channel state of this format: state of an earlier format
-/// does not open, and the page starts over.
-const SAVED_CHANNELS_TAG: &[u8] = b"tilo.browser-channels.v4";
+/// The channels' workspace transport over the host session: what they say
+/// waits here for the session to send it, newest per channel, until the host
+/// admitted the session to its workspace.
+#[derive(Default)]
+struct HostGovernance {
+    inbound: Mutex<Vec<tilo_channels::InboundChannelGovernance>>,
+    outbound: Mutex<BTreeMap<(u64, [u8; 16]), neighbour_wire::NeighbourMsg>>,
+}
 
-impl SavedPeerChannels {
-    fn encode(&self) -> Result<Vec<u8>, String> {
-        let mut bytes = SAVED_CHANNELS_TAG.to_vec();
-        postcard::to_io(self, &mut bytes).map_err(|error| error.to_string())?;
-        Ok(bytes)
+impl HostGovernance {
+    /// What waits for the workspaces `admitted` names.
+    fn take_for(&self, admitted: impl Fn(u64) -> bool) -> Vec<(u64, neighbour_wire::NeighbourMsg)> {
+        let outbound = std::mem::take(&mut *self.outbound.lock_recover());
+        let (due, waiting): (BTreeMap<_, _>, BTreeMap<_, _>) = outbound
+            .into_iter()
+            .partition(|((workspace_id, _), _)| admitted(*workspace_id));
+        self.outbound.lock_recover().extend(waiting);
+        due.into_iter()
+            .map(|((workspace_id, _), message)| (workspace_id, message))
+            .collect()
+    }
+}
+
+impl tilo_channels::GovernanceTransport for HostGovernance {
+    fn publish(&self, message: neighbour_wire::NeighbourMsg) -> bool {
+        use neighbour_wire::NeighbourMsg;
+        let (workspace, channel) = match &message {
+            NeighbourMsg::MlsAccessRequest {
+                workspace, request, ..
+            } => (workspace, request.channel),
+            NeighbourMsg::MlsRoutedAccessRequest { room, request, .. } => (room, request.channel),
+            // A reader commits nothing.
+            _ => return false,
+        };
+        let Ok(workspace_id) = tilo_relay_protocol::room_workspace_id(workspace) else {
+            return false;
+        };
+        self.outbound
+            .lock_recover()
+            .insert((workspace_id, channel.0.into_bytes()), message);
+        true
     }
 
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        postcard::from_bytes(bytes.strip_prefix(SAVED_CHANNELS_TAG)?).ok()
+    fn take_inbound(&self) -> Vec<tilo_channels::InboundChannelGovernance> {
+        std::mem::take(&mut *self.inbound.lock_recover())
     }
-}
-
-/// Sign a governance message with the device key and wrap it for the host,
-/// which retains it for the workspace's participants. An access request goes
-/// routed, so they decide Read on the record.
-async fn sign_governance(
-    signer: &dyn DeviceSigner,
-    device: [u8; 32],
-    outgoing: crate::channels::Outgoing,
-) -> Vec<Envelope> {
-    let Some(messages) = signed_governance(signer, outgoing).await else {
-        return Vec::new();
-    };
-    messages
-        .into_iter()
-        .filter_map(|(workspace_id, message)| governance_envelope(device, workspace_id, &message))
-        .collect()
-}
-
-/// `outgoing` signed, as the messages that carry it and their workspace.
-async fn signed_governance(
-    signer: &dyn DeviceSigner,
-    outgoing: crate::channels::Outgoing,
-) -> Option<Vec<(u64, neighbour_wire::NeighbourMsg)>> {
-    let crate::channels::Outgoing::Request {
-        workspace_id,
-        cluster_id,
-        mut request,
-        route,
-    } = outgoing;
-    let signature = signer.sign(request.signing_bytes().ok()?).await.ok()?;
-    request.signature = collab_types::Signature::from_bytes(signature);
-    // A group the unit's own is asked for with the record it carries, so its
-    // participants decide Read on it; the workspace's scope names no record.
-    let routed = match route {
-        Some(route) => neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest {
-            room: cluster_id,
-            request: Box::new(request),
-            route: Box::new(route),
-            delivery: rand::random(),
-        },
-        None => neighbour_wire::NeighbourMsg::MlsAccessRequest {
-            workspace: cluster_id,
-            request: Box::new(request),
-            delivery: rand::random(),
-        },
-    };
-    Some(vec![(workspace_id, routed)])
 }
 
 /// `message`, signed governance of `workspace_id`, wrapped for the host.
@@ -3583,36 +3692,6 @@ fn answered<T: serde::de::DeserializeOwned>(frame: &[u8]) -> Result<T, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn stored_pending_requests_and_held_edits_survive_reopen()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let route = DocumentRoute {
-            app_id: "so.tilo.notes".into(),
-            cluster_id: "workspace".into(),
-            record: "note".into(),
-        };
-        let request = collab_types::MlsAccessRequestV1::unsigned(
-            collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record),
-            collab_types::Ed25519PublicKey::from_bytes([3; 32]),
-            vec![1, 2, 3],
-            7,
-        );
-        let saved = SavedPeerChannels {
-            channels: crate::channels::SavedChannels::default(),
-            requests: vec![request.clone()],
-            held: vec![(route, vec![b"before the reload".to_vec()])],
-        };
-        let decoded =
-            SavedPeerChannels::decode(&saved.encode()?).ok_or("stored state did not decode")?;
-        if postcard::to_stdvec(&decoded.requests)? != postcard::to_stdvec(&vec![request])? {
-            return Err("the pending access request changed on reopen".into());
-        }
-        if decoded.held != saved.held {
-            return Err("the held edit changed on reopen".into());
-        }
-        Ok(())
-    }
 
     fn status(workspaces: &[(u64, bool)]) -> PeerStatus {
         PeerStatus {

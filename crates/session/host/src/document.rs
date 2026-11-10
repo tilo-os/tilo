@@ -100,3 +100,53 @@ pub async fn sign_frame(
         checkpoint: retention == Retention::Checkpoint,
     })
 }
+
+/// The verdict on an op for `route` from the gate of the page's state for
+/// its channel, through the one gate a broker checks too
+/// ([`channel_crypto::admission`]). A page that holds the channel's content
+/// keys (`sealed`) knows the channel requires them, as a broker that
+/// registered its gate does. `governance_known`: the host answered `Ready`
+/// for the route's workspace, after the governance it holds, so a channel the
+/// page has no state of requires nothing; before that, cleartext waits.
+pub fn document_admission(
+    gate: Option<channel_crypto::ChannelGate>,
+    governance_known: bool,
+    sealed: bool,
+    route: &DocumentRoute,
+    encryption: Option<&collab_types::EncryptionMetadata>,
+) -> collab_types::inbound::OpAdmission {
+    let keys = sealed.then_some(channel_crypto::ChannelGate {
+        encryption_required: true,
+    });
+    channel_crypto::admission(
+        gate.into_iter().chain(keys),
+        governance_known,
+        collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record),
+        encryption,
+    )
+}
+
+/// [`document_admission`] for an op the host is replaying from a record's
+/// retained history, as a broker decides one with
+/// [`tilo_action_broker::collab_core::BrokerChannels::document_history_allowed`]:
+/// a record's cleartext writes stay the base its sealed writes are changes
+/// over, so a device that joins the record after it sealed reads it by taking
+/// that base in first. Cleartext history is admitted once the workspace's
+/// governance is known, whatever the page holds of the channel; a live
+/// cleartext write is still refused ([`document_admission`]).
+pub fn document_history_admission(
+    gate: Option<channel_crypto::ChannelGate>,
+    governance_known: bool,
+    sealed: bool,
+    route: &DocumentRoute,
+    encryption: Option<&collab_types::EncryptionMetadata>,
+) -> collab_types::inbound::OpAdmission {
+    if encryption.is_none() {
+        return if governance_known {
+            collab_types::inbound::OpAdmission::CleartextAdmitted
+        } else {
+            collab_types::inbound::OpAdmission::Unstated
+        };
+    }
+    document_admission(gate, governance_known, sealed, route, encryption)
+}

@@ -35,7 +35,6 @@
     )
 )]
 
-mod channels;
 mod clock;
 pub mod custody;
 /// A device's entry into its person's workspaces: the one the CLI, agents, the front door and the
@@ -55,8 +54,8 @@ pub use tilo_session_core::remote as session_actions;
 pub mod surfaces;
 pub mod voice;
 
-pub use channels::{document_admission, document_history_admission};
 pub use custody::{MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore};
+pub use document::{document_admission, document_history_admission};
 pub use health::{PeerSnapshot, SessionHealth};
 pub use session::{
     CallFrame, CallPicture, CallShown, Completion, Failure, FailureSubject, LocalState,

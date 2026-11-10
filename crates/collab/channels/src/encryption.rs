@@ -22,11 +22,11 @@ use std::time::Duration;
 use tilo_clock::Instant;
 
 use channel_crypto::{Access, ChannelContentKeys, ChannelPeer, PeerEvent, VaultKey};
+use collab_types::signer::{DeviceSigner, SignFuture};
 use collab_types::{
     ChannelId, ChannelRoute, Ed25519PublicKey, EncryptionMetadata, MlsAccessRequestV1,
     MlsGovernanceFrame, SignedOp,
 };
-use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 
 use crate::gates::ChannelGates;
@@ -491,102 +491,6 @@ impl ChannelsDir {
     }
 }
 
-/// A host's channel state in its platform secret store: the bytes of every
-/// peer and route under an app's secrets, which is what a page has of storage
-/// (the browser's `IndexedDB` under a key it cannot export).
-#[derive(Clone, Debug)]
-pub struct SecretStates {
-    store: tilo_secrets::SecretStore,
-}
-
-impl SecretStates {
-    /// The state kept in `app`'s secrets.
-    #[must_use]
-    pub fn new(app: &str) -> Self {
-        Self {
-            store: tilo_secrets::SecretStore::for_app(app),
-        }
-    }
-
-    /// The secret naming `channel`'s state of `workspace`.
-    fn key(workspace: WorkspaceId, channel: ChannelId, extension: &str) -> String {
-        format!("{workspace}/{}.{extension}", channel.0)
-    }
-
-    fn read(&self, key: &str) -> channel_crypto::Result<Option<Vec<u8>>> {
-        let stored = self
-            .store
-            .get_blocking(key)
-            .map_err(|error| channel_crypto::Error::Io(std::io::Error::other(error.to_string())))?;
-        Ok(stored.map(|secret| secret.expose().to_vec()))
-    }
-
-    fn write(&self, key: &str, bytes: &[u8]) -> channel_crypto::Result<()> {
-        self.store
-            .put_blocking(key, bytes, tilo_secrets::PutOptions::default())
-            .map_err(|error| channel_crypto::Error::Io(std::io::Error::other(error.to_string())))
-    }
-
-    fn forget(&self, key: &str) -> channel_crypto::Result<()> {
-        self.store
-            .delete_blocking(key)
-            .map_err(|error| channel_crypto::Error::Io(std::io::Error::other(error.to_string())))
-    }
-}
-
-/// One workspace's peers in a host's secret store.
-#[derive(Debug)]
-struct SecretPeers {
-    states: SecretStates,
-    workspace: WorkspaceId,
-}
-
-impl channel_crypto::PeerStates for SecretPeers {
-    fn read(&self, channel: ChannelId) -> channel_crypto::Result<Option<Vec<u8>>> {
-        self.states
-            .read(&SecretStates::key(self.workspace, channel, "peer"))
-    }
-
-    fn write(&self, channel: ChannelId, sealed: &[u8]) -> channel_crypto::Result<()> {
-        self.states
-            .write(&SecretStates::key(self.workspace, channel, "peer"), sealed)
-    }
-
-    fn forget(&self, channel: ChannelId) -> channel_crypto::Result<()> {
-        self.states
-            .forget(&SecretStates::key(self.workspace, channel, "peer"))
-    }
-}
-
-impl ChannelState for SecretStates {
-    fn peers(&self, workspace: WorkspaceId) -> Arc<dyn channel_crypto::PeerStates> {
-        Arc::new(SecretPeers {
-            states: self.clone(),
-            workspace,
-        })
-    }
-
-    fn route(&self, workspace: WorkspaceId, channel: ChannelId) -> Option<ChannelRoute> {
-        let bytes = self
-            .read(&Self::key(workspace, channel, "route"))
-            .ok()
-            .flatten()?;
-        let route = postcard::from_bytes::<ChannelRoute>(&bytes).ok()?;
-        route
-            .proves(&workspace.to_string(), channel)
-            .then_some(route)
-    }
-
-    fn keep_route(&self, workspace: WorkspaceId, channel: ChannelId, route: &ChannelRoute) {
-        let Ok(bytes) = postcard::to_allocvec(route) else {
-            return;
-        };
-        if let Err(error) = self.write(&Self::key(workspace, channel, "route"), &bytes) {
-            tracing::warn!(%error, "channel route could not be saved");
-        }
-    }
-}
-
 /// Durable location and keys of this device's own channel state: what a
 /// participant of a channel needs, and only workspaces this device's own workspace
 /// host does not take part in need it.
@@ -595,8 +499,21 @@ pub struct ChannelEncryptionConfig {
     pub state: Arc<dyn ChannelState>,
     /// Key sealing that state, held by the platform secret store.
     pub vault: VaultKey,
-    /// This device's certified key: MLS credential, request and frame signer.
-    pub device_key: SigningKey,
+    /// This device's certified key, kept in its custody: the request and frame signer.
+    pub signer: Arc<dyn DeviceSigner>,
+    /// Whether this device settles its groups or only follows them.
+    pub role: Role,
+}
+
+/// What a device does in the groups it takes part in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    /// Founds groups and commits them to the access policy.
+    Participant,
+    /// Asks for access and follows the commits participants write, but never founds a group or
+    /// commits: a page or an agent, whose device key signs asynchronously and which may not hold
+    /// the grants a commit is decided on.
+    Reader,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -641,6 +558,8 @@ struct PeerEntry {
     route: Option<ChannelRoute>,
     /// The request this device asks with while it waits, re-sent on `retry`.
     request: Option<MlsAccessRequestV1>,
+    /// A request whose signature the device's custody has not answered yet.
+    signing: Option<(MlsAccessRequestV1, SignFuture<'static>)>,
     retry: Backoff,
     /// When the next request mints a fresh member key: an admission whose
     /// Welcome never arrived here is then answered again.
@@ -1029,6 +948,10 @@ impl ChannelEncryption {
     /// device has not learned the readers of waits for a policy re-check,
     /// which resolves it.
     fn hand_over_legacy_keys(&mut self, wall: u64, recheck: bool) {
+        // Handing keys over is a commit, which a reader leaves to participants.
+        if self.reads_only() {
+            return;
+        }
         let mut handing = Vec::new();
         let mut unresolved = Vec::new();
         for (unit, entry) in &self.peers {
@@ -1252,7 +1175,39 @@ impl ChannelEncryption {
     fn device(&self) -> Option<Ed25519PublicKey> {
         self.store
             .as_ref()
-            .map(|store| Ed25519PublicKey::from_bytes(store.device_key.verifying_key().to_bytes()))
+            .map(|store| Ed25519PublicKey::from_bytes(store.signer.device_public_key()))
+    }
+
+    /// Whether this device only follows its groups ([`Role::Reader`]).
+    fn reads_only(&self) -> bool {
+        self.store
+            .as_ref()
+            .is_some_and(|store| store.role == Role::Reader)
+    }
+
+    /// Whether a request waits on its signature from the device's custody: [`Self::signatures`]
+    /// then has something to await.
+    #[must_use]
+    pub fn signing(&self) -> bool {
+        self.peers.values().any(|entry| entry.signing.is_some())
+    }
+
+    /// Await every signature the device's custody owes, keeping each signed request for the next
+    /// [`Self::pump`] to send.
+    pub async fn signatures(&mut self) {
+        for entry in self.peers.values_mut() {
+            let Some((mut request, signing)) = entry.signing.take() else {
+                continue;
+            };
+            match signing.await {
+                Ok(signature) => {
+                    request.signature = collab_types::Signature::from_bytes(signature);
+                    entry.request = Some(request);
+                    self.queued = true;
+                }
+                Err(error) => tracing::warn!(%error, "channel access request was not signed"),
+            }
+        }
     }
 
     /// Run the governance protocol once: apply what arrived, move groups to
@@ -1567,6 +1522,10 @@ impl ChannelEncryption {
         wall: u64,
     ) {
         let channel = request.channel;
+        // A reader admits no one.
+        if self.reads_only() {
+            return;
+        }
         // A route that is not the channel's is a forgery: the request goes
         // with it, rather than being decided as if it named no record.
         if route.is_some_and(|route| !route.proves(&workspace.to_string(), channel)) {
@@ -1632,8 +1591,8 @@ impl ChannelEncryption {
         };
         entry.dirty = false;
         // Without the channel's record this device cannot tell who may read
-        // it: it commits nothing, and removes no one.
-        let Some(allowed) = allowed else {
+        // it: it commits nothing, and removes no one; nor does a reader.
+        let Some(allowed) = allowed.filter(|_| store.role == Role::Participant) else {
             entry.turn_at = None;
             return;
         };
@@ -1708,21 +1667,51 @@ impl ChannelEncryption {
             Access::Removed => entry.rejoin,
             Access::Ready { .. } => false,
         };
-        if !asking || !entry.retry.is_due(now) {
+        if !asking || !entry.retry.is_due(now) || entry.signing.is_some() {
             return;
         }
         let fresh = now >= entry.fresh_at;
         if entry.request.is_none() || fresh {
-            match entry.peer.access_request_now(wall, fresh, &store.vault) {
-                Ok(request) => {
-                    entry.request = request;
-                    entry.rejoin = false;
-                    if fresh {
-                        entry.fresh_at = now.checked_add(REQUEST_FRESH).unwrap_or(now);
-                    }
-                }
+            let request = match entry
+                .peer
+                .unsigned_access_request(wall, fresh, &store.vault)
+            {
+                Ok(request) => request,
                 Err(error) => {
                     tracing::warn!(%error, "channel access request could not be prepared");
+                    return;
+                }
+            };
+            entry.request = None;
+            entry.rejoin = false;
+            if fresh {
+                entry.fresh_at = now.checked_add(REQUEST_FRESH).unwrap_or(now);
+            }
+            let Some(mut request) = request else {
+                return;
+            };
+            let Ok(message) = request.signing_bytes() else {
+                return;
+            };
+            let signer = Arc::clone(&store.signer);
+            let mut signing: SignFuture<'static> =
+                Box::pin(async move { signer.sign(message).await });
+            // A key that answers at once (a native one) signs in this pass; custody that answers
+            // later (a page's) leaves the request for [`Self::signatures`].
+            match signing
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+            {
+                std::task::Poll::Ready(Ok(signature)) => {
+                    request.signature = collab_types::Signature::from_bytes(signature);
+                    entry.request = Some(request);
+                }
+                std::task::Poll::Ready(Err(error)) => {
+                    tracing::warn!(%error, "channel access request was not signed");
+                    return;
+                }
+                std::task::Poll::Pending => {
+                    entry.signing = Some((request, signing));
                     return;
                 }
             }
@@ -1767,7 +1756,7 @@ impl ChannelEncryption {
             return Ok(true);
         }
         let store = self.store.as_ref().ok_or_else(no_store)?;
-        let signer = Box::new(store.device_key.clone());
+        let signer = Box::new(Arc::clone(&store.signer));
         let peer = ChannelPeer::waiting(
             Some(store.state.peers(workspace)),
             channel,
@@ -1785,7 +1774,7 @@ impl ChannelEncryption {
         let Some(entry) = self.peers.get(&channel) else {
             return;
         };
-        if entry.peer.knows_group() || self.groups_seen.contains(&channel) {
+        if entry.peer.knows_group() || self.groups_seen.contains(&channel) || self.reads_only() {
             return;
         }
         let (workspace, route) = (entry.workspace, entry.route.clone());
@@ -1827,7 +1816,7 @@ impl ChannelEncryption {
         let opened = match ChannelPeer::open(
             Some(store.state.peers(workspace)),
             channel,
-            Box::new(store.device_key.clone()),
+            Box::new(Arc::clone(&store.signer)),
             &store.vault,
         ) {
             // A machine copied from another re-keyed its device: the state
@@ -1896,6 +1885,7 @@ impl ChannelEncryption {
                 peer,
                 route,
                 request: None,
+                signing: None,
                 retry: Backoff::now(now, REQUEST_FIRST),
                 fresh_at: now.checked_add(REQUEST_FRESH).unwrap_or(now),
                 dirty: true,
@@ -1903,7 +1893,7 @@ impl ChannelEncryption {
                 rejoin: false,
                 founding: Founding {
                     at: found_at,
-                    allowed: true,
+                    allowed: !self.reads_only(),
                 },
                 wanted: true,
                 held: Vec::new(),

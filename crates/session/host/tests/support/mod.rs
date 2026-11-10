@@ -491,8 +491,9 @@ pub fn start_peer_with_store(
 }
 
 /// A page's device key in custody: the session signs with it and never reads
-/// it, as a browser's `WebCrypto` key is used. A page's endpoint therefore
-/// speaks under a key of its own, which the device signs for.
+/// it, and each signature answers on a later poll, as a browser's `WebCrypto`
+/// key does. A page's endpoint therefore speaks under a key of its own, which
+/// the device signs for.
 pub struct PageCustody(SigningKey);
 
 impl tilo_session_host::DeviceSigner for PageCustody {
@@ -502,7 +503,15 @@ impl tilo_session_host::DeviceSigner for PageCustody {
 
     fn sign(&self, message: Vec<u8>) -> tilo_session_host::SignFuture<'_> {
         let signature = ed25519_dalek::Signer::sign(&self.0, &message).to_bytes();
-        Box::pin(std::future::ready(Ok(signature)))
+        let mut answered = false;
+        Box::pin(std::future::poll_fn(move |context| {
+            if std::mem::replace(&mut answered, true) {
+                std::task::Poll::Ready(Ok(signature))
+            } else {
+                context.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        }))
     }
 }
 

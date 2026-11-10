@@ -54,6 +54,21 @@ pub trait DeviceSigner: MaybeSendSync {
     }
 }
 
+/// A shared handle to one device's custody signs as that custody does.
+impl<T: DeviceSigner + ?Sized> DeviceSigner for std::sync::Arc<T> {
+    fn device_public_key(&self) -> [u8; 32] {
+        (**self).device_public_key()
+    }
+
+    fn sign(&self, message: Vec<u8>) -> SignFuture<'_> {
+        (**self).sign(message)
+    }
+
+    fn device_signing_key(&self) -> Option<[u8; 32]> {
+        (**self).device_signing_key()
+    }
+}
+
 impl DeviceSigner for ed25519_dalek::SigningKey {
     fn device_public_key(&self) -> [u8; 32] {
         self.verifying_key().to_bytes()

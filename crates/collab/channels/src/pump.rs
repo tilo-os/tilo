@@ -200,7 +200,8 @@ mod tests {
             ChannelEncryptionConfig {
                 state: Arc::new(ChannelsDir::new(dir.join("channels"))),
                 vault: VaultKey::new([1; 32]),
-                device_key: key(1),
+                signer: std::sync::Arc::new(key(1)),
+                role: crate::Role::Participant,
             },
             Box::new(Directory {
                 policy: Policy::default(),
@@ -317,7 +318,8 @@ mod tests {
                 ChannelEncryptionConfig {
                     state: Arc::new(ChannelsDir::new(dir.join("channels"))),
                     vault: VaultKey::new([seed; 32]),
-                    device_key: key(seed),
+                    signer: std::sync::Arc::new(key(seed)),
+                    role: crate::Role::Participant,
                 },
                 Box::new(Directory {
                     policy: policy.clone(),

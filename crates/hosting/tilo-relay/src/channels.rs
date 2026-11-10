@@ -75,7 +75,8 @@ impl Channels {
             ChannelEncryptionConfig {
                 state: Arc::new(ChannelsDir::new(&root)),
                 vault: vault_key(&device),
-                device_key: device,
+                signer: Arc::new(device),
+                role: tilo_action_broker::channel_encryption::Role::Participant,
             },
             Box::new(directory.clone()),
             Arc::new(NoGates),

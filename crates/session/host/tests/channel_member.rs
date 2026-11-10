@@ -27,8 +27,8 @@ use collab_types::{
     OpKind, SignedOp, document_artifact_id, document_attestation_id, document_channel_id,
 };
 use neighbour_wire::NeighbourMsg;
-use tilo_session_host::{PeerEvent, PeerStore as _};
 use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
+use tilo_session_host::{PeerEvent, PeerStore as _};
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
 use support::{
@@ -206,12 +206,14 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     }
     observer_session.close().await;
 
-    // The browser joins the workspace over HTTPS and opens the note.
-    let peer = start_peer(
+    // The browser joins the workspace and opens the note, its key in custody:
+    // every signature it asks for answers later, as a `WebCrypto` key's does.
+    let peer = support::start_page(
         host.iroh(),
         browser.cert.clone(),
         host_device.cert.clone(),
         browser.key.clone(),
+        std::sync::Arc::new(tilo_session_host::MemoryPeerStore::default()),
     );
     let events = peer.events();
     // A reader of the status (the host's workspace actions on another thread)

@@ -41,7 +41,8 @@ fn sealed_device(
         ChannelEncryptionConfig {
             state: Arc::new(ChannelsDir::new(dir.join("channels"))),
             vault: VaultKey::new([vault; 32]),
-            device_key: key(seed),
+            signer: std::sync::Arc::new(key(seed)),
+            role: crate::Role::Participant,
         },
         Box::new(Directory {
             policy: policy.clone(),
@@ -296,7 +297,8 @@ fn scoped_device(
         ChannelEncryptionConfig {
             state: Arc::new(ChannelsDir::new(dir.join("channels"))),
             vault: VaultKey::new([seed; 32]),
-            device_key: key(seed),
+            signer: std::sync::Arc::new(key(seed)),
+            role: crate::Role::Participant,
         },
         Box::new(ScopedDirectory {
             readers: Directory {
@@ -2314,3 +2316,118 @@ include!("held_frame_tests.rs");
 include!("catch_up_tests.rs");
 
 include!("turn_tests.rs");
+
+/// A device key in custody that answers a signature only on a later poll, as a page's `WebCrypto`
+/// key does.
+struct LaterSigner(ed25519_dalek::SigningKey);
+
+impl DeviceSigner for LaterSigner {
+    fn device_public_key(&self) -> [u8; 32] {
+        self.0.verifying_key().to_bytes()
+    }
+
+    fn sign(&self, message: Vec<u8>) -> SignFuture<'_> {
+        let signature = ed25519_dalek::Signer::sign(&self.0, &message).to_bytes();
+        let mut answered = false;
+        Box::pin(std::future::poll_fn(move |context| {
+            if std::mem::replace(&mut answered, true) {
+                std::task::Poll::Ready(Ok(signature))
+            } else {
+                context.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        }))
+    }
+}
+
+/// A reader whose key signs later is admitted by a participant and opens what it seals; alone it
+/// never founds a group, and it commits nothing when the policy moves.
+#[test]
+fn a_reader_with_custody_that_signs_later_reads_a_participants_channel() {
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    let channel = ChannelId::new();
+    let artifact = collab_types::ArtifactId::new();
+    let policy = Policy::readers([31, 32, 33]);
+    let (desktop_dir, page_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut now = Instant::now();
+    let reader = |seed: u8, id: usize, dir: &Path| {
+        workspace.queues.lock().unwrap().entry(id).or_default();
+        Device {
+            service: ChannelEncryption::open(
+                ChannelEncryptionConfig {
+                    state: Arc::new(ChannelsDir::new(dir.join("channels"))),
+                    vault: VaultKey::new([seed; 32]),
+                    signer: Arc::new(LaterSigner(key(seed))),
+                    role: Role::Reader,
+                },
+                Box::new(Directory {
+                    policy: policy.clone(),
+                }),
+                Arc::new(Gates::default()),
+            )
+            .unwrap(),
+            gates: Arc::new(Gates::default()),
+            endpoint: Endpoint::join(&workspace, workspace_id, id),
+        }
+    };
+    let mut page = reader(32, 1, page_dir.path());
+
+    // Alone, a reader waits: it founds no group, however long it waits.
+    assert!(matches!(
+        page.service.access(workspace_id, channel, now),
+        ChannelAccess::Waiting
+    ));
+    run(&mut [&mut page], &mut now, 30);
+    assert!(!page.service.peers[&channel].peer.knows_group());
+    assert!(page.service.signing(), "its request waits on its custody");
+    pollster::block_on(page.service.signatures());
+    assert!(!page.service.signing());
+
+    let mut desktop = device(&workspace, workspace_id, 0, 31, &policy, desktop_dir.path());
+    let ChannelAccess::Ready(_) = create(&mut desktop, workspace_id, channel, now) else {
+        panic!("the desktop founds the channel");
+    };
+    for _ in 0..10 {
+        run(&mut [&mut desktop, &mut page], &mut now, 3);
+        pollster::block_on(page.service.signatures());
+    }
+    let ChannelAccess::Ready(keys) = page.service.access(workspace_id, channel, now) else {
+        panic!("the desktop admits the reader");
+    };
+    let ChannelAccess::Ready(desktop_keys) = desktop.service.access(workspace_id, channel, now)
+    else {
+        panic!("desktop keys");
+    };
+    assert_eq!(keys.epoch(), desktop_keys.epoch());
+    let sealed = sealed_write(artifact, &desktop_keys);
+    assert_eq!(
+        ChannelKeyAccess::new(page.service)
+            .open_new_write(workspace_id, &sealed)
+            .unwrap(),
+        b"the edit"
+    );
+
+    // The policy admits a third device that asks: the desktop commits it, never a reader.
+    let mut page = reader(32, 1, page_dir.path());
+    let third_dir = tempfile::tempdir().unwrap();
+    let mut third = reader(33, 2, third_dir.path());
+    third.service.access(workspace_id, channel, now);
+    page.service.access(workspace_id, channel, now);
+    for _ in 0..10 {
+        run(&mut [&mut page, &mut third], &mut now, 3);
+        pollster::block_on(third.service.signatures());
+        assert!(page.service.peers[&channel].peer.outbox().is_empty());
+    }
+    assert!(matches!(
+        third.service.access(workspace_id, channel, now),
+        ChannelAccess::Waiting
+    ));
+    run(&mut [&mut desktop, &mut page, &mut third], &mut now, 10);
+    pollster::block_on(third.service.signatures());
+    run(&mut [&mut desktop, &mut page, &mut third], &mut now, 10);
+    assert_eq!(
+        ready_epoch(&third.service.access(workspace_id, channel, now)),
+        ready_epoch(&page.service.access(workspace_id, channel, now)),
+    );
+}

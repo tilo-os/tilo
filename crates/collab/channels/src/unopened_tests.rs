@@ -45,7 +45,8 @@ fn late_readers_service(dir: &Path, directory: &LateReaders) -> ChannelEncryptio
         ChannelEncryptionConfig {
             state: Arc::new(ChannelsDir::new(dir.join("channels"))),
             vault: VaultKey::new([21; 32]),
-            device_key: key(21),
+            signer: std::sync::Arc::new(key(21)),
+            role: crate::Role::Participant,
         },
         Box::new(directory.clone()),
         Arc::new(Gates::default()),
@@ -219,7 +220,8 @@ fn routed_service(dir: &Path, directory: &RoutedReaders) -> ChannelEncryption {
         ChannelEncryptionConfig {
             state: Arc::new(ChannelsDir::new(dir.join("channels"))),
             vault: VaultKey::new([21; 32]),
-            device_key: key(21),
+            signer: std::sync::Arc::new(key(21)),
+            role: crate::Role::Participant,
         },
         Box::new(directory.clone()),
         Arc::new(Gates::default()),
