@@ -102,10 +102,19 @@ struct Lounge {
 }
 
 async fn lounge() -> Lounge {
+    lounge_reading(0).await
+}
+
+/// [`lounge`] whose host reads its workspace's link with room for only
+/// `capacity` frames it did not read yet; `0` keeps the link's own.
+async fn lounge_reading(capacity: usize) -> Lounge {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
     let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
+    if capacity > 0 {
+        workspaces.bound_link_readers(capacity);
+    }
     let created = workspaces.create("Lounge").await.unwrap();
     let (member_key, member_cert) =
         member_device(&workspaces, &created.workspace, (&key, &cert), 3).await;
@@ -139,9 +148,14 @@ async fn lounge() -> Lounge {
 /// [`lounge`] with its member's own subscription to the node's host, as the member's phone
 /// or laptop reaches it.
 async fn lounge_with_client() -> (Lounge, crate::RelayClient) {
+    lounge_reading_with_client(0).await
+}
+
+/// [`lounge_with_client`] over [`lounge_reading`].
+async fn lounge_reading_with_client(capacity: usize) -> (Lounge, crate::RelayClient) {
     // The host is heap-held from the moment it exists: a node's state is far larger than a
     // test's future wants to keep in its frame while the member's subscription is set up.
-    let lounge = Box::new(lounge().await);
+    let lounge = Box::new(lounge_reading(capacity).await);
     let client = Box::pin(subscribed_member(
         &lounge.relay,
         &lounge.member_key,
@@ -1590,13 +1604,19 @@ async fn a_change_a_repair_kept_is_taken_in_once_what_it_builds_on_arrives() {
 struct Desk {
     key: ed25519_dalek::SigningKey,
     link: tilo_peer_state::direct::DirectSync,
-    heard: tokio::sync::broadcast::Receiver<tilo_peer_state::direct::Heard>,
+    heard: tilo_peer_state::direct::Reader,
     pairing: tokio::task::JoinHandle<Result<(), String>>,
 }
 
 impl Desk {
     /// Another device of the lounge's person, admitted and linked to the node, caught up.
     async fn link(lounge: &Lounge, seed: u8) -> Self {
+        Self::reading(lounge, seed, 0).await
+    }
+
+    /// [`Self::link`] with room for only `capacity` frames heard and not read
+    /// yet; `0` keeps the link's own.
+    async fn reading(lounge: &Lounge, seed: u8, capacity: usize) -> Self {
         let (key, _) = member_device(
             &lounge.workspaces,
             &lounge.workspace,
@@ -1609,8 +1629,12 @@ impl Desk {
             .direct()
             .link(lounge.workspace_id)
             .expect("the node serves the workspace over a direct link");
-        let link = tilo_peer_state::direct::DirectSync::new(host.read(Clone::clone), key.clone());
-        let heard = link.heard();
+        let mut link =
+            tilo_peer_state::direct::DirectSync::new(host.read(Clone::clone), key.clone());
+        if capacity > 0 {
+            link = link.with_heard_capacity(capacity);
+        }
+        let heard = link.reader();
         let mut caught_up = link.caught_up();
         let linked = link.clone();
         let pairing =
@@ -2060,5 +2084,155 @@ async fn a_kept_change_a_bot_showed_another_name_in_keeps_the_name_it_showed() {
         Some("for Ada"),
         "the record holds the change, showing the name it showed"
     );
+/// Every write of [`RECORD`] the relay sends `client` live, as `(author, seq)`
+/// in the order they arrived, up to and including `author`'s write `last`.
+async fn writes_sent(
+    client: &crate::RelayClient,
+    author: [u8; 32],
+    last: u64,
+) -> Vec<([u8; 32], u64)> {
+    tilo_test_env::within("the session is sent the writes", async {
+        let mut writes = Vec::new();
+        loop {
+            let Some(crate::Envelope::Delta { delta, .. }) = client.recv().await else {
+                continue;
+            };
+            let Some(
+                crate::CoeditPayload::Checkpoint { body, .. }
+                | crate::CoeditPayload::RetainedDelta { body, .. },
+            ) = crate::CoeditPayload::decode(&delta)
+            else {
+                continue;
+            };
+            let Ok(NeighbourMsg::AppDocument {
+                record_id,
+                envelope,
+                ..
+            }) = postcard::from_bytes::<NeighbourMsg>(&body)
+            else {
+                continue;
+            };
+            if record_id != RECORD {
+                continue;
+            }
+            let write = (*envelope.author.as_bytes(), envelope.seq);
+            writes.push(write);
+            if write == (author, last) {
+                return writes;
+            }
+        }
+    })
+    .await
+}
+
+/// A desktop whose reader of the workspace's link falls behind, and a host
+/// whose reader of it does while a page waits on the relay's session, still
+/// read every write once after catching up from the workspace's history:
+/// the desk each of the page's writes, the page each of the desk's, and
+/// neither its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn readers_that_fell_behind_read_every_write_once() {
+    const WRITES: u64 = 6;
+    let (lounge, page) = lounge_reading_with_client(2).await;
+    let mut desk = Desk::reading(&lounge, 5, 2).await;
+    let page_author = lounge.member_key.verifying_key().to_bytes();
+
+    // The page writes while the desk reads nothing: its link has room for two.
+    let started = std::time::Instant::now();
+    for line in 0..WRITES {
+        seal_and_send_title(
+            &lounge.member,
+            &page,
+            &lounge.workspace,
+            lounge.workspace_id,
+            &lounge.member_key,
+            &format!("from the page {line}"),
+        );
+    }
+    // Every write reached the desk's link before the desk reads one.
+    let mut landed = desk.link.changes();
+    tilo_test_env::within("the page's writes reach the desk", async {
+        landed
+            .wait_for(|_| {
+                desk.link.cursors().iter().any(|cursor| {
+                    cursor.lineage.author == page_author && cursor.after_seq == WRITES
+                })
+            })
+            .await
+            .unwrap();
+    })
+    .await;
+    let caught_up = std::time::Instant::now();
+    assert_eq!(
+        desk.hears(page_author, WRITES).await,
+        (1..=WRITES).collect::<Vec<_>>(),
+        "a desk that fell behind reads each of the page's writes once"
+    );
+    eprintln!(
+        "a desk that fell behind {WRITES} writes caught up in {:?} ({:?} after the first write)",
+        caught_up.elapsed(),
+        started.elapsed()
+    );
+
+    // The host's reader of the link stalls while the desk writes: it cannot
+    // take the workspace while the test holds it.
+    let sealing = SealingMember::join(
+        &lounge.workspaces,
+        &lounge.workspace,
+        (APP, RECORD),
+        desk.key.clone(),
+    )
+    .await;
+    let desk_author = desk.key.verifying_key().to_bytes();
+    let state = lounge
+        .workspaces
+        .workspace(&lounge.workspace)
+        .await
+        .unwrap();
+    let host = lounge
+        .workspaces
+        .direct()
+        .link(lounge.workspace_id)
+        .expect("the node serves the workspace over a direct link");
+    let mut landed = host.changes();
+    let held = state.lock().await;
+    for line in 0..WRITES {
+        let ((), message) = sealing.seal(&lounge.workspace, |doc| {
+            doc.put(ROOT, "title", format!("from a desk {line}"))
+                .unwrap();
+            doc.commit_edit("fixture", "title");
+        });
+        desk.link.send(message).unwrap();
+    }
+    tilo_test_env::within("the desk's writes reach the host's link", async {
+        landed
+            .wait_for(|_| {
+                host.cursors().iter().any(|cursor| {
+                    cursor.lineage.author == desk_author && cursor.after_seq == WRITES
+                })
+            })
+            .await
+            .unwrap();
+    })
+    .await;
+    let released = std::time::Instant::now();
+    drop(held);
+    let sent: Vec<_> = writes_sent(&page, desk_author, WRITES)
+        .await
+        .into_iter()
+        .filter(|(author, _)| [desk_author, page_author].contains(author))
+        .collect();
+    eprintln!(
+        "a host reader that fell behind {WRITES} writes carried them to a session in {:?}",
+        released.elapsed()
+    );
+    assert_eq!(
+        sent,
+        (1..=WRITES)
+            .map(|seq| (desk_author, seq))
+            .collect::<Vec<_>>(),
+        "the page's session is sent each of the desk's writes once, and none of its own"
+    );
+    desk.pairing.abort();
     lounge.relay.shutdown().await;
 }

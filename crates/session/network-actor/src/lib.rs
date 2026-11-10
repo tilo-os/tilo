@@ -4212,7 +4212,7 @@ fn spawn_direct_pump(
     tx: mpsc::Sender<InternalEvent>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut heard = link.heard();
+        let mut reader = link.reader();
         let mut caught_up = link.caught_up();
         let running = linked.run();
         tokio::pin!(running);
@@ -4233,16 +4233,15 @@ fn spawn_direct_pump(
             // founds no group before then.
             tokio::select! {
                 biased;
-                received = heard.recv() => match received {
-                    Ok(heard) => {
+                // A reader that fell behind the link takes what it missed
+                // from the workspace's history before it reads on.
+                received = reader.recv() => match received {
+                    Some(heard) => {
                         if tx.send(InternalEvent::NativeHeard { ws, heard }).await.is_err() {
                             return;
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(missed)) => {
-                        tracing::warn!(ws, missed, "frames a workspace's link admitted were not told here");
-                    }
-                    Err(broadcast::error::RecvError::Closed) => break,
+                    None => break,
                 },
                 result = &mut running => {
                     if let Err(reason) = result {

@@ -159,6 +159,12 @@ struct Entry {
     bytes: u64,
     authored_at_ns: u64,
     retention: ContentRetention,
+    /// Whether the store's first copy came over one of the device's links,
+    /// rather than from the device itself or another carrier: what a reader
+    /// of those links that fell behind is handed again
+    /// ([`Store::taken_from_link`]). Known for the frames kept since the store
+    /// opened, which is all a reader that subscribed since can miss.
+    from_link: bool,
 }
 
 impl Store {
@@ -184,7 +190,7 @@ impl Store {
         {
             let mut held = store.held.lock_recover();
             for (workspace, frame, bytes) in store.stored()? {
-                add(&mut held, workspace, &frame, bytes);
+                add(&mut held, workspace, &frame, bytes, false);
             }
             retire_to_appetite(&store.root, appetite, &mut held);
         }
@@ -234,6 +240,38 @@ impl Store {
     /// Returns an error when the frame cannot be written. The store is
     /// unchanged then.
     pub fn retain(&self, workspace: u64, frame: &Frame) -> Result<Retained, StoreError> {
+        self.retain_from(workspace, frame, false)
+    }
+
+    /// [`Self::retain`] a frame one of the device's links brought it: the
+    /// store remembers it came that way ([`Self::taken_from_link`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::retain`].
+    pub fn retain_from_link(&self, workspace: u64, frame: &Frame) -> Result<Retained, StoreError> {
+        self.retain_from(workspace, frame, true)
+    }
+
+    /// Whether the store's first copy of `frame` came over one of the device's
+    /// links since the store opened.
+    #[must_use]
+    pub fn taken_from_link(&self, workspace: u64, frame: &Frame) -> bool {
+        self.held
+            .lock_recover()
+            .workspaces
+            .get(&workspace)
+            .and_then(|held| held.lineages.get(&frame.lineage))
+            .and_then(|entries| entries.iter().find(|entry| entry.seq == frame.seq))
+            .is_some_and(|entry| entry.from_link)
+    }
+
+    fn retain_from(
+        &self,
+        workspace: u64,
+        frame: &Frame,
+        from_link: bool,
+    ) -> Result<Retained, StoreError> {
         let bytes = postcard::to_allocvec(&frame.message)?;
         let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         let mut held = self.held.lock_recover();
@@ -256,7 +294,7 @@ impl Store {
             fs::create_dir_all(parent)?;
         }
         tilo_files::native::atomic::write(&path, &bytes)?;
-        add(&mut held, workspace, frame, len);
+        add(&mut held, workspace, frame, len, from_link);
         if frame.retention == ContentRetention::Checkpoint {
             let retired = retire_before(&self.root, workspace, frame.lineage, frame.seq, &mut held);
             tracing::debug!(
@@ -581,12 +619,13 @@ fn files(dir: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(found)
 }
 
-fn add(held: &mut Held, workspace: u64, frame: &Frame, bytes: u64) {
+fn add(held: &mut Held, workspace: u64, frame: &Frame, bytes: u64, from_link: bool) {
     let entry = Entry {
         seq: frame.seq,
         bytes,
         authored_at_ns: frame.authored_at_ns,
         retention: frame.retention,
+        from_link,
     };
     let stored = held.workspaces.entry(workspace).or_default();
     let entries = stored.lineages.entry(frame.lineage).or_default();

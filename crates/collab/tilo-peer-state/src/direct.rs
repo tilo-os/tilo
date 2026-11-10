@@ -31,7 +31,7 @@ use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointAddr};
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
-use tilo_lock::RwLockRecover as _;
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tokio::sync::{broadcast, watch};
 use web_time::SystemTime;
 
@@ -57,6 +57,29 @@ enum LinkFrame {
         /// Whether a further ask carries more.
         more: bool,
     },
+}
+
+/// Ask the other device's store for the frames after `cursors`, round by round
+/// while it says more are left, handing each round to `take`, and return once
+/// it says no more are.
+async fn fetch_store(
+    control: &mut Control,
+    mut cursors: Vec<Cursor>,
+    mut take: impl FnMut(&[NeighbourMsg]) -> Result<(), String>,
+) -> Result<(), String> {
+    write_link(&mut control.send, &LinkFrame::Cursors(cursors.clone())).await?;
+    while let Some(frame) = read_link(&mut control.recv, MAX_FRAME_BYTES).await? {
+        let LinkFrame::Frames { frames, more } = frame else {
+            return Err("the device answered something else than retained frames".into());
+        };
+        take(&frames)?;
+        store::advance(&mut cursors, &frames);
+        if !more {
+            return Ok(());
+        }
+        write_link(&mut control.send, &LinkFrame::Cursors(cursors.clone())).await?;
+    }
+    Err("the device's store ended the history before the last frame".into())
 }
 
 /// Write `frame` as the control stream's next record.
@@ -107,6 +130,96 @@ pub struct Heard {
     /// Whether this device had not taken the frame in before, on any carrier:
     /// a sealed frame its store already held is one it carried on already.
     pub fresh: bool,
+}
+
+/// A reader of what a device's links bring its engine ([`DirectSync::reader`]).
+///
+/// The links hand each frame to a channel that keeps the newest ones and drops
+/// the oldest for a reader that falls behind. A dropped frame the workspace
+/// retains is still in its store, so this reader takes those it missed from
+/// there, after where it stands, before it reads on: each once, judged by the
+/// workspace again, never one this device wrote itself, and a frame the
+/// channel still held after the catch-up handed it is not read twice. What
+/// the store never keeps — presence, asks for content and their answers,
+/// channel governance — is asked again by whoever wants it.
+pub struct Reader {
+    link: DirectSync,
+    heard: broadcast::Receiver<Heard>,
+    /// Where this reader stands in the workspace's retained history.
+    cursors: Vec<Cursor>,
+    /// The frames the last catch-up handed, whose copy still in the channel
+    /// is skipped.
+    caught: std::collections::BTreeSet<(crate::store::Lineage, u64)>,
+    pending: std::collections::VecDeque<Heard>,
+    /// Whether this reader fell behind and has not caught up yet.
+    behind: bool,
+}
+
+impl Reader {
+    /// The next frame the link brought, or `None` once the link is gone.
+    /// Cancel-safe: a catch-up cut short is taken again on the next call.
+    pub async fn recv(&mut self) -> Option<Heard> {
+        loop {
+            if self.behind {
+                self.catch_up().await;
+            }
+            if let Some(heard) = self.pending.pop_front() {
+                return Some(heard);
+            }
+            match self.heard.recv().await {
+                Ok(heard) => {
+                    if let Ok(frame) = Frame::of(&heard.message) {
+                        if self.caught.remove(&(frame.lineage, frame.seq)) {
+                            continue;
+                        }
+                        store::advance(&mut self.cursors, std::slice::from_ref(&heard.message));
+                    }
+                    return Some(heard);
+                }
+                Err(broadcast::error::RecvError::Lagged(missed)) => {
+                    tracing::info!(
+                        missed,
+                        "a reader fell behind its link; it takes what it missed from the workspace's history"
+                    );
+                    self.behind = true;
+                }
+                Err(broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    }
+
+    /// Take the retained frames after this reader's cursors in, judged by the
+    /// workspace as the link judged them when they came.
+    async fn catch_up(&mut self) {
+        let missed = match self.link.missed(&self.cursors).await {
+            Ok(missed) => missed,
+            Err(error) => {
+                tracing::warn!(%error, "a reader that fell behind its link could not catch up");
+                self.behind = false;
+                return;
+            }
+        };
+        self.behind = false;
+        self.caught.clear();
+        for message in missed {
+            let Some(author) = store::author_of(&message) else {
+                continue;
+            };
+            let identity = Frame::of(&message).map(|frame| (frame.lineage, frame.seq));
+            store::advance(&mut self.cursors, std::slice::from_ref(&message));
+            match self.link.judge(author, message, true) {
+                Ok(heard) => {
+                    if let Ok(identity) = identity {
+                        self.caught.insert(identity);
+                    }
+                    self.pending.push_back(heard);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "a frame a reader missed could not be judged again");
+                }
+            }
+        }
+    }
 }
 
 /// A frame on its way to this device's links, with the device that authored
@@ -193,7 +306,26 @@ struct Inner {
     hearing: Option<Hearing>,
     /// Handed with the catch-up ([`DirectSync::with_channel_history`]).
     channels: Option<ChannelHistory>,
+    /// The other device's store, for a device that keeps none: where a reader
+    /// that fell behind takes the frames it missed ([`Reader`]).
+    other_store: Arc<std::sync::Mutex<Option<OtherStore>>>,
 }
+
+/// The store on the other end of a device's link.
+#[derive(Clone)]
+enum OtherStore {
+    /// The device it pairs with in this process ([`DirectSync::pair`]).
+    Paired(DirectSync),
+    /// The device it dialled, asked over the link's control stream.
+    Dialled(tokio::sync::mpsc::UnboundedSender<HistoryAsk>),
+}
+
+/// An ask for the frames a store holds after some cursors, and where the
+/// answer goes.
+type HistoryAsk = (
+    Vec<Cursor>,
+    tokio::sync::oneshot::Sender<Result<Vec<NeighbourMsg>, String>>,
+);
 
 /// Where a device takes what its members' links bring it, in the workspace
 /// they are of ([`Owning::hear`]): each frame as its link took it in.
@@ -243,6 +375,7 @@ impl DirectSync {
             fan_out: std::sync::atomic::AtomicBool::new(false),
             hearing: None,
             channels: None,
+            other_store: Arc::default(),
         }))
     }
 
@@ -268,6 +401,7 @@ impl DirectSync {
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
             hearing: self.0.hearing.clone(),
             channels: self.0.channels.clone(),
+            other_store: Arc::clone(&self.0.other_store),
         }))
     }
 
@@ -287,6 +421,7 @@ impl DirectSync {
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
             hearing: Some(hearing),
             channels: self.0.channels.clone(),
+            other_store: Arc::clone(&self.0.other_store),
         }))
     }
 
@@ -339,6 +474,7 @@ impl DirectSync {
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
             hearing: self.0.hearing.clone(),
             channels: self.0.channels.clone(),
+            other_store: Arc::clone(&self.0.other_store),
         }))
     }
 
@@ -386,7 +522,7 @@ impl DirectSync {
     ) -> Result<NeighbourMsg, String> {
         let message = write(&mut self.0.replica.lock(), &self.0.key, SystemTime::now())?;
         self.0.changed.send_modify(bump);
-        self.keep(&message);
+        self.keep(&message, false);
         self.outgoing(Authored {
             from: self.device(),
             message: message.clone(),
@@ -403,10 +539,79 @@ impl DirectSync {
     }
 
     /// Every frame a link brings this device's engine, in the order the
-    /// workspace took them in.
+    /// workspace took them in. A receiver that falls behind loses frames;
+    /// [`Self::reader`] does not.
     #[must_use]
     pub fn heard(&self) -> broadcast::Receiver<Heard> {
         self.0.heard.subscribe()
+    }
+
+    /// A reader of every frame a link brings this device's engine, from now
+    /// on, that misses none of the workspace's retained frames: one that fell
+    /// behind takes those it missed from the workspace's store
+    /// ([`Reader::recv`]).
+    #[must_use]
+    pub fn reader(&self) -> Reader {
+        Reader {
+            heard: self.heard(),
+            cursors: self.cursors(),
+            link: self.clone(),
+            caught: std::collections::BTreeSet::new(),
+            pending: std::collections::VecDeque::new(),
+            behind: false,
+        }
+    }
+
+    /// The retained frames after `cursors` a reader of this device's links
+    /// missed, each with whether it is the first copy this device took in:
+    /// from this device's store, the frames its links brought it; from the
+    /// other device's, every frame not this device's own, as the other device
+    /// sent them all here.
+    async fn missed(&self, cursors: &[Cursor]) -> Result<Vec<NeighbourMsg>, String> {
+        if let Some(store) = &self.0.store {
+            let workspace = self.workspace_number()?;
+            let mut cursors = cursors.to_vec();
+            let mut missed = Vec::new();
+            loop {
+                let replay = store
+                    .replay(workspace, &cursors, Budget::default())
+                    .map_err(|error| error.to_string())?;
+                store::advance(&mut cursors, &replay.frames);
+                missed.extend(replay.frames.into_iter().filter(|message| {
+                    Frame::of(message).is_ok_and(|frame| store.taken_from_link(workspace, &frame))
+                }));
+                if !replay.more {
+                    return Ok(missed);
+                }
+            }
+        }
+        let other = self.0.other_store.lock_recover().clone();
+        let frames = match other {
+            None => return Err("neither end of the link keeps the workspace's history".into()),
+            Some(OtherStore::Paired(host)) => {
+                let mut cursors = cursors.to_vec();
+                let mut frames = Vec::new();
+                loop {
+                    let (round, more) = host.replay(&cursors)?;
+                    store::advance(&mut cursors, &round);
+                    frames.extend(round);
+                    if !more {
+                        break frames;
+                    }
+                }
+            }
+            Some(OtherStore::Dialled(asks)) => {
+                let (answer, answered) = tokio::sync::oneshot::channel();
+                asks.send((cursors.to_vec(), answer))
+                    .map_err(|_| "the link ended".to_owned())?;
+                answered.await.map_err(|_| "the link ended".to_owned())??
+            }
+        };
+        let own = self.device();
+        Ok(frames
+            .into_iter()
+            .filter(|message| store::author_of(message).is_some_and(|author| author != own))
+            .collect())
     }
 
     /// Read the other device's retained history again, from where this
@@ -434,7 +639,7 @@ impl DirectSync {
     /// `message` is not this device's to send in the workspace (see
     /// [`Self::publish`]).
     pub fn send(&self, message: NeighbourMsg) -> Result<(), String> {
-        self.keep(&message);
+        self.keep(&message, false);
         self.outgoing(Authored {
             from: self.device(),
             message,
@@ -450,7 +655,7 @@ impl DirectSync {
     /// holds went out when it first arrived, and is not sent again. Returns
     /// whether it went out.
     pub fn carry(&self, from: [u8; 32], message: &NeighbourMsg) -> bool {
-        if !self.keep(message) {
+        if !self.keep(message, false) {
             return false;
         }
         self.outgoing(Authored {
@@ -544,6 +749,9 @@ impl DirectSync {
             host.admit(authored.from, authored.message, false)?;
         }
         member.replay_from(host)?;
+        if member.0.store.is_none() {
+            *member.0.other_store.lock_recover() = Some(OtherStore::Paired(host.clone()));
+        }
         member.0.caught_up.send_replace(true);
         host.0.caught_up.send_replace(true);
         let to_host = forward(live_mine, own, host, false);
@@ -656,11 +864,23 @@ impl DirectSync {
             // ones the link brings. A write this device let go unapplied
             // waits in the other device's history; once what it waited for
             // lands here, the history is read again from where the replica
-            // stands.
+            // stands. A reader of this link that fell behind it asks the same
+            // history for the frames it missed.
             self.0.caught_up.send_replace(true);
+            let (asks, mut asked) = tokio::sync::mpsc::unbounded_channel();
+            *self.0.other_store.lock_recover() = Some(OtherStore::Dialled(asks));
             loop {
-                self.0.replay.notified().await;
-                self.ask_store(&mut control).await?;
+                tokio::select! {
+                    () = self.0.replay.notified() => self.ask_store(&mut control).await?,
+                    Some((cursors, answer)) = asked.recv() => {
+                        let fetched = Self::fetch_history(&mut control, cursors).await;
+                        let failed = fetched.as_ref().err().cloned();
+                        let _ = answer.send(fetched);
+                        if let Some(error) = failed {
+                            return Err(error);
+                        }
+                    }
+                }
             }
         };
         tokio::select! {
@@ -674,24 +894,31 @@ impl DirectSync {
     /// by round while it says more are left, and return once it says no more
     /// are: the history is in hand.
     async fn ask_store(&self, control: &mut Control) -> Result<(), String> {
-        let mut cursors = self.cursors();
-        write_link(&mut control.send, &LinkFrame::Cursors(cursors.clone())).await?;
-        while let Some(frame) = read_link(&mut control.recv, MAX_FRAME_BYTES).await? {
-            let LinkFrame::Frames { frames, more } = frame else {
-                return Err("the device answered something else than retained frames".into());
-            };
-            for message in &frames {
+        fetch_store(control, self.cursors(), |frames| {
+            for message in frames {
                 let author = store::author_of(message)
                     .ok_or("the store replayed a message that is not a document frame")?;
                 self.admit(author, message.clone(), true)?;
             }
-            store::advance(&mut cursors, &frames);
-            if !more {
-                return Ok(());
-            }
-            write_link(&mut control.send, &LinkFrame::Cursors(cursors.clone())).await?;
-        }
-        Err("the device's store ended the history before the last frame".into())
+            Ok(())
+        })
+        .await
+    }
+
+    /// The frames the other device's store holds after `cursors`, read over
+    /// the link's control stream for a reader of this device's links that
+    /// fell behind them.
+    async fn fetch_history(
+        control: &mut Control,
+        cursors: Vec<Cursor>,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        let mut fetched = Vec::new();
+        fetch_store(control, cursors, |frames| {
+            fetched.extend_from_slice(frames);
+            Ok(())
+        })
+        .await?;
+        Ok(fetched)
     }
 
     /// Answer the dialling device's cursors from this device's store, for as
@@ -841,12 +1068,8 @@ impl DirectSync {
             self.carry_governance(author, message, retained);
             return Ok(());
         }
-        let heard = match &self.0.admission {
-            Some(admission) => self.admit_owned(admission, author, message, retained),
-            None => self.admit_local(author, message, retained)?,
-        };
-        let mut heard = heard;
-        heard.fresh = self.keep(&heard.message);
+        let mut heard = self.judge(author, message, retained)?;
+        heard.fresh = self.keep(&heard.message, true);
         if heard.landed {
             self.0.changed.send_modify(bump);
         }
@@ -871,6 +1094,20 @@ impl DirectSync {
         }
         self.tell(heard);
         Ok(())
+    }
+
+    /// Admit `message`, `author`'s frame, into this device's workspace: what
+    /// the workspace decided of it, as its engine hears it.
+    fn judge(
+        &self,
+        author: [u8; 32],
+        message: NeighbourMsg,
+        retained: bool,
+    ) -> Result<Heard, String> {
+        match &self.0.admission {
+            Some(admission) => Ok(self.admit_owned(admission, author, message, retained)),
+            None => self.admit_local(author, message, retained),
+        }
     }
 
     /// Hand `heard` to this device's engine, and to the sinks an [`Owning`]
@@ -1015,9 +1252,10 @@ impl DirectSync {
     }
 
     /// Keep `message` at this device's store when it is a sealed document
-    /// frame, the only history a store holds. Returns `false` only for a frame
+    /// frame, the only history a store holds, as one a link brought when
+    /// `from_link`. Returns `false` only for a frame
     /// the store already held: one this device took in before, on any carrier.
-    fn keep(&self, message: &NeighbourMsg) -> bool {
+    fn keep(&self, message: &NeighbourMsg, from_link: bool) -> bool {
         let Some(store) = &self.0.store else {
             return true;
         };
@@ -1027,7 +1265,12 @@ impl DirectSync {
         let Ok(frame) = Frame::of(message) else {
             return true;
         };
-        match store.retain(workspace, &frame) {
+        let retained = if from_link {
+            store.retain_from_link(workspace, &frame)
+        } else {
+            store.retain(workspace, &frame)
+        };
+        match retained {
             Ok(retained) => retained != crate::store::Retained::Duplicate,
             Err(error) => {
                 tracing::warn!(%error, "a frame was not kept at the store");

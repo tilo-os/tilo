@@ -802,6 +802,11 @@ struct WorkspacesInner {
     /// The direct links of the workspaces governed here, one per workspace,
     /// answering a device's dial by the workspace it names.
     direct: tilo_peer_state::direct::Serving,
+    /// Room for the frames a workspace's link heard and its reader did not
+    /// read yet, when a test bounds it ([`Workspaces::bound_link_readers`]);
+    /// `0` keeps the link's own.
+    #[cfg(test)]
+    link_heard_capacity: std::sync::atomic::AtomicUsize,
     dir: PathBuf,
     workspaces: Arc<device_plane::WorkspacesMap>,
     /// The plane the workspaces answer their members' devices on, as this
@@ -1021,6 +1026,8 @@ impl Workspaces {
         let (plane, jobs) = device_plane::plane(Arc::clone(&workspaces), host.key.clone());
         let this = Self {
             inner: Arc::new(WorkspacesInner {
+                #[cfg(test)]
+                link_heard_capacity: std::sync::atomic::AtomicUsize::new(0),
                 store: Arc::new(
                     tilo_peer_state::store::Store::open(
                         store,
@@ -1392,9 +1399,28 @@ impl Workspaces {
             let records = records.clone();
             Box::pin(async move { records.channel_governance(workspace_id).await })
         }));
+        #[cfg(test)]
+        let link = match self
+            .inner
+            .link_heard_capacity
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            0 => link,
+            capacity => link.with_heard_capacity(capacity),
+        };
         self.inner.direct.serve(link.clone())?;
         self.follow_link(workspace, &link);
         Ok(())
+    }
+
+    /// Give the links of the workspaces served from now on room for only
+    /// `capacity` frames heard and not read yet: what a test that makes the
+    /// host's reader of a link fall behind sets.
+    #[cfg(test)]
+    pub(crate) fn bound_link_readers(&self, capacity: usize) {
+        self.inner
+            .link_heard_capacity
+            .store(capacity, std::sync::atomic::Ordering::Release);
     }
 
     /// Run the transform an offloadable action declares for the workspaces
