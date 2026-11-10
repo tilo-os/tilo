@@ -139,8 +139,11 @@ pub struct Answered {
     /// The form's shape with what the answer taught, and the place to
     /// remember it for, when it taught something.
     pub learned: Option<(Place, RememberedForm)>,
-    /// The answer made the form ask more.
+    /// The answer made the form ask more, or something else.
     pub grew: bool,
+    /// The form asks what it asked and offers other answers than the page
+    /// publishes for it.
+    pub refresh: bool,
     /// The forms the site asked after this one on an earlier visit, by
     /// label and signature, when this answer sent the form.
     pub then: Vec<(String, String)>,
@@ -853,10 +856,21 @@ impl PageForms {
             }
             taught
         };
+        // What a read of the form gives once the answers were placed: its
+        // signature, which is another one when it asks something else, and
+        // the hash of the answers it offers.
+        let became = |key: &str| {
+            data.get("became")
+                .and_then(|became| became.get(key))
+                .and_then(serde_json::Value::as_str)
+                .filter(|said| site_memory::is_signature(said))
+        };
         let grew = data
             .get("now_asks")
             .and_then(serde_json::Value::as_array)
-            .is_some_and(|asks| !asks.is_empty());
+            .is_some_and(|asks| !asks.is_empty())
+            || became("signature").is_some_and(|after| after != signature);
+        let mut refresh = false;
         let sent = data
             .get("submitted")
             .and_then(serde_json::Value::as_bool)
@@ -873,6 +887,9 @@ impl PageForms {
             read_here = true;
             origin.clone_from(&read_at.origin);
             form.changed |= grew;
+            refresh = !grew
+                && !form.offers.is_empty()
+                && became("offers").is_some_and(|offers| offers != form.offers);
             if teach(&mut form.shape) {
                 learned = Some((read_at.clone(), form.shape.clone()));
             }
@@ -915,6 +932,7 @@ impl PageForms {
         Answered {
             learned,
             grew,
+            refresh,
             then,
         }
     }
@@ -1377,5 +1395,52 @@ mod tests {
                 .unwrap()
                 .contains("\"Full name\" is written by typing and takes fill-page")
         );
+    }
+
+    /// An answer says what the form became. One that became another form
+    /// grew, though it opened no question by name; one that asks the same
+    /// and offers other answers is to be read again; one that is what the
+    /// page publishes teaches nothing.
+    #[test]
+    fn an_answer_says_whether_the_form_became_another_or_offers_other_answers() {
+        let mut forms = PageForms::default();
+        let at = place("https://visa.test/apply");
+        let mut data = visa();
+        data["forms"][0]["offers"] = "aaaa1111".into();
+        forms.heard_read(&at, &data);
+        let answered = |became: serde_json::Value| {
+            serde_json::json!({"form": "form1", "signature": "5f1c2a9b", "results": [],
+                "set": [], "submitted": false, "now_asks": [], "unanswered": [],
+                "became": became})
+        };
+        for (became, grew, refresh) in [
+            (
+                serde_json::json!({"signature": "5f1c2a9b", "offers": "aaaa1111"}),
+                false,
+                false,
+            ),
+            (
+                serde_json::json!({"signature": "5f1c2a9b", "offers": "bbbb2222"}),
+                false,
+                true,
+            ),
+            // What no engine prints is not taken for a signature.
+            (
+                serde_json::json!({"signature": "no good", "offers": 7}),
+                false,
+                false,
+            ),
+            (serde_json::json!(null), false, false),
+        ] {
+            let heard = forms.heard_answer(&at, &answered(became.clone()));
+            assert_eq!((heard.grew, heard.refresh), (grew, refresh), "{became}");
+            assert_eq!(forms.standing(&at, "5f1c2a9b"), Some(Standing::Read));
+        }
+        let heard = forms.heard_answer(
+            &at,
+            &answered(serde_json::json!({"signature": "0badc0de", "offers": "bbbb2222"})),
+        );
+        assert!(heard.grew && !heard.refresh);
+        assert_eq!(forms.standing(&at, "5f1c2a9b"), Some(Standing::Changed));
     }
 }

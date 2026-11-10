@@ -701,9 +701,10 @@ fn a_form_that_changed_under_its_action_is_refused_and_the_page_read_again() {
     changed["signature"] = "0badc0de".into();
     page_holds(&engine, &[changed]);
     let reads = own_reads(&engine);
-    // The engine finds no form of the old signature and answers nothing.
+    // The engine finds no form of the old signature among the page's forms
+    // and answers nothing.
     engine.push_page_reply(Err(PageFailure::new(
-        "no_form",
+        "form_changed",
         "This page has no form \"5f1c2a9b\": it has form1 \"Apply for a visitor visa\". A \
          form named by a signature it no longer has has changed; read the page's forms again",
     )));
@@ -749,6 +750,253 @@ fn a_form_that_changed_under_its_action_is_refused_and_the_page_read_again() {
         remembered(&app, "0badc0de").map(|form| form.grew_from),
         Some(VISA.to_owned())
     );
+}
+
+/// A page that took its form away holds no form at all, which the engine
+/// says apart from a form that changed. The form's action is refused the
+/// same way, as changed, saying the page holds no form now; nothing was
+/// placed, the window reads the page again and the page publishes what it
+/// holds: nothing. What is remembered of the page follows that read.
+#[test]
+fn a_page_that_holds_no_form_any_more_refuses_the_forms_action_as_changed() {
+    let (engine, mut app) = open_on(APPLY, &[visa_form()]);
+    assert_eq!(
+        ids(&form_actions(&mut app)),
+        ["form-5f1c2a9b", "send-form-5f1c2a9b"]
+    );
+    // The page takes its form away. Nothing tells the window.
+    page_holds(&engine, &[]);
+    let reads = own_reads(&engine);
+    engine.push_page_reply(Err(PageFailure::new("no_form", "This page has no form")));
+    let refused = run(
+        &mut app,
+        "form-5f1c2a9b",
+        &serde_json::json!({"full_name": "Ada Lovelace", "arrival": "2027-02-03",
+            "i_agree": true}),
+    )
+    .refusal("a form the page no longer holds is not answered");
+    assert_eq!(refused.code, "browser.page.form_changed");
+    assert!(
+        refused.message.contains("\"Apply for a visitor visa\"")
+            && refused.message.contains("as it was read")
+            && refused.message.contains("this page holds no form now")
+            && refused.message.contains("Nothing was placed")
+            && refused.message.contains("read-page-forms"),
+        "{}",
+        refused.message
+    );
+    assert!(!refused.retryable, "it runs once, and did not run");
+
+    // The window read the page again: it publishes no form of a page that
+    // holds none, and remembers none for it.
+    assert!(form_actions(&mut app).is_empty());
+    assert_eq!(own_reads(&engine), reads + 1, "one read, and no agent's");
+    assert_eq!(asked(&engine).len(), 1);
+    assert!(
+        remembered(&app, VISA).is_none_or(|form| !form.pages.iter().any(|page| page == "/apply")),
+        "the form is not remembered for a page that no longer asks it"
+    );
+}
+
+/// `fill-page-form` names a form itself and is told what the engine said. A
+/// form the page publishes under the signature it named is withdrawn all
+/// the same, and the page read again; a form it named by anything else
+/// teaches the window nothing.
+#[test]
+fn a_changed_form_named_through_fill_page_form_is_read_again_too() {
+    let (engine, mut app) = open_on(APPLY, &[visa_form()]);
+    let mut changed = visa_form();
+    changed["signature"] = "0badc0de".into();
+    page_holds(&engine, &[changed]);
+    let reads = own_reads(&engine);
+    let said = "This page has no form \"form9\": it has form1 \"Apply for a visitor visa\"";
+    engine.push_page_reply(Err(PageFailure::new("form_changed", said)));
+    let refused = run(
+        &mut app,
+        "fill-page-form",
+        &serde_json::json!({"form": "form9", "answers": {"Full name": "Ada Lovelace"}}),
+    )
+    .refusal("the page has no such form");
+    assert_eq!(refused.code, "browser.page.form_changed");
+    assert_eq!(refused.message, said, "the engine's own words");
+    settle(&mut app);
+    assert_eq!(own_reads(&engine), reads, "an id the page never published");
+
+    engine.push_page_reply(Err(PageFailure::new("form_changed", said)));
+    let refused = run(
+        &mut app,
+        "fill-page-form",
+        &serde_json::json!({"form": VISA, "answers": {"Full name": "Ada Lovelace"}}),
+    )
+    .refusal("the form changed");
+    assert_eq!(refused.code, "browser.page.form_changed");
+    assert_eq!(
+        ids(&form_actions(&mut app)),
+        ["form-0badc0de", "send-form-0badc0de"],
+        "the page publishes the form as it is now"
+    );
+    assert_eq!(own_reads(&engine), reads + 1);
+}
+
+/// A form's answer says what the form became: the signature and the offers
+/// a read of it gives once the answers were placed. A form that offers
+/// other answers than the page publishes is read again, so its action
+/// offers them; one that became another form is withdrawn and read again,
+/// though it opened no question; and one that is what it was is not read.
+#[test]
+fn an_answer_says_what_the_form_became_and_the_page_follows_it() {
+    let mut offered = visa_form();
+    offered["offers"] = "aaaa1111".into();
+    let (engine, mut app) = open_on(APPLY, std::slice::from_ref(&offered));
+    let answers = serde_json::json!({"full_name": "Ada Lovelace", "arrival": "2027-02-03",
+        "i_agree": true, "nationality": "Kenya"});
+    let became = |signature: &str, offers: &str| {
+        let mut said = placed(VISA, &["Nationality"], false);
+        said["became"] = serde_json::json!({"signature": signature, "offers": offers});
+        said
+    };
+    let choices = |app: &mut TestApp<BrowserShell>| {
+        form_actions(app)[0]
+            .params()
+            .iter()
+            .find(|param| param.name == "nationality")
+            .map(|param| param.choices.clone())
+            .expect("the form asks for a nationality")
+    };
+    assert_eq!(choices(&mut app), ["Kenya", "Other"]);
+
+    // Answering makes the form offer another country. It asks what it asked.
+    let mut other = offered.clone();
+    other["offers"] = "bbbb2222".into();
+    other["fields"][3]["choices"] = serde_json::json!(["Kenya", "Uganda", "Other"]);
+    page_holds(&engine, std::slice::from_ref(&other));
+    let reads = own_reads(&engine);
+    engine.push_page_reply(Ok(reply(
+        APPLY,
+        "Answered 1 of 1 questions of form1",
+        became(VISA, "bbbb2222"),
+    )));
+    let answered = run(&mut app, "form-5f1c2a9b", &answers).answer("the answer was placed");
+    assert_eq!(answered["data"]["became"]["offers"], "bbbb2222");
+    let message = answered["message"].as_str().expect("a message");
+    assert!(!message.contains("withdrawn"), "{message}");
+    assert_eq!(choices(&mut app), ["Kenya", "Uganda", "Other"]);
+    assert_eq!(
+        ids(&form_actions(&mut app)),
+        ["form-5f1c2a9b", "send-form-5f1c2a9b"]
+    );
+    assert_eq!(own_reads(&engine), reads + 1, "one read for the new offers");
+
+    // An answer after which the form is what the page publishes reads
+    // nothing.
+    engine.push_page_reply(Ok(reply(
+        APPLY,
+        "Answered 1 of 1 questions of form1",
+        became(VISA, "bbbb2222"),
+    )));
+    run(&mut app, "form-5f1c2a9b", &answers).answer("the answer was placed");
+    settle(&mut app);
+    assert_eq!(own_reads(&engine), reads + 1);
+
+    // An answer after which the form is another form, though no question
+    // was opened by name: its action is withdrawn and the page read again.
+    let mut grown = other.clone();
+    grown["signature"] = "0badc0de".into();
+    page_holds(&engine, &[grown]);
+    engine.push_page_reply(Ok(reply(
+        APPLY,
+        "Answered 1 of 1 questions of form1; the form asks something else now, signature \
+         0badc0de",
+        became("0badc0de", "bbbb2222"),
+    )));
+    let answered = run(&mut app, "form-5f1c2a9b", &answers).answer("the answer was placed");
+    let message = answered["message"].as_str().expect("a message");
+    assert!(
+        message.contains("so this action is withdrawn")
+            && message.contains("the page reads its forms again by itself"),
+        "{message}"
+    );
+    assert_eq!(
+        ids(&form_actions(&mut app)),
+        ["form-0badc0de", "send-form-0badc0de"]
+    );
+    assert_eq!(own_reads(&engine), reads + 2);
+    assert_eq!(
+        asked(&engine).len(),
+        3,
+        "three answers, and no read of an agent's"
+    );
+}
+
+/// A field is secret for as long as the page says so: one the page turned
+/// into a one-time code field after it was read is refused by the typed
+/// path, for that field alone. From then on it is no parameter of the
+/// form's action, which says the action that takes it; given all the same
+/// it is refused at the door, and nothing of it is remembered but that the
+/// question is a secret.
+#[test]
+fn a_field_the_page_holds_as_a_secret_is_no_parameter_once_an_answer_says_so() {
+    let mut form = visa_form();
+    form["fields"].as_array_mut().unwrap().push(
+        serde_json::json!({"name": "One-time code", "kind": "text", "value": "",
+            "element": "d1e11"}),
+    );
+    let (engine, mut app) = open_on(APPLY, &[form]);
+    let code = typed(&form_actions(&mut app)[0])
+        .into_iter()
+        .map(|(name, _, _)| name)
+        .find(|name| name.contains("code"))
+        .expect("the code is a parameter while the page calls it text");
+    let mut answers = serde_json::json!({"full_name": "Ada Lovelace", "arrival": "2027-02-03",
+        "i_agree": true});
+    answers[code.as_str()] = "481516".into();
+    engine.push_page_reply(Ok(reply(
+        APPLY,
+        "Answered 1 of 2 questions of form1; not placed: \"One-time code\"",
+        serde_json::json!({
+            "form": "form1", "signature": VISA,
+            "results": [
+                {"name": "Full name", "ok": true},
+                {"name": "One-time code", "ok": false, "code": "secret_field",
+                    "message": "\"One-time code\" is a password or card field; fill d1e11 \
+                        with fill_secret, which keeps the text out of logs and history",
+                    "element": "d1e11"},
+            ],
+            "set": [{"name": "Full name", "value": "Ada Lovelace"}],
+            "submitted": false, "now_asks": [], "unanswered": [],
+        }),
+    )));
+    let answered = run(&mut app, "form-5f1c2a9b", &answers).answer("the other answer was placed");
+    assert_eq!(answered["data"]["results"][1]["code"], "secret_field");
+    assert_eq!(answered["data"]["results"][1]["element"], "d1e11");
+
+    let actions = form_actions(&mut app);
+    assert!(
+        !typed(&actions[0]).iter().any(|(name, _, _)| *name == code),
+        "{:?}",
+        typed(&actions[0])
+    );
+    let description = actions[0].description.clone().expect("a description");
+    assert!(
+        description.contains("\"One-time code\" is a secret and takes fill-page-secret"),
+        "{description}"
+    );
+    let reached = asked(&engine).len();
+    assert!(
+        refused_at_the_door(&mut app, "form-5f1c2a9b", &answers).is_some(),
+        "a secret given to the form's action never reaches the page"
+    );
+    assert_eq!(asked(&engine).len(), reached);
+    let kept = remembered(&app, VISA).expect("the form is remembered");
+    assert_eq!(
+        kept.questions
+            .iter()
+            .find(|question| question.name == "One-time code")
+            .map(|question| question.fallback.as_str()),
+        Some("secret_field")
+    );
+    let whole = serde_json::to_string(&app.state().site_forms).expect("memory is plain data");
+    assert!(!whole.contains("481516"), "memory holds the code: {whole}");
 }
 
 /// Two forms of one page are two actions, each with its own questions, and

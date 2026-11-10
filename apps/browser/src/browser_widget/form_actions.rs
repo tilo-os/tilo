@@ -22,8 +22,9 @@ use crate::resource::{Browser, browser};
 use crate::site_memory::{self, Place, RememberedForm};
 
 /// What a form action is refused with when the page holds no form of the
-/// signature it was made for.
-fn gone_message(label: &str, standing: Standing) -> String {
+/// signature it was made for: it holds other forms (the engine's
+/// `form_changed`), or none at all (`none`, its `no_form`).
+fn gone_message(label: &str, standing: Standing, none: bool) -> String {
     let name = if label.is_empty() {
         "The form".to_owned()
     } else {
@@ -33,9 +34,14 @@ fn gone_message(label: &str, standing: Standing) -> String {
         Standing::Remembered => "remembered",
         Standing::Read | Standing::Changed => "read",
     };
+    let why = if none {
+        "this page holds no form now"
+    } else {
+        "it has changed, or this page does not hold it"
+    };
     format!(
-        "{name} is not on this page as it was {known}: it has changed, or this page does not \
-         hold it. Nothing was placed or sent. The page reads its forms again by itself and \
+        "{name} is not on this page as it was {known}: {why}. Nothing was placed or sent. \
+         The page reads its forms again by itself and \
          publishes the action of each form as it is now: list the page's actions and run \
          that one. If none appears, read the page's forms (read-page-forms)."
     )
@@ -164,9 +170,10 @@ impl BrowserWidget {
                     if let Some((at, shape)) = heard.learned {
                         self.remember_forms(&at, vec![shape], false);
                     }
-                    if heard.grew {
+                    if heard.grew || heard.refresh {
                         // The form is not the one the page publishes any
-                        // more: the window reads the page again.
+                        // more, or offers other answers than it publishes:
+                        // the window reads the page again.
                         self.read_forms_again();
                     }
                     if run.is_some() {
@@ -175,15 +182,32 @@ impl BrowserWidget {
                 }
                 Ok(reply)
             }
-            (PageRequest::FillForm { form, .. }, Err(failure))
-                if run.is_some() && failure.code == "no_form" =>
-            {
+            // The page holds forms, none of them the one named
+            // (`form_changed`), or no form at all (`no_form`). Either way it
+            // does not hold the form, and nothing was placed.
+            (
+                PageRequest::FillForm {
+                    form, frame: None, ..
+                },
+                Err(failure),
+            ) if matches!(failure.code.as_str(), "no_form" | FORM_CHANGED) => {
+                if run.is_none() {
+                    // `fill-page-form` named the form itself and is told
+                    // what the engine said. A form the page publishes under
+                    // that signature is withdrawn, and the page read again.
+                    if self.forms.standing(&place, form).is_some() {
+                        self.forms.heard_gone(&place, form);
+                        self.read_forms_again();
+                    }
+                    return Err(failure);
+                }
+                let none = failure.code == "no_form";
                 let (label, standing) = self.forms.heard_gone(&place, form);
                 // The page does not hold what it publishes: it is read again.
                 self.read_forms_again();
                 Err(PageFailure {
                     code: FORM_CHANGED.to_owned(),
-                    message: gone_message(&label, standing),
+                    message: gone_message(&label, standing, none),
                     record: failure.record,
                 })
             }
