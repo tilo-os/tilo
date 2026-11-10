@@ -81,8 +81,11 @@ exclude = [
     "windows-vm", "workspace-unify",
 ]
 # The tests that start sandboxes of their own need nested namespaces, which a job's sandbox does
-# not give them.
-isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-vmd", "settings", "tilo-sandbox-core", "thumbnails", "runtime-bundle"] }
+# not give them: the session's own tests are here too, because installing an app and opening it is
+# the launcher's sandbox, built with bubblewrap in a user namespace of its own. The packages are
+# tools/ci/nested-sandboxes.toml's, an edit there moving this list with it
+# (tools/tests/test_nested_sandboxes.py fails while the two disagree).
+isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-vmd", "settings", "tilo-sandbox-core", "thumbnails", "runtime-bundle", "tilo-session"] }
 env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
 # The apps the session's tests start (`tilo_test_env::sibling_binary`), as the session-siblings
 # setup in .config/nextest.toml names them for both packages, and for the session the three the
