@@ -1,0 +1,81 @@
+[
+  {
+    "wire": {
+      "Unavailable": {
+        "reason": "no live apps"
+      }
+    },
+    "code": "remote_actions_unavailable",
+    "display": "remote actions are unavailable: no live apps"
+  },
+  {
+    "wire": "UnknownAction",
+    "code": "unknown_action",
+    "display": "no such action is offered"
+  },
+  {
+    "wire": "NotPermitted",
+    "code": "not_permitted",
+    "display": "the caller may not invoke this action"
+  },
+  {
+    "wire": "ConfirmationRequired",
+    "code": "action_confirmation_required",
+    "display": "the action requires confirmation"
+  },
+  {
+    "wire": {
+      "InvalidRequest": {
+        "reason": "`name` is text"
+      }
+    },
+    "code": "invalid_arguments",
+    "display": "invalid request: `name` is text"
+  },
+  {
+    "wire": {
+      "InvalidRequest": {
+        "reason": "the target changed since that revision; list it again"
+      }
+    },
+    "code": "stale_revision",
+    "display": "invalid request: the target changed since that revision; list it again"
+  },
+  {
+    "wire": "UnknownInvocation",
+    "code": "unknown_invocation",
+    "display": "no such invocation"
+  },
+  {
+    "wire": "InvocationConflict",
+    "code": "invocation_conflict",
+    "display": "the invocation id was already used for a different request"
+  },
+  {
+    "wire": {
+      "NotCancellable": {
+        "reason": "it finished"
+      }
+    },
+    "code": "not_cancellable",
+    "display": "the invocation cannot be cancelled: it finished"
+  },
+  {
+    "wire": {
+      "Refused": {
+        "reason": "device revoked"
+      }
+    },
+    "code": "refused",
+    "display": "refused: device revoked"
+  },
+  {
+    "wire": {
+      "Refused": {
+        "reason": "{\"reason\":{\"too_many_workspaces\":{\"limit\":1,\"existing\":[\"6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71\"]}},\"message\":\"You already have a workspace of your own on this host; use that one.\",\"next\":[{\"kind\":\"use_existing\",\"url\":null}]}"
+      }
+    },
+    "code": "refused",
+    "display": "refused: {\"reason\":{\"too_many_workspaces\":{\"limit\":1,\"existing\":[\"6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71\"]}},\"message\":\"You already have a workspace of your own on this host; use that one.\",\"next\":[{\"kind\":\"use_existing\",\"url\":null}]}"
+  }
+]
