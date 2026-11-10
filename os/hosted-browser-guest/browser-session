@@ -25,7 +25,9 @@ if [ -r "$config" ]; then
     . "$config"
 fi
 
-home=${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}
+# The account's own home, whatever HOME the agent started this with: the
+# session writes its identity, caches and runtime directory there.
+home=$(getent passwd "$(id -u)" | cut -d: -f6)
 export HOME=$home
 umask 077
 

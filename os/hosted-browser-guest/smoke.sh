@@ -35,7 +35,9 @@ trap trace EXIT
 # The tenant's own files are its own: the engine writes its profile, and the
 # session its runtime directory.
 chown 1000:1000 "$work"
-as_tilo() { setpriv --reuid=1000 --regid=1000 --init-groups "$@"; }
+as_tilo() {
+    setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/home/tilo "$@"
+}
 
 # Wait for FILE to hold TEXT, or stop waiting: never longer than the bound.
 wait_for_text() {
