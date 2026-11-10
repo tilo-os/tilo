@@ -21,7 +21,7 @@
 //! first frame names.
 
 use crate::actions::now_ns;
-use crate::frames::LinkFrame;
+use crate::frames::{MAX_FRAME_BYTES, OUTGOING, REFUSED, bump, from_device};
 pub use crate::replica::Replica;
 use crate::store::{self, Budget, Cursor, Frame, Store};
 use crate::{NeighbourMsg, StatePeer, TransportOrigin};
@@ -29,7 +29,6 @@ use ed25519_dalek::SigningKey;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointAddr};
-use neighbour_wire::peer_handle;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 use tilo_lock::RwLockRecover as _;
@@ -39,15 +38,48 @@ use web_time::SystemTime;
 /// ALPN of a direct replica link between two devices of one workspace.
 pub const DIRECT_ALPN: &[u8] = b"tilo-peer-state-direct/1";
 
-/// The largest frame: a document checkpoint with space to spare.
-const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
+/// One frame of a direct link's control stream.
+///
+/// A dialling device names its workspace first, then asks the other device's
+/// retained history to continue from its own cursors; the other device
+/// answers with the frames its store holds. The workspace's live messages
+/// travel on their own streams, one per direction.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+enum LinkFrame {
+    /// The workspace the dialling device wants, named before anything else.
+    Workspace(u64),
+    /// The retained history the dialling device asks for, from its cursors.
+    Cursors(Vec<Cursor>),
+    /// Retained history after the asker's cursors, and whether more is left.
+    Frames {
+        /// The frames the other device holds after the asker's cursors.
+        frames: Vec<NeighbourMsg>,
+        /// Whether a further ask carries more.
+        more: bool,
+    },
+}
 
-/// Messages published while a link is writing; a link further behind than
-/// this ends, and the next connection catches up from the checkpoint.
-pub(crate) const OUTGOING: usize = 1024;
+/// Write `frame` as the control stream's next record.
+async fn write_link<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut W,
+    frame: &LinkFrame,
+) -> Result<(), String> {
+    let bytes = postcard::to_allocvec(frame).map_err(|error| error.to_string())?;
+    crate::frames::write_frame(writer, &bytes).await
+}
 
-/// Application close code of a refused connection.
-pub(crate) const REFUSED: u32 = 1;
+/// The next control frame, or `None` once the stream ended cleanly before one started.
+async fn read_link<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut R,
+    max: usize,
+) -> Result<Option<LinkFrame>, String> {
+    match crate::frames::read_frame(reader, max).await? {
+        Some(bytes) => postcard::from_bytes(&bytes)
+            .map(Some)
+            .map_err(|error| error.to_string()),
+        None => Ok(None),
+    }
+}
 
 /// A device's replica, shared by the device's engine and its direct links.
 ///
@@ -330,7 +362,7 @@ impl DirectSync {
             .await
             .map_err(|error| error.to_string())?;
         let workspace = self.workspace_number()?;
-        crate::frames::write_link(&mut send, &LinkFrame::Workspace(workspace)).await?;
+        write_link(&mut send, &LinkFrame::Workspace(workspace)).await?;
         // Who the dialled device is, this one learns from what it sends: its
         // certificate is in the frames it opens with, and a device that has
         // not synced yet holds no roster to refuse by.
@@ -497,9 +529,8 @@ impl DirectSync {
     /// are: the history is in hand.
     async fn ask_store(&self, mut control: Control) -> Result<(), String> {
         let mut cursors = self.cursors();
-        crate::frames::write_link(&mut control.send, &LinkFrame::Cursors(cursors.clone())).await?;
-        while let Some(frame) = crate::frames::read_link(&mut control.recv, MAX_FRAME_BYTES).await?
-        {
+        write_link(&mut control.send, &LinkFrame::Cursors(cursors.clone())).await?;
+        while let Some(frame) = read_link(&mut control.recv, MAX_FRAME_BYTES).await? {
             let LinkFrame::Frames { frames, more } = frame else {
                 return Err("the device answered something else than retained frames".into());
             };
@@ -512,22 +543,19 @@ impl DirectSync {
             if !more {
                 return Ok(());
             }
-            crate::frames::write_link(&mut control.send, &LinkFrame::Cursors(cursors.clone()))
-                .await?;
+            write_link(&mut control.send, &LinkFrame::Cursors(cursors.clone())).await?;
         }
         Err("the device's store ended the history before the last frame".into())
     }
 
     /// Answer the dialling device's cursors from this device's store.
     async fn answer_store(&self, mut control: Control) -> Result<(), String> {
-        while let Some(frame) = crate::frames::read_link(&mut control.recv, MAX_FRAME_BYTES).await?
-        {
+        while let Some(frame) = read_link(&mut control.recv, MAX_FRAME_BYTES).await? {
             let LinkFrame::Cursors(cursors) = frame else {
                 return Err("the device asked for something else than retained frames".into());
             };
             let (frames, more) = self.replay(&cursors)?;
-            crate::frames::write_link(&mut control.send, &LinkFrame::Frames { frames, more })
-                .await?;
+            write_link(&mut control.send, &LinkFrame::Frames { frames, more }).await?;
         }
         Ok(())
     }
@@ -815,9 +843,7 @@ async fn dialed_workspace(
         .accept_bi()
         .await
         .map_err(|error| error.to_string())?;
-    let Some(LinkFrame::Workspace(named)) =
-        crate::frames::read_link(&mut recv, MAX_FRAME_BYTES).await?
-    else {
+    let Some(LinkFrame::Workspace(named)) = read_link(&mut recv, MAX_FRAME_BYTES).await? else {
         return Err(refuse(connection, "the device did not name its workspace"));
     };
     Ok((named, send, recv))
@@ -996,10 +1022,6 @@ impl ProtocolHandler for Owning {
     }
 }
 
-pub(crate) fn bump(count: &mut u64) {
-    *count = count.wrapping_add(1);
-}
-
 /// Take every frame `live` publishes into `device`'s workspace, in its
 /// author's name.
 async fn forward(
@@ -1030,26 +1052,6 @@ async fn forward(
 /// that member's replica lacks, so whose name a frame bears says nothing there.
 fn already_theirs(authored: &Authored, remote: [u8; 32], own: [u8; 32]) -> bool {
     !authored.published && remote != own && from_device(&authored.message, remote)
-}
-
-/// Whether `message` is one `device` sent: what a link does not send back to
-/// the device it came from.
-pub(crate) fn from_device(message: &NeighbourMsg, device: [u8; 32]) -> bool {
-    match message {
-        NeighbourMsg::AppDocument { peer, envelope, .. } => {
-            envelope.author.as_bytes() == &device || *peer == peer_handle(&device)
-        }
-        NeighbourMsg::IdentityHello { cert, .. } => cert.device_public_key == device,
-        // The frames carrying no signature of their own name their author in
-        // the handle the workspace knows it by.
-        NeighbourMsg::RecordContentWant { requester, .. } => *requester == peer_handle(&device),
-        NeighbourMsg::RecordContentPiece { responder, .. }
-        | NeighbourMsg::RecordContentLacks { responder, .. } => *responder == peer_handle(&device),
-        NeighbourMsg::LivePresence { peer, .. } | NeighbourMsg::Heartbeat { peer, .. } => {
-            *peer == peer_handle(&device)
-        }
-        _ => false,
-    }
 }
 
 /// Write `catch_up`, then every frame published live, to `send`, under the
@@ -1099,50 +1101,6 @@ async fn read_authored(recv: &mut RecvStream) -> Result<Option<Authored>, String
                     published: false,
                 })
             })
-            .map_err(|error| error.to_string()),
-        None => Ok(None),
-    }
-}
-
-/// Write `catch_up`, then every message published live that `remote` did not
-/// send, to `send`. The device-store link's plain frames.
-pub(crate) async fn send_all(
-    mut send: SendStream,
-    remote: [u8; 32],
-    catch_up: Vec<NeighbourMsg>,
-    mut live: broadcast::Receiver<NeighbourMsg>,
-) -> Result<(), String> {
-    for message in &catch_up {
-        write_frame(&mut send, message).await?;
-    }
-    loop {
-        match live.recv().await {
-            Ok(message) if from_device(&message, remote) => {}
-            Ok(message) => write_frame(&mut send, &message).await?,
-            Err(broadcast::error::RecvError::Lagged(_)) => {
-                return Err("the link fell behind the device's changes".into());
-            }
-            Err(broadcast::error::RecvError::Closed) => return Ok(()),
-        }
-    }
-}
-
-pub(crate) async fn write_frame(
-    send: &mut SendStream,
-    message: &NeighbourMsg,
-) -> Result<(), String> {
-    let bytes = postcard::to_allocvec(message).map_err(|error| error.to_string())?;
-    if bytes.len() > MAX_FRAME_BYTES {
-        return Err("frame too large".into());
-    }
-    crate::frames::write_frame(send, &bytes).await
-}
-
-/// The next frame, or `None` once the other side finished its stream.
-pub(crate) async fn read_frame(recv: &mut RecvStream) -> Result<Option<NeighbourMsg>, String> {
-    match crate::frames::read_frame(recv, MAX_FRAME_BYTES).await? {
-        Some(bytes) => postcard::from_bytes(&bytes)
-            .map(Some)
             .map_err(|error| error.to_string()),
         None => Ok(None),
     }

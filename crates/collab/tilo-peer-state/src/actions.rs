@@ -1467,32 +1467,11 @@ async fn write_frame(send: &mut SendStream, bytes: &[u8]) -> Result<(), String> 
     if bytes.len() > MAX_FRAME_BYTES {
         return Err("frame too large".into());
     }
-    let len = u32::try_from(bytes.len()).map_err(|_| "frame too large".to_string())?;
-    send.write_all(&len.to_le_bytes())
-        .await
-        .map_err(|error| error.to_string())?;
-    send.write_all(bytes)
-        .await
-        .map_err(|error| error.to_string())
+    crate::frames::write_frame(send, bytes).await
 }
 
 async fn read_frame(recv: &mut RecvStream) -> Result<Option<Vec<u8>>, String> {
-    let mut len = [0_u8; 4];
-    match recv.read_exact(&mut len).await {
-        Ok(()) => {}
-        Err(iroh::endpoint::ReadExactError::FinishedEarly(0)) => return Ok(None),
-        Err(error) => return Err(error.to_string()),
-    }
-    let len =
-        usize::try_from(u32::from_le_bytes(len)).map_err(|_| "frame too large".to_string())?;
-    if len > MAX_FRAME_BYTES {
-        return Err("frame too large".into());
-    }
-    let mut bytes = vec![0_u8; len];
-    recv.read_exact(&mut bytes)
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(Some(bytes))
+    crate::frames::read_frame(recv, MAX_FRAME_BYTES).await
 }
 
 #[cfg(test)]

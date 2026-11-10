@@ -6,7 +6,6 @@
         reason = "a page's store and neighbour handles reach JavaScript and stay on the page's one thread"
     )
 )]
-#[cfg(not(target_arch = "wasm32"))]
 mod frames;
 pub mod governance;
 #[cfg(not(target_arch = "wasm32"))]
@@ -54,7 +53,6 @@ pub mod workspace;
 pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation, InstallationId};
 mod verified_certificate;
 /// The person's own documents between their devices, with no host in between.
-#[cfg(not(target_arch = "wasm32"))]
 pub use state::{AdmittedFrame, PERSONAL_ALPN, PersonalSync};
 pub use state::{
     DelegateInactive, DocumentRow, GovernedAccess, GovernedAgent, GovernedDelegateRow,

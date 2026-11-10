@@ -15,9 +15,16 @@
 //! publishes while the link lasts. Whoever holds a document can hand over its
 //! whole state, so a device added later catches up from any of its siblings.
 
+// Nothing compiled for the web dials the person's own store yet: the page's
+// session opens its links with its own wiring.
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(dead_code, reason = "the page's session wires these")
+)]
+
 use super::PeerPersonal;
 use crate::NeighbourMsg;
-use crate::direct::{OUTGOING, REFUSED, bump, read_frame, send_all};
+use crate::frames::{OUTGOING, REFUSED, bump, read_message, send_all};
 use ed25519_dalek::SigningKey;
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler};
@@ -239,7 +246,7 @@ impl PersonalSync {
             .accept_uni()
             .await
             .map_err(|error| error.to_string())?;
-        while let Some(message) = read_frame(&mut recv).await? {
+        while let Some(message) = read_message(&mut recv).await? {
             let identity = matches!(message, NeighbourMsg::IdentityHello { .. });
             let frame = admitted_frame(&message);
             let admitted = self

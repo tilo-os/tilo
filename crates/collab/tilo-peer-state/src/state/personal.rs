@@ -38,7 +38,6 @@ use tilo_lock::MutexRecover;
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 use web_time::{Duration, SystemTime};
 
-#[cfg(not(target_arch = "wasm32"))]
 pub mod link;
 
 /// The version of [`PersonalStore::durable`] this build writes, and the one
