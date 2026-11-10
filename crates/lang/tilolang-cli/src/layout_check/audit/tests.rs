@@ -1809,6 +1809,64 @@ fn a_rounded_surface_keeps_a_gutter_from_its_column_and_the_window() {
     );
 }
 
+/// A card a page scrolls is no card on the frame: its top and bottom are where the scroll stands,
+/// so a card whose last row ends within a pixel of the column's floor — or one the floor cuts on
+/// its way past — is no finding, while its sides are still the layout's to keep clear of the
+/// column.
+#[test]
+fn a_card_a_page_scrolls_is_no_card_on_the_edge() {
+    let column_with = |card: InspectionNode| {
+        let mut page = node("Page", "page", [0.0, 66.0, 752.0, 4107.5], None);
+        page.children.push(card);
+        let mut scroll = node_of("Scrollable", "scroll", [0.0, 66.0, 768.0, 958.0]);
+        scroll.child_clip = Some([0.0, 66.0, 768.0, 958.0]);
+        scroll.children.push(page);
+        let mut shell = node("NavShell", "shell", [0.0, 0.0, 768.0, 1024.0], None);
+        shell.children.push(scroll);
+        let mut root = node("TilolangWindow", "window", [0.0, 0.0, 768.0, 1024.0], None);
+        root.children.push(shell);
+        root
+    };
+    let found = |root: &InspectionNode| -> Vec<Problem> {
+        inspect(root, (768, 1024), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::RoundedOnEdge)
+            .collect()
+    };
+
+    assert!(
+        found(&column_with(node_of(
+            "Card",
+            "card",
+            [24.0, 777.5, 344.0, 245.5]
+        )))
+        .is_empty(),
+        "a card ending a pixel from the floor is on its way past"
+    );
+    assert!(
+        found(&column_with(node_of(
+            "Card",
+            "card",
+            [24.0, 700.0, 344.0, 400.0]
+        )))
+        .is_empty(),
+        "and one the floor cuts through is too"
+    );
+    // Its sides are the layout's to keep clear: a card across the page's whole width is one on
+    // the frame, however it is scrolled.
+    let across = found(&column_with(node_of(
+        "Card",
+        "card",
+        [0.0, 777.5, 752.0, 245.5],
+    )));
+    assert_eq!(across.len(), 1, "{across:?}");
+    assert!(
+        across[0].detail.contains("left"),
+        "its side stands on the column's: {}",
+        across[0].detail
+    );
+}
+
 /// A card keeps a sibling's gap from what stands over and under it: a notice glued to the list
 /// under it, or a card pressed against the one above it, is found — and the same card with the
 /// gap the toolkit's rhythm gives is no finding. A box beside it in a row is no neighbour.

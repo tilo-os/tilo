@@ -911,7 +911,8 @@ impl Walk<'_> {
         let inside = self.column.unwrap_or(self.viewport);
         // A card's sides are the layout's to keep clear of the column. Its top and bottom are
         // where the scroll stands once the page scrolls them: a card the floor or ceiling cuts
-        // there is on its way past, not a card on the frame.
+        // there is on its way past, not a card on the frame — and one whose last row happens to
+        // end a pixel from the floor is the same card, not one standing on the edge.
         let scrolls = self.page.is_some();
         let edges = [
             ("left", own.x0 - inside.x0, false),
@@ -921,7 +922,7 @@ impl Walk<'_> {
         ];
         let mut on: Vec<&str> = edges
             .into_iter()
-            .filter(|(_, gap, vertical)| !(scrolls && *vertical) || *gap < 0.0)
+            .filter(|(_, _, vertical)| !(scrolls && *vertical))
             .filter(|(_, gap, _)| gap.abs() <= EPSILON)
             .map(|(side, _, _)| side)
             .collect();
