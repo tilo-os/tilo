@@ -97,6 +97,9 @@ pub(super) struct Sibling {
     /// Fingerprint of the last codec advert taken from it: a repeated
     /// advert changes nothing.
     caps_advert: Option<[u8; 32]>,
+    /// Fingerprint of the last word taken from it of where the person's
+    /// workspaces are hosted: a repeated word changes nothing.
+    hosts_advert: Option<[u8; 32]>,
     tasks: [tokio::task::JoinHandle<()>; 2],
 }
 
@@ -320,6 +323,7 @@ impl ActorState {
             revocations: hello.revocations,
             frames,
             caps_advert: None,
+            hosts_advert: None,
             tasks,
         };
         tracing::info!(peer = %peer, "session with a device of the person started");
@@ -378,6 +382,18 @@ impl ActorState {
                         })
                     }
                     NeighbourMsg::PersonalWorkspaces { .. } => true,
+                    // Where the person's workspaces are hosted, as the device that holds
+                    // them says: how a device copied from it, or one that holds none of
+                    // them yet, finds each workspace's host.
+                    NeighbourMsg::PersonalHosts { .. } => {
+                        let Ok(bytes) = postcard::to_allocvec(&msg) else {
+                            return;
+                        };
+                        let fingerprint = message_fingerprint(&bytes);
+                        self.siblings.get_mut(&peer).is_some_and(|sibling| {
+                            sibling.hosts_advert.replace(fingerprint) != Some(fingerprint)
+                        })
+                    }
                     _ => {
                         tracing::warn!(peer = %peer, kind = msg.kind(), "a device of the person sent what its session does not carry");
                         false

@@ -457,6 +457,52 @@ fn fabric_action_from(event: &NetEvent, from: EndpointId, action: &[u8]) -> bool
     )
 }
 
+/// Where the person's workspaces are hosted reaches their other device, once
+/// for each word that changed: the device the word is for enters each
+/// workspace at its host (`NeighbourMsg::PersonalHosts`), and a session that
+/// dropped it left a device copied from another without its hosts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_hears_where_the_persons_workspaces_are_hosted() {
+    let [a, mut b] = two(linked(46, 2).await);
+    let (a_id, root) = (a.id, a.root);
+    let hosts = |hint: u8| NeighbourMsg::PersonalHosts {
+        user_public_key: root,
+        hosts: vec![neighbour_wire::PersonalHost {
+            workspace: "00000000-0000-4000-8000-000000000001".into(),
+            hint: vec![hint],
+        }],
+    };
+    let heard = |hint: u8| {
+        move |event: &NetEvent| {
+            matches!(
+                event,
+                NetEvent::SiblingMsg {
+                    peer,
+                    msg: NeighbourMsg::PersonalHosts { hosts, .. },
+                    ..
+                } if *peer == a_id && hosts.first().is_some_and(|host| host.hint == [hint])
+            )
+        }
+    };
+    a.cmd
+        .send(NetCmd::PublishToSiblings { msg: hosts(1) })
+        .await
+        .unwrap();
+    wait_for_event("where the workspaces are hosted", &mut b.rx, heard(1)).await;
+    // The same word again is not news; the next one that differs is.
+    for hint in [1, 2] {
+        a.cmd
+            .send(NetCmd::PublishToSiblings { msg: hosts(hint) })
+            .await
+            .unwrap();
+    }
+    wait_for_event("the hosts that changed", &mut b.rx, |event| {
+        assert!(!heard(1)(event), "a repeated word is heard once");
+        heard(2)(event)
+    })
+    .await;
+}
+
 /// Connections `endpoint` holds open.
 fn open_connections(endpoint: &Endpoint) -> u64 {
     let socket = &endpoint.metrics().socket;
