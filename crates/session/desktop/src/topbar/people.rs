@@ -262,15 +262,30 @@ impl TopBarChrome {
         // the badge the people button beside them is who is here. A phone-wide bar has no room
         // right of the clock and the gap before it where they fit: they stand there rather than
         // folding everyone out of the bar, so the agent this person follows is still on it.
-        let (anchor, room) = if self.center_lane.is_zero_area() {
+        // What the middle of the bar keeps for itself: the banner's lane while this view follows
+        // someone, else the clock's own drawing. The lane is the clock's seat with the room its
+        // hands may sweep through; a phone's bar is a couple of pixels short of a face beside
+        // that seat, and the clock's ink is not, so the faces stand clear of the drawing rather
+        // than of the seat.
+        let middle = if self.center_rect.is_zero_area() {
+            self.center_lane
+        } else {
+            Rect::new(
+                self.center_rect.x0,
+                self.center_lane.y0,
+                self.center_rect.x1,
+                self.center_lane.y1,
+            )
+        };
+        let (anchor, room) = if middle.is_zero_area() {
             (stack_right_x, stack_right_x - pill_right)
         } else {
-            let right_of_clock = stack_right_x - self.center_lane.x1 - gap;
-            if right_of_clock >= stack.width_of(1, 0) {
-                (stack_right_x, right_of_clock)
+            let right_of_middle = stack_right_x - middle.x1 - gap;
+            if right_of_middle >= stack.width_of(1, 0) {
+                (stack_right_x, right_of_middle)
             } else {
-                let before_clock = (self.center_lane.x0 - gap).max(pill_right);
-                (before_clock, (before_clock - pill_right).max(0.0))
+                let before_middle = (middle.x0 - gap).max(pill_right);
+                (before_middle, (before_middle - pill_right).max(0.0))
             }
         };
         let mut faces = faces;
