@@ -56,8 +56,8 @@ use session::{finish_peer_outcome, run_peer_stream};
 pub use session::{run_peer, run_peer_until};
 use state::{
     FanoutStamp, PreparedRecipients, StateCommit, authorized_state_source, desktop_refusal,
-    file_refusal_of, gated_checkpoint_channel, governor_notice, handle_delta, handle_delta_prefix,
-    live_audience, unpublished,
+    file_refusal_of, gated_checkpoint_channel, governor_notice, governor_refusal, handle_delta,
+    handle_delta_prefix, live_audience, unpublished,
 };
 pub use state::{Lag, StateSource};
 pub(crate) use state::{StateDelivery, StateSession, tell_governor};
@@ -333,6 +333,9 @@ mod retention_diagnostic_tests;
 
 #[cfg(test)]
 mod state_tests;
+
+#[cfg(all(test, feature = "agents"))]
+mod refused_change_tests;
 
 #[cfg(test)]
 mod state_delivery_tests;

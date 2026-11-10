@@ -275,6 +275,36 @@ pub async fn admit_view_reader(
         .expect("the admission commits");
 }
 
+/// Project `workspace`'s members onto the relay's own runtime for it, as a
+/// settled decision does: what a member's change is decided against on its way
+/// in, before the workspace's governance reaches the relay by its own path.
+///
+/// # Panics
+///
+/// The workspace is not governed here, or its governance does not read.
+pub async fn project_standings(workspaces: &Workspaces, workspace: &str) {
+    let state = workspaces
+        .workspace(workspace)
+        .await
+        .expect("a governed room");
+    let (standings, workspace_id) = {
+        let governed = state.lock().await;
+        let standings = governed
+            .peer()
+            .governance()
+            .governed_standings(SystemTime::now())
+            .expect("the workspace's standings");
+        (standings, governed.workspace_id())
+    };
+    workspaces
+        .inner
+        .host
+        .access
+        .replace_standings(workspace_id, true, standings)
+        .await
+        .expect("the relay projects the workspace's standings");
+}
+
 /// Until when `workspace` restricts `person`, as `host` reads its policy.
 ///
 /// # Panics

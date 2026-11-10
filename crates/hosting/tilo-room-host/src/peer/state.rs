@@ -490,9 +490,10 @@ pub(super) async fn handle_delta(
 
 /// Why the relay refuses `env`, `peer`'s change in `ws`, once authorization
 /// let it through: a change that names nothing it writes, one its author's
-/// role grants nothing of (a Viewer writes none), or one taking down what
-/// someone else made without the workspace's leave. None keeps and forwards
-/// the change.
+/// role grants nothing of (a Viewer writes none), one taking down what
+/// someone else made without the workspace's leave, or one the workspace's
+/// own copy of the record does not take in. None keeps and forwards the
+/// change.
 async fn change_refusal(
     ws: &SharedWorkspace,
     peer: &AuthenticatedPeer,
@@ -520,7 +521,37 @@ async fn change_refusal(
         return Some(reason);
     }
     let author = deciding_author(peer, attached, own_device, &claimed);
-    desktop_refusal(ws, author, env).await
+    if let Some(reason) = desktop_refusal(ws, author, env).await {
+        return Some(reason);
+    }
+    governor_refusal(ws, author, env).await
+}
+
+/// Why the workspace refuses `env`, `author`'s change, as its own copy of the
+/// record decides it ([`crate::workspaces::Workspaces::refuses_write`]);
+/// `None` in a workspace this relay does not govern, for a change that is no
+/// record write, and for one the workspace takes in.
+///
+/// This is the governor's verdict, so it is the same one its copy gives the
+/// change when it follows it: a change it refuses is neither kept nor
+/// forwarded, and the record's stored history never holds it for a later
+/// reader to meet, or for its writer to number its next change after.
+pub(super) async fn governor_refusal(
+    ws: &SharedWorkspace,
+    author: [u8; 32],
+    env: &Envelope,
+) -> Option<String> {
+    let body = governor_notice(env)?;
+    let authority = ws.lock().await.workspace_authority.clone()?;
+    let workspaces = authority.workspaces()?;
+    let reason = workspaces
+        .refuses_write(authority.workspace(), author, &body)
+        .await?;
+    // Neither kept nor forwarded: the write's verdict is filed in this
+    // device's own workspace slice, the one place its author reads it.
+    file_refusal_of(ws, env, &reason).await;
+    tracing::warn!(%reason, device = %hex::encode(author), "refused a change the workspace does not take in");
+    Some(reason)
 }
 
 /// File `ws`'s verdict on `env`, a change this host refused for `reason`, in
@@ -703,6 +734,13 @@ pub(super) async fn handle_delta_prefix(
             .is_some()
         {
             // The prefix is kept whole or not at all.
+            return Ok(None);
+        }
+        if governor_refusal(&workspace, author, envelope)
+            .await
+            .is_some()
+        {
+            // As above: the prefix is kept whole or not at all.
             return Ok(None);
         }
     }

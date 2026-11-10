@@ -644,6 +644,22 @@ impl WorkspaceHost {
         &self.sessions.handler.compactor
     }
 
+    /// The runtime of workspace `workspace_id`, as this host's sessions hold
+    /// it: what the workspace's own writes go through, for a test driving a
+    /// member's change in and reading what the store kept of it.
+    #[cfg(all(test, feature = "agents"))]
+    pub(crate) async fn runtime(
+        &self,
+        workspace_id: u64,
+    ) -> Option<crate::workspace::SharedWorkspace> {
+        self.sessions
+            .workspaces
+            .lock()
+            .await
+            .get(&workspace_id)
+            .cloned()
+    }
+
     /// The durable records of the workspaces hosted here, for a service the
     /// embedder runs beside them.
     #[must_use]

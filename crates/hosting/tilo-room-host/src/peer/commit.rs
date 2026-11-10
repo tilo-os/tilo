@@ -297,7 +297,8 @@ impl AdmittedCommit {
 /// Why the workspace refuses `delta`, a page's commit, if it does: decided as a
 /// session's delta is ([`super::handle_delta`]), by what the change says it
 /// does against its author's grants, then, for the workspace's shared desktop,
-/// by what it does to what others made.
+/// by what it does to what others made, then by what the workspace's own copy
+/// of the record takes in.
 async fn commit_refusal(
     ws: &SharedWorkspace,
     author: [u8; 32],
@@ -319,10 +320,12 @@ async fn commit_refusal(
     if let Some(reason) = desktop_refusal(ws, author, delta).await {
         return Some(reason);
     }
-    let reason = crate::surfaces::role_refusal(bytes, standings.as_deref(), author)?;
-    tracing::warn!(%reason, device = %hex::encode(author), "refused a change a viewer's role writes nothing of");
-    file_refusal_of(ws, delta, &reason).await;
-    Some(reason)
+    if let Some(reason) = crate::surfaces::role_refusal(bytes, standings.as_deref(), author) {
+        tracing::warn!(%reason, device = %hex::encode(author), "refused a change a viewer's role writes nothing of");
+        file_refusal_of(ws, delta, &reason).await;
+        return Some(reason);
+    }
+    super::governor_refusal(ws, author, delta).await
 }
 
 /// Hand `delta`, a member's change `ws` kept, to the workspace's governor, if a
