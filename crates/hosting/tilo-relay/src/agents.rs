@@ -310,6 +310,10 @@ pub struct AgentOptions {
     /// host ([`host_shells`]); `None` leaves them to the devices running
     /// them.
     pub shell: Option<Arc<HostShells>>,
+    /// The Browser this host places for its workspaces
+    /// ([`crate::hosted_browser::HostedBrowsers`]); `None` places none, and
+    /// opening Browser in a hosted workspace is refused in words that say so.
+    pub browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
 }
 
 /// The shells of the workspaces this host serves.
@@ -335,8 +339,13 @@ pub fn host_shells(state: PathBuf) -> Result<Arc<HostShells>, String> {
 }
 
 /// What a host lends its workspaces' records service: a model that looks
-/// over feedback reviews, and where Terminal sessions run their commands.
-type Lent = (Option<Arc<dyn FeedbackReviewer>>, Option<Arc<HostShells>>);
+/// over feedback reviews, where Terminal sessions run their commands, and the
+/// Browser it places.
+type Lent = (
+    Option<Arc<dyn FeedbackReviewer>>,
+    Option<Arc<HostShells>>,
+    Option<Arc<crate::hosted_browser::HostedBrowsers>>,
+);
 
 /// Where the workspace actions run a session's commands.
 pub enum HostShells {
@@ -397,12 +406,22 @@ impl WorkspaceShell for HostShells {
 
 /// The host's app-serving plane: agents and the workspaces' page actions,
 /// keeping what they make in the host's content.
-struct HostActionsPlane(HostActions, Arc<WorkspaceStores>);
+struct HostActionsPlane {
+    host: HostActions,
+    stores: Arc<WorkspaceStores>,
+    /// The Browser this host places for its workspaces, when it places one.
+    browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
+}
 
 /// The app-serving plane of a host that runs no agents: the workspaces' page
 /// actions alone. A member's own actions on a workspace record (linking their
 /// account on the workspace's Discord from the profile card) need nothing more.
-struct WorkspaceRecordsPlane(WorkspaceActions, Arc<WorkspaceStores>);
+struct WorkspaceRecordsPlane {
+    actions: WorkspaceActions,
+    stores: Arc<WorkspaceStores>,
+    /// The Browser this host places for its workspaces, when it places one.
+    browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
+}
 
 impl crate::AppServingPlane for WorkspaceRecordsPlane {
     fn serve(
@@ -423,11 +442,23 @@ impl crate::AppServingPlane for WorkspaceRecordsPlane {
         if agents {
             return None;
         }
-        self.0.serve(workspace_id, caller, message)
+        serve_with_browser(self.browsers.as_ref(), workspace_id, message, |message| {
+            self.actions.serve(workspace_id, caller, message)
+        })
+    }
+
+    fn route(
+        &self,
+        workspace_id: u64,
+        sender: [u8; 32],
+        message: &tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<crate::app_serving::Routing> {
+        let _ = sender;
+        self.browsers.as_ref()?.route(workspace_id, message)
     }
 
     fn content(&self) -> Option<Arc<WorkspaceStores>> {
-        Some(Arc::clone(&self.1))
+        Some(Arc::clone(&self.stores))
     }
 }
 
@@ -438,12 +469,58 @@ impl crate::AppServingPlane for HostActionsPlane {
         caller: &tilo_actions::remote::Caller,
         message: tilo_actions::remote::RemoteActionMessage,
     ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>> {
-        self.0.serve(workspace_id, caller, message)
+        serve_with_browser(self.browsers.as_ref(), workspace_id, message, |message| {
+            self.host.serve(workspace_id, caller, message)
+        })
+    }
+
+    fn route(
+        &self,
+        workspace_id: u64,
+        sender: [u8; 32],
+        message: &tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<crate::app_serving::Routing> {
+        let _ = sender;
+        self.browsers.as_ref()?.route(workspace_id, message)
     }
 
     fn content(&self) -> Option<Arc<WorkspaceStores>> {
-        Some(Arc::clone(&self.1))
+        Some(Arc::clone(&self.stores))
     }
+}
+
+/// Serve a workspace's message, placing its Browser after an answered
+/// `app.so.tilo.browser#open`: the open answers once the window is live, and
+/// a Browser this host cannot place is refused in words that say so rather
+/// than as an app it does not know.
+fn serve_with_browser(
+    browsers: Option<&Arc<crate::hosted_browser::HostedBrowsers>>,
+    workspace_id: u64,
+    message: tilo_actions::remote::RemoteActionMessage,
+    serve: impl FnOnce(
+        tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<Pending<tilo_actions::remote::RemoteActionMessage>>,
+) -> Option<Pending<tilo_actions::remote::RemoteActionMessage>> {
+    use tilo_actions::remote::RemoteActionMessage;
+    let opens = match &message {
+        RemoteActionMessage::Invoke(request) if crate::hosted_browser::opens_browser(request) => {
+            Some(request.invocation)
+        }
+        _ => None,
+    };
+    let Some(invocation) = opens else {
+        return serve(message);
+    };
+    let Some(browsers) = browsers else {
+        return Some(Pending::ready(crate::hosted_browser::refused(
+            invocation,
+            crate::hosted_browser::unplaced(),
+        )));
+    };
+    let browsers = Arc::clone(browsers);
+    Some(serve(message)?.map(move |message| {
+        crate::hosted_browser::placed(&browsers, workspace_id, invocation, message)
+    }))
 }
 
 /// The relay's own device, as the workspace actions service joins its workspaces.
@@ -630,22 +707,24 @@ pub async fn start_serving_records(
     catalogue: Option<CatalogueFactory>,
     feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
     shell: Option<Arc<HostShells>>,
+    browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
 ) -> Result<Relay, RelayError> {
     let host_cert = identity.device_cert.clone();
     let catalogue = catalogue.unwrap_or_else(|| Arc::new(AppCatalogue::native));
     cfg.services.app_serving = true;
-    let plane = Arc::new(WorkspaceRecordsPlane(
-        WorkspaceActions::new(catalogue),
-        crate::content::stores(&cfg.state_root),
-    ));
+    let plane = Arc::new(WorkspaceRecordsPlane {
+        actions: WorkspaceActions::new(catalogue),
+        stores: crate::content::stores(&cfg.state_root),
+        browsers: browsers.clone(),
+    });
     let web_entry = cfg.web_entry.clone();
     let relay = Relay::start_with_app_serving(cfg, identity, Some(plane.clone())).await?;
     attach_records(
-        &plane.0,
+        &plane.actions,
         &relay,
         &host_cert,
         web_entry,
-        (feedback_reviewer, shell),
+        (feedback_reviewer, shell, browsers),
     )?;
     Ok(relay)
 }
@@ -656,10 +735,20 @@ fn attach_records(
     relay: &Relay,
     host_cert: &DeviceCert,
     web_entry: Option<String>,
-    (feedback_reviewer, shell): Lent,
+    (feedback_reviewer, shell, browsers): Lent,
 ) -> Result<(), RelayError> {
     if let Some(shell) = &shell {
         shell.serve_from(relay);
+    }
+    if let Some(browsers) = &browsers {
+        browsers.serve_from(crate::hosted_browser::Authority {
+            user_public_key: relay.workspace_records().user_public_key(),
+            cert: host_cert.clone(),
+            key: relay.workspace_records().signing_key().clone(),
+            relay: relay.node_addr(),
+            workspaces: relay.workspaces().cloned(),
+            runtime: tokio::runtime::Handle::current(),
+        });
     }
     let shell = shell.map(|shell| shell as Arc<dyn WorkspaceShell>);
     actions
@@ -723,13 +812,14 @@ async fn start_inner(
         Arc::clone(&catalogue),
     );
     cfg.services.app_serving = true;
-    let plane = Arc::new(HostActionsPlane(
-        HostActions {
+    let plane = Arc::new(HostActionsPlane {
+        host: HostActions {
             supervisor: SupervisorHost(agents.supervisor().clone()),
             actions: WorkspaceActions::new(catalogue),
         },
-        content,
-    ));
+        stores: content,
+        browsers: options.browsers.clone(),
+    });
     let web_entry = cfg.web_entry.clone();
     let relay = match relay_mode {
         Some(mode) => {
@@ -739,11 +829,11 @@ async fn start_inner(
         None => Relay::start_with_app_serving(cfg, identity, Some(plane.clone())).await?,
     };
     attach_records(
-        &plane.0.actions,
+        &plane.host.actions,
         &relay,
         &host_cert,
         web_entry,
-        (options.feedback_reviewer, options.shell),
+        (options.feedback_reviewer, options.shell, options.browsers),
     )?;
     agents
         .start(

@@ -213,6 +213,7 @@ impl AgentArgs {
             catalogue: None,
             feedback_reviewer: None,
             shell: None,
+            browsers: None,
         }))
     }
 }
@@ -325,6 +326,7 @@ pub async fn start_relay_lending(
                 tilo_relay::agents::host_shells(state_root.join("shells"))
                     .map_err(anyhow::Error::msg)?,
             ),
+            None,
         )
         .await
         .context("start the relay serving its workspaces' records")?;

@@ -120,6 +120,31 @@ The relay places a workspace's Browser the way it places a shell
    record. The window counts as the workspace's Browser for as long as the
    environment runs. Opening Browser again attaches to it.
 
+### What the session in the VM is handed
+
+The relay certifies the environment's device — a member device of the
+workspace's person, made with the stand-in the person gave the host, lasting
+as long as the environment may run — lists it in that one workspace, and asks
+the VM host to start the environment. What the session in the VM is started
+with is the relay's placement record, one object
+(`tilo_relay::hosted_browser::Material`):
+
+| Field | What the session does with it |
+| :--- | :--- |
+| `workspace` | The workspace's UUID: the one it joins. |
+| `workspace_id` | The same workspace as the relay carries it. |
+| `record` | The Browser record to open the window on. |
+| `device`, `secret` | Its device certificate and the signing key: the session's identity. |
+| `relay` | The relay's endpoint address, to join the workspace through. |
+| `user_public_key` | The person the workspace belongs to. |
+| `account` | Who pays, as the relay counts it. |
+
+The session starts headless (`--backend headless`), with that device as its
+identity, joins the workspace through `relay`, and opens Browser on `record`,
+then reports the window's provider (`browser@42`) so the relay can route page
+actions and the open can answer. It keeps the window live, published and
+subscribed until it stops.
+
 Door agents' calls go to the workspace host's device. So the relay forwards
 a page action addressed to the hosted Browser window to the device holding
 it, as it already carries remote actions between a workspace's devices. The
@@ -195,7 +220,9 @@ Each part above is a unit:
 4. **Joining and routing**: `#open` in a hosted workspace places an
    environment, its session joins as a device of that workspace only and
    opens the window, and the relay routes page actions to it through the
-   gate.
+   gate. The relay's half is in (`tilo_relay::hosted_browser`); the
+   environment's client and the session's start with the material are not
+   linked yet.
 5. **The page track** on the live carrier, and the desk drawing it,
    natively and in a web tab.
 6. **The end-to-end test**: a workspace key opens Browser, fills a test form

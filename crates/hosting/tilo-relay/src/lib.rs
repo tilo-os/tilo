@@ -81,6 +81,8 @@ pub mod files_content;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod host_jobs;
 #[cfg(feature = "agents")]
+pub mod hosted_browser;
+#[cfg(feature = "agents")]
 pub mod moderation;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod offload;

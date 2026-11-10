@@ -41,6 +41,9 @@ mod end_to_end_sync;
 mod governed_rooms;
 #[path = "governed_workspace_access.rs"]
 mod governed_workspace_access;
+#[cfg(feature = "agents")]
+#[path = "hosted_browser.rs"]
+mod hosted_browser;
 #[path = "hosting_cost.rs"]
 mod hosting_cost;
 #[path = "hosting_member.rs"]
