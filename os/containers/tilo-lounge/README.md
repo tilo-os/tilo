@@ -96,12 +96,17 @@ deployment that still names one (eu1 does) starts unchanged.
 
 ## Building
 
-`tools/ci/publish/lounge-binaries.sh` builds the programs and
+`tools/ci/publish/lounge-binaries.sh` builds the programs,
+`tools/ci/publish/lounge-fonts.sh` the product font catalog and
 `tools/ci/publish/lounge-context.sh` lays out the build context; the
 `publish-site` workflow (dispatch-only, main) builds this image and the web
 entry from one commit, tests both and publishes `dev-<commit>`. Those steps
-are also t's checks — `lounge-binaries`, `image-lounge-context`,
-`image-lounge` — so a change is built by naming them.
+are also t's checks — `lounge-binaries`, `lounge-fonts`,
+`image-lounge-context`, `image-lounge` — so a change is built by naming them.
+The checks that run the programs without an image around them (`page-boot`,
+`page-two-people`, `agent-setup`) ask `lounge-binaries.sh` for the profile
+Cargo.toml's `lounge-gate` names: the same code and optimisation level without
+the whole-program link the image's own build spends.
 `test-entrypoint.sh` asserts the environment-to-flags mapping and
 `test-image.sh` what the built image must carry.
 
@@ -130,6 +135,6 @@ It needs buildah (it starts the image chrooted, as `test-image.sh` does),
 node, a headless Chrome (`CHROME`, else Playwright's cache), curl and a Rust
 toolchain (the image's own `tilo-crypto` mints the site's certificate;
 `TILO_CRYPTO_BIN` names a built one instead), and the artifacts
-`publish-site` builds: `lounge-binaries.sh` +
+`publish-site` builds: `lounge-binaries.sh` + `lounge-fonts.sh` +
 `lounge-context.sh` + `publish/oci-build.sh` for the image, and
 `web-desktop-bundle.sh wasm` + `web-desktop-bundle.sh bundle` for the bundle.

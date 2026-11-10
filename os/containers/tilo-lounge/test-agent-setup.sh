@@ -15,7 +15,7 @@
 # report, the site's and the Lounge's logs. Needs node, chromium, curl, and
 # TILO_RELAY_BIN, TILO_CLI_BIN and TILO_CRYPTO_BIN naming built programs, and
 # TILO_FONTS_DIR the product's font catalog (the agent-setup check hands it the
-# lounge-binaries, cli-x86_64 and image-lounge-context outputs).
+# lounge-gate-binaries, lounge-fonts, cli-x86_64 and lounge-gate-tools outputs).
 set -euo pipefail
 usage='usage: test-agent-setup.sh BUNDLE WORK'
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)

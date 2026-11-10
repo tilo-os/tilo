@@ -1363,6 +1363,19 @@ debug-assertions = true
 [profile.demo.package.app-cli]
 debug-assertions = true
 
+# The checks' build of the Lounge's programs (tools/ci/publish/lounge-binaries.sh). The image
+# ships `release`'s thin whole-program link; a check starts from an empty build directory, takes
+# every crate it reuses from the compiler cache and then links that graph whole — a host that
+# serves pages carries every app's components, the UI toolkit's renderer, shaping and search
+# among them, so that link is the last and longest thing such a run does, for a binary no check
+# reads the speed of. Release optimisation without it: the same code at the same opt-level,
+# sixteen codegen units, and each cached crate stored without the bitcode a whole-program link
+# alone needs.
+[profile.lounge-gate]
+inherits = "release"
+lto = false
+codegen-units = 16
+
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]

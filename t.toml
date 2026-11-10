@@ -4676,15 +4676,42 @@ run = "bash tools/ci/publish/lounge-binaries.sh /target/publish/lounge/binaries"
 env = { CARGO_BUILD_JOBS = "8" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/lounge/binaries/**"]
-# A release build of the relay and the bridge on eight jobs: a change low in their dependencies
-# (the networking stack) rebuilds nearly all of it, longer than the default limit on a busy node.
-timeout_secs = 3600
+# The image's programs, built as the image ships them: a release build whose whole-program link
+# covers everything a host that serves pages carries. Only the image waits for this build; the
+# checks that run these programs themselves ask for `lounge-gate-binaries` below. A release waits
+# for it, so it gets longer than a check of a change does: the whole-program link grows with the
+# graph and this is the only build of it left.
+timeout_secs = 5400
+default = false
+
+# The same two programs, for the checks that run them directly (page-boot, page-two-people,
+# agent-setup): the profile Cargo.toml's `lounge-gate` describes, which is release optimisation
+# without the whole-program link. A check starts from an empty build directory, so a run is the
+# whole graph taken from the compiler cache and then linked whole, which grows with every crate a
+# host that serves pages carries and which any change in that graph redoes — for a binary no check
+# reads the speed of.
+[[check]]
+name = "lounge-gate-binaries"
+run = "bash tools/ci/publish/lounge-binaries.sh /target/publish/lounge-gate/binaries lounge-gate"
+env = { CARGO_BUILD_JOBS = "8" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/lounge-gate/binaries/**"]
+default = false
+
+# The product font catalog, which the image's context and every check that runs the Lounge's
+# programs directly serve: built once, apart from the image's own assembly, so a check of the page
+# does not wait for the image's programs.
+[[check]]
+name = "lounge-fonts"
+run = "bash tools/ci/publish/lounge-fonts.sh /target/publish/lounge/fonts"
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/lounge/fonts/**"]
 default = false
 
 [[check]]
 name = "image-lounge-context"
-run = "bash tools/ci/publish/lounge-context.sh /target/publish/lounge/context /target/publish/lounge/binaries"
-needs = ["lounge-binaries"]
+run = "bash tools/ci/publish/lounge-context.sh /target/publish/lounge/context /target/publish/lounge/binaries /target/publish/lounge/fonts"
+needs = ["lounge-binaries", "lounge-fonts"]
 outputs = ["/target/publish/lounge/context/**"]
 requires = ["arch=x86_64"]
 git = true
@@ -4743,8 +4770,8 @@ default = false
 [[check]]
 name = "agent-setup"
 run = "mkdir -p /target/agent-setup-cli\ntar -xzf /target/publish/cli/linux-x86_64/tilo-linux-x86_64.tar.gz -C /target/agent-setup-cli tilo\nbash os/containers/tilo-lounge/test-agent-setup.sh /target/publish/web-desktop/bundle /target/agent-setup"
-needs = ["lounge-binaries", "image-lounge-context", "cli-x86_64", "lounge-gate-tools", "web-desktop-bundle"]
-env = { TILO_RELAY_BIN = "/target/publish/lounge/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/context/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/agent-setup-cli/tilo" }
+needs = ["lounge-gate-binaries", "lounge-fonts", "cli-x86_64", "lounge-gate-tools", "web-desktop-bundle"]
+env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/agent-setup-cli/tilo" }
 requires = ["arch=x86_64"]
 outputs = ["/target/agent-setup/**"]
 timeout_secs = 1800
@@ -4760,8 +4787,8 @@ default = false
 [[check]]
 name = "page-boot"
 run = "bash os/containers/tilo-lounge/test-page-boot.sh /target/publish/web-desktop/bundle /target/page-boot"
-needs = ["lounge-binaries", "image-lounge-context", "lounge-gate-tools", "web-desktop-bundle"]
-env = { TILO_RELAY_BIN = "/target/publish/lounge/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/context/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto" }
+needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-tools", "web-desktop-bundle"]
+env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto" }
 requires = ["arch=x86_64"]
 outputs = ["/target/page-boot/**"]
 timeout_secs = 1200
@@ -4774,8 +4801,8 @@ timeout_secs = 1200
 [[check]]
 name = "page-two-people"
 run = "bash os/containers/tilo-lounge/test-page-two-people.sh /target/publish/web-desktop/bundle /target/page-two-people"
-needs = ["lounge-binaries", "image-lounge-context", "lounge-gate-tools", "web-desktop-bundle"]
-env = { TILO_RELAY_BIN = "/target/publish/lounge/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/context/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto" }
+needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-tools", "web-desktop-bundle"]
+env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto" }
 requires = ["arch=x86_64"]
 outputs = ["/target/page-two-people/**"]
 timeout_secs = 1200

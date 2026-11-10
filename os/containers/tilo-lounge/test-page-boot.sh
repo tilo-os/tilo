@@ -12,7 +12,7 @@
 # report, the site's and the Lounge's logs. Needs node, chromium, curl,
 # TILO_RELAY_BIN and TILO_CRYPTO_BIN naming built programs, and TILO_FONTS_DIR
 # the product's font catalog (the page-boot check hands it the
-# lounge-binaries, lounge-gate-tools and image-lounge-context outputs).
+# lounge-gate-binaries, lounge-fonts and lounge-gate-tools outputs).
 set -euo pipefail
 usage='usage: test-page-boot.sh BUNDLE WORK'
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
