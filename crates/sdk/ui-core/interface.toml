@@ -682,6 +682,7 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "ToolbarAction.name" = "String"
 "ToolbarAction.navigates" = "bool optional"
 "ToolbarAction.on" = "bool optional"
+"ToolbarAction.primary" = "bool optional"
 "ToolbarAction.toggles" = "bool optional"
 "ToolbarEvent" = "enum internal tag=kind"
 "ToolbarEvent::action" = "struct"
