@@ -1036,7 +1036,15 @@ mod tests {
             "the rename is what happened: {:?}",
             feed.entries[0]
         );
-        assert_eq!(feed.entries[0].author.name, "ada", "and who did it");
+        // The desk's own change names the person who made it as its invoker, and the pane reads
+        // the history as that person: their own rename is theirs, so it reads as "You", as every
+        // history says the reader's own changes.
+        assert_eq!(feed.entries[0].author.name, "You", "and who did it");
+        assert_eq!(
+            feed.entries[0].author.relation,
+            wire::Relation::Reader,
+            "the person here made the change"
+        );
         assert!(
             feed.mutations,
             "the desk's own layout is the person's to undo"
