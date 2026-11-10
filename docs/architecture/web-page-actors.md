@@ -290,13 +290,18 @@ reason under "Not built yet".
   door, which admits the devices of the desktop's own person. A device of
   another member of the workspace sees a shared tab and may type into it,
   but its agent has no door to the tab's actions.
-- **The Browser on the end-to-end test machines.** On the machines the remote
-  end-to-end run boots, the Browser ends on a fault about a second after it
-  starts, whether an agent opens it through the door or the person opens it
-  from the desk. Until it starts there, the run's two tab steps stop at
-  their first line, and several machines in one tab are checked only in
-  parts: the actors and their record on one machine with the real engine,
-  the door's naming of a remote agent, and the shared window's viewers.
+- **Several machines in one tab, end to end.** The Browser starts on the
+  machines the remote end-to-end run boots. The run's two tab steps still do
+  not run there, because on those machines no app's actions reach the desk,
+  on either device of the person: an app opens its window, its record never
+  loads, and it publishes nothing, so an agent at the door is told the app
+  is installed and not running. That holds for every app and is not the
+  Browser's. The run's earlier step, an agent of one machine working in
+  Notes on another, fails for it now; it used to pass on the door's "nothing
+  matches", which names the title the step looked for. Until apps publish
+  there, several machines in one tab are checked only in parts: the actors
+  and their record on one machine with the real engine, the door's naming of
+  a remote agent, and the shared window's viewers.
 - **Gestures in a frame.** Hover, drag, a drawn path and reading the element
   at a point still act in the page's own document only, and choosing files
   in a frame is not checked. A find and a search read one document and name
