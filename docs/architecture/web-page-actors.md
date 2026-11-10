@@ -153,7 +153,9 @@ Browser's.
   workspace. Each member who shows it receives the window's live picture,
   the engine's own pixels, and their pointer and keys reach the page
   through a seat of their own while the person allows it. What they type
-  is direct input to the page.
+  is direct input to the page. Several members view one window at once,
+  each a viewer of its own: one who stops viewing ends their own picture,
+  seat and reach, and nobody else's.
 - **Acting.** An agent on another of the person's devices connects to the
   desktop's agent door and works there under a name of its own, as an agent
   on the desktop itself does. Its page actions take their turn in the tab,
@@ -163,6 +165,14 @@ Browser's.
 So two agents on two machines in one tab are two connections to one
 desktop's door, and a third machine is a third. Nothing is merged.
 
+What checks this: the session's window share tests run three sessions, one
+sharing a window and two viewing it. The remote end-to-end run
+(`scripts/e2e-remote/run.py`) has an agent on one machine work on another
+through its door under its own name, and carries two steps for the tab: two
+machines, then three, answer one form in one Browser tab while the tab's
+person reads who set each field. Those two steps do not pass yet, for the
+reason under "Not built yet".
+
 ## The cases
 
 | Case | How it holds |
@@ -171,7 +181,7 @@ desktop's door, and a third machine is a third. Nothing is merged.
 | Two agents, two tabs | Two pages with two records; one profile, so the site's own session (a basket, a sign-in) is shared between them |
 | Two devices, one tab | One page on the device that runs it; the other sees the shared window and types into it, and its agent acts through the desktop's agent door |
 | Two agents and a person | The person's typing is direct input; the review read tells the three apart |
-| Three devices, one tab | As two; each device's actor has its own read and is told of the others |
+| Three devices, one tab | As two; each device's actor has its own read and is told of the others, and each viewer of the shared window has its own picture and seat |
 
 ## Not built yet
 
@@ -201,6 +211,13 @@ desktop's door, and a third machine is a third. Nothing is merged.
   door, which admits the devices of the desktop's own person. A device of
   another member of the workspace sees a shared tab and may type into it,
   but its agent has no door to the tab's actions.
+- **The Browser on the end-to-end test machines.** On the machines the remote
+  end-to-end run boots, the Browser ends on a fault about a second after it
+  starts, whether an agent opens it through the door or the person opens it
+  from the desk. Until it starts there, the run's two tab steps stop at
+  their first line, and several machines in one tab are checked only in
+  parts: the actors and their record on one machine with the real engine,
+  the door's naming of a remote agent, and the shared window's viewers.
 - **Dialogs in another site's frame.** A consent dialog a site shows in a
   frame of another site reads as empty, so an agent cannot answer it. Real
   shops and news sites put their cookie question there.
