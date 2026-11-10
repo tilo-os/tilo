@@ -458,7 +458,27 @@ globalThis.__tiloPage ||= (() => {
     }
     return clean(element.title, MAX_NAME);
   }
-  const secret = element => type(element) === 'password' || /(^|\s)cc-/.test(element.getAttribute('autocomplete') || '');
+  // A field that is secret by its nature: a password field, one the page
+  // says holds a card's number or security code, a password or a one-time
+  // code, and one the page draws as dots. A field that was one stays one: a
+  // page that shows a password on request turns its field into plain text,
+  // and what it holds is no less a secret for that. What such a field holds
+  // is never read out, recorded or told, whatever wrote it.
+  const SECRET_TOKENS = /(^|\s)(cc-[a-z-]+|one-time-code|current-password|new-password)(\s|$)/i;
+  const onceSecret = new WeakSet();
+  function secret(element) {
+    if (!element || element.nodeType !== 1) return false;
+    if (onceSecret.has(element)) return true;
+    const tag = element.localName;
+    let is = (tag === 'input' && type(element) === 'password') ||
+      SECRET_TOKENS.test(element.getAttribute('autocomplete') || '');
+    if (!is && (tag === 'input' || tag === 'textarea')) {
+      const drawn = getComputedStyle(element).webkitTextSecurity;
+      is = !!drawn && drawn !== 'none';
+    }
+    if (is) onceSecret.add(element);
+    return is;
+  }
   function checked(element) {
     const aria = element.getAttribute('aria-checked');
     if (aria === 'mixed' || element.indeterminate) return 'mixed';
@@ -2314,7 +2334,8 @@ globalThis.__tiloPage ||= (() => {
   // edit it causes keeps the window open a little longer; an edit outside
   // any window is direct input when the browser trusts its event, and the
   // page's own script when it does not.
-  const ACTS = new Set(['locate', 'fill', 'fill_files', 'select', 'submit', 'focus', 'arm', 'fill_form']);
+  const ACTS = new Set(['locate', 'fill', 'fill_files', 'select', 'submit', 'focus', 'arm', 'fill_form',
+    'key_target', 'locate_box']);
   const ACTING_MS = 1500, GESTURE_ACTING_MS = 20000;
   const provenance = new WeakMap();
   let acting = null;
@@ -2381,10 +2402,29 @@ globalThis.__tiloPage ||= (() => {
   }
   const acted = (ref, result) => {
     if (result && result.ok !== false && typeof ref === 'string') {
-      try { const target = targetOf(resolve(ref)); if (target) result.target = target; } catch (_) {}
+      try {
+        const element = resolve(ref), target = targetOf(element);
+        if (target) result.target = target;
+        // What was written into a secret is kept out of the tab's record
+        // by what the field is, not by what the caller said of its text.
+        if (secret(element)) result.secret = true;
+      } catch (_) {}
     }
     return result;
   };
+  // Where a key pressed without naming an element goes: the element that
+  // has the keyboard, by the description the record keeps, and whether it
+  // is a secret. Focus inside a frame is that frame's to say: the frame is
+  // named, and the browser process asks its document in turn.
+  function keyTarget() {
+    const active = activeTextElement(), said = {ok: true, message: 'Key'};
+    if (!active || active === document.body || active === document.documentElement) return said;
+    if (active.localName === 'iframe' || active.localName === 'frame') { said.framed = refOf(active); return said; }
+    const target = targetOf(active);
+    if (target) said.target = target;
+    if (secret(active)) said.secret = true;
+    return said;
+  }
 
   // Every field of the document with what it holds now and who set it: the
   // read a filled form is reviewed by. It reads values only, and asks the
@@ -2844,6 +2884,7 @@ globalThis.__tiloPage ||= (() => {
             return acted(command.element, focused);
           }
           case 'arm': return arm('key');
+          case 'key_target': return keyTarget();
           case 'reader': return reader(command.enabled === true);
           // The engine moves the pointer to a point computed here.
           case 'hover': {

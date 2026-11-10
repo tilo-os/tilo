@@ -413,6 +413,23 @@ APPLY = b'''<!doctype html><title>Apply</title>
 <script>document.getElementById('nat').addEventListener('change', e => document.getElementById('other').hidden = e.target.value !== 'Other');</script>'''
 
 
+# Fields that are secret by what they are: a password, and what the page says
+# holds a card's number, its security code, a password under another type or
+# a one-time code; beside one that is none of them.
+SECRETS = b'''<!doctype html><title>Pay</title>
+<h1>Pay</h1>
+<form action="/done" method="get">
+  <label>Card number <input name="card" autocomplete="cc-number"></label>
+  <label>Security code <input name="csc" autocomplete="cc-csc"></label>
+  <label>Account password <input name="pass" type="password"></label>
+  <label>Old password <input name="old" autocomplete="current-password"></label>
+  <label>New password <input name="new" autocomplete="section-login new-password"></label>
+  <label>Code we sent you <input name="otp" autocomplete="one-time-code"></label>
+  <label>Delivery note <input name="note"></label>
+  <button>Pay</button>
+</form>'''
+
+
 # A paragraph as an essay writes them: longer than a line or two, with the
 # point at its end.
 ESSAY = ('<!doctype html><title>Essay</title><article><h1>On reading</h1><p>' +
@@ -668,7 +685,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == '/signed':
             self.server.signed = parse_qs(urlparse(self.path).query)
         body = FORM if path == '/form' else AGENT if path == '/agent' else ARTICLE if path == '/article' \
-            else APPLY if path == '/apply' else ESSAY if path == '/essay' else OLD if path == '/old' else RUN if path == '/run' \
+            else APPLY if path == '/apply' else SECRETS if path == '/secrets' else ESSAY if path == '/essay' else OLD if path == '/old' else RUN if path == '/run' \
             else LATER if path == '/later' \
             else GESTURE if path == '/gesture' \
             else CANVAS if path == '/canvas' \
@@ -1130,6 +1147,86 @@ class PageActions(unittest.TestCase):
         self.assertFalse(nothing['ok'])
         self.assertEqual(nothing['code'], 'no_field')
         self.assertFalse(self.page('fill_form', form='form9', answers={'Arrival': '2027-02-03'})['ok'])
+
+    def test_no_secret_is_in_the_record_whatever_wrote_it(self):
+        # What is written into a field that is secret by its nature is in
+        # the page and nowhere else: not in the tab's record, in no answer
+        # and in no note to another actor, whichever action wrote it.
+        self.h.navigate(self.url + '/secrets')
+        said = []
+
+        def heard(answer):
+            said.append(answer)
+            return answer
+        outline = heard(self.ok('outline', actor='ada'))['outline']
+        filled = {'Card number': 'card-4111111111111111', 'Security code': 'csc-737-x', 'Old password': 'correct-horse',
+                  'New password': 'battery-staple', 'Code we sent you': 'otp-918273-x'}
+        for name, text in filled.items():
+            field = self.ref(outline, f'textbox "{name}"')
+            # Consent is asked for by what the field is, and the record keeps
+            # nothing of the text by what the field is.
+            refused = heard(self.page('fill', element=field, text=text, actor='ada'))
+            self.assertEqual((refused['ok'], refused['code']), (False, 'secret_field'), refused)
+            heard(self.ok('fill', element=field, text=text, secret=True, actor='ada'))
+        # Typed key by key: into the field a press names, then into the
+        # field that has the keyboard.
+        keys = dict(ctrl=False, shift=False, alt=False, meta=False)
+        password = self.ref(outline, 'textbox "Account password"')
+        for char in 'hunter2':
+            pressed = heard(self.ok('press', element=password, key=char, actor='ben', **keys))
+            self.assertEqual(pressed['message'], 'Pressed a key in a secret field', pressed)
+        for char in '-secret':
+            pressed = heard(self.ok('press', key=char, actor='ben', **keys))
+            self.assertEqual(pressed['message'], 'Pressed a key in a secret field', pressed)
+        # A key that writes nothing is named, and so is one written elsewhere.
+        self.assertEqual(heard(self.ok('press', key='End', actor='ben', **keys))['message'], 'Pressed End')
+        note = self.ref(outline, 'textbox "Delivery note"')
+        self.assertEqual(heard(self.ok('press', element=note, key='x', actor='ben', **keys))['message'], 'Pressed x')
+        # A form's answers by name place no secret, and say so of each.
+        answered = heard(self.ok('fill_form', form='form1', actor='ada',
+                                 answers={'Delivery note': 'Ring twice', 'Card number': 'card-4000056655665556'}))
+        self.assertEqual({result['name']: result.get('code') for result in answered['data']['results']},
+                         {'Delivery note': None, 'Card number': 'secret_field'})
+        # What the other actor did meanwhile is told with that answer, and
+        # says no more of its keys than the record does.
+        self.assertEqual(([other['message'] for other in answered['others']], answered['others_earlier']),
+                         (['Pressed a key in a secret field'] * 6 + ['Pressed End', 'Pressed x'], 8))
+        # The page did receive every one of them.
+        held = json.loads(self.main_world(
+            'JSON.stringify(Object.fromEntries([...document.querySelectorAll("input")].map(i => [i.name, i.value])))'))
+        self.assertEqual(held, {'card': 'card-4111111111111111', 'csc': 'csc-737-x', 'pass': 'hunter2-secret',
+                                'old': 'correct-horse', 'new': 'battery-staple', 'otp': 'otp-918273-x', 'note': 'Ring twice'})
+        entries = heard(self.ok('ledger', since=0, actor='cy'))['data']['entries']
+        fills = [entry for entry in entries if entry['action'] == 'fill' and entry['ok']]
+        self.assertEqual([entry['target']['name'] for entry in fills], list(filled))
+        for entry in fills:
+            self.assertEqual((entry.get('text'), entry['secret']), (None, True), entry)
+        presses = [entry for entry in entries if entry['action'] == 'press']
+        self.assertEqual([entry['message'] for entry in presses],
+                         ['Pressed a key in a secret field'] * 14 + ['Pressed End', 'Pressed x'])
+        # A key pressed without naming a field is set down with the field
+        # that had the keyboard.
+        self.assertEqual([entry['target'] for entry in presses[:15]], [{'role': 'textbox', 'name': 'Account password'}] * 15)
+        self.assertEqual(entries[-1]['answers'], [{'name': 'Delivery note', 'value': 'Ring twice'}])
+        # Every read says a secret is set, by its length alone.
+        review = heard(self.ok('fields', actor='rev'))
+        fields = {field['name']: field for field in review['data']['fields']}
+        self.assertEqual((fields['Account password']['value'], fields['Code we sent you']['value'], fields['Delivery note']['value']),
+                         ('<14 characters hidden>', '<12 characters hidden>', 'Ring twice'))
+        self.assertEqual(fields['Account password']['set']['by'], 'ben')
+        asked = {field['name']: field['kind'] for field in heard(self.ok('forms'))['data']['forms'][0]['fields']}
+        self.assertEqual(asked, {'Card number': 'secret', 'Security code': 'secret', 'Account password': 'secret',
+                                 'Old password': 'secret', 'New password': 'secret', 'Code we sent you': 'secret',
+                                 'Delivery note': 'text'})
+        self.assertEqual(heard(self.ok('search', text='hunter'))['data']['total'], 0)
+        # A page that shows a password on request turns its field into plain
+        # text: what it holds is no less a secret.
+        self.main_world('(document.querySelector("[name=pass]").type = "text", 1)')
+        self.assertIn('textbox "Account password" [ref=' + password + '] value=<14 characters hidden>',
+                      heard(self.ok('outline', actor='rev'))['outline'])
+        everything = json.dumps(said)
+        for text in list(filled.values()) + ['hunter2', '-secret', 'card-4000056655665556']:
+            self.assertNotIn(text, everything)
 
     def test_outline_lists_structure_with_refs_and_hides_secrets(self):
         self.h.navigate(self.url + '/form')

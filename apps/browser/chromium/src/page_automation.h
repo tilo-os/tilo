@@ -444,6 +444,14 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // The place this action takes in the tab's record when it operates the
     // page; a read takes none.
     uint64_t seq=0;
+    // Whether what the action wrote went into a field that is secret by its
+    // nature, as the page said of the element it acted on, and whether a key
+    // went where the page's focus could not be read: neither is set down
+    // with what was written.
+    bool secret=false,unseen=false;
+    // A key pressed without an element: what the page said of where its
+    // focus is, kept while the frames that focus is inside are asked.
+    bool armed=false;CefRefPtr<CefDictionaryValue> arm;
     Pending()=default;
     Pending(int request,uint64_t token,uint64_t navigations,bool retried,CefRefPtr<CefDictionaryValue> command,
       std::string message)
@@ -601,8 +609,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // the page's own frame tree says which document the wheel turns in, and
     // the page then says where to turn it.
     if(pending_ && Action()=="scroll") { Call(Stage::FrameTree,"Page.getFrameTree",nullptr);return; }
-    // A press with no element arms a key: nothing on the page is read first.
-    if(Action()=="press" && !pending_->command->HasKey("element")) { Act(nullptr);return; }
+    // A press with no element is read like any other action first: the
+    // page says where its focus is, so the key's edit is known as this
+    // action's and a key written into a secret is not named.
     // A chooser this page is waiting on is answered with the page's own
     // completion path, so its input and change events are the picker's, and
     // no DOM node has to be reached while that dialog is open.
@@ -1886,7 +1895,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     auto command=CefDictionaryValue::Create();
     const auto action=Action();
     const bool elementless=!pending_->command->HasKey("element");
-    command->SetString("action",action=="click"?"locate":action=="press"?(elementless?"arm":"focus"):action);
+    command->SetString("action",action=="click"?"locate":action=="press"?(elementless?"key_target":"focus"):action);
     command->SetInt("doc",PrivateText()?text_frame_.document:document_);
     if(!PrivateText()) Mark(command);
     if(!PrivateText() && !world_frame_.number.empty()) command->SetString("frame",world_frame_.number);
@@ -2124,7 +2133,16 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // What the page says the action acted on, by the description that still
     // names it once this document's refs are gone: kept for the tab's record.
     if(value && value->GetType("target")==VTYPE_DICTIONARY) pending_->target=value->GetDictionary("target")->Copy(false);
+    // Whether that element is a secret by its nature: what was written into
+    // one is kept out of the record whatever the caller said of its text.
+    if(value && value->GetType("secret")==VTYPE_BOOL && value->GetBool("secret")) pending_->secret=true;
     Adopt(value);
+    // A key pressed without an element goes where the page's focus is, and
+    // focus inside a frame is that frame's own to say.
+    if(action=="press" && value && value->GetType("framed")==VTYPE_STRING && !pending_->armed) {
+      pending_->armed=true;pending_->arm=value->Copy(false);
+      KeyInFrame(Text(value,"framed"),0);return;
+    }
     // The address of the frame document the action ran in, for the record.
     if(value && value->GetType("document_url")==VTYPE_STRING) pending_->frame_url=Clip(value->GetString("document_url").ToString(),300);
     if(action=="scroll") { ScrollTurn(value);return; }
@@ -2207,7 +2225,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       for(const char* flag:{"ctrl","shift","alt","meta"}) key->SetBool(flag,pending_->command->GetBool(flag));
       key_(key);
     }
-    if(action=="press") pending_->message="Pressed "+Chord();
+    if(action=="press") pending_->message=Pressed();
     else if(action!="click") pending_->message=Text(value,"message");
     else pending_->message="Clicked "+Text(pending_->command,"element");
     // Answers once the page has handled the input: see `fence` in page_automation.js.
@@ -2504,6 +2522,37 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     seen=std::max(seen,seq);
     if(seen_.size()>kMaxActors) seen_.erase(seen_.begin()->first==actor?std::next(seen_.begin()):seen_.begin());
   }
+  // What a press says of itself, in its answer and in the tab's record. A
+  // key that writes its character into a secret field is not named, and nor
+  // is one that went where the engine could not read what it was written
+  // into: the keys of a password are the password.
+  std::string Pressed() const {
+    const auto key=pending_->command->GetString("key").ToString();
+    const bool writes=key.size()==1 && !tilo::NamedKeyMapping(key);
+    if(writes && pending_->secret) return "Pressed a key in a secret field";
+    if(writes && pending_->unseen) return "Pressed a key in a frame whose focus could not be read";
+    return "Pressed "+Chord();
+  }
+  // A key pressed without naming an element goes where the page's focus is.
+  // Focus inside a frame is that frame's own to say: its document is asked
+  // where the key goes, and a frame inside it in turn. The frame hears that
+  // the action began, so the key's edit is the action's there too. A frame
+  // that cannot be asked leaves the key's place unseen.
+  void KeyInFrame(const std::string& ref,int depth) {
+    if(ref.empty() || depth>=kKeyFrameDepth || !docs_.count(RefDocument(ref))) { pending_->unseen=true;KeyPlaced();return; }
+    const int handle=HandleOf(ref);
+    auto command=CefDictionaryValue::Create();command->SetString("action","key_target");
+    AskFrame(handle,command,[this,handle,depth](CefRefPtr<CefDictionaryValue> said) {
+      if(!said || said->GetType("ok")!=VTYPE_BOOL || !said->GetBool("ok")) { pending_->unseen=true;KeyPlaced();return; }
+      pending_->frame=handle;
+      if(said->GetType("document_url")==VTYPE_STRING) pending_->frame_url=Clip(said->GetString("document_url").ToString(),300);
+      if(said->GetType("framed")==VTYPE_STRING) { KeyInFrame(said->GetString("framed").ToString(),depth+1);return; }
+      if(said->GetType("target")==VTYPE_DICTIONARY) pending_->target=said->GetDictionary("target")->Copy(false);
+      if(said->GetType("secret")==VTYPE_BOOL && said->GetBool("secret")) pending_->secret=true;
+      KeyPlaced();
+    });
+  }
+  void KeyPlaced() { auto arm=pending_->arm;pending_->arm=nullptr;Act(arm); }
   // An operating action is set down in the tab's record as it ends, and
   // every answer to a named actor says what the other actors did in the tab
   // since that actor last heard from it: the page an agent acts on next may
@@ -2536,7 +2585,10 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       }
       // What was written is part of the record. A secret never is, and nor
       // is text the page did not take.
-      const bool secret=asked->GetType("secret")==VTYPE_BOOL && asked->GetBool("secret");
+      // A secret is one by what the field is, as the page said of the
+      // element the action acted on, or because the caller said so.
+      const bool secret=pending_->secret || (asked->GetType("secret")==VTYPE_BOOL && asked->GetBool("secret"));
+      if(secret) entry->SetBool("secret",true);
       if(ok && !secret && asked->GetType("text")==VTYPE_STRING) entry->SetString("text",Clip(asked->GetString("text").ToString(),kMaxLedgerText));
       if(ok && asked->GetType("values")==VTYPE_LIST) entry->SetList("values",asked->GetList("values")->Copy());
       // A form's answers as the page placed them, by the names it asked.
@@ -2630,6 +2682,8 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   uint64_t acted_seq_=0,ledger_dropped_=0;
   std::map<std::string,uint64_t> seen_;
   static constexpr size_t kMaxLedger=1000,kMaxLedgerRead=200,kMaxOthers=8,kMaxActors=64,kMaxLedgerText=200;
+  // How many frames deep a key's focus is followed.
+  static constexpr int kKeyFrameDepth=4;
   int stage_=static_cast<int>(Stage::FrameTree);int call_=0;
   // The stage that asked for that call, which its answer is answered in.
   int stage_at_call_=static_cast<int>(Stage::FrameTree);

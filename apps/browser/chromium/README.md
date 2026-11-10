@@ -364,8 +364,8 @@ never resolves in a later document or another tab. Nothing a page action kept
 of a document (its script world, its refs, its frames) outlives it: when the
 page commits a new document all of it is dropped, so a script context of the
 document before is never taken for one of the next, whose renderer may be
-another that numbers its contexts from the start again. Password and card-number
-values are reported by length only. Clicks and keys go through CEF's own input
+another that numbers its contexts from the start again. What a secret field
+holds is reported by its length only. Clicks and keys go through CEF's own input
 path, so pages see trusted events with user activation; fill, select and submit
 edit the DOM and dispatch the page's input, change and submit events.
 
@@ -509,7 +509,8 @@ may act and passes the name of the invoker it admitted.
   by then), `frame_name` (the title or name the page gave it) and `frame_url`
   (the origin and path of the frame's own document), which still say which
   frame it was once the number names nothing.
-  A secret fill's text is never recorded, and nor is text the page refused.
+  What was written into a secret field is never recorded, whatever wrote it
+  (the entry then carries `secret: true`), and nor is text the page refused.
   Reads take no place in it. `page` with `action: "ledger"` and `since`
   answers with the entries after that place, `next`, `more`, `dropped`, the
   action `running` and how many are `waiting`. It reads nothing of the page,
@@ -517,6 +518,24 @@ may act and passes the name of the invoker it admitted.
   this host is carrying out now: a read that is running, or an action its
   caller has not sent yet, shows as neither. The record holds the newest 1000
   actions of the tab and lasts as long as the tab.
+- **No secret is in the record.** A field is secret by its nature: a password
+  field, a field whose `autocomplete` says it holds a card detail (`cc-…`), a
+  current or new password or a one-time code, and a field the page draws as
+  dots (`-webkit-text-security`). A field that was one stays one for as long
+  as its document lives, so a page that shows a password on request (its
+  field turned into plain text) is still read by length only. What is written
+  into such a field is in the page and nowhere else. Its record entry carries
+  `secret: true` and no `text`, whether or not the caller marked the fill
+  `secret`. A `press` that writes a character there answers `Pressed a key in
+  a secret field` and is set down so, in the record and in every `others`
+  note. `fill_form` does not place it (`secret_field`). A key pressed without
+  an element goes where the page's focus is: the page says which field that
+  is (the entry's `target`), and when focus is inside a frame, the frame's
+  document is asked in turn; a character written where the focus could not
+  be read is not named either. Every read (`outline`, `fields`, `forms`,
+  `search`) says of a secret that it is set, by its length. A fill still
+  needs `secret: true` to write into one (`secret_field` otherwise): that is
+  the caller's consent, and not what keeps the text out of the record.
 - **An actor is told what the others did.** An answer to a named actor
   carries `others`: the newest eight record entries of other actors since
   that actor last heard from the tab (`others_earlier` counts older ones). An
