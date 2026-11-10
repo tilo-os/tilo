@@ -71,8 +71,8 @@ fn hdr10_pq() -> Colorimetry {
     }
 }
 
-/// A share of `window` that encodes nothing: the colour is decided before any byte reaches an
-/// encoder, so no encoder is needed to see what it announces.
+/// A share of `window` as its app starts it: the colour is decided before any byte reaches an
+/// encoder, so nothing here needs a frame to see what it announces.
 fn shared(compositor: &mut Compositor, window: u64) -> Arc<SharedFlatpakSession> {
     let config = FlatpakShareConfig {
         max_bitrate_kbps: 8000,
@@ -81,8 +81,8 @@ fn shared(compositor: &mut Compositor, window: u64) -> Arc<SharedFlatpakSession>
         hdr: None,
     };
     let session = Arc::new(
-        SharedFlatpakSession::start_paint(1, "colour", window, 200, 100, &config)
-            .expect("a paint share needs no encoder"),
+        SharedFlatpakSession::start(1, "colour", window, 200, 100, &config)
+            .expect("a share of the window"),
     );
     compositor.share_window(window, Arc::new(Tells(Arc::clone(&session))));
     session
