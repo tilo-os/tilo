@@ -38,30 +38,34 @@ impl crate::Shared {
             return;
         }
         self.membership_fed.set(Some(revision));
-        let mut tree = self.handle.read(Clone::clone);
-        let mut changed = false;
-        for workspace in &mut tree.workspaces {
-            let Ok(policy) = engine.policy(&workspace.id().to_string()) else {
-                // A workspace whose governance this device does not hold keeps the people and bots
-                // the desk has of it.
-                continue;
-            };
-            changed |= membership::project(workspace, &policy);
-            let Ok(bots) = engine.owner().with_current(workspace.id(), |view| {
-                Ok(view.peer().governance().workspace_bots())
-            }) else {
-                continue;
-            };
-            if workspace.bots != bots {
-                workspace.bots = bots;
-                changed = true;
+        let desk = Desk(&self.handle);
+        let projected = desk.edit(&mut |workspaces| {
+            let mut changed = false;
+            for workspace in workspaces {
+                let Ok(policy) = engine.policy(&workspace.id().to_string()) else {
+                    // A workspace whose governance this device does not hold keeps the people and
+                    // bots the desk has of it.
+                    continue;
+                };
+                changed |= membership::project(workspace, &policy);
+                let Ok(bots) = engine.owner().with_current(workspace.id(), |view| {
+                    Ok(view.peer().governance().workspace_bots())
+                }) else {
+                    continue;
+                };
+                if workspace.bots != bots {
+                    workspace.bots = bots;
+                    changed = true;
+                }
             }
-        }
-        if changed {
-            self.handle.replace_tree(tree);
+            Ok(changed)
+        });
+        if let Err(reason) = projected {
+            tracing::warn!(%reason, "the desk's people were not projected");
         }
     }
 }
+
 #[cfg(test)]
 #[path = "membership_tests.rs"]
 mod tests;

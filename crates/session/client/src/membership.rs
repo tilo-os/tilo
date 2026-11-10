@@ -263,6 +263,7 @@ fn author_on_desk(workspace: &mut Workspace, app: &str, now: u64) -> Result<bool
         .map_err(|refusal| refusal.to_string())?;
     Ok(true)
 }
+
 /// Write the people `policy` — the workspace's governance — names into `workspace` : the part each
 /// of them takes there, when each was admitted, the owner aside, whom the desk's policy names on
 /// its own, the agents it admits, each with the grants governance gave it, and the apps it lets
