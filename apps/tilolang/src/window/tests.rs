@@ -2903,8 +2903,8 @@ fn find_in_an_open_note_counts_its_matches_and_replaces_them_all_in_one_change()
     let (mut driver, in_place) = workspace.window_search();
     assert_eq!(
         in_place,
-        ui::widget::InPlace::Document,
-        "a note stands in the window: the search finds in it, not in the list beside it"
+        ui::widget::InPlace::Query,
+        "the notebook's frame narrows its tree, and the note beside it is found in too"
     );
     let find = |workspace: &mut Workspace, driver: &mut ui::widget::SearchDriver, step| {
         driver.drive(

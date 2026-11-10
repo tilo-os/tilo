@@ -300,6 +300,9 @@ pub struct ListRowFace<'a> {
     /// The title reads in the weaker ink, as a subordinate row of a tree does: not struck
     /// through, just quiet.
     quiet: bool,
+    /// The title reads in the quietest ink: a row a window shows for where another stands, as
+    /// a tree narrowed to a search shows the branches to what it found.
+    faint: bool,
     disclosure: bool,
     /// How far the chevron has turned towards pointing down, 0 to 1: a row
     /// that opens in place rather than onto a page.
@@ -401,6 +404,7 @@ impl<'a> ListRowFace<'a> {
             change: None,
             struck: false,
             quiet: false,
+            faint: false,
             disclosure: false,
             disclosure_turn: 0.0,
             checked: None,
@@ -697,6 +701,14 @@ impl<'a> ListRowFace<'a> {
     #[must_use]
     pub fn quiet(mut self, quiet: bool) -> Self {
         self.quiet = quiet;
+        self
+    }
+
+    /// The row reads as one a window shows for where another stands: its title in the
+    /// quietest ink, under a match a search keeps in its place.
+    #[must_use]
+    pub fn faint(mut self, faint: bool) -> Self {
+        self.faint = faint;
         self
     }
 
@@ -1194,6 +1206,8 @@ pub struct ListRow {
     struck: bool,
     /// Its title reads in the weaker ink ([`Self::quiet`]).
     quiet: bool,
+    /// Its title reads in the quietest ink ([`Self::faint`]).
+    faint: bool,
     disclosure: bool,
     checked: Option<bool>,
     emphasized: bool,
@@ -1307,6 +1321,7 @@ impl ListRow {
             change: None,
             struck: false,
             quiet: false,
+            faint: false,
             disclosure: false,
             checked: None,
             emphasized: false,
@@ -1755,6 +1770,13 @@ impl ListRow {
     #[must_use]
     pub fn quiet(mut self) -> Self {
         self.quiet = true;
+        self
+    }
+
+    /// The row reads as one a window shows for where another stands ([`ListRowFace::faint`]).
+    #[must_use]
+    pub fn faint(mut self) -> Self {
+        self.faint = true;
         self
     }
 
@@ -2400,7 +2422,7 @@ impl ListRow {
         face = face.struck(
             self.struck || matches!(&self.leading, Some(Leading::Checkbox { checked: true, .. })),
         );
-        face = face.quiet(self.quiet);
+        face = face.quiet(self.quiet).faint(self.faint);
         if let Some(change) = &self.change {
             face = face.change(RowChange {
                 identity: &change.identity,

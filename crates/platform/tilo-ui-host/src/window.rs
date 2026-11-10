@@ -2531,21 +2531,11 @@ impl AppWindow {
             .is_some_and(|shell| shell.events.contains_key(SEARCH))
     }
 
-    /// Whether a view bound a document in this window: a window that lists and shows one is
-    /// read in the document, as an app's own widgets are searched
-    /// ([`ui::widget::InPlace::of`]).
-    fn shows_document(&self) -> bool {
-        fn bound_editor(node: &UiNode) -> bool {
-            let document = node.kind == crate::adapter::kind("BlockEditor");
-            (document && node.binding.is_some()) || node.children.iter().any(bound_editor)
-        }
-        self.composed().is_some_and(bound_editor)
-    }
-
-    /// How many rows the window's list shows now: the rows of the first list its views show.
+    /// How many rows the window's list shows now: the rows of the first list its views show,
+    /// a tree's rows counting as a list's do.
     fn shown_rows(&self) -> Option<usize> {
         fn first_list(node: &UiNode) -> Option<&str> {
-            if node.kind == crate::adapter::kind("VirtualList") {
+            if crate::is_virtual(&node.kind) {
                 return Some(&node.key);
             }
             node.children.iter().find_map(first_list)
@@ -2556,10 +2546,10 @@ impl AppWindow {
         Some(len)
     }
 
-    /// Whether the window's search narrows what the frame lists: the frame says where it
-    /// goes, and no document stands in the window for it to find in instead.
+    /// Whether the window's search narrows what the frame lists: the frame says where it goes.
+    /// A document standing in the window is found in as well, so the one search does both.
     fn offers_search(&self) -> bool {
-        self.searches() && !self.shows_document()
+        self.searches()
     }
 
     /// Type `text` into the window's search: the frame narrows what it lists, as a place

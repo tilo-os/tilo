@@ -315,13 +315,19 @@ view outline<T>(
 /// cost nothing: the tree builds the rows the window shows, of ten notes as of ten thousand.
 /// Each row says who else is at its item, as a list of them does (`std.list`).
 ///
+/// `found` is what the window's search holds: the tree then shows the items the store finds for
+/// those words, each with the items it stands under for context, in the quietest ink, and opens
+/// the branches to them. Nothing found says so in the place of the tree. Empty, the tree is the
+/// whole collection again, with the branches a person had opened as they left them.
+///
 /// The row chosen is the one the window has open (`opened`), and the tree keeps which branches a
 /// person opened. A move — a drag before, after or inside a row, `Tab` and `Shift-Tab`, `Alt-Up`
 /// and `Alt-Down` — is reported with the item it lands under and the item it lands before, and
 /// `place` puts it in the one place they name: `(moved, .none, .none)` is the end of the top
 /// level, `(moved, x, .none)` the end of `x`'s own, and `(moved, .none, x)` where `x` stands.
 /// A move after a row and everything under it is `place_after(moved, x)`: what stands after
-/// them is a row the tree may not have built.
+/// them is a row the tree may not have built. A tree a search narrowed moves nothing: the rows
+/// it shows are not its order.
 ///
 /// `add` draws the button a row shows over its trailing corner while it is hovered or holds
 /// focus, so the tree makes what a person needs beside where it will stand. The tree is named
@@ -337,46 +343,101 @@ template view tree_rows<T>(
     place: (T, Option<T>, Option<T>) -> Action,
     place_after: (T, T) -> Action,
     add: (T) -> View,
+    found: Text = "",
+    nothing_found: Text = phrase("tilolang-nothing-found"),
     fill: Bool = true,
     row: (T) -> View,
 ) {
-    ui.TreeView(
-        name: name,
-        fill: fill,
-        reorder: true,
-        tab_indents: true,
-        hide_root: true,
-        single_click: true,
-        selection_follows_focus: true,
-        selection: if let x = opened { [x] },
-    ) {
-        on select(x: T): set(opened, x)
-        on activate(x: T): set(opened, x)
-        on drop(moved: T): place(moved, .none, .none)
-        for x in items {
-            // The item just before this one under the same parent: the place the actions offered
-            // on it get and the row `Tab` indents it under, whatever the window shows between
-            // them. The store's index answers the run of `p`'s own, never a walk of the rows
-            // before it: none for a first child, which costs its own row and no other.
-            let p = parent(x)
-            let above: Option<T> = items.filter(y -> y.parent == p).previous(x)
-            ui.TreeViewNode(
-                x,
-                label(x),
-                parent: p,
-                presence: lenses(x).find(l -> not l.mine)?.who,
-                depth: depth(x),
-                branch: branch(x),
-                above: above,
-            ) {
-                on drop(moved: T): place(moved, .none, x)
-                on into(moved: T): place(moved, x, .none)
-                on after(moved: T): place_after(moved, x)
-                toolbar: {
-                    add(x)
+    let searching = not found.is_empty()
+    // What the search found, the rows it shows and the branches it opens: the store's own answer
+    // for the words, and nothing while the tree is the whole collection.
+    let hits: List<T> = if searching { items.matching(found).flat_map(h -> [h]) } else { [] }
+    // Each match, and the items it stands under from the top of the tree down, in the order the
+    // tree gives them: a row once, however many matches stand under it. Each match costs the
+    // items above it, never the items beside it.
+    let shown: List<T> = if searching {
+        hits.flat_map(
+            h -> [items.ancestors(h, .parent).sort_by(a -> depth(a) ?? 0), [h]]
+                .flat_map(rows -> rows),
+        )
+    } else { [] }
+    // The branches a search opens: every item a match stands under, so each match is in sight.
+    let open_branches: Option<List<T>> = if searching {
+        .some(hits.flat_map(h -> items.ancestors(h, .parent)))
+    } else { .none }
+    let matched: Option<List<T>> = if searching { .some(hits) } else { .none }
+    if searching and shown.is_empty() {
+        ui.EmptyState(nothing_found, inline: true)
+    } else {
+        ui.TreeView(
+            name: name,
+            fill: fill,
+            reorder: not searching,
+            tab_indents: true,
+            hide_root: true,
+            single_click: true,
+            selection_follows_focus: true,
+            selection: if let x = opened { [x] },
+            expanded: if let rows = open_branches { rows },
+            matching: if let rows = matched { rows },
+        ) {
+            on select(x: T): set(opened, x)
+            on activate(x: T): set(opened, x)
+            on drop(moved: T): place(moved, .none, .none)
+            if searching {
+                // The matches and the rows they stand under: the rows the search shows, each
+                // one a row of the tree in the place it keeps.
+                for x in shown {
+                    let p = parent(x)
+                    let above: Option<T> = items.filter(y -> y.parent == p).previous(x)
+                    ui.TreeViewNode(
+                        x,
+                        label(x),
+                        parent: p,
+                        presence: lenses(x).find(l -> not l.mine)?.who,
+                        depth: depth(x),
+                        branch: branch(x),
+                        above: above,
+                    ) {
+                        on drop(moved: T): place(moved, .none, x)
+                        on into(moved: T): place(moved, x, .none)
+                        on after(moved: T): place_after(moved, x)
+                        toolbar: {
+                            add(x)
+                        }
+                        row: {
+                            row(x)
+                        }
+                    }
                 }
-                row: {
-                    row(x)
+            } else {
+                for x in items {
+                    // The item just before this one under the same parent: the place the actions
+                    // offered on it get and the row `Tab` indents it under, whatever the window
+                    // shows between them. The store's index answers the run of `p`'s own, never a
+                    // walk of the rows before it: none for a first child, which costs its own row
+                    // and no other.
+                    let p = parent(x)
+                    let above: Option<T> = items.filter(y -> y.parent == p).previous(x)
+                    ui.TreeViewNode(
+                        x,
+                        label(x),
+                        parent: p,
+                        presence: lenses(x).find(l -> not l.mine)?.who,
+                        depth: depth(x),
+                        branch: branch(x),
+                        above: above,
+                    ) {
+                        on drop(moved: T): place(moved, .none, x)
+                        on into(moved: T): place(moved, x, .none)
+                        on after(moved: T): place_after(moved, x)
+                        toolbar: {
+                            add(x)
+                        }
+                        row: {
+                            row(x)
+                        }
+                    }
                 }
             }
         }
@@ -393,6 +454,11 @@ template view tree_rows<T>(
 /// pinned — with the filter's own words over them, standing only while it holds anything.
 /// Choosing one opens it beside as any row of the tree does. A window whose tree holds nothing
 /// says `empty` in its sidebar, and one with nothing open says so beside it.
+///
+/// The bar's search is the tree's: what is typed narrows it to the items the store finds
+/// (`tree_rows`' `found`), with the items they stand under shown for them, and closing the
+/// search shows the tree as the person had it. The page beside them is found in too, where the
+/// window shows one.
 template view tree<R, T>(
     of: R,
     items: Collection<T>,
@@ -414,19 +480,24 @@ template view tree<R, T>(
     // The item the window opens: the first of the tree until a person chooses another, kept for
     // them alone, as every window keeps what it shows.
     state open_item: Option<T> = items.first()
+    // What the bar's search holds: the tree narrows to the items it finds.
+    state found: Text = ""
     ui.NavShell(
         content_kind: .document,
         sidebar_title: meta(of).title,
         title: if let x = opened { path(x) },
     ) {
+        on search(t: Text): set(found, t)
         sidebar_actions: {
             head
         }
         sidebar: {
             stack {
+                // The shelves a search shows rows of its own in place of: a match stands where
+                // the tree puts it, not again over it.
                 for f in above {
                     let held = items.matching(f)
-                    if not held.is_empty() {
+                    if not held.is_empty() and found.is_empty() {
                         ui.Text(f.label, role: .label, secondary: true)
                         std.tree_rows(
                             f.label,
@@ -459,6 +530,7 @@ template view tree<R, T>(
                         place,
                         place_after,
                         add,
+                        found: found,
                     ) { x ->
                         row(x)
                     }

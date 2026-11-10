@@ -5358,7 +5358,16 @@
       "state": [
         {
           "name": "expanded",
-          "doc": "The nodes open now, by the resource each stands for. Given, it is where the view says the tree is; without it the tree keeps what a person opened.",
+          "doc": "The nodes open now, by the resource each stands for. Given, it is where the view says the tree is; without it the tree keeps what a person opened. A view that says it only while it narrows the tree — a search opens the branches to what it found — leaves the person's own folding as it was: what they had opened comes back when the view stops saying it.",
+          "type": {
+            "option": {
+              "list": "resource"
+            }
+          }
+        },
+        {
+          "name": "matching",
+          "doc": "The rows a search found, by the resource each stands for, when the tree shows what the search narrowed it to: the rows the tree shows that are not among them stand for where the found ones are, and read in the quietest ink. None, every row is one the tree shows for itself.",
           "type": {
             "option": {
               "list": "resource"

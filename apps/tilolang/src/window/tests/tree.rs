@@ -134,3 +134,52 @@ impl Workspace {
         ResourceRef::parse_id(field.0, ty).expect("a resource id")
     }
 }
+
+
+// The window's search narrows the tree: the notes the store finds, with the notes they stand
+// under shown for them, and the tree as the person left it when the search clears.
+#[test]
+fn typing_in_the_window_s_search_narrows_a_tree_to_what_matches() {
+    let mut workspace = Workspace::staged("notes", "a week of notes");
+    let notebook = workspace.tree_labels();
+    assert!(notebook.len() > 4, "the notebook's tree: {notebook:?}");
+    let (mut driver, in_place) = workspace.window_search();
+    assert_eq!(
+        in_place,
+        ui::widget::InPlace::Query,
+        "the frame says where the search goes, so typing narrows the tree in place"
+    );
+    workspace.type_in_search(&mut driver, "Monday");
+    let found = workspace.tree_labels();
+    assert_eq!(
+        found,
+        ["Q3 plan", "Standups", "Monday"],
+        "the note the words name, and the notes it stands under: {found:?}"
+    );
+    assert_eq!(
+        driver.count(),
+        Some(ui::widget::FilterCount::new(3, notebook.len())),
+        "the search says how many rows it left of how many the tree showed"
+    );
+    // A note's body is rich text: the words of one find the note wherever the tree keeps it.
+    workspace.type_in_search(&mut driver, "sync bug");
+    assert_eq!(
+        workspace.tree_labels(),
+        ["Q3 plan", "Standups", "Monday"],
+        "the note whose body says it, with the way to it"
+    );
+    // Closing the search widens the tree again, with the branches the person had opened.
+    driver.drive(
+        &mut workspace.window,
+        "",
+        ui::widget::FindOptions::default(),
+        None,
+        true,
+    );
+    workspace.settle();
+    assert_eq!(
+        workspace.tree_labels(),
+        notebook,
+        "the tree widens back to the notebook's notes"
+    );
+}

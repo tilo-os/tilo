@@ -305,9 +305,18 @@ pub struct TreeViewProps {
     #[component(slot)]
     pub removed: RemovedNodes,
     /// The nodes open now, by the resource each stands for. Given, it is where the view says
-    /// the tree is; without it the tree keeps what a person opened.
+    /// the tree is; without it the tree keeps what a person opened. A view that says it only
+    /// while it narrows the tree — a search opens the branches to what it found — leaves the
+    /// person's own folding as it was: what they had opened comes back when the view stops
+    /// saying it.
     #[component(state)]
     pub expanded: Option<Vec<ResourceId>>,
+    /// The rows a search found, by the resource each stands for, when the tree shows what the
+    /// search narrowed it to: the rows the tree shows that are not among them stand for where
+    /// the found ones are, and read in the quietest ink. None, every row is one the tree shows
+    /// for itself.
+    #[component(state)]
+    pub matching: Option<Vec<ResourceId>>,
     /// The nodes selected, by the resource each stands for.
     #[component(state)]
     pub selection: Option<Vec<ResourceId>>,
@@ -338,6 +347,9 @@ pub struct DescribedTreeView {
     rows: TreeRows,
     /// What the list works out of the rows as it mounts them, and what the person folded.
     marks: Rc<TreeMarks<String>>,
+    /// What the person had folded before the view said where the tree is (`expanded`), while it
+    /// says it: the folding their own, which comes back when the view stops saying it.
+    own_folds: Option<Vec<String>>,
 }
 
 /// The key of the top level: the row of the tree's own name, over the nodes without a parent.
@@ -1292,16 +1304,23 @@ fn row_of(
     key: &str,
     feel: crate::motion::Feel,
     marks: &TreeMarks<String>,
+    matching: Option<&HashSet<String>>,
 ) -> Element {
     let Some(node) = rows.node(key) else {
         return Box::new(ListRow::new(key.to_owned(), ""));
     };
+    // A row the search did not find stands for where one it did stands: shown for it, and read
+    // quieter than the match it leads to.
+    let context = matching.is_some_and(|found| !found.contains(node.item.0.as_str()));
     let key_owned = key.to_owned();
     let folded = marks.is_folded(&key_owned);
     let mut row = ListRow::new(key_owned.clone(), node.label.clone())
         .depth(marks.depth(&key_owned))
         .row_height(TREE_ROW_HEIGHT)
         .with_feel(feel);
+    if context {
+        row = row.faint();
+    }
     if let Some(props) = &node.row {
         // The box leads, and the glyph after it: a task checks off and still says what it is.
         if let Some(checked) = props.checkbox {
@@ -1417,6 +1436,7 @@ impl DescribedTreeView {
             nodes,
             removed,
             expanded,
+            matching,
             selection,
             motion,
             select,
@@ -1439,10 +1459,13 @@ impl DescribedTreeView {
             &marks,
         );
         let row_marks = Rc::clone(&marks);
+        // What the search found, as the rows' own keys: a row reads whether it is one of them.
+        let found: Option<Rc<HashSet<String>>> =
+            matching.map(|found| Rc::new(found.iter().map(|id| id.0.clone()).collect()));
         let mut list = VirtualList::with_selection_delegate(
             rows.clone(),
             TREE_ROW_HEIGHT,
-            move |rows, _, key, _| row_of(rows, key, feel, &row_marks),
+            move |rows, _, key, _| row_of(rows, key, feel, &row_marks, found.as_deref()),
         )
         .with_tree(Rc::clone(&marks))
         .with_id(key)
@@ -1529,6 +1552,7 @@ impl DescribedTreeView {
             list,
             rows,
             marks,
+            own_folds: None,
         }
     }
 }
@@ -1544,6 +1568,10 @@ impl Described for DescribedTreeView {
     /// what they selected stays selected, the row they were on stays focused and where they
     /// were in it stays. A change of a node's label or place is a row the list draws, so
     /// nothing narrower saves the rebuild.
+    ///
+    /// A view that says where the tree is (`expanded`) shows the branches it says open while it
+    /// says it: what the person had folded before is kept aside, and comes back when the view
+    /// stops saying it, as a search that widens again shows the tree the person left.
     fn set_props(&mut self, props: TreeViewProps) -> bool {
         let motion = props.motion;
         let folded = self.marks.folded_keys();
@@ -1551,11 +1579,18 @@ impl Described for DescribedTreeView {
         let focused = self.list.focused_key().cloned();
         let scroll = self.list.scroll_offset();
         let keep_folded = props.expanded.is_none();
+        let said = props.expanded.is_some();
+        // What the person had folded before a view said where the tree is: kept across every
+        // build that says it, and put back by the first that does not.
+        let kept = self.own_folds.take();
         let keep_selected = props.selection.is_none();
         let key = self.key.clone();
         *self = Self::build(&key, props);
-        if keep_folded {
-            self.marks.restore_folded(folded);
+        match (said, kept) {
+            (true, kept) => self.own_folds = Some(kept.unwrap_or(folded)),
+            (false, Some(kept)) => self.marks.restore_folded(kept),
+            (false, None) if keep_folded => self.marks.restore_folded(folded),
+            (false, None) => {}
         }
         if keep_selected {
             let mut chosen = KeySelection::new();
@@ -1757,6 +1792,51 @@ mod tests {
             labels,
             [("a".to_owned(), None), ("b".to_owned(), None),],
             "the node's rows are the nodes, not the tree's name"
+        );
+    }
+
+    /// A view that says which branches stand open — a search opens the way to what it found —
+    /// says nothing of the person's own folding: what they had opened is open again when the
+    /// view stops saying it.
+    #[test]
+    fn a_tree_the_view_narrows_keeps_the_person_s_own_folding() {
+        let queue = crate::Intents::default();
+        let nodes = || {
+            vec![
+                node("plan", None, true, &queue),
+                node("standups", Some("plan"), true, &queue),
+                node("monday", Some("standups"), false, &queue),
+                node("home", None, true, &queue),
+                node("groceries", Some("home"), false, &queue),
+            ]
+        };
+        let props = |expanded: Option<Vec<ResourceId>>| TreeViewProps {
+            hide_root: true,
+            nodes: nodes().into(),
+            expanded,
+            ..TreeViewProps::default()
+        };
+        // The person leaves "home" folded and reads the plan.
+        let mut tree = DescribedTreeView::from_props("tree", props(None));
+        tree.marks.fold(&"home".to_owned(), true);
+        assert!(
+            tree.is_open("plan"),
+            "nothing is folded but what the person folded"
+        );
+        // A search opens the way to the match, and the rest stands as it finds it.
+        let found = vec![ResourceId("plan".into()), ResourceId("standups".into())];
+        tree.set_props(props(Some(found)));
+        assert!(tree.is_open("plan") && tree.is_open("standups"));
+        assert!(
+            !tree.is_open("home"),
+            "a branch the search does not open stands folded"
+        );
+        // Clearing the search shows the tree the person left: their folding, not the search's.
+        tree.set_props(props(None));
+        assert!(tree.is_open("plan"), "the branch they were reading is open");
+        assert!(
+            !tree.is_open("home"),
+            "the branch they had folded is still folded, not the search's folding",
         );
     }
 

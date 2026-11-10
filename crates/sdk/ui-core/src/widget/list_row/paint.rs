@@ -309,7 +309,11 @@ impl ListRowFace<'_> {
             }
             // A removed item's title is struck through, in the weaker ink, as an item nobody
             // has named yet shows its placeholder; a quiet row reads in the weaker ink alone.
-            let ink = if self.struck || self.quiet || self.untitled() {
+            let ink = if self.struck || self.untitled() {
+                theme.text_dim
+            } else if self.faint {
+                theme.text_tertiary
+            } else if self.quiet {
                 theme.text_dim
             } else {
                 theme.text_primary
