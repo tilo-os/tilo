@@ -123,6 +123,8 @@ struct Pinned {
     pointer: Point,
     /// The screen's room, as the roster last laid it out: where a drop snaps.
     work: Rect,
+    /// It drew at another size than the slot it was placed in: the next frame places it again.
+    remeasured: bool,
 }
 
 impl Pinned {
@@ -143,12 +145,14 @@ impl Pinned {
             settle: MotionValue::new(Point::ZERO),
             pointer: Point::ZERO,
             work: Rect::ZERO,
+            remeasured: false,
         }
     }
 
     /// Whether anything of it is moving: arriving, leaving, sprung to its slot, or dragged.
     fn is_moving(&self, now: ui::time::Instant) -> bool {
-        self.arriving
+        self.remeasured
+            || self.arriving
             || self.gone
             || self.drag.is_some_and(|drag| drag.dragging)
             || self.shown.is_moving(now)
@@ -220,6 +224,14 @@ pub struct People {
 
 /// Keep the roster on screen: it waits at the edge the person last chose, and what they see from
 /// then on is the panel, not the dropdown the faces open.
+/// Where the pointer is in the logical pixels the roster is laid out and pressed in: a window
+/// event carries physical ones, which on a screen at twice the scale put every press twice as far
+/// from the corner as the control it was made on.
+fn logical(position: ui::winit::dpi::PhysicalPosition<f64>, scale: f64) -> Point {
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    Point::new(position.x / scale, position.y / scale)
+}
+
 fn pin_roster(shown: &mut Shown, open: &Cell<bool>) {
     if shown.pinned.is_some() {
         return;
@@ -1239,6 +1251,10 @@ impl Panel {
         // by that, and a press on its header drags the panel the person sees.
         let drawn = shown.overlay.panel_rect();
         if let Some(pin) = shown.pinned.as_mut() {
+            // Drawn at another size than its slot was made for, it is placed again by the size it
+            // drew at on the next frame, which it asks for now: otherwise it stands where the guess
+            // put it until the next input, and that input's own frame moves it from under the press.
+            pin.remeasured = drawn.size() != pin.panel.size();
             pin.panel = drawn;
         }
     }
@@ -1366,6 +1382,7 @@ impl Panel {
             at = Point::new(at.x + shift.x, at.y + shift.y);
         }
         pin.panel = rest.with_origin(at);
+        pin.remeasured = false;
     }
 
     /// What a drag of the pinned roster asks: the pointer moved, a press started on it, or it was
@@ -1381,7 +1398,7 @@ impl Panel {
             };
             match event {
                 WindowEvent::CursorMoved { position, .. } => {
-                    pin.pointer = Point::new(position.x, position.y);
+                    pin.pointer = logical(*position, ctx.scale_factor);
                     if let Some(drag) = &mut pin.drag {
                         handled = drag.moved(pin.pointer);
                     }
@@ -1580,7 +1597,7 @@ impl Widget for Panel {
         // Where the pointer is, as the panel draws by it: under the pointer of the bar's faces, the
         // banner's Stop and every other person's name.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.shown.borrow_mut().cursor = Some(Point::new(position.x, position.y));
+            self.shown.borrow_mut().cursor = Some(logical(*position, ctx.scale_factor));
         }
         if matches!(event, WindowEvent::CursorLeft { .. }) {
             self.shown.borrow_mut().cursor = None;
@@ -1709,3 +1726,7 @@ fn roster_place(area: Rect, theme: &Theme) -> Rect {
         area.y0 + f64::from(tilo_desktop::topbar::topbar_height(theme)) + f64::from(spacing.s2);
     Rect::new(right - width, top, right, top)
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "people_scale_tests.rs"]
+mod scale_tests;
