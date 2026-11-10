@@ -26,6 +26,8 @@ impl BlockEditor {
         let key = self.presence_key_for(&b.id);
         let line = &b.line;
         let brect = line.get_rect();
+        // A caret's name chip ends before the text's own right edge.
+        let text_right = brect.x1 - line.text_inset(ctx.theme);
         let _tr_rect = {
             let p0 = transformed(ctx.transform, Point::new(brect.x0, brect.y0));
             let p1 = transformed(ctx.transform, Point::new(brect.x1, brect.y1));
@@ -104,7 +106,8 @@ impl BlockEditor {
                     self.blocks
                         .first()
                         .map_or(brect.y0, |first| first.line.get_rect().y0),
-                ),
+                )
+                .among(self.ink_around(i, ctx.theme), text_right),
             );
         }
         if let Some(list) = ctx.presence.carets.get(&key) {
@@ -126,7 +129,8 @@ impl BlockEditor {
                     crate::presence::LabeledCaret::within(
                         line.caret_rect(ctx.theme, *byte_pos),
                         top,
-                    ),
+                    )
+                    .among(self.ink_around(i, ctx.theme), text_right),
                 );
             }
         }
@@ -161,6 +165,22 @@ impl BlockEditor {
                 line.selection_rect(ctx.theme, start, end),
             );
         }
+    }
+}
+
+impl BlockEditor {
+    /// Where block `i` and the blocks either side of it have glyphs, one rect
+    /// per visual line: what a peer's caret chip in block `i` must not cover.
+    fn ink_around(&self, i: usize, theme: &crate::theme::Theme) -> Vec<Rect> {
+        let last = self.blocks.len().saturating_sub(1);
+        (i.saturating_sub(1)..=(i + 1).min(last))
+            .filter_map(|j| self.blocks.get(j))
+            .flat_map(|block| {
+                let line = &block.line;
+                line.mark_rects(theme, 0..line.value().len())
+            })
+            .filter(|glyphs| glyphs.width() > 0.0 && glyphs.height() > 0.0)
+            .collect()
     }
 }
 

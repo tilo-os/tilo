@@ -7,14 +7,22 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use vello::kurbo::Rect;
 
-/// A peer's caret to label, and the highest its name chip may reach.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// A peer's caret to label, the highest its name chip may reach, and where
+/// the text around it has glyphs, which the chip never covers.
+#[derive(Debug, Clone, PartialEq)]
 pub struct LabeledCaret {
     /// The caret bar, in the widget's own coordinates.
     pub rect: Rect,
     /// The top of the text the caret is in, in the same coordinates: a
     /// chip that would rise above it hangs below the caret instead.
     pub top: f64,
+    /// Where the text around the caret has glyphs, one rect per visual
+    /// line (its own line's, and the lines above and below it). Empty when
+    /// the caller does not know: the chip then hangs a line above.
+    pub ink: Vec<Rect>,
+    /// The right edge of the text's column: a chip beside the caret ends
+    /// before it.
+    pub right: f64,
 }
 
 impl LabeledCaret {
@@ -24,35 +32,84 @@ impl LabeledCaret {
         Self {
             rect,
             top: f64::NEG_INFINITY,
+            ink: Vec::new(),
+            right: f64::INFINITY,
         }
     }
 
     /// A caret in text whose first line starts at `top`.
     #[must_use]
     pub fn within(rect: Rect, top: f64) -> Self {
-        Self { rect, top }
+        Self {
+            top,
+            ..Self::new(rect)
+        }
     }
 
-    /// Where a `w` by `h` name chip goes: above the caret, or below it when
-    /// above would cross [`Self::top`].
+    /// The glyphs around the caret, one rect per visual line, and the right
+    /// edge of the text's column: the chip goes where none of them are.
+    #[must_use]
+    pub fn among(mut self, ink: Vec<Rect>, right: f64) -> Self {
+        self.ink = ink;
+        self.right = right;
+        self
+    }
+
+    /// Where a `w` by `h` name chip goes.
     ///
-    /// Above the caret is one line box clear of it, not the caret's own top:
-    /// an editor draws the caret from the baseline down, and the line's words
-    /// rise above it — a chip pinned to the caret's top sat across them, which
-    /// is what the person following an agent saw it hide ("…ing me puts this
-    /// windo…").
+    /// Where the glyphs around the caret are known ([`Self::among`]), the chip
+    /// never covers one: right of the caret on its own line where the line has
+    /// room there (an agent writing at the end of a line), else in the gap
+    /// above the caret's line where no glyph is, else below the line. Hung a
+    /// line above, it sat on the previous line's words ("write it."); pinned
+    /// to the caret's top, across its own line's.
+    ///
+    /// Not knowing the glyphs, it hangs one line box clear above the caret,
+    /// or below it when that would cross [`Self::top`].
     #[must_use]
     pub fn chip_rect(&self, w: f64, h: f64) -> Rect {
-        let x = self.rect.x0;
-        let line = self.rect.height().max(0.0);
-        let above = self.rect.y0 - line - h - CARET_CHIP_GAP;
-        let y = if above < self.top {
-            self.rect.y1 + CARET_CHIP_GAP
-        } else {
-            above
-        };
-        Rect::new(x, y, x + w, y + h)
+        if self.ink.is_empty() {
+            let x = self.rect.x0;
+            let line = self.rect.height().max(0.0);
+            let above = self.rect.y0 - line - h - CARET_CHIP_GAP;
+            let y = if above < self.top {
+                self.rect.y1 + CARET_CHIP_GAP
+            } else {
+                above
+            };
+            return Rect::new(x, y, x + w, y + h);
+        }
+        let covers = |chip: Rect| self.ink.iter().any(|glyphs| overlaps(chip, *glyphs));
+        // The caret's own line box: the caret, and its line's glyphs where it stands among them.
+        let centre = self.rect.center().y;
+        let (line_top, line_bottom) = self
+            .ink
+            .iter()
+            .filter(|glyphs| glyphs.y0 <= centre && centre <= glyphs.y1)
+            .fold((self.rect.y0, self.rect.y1), |(top, bottom), glyphs| {
+                (top.min(glyphs.y0), bottom.max(glyphs.y1))
+            });
+        let beside_x = self.rect.x1 + 2.0 * CARET_CHIP_GAP;
+        let beside_y = f64::midpoint(line_top, line_bottom) - h / 2.0;
+        let beside = Rect::new(beside_x, beside_y, beside_x + w, beside_y + h);
+        if beside.x1 <= self.right && !covers(beside) {
+            return beside;
+        }
+        // Above and below start at the caret and keep inside the column where it allows.
+        let x = self.rect.x0.min(self.right - w).max(self.rect.x0 - w);
+        let above_y = line_top - CARET_CHIP_GAP - h;
+        let above = Rect::new(x, above_y, x + w, above_y + h);
+        if above_y >= self.top && !covers(above) {
+            return above;
+        }
+        let below_y = line_bottom + CARET_CHIP_GAP;
+        Rect::new(x, below_y, x + w, below_y + h)
     }
+}
+
+/// Whether `a` and `b` share any area.
+fn overlaps(a: Rect, b: Rect) -> bool {
+    a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
 }
 
 /// Space between a caret and its name chip.
@@ -156,6 +213,87 @@ mod tests {
         assert!((chip.x0 - caret.rect.x0).abs() < f64::EPSILON);
     }
 
+    /// Lines of text 20 px tall at y = 100, 120, 140, the column 300 px wide:
+    /// each visual line's glyphs from x = 10 to `ends[i]`.
+    fn lines(ends: &[f64]) -> Vec<Rect> {
+        ends.iter()
+            .enumerate()
+            .map(|(i, end)| {
+                let y = 100.0 + 20.0 * i as f64;
+                Rect::new(10.0, y, *end, y + 20.0)
+            })
+            .collect()
+    }
+
+    fn covers_none(chip: Rect, ink: &[Rect]) -> bool {
+        ink.iter().all(|glyphs| !overlaps(chip, *glyphs))
+    }
+
+    /// An agent writing at the end of a line has its name right of the caret,
+    /// on that line, covering none of the text above or before it.
+    #[test]
+    fn a_chip_stands_beside_a_caret_at_the_end_of_its_line() {
+        // A full line above, the caret's own line ending at x = 120.
+        let ink = lines(&[290.0, 120.0]);
+        let caret = LabeledCaret::within(Rect::new(120.0, 120.0, 122.0, 140.0), 100.0)
+            .among(ink.clone(), 300.0);
+        let chip = caret.chip_rect(90.0, 18.0);
+        assert!(chip.x0 >= caret.rect.x1, "right of the caret: {chip:?}");
+        assert!(
+            chip.y0 >= 120.0 && chip.y1 <= 140.0,
+            "on its own line: {chip:?}"
+        );
+        assert!(covers_none(chip, &ink), "covering no text: {chip:?}");
+    }
+
+    /// With text right of the caret, or no room before the column's edge,
+    /// the chip goes into the gap above where that gap has no glyphs.
+    #[test]
+    fn a_chip_rises_into_a_free_gap_when_its_line_is_full() {
+        // A short line above (to x = 40), the caret mid-way along a full line.
+        let ink = lines(&[40.0, 290.0]);
+        let caret = LabeledCaret::within(Rect::new(150.0, 120.0, 152.0, 140.0), 0.0)
+            .among(ink.clone(), 300.0);
+        let chip = caret.chip_rect(90.0, 18.0);
+        assert!(chip.y1 <= 120.0, "above the caret's line: {chip:?}");
+        assert!(covers_none(chip, &ink), "covering no text: {chip:?}");
+        // At the end of a line that reaches the column's edge, there is no room beside it.
+        let ink = lines(&[40.0, 280.0]);
+        let caret = LabeledCaret::within(Rect::new(280.0, 120.0, 282.0, 140.0), 0.0)
+            .among(ink.clone(), 300.0);
+        let chip = caret.chip_rect(90.0, 18.0);
+        assert!(chip.x1 <= 300.0, "inside the column: {chip:?}");
+        assert!(covers_none(chip, &ink), "covering no text: {chip:?}");
+    }
+
+    /// Text above and to the right: the chip hangs below the caret's line,
+    /// never on the words above it.
+    #[test]
+    fn a_chip_hangs_below_when_text_stands_above_and_beside() {
+        let ink = lines(&[290.0, 290.0]);
+        let caret = LabeledCaret::within(Rect::new(150.0, 120.0, 152.0, 140.0), 0.0)
+            .among(ink.clone(), 300.0);
+        let chip = caret.chip_rect(90.0, 18.0);
+        assert!(chip.y0 >= 140.0, "below the caret's line: {chip:?}");
+        assert!(covers_none(chip, &ink), "covering no text: {chip:?}");
+        // The wrapped paragraph the follower saw: "...as I / write it." above, the caret after
+        // "of you." on the second line of the next paragraph, with room beside it.
+        let ink = vec![
+            Rect::new(10.0, 60.0, 290.0, 80.0),
+            Rect::new(10.0, 80.0, 60.0, 100.0),
+            Rect::new(10.0, 100.0, 290.0, 120.0),
+            Rect::new(10.0, 120.0, 52.0, 140.0),
+        ];
+        let caret = LabeledCaret::within(Rect::new(52.0, 120.0, 54.0, 140.0), 0.0)
+            .among(ink.clone(), 300.0);
+        let chip = caret.chip_rect(130.0, 18.0);
+        assert!(
+            covers_none(chip, &ink),
+            "\"write it.\" and its own line stay readable: {chip:?}"
+        );
+        assert!(chip.x0 >= caret.rect.x1, "beside \"of you.\": {chip:?}");
+    }
+
     #[test]
     fn a_caret_with_no_top_keeps_its_chip_above() {
         let caret = LabeledCaret::new(Rect::new(30.0, 4.0, 32.0, 24.0));
@@ -176,7 +314,7 @@ mod tests {
             Affine::scale(2.0),
             &UserId("ada".into()),
             "Ada",
-            caret,
+            caret.clone(),
         );
         let (w, h) = crate::presence::render::peer_pill_size(&mut text, &theme, "Ada");
         assert_eq!(
