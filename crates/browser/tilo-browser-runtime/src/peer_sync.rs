@@ -10,12 +10,12 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use collab_types::presence::{
-    Presence, ShellChat, ShellPresence, ShellReaction, ShellSelection, ShellWindow, Shown,
-    ShownLayout, ShownWave,
+    ShellChat, ShellPresence, ShellReaction, ShellSelection, ShellWindow, Shown, ShownLayout,
+    ShownWave,
 };
 use iroh::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
-use tilo_session::sync::{Client, Device, Outbox, OwnPresence, SayPresence, Topic, Transport};
+use tilo_session::sync::{Client, Device, Outbox, OwnPresence, Topic, Transport};
 use tilo_session_host::PeerHandle;
 use tilo_session_host::session_actions::SessionActions;
 use tilo_user_identity::DeviceCert;
@@ -179,33 +179,6 @@ fn pointer_of(value: &JsPresence) -> Result<Option<tilo_live::presence::Point>, 
         .transpose()
 }
 
-/// This page's presence tracks: the live plane its certified peer holds for each workspace, the one
-/// every device of the workspace says presence on.
-struct PagePlane {
-    handle: PeerHandle,
-}
-
-impl std::fmt::Debug for PagePlane {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("page plane")
-    }
-}
-
-impl SayPresence for PagePlane {
-    fn say(
-        &self,
-        workspace: tilo_desktop_model::WorkspaceId,
-        sequence: u32,
-        frame: &Presence,
-    ) -> Result<(), String> {
-        // The plane numbers the objects it carries itself; `sequence` is the board's count.
-        let _ = sequence;
-        let topic =
-            workspace_number(&workspace.to_string()).map_err(|error| format!("{error:?}"))?;
-        self.handle.publish_presence(topic, vec![frame.clone()])
-    }
-}
-
 /// What this page has no carrier for: the client's commands to the plane, which this session says
 /// through its host — the mount that shows a workspace opens its live plane.
 #[derive(Debug)]
@@ -281,9 +254,7 @@ pub(crate) fn register(
             outgoing: std::sync::Arc::new(NoCarrier),
             arrived,
             enrolled,
-            saying: Some(std::sync::Arc::new(PagePlane {
-                handle: handle.clone(),
-            })),
+            saying: Some(tilo_session_host::saying(handle)),
         },
         Device {
             publisher,

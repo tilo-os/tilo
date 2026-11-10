@@ -21636,6 +21636,7 @@ dependencies = [
  "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-relay-session",
+ "tilo-session-client",
  "tilo-session-core",
  "tilo-sort",
  "tilo-test-env",

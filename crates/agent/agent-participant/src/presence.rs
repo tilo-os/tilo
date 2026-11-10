@@ -1,36 +1,13 @@
 //! An agent's word in a workspace: the presence the client keeps, said on this agent's session so
 //! every desktop's roster draws it beside the people's.
 
-use std::sync::Arc;
-
-use collab_types::presence::{Presence as Frame, ShellPresence};
+use collab_types::presence::ShellPresence;
 use iroh::{EndpointAddr, EndpointId};
 use tilo_desktop_model::WorkspaceId as DeskWorkspaceId;
 use tilo_session_client::presence::OwnPresence;
-use tilo_session_client::{Device, Presence, SayPresence, topic_of};
+use tilo_session_client::{Device, Presence, topic_of};
 use tilo_session_host::PeerHandle;
 use tilo_user_identity::DeviceCert;
-
-/// This agent's session as a participant's transport: what the client says leaves on the workspace's
-/// live plane, as every other device's word does.
-struct Saying {
-    peer: PeerHandle,
-}
-
-impl std::fmt::Debug for Saying {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("live plane")
-    }
-}
-
-impl SayPresence for Saying {
-    fn say(&self, workspace: DeskWorkspaceId, sequence: u32, frame: &Frame) -> Result<(), String> {
-        // The plane numbers the objects it carries itself; `sequence` is the board's count.
-        let _ = sequence;
-        let topic = topic_of(workspace);
-        self.peer.publish_presence(topic, vec![frame.clone()])
-    }
-}
 
 /// The device an agent is on the plane: its certificate's own device key and label, belonging to the
 /// person its root signed for.
@@ -58,7 +35,7 @@ pub fn enter(
     let device = device(cert)?;
     let workspace_id = DeskWorkspaceId::parse(workspace)?;
     let presence = Presence::over(
-        Some(Arc::new(Saying { peer: peer.clone() })),
+        Some(tilo_session_host::saying(peer)),
         &device,
         OwnPresence {
             label: label.to_owned(),

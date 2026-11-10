@@ -46,6 +46,9 @@ pub mod health;
 mod held_live;
 pub mod narration;
 mod replica;
+/// This session's presence tracks, as a participant's client says on them.
+pub mod saying;
+pub use saying::saying;
 pub mod session;
 /// Another device's actions, asked through this device's session.
 pub use tilo_session_core::remote as session_actions;
