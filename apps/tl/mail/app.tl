@@ -588,9 +588,14 @@ fn label_query(name: Text) -> Text {
 /// What the window calls the place `query` shows: the filters' and the labels' names, and
 /// "All mail" for every conversation.
 fn place_title(m: Mail, query: Text) -> Text {
-    filters(Thread).find(f -> f.query == query)?.label
-        ?? m.labels.find(l -> label_query(l.name) == query)?.name
-        ?? "All mail"
+    // No query is the window on every conversation: the place the sidebar calls All mail.
+    if query.is_empty() {
+        "All mail"
+    } else {
+        filters(Thread).find(f -> f.query == query)?.label
+            ?? m.labels.find(l -> label_query(l.name) == query)?.name
+            ?? "All mail"
+    }
 }
 
 /// The mail window: every account's mail. The unified inbox is every account's inbox in one

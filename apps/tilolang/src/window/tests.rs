@@ -26,13 +26,14 @@ use tilo_ui_host::{UiNode, Value};
 use tilolang_tilo::runtime::{Principal, Value as RtValue};
 use ui::framework::{ResourceSurface as _, RunMode};
 use ui::permissions::policy::{self, agent_answers};
-use ui::widget::{DescribedList, NavPane, NavShell, Widget as _};
+use ui::widget::{DescribedList, NavShell, Widget as _};
 
 use super::*;
 
 mod mail;
 mod opening;
 mod personal;
+mod tree;
 
 /// The text a value of the runtime holds.
 fn rt_text(value: &RtValue) -> String {
@@ -392,8 +393,6 @@ impl Workspace {
             .expect("the root lists its items")
     }
 
-    /// Ask for `range` of the root's list, as the list does when it shows them, and let the
-    /// window take the rows the app renders for it.
     fn show_rows(&mut self, range: std::ops::Range<usize>) {
         self.root_rows().borrow_mut().request_range(range);
         self.frame();
@@ -511,26 +510,27 @@ impl Workspace {
         }
     }
 
-    /// Press the header's button labelled `label`.
+    /// Press the header's button labelled `label`: the window bar's, or the sidebar's own where
+    /// the app makes what it lists there.
     fn header_action(&mut self, label: &str) {
         // The bar's own button for the action, not a control of the page that happens to be
         // named the same (a change mark's item is titled like the note it names).
+        fn walk<'a>(node: &'a UiNode, label: &str) -> Option<&'a UiNode> {
+            let names = node
+                .props
+                .get("label")
+                .is_some_and(|said| tilo_ui_host::reconcile::display(said) == label);
+            if node.kind == "ui.Button" && names {
+                return Some(node);
+            }
+            node.children.iter().find_map(|child| walk(child, label))
+        }
         let composed = self.composed();
-        let key = ["overview_actions", "actions"]
+        let key = ["overview_actions", "actions", "sidebar_actions"]
             .into_iter()
             .flat_map(|slot| slot_of(&composed, slot))
-            .find(|node| {
-                node.kind == "ui.Button"
-                    && node
-                        .props
-                        .get("label")
-                        .map(tilo_ui_host::reconcile::display)
-                        .as_deref()
-                        == Some(label)
-            })
-            .unwrap_or_else(|| panic!("the bar offers {label}"))
-            .key
-            .clone();
+            .find_map(|node| walk(node, label).map(|button| button.key.clone()))
+            .unwrap_or_else(|| panic!("the window's header offers {label}"));
         self.fire(&key, "press", None);
     }
 
@@ -682,77 +682,76 @@ fn header_labels(shell: &UiNode, slot: &str) -> Vec<String> {
 // ----- the shell ---------------------------------------------------------------------------
 
 #[test]
-fn a_notebook_is_the_native_list_and_detail_shell_with_the_header_the_platform_fills() {
-    let mut workspace = Workspace::seeded("notes");
+fn a_notebook_is_the_native_tree_shell_with_the_header_the_platform_fills() {
+    let workspace = Workspace::seeded("notes");
     assert!(
-        workspace.shell().has_overview(),
-        "the notes list is the overview column"
+        !workspace.shell().has_overview(),
+        "no list of notes stands between the tree and the note it opens"
     );
     assert!(
         workspace.shell().has_sidebar(),
-        "the note's filters are the sidebar's places"
+        "the notebook is the sidebar's tree"
     );
-    let rows = workspace.rows();
-    assert!(rows.len() >= 3, "{rows:?}");
+    assert!(
+        workspace.shell().has_content(),
+        "the note chosen stands beside the tree"
+    );
+    let notes = workspace.tree_labels();
+    assert!(notes.len() >= 3, "{notes:?}");
+    assert_eq!(notes[0], "Q3 plan", "the notebook's notes, in its order");
     let shell = workspace.composed();
     assert_eq!(
-        shell.props.get("overview_title"),
-        Some(&Value::text("All notes"))
+        shell.props.get("sidebar_title"),
+        Some(&Value::text("Notes"))
     );
     assert_eq!(
-        header_labels(&shell, "overview_actions"),
-        ["Sort", "search", "New note"],
-        "the sort menu, search, and the primary action last"
-    );
-    // The scenario showed its note; with that closed the list lists for the whole window, and
-    // the note's column stands there again once a note is shown.
-    assert!(workspace.window.detail_target().is_some());
-    workspace.window.close_detail();
-    workspace.settle();
-    assert!(workspace.window.detail_target().is_none());
-    assert!(
-        slot_of(&workspace.composed(), "content").is_empty(),
-        "no content column stands beside the list"
+        workspace.header_buttons("sidebar_actions"),
+        ["New note"],
+        "the window's primary action stands where what it makes stands"
     );
     assert!(
-        !workspace.shell().has_content(),
-        "the list lists for the whole window"
+        !workspace
+            .header_buttons("actions")
+            .contains(&"New note".to_owned()),
+        "and the bar does not offer it again: {:?}",
+        workspace.header_buttons("actions")
     );
+    // The window opens on the first note of the tree, its page beside it.
+    let opened = workspace.opened_note();
+    let host = workspace.window.current_host().unwrap();
+    assert_eq!(tilolang_tilo::instance::title_of(&host, &opened), "Q3 plan");
 }
 
 // USER REQUIREMENT (2026-10-20): `open(r)` "the host minimally implements it as
-// push-navigation to the resource's default view with back". It now shows the resource's
-// default view in the next column, which a narrow window pushes with Back.
+// push-navigation to the resource's default view with back". A note chosen in the tree stands
+// beside it, in the window's own content column, and its page edits the note.
 #[test]
-fn activating_a_row_shows_the_item_in_the_next_column_and_back_returns_to_the_list() {
+fn choosing_a_note_in_the_tree_shows_it_beside_the_tree() {
     let mut workspace = Workspace::seeded("notes");
-    let (key, _) = workspace.rows().remove(1);
-    workspace.activate(&key);
-    let item = workspace.item_of(&key);
+    let first = workspace.opened_note();
+    // A note inside another: the bar names where it stands, the note under it.
+    let tree = workspace.key_of("ui.TreeView", "name", "Notes");
+    let inside = workspace.tree_row_note("Standups");
+    workspace.fire(
+        &tree,
+        "select",
+        Some(Value::Ref(tilolang_tilo::instance::wire::resource(&inside))),
+    );
+    assert_ne!(
+        inside, first,
+        "another note than the one the window opened on"
+    );
     assert_eq!(
-        workspace.window.detail_target(),
-        Some(&item),
-        "the note is shown"
+        workspace.opened_note(),
+        inside,
+        "the row's note stands in the content column"
     );
-    let detail = workspace.window.detail_tree().expect("the note is shown");
-    assert!(
-        first_input(&detail).is_some(),
-        "the note's editor: {detail:#?}"
+    assert_eq!(
+        workspace.composed().props.get("title"),
+        Some(&Value::text("Q3 plan")),
+        "the bar names where the open note stands, for when the page's heading scrolls away"
     );
-    let selected: Vec<String> = workspace
-        .list()
-        .list()
-        .unwrap()
-        .selection()
-        .stored_keys()
-        .cloned()
-        .collect();
-    assert_eq!(selected, std::slice::from_ref(&key), "the row is selected");
-    assert!(
-        workspace.composed().props.contains_key("title"),
-        "the shell keeps the title for when the note's own heading scrolls away"
-    );
-    // Editing the title changes the row.
+    // Editing the title on the page renames the note, and the tree's row says so.
     let input = first_input(&workspace.composed())
         .expect("the composed editor")
         .key
@@ -763,36 +762,40 @@ fn activating_a_row_shows_the_item_in_the_next_column_and_back_returns_to_the_li
     workspace.settle();
     assert!(
         workspace
-            .rows()
+            .tree_labels()
             .iter()
-            .any(|(_, shown)| shown == "Plans for the week"),
+            .any(|shown| shown == "Plans for the week"),
         "{:?}",
-        workspace.rows()
+        workspace.tree_labels()
     );
-    workspace.window.close_detail();
-    workspace.settle();
-    assert!(
-        workspace.window.detail_target().is_none()
-            || workspace.shell().front_pane() != NavPane::Content
-    );
+}
+
+/// Every `ui.EmptyState` the node holds: what a column says when it lists nothing.
+fn empty_states(node: &UiNode, out: &mut Vec<UiNode>) {
+    if node.kind == "ui.EmptyState" {
+        out.push(node.clone());
+    }
+    for child in &node.children {
+        empty_states(child, out);
+    }
 }
 
 #[test]
 fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_the_door() {
     let mut workspace = Workspace::new("notes");
     assert_eq!(workspace.items_of("so.tilo.lang.notes", "notes"), 0);
-    // An empty notebook says one sentence, and its primary action stands once, in the window's
-    // bar: the empty state has no button of its own.
-    let empty = slot_of(&workspace.composed(), "overview")
-        .into_iter()
-        .find(|node| node.kind == "ui.EmptyState")
-        .cloned()
-        .expect("the empty notebook says so");
+    // An empty notebook says one sentence in its sidebar, and its primary action stands once,
+    // in that sidebar's header: the empty state has no button of its own.
+    let mut empty = Vec::new();
+    for node in slot_of(&workspace.composed(), "sidebar") {
+        empty_states(node, &mut empty);
+    }
+    let empty = empty.first().expect("the empty notebook says so");
     assert_eq!(empty.props.get("title"), Some(&Value::text("No notes yet")));
     assert_eq!(
-        header_labels(&workspace.composed(), "overview_actions"),
-        ["Sort", "search", "New note"],
-        "the bar offers the primary once"
+        workspace.header_buttons("sidebar_actions"),
+        ["New note"],
+        "the sidebar's header offers the primary once"
     );
     workspace.header_action("New note");
     assert_eq!(
@@ -800,13 +803,12 @@ fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_
         1,
         "the action inserted a note"
     );
-    assert_eq!(workspace.rows().len(), 1);
-    let (key, _) = workspace.rows().remove(0);
-    let made = workspace.item_of(&key);
+    assert_eq!(workspace.tree_labels(), ["Untitled"]);
+    let made = workspace.tree_row_note("Untitled");
     assert_eq!(
         workspace.window.detail_target(),
         Some(&made),
-        "and the note it made opened beside the list"
+        "and the note it made stands beside the tree"
     );
 }
 
@@ -904,12 +906,11 @@ fn what_an_agent_or_a_script_creates_through_the_door_moves_nobodys_view() {
         .detail_target()
         .cloned()
         .expect("the person's note opened");
-    let keys: Vec<String> = workspace.rows().into_iter().map(|(key, _)| key).collect();
-    let theirs = keys
-        .iter()
-        .filter(|key| workspace.item_of(key) == opened)
-        .count();
-    assert_eq!(theirs, 1, "it is a note of the list");
+    let notes: Vec<String> = workspace.tree_labels();
+    assert!(
+        notes.iter().filter(|label| *label == "Untitled").count() == 3,
+        "it is a note of the notebook: {notes:?}"
+    );
     // And an agent's note after that leaves the person's open.
     workspace
         .applies_as(Some(task()), &notebook, &new_note, &Json::Null)
@@ -1021,15 +1022,29 @@ fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_
 
 #[test]
 fn a_filter_case_from_the_sidebar_narrows_the_list_and_titles_it() {
-    let mut workspace = Workspace::seeded("notes");
-    let all = workspace.rows().len();
-    let pinned = workspace.key_of("ui.NavItem", "label", "Pinned");
-    workspace.fire(&pinned, "select", None);
-    let shown = workspace.rows().len();
-    assert!(shown < all, "{shown} of {all}");
+    let mut workspace = Workspace::seeded("mail");
+    // The inbox narrows the account's mail; the place a person chooses says so over the list.
+    let inbox = workspace.rows().len();
+    assert!(inbox > 0, "the inbox lists its conversations");
     assert_eq!(
         workspace.composed().props.get("overview_title"),
-        Some(&Value::text("Pinned"))
+        Some(&Value::text("Inbox"))
+    );
+    let all = workspace.key_of("ui.NavItem", "label", "All mail");
+    workspace.fire(&all, "select", None);
+    let shown = workspace.rows().len();
+    assert!(shown > inbox, "{shown} of {inbox}");
+    assert_eq!(
+        workspace.composed().props.get("overview_title"),
+        Some(&Value::text("All mail"))
+    );
+    // And the inbox narrows it back, under its own name.
+    let back = workspace.key_of("ui.NavItem", "label", "All inboxes");
+    workspace.fire(&back, "select", None);
+    assert_eq!(workspace.rows().len(), inbox, "the inbox again");
+    assert_eq!(
+        workspace.composed().props.get("overview_title"),
+        Some(&Value::text("Inbox"))
     );
 }
 
@@ -1101,7 +1116,7 @@ fn a_scenario_stages_exactly_its_data_however_many_frames_run() {
         workspace.settle();
     }
     assert_eq!(workspace.items_of("so.tilo.lang.notes", "notes"), staged);
-    assert_eq!(workspace.rows().len(), staged);
+    assert_eq!(workspace.tree_labels().len(), staged);
     let records = tilolang_tilo::action::resource_ids(&workspace.doc, "so.tilo.lang.notes");
     assert_eq!(records.len(), 1, "one notebook");
 }
@@ -1842,21 +1857,22 @@ fn a_board_scenario_shows_the_apps_it_attaches_filled_by_their_own_scenarios() {
         "the list holds its scenario"
     );
     assert!(
-        workspace.items_of("so.tilo.lang.notes", "notes") >= 12,
+        workspace.items_of("so.tilo.lang.notes", "notes") >= 5,
         "and the notebook its"
     );
 }
 
 #[test]
 fn a_scenario_that_returns_a_resource_shows_it_beside_the_list() {
-    let mut workspace = Workspace::seeded("notes");
+    let mut workspace = Workspace::seeded("mail");
     let shown = workspace
         .window
         .detail_target()
         .cloned()
-        .expect("the scenario's note is shown");
+        .expect("the scenario's thread is shown");
     let host = workspace.window.current_host().unwrap();
-    assert_eq!(tilolang_tilo::instance::title_of(&host, &shown), "Q3 plan");
+    let subject = tilolang_tilo::instance::title_of(&host, &shown);
+    assert!(!subject.is_empty(), "the thread's subject names it");
     let selected: Vec<String> = workspace
         .list()
         .list()
@@ -1876,15 +1892,21 @@ fn a_scenario_that_returns_a_resource_shows_it_beside_the_list() {
 
 #[test]
 fn a_document_edits_its_title_as_its_large_title_and_the_shell_leaves_it_to_the_page() {
-    let workspace = Workspace::seeded("notes");
-    assert!(
-        workspace.window.detail_target().is_some(),
-        "the scenario's note is shown"
+    let mut workspace = Workspace::seeded("notes");
+    // The bar names where the open note stands, and shows it only once the page's heading
+    // scrolls away: the note's own title is the page's.
+    let tree = workspace.key_of("ui.TreeView", "name", "Notes");
+    let inside = workspace.tree_row_note("Standups");
+    workspace.fire(
+        &tree,
+        "select",
+        Some(Value::Ref(tilolang_tilo::instance::wire::resource(&inside))),
     );
     let shell = workspace.composed();
-    assert!(
-        shell.props.contains_key("title"),
-        "the shell holds the title, and shows it only once the page's heading scrolls away"
+    assert_eq!(
+        shell.props.get("title"),
+        Some(&Value::text("Q3 plan")),
+        "the bar names the note the open one stands under"
     );
     let title = first_input(&shell).expect("the editor");
     assert!(
@@ -1895,11 +1917,16 @@ fn a_document_edits_its_title_as_its_large_title_and_the_shell_leaves_it_to_the_
         "the editor binds the title as its large title: {:?}",
         title.props.get("title")
     );
+    assert_eq!(
+        workspace.opened_note(),
+        inside,
+        "and the page edits the note the tree shows open"
+    );
 }
 
 #[test]
 fn the_list_renders_only_the_rows_it_shows() {
-    let mut workspace = Workspace::seeded("notes");
+    let mut workspace = Workspace::seeded("mail");
     let rows = workspace.root_rows();
     // What the app renders: the rows of the list in its view's tree.
     let rendered = |workspace: &Workspace| -> Vec<String> {
@@ -1952,11 +1979,11 @@ fn first_of<'a>(
 
 #[test]
 fn a_change_to_an_item_reaches_its_shown_row() {
-    let mut workspace = Workspace::seeded("notes");
+    let mut workspace = Workspace::seeded("handmade");
     let (key, _) = workspace.rows().remove(0);
     workspace.activate(&key);
     let input = first_input(&workspace.composed())
-        .expect("the note's title")
+        .expect("the book's title")
         .key
         .clone();
     workspace
@@ -2322,8 +2349,8 @@ fn an_app_composes_its_own_list_window_from_the_toolkit_and_the_platform() {
     );
     assert_eq!(
         header_labels(&shell, "overview_actions"),
-        ["search", "New book"],
-        "the header holds the shelf's primary action"
+        ["New book", "search"],
+        "the header leads with the shelf's primary action, then the window's search"
     );
     let items = workspace.items();
     assert_eq!(items.len(), 2);
@@ -2417,70 +2444,44 @@ fn shows_text(node: &UiNode, text: &str) -> bool {
 #[test]
 fn a_later_build_takes_over_in_place_keeping_window_state_selection_and_detail() {
     let mut workspace = Workspace::seeded("notes");
-    let all = workspace.rows().len();
-    // A place of the sidebar narrows the list: the person's filter.
-    let pinned = workspace.key_of("ui.NavItem", "label", "Pinned");
-    workspace.fire(&pinned, "select", None);
-    let filtered = workspace.rows().len();
-    assert!(filtered < all, "{filtered} of {all}");
-    let (key, _) = workspace.rows().remove(0);
-    workspace.activate(&key);
-    let shown = workspace
-        .window
-        .detail_target()
-        .cloned()
-        .expect("a note is shown");
-    let detail = workspace.window.detail_tree().unwrap();
-    assert!(shows_text(&detail, "Write something"), "{detail:#?}");
+    let all = workspace.tree_labels();
+    // The note the person chose stands forward: their own view state.
+    let tree = workspace.key_of("ui.TreeView", "name", "Notes");
+    let home = workspace.tree_row_note("Home");
+    workspace.fire(
+        &tree,
+        "select",
+        Some(Value::Ref(tilolang_tilo::instance::wire::resource(&home))),
+    );
+    assert_eq!(workspace.opened_note(), home, "the note the person chose");
 
     crate::updates::hand_over(later_notes(|source| {
         source.replace("\"Write something\"", "\"Write anything\"")
     }));
     workspace.settle();
 
-    let detail = workspace
-        .window
-        .detail_tree()
-        .expect("the note is still shown");
+    let composed = workspace.composed();
     assert!(
-        shows_text(&detail, "Write anything"),
-        "the new build renders it: {detail:#?}"
+        shows_text(&composed, "Write anything"),
+        "the new build renders the page: {composed:#?}"
     );
     assert_eq!(
-        workspace.window.detail_target(),
-        Some(&shown),
-        "the same note"
+        workspace.opened_note(),
+        home,
+        "the same note of the notebook is still shown"
     );
     assert_eq!(
-        workspace.composed().props.get("overview_title"),
-        Some(&Value::text("Pinned")),
-        "the same place of the sidebar is chosen"
-    );
-    assert_eq!(
-        workspace.rows().len(),
-        filtered,
-        "the list is still filtered"
-    );
-    let selected: Vec<String> = workspace
-        .list()
-        .list()
-        .unwrap()
-        .selection()
-        .stored_keys()
-        .cloned()
-        .collect();
-    assert_eq!(
-        selected,
-        std::slice::from_ref(&key),
-        "the row stays selected"
+        workspace.tree_labels(),
+        all,
+        "and the notebook still lists every note"
     );
 }
 
 #[test]
 fn a_later_build_that_changes_a_field_type_starts_over_on_the_same_data() {
     let mut workspace = Workspace::seeded("notes");
-    let notes = workspace.rows().len();
-    assert!(workspace.window.detail_target().is_some());
+    let notes = workspace.tree_labels().len();
+    assert_eq!(workspace.opened_note(), workspace.tree_row_note("Q3 plan"));
 
     crate::updates::hand_over(later_notes(|source| {
         let source = source
@@ -2512,10 +2513,13 @@ fn a_later_build_that_changes_a_field_type_starts_over_on_the_same_data() {
         note.fields.iter().any(|field| field.ty == "Set<Int>"),
         "the new build runs: {note:?}"
     );
-    assert_eq!(workspace.rows().len(), notes, "every note is still there");
     assert_eq!(
-        workspace.window.detail_target(),
-        None,
+        workspace.tree_labels().len(),
+        notes,
+        "every note is still there"
+    );
+    assert!(
+        workspace.window.detail_target().is_none(),
         "the window started over"
     );
 }
@@ -2595,7 +2599,7 @@ fn a_keystroke_repaints_its_field_not_the_window() {
 
 #[test]
 fn a_list_that_asks_for_more_rows_shows_the_ones_it_has_until_they_come() {
-    let mut workspace = Workspace::staged("notes", "a week of notes");
+    let mut workspace = Workspace::staged("mail", "a busy inbox");
     let rows = workspace.root_rows();
     let len = rows.borrow().len();
     workspace.show_rows(0..len);
@@ -2823,11 +2827,7 @@ fn typing_in_the_window_s_search_narrows_the_tasks_list_to_what_matches() {
 #[test]
 fn find_in_an_open_note_counts_its_matches_and_replaces_them_all_in_one_change() {
     let mut workspace = Workspace::seeded("notes");
-    let note = workspace
-        .window
-        .detail_target()
-        .expect("the scenario's note")
-        .clone();
+    let note = workspace.opened_note();
     let body = node_with(&workspace.composed(), "ui.BlockEditor", "", "")
         .expect("the note's body")
         .key
@@ -2899,31 +2899,32 @@ fn find_in_an_open_note_counts_its_matches_and_replaces_them_all_in_one_change()
 // `std.browse` narrows its list to the window's search, beside the place and the order it holds.
 #[test]
 fn typing_in_the_window_s_search_narrows_a_standard_list_window() {
-    let mut workspace = Workspace::seeded("notes");
-    workspace.window.close_detail();
-    workspace.settle();
+    let mut workspace = Workspace::staged("tasks", "a busy week");
+    // A project's tasks: the list the search narrows.
+    let launch = workspace.key_of("ui.NavItem", "label", "Website launch");
+    workspace.fire(&launch, "select", None);
     let before = workspace.rows();
-    assert!(before.len() > 3, "the notebook lists its notes: {before:?}");
+    assert!(before.len() > 3, "the project lists its tasks: {before:?}");
     let (mut driver, in_place) = workspace.window_search();
     assert_eq!(
         in_place,
         ui::widget::InPlace::Query,
-        "with no note open the window narrows its list"
+        "the window narrows its list"
     );
-    workspace.type_in_search(&mut driver, "groceries");
+    workspace.type_in_search(&mut driver, "pricing");
     let after = workspace.rows();
-    assert_eq!(after.len(), 1, "one note says it: {after:?}");
+    assert_eq!(after.len(), 1, "one task says it: {after:?}");
     assert!(
-        after[0].1.contains("Groceries"),
-        "the note the search found: {after:?}"
+        after[0].1.contains("pricing"),
+        "the task the search found: {after:?}"
     );
-    // A note's body is rich text: its words find it too.
-    workspace.type_in_search(&mut driver, "oat milk");
+    // A task's notes are rich text: their words find it too.
+    workspace.type_in_search(&mut driver, "offline");
     let body = workspace.rows();
     assert_eq!(
         body.len(),
         1,
-        "the note whose body says it: {body:?} of {before:?}"
+        "the task whose notes say it: {body:?} of {before:?}"
     );
-    assert!(body[0].1.contains("Groceries"), "{body:?}");
+    assert!(body[0].1.contains("launch post"), "{body:?}");
 }

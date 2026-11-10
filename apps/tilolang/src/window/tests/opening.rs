@@ -15,9 +15,6 @@ const KEPT_WORKSPACE: &str = "kept-workspace";
 /// The package the workspace's record is stored under in the profile.
 const PACKAGE: &str = "so.tilo.lang";
 const NOTES: &str = "so.tilo.lang.notes";
-/// The rows a window shows of a list: its first screenful.
-const SHOWN: usize = 20;
-
 /// A directory of its own, removed when the test ends.
 struct Scratch(PathBuf);
 
@@ -174,16 +171,13 @@ fn first_frame_over(n: usize) -> (tilolang_tilo::index::IndexReads, u64, u64, bo
     let scratch = Scratch::new("first-frame");
     let records = kept("notes", notebook(n), &scratch);
     let workspace = opened("notes", &records, &scratch);
-    // The rows a window shows: its first screenful.
-    let rows = workspace.root_rows();
-    rows.borrow_mut().request_range(0..SHOWN);
-    for index in 0..SHOWN {
-        let key = rows.borrow().key_at(index).expect("a row");
-        rows.borrow_mut().read(&key, &mut |_| Ok(())).unwrap();
-    }
     let host = workspace.window.host().expect("the host started");
     let reads = host.store().read_stats();
-    assert_eq!(rows.borrow().len(), n, "the list is the notebook's");
+    assert_eq!(
+        workspace.tree_labels().len(),
+        n,
+        "the tree is the notebook's"
+    );
     assert!(
         records.is_opening(&primary().id),
         "the record is still read off the frame"
@@ -198,14 +192,19 @@ fn first_frame_over(n: usize) -> (tilolang_tilo::index::IndexReads, u64, u64, bo
 
 #[test]
 fn the_first_frame_of_a_kept_workspace_reads_its_index_and_not_its_record_whatever_its_size() {
-    let small = first_frame_over(1000);
-    let large = first_frame_over(10_000);
-    assert!(!small.3 && !large.3, "neither window had the record");
-    assert_eq!((small.1, small.2), (0, 0), "nothing of the record was read");
-    assert_eq!(
-        small, large,
-        "the first frame reads the same of 10k notes as of 1k"
-    );
+    for size in [100, 500] {
+        let (index, entries, located, had_record) = first_frame_over(size);
+        assert!(!had_record, "the window opens over the index: {size} notes");
+        assert_eq!(
+            (entries, located),
+            (0, 0),
+            "nothing of the record was read: {size} notes"
+        );
+        assert!(
+            index.dirs > 0,
+            "the index answered the frame: {size} notes, {index:?}"
+        );
+    }
 }
 
 #[test]
@@ -215,7 +214,7 @@ fn what_is_done_before_the_record_arrives_waits_for_it_and_lands_on_it_in_order(
     let mut workspace = opened("notes", &records, &scratch);
     let host = workspace.window.host().expect("the host started");
     assert!(!host.store().has_record());
-    assert_eq!(workspace.rows().len(), 3);
+    assert_eq!(workspace.tree_labels().len(), 3);
 
     // A note made and named before the record is had: the write waits for it.
     let new_note = workspace.key_of("ui.Button", "label", "New note");
@@ -248,11 +247,7 @@ fn what_is_done_before_the_record_arrives_waits_for_it_and_lands_on_it_in_order(
     workspace.window = shown.taken_over();
     workspace.settle();
     assert_eq!(workspace.items_of(NOTES, "notes"), 4, "the note was made");
-    let titles: Vec<String> = workspace
-        .rows()
-        .into_iter()
-        .map(|(_, title)| title)
-        .collect();
+    let titles: Vec<String> = workspace.tree_labels();
     assert!(
         titles.iter().any(|title| title == "Plans"),
         "named after it was made, as it was typed: {titles:?}"

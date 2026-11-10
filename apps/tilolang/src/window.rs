@@ -588,13 +588,6 @@ impl Window {
     fn current_host(&self) -> Option<Host> {
         self.instance.host()
     }
-
-    /// Close the view after the root's, as Back does.
-    #[cfg(test)]
-    fn close_detail(&mut self) {
-        self.instance.close_detail();
-        self.show_sent();
-    }
 }
 
 /// Where in the package a participant is: the resource their window shows beside the root.
