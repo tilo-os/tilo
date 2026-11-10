@@ -118,8 +118,10 @@ pub fn requested_workspace(request: &JoinTransportRequest, now: u64) -> Result<S
 
 /// Admit the verified `joins` to `workspace` in one governance change signed
 /// with `key`. Each is checked on its own and refused alone; everyone
-/// admitted is then committed, recorded in the workspace's ledger and sent,
-/// together. Answers each join in order.
+/// admitted is then committed and recorded in the workspace's ledger,
+/// together. Answers each join in order, with its admission: what the
+/// bootstrap says of the device, without the workspace's state, which
+/// [`crate::join_ledger::Governed::filled`] adds for a device it is sent to.
 pub fn admit(
     workspace: &mut dyn WorkspaceTxn,
     joins: &[Redeeming<'_>],
@@ -304,9 +306,11 @@ fn complete(
         redemption: &redemption,
         name: None,
     }];
-    admit(workspace, &joins, key, now)?
+    let admitted = admit(workspace, &joins, key, now)?
         .pop()
-        .unwrap_or_else(|| Err(JoinError::new("join bootstrap was not built")))
+        .unwrap_or_else(|| Err(JoinError::new("join bootstrap was not built")))?;
+    // The device is sent the workspace as the admission committed it.
+    workspace.governed().filled(admitted)
 }
 
 /// Admit `device` to the workspace before it is challenged, when the workspace

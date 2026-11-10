@@ -204,12 +204,19 @@ impl Governed<'_> {
         device_cert: DeviceCert,
         role: MemberRole,
     ) -> Result<JoinBootstrap, JoinError> {
-        let messages = match self.governance_messages {
-            Some(messages) => messages.governance_messages(),
-            None => self.peer.governance_messages(),
-        }
-        .map_err(JoinError::new)?;
-        Ok(JoinBootstrap {
+        self.filled(Self::admission(self, invite_id, device_cert, role))
+    }
+
+    /// What a bootstrap says of the one device it admits, with the workspace's
+    /// state it carries (roster, revocations, records, governance) left out:
+    /// as large as the workspace, so built only for a device it is sent to.
+    fn admission(
+        &self,
+        invite_id: [u8; 32],
+        device_cert: DeviceCert,
+        role: MemberRole,
+    ) -> JoinBootstrap {
+        JoinBootstrap {
             version: 1,
             invite_id,
             device_cert,
@@ -217,11 +224,32 @@ impl Governed<'_> {
             room: self.peer.workspace_id().to_owned(),
             workspace_id: self.workspace_id,
             host: self.host.clone(),
+            certified_roster: Vec::new(),
+            revocations: Vec::new(),
+            records: Vec::new(),
+            governance_messages: Vec::new(),
+            generation: self.generation,
+        }
+    }
+
+    /// `admitted`, one device's admission, with the workspace's state as it
+    /// stands now: the bootstrap that device receives.
+    ///
+    /// # Errors
+    ///
+    /// The workspace's governance does not encode.
+    pub fn filled(&self, admitted: JoinBootstrap) -> Result<JoinBootstrap, JoinError> {
+        let messages = match self.governance_messages {
+            Some(messages) => messages.governance_messages(),
+            None => self.peer.governance_messages(),
+        }
+        .map_err(JoinError::new)?;
+        Ok(JoinBootstrap {
             certified_roster: self.peer.certificates(),
             revocations: self.peer.revocations(),
             records: self.peer.rows(),
             governance_messages: messages,
-            generation: self.generation,
+            ..admitted
         })
     }
 
@@ -296,9 +324,8 @@ pub struct JoinCompletionRecord {
     pub remote_endpoint: [u8; 32],
     pub request_id: [u8; 32],
     pub proof_digest: [u8; 32],
-    /// The delivered bootstrap with the workspace's state it carried left out and
-    /// its governance messages replaced by one digest entry (see
-    /// [`JoinCompletionRecord::receipt`]).
+    /// The delivered bootstrap with the workspace's state it carried left out
+    /// (see [`JoinCompletionRecord::receipt`]).
     pub bootstrap: JoinBootstrap,
 }
 
@@ -317,80 +344,38 @@ pub struct AdministrationRecord {
     pub generation: u64,
 }
 
-/// Marks the single governance entry of a completion receipt. An encoded
-/// neighbour message starts with its small postcard variant index instead.
-const JOIN_RECEIPT_TAG: &[u8] = b"tilo.join-receipt.v1\0";
-
 impl JoinCompletionRecord {
     /// Durable receipt for a delivered join reply: the joiner's own fields
-    /// and one digest over the whole reply. The roster, revocations, rows
+    /// and the generation it was delivered at. The roster, revocations, rows
     /// and governance messages are the workspace's state at delivery; a replay
-    /// rebuilds them from the workspace and answers only while the digest still
-    /// matches. Keeping them here made every receipt as large as the workspace,
-    /// and the workspace record grow with the square of its members.
+    /// rebuilds them from the workspace while it is still at that generation,
+    /// which every governance change moves on. Keeping them here made every
+    /// receipt as large as the workspace, and building them only to hash them
+    /// made every admission cost the whole workspace, for a reply the joiner
+    /// mostly never asks again.
     fn receipt(
         remote_endpoint: [u8; 32],
         request_id: [u8; 32],
         proof_digest: [u8; 32],
-        delivered: &JoinBootstrap,
-    ) -> Result<Self, JoinError> {
-        let mut marker = JOIN_RECEIPT_TAG.to_vec();
-        marker.extend_from_slice(&bootstrap_digest(delivered)?);
-        Ok(Self {
+        admitted: JoinBootstrap,
+    ) -> Self {
+        Self {
             remote_endpoint,
             request_id,
             proof_digest,
-            bootstrap: JoinBootstrap {
-                certified_roster: Vec::new(),
-                revocations: Vec::new(),
-                records: Vec::new(),
-                governance_messages: vec![marker],
-                ..delivered.clone()
-            },
-        })
-    }
-
-    fn delivered_digest(&self) -> Option<&[u8]> {
-        match self.bootstrap.governance_messages.as_slice() {
-            [only] => only
-                .strip_prefix(JOIN_RECEIPT_TAG)
-                .filter(|digest| digest.len() == 32),
-            _ => None,
+            bootstrap: admitted,
         }
     }
 
-    /// The exact reply this completion delivered, rebuilt from the workspace and
-    /// answered only while it is unchanged. Once the workspace has moved on, the
-    /// member refreshes through the membership challenge.
+    /// The reply this completion delivered, rebuilt from the workspace and
+    /// answered only while its governance is unchanged. Once the workspace has
+    /// moved on, the member refreshes through the membership challenge.
     fn replay(&self, workspace: &Governed<'_>) -> Result<JoinBootstrap, JoinError> {
-        let delivered = self
-            .delivered_digest()
-            .ok_or_else(|| JoinError::new("join completion receipt is malformed"))?;
-        let rebuilt = JoinBootstrap {
-            certified_roster: workspace.peer.certificates(),
-            revocations: workspace.peer.revocations(),
-            records: workspace.peer.rows(),
-            governance_messages: match workspace.governance_messages {
-                Some(messages) => messages.governance_messages(),
-                None => workspace.peer.governance_messages(),
-            }
-            .map_err(JoinError::new)?,
-            ..self.bootstrap.clone()
-        };
-        if bootstrap_digest(&rebuilt)?.as_slice() != delivered {
+        if workspace.generation != self.bootstrap.generation {
             return Err(JoinError::refresh());
         }
-        Ok(rebuilt)
+        workspace.filled(self.bootstrap.clone())
     }
-}
-
-fn bootstrap_digest(bootstrap: &JoinBootstrap) -> Result<[u8; 32], JoinError> {
-    let hasher = postcard::to_io(
-        bootstrap,
-        blake3::Hasher::new_derive_key("tilo join completion receipt v1"),
-    )
-    .map_err(|error| JoinError::new(error.to_string()))?;
-    Ok(*hasher.finalize().as_bytes())
 }
 
 /// The idempotency digest of a request.
@@ -884,8 +869,9 @@ impl JoinLedger {
     /// Stage the outcome of [`Self::admit`] once `workspace` is the committed
     /// state that admitted them: the receipt of each admitted join, which
     /// answers for it from now on, with the challenge it proved and the
-    /// invitation it spent let go. Answers each join's bootstrap or refusal,
-    /// in order.
+    /// invitation it spent let go. Answers each join's admission or refusal,
+    /// in order: its bootstrap without the workspace's state, which
+    /// [`Governed::filled`] adds for a device the bootstrap is sent to.
     pub fn complete(
         &mut self,
         workspace: &Governed<'_>,
@@ -908,18 +894,18 @@ impl JoinLedger {
             });
             self.invitations
                 .retain(|record| record.issued.invite_id != invite_id);
-            let bootstrap = workspace.bootstrap(
+            let admitted = workspace.admission(
                 invite_id,
                 join.redemption.certificate().clone(),
                 join.redemption.join().grant().role,
-            )?;
+            );
             self.join_completions.push(JoinCompletionRecord::receipt(
                 join.remote_endpoint,
                 join.request_id,
                 join.proof_digest,
-                &bootstrap,
-            )?);
-            delivered.push(Ok(bootstrap));
+                admitted.clone(),
+            ));
+            delivered.push(Ok(admitted));
         }
         Ok(delivered)
     }

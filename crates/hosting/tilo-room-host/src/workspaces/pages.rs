@@ -744,8 +744,13 @@ impl Workspaces {
             challenge,
             signature,
         };
+        let proving = crate::timing::start();
         let reply = self.prove(proof, &valid_name(name)?, token, now).await?;
+        crate::timing::event("join.prove.admitted", proving, 0);
+        let retaining = crate::timing::start();
         self.retained_for(&reply).await;
+        crate::timing::event("join.prove.retained", retaining, 0);
+        crate::timing::event("join.prove", proving, 0);
         Ok(reply)
     }
 
@@ -901,6 +906,7 @@ impl Workspaces {
         reason = "the workspace stays locked until its admissions are committed, published and answered"
     )]
     async fn admit_queued(&self, identity: &str) {
+        let locking = crate::timing::start();
         let workspace = self.workspace(identity).await;
         let mut locked = match &workspace {
             Ok(workspace) => Some(workspace.lock().await),
@@ -912,11 +918,14 @@ impl Workspaces {
             .lock_recover()
             .remove(identity)
             .unwrap_or_default();
+        crate::timing::event("join.queued.locked", locking, queued.len() as u64);
+        let admitting = crate::timing::start();
         let answers = match (&workspace, locked.as_mut()) {
             (Ok(_), Some(workspace)) => self.admit_pre_admitted(workspace, &queued).await,
             (Err(error), _) => vec![Err(error.clone()); queued.len()],
             (Ok(_), None) => Vec::new(),
         };
+        crate::timing::event("join.queued.admit", admitting, queued.len() as u64);
         for (queued, answer) in queued.into_iter().zip(answers) {
             let _ = queued.answer.send(answer);
         }

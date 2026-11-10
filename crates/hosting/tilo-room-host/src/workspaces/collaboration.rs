@@ -1178,6 +1178,7 @@ impl Workspaces {
         now: u64,
     ) -> Result<Vec<Result<JoinBootstrap, CollaborationError>>, CollaborationError> {
         let key = &self.inner.host.key;
+        let deciding = crate::timing::start();
         let (admitted, committed) = {
             let shared = workspace.peer.shared();
             let mut replica = shared.lock();
@@ -1185,8 +1186,11 @@ impl Workspaces {
             let admitted = tilo_peer_state::join_answer::admit(&mut held, joins, key, now);
             (admitted, held.committed)
         };
+        crate::timing::event("join.admit.decide", deciding, joins.len() as u64);
         if committed {
+            let settling = crate::timing::start();
             self.settle(workspace).await?;
+            crate::timing::event("join.admit.settle", settling, joins.len() as u64);
             // The person whose own workspace this is administers it from
             // their first device on.
             let owner = self

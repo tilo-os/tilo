@@ -182,7 +182,11 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
             now_ns,
         )
         .unwrap();
-    assert_eq!(replayed, Some(bootstrap), "a retry hears the same answer");
+    assert_eq!(
+        replayed,
+        Some(committed.filled(bootstrap).unwrap()),
+        "a retry hears the answer the device was sent"
+    );
     let later = || Ok(vec![b"later governance".to_vec()]);
     let moved = Governed {
         peer: (&candidate).into(),
@@ -449,12 +453,19 @@ fn a_join_receipt_keeps_none_of_the_workspaces_state_and_replays_while_it_is_unc
         governance_messages: Some(&messages),
     };
     let (_, cert) = guest();
-    let delivered = workspace
-        .bootstrap([9; 32], cert, MemberRole::Editor)
-        .unwrap();
+    let admitted = workspace.admission([9; 32], cert, MemberRole::Editor);
+    let delivered = workspace.filled(admitted.clone()).unwrap();
     assert!(!delivered.certified_roster.is_empty());
-    let receipt = JoinCompletionRecord::receipt([1; 32], [2; 32], [3; 32], &delivered).unwrap();
+    let receipt = JoinCompletionRecord::receipt([1; 32], [2; 32], [3; 32], admitted);
     assert!(receipt.bootstrap.certified_roster.is_empty());
     assert!(receipt.bootstrap.records.is_empty());
+    assert!(receipt.bootstrap.governance_messages.is_empty());
     assert_eq!(receipt.replay(&workspace).unwrap(), delivered);
+    // Any governance change since moves the workspace's generation on: the
+    // reply delivered then is not the workspace now, and the member refreshes.
+    let moved = Governed {
+        generation: 2,
+        ..workspace
+    };
+    assert!(receipt.replay(&moved).is_err());
 }
