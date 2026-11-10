@@ -442,9 +442,9 @@ fn now_line(request: &Value, failed: bool) -> Option<String> {
     let line = match tool {
         "tilo_ls" => match named("path") {
             path if path.is_empty() => "Looking at the apps".to_owned(),
-            path => verb_line("Looking at", &path),
+            path => place_line("Looking at", &path),
         },
-        "tilo_read" => verb_line("Reading", &named("path")),
+        "tilo_read" => place_line("Reading", &named("path")),
         "tilo_find" => verb_line("Searching for", &named("query")),
         "tilo_do" => doing(&arguments)?,
         "tilo" => "Running a program".to_owned(),
@@ -486,8 +486,7 @@ fn doing(arguments: &Value) -> Option<String> {
         ),
     };
     let path = path.trim();
-    let (target, action) = path.split_once('#').map_or((path, ""), |parts| parts);
-    let target = target.trim();
+    let action = path.split_once('#').map_or("", |(_, action)| action);
     let line = match verb(action) {
         "Running" => {
             let command = ["command", "command_line", "cmd"]
@@ -498,10 +497,13 @@ fn doing(arguments: &Value) -> Option<String> {
                 .filter(|command| !command.is_empty());
             match command {
                 Some(command) => verb_line("Running", command),
-                None => format!("Running a command in {target}"),
+                None => match path_place(path).0 {
+                    app if app.is_empty() => "Running a command".to_owned(),
+                    app => format!("Running a command in {app}"),
+                },
             }
         }
-        verb => verb_line(verb, target),
+        verb => place_line(verb, path),
     };
     Some(if more == 0 {
         line
@@ -539,6 +541,42 @@ fn verb_line(verb: &str, what: &str) -> String {
         verb.to_owned()
     } else {
         format!("{verb} {what}")
+    }
+}
+
+/// The app and the record a tool path names, as a person reads them:
+/// `notes/Notebook/Launch notes#append-paragraph` is "Launch notes" in "Notes",
+/// and `terminal#run` is the Terminal itself, with no record of its own.
+fn path_place(path: &str) -> (String, String) {
+    let path = path.split('#').next().unwrap_or_default().trim();
+    let mut parts = path
+        .split('/')
+        .map(str::trim)
+        .filter(|part| !part.is_empty());
+    let app = parts
+        .next()
+        .map(|app| app.split('@').next().unwrap_or(app))
+        .map(|app| {
+            let mut letters = app.chars();
+            letters
+                .next()
+                .map(|first| first.to_uppercase().chain(letters).collect())
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+    let record = parts.next_back().unwrap_or_default().to_owned();
+    (app, record)
+}
+
+/// `<verb> <record> in <app>` as one line: an app with no record of its own is
+/// the whole of what is named, and a path naming nothing is the verb alone.
+fn place_line(verb: &str, path: &str) -> String {
+    let (app, record) = path_place(path);
+    match (record.is_empty(), app.is_empty()) {
+        (false, false) => format!("{verb} {record} in {app}"),
+        (false, true) => format!("{verb} {record}"),
+        (true, false) => format!("{verb} {app}"),
+        (true, true) => verb.to_owned(),
     }
 }
 
@@ -580,21 +618,25 @@ mod tests {
     }
 
     /// Each tool call is said as what the agent is at now, present tense and
-    /// on what.
+    /// on what: the record it names in the app it is in, never the tool's path.
     #[test]
     fn a_call_is_said_as_what_the_agent_is_doing() {
         let line = |name: &str, arguments: Value| now_line(&call(name, arguments), false);
         assert_eq!(
             line("tilo_ls", json!({"path": "notes"})).as_deref(),
-            Some("Looking at notes")
+            Some("Looking at Notes")
+        );
+        assert_eq!(
+            line("tilo_ls", json!({"path": "notes/Notebook/Launch notes"})).as_deref(),
+            Some("Looking at Launch notes in Notes")
         );
         assert_eq!(
             line("tilo_ls", json!({})).as_deref(),
             Some("Looking at the apps")
         );
         assert_eq!(
-            line("tilo_read", json!({"path": "notes/Welcome"})).as_deref(),
-            Some("Reading notes/Welcome")
+            line("tilo_read", json!({"path": "notes/Notebook/Launch notes"})).as_deref(),
+            Some("Reading Launch notes in Notes")
         );
         assert_eq!(
             line("tilo_find", json!({"query": "invoices"})).as_deref(),
@@ -606,7 +648,7 @@ mod tests {
                 json!({"path": "sheets/Budget#edit-cell", "args": {"cell": "B2"}})
             )
             .as_deref(),
-            Some("Editing sheets/Budget")
+            Some("Editing Budget in Sheets")
         );
         assert_eq!(
             line(
@@ -617,12 +659,16 @@ mod tests {
             Some("Running cargo test")
         );
         assert_eq!(
+            line("tilo_do", json!({"path": "terminal#run"})).as_deref(),
+            Some("Running a command in Terminal")
+        );
+        assert_eq!(
             line(
                 "tilo_do",
                 json!({"path": "sheets#new-sheet", "args": {"name": "Budget"}})
             )
             .as_deref(),
-            Some("Adding sheets")
+            Some("Adding Sheets")
         );
         assert_eq!(
             line(
@@ -631,7 +677,7 @@ mod tests {
                                  {"path": "notes/Welcome#set-title"}]})
             )
             .as_deref(),
-            Some("Editing notes/Welcome and 1 more")
+            Some("Editing Welcome in Notes and 1 more")
         );
         assert_eq!(
             line("tilo", json!({"program": "notes.notebook.notes"})).as_deref(),
@@ -648,7 +694,7 @@ mod tests {
             &call("tilo_do", json!({"path": "notes/Welcome#edit"})),
             true,
         );
-        assert_eq!(failed.as_deref(), Some("Editing notes/Welcome (failed)"));
+        assert_eq!(failed.as_deref(), Some("Editing Welcome in Notes (failed)"));
         let long = now_line(
             &call(
                 "tilo_find",
@@ -676,14 +722,14 @@ mod tests {
             1_700_000_000_000,
             "Claude Code",
             [0x81, 0xa8, 0xff],
-            Some("Editing sheets/Budget".to_owned()),
+            Some("Editing Budget in Sheets".to_owned()),
             Some(&focus),
             None,
         );
         assert!(view.agent);
         assert_eq!(view.label, "Claude Code");
         assert_eq!(view.colour, "#81a8ff");
-        assert_eq!(view.activity.as_deref(), Some("Editing sheets/Budget"));
+        assert_eq!(view.activity.as_deref(), Some("Editing Budget in Sheets"));
         assert_eq!(view.focus(), Some(("so.tilo.sheets", focus.short_digest())));
         assert!(view.selection.is_none(), "the agent names no caret");
         // An agent that acts nowhere yet names no window: a receiver still
