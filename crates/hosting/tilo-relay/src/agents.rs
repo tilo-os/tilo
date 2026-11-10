@@ -450,6 +450,8 @@ struct RelayRecordsLink {
     feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
     shell: Option<Arc<dyn WorkspaceShell>>,
     stores: Arc<WorkspaceStores>,
+    /// Where a person is asked about an action run for them.
+    certification: CertificationProtocol,
 }
 
 /// The workspaces' content stores, as the host answers its members from
@@ -464,6 +466,44 @@ impl crate::workspaces::WorkspaceContent for StoresContent {
 }
 
 impl WorkspaceRecordsLink for RelayRecordsLink {
+    /// On the approving devices of the person `caller` is or acts for: the
+    /// host's own person's, or a member's own root, as their device requests
+    /// are answered.
+    fn ask_person(
+        &self,
+        _workspace: u64,
+        caller: &Caller,
+        question: tilo_actions::remote::ConfirmationQuestion,
+    ) -> Option<Pending<Result<tilo_actions::remote::ConfirmationReply, ActionHostError>>> {
+        let person = *caller.user_public_key()?;
+        let agent_id = match caller.principal() {
+            CallerPrincipal::Agent(agent) => agent.clone(),
+            _ => String::new(),
+        };
+        let pending = PendingConfirmation {
+            id: question.id,
+            agent_id,
+            agent_label: question.device_label,
+            action_label: question.action_label,
+            resource_label: question.resource_label,
+            risk: question.risk,
+            workspace: question.workspace,
+            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(CONFIRMATION_WAIT_NS),
+        };
+        let (completer, answer) = tilo_actions::remote::pending();
+        let certification = self.certification.clone();
+        self.member.runtime.spawn(async move {
+            completer.complete(match certification.confirm_for(person, pending).await {
+                Ok(ConfirmationAnswer::AllowOnce) => {
+                    Ok(tilo_actions::remote::ConfirmationReply::AllowOnce)
+                }
+                Ok(ConfirmationAnswer::Deny) => Ok(tilo_actions::remote::ConfirmationReply::Deny),
+                Err(_) => Err(ActionHostError::ConfirmationRequired),
+            });
+        });
+        Some(answer)
+    }
+
     fn workspace_content(&self, workspace: u64) -> Option<tilo_content::ContentStore> {
         let identity = self
             .member
@@ -625,6 +665,7 @@ fn attach_records(
             web_entry,
             feedback_reviewer,
             stores,
+            certification: relay.web_context().certification.clone(),
             member: WorkspaceMember {
                 endpoint: HostEndpoint::iroh(relay.node_addr(), host_cert.clone()),
                 key: relay.workspace_records().signing_key().clone(),

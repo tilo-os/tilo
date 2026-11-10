@@ -81,6 +81,7 @@ impl Fixture {
             compactor: None,
             member_limits,
             resumes: Box::leak(Box::default()),
+            agent: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         }
     }
@@ -1205,6 +1206,7 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
                 compactor: None,
                 member_limits: None,
                 resumes: Box::leak(Box::default()),
+                agent: Box::leak(Box::default()),
                 lag: Box::leak(Box::default()),
             };
             handle_sync_request(&source.peer, &session, 7, vec![]).await

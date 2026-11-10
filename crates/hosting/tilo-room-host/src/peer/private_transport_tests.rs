@@ -93,6 +93,7 @@ impl Doors {
             compactor: None,
             member_limits: None,
             resumes: Box::leak(Box::default()),
+            agent: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         }
     }

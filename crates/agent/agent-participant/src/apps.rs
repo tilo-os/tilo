@@ -186,16 +186,21 @@ pub enum ReplicaActor {
         /// The installer's standing bounded by the bot's grants.
         standing: policy::Standing,
     },
-    /// A workspace member whose action the host runs (commenting a person may do
-    /// but cannot publish as a document writer): their own current standing
-    /// and the workspace's sandbox, as the workspace's policy gave them to the host.
+    /// A person whose action the host runs for them, or an agent acting for
+    /// them: their own current standing and the workspace's sandbox, as the
+    /// workspace's policy gave them to the host. An agent holds that standing
+    /// bounded as every agent's is ([`policy::roles::agent_turn`]: the
+    /// editor preset at most), is offered only what reaches agents, and is
+    /// who the changes it makes are by, for the person.
     Member {
-        /// The member's current standing in the workspace.
+        /// The person's current standing in the workspace.
         standing: policy::Standing,
         /// The workspace's sandbox capabilities.
         sandbox: Vec<collab_types::caps::CapOverride>,
         /// When the policy was read, for grant expiry.
         unix_time: u64,
+        /// The agent acting for the person, by its agent id, when one is.
+        agent: Option<String>,
     },
 }
 
@@ -414,8 +419,10 @@ impl Replica {
             .kind(app_id)
             .ok_or_else(|| AppError::UnknownApp(app_id.to_owned()))?;
         let offers_reads = matches!(actor, ReplicaActor::Bot { .. });
-        let runs_effects = matches!(actor, ReplicaActor::Agent | ReplicaActor::Owner);
-        let automated = matches!(actor, ReplicaActor::Agent | ReplicaActor::Bot { .. });
+        let for_agent = matches!(actor, ReplicaActor::Member { agent: Some(_), .. });
+        let runs_effects = for_agent || matches!(actor, ReplicaActor::Agent | ReplicaActor::Owner);
+        let automated =
+            for_agent || matches!(actor, ReplicaActor::Agent | ReplicaActor::Bot { .. });
         let (invoker, permissions) = replica_standing(actor, workspace, participant);
         let (checkout, bytes, created) = seeded(definition, kind, workspace, participant, seed)?;
         let opening = AttachedView::opening(definition, workspace, checkout, bytes)
@@ -1012,12 +1019,28 @@ fn replica_standing(
             standing,
             sandbox,
             unix_time,
-        } => PermissionContext::new(
-            ui::permissions::Actor::person(standing.person.clone()).in_workspace(workspace),
-            sandbox,
-            standing,
-        )
-        .at_unix_time(unix_time),
+            agent,
+        } => {
+            let person = standing.person.clone();
+            let permissions = PermissionContext::new(
+                ui::permissions::Actor::person(person.clone()).in_workspace(workspace),
+                sandbox,
+                standing,
+            )
+            .at_unix_time(unix_time);
+            match agent {
+                Some(agent) => {
+                    let bound = policy::roles::agent_turn(workspace, &agent, &person, &[]);
+                    // Named as the host admitted it (`Caller::actor`), so
+                    // History reads the agent, for the person.
+                    invoker = tilo_actions::ActionInvoker::actor(format!("agent:{agent}"))
+                        .with_kind(tilo_actions::ActorKind::Agent)
+                        .acting_for(person);
+                    permissions.acting_as(bound.subject, bound.grants)
+                }
+                None => permissions,
+            }
+        }
     };
     (invoker, permissions)
 }

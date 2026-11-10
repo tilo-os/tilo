@@ -327,7 +327,8 @@ fn serve_locally(
     Ok(None)
 }
 
-/// Who `peer` acts as: the person on their own device, or the agent or bot
+/// Who `peer` acts as: the person on their own device, the agent that
+/// device handed this session to ([`SessionCtx::agent`]), or the agent or bot
 /// whose live delegation that device carries.
 fn session_caller(
     peer: &AuthenticatedPeer,
@@ -359,7 +360,13 @@ fn session_caller(
             Caller::authenticated(peer.user_public_key, peer.device_public_key)
                 .delegated_to(grant_agent_id(&peer.device_public_key))
         }
-        None => Caller::authenticated(peer.user_public_key, peer.device_public_key),
+        None => {
+            let person = Caller::authenticated(peer.user_public_key, peer.device_public_key);
+            match session.agent.get() {
+                Some(agent) => person.delegated_to(agent.clone()),
+                None => person,
+            }
+        }
     })
 }
 

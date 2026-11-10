@@ -21,6 +21,26 @@ pub enum Confirmation {
     Witnessed(String),
 }
 
+/// What a confirmation is bound to of an invocation's arguments: their
+/// digest, so a host that keeps the person's answer for one invocation keeps
+/// no raw input, and arguments other than the ones answered find no answer.
+/// `argument` is the invocation's argument as it travels
+/// ([`InvokeArgument::to_slot`](super::InvokeArgument::to_slot)).
+#[must_use]
+pub fn argument_digest(argument: Option<&str>) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    match argument {
+        Some(value) => {
+            hasher.update(b"some\0");
+            hasher.update(value.as_bytes());
+        }
+        None => {
+            hasher.update(b"none\0");
+        }
+    }
+    *hasher.finalize().as_bytes()
+}
+
 /// The person's answer to [`ActionHost::confirm`](super::ActionHost::confirm):
 /// the confirmation to invoke again with, and the arguments to invoke with.
 ///

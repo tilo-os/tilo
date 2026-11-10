@@ -191,7 +191,7 @@ impl Worker {
         request: &InvokeRequest,
     ) -> Option<InvocationReceipt> {
         let invocation = request.invocation;
-        if request.target.address.action != RUN || !self.serves_as_owner(caller) {
+        if request.target.address.action != RUN || !self.acts_for_owner(caller) {
             return None;
         }
         let route =
@@ -312,7 +312,7 @@ impl Worker {
         request: &InvokeRequest,
     ) -> Option<InvocationReceipt> {
         let invocation = request.invocation;
-        if request.target.address.action != STOP || !self.serves_as_owner(caller) {
+        if request.target.address.action != STOP || !self.acts_for_owner(caller) {
             return None;
         }
         record_of(&request.target.provider, "").filter(|route| route.app_id == TERMINAL_APP)?;

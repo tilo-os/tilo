@@ -438,9 +438,12 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
             ),
         ))
         .await;
-    assert!(
-        !matches!(triage.status, ReceiptStatus::Completed { .. }),
-        "triage needs Write, which a commenter does not have: {triage:?}"
+    assert_eq!(
+        triage.status,
+        ReceiptStatus::Rejected {
+            error: ActionHostError::NotPermitted
+        },
+        "triage is the record's, but needs more than a commenter holds: {triage:?}"
     );
     visitor.peer.close();
     owner_browser.peer.close();

@@ -65,6 +65,8 @@ impl Pending {
 
 /// A question an agent waits on, and the person's answer once given.
 struct Asked {
+    /// The person asked: only their approving devices see and answer it.
+    person: [u8; 32],
     question: PendingConfirmation,
     answer: watch::Sender<Option<ConfirmationAnswer>>,
 }
@@ -178,6 +180,22 @@ impl CertificationProtocol {
         &self,
         question: PendingConfirmation,
     ) -> Result<ConfirmationAnswer, String> {
+        self.confirm_for(self.identity.user_public_key, question)
+            .await
+    }
+
+    /// [`Self::confirm`], put to `person`: the host's own person on their
+    /// approving devices, or a member of a workspace here, whose root answers
+    /// it through [`Self::member_approve`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::confirm`].
+    pub async fn confirm_for(
+        &self,
+        person: [u8; 32],
+        question: PendingConfirmation,
+    ) -> Result<ConfirmationAnswer, String> {
         let now = unix_now_ns();
         let id = question.id;
         let wait = Duration::from_nanos(question.expires_at_ns.saturating_sub(now));
@@ -191,7 +209,14 @@ impl CertificationProtocol {
                 return Err("too many questions are waiting for an answer".into());
             }
             let (answer, receiver) = watch::channel(None);
-            asked.insert(id, Asked { question, answer });
+            asked.insert(
+                id,
+                Asked {
+                    person,
+                    question,
+                    answer,
+                },
+            );
             receiver
         };
         let answered = tokio::time::timeout(wait, receiver.wait_for(Option::is_some))
@@ -244,7 +269,15 @@ impl CertificationProtocol {
                 now_ns,
                 &user,
             ),
-            _ => refused("a member approves only their own device requests"),
+            // What the host asks them about something run for them, and
+            // their answer to one such question of their own.
+            ApproverRequest::Confirmations => {
+                ApproverReply::Confirmations(self.questions(&user, now_ns))
+            }
+            ApproverRequest::Answer { id, answer } => self.answer(&user, id, answer, now_ns),
+            ApproverRequest::DelegateProposals => {
+                refused("a member approves only their own device requests")
+            }
         }
     }
 
@@ -497,18 +530,27 @@ impl CertificationProtocol {
     }
 
     /// Every question still waiting for its answer.
-    fn questions(&self, now_ns: u64) -> Vec<PendingConfirmation> {
+    fn questions(&self, person: &[u8; 32], now_ns: u64) -> Vec<PendingConfirmation> {
         self.asked()
             .values()
-            .filter(|entry| entry.open(now_ns))
+            .filter(|entry| entry.open(now_ns) && entry.person == *person)
             .map(|entry| entry.question.clone())
             .collect()
     }
 
     /// Hand `answer` to the agent waiting on question `id`, once.
-    fn answer(&self, id: [u8; 32], answer: ConfirmationAnswer, now_ns: u64) -> ApproverReply {
+    fn answer(
+        &self,
+        person: &[u8; 32],
+        id: [u8; 32],
+        answer: ConfirmationAnswer,
+        now_ns: u64,
+    ) -> ApproverReply {
         let asked = self.asked();
-        let Some(entry) = asked.get(&id).filter(|entry| entry.open(now_ns)) else {
+        let Some(entry) = asked
+            .get(&id)
+            .filter(|entry| entry.open(now_ns) && entry.person == *person)
+        else {
             return ApproverReply::Refused {
                 reason: "no such question is waiting".into(),
             };
@@ -542,8 +584,12 @@ impl CertificationProtocol {
                     })
                     .collect(),
             ),
-            ApproverRequest::Confirmations => ApproverReply::Confirmations(self.questions(now_ns)),
-            ApproverRequest::Answer { id, answer } => self.answer(id, answer, now_ns),
+            ApproverRequest::Confirmations => {
+                ApproverReply::Confirmations(self.questions(&self.identity.user_public_key, now_ns))
+            }
+            ApproverRequest::Answer { id, answer } => {
+                self.answer(&self.identity.user_public_key, id, answer, now_ns)
+            }
             ApproverRequest::Decide {
                 request_digest,
                 decision,

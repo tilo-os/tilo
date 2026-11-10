@@ -254,6 +254,12 @@ struct SessionCtx<'a> {
     member_limits: Option<&'a crate::member_limits::MemberLimits>,
     /// This connection's resume log per resumed workspace.
     resumes: &'a std::sync::Mutex<HashMap<u64, ResumeLog>>,
+    /// The agent this connection is a run of, once its device said so
+    /// ([`tilo_relay_protocol::web::HereRequest::agent`]): every request the
+    /// connection makes from then on is that agent's, acting for the device's
+    /// person, as the session's caller. Said once, it stays: a session
+    /// handed to an agent is never handed back.
+    agent: &'a std::sync::OnceLock<String>,
     /// Workspaces whose live deliveries this connection could not take.
     lag: &'a Arc<Lag>,
     /// Where this connection's workspaces post the presence they fan out to it;

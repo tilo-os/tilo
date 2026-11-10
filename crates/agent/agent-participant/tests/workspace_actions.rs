@@ -54,6 +54,12 @@ pub mod hosted_documents;
 #[cfg(test)]
 #[path = "workspace_actions/member_own.rs"]
 mod member_own;
+#[cfg(test)]
+#[path = "workspace_actions/member_roles.rs"]
+mod member_roles;
+#[cfg(test)]
+#[path = "workspace_actions/own_agent.rs"]
+mod own_agent;
 #[path = "workspace_actions/resource_support.rs"]
 mod resource_support;
 #[cfg(test)]

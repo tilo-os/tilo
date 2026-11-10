@@ -32,6 +32,12 @@ pub(super) async fn handle_here(
 ) -> Result<Option<Envelope>, PeerError> {
     let reply = match postcard::from_bytes::<HereRequest>(frame) {
         Ok(request) => match session.here {
+            // Said before anything else: the device hands this session to
+            // the agent it names, and every request it makes from now on is
+            // the agent's, for the person, within what bounds an agent.
+            _ if request.agent && !note_agent(session, &request.label) => {
+                Err("this session is already the run of another agent".into())
+            }
             Some(here) if request.agent => {
                 // The device runs an agent, and this session is one run of
                 // it: the person's agent door lists it while it lasts.
@@ -48,4 +54,13 @@ pub(super) async fn handle_here(
     let frame = postcard::to_stdvec(&reply)
         .map_err(|error| PeerError::Protocol(format!("who is here does not encode: {error}")))?;
     Ok(Some(Envelope::HereReply { request_id, frame }))
+}
+
+/// Record that `session` is a run of the agent `label`, unless it already is
+/// one of another: whether it is now `label`'s. An agent with no name is
+/// still an agent, named for the device that runs it.
+fn note_agent(session: &SessionCtx<'_>, label: &str) -> bool {
+    let name = label.trim();
+    let name = if name.is_empty() { "agent" } else { name };
+    session.agent.get_or_init(|| name.to_owned()) == name
 }

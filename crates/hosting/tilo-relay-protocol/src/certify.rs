@@ -141,8 +141,10 @@ pub const MEMBER_APPROVAL_LABEL: &[u8] = b"tilo member approval v1\0";
 pub const MEMBER_APPROVAL_SKEW_NS: u64 = 5 * 60 * 1_000_000_000;
 
 /// An approver command from a member's root over HTTPS: only
-/// [`ApproverRequest::ListPending`] (that member's own requests) and
-/// [`ApproverRequest::Decide`] (one of them) are answered.
+/// [`ApproverRequest::ListPending`] (that member's own requests),
+/// [`ApproverRequest::Decide`] (one of them), [`ApproverRequest::Confirmations`]
+/// (what the host asks that member about actions run for them) and
+/// [`ApproverRequest::Answer`] (to one of those) are answered.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemberApproval {
     /// The member's root, which signs.

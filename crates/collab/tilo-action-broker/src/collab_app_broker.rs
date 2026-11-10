@@ -2521,19 +2521,7 @@ struct ConfirmationGrant {
     expires: std::time::Instant,
 }
 
-fn argument_digest(argument: Option<&str>) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    match argument {
-        Some(value) => {
-            hasher.update(b"some\0");
-            hasher.update(value.as_bytes());
-        }
-        None => {
-            hasher.update(b"none\0");
-        }
-    }
-    *hasher.finalize().as_bytes()
-}
+use tilo_actions::remote::argument_digest;
 
 /// One subscription onto the broker fanout. Slot-indexed inside a
 /// [`ChannelSubscribers`] table so it can be dropped en masse when
