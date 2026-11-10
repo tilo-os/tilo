@@ -579,32 +579,24 @@ function fakeStandIn() {
   return {
     asked, stored,
     standIn: {
-      ask: async body => {
-        const request = typeof body === 'string' ? JSON.parse(body.replace(/"signed_at_ns":(\d+)/, '"signed_at_ns":"$1"')) : body;
-        asked.push(request);
-        return request.op === 'key' ? {state: 'key', key: 'cd'.repeat(32)} : request.op === 'certify' ? {state: 'kept', expires_at_ms: 1} : {state: 'retired'};
-      },
-      certify: async key => { asked.push({certify: key}); return `cert-of-${key.slice(0, 4)}`; },
-      revoke: async key => { asked.push({revoke: key}); },
+      keep: async () => { asked.push('keep'); return 'cd'.repeat(32); },
+      retire: async () => { asked.push('retire'); },
+      revoke: async key => { asked.push(`revoke ${key}`); },
     },
     standInStore: {getItem: key => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value), removeItem: key => stored.delete(key)},
   };
 }
 
-test('a person set up through an agent gets a stand-in: the host makes a key, the root certifies it, the host keeps it', async () => {
+test('a person set up through an agent gets a stand-in, once', async () => {
+  // How the host makes the key, the root certifies it and the host keeps it
+  // is the shared client's (tilo-relay-client's `keep_stand_in`).
   const identity = fakeIdentity();
   const fake = fakeStandIn();
-  const actions = createIdentityActions({passkeys: withPasskeys, identity, now: () => 1_700_000_000_123, ...fake});
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, ...fake});
   assert.equal(await actions.keepStandIn(), 'cd'.repeat(32));
-  assert.deepEqual(fake.asked.map(request => request.op ?? Object.keys(request)[0]), ['key', 'certify', 'certify']);
-  const [key] = fake.asked;
-  assert.equal(key.user, identity.userPublicKey);
-  assert.equal(key.signed_at_ns, '1700000000123000000', 'the exact nanoseconds, not a rounded number');
-  assert.equal(key.signature, '00'.repeat(64));
-  assert.deepEqual(fake.asked[1], {certify: 'cd'.repeat(32)});
-  assert.deepEqual(fake.asked[2], {op: 'certify', cert: 'cert-of-cdcd'});
+  assert.deepEqual(fake.asked, ['keep']);
   assert.equal(await actions.keepStandIn(), 'cd'.repeat(32), 'made once');
-  assert.equal(fake.asked.length, 3);
+  assert.deepEqual(fake.asked, ['keep']);
 });
 
 test('keeping with a passkey revokes the stand-in and has the host forget it', async () => {
@@ -617,8 +609,7 @@ test('keeping with a passkey revokes the stand-in and has the host forget it', a
   await actions.attach(fakeMount());
   await actions.perform(KEEP.id);
   assert.deepEqual(errors, []);
-  assert.deepEqual(fake.asked.map(request => request.op ?? Object.keys(request)[0]), ['revoke', 'retire']);
-  assert.equal(fake.asked[1].user, identity.userPublicKey);
+  assert.deepEqual(fake.asked, [`revoke ${'cd'.repeat(32)}`, 'retire']);
   assert.equal(fake.stored.size, 0);
   assert.equal(await actions.keepStandIn(), null, 'a kept root needs no stand-in');
 });
@@ -631,8 +622,8 @@ test('the host is asked to forget the stand-in only once its revocation is signe
   const actions = createIdentityActions({
     passkeys: withPasskeys, identity, publish: async () => {},
     standIn: {
-      ask: async body => { asked.push((typeof body === 'string' ? JSON.parse(body) : body).op); return {}; },
-      certify: async () => 'cert',
+      keep: async () => 'cd'.repeat(32),
+      retire: async () => { asked.push('retire'); },
       revoke: async key => {
         asked.push(`revoke ${key}`);
         await settled;

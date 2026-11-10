@@ -602,7 +602,6 @@ inputs = ["crates/browser/tilo-browser-runtime/", "tools/web/wasm-split/src/main
 suites = [
   "crates/browser/tilo-browser-runtime/web/app-bar.test.mjs",
   "crates/browser/tilo-browser-runtime/web/first-run.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/login-code.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-prefetch.test.mjs",
   "crates/browser/tilo-browser-runtime/web/here.test.mjs",
   "crates/browser/tilo-browser-runtime/web/fetch-proxy.test.mjs",

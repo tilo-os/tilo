@@ -44,7 +44,6 @@
  * chooses (their profile, signed by the root): each of their devices, paired
  * or signed in, comes up with it (`syncProfile`).
  */
-import {standInBody} from './login-code.mjs';
 import {forInvites, openInvites} from './pairing.mjs';
 import {
   fetchEnvelope, fetchProfile, fitDisplayName, IdentityError, publishEnvelope, publishProfile, signInWithPasskey,
@@ -167,14 +166,14 @@ export async function saveRecoveryKey(recoveryKey, {userPublicKey, name = 'Tilo'
  * that it signed in.
  * `keepStandIn()` gives a person set up through an agent a stand-in on
  * their host, so that clearing this tab, the one place their root is, does
- * not lose them: the host makes a key (`standIn.ask`, a root-signed
- * `key`), the root certifies it here as an approver of the person's new
- * devices (`standIn.certify(key)`, resolving to the certificate as hex),
- * and the host keeps the certificate (`certify`). Once the person keeps
- * their root with a passkey, the root revokes the stand-in as it revokes
- * any of their devices (`standIn.revoke(key)`, signed by the root and kept
- * with the person, which every session of theirs announces to its host) and
- * the host forgets it (`retire`). `standInStore` remembers which key it was.
+ * not lose them (`standIn.keep()`, the shared client's `keepStandIn`: the
+ * host makes a key, the root certifies it here as an approver of the
+ * person's new devices, and the host keeps the certificate; it resolves to
+ * the key). Once the person keeps their root with a passkey, the root revokes
+ * the stand-in as it revokes any of their devices (`standIn.revoke(key)`,
+ * signed by the root and kept with the person, which every session of theirs
+ * announces to its host) and the host forgets it (`standIn.retire()`).
+ * `standInStore` remembers which key it was.
  */
 export function createIdentityActions({
   identity, hosts = () => [], lookups = hosts, rpId = globalThis.location?.hostname, name = () => undefined,
@@ -194,7 +193,7 @@ export function createIdentityActions({
     const key = remembered();
     if (!key || !standIn) return;
     await standIn.revoke(key);
-    await standIn.ask(await standInBody('retire', identity, now()));
+    await standIn.retire();
     try { standInStore?.removeItem(standInKey); } catch { /* Forgotten on the host already. */ }
   };
   let mount;
@@ -341,9 +340,7 @@ export function createIdentityActions({
       if (identity.kept || !standIn) return null;
       const existing = remembered();
       if (existing) return existing;
-      const {key} = await standIn.ask(await standInBody('key', identity, now()));
-      const cert = await standIn.certify(key);
-      await standIn.ask({op: 'certify', cert});
+      const key = await standIn.keep();
       try { standInStore?.setItem(standInKey, key); } catch { /* Made again next time: the host names the same key. */ }
       return key;
     },

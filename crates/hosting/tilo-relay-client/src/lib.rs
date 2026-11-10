@@ -55,6 +55,8 @@ pub mod invite;
 /// [`login::redeem`]).
 #[cfg(feature = "iroh")]
 pub mod login;
+/// A host's login codes and the person's stand-in approver, for the tab and the computer alike.
+pub mod login_code;
 pub mod pairing;
 pub mod sign_in;
 pub mod signer;

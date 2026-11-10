@@ -766,31 +766,70 @@ pub async fn certify_with_root(
     .map_err(js_error)
 }
 
-/// Have the root the page holds (`root`, the identity handle
-/// `pendingPairings` takes) make `key_hex`, a key the page's host holds, the
-/// person's stand-in approver for as long as a stand-in may last: while the
-/// root is in this page only, the host can then certify a new member device
-/// of the person that a device of theirs asked for, and nothing else.
-/// Resolves to the certificate's canonical bytes (postcard) as hex, as the
-/// host's stand-in `certify` request carries it.
+/// `refusal` as the page reads it: an `Error` named `LoginCodeError`, with the host's HTTP
+/// `status` (0 unreached) and the kind of refusal as `code`
+/// ([`tilo_relay_client::login_code::CodeRefusal::code`]).
+fn code_error(refusal: &tilo_relay_client::login_code::CodeRefusal) -> JsValue {
+    let error = js_sys::Error::new(&refusal.message);
+    error.set_name("LoginCodeError");
+    let _ = Reflect::set(&error, &"code".into(), &refusal.code().into());
+    let _ = Reflect::set(&error, &"status".into(), &refusal.status.into());
+    error.into()
+}
+
+/// Make a login code at the host `post` reaches, naming `link` (this tab's pairing link, setting
+/// up through an agent) or nothing (asking to be signed in by a device of the person). Resolves
+/// to `{code, follow, expires_at_ms}` JSON.
 ///
 /// # Errors
 ///
-/// Rejects for a malformed key, the root's own key, or a failed signature.
-#[wasm_bindgen(js_name = certifyStandIn)]
-pub async fn certify_stand_in(root: JsValue, key_hex: String) -> Result<String, JsError> {
+/// Rejects with a `LoginCodeError` ([`code_error`]).
+#[wasm_bindgen(js_name = createLoginCode)]
+pub async fn create_login_code(post: Function, link: Option<String>) -> Result<String, JsValue> {
+    let made = tilo_relay_client::login_code::create(&PageHttp(post), link)
+        .await
+        .map_err(|refusal| code_error(&refusal))?;
+    serde_json::to_string(&made).map_err(|error| js_error(error).into())
+}
+
+/// Where the code this tab follows with the secret `follow` is: the host's `Polled`, as JSON.
+///
+/// # Errors
+///
+/// Rejects with a `LoginCodeError` ([`code_error`]).
+#[wasm_bindgen(js_name = followLoginCode)]
+pub async fn follow_login_code(post: Function, follow: String) -> Result<String, JsValue> {
+    let polled = tilo_relay_client::login_code::follow(&PageHttp(post), &follow)
+        .await
+        .map_err(|refusal| code_error(&refusal))?;
+    serde_json::to_string(&polled).map_err(|error| js_error(error).into())
+}
+
+/// Give the person whose root the page holds (`root`) a stand-in on the host `post` reaches
+/// ([`tilo_relay_client::login_code::keep_stand_in`]). Resolves to the stand-in's key, hex.
+///
+/// # Errors
+///
+/// Rejects with a `LoginCodeError` ([`code_error`]).
+#[wasm_bindgen(js_name = keepStandIn)]
+pub async fn keep_stand_in(post: Function, root: JsValue) -> Result<String, JsValue> {
     let root = PageSigner::from_js(&root)?;
-    let cert = tilo_relay_client::issue_stand_in(
-        &root,
-        device_key(&key_hex)?,
-        "Stand-in approver",
-        tilo_user_identity::STAND_IN_LIFETIME_NS,
-    )
-    .await
-    .map_err(js_error)?;
-    tilo_user_identity::canonical::canonical_bytes(&cert)
-        .map(hex::encode)
-        .map_err(js_error)
+    tilo_relay_client::login_code::keep_stand_in(&PageHttp(post), &root)
+        .await
+        .map_err(|refusal| code_error(&refusal))
+}
+
+/// Have the host `post` reaches forget the person's stand-in, signed by their root (`root`).
+///
+/// # Errors
+///
+/// Rejects with a `LoginCodeError` ([`code_error`]).
+#[wasm_bindgen(js_name = retireStandIn)]
+pub async fn retire_stand_in(post: Function, root: JsValue) -> Result<(), JsValue> {
+    let root = PageSigner::from_js(&root)?;
+    tilo_relay_client::login_code::retire_stand_in(&PageHttp(post), &root)
+        .await
+        .map_err(|refusal| code_error(&refusal))
 }
 
 /// Revoke `keyHex` — a device key of this person's, or the stand-in approver

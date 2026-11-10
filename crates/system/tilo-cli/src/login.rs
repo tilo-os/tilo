@@ -26,14 +26,15 @@ use std::process::ExitCode;
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use ed25519_dalek::{Signer as _, SigningKey};
+use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tilo_relay_client::CertifyError;
 use tilo_relay_client::HttpClient;
 use tilo_relay_client::https::{self, Origin};
 use tilo_relay_client::login::{Door, PairingLink, SignIn, door_at, sign_in};
-use tilo_relay_protocol::login_code::{self, Claim, Claimed, Report, Resolve, Resolved, Step};
+use tilo_relay_client::login_code;
+use tilo_relay_protocol::login_code::{self as protocol, Claimed, Report, Resolved, Step};
 use tilo_relay_protocol::web::API_PREFIX;
 use tilo_session_host::device::Device as Entered;
 
@@ -300,42 +301,20 @@ async fn home_host(site: &Origin) -> Result<String> {
     Ok(url.origin().ascii_serialization())
 }
 
-/// POST `body` as JSON to `route` below the host's API.
-async fn post_json(
-    host: &dyn HttpClient,
-    route: &str,
-    body: &(impl Serialize + Sync),
-) -> Result<(u16, Vec<u8>)> {
-    host.post(&format!("{API_PREFIX}{route}"), serde_json::to_vec(body)?)
-        .await
-        .map_err(|error| anyhow!("the host was not reached: {error}"))
-}
-
 /// What the code names, spending it.
 async fn resolve(host: &dyn HttpClient, code: &str) -> Result<Resolved> {
-    let (status, body) = post_json(
-        host,
-        login_code::RESOLVE_ROUTE,
-        &Resolve {
-            code: code.to_owned(),
-        },
-    )
-    .await?;
-    match status {
-        200 => serde_json::from_slice(&body).context("the host answered something else"),
-        404 => bail!(
-            "the code {code} is unknown, used or expired: a code works once, for 10 minutes. \
+    login_code::resolve(host, code)
+        .await
+        .map_err(|refusal| match refusal.code() {
+            "unknown" => anyhow!(
+                "the code {code} is unknown, used or expired: a code works once, for 10 minutes. \
              Ask the person to copy the prompt from their Tilo tab again."
-        ),
-        429 => bail!("too many wrong codes from here: wait a minute, then check the code"),
-        other => bail!(
-            "the host refused the code (HTTP {other}): {}",
-            String::from_utf8_lossy(&body)
-                .chars()
-                .take(200)
-                .collect::<String>()
-        ),
-    }
+            ),
+            "too-many" => {
+                anyhow!("too many wrong codes from here: wait a minute, then check the code")
+            }
+            _ => anyhow!("the host refused the code: {refusal}"),
+        })
 }
 
 /// Tells the tab what this computer did with its code.
@@ -361,20 +340,11 @@ impl Reporter<'_> {
         let report = Report {
             report: self.report.clone(),
             step,
-            agent: Some(
-                self.agent
-                    .chars()
-                    .take(login_code::MAX_AGENT_CHARS)
-                    .collect(),
-            ),
+            agent: Some(self.agent.chars().take(protocol::MAX_AGENT_CHARS).collect()),
             detail,
         };
-        match post_json(self.host, login_code::STEP_ROUTE, &report).await {
-            Ok((200 | 204, _)) => {}
-            Ok((status, _)) => {
-                eprintln!("The person's tab was not told this step (HTTP {status}).");
-            }
-            Err(error) => eprintln!("The person's tab was not told this step: {error:#}"),
+        if let Err(refusal) = login_code::report(self.host, &report).await {
+            eprintln!("The person's tab was not told this step: {refusal}");
         }
     }
 }
@@ -391,32 +361,15 @@ async fn claim(
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos(),
     )?;
-    let signature = key.sign(&login_code::claim_message(report, signed_at_ns));
-    let (status, body) = post_json(
-        host,
-        login_code::CLAIM_ROUTE,
-        &Claim {
-            report: report.to_owned(),
-            cert: device.cert.clone(),
-            signed_at_ns,
-            signature: hex::encode(signature.to_bytes()),
-        },
-    )
-    .await?;
-    match status {
-        200 => serde_json::from_slice(&body).context("the host answered something else"),
-        403 => bail!(
-            "this host signs nobody in for the person this computer is a device of: \
-             sign in on the host where you set Tilo up"
-        ),
-        other => bail!(
-            "the host refused the claim (HTTP {other}): {}",
-            String::from_utf8_lossy(&body)
-                .chars()
-                .take(200)
-                .collect::<String>()
-        ),
-    }
+    login_code::claim(host, report, device.cert.clone(), key, signed_at_ns)
+        .await
+        .map_err(|refusal| match refusal.code() {
+            "not-a-device" => anyhow!(
+                "this host signs nobody in for the person this computer is a device of: \
+                 sign in on the host where you set Tilo up"
+            ),
+            _ => anyhow!("the host refused the claim: {refusal}"),
+        })
 }
 
 /// The name the host lists `workspace` under, when it lists it.
@@ -497,7 +450,7 @@ fn add_tools(agent: &Agent, tilo: &Path, runner: &dyn agent::Runner) -> Tools {
 
 /// `tilo login <code> [--agent NAME] [--site ORIGIN]`.
 pub fn login(code: &str, agent: Option<&str>, site: Option<&str>) -> Result<ExitCode> {
-    let Some(code) = login_code::normalize_code(code) else {
+    let Some(code) = protocol::normalize_code(code) else {
         bail!(
             "{} is not a login code; one looks like K7Q-MX2P. Ask the person to copy the prompt \
              from their Tilo tab again.",
@@ -721,7 +674,7 @@ mod tests {
     #[tokio::test]
     async fn a_code_resolves_at_its_host_and_every_step_reaches_the_tab() {
         let host = FakeHost::new(|route, _| match route {
-            login_code::RESOLVE_ROUTE => (
+            protocol::RESOLVE_ROUTE => (
                 200,
                 json!({"link": "https://tilo.sh/#/@eu1.tilo.sh/w/x?pair=ab", "report": "aa"}),
             ),
@@ -744,7 +697,7 @@ mod tests {
         assert_eq!(
             sent[0],
             (
-                login_code::RESOLVE_ROUTE.to_owned(),
+                protocol::RESOLVE_ROUTE.to_owned(),
                 json!({"code": "K7Q-MX2P"})
             )
         );
@@ -752,15 +705,15 @@ mod tests {
             sent[1..],
             [
                 (
-                    login_code::STEP_ROUTE.to_owned(),
+                    protocol::STEP_ROUTE.to_owned(),
                     json!({"report": "aa", "step": "resolved", "agent": "Claude Code"})
                 ),
                 (
-                    login_code::STEP_ROUTE.to_owned(),
+                    protocol::STEP_ROUTE.to_owned(),
                     json!({"report": "aa", "step": "logged-in", "agent": "Claude Code"})
                 ),
                 (
-                    login_code::STEP_ROUTE.to_owned(),
+                    protocol::STEP_ROUTE.to_owned(),
                     json!({"report": "aa", "step": "failed", "agent": "Claude Code",
                            "detail": "Entering the workspace failed: offline."})
                 ),
@@ -783,12 +736,12 @@ mod tests {
         let key = SigningKey::from_bytes(&[9; 32]);
         let public = key.verifying_key();
         let host = FakeHost::new(move |route, body| {
-            assert_eq!(route, login_code::CLAIM_ROUTE);
-            let claim: Claim = serde_json::from_value(body.clone()).unwrap();
+            assert_eq!(route, protocol::CLAIM_ROUTE);
+            let claim: protocol::Claim = serde_json::from_value(body.clone()).unwrap();
             let signature = ed25519_dalek::Signature::from_bytes(
                 &hex::decode(&claim.signature).unwrap().try_into().unwrap(),
             );
-            let message = login_code::claim_message(&claim.report, claim.signed_at_ns);
+            let message = protocol::claim_message(&claim.report, claim.signed_at_ns);
             if public.verify_strict(&message, &signature).is_ok() && claim.cert == "00" {
                 (200, json!({"expires_at_ms": 5}))
             } else {
@@ -861,7 +814,7 @@ mod tests {
     #[test]
     fn a_login_code_reads_however_it_is_typed() {
         assert_eq!(
-            login_code::normalize_code("k7q mx2p").as_deref(),
+            protocol::normalize_code("k7q mx2p").as_deref(),
             Some("K7Q-MX2P")
         );
         assert!(login("https://tilo.sh/#/@eu1.tilo.sh/w/x?pair=ab", None, None).is_err());

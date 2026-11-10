@@ -27,7 +27,6 @@ import {readBrowserAccounts} from './browser-accounts.mjs';
 import {CustodyError, idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, SIGN_IN, syncProfile} from './identity-actions.mjs';
 import {firstRun, MCP_URL, SEEN} from './first-run.mjs';
-import {loginCodes} from './login-code.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
 import {deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
@@ -1238,7 +1237,7 @@ export async function startEntryPage({mode}) {
     // The first screen (first-run.mjs) sets an agent up through this tab's
     // root and signs in with an agent, both through a login code its host
     // makes, and signs in with a passkey, once the page can.
-    if (firstRun) offerFirstRun({page, identityActions});
+    if (firstRun) offerFirstRun({page, identityActions, runtime});
     // Leaving the first screen (skipped, or the agent is in) opens the
     // person's own workspace: the one their host keeps for them, where the
     // agent was set up, or else their own desktop where the site gives one.
@@ -1888,13 +1887,13 @@ function inputPause() {
  * joined (for an agent to set Tilo up through this tab's root, or to sign
  * this tab in as a person who has been here), and a passkey sign-in.
  */
-function offerFirstRun({page, identityActions}) {
+function offerFirstRun({page, identityActions, runtime}) {
   const peer = page.peer;
   if (!peer?.origin || !peer.workspace) {
     firstRun.unavailable({code: 'no-workspace'});
     return;
   }
-  const codes = loginCodes(peer.origin);
+  const codes = loginCodes(runtime, peer.origin);
   if (identityActions) {
     firstRun.offerSetup(async () => {
       // The agent is set up in the person's own workspace on this host,
@@ -1971,12 +1970,30 @@ const ownChoice = own => ({id: `${OPEN_WORKSPACE}${own.id}`, name: own.name ?? '
  * its host, so the stand-in approves nothing from then on.
  */
 function standInOf({peer, identity, runtime}) {
-  if (!peer?.origin || typeof runtime?.certifyStandIn !== 'function' || typeof identity?.revokeDevice !== 'function') return null;
-  const codes = loginCodes(peer.origin);
+  if (!peer?.origin || typeof runtime?.keepStandIn !== 'function' || typeof identity?.revokeDevice !== 'function') return null;
+  const post = httpsPost(peer.origin);
   return {
-    ask: body => codes.standIn(body),
-    certify: key => runtime.certifyStandIn(identity, key),
+    keep: () => runtime.keepStandIn(post, identity),
+    retire: () => runtime.retireStandIn(post, identity),
     revoke: key => identity.revokeDevice(key),
+  };
+}
+
+/**
+ * The login codes of the host at `origin`, through the one client of them
+ * (`createLoginCode`, `followLoginCode` in wasm): `create(link)` makes one
+ * naming this tab's pairing link, or nothing to be signed in by a device of
+ * the person, resolving to `{code, expiresAt, follow()}`; `follow()` says
+ * where it is (the host's `Polled`). A refusal is a `LoginCodeError` whose
+ * `code` says its kind (`not-a-device`, `unknown`, `unreachable`, …).
+ */
+function loginCodes(runtime, origin) {
+  const post = httpsPost(origin);
+  return {
+    async create(link = null) {
+      const made = JSON.parse(await runtime.createLoginCode(post, link));
+      return {code: made.code, expiresAt: made.expires_at_ms, follow: async () => JSON.parse(await runtime.followLoginCode(post, made.follow))};
+    },
   };
 }
 
