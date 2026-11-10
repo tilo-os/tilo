@@ -210,7 +210,7 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
     // The person's device: a runtime of its own that joins the workspace and
     // holds its files until the test stops it.
     let _ = tracing_subscriber::fmt()
-        .with_env_filter("warn,tilo_fs=debug,tilo_runtime=debug")
+        .with_env_filter("warn,tilo_fs=debug,tilo_runtime=debug,tilo_channels=debug")
         .with_writer(std::io::stderr)
         .try_init();
     if let Some(invitation) = std::env::var_os(PERSON_INVITATION) {

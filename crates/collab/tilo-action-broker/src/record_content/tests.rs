@@ -344,3 +344,40 @@ fn a_want_nobody_connected_keeps_is_unavailable_until_one_that_might_connects() 
         [ContentState::Pending, ContentState::Resolved]
     );
 }
+
+/// A record names content before the device that wrote it keeps the bytes
+/// where peers are served from. A peer that asked in between hears that the
+/// device lacks it, and asks no more while no device connects: the device
+/// hands the content over once it keeps it.
+#[test]
+fn content_a_device_lacked_when_asked_follows_once_it_keeps_it() {
+    let (a, b, _) = pair(true);
+    let bytes = picture(PIECE_BYTES + 5);
+    let hash = hash_bytes(&bytes);
+    let mut arrivals = b.subscribe(&route());
+    b.want(&route(), &hash);
+    assert_eq!(
+        states(&mut arrivals),
+        [ContentState::Pending, ContentState::Unavailable]
+    );
+
+    a.offer(&route(), &hash, &bytes).unwrap();
+    let arrived = arrival(&mut arrivals).expect("the content followed");
+    assert_eq!(arrived.bytes, bytes);
+    assert_eq!(
+        b.shelf.read(&ContentScope::of(&route()), &hash),
+        Some(bytes)
+    );
+}
+
+/// What a device lacked is owed only to peers that may read the record.
+#[test]
+fn content_is_not_owed_to_a_device_that_may_not_read() {
+    let (a, b, _) = pair(false);
+    let bytes = picture(100);
+    let hash = hash_bytes(&bytes);
+    let mut arrivals = b.subscribe(&route());
+    b.want(&route(), &hash);
+    a.offer(&route(), &hash, &bytes).unwrap();
+    assert!(arrival(&mut arrivals).is_none());
+}
