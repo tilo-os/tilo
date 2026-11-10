@@ -2306,6 +2306,23 @@ pub fn render(report: &Report) -> String {
         report.elapsed_ms / 1000,
         report.elapsed_ms % 1000 / 100,
     );
+    // What the layouts spent, counted by the toolkit rather than timed: the same sources give
+    // the same numbers on any machine, so two runs of a change are compared by them.
+    let layout = report.work.layout;
+    let _ = writeln!(
+        out,
+        "layout: {} frames, {} solves in {} passes ({}.{} s), {} region solves and {} kept, {} measures, {} probes in {} copies",
+        report.work.frames,
+        layout.solves,
+        layout.passes,
+        layout.solve_nanos / 1_000_000_000,
+        layout.solve_nanos % 1_000_000_000 / 100_000_000,
+        layout.regions,
+        layout.kept,
+        layout.measures,
+        layout.probes,
+        layout.copies,
+    );
     out
 }
 

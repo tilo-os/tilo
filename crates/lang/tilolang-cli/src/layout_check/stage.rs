@@ -136,6 +136,10 @@ pub struct Work {
     pub nodes: u64,
     /// Text shaped that the renderer's cache did not hold.
     pub shaped: u64,
+    /// What the layout solver did for those frames: the trees it solved, the passes it took,
+    /// the manual regions it ran and the manual regions it kept, what it probed and what it
+    /// measured.
+    pub layout: ui::profiling::layout_counts::LayoutCounts,
 }
 
 impl Work {
@@ -144,6 +148,7 @@ impl Work {
         self.frames = self.frames.saturating_add(other.frames);
         self.nodes = self.nodes.saturating_add(other.nodes);
         self.shaped = self.shaped.saturating_add(other.shaped);
+        self.layout.add(other.layout);
     }
 }
 
@@ -408,7 +413,8 @@ impl Staged {
     }
 
     /// What laying the window out has cost since the last call: frames laid out, layout nodes
-    /// built, and text shaped that the renderer's cache did not hold.
+    /// built, text shaped that the renderer's cache did not hold, and what the layout solver did
+    /// for them.
     pub fn take_work(&mut self) -> Work {
         let frames = self.harness.relayout_frames();
         let nodes = self.harness.layout_nodes_built();
@@ -417,6 +423,7 @@ impl Staged {
             frames: frames.saturating_sub(self.work.frames),
             nodes: nodes.saturating_sub(self.work.nodes),
             shaped: misses,
+            layout: ui::profiling::layout_counts::take(),
         };
         self.work.frames = frames;
         self.work.nodes = nodes;

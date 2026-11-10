@@ -432,6 +432,32 @@ pub(super) unsafe fn compute_widget_layout_depth(
     text: &mut TextRenderer,
     depth: usize,
 ) -> Result<(), WidgetLayoutError> {
+    // The window's own solve is what it pays for a frame; a probe inside it is
+    // counted apart, and timing it here as well would read as more work than
+    // ran.
+    let started = (depth == 0).then(crate::time::now);
+    // SAFETY: forwards the caller's exact live-tree ownership contract.
+    let settled =
+        unsafe { solve_widget_layout(taffy, root, available, nodes, bindings, text, depth) };
+    crate::profiling::layout_counts::solved(started.map_or(0, |started| {
+        u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+    }));
+    settled
+}
+
+/// One solve's settlement, counted by [`compute_widget_layout_depth`].
+///
+/// # Safety
+/// The same live-tree contract as [`compute_widget_layout`].
+unsafe fn solve_widget_layout(
+    taffy: &mut TaffyTree<()>,
+    root: NodeId,
+    available: Size<AvailableSpace>,
+    nodes: &HashMap<NodeId, *mut dyn Widget>,
+    bindings: &BoundNodeMap,
+    text: &mut TextRenderer,
+    depth: usize,
+) -> Result<(), WidgetLayoutError> {
     if depth > 32 {
         return Err(WidgetLayoutError::ManualNestingLimit);
     }
@@ -440,11 +466,15 @@ pub(super) unsafe fn compute_widget_layout_depth(
     let mut sweep = crate::bound_dispatch::NodeSweep::new(bindings, nodes);
     while let Some(node) = pending.pop() {
         // SAFETY: the caller's exact live-tree ownership contract.
-        let policy = unsafe { sweep.inspect(node, |widget| widget.manual_layout_policy()) }
-            .ok()
-            .flatten();
-        if let Some(policy) = policy {
-            policies.push((node, policy));
+        let found = unsafe {
+            sweep.inspect(node, |widget| {
+                (widget.manual_layout_policy(), widget.layout_needs_measure())
+            })
+        }
+        .ok()
+        .and_then(|(policy, needs_measure)| policy.map(|policy| (policy, needs_measure)));
+        if let Some((policy, needs_measure)) = found {
+            policies.push((node, policy, needs_measure));
         }
         pending.extend(taffy.children(node)?.into_iter().rev());
     }
@@ -461,9 +491,29 @@ pub(super) unsafe fn compute_widget_layout_depth(
     }
     // Measurement enters each measured node's own scope.
     drop(sweep);
-    // Outermost first: resetting a region dirties the regions inside it.
-    for (node, policy) in &policies {
-        super::manual::reset_region(policy, taffy, *node)?;
+    // A region is solved again only when something it reads moved: the
+    // allocation it is handed, a measure inside its own subtree, or a revision
+    // its owner asked for. `reusable` is that question, one answer per region:
+    // a still window keeps every solve it made.
+    let mut probes = super::manual::Probes::default();
+    let mut reusable = Vec::with_capacity(policies.len());
+    let mut regions = HashMap::with_capacity(policies.len());
+    for (index, (node, policy, needs_measure)) in policies.iter().enumerate() {
+        // Outermost first: resetting a region dirties the regions inside it.
+        let reset = super::manual::reset_region(policy, taffy, *node)?;
+        // A probe solves inside a copy of a tree whose regions may hold what
+        // the window placed, so it solves every region it finds.
+        reusable.push(depth == 0 && !reset && !needs_measure);
+        regions.insert(*node, index);
+    }
+    if depth == 0 {
+        // A region that starts its solve again is an input the regions holding
+        // it read too.
+        for (index, (node, _, _)) in policies.iter().enumerate() {
+            if !reusable[index] {
+                mark_enclosing_regions(taffy, &regions, &mut reusable, *node);
+            }
+        }
     }
     let mut still_changing = Vec::new();
     // The last passes' solved sizes of the nodes that changed in them.
@@ -482,18 +532,27 @@ pub(super) unsafe fn compute_widget_layout_depth(
             );
         }
         still_changing.clear();
+        crate::profiling::layout_counts::pass();
         solve_layout(taffy, root, available, &mut |known, available, node| {
             // SAFETY: caller owns the stable matching tree, each callback is
             // exclusive, and bound dispatch checks admission and lifetime.
             unsafe {
                 layout_bound_node(bindings, nodes, node, |widget| {
+                    crate::profiling::layout_counts::measure();
                     widget.measure(known, available, text)
                 })
             }
             .unwrap_or(Size::ZERO)
         })?;
         let mut changed = false;
-        for (node, policy) in &policies {
+        for (index, (node, policy, _)) in policies.iter().enumerate() {
+            // What this region was handed last time it solved here: the same
+            // allocation with nothing changed inside its subtree answers the
+            // same, so its placement stands and its policy is not run.
+            if reusable[index] && policy.settled_at(taffy.unrounded_layout(*node).size) {
+                crate::profiling::layout_counts::kept();
+                continue;
+            }
             // Descriptor extraction proved admission (including unbound).
             // Re-enter the same owner's existing lease for the WHOLE policy.
             let binding = bindings.binding_for(*node);
@@ -504,11 +563,22 @@ pub(super) unsafe fn compute_widget_layout_depth(
             else {
                 continue;
             };
+            crate::profiling::layout_counts::region();
             let placed = unsafe {
-                super::manual::run_policy(policy, taffy, *node, nodes, bindings, text, depth)?
+                super::manual::run_policy(
+                    policy,
+                    taffy,
+                    *node,
+                    nodes,
+                    bindings,
+                    text,
+                    depth,
+                    &mut probes,
+                )?
             };
             if placed {
                 still_changing.push(*node);
+                mark_enclosing_regions(taffy, &regions, &mut reusable, *node);
             }
             changed |= placed;
         }
@@ -522,6 +592,7 @@ pub(super) unsafe fn compute_widget_layout_depth(
             .unwrap_or(false);
             if adjusted {
                 still_changing.push(node);
+                mark_enclosing_regions(taffy, &regions, &mut reusable, node);
             }
             changed |= adjusted;
         }
@@ -564,6 +635,24 @@ pub(super) unsafe fn compute_widget_layout_depth(
         passes,
         available: format!("{available:?}"),
     })
+}
+
+/// Stop keeping the solve of every region whose own subtree holds `node`,
+/// `node`'s own region included: what a region's policy read is its subtree,
+/// and something in it moved.
+fn mark_enclosing_regions(
+    taffy: &TaffyTree<()>,
+    regions: &HashMap<NodeId, usize>,
+    reusable: &mut [bool],
+    node: NodeId,
+) {
+    let mut current = Some(node);
+    while let Some(at) = current {
+        if let Some(&index) = regions.get(&at) {
+            reusable[index] = false;
+        }
+        current = taffy.parent(at);
+    }
 }
 
 /// `node`'s unrounded solved size, its minimum height and its trailing
