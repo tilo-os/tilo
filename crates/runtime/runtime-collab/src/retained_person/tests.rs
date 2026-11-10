@@ -24,7 +24,7 @@ fn retained_person_peer_child() {
     };
     // SAFETY: this fixture transfers exactly this owned descriptor pre-exec.
     let mut stream = unsafe { UnixStream::from_raw_fd(raw.parse().unwrap()) };
-    assert_eq!(unsafe { libc::geteuid() }, 1000);
+    assert_eq!(effective_uid(), 1000);
     process_binding::complete(&mut stream).unwrap();
     let mut finish = [0];
     stream.read_exact(&mut finish).unwrap();
@@ -36,21 +36,18 @@ struct PeerFixture {
     peer: process_binding::ExecutingPeer,
 }
 impl PeerFixture {
-    fn start() -> Self {
-        assert_eq!(
-            unsafe { libc::geteuid() },
-            0,
-            "explicit native proof qualification requires root"
-        );
-        let (mut stream, child_stream) = UnixStream::pair().unwrap();
-        stream
-            .set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        stream
-            .set_write_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
+    fn start() -> io::Result<Self> {
+        if effective_uid() != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "explicit native proof qualification requires root",
+            ));
+        }
+        let (mut stream, child_stream) = UnixStream::pair()?;
+        stream.set_read_timeout(Some(tilo_test_env::hang_bound()))?;
+        stream.set_write_timeout(Some(tilo_test_env::hang_bound()))?;
         let descriptor = child_stream.as_raw_fd();
-        let mut command = Command::new(std::env::current_exe().unwrap());
+        let mut command = Command::new(std::env::current_exe()?);
         command
             .args(["--exact", CHILD_TEST, "--nocapture"])
             .env(CHILD_FD, descriptor.to_string());
@@ -68,28 +65,36 @@ impl PeerFixture {
                 Ok(())
             });
         }
-        process_binding::arm(&stream).unwrap();
-        stream.write_all(&process_binding::MAGIC).unwrap();
-        stream.write_all(&[61; 32]).unwrap();
-        let child = command.spawn_locked().unwrap();
+        process_binding::arm(&stream)?;
+        stream.write_all(&process_binding::MAGIC)?;
+        stream.write_all(&[61; 32])?;
+        let child = command.spawn_locked()?;
         drop(child_stream);
-        let peer = process_binding::receive(&stream, &[61; 32], 1000).unwrap();
-        assert_eq!(peer.pid(), child.id());
-        assert!(peer.current());
-        stream.write_all(&[1]).unwrap();
-        Self {
+        let peer = process_binding::receive(&stream, &[61; 32], 1000)?;
+        if peer.pid() != child.id() {
+            return Err(io::Error::other("admitted peer is not the spawned child"));
+        }
+        if !peer.current() {
+            return Err(io::Error::other("spawned kernel task was not admitted"));
+        }
+        stream.write_all(&[1])?;
+        Ok(Self {
             child,
             stream,
             peer,
-        }
+        })
     }
-    fn finish(&mut self) {
-        self.stream.write_all(&[9]).unwrap();
-        assert!(self.child.wait().unwrap().success());
-        assert!(
-            !self.peer.current(),
-            "exited kernel task cannot remain admitted"
-        );
+    fn finish(&mut self) -> io::Result<()> {
+        self.stream.write_all(&[9])?;
+        if !self.child.wait()?.success() {
+            return Err(io::Error::other("qualification child failed"));
+        }
+        if self.peer.current() {
+            return Err(io::Error::other(
+                "exited kernel task cannot remain admitted",
+            ));
+        }
+        Ok(())
     }
 }
 impl Drop for PeerFixture {
@@ -98,7 +103,7 @@ impl Drop for PeerFixture {
         let _ = self.child.wait();
     }
 }
-fn certificate(root: &SigningKey, device: &SigningKey) -> DeviceCert {
+fn certificate(root: &SigningKey, device: &SigningKey) -> io::Result<DeviceCert> {
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: device.verifying_key().to_bytes(),
@@ -109,14 +114,14 @@ fn certificate(root: &SigningKey, device: &SigningKey) -> DeviceCert {
         signature: [0; 64],
         issuer: None,
     };
-    tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
-    cert
+    tilo_user_identity::sign_device_cert(&mut cert, root).map_err(io::Error::other)?;
+    Ok(cert)
 }
 fn proof(
     peer: &process_binding::ExecutingPeer,
     cert: &DeviceCert,
     device: &SigningKey,
-) -> SignedRetainedPersonProof {
+) -> io::Result<SignedRetainedPersonProof> {
     let claims = RetainedPersonClaims {
         binding: RetainedLaunchBinding {
             operation_id: "a3a5760f-066e-4c9a-92d7-07a3ee73c650".into(),
@@ -130,23 +135,21 @@ fn proof(
             context_sha256: "b".repeat(64),
         },
         challenge: [17; 32],
-        certificate: serde_json::to_vec(cert).unwrap(),
+        certificate: serde_json::to_vec(cert).map_err(io::Error::other)?,
         revocations: vec![],
         execution_id: "39b8f599-0d98-4d89-9c11-4d8ea6401c1e".into(),
     };
-    let signature = device
-        .sign(&claims.signing_bytes().unwrap())
-        .to_bytes()
-        .to_vec();
-    SignedRetainedPersonProof { claims, signature }
+    let signature = device.sign(&claims.signing_bytes()?).to_bytes().to_vec();
+    Ok(SignedRetainedPersonProof { claims, signature })
 }
-fn resign(proof: &mut SignedRetainedPersonProof, device: &SigningKey) {
+fn resign(proof: &mut SignedRetainedPersonProof, device: &SigningKey) -> io::Result<()> {
     proof.signature = device
-        .sign(&proof.claims.signing_bytes().unwrap())
+        .sign(&proof.claims.signing_bytes()?)
         .to_bytes()
         .to_vec();
+    Ok(())
 }
-fn revocation(root: &SigningKey, key: [u8; 32]) -> RevocationEntry {
+fn revocation(root: &SigningKey, key: [u8; 32]) -> io::Result<RevocationEntry> {
     let mut entry = RevocationEntry {
         user_public_key: root.verifying_key().to_bytes(),
         revoked_device_public_key: key,
@@ -154,17 +157,17 @@ fn revocation(root: &SigningKey, key: [u8; 32]) -> RevocationEntry {
         reason: RevocationReason::Compromised,
         signature: [0; 64],
     };
-    tilo_user_identity::sign_revocation_entry(&mut entry, root).unwrap();
-    entry
+    tilo_user_identity::sign_revocation_entry(&mut entry, root).map_err(io::Error::other)?;
+    Ok(entry)
 }
 
 #[test]
 fn actual_peer_signatures_refuse_forgery_replay_rebinding_and_wrong_installed_root() {
-    let mut fixture = PeerFixture::start();
+    let mut fixture = PeerFixture::start().expect("root proof qualification fixture");
     let root = SigningKey::from_bytes(&[9; 32]);
     let device = SigningKey::from_bytes(&[7; 32]);
-    let cert = certificate(&root, &device);
-    let original = proof(&fixture.peer, &cert, &device);
+    let cert = certificate(&root, &device).expect("certificate fixture");
+    let original = proof(&fixture.peer, &cert, &device).expect("proof fixture");
     let binding = original.claims.binding.clone();
     let list = RevocationList::new();
     let wire = original.encode().unwrap();
@@ -186,7 +189,7 @@ fn actual_peer_signatures_refuse_forgery_replay_rebinding_and_wrong_installed_ro
     );
     let mut rebound = original.clone();
     rebound.claims.binding.context_sha256 = "c".repeat(64);
-    resign(&mut rebound, &device);
+    resign(&mut rebound, &device).expect("proof signature");
     assert!(
         rebound
             .verify(&binding, &[17; 32], &fixture.peer, &cert, &list)
@@ -199,7 +202,8 @@ fn actual_peer_signatures_refuse_forgery_replay_rebinding_and_wrong_installed_ro
             .verify(&wrong_uid, &[17; 32], &fixture.peer, &cert, &list)
             .is_err()
     );
-    let wrong_cert = certificate(&SigningKey::from_bytes(&[11; 32]), &device);
+    let wrong_cert =
+        certificate(&SigningKey::from_bytes(&[11; 32]), &device).expect("certificate fixture");
     assert!(
         original
             .verify(&binding, &[17; 32], &fixture.peer, &wrong_cert, &list)
@@ -207,7 +211,7 @@ fn actual_peer_signatures_refuse_forgery_replay_rebinding_and_wrong_installed_ro
     );
     let mut wrong_root = original.clone();
     wrong_root.claims.binding.root_pid += 1;
-    resign(&mut wrong_root, &device);
+    resign(&mut wrong_root, &device).expect("proof signature");
     assert!(
         wrong_root
             .verify(
@@ -222,7 +226,7 @@ fn actual_peer_signatures_refuse_forgery_replay_rebinding_and_wrong_installed_ro
     let mut expired = cert.clone();
     expired.expires_at_ns = Some(2);
     tilo_user_identity::sign_device_cert(&mut expired, &root).unwrap();
-    let expired_proof = proof(&fixture.peer, &expired, &device);
+    let expired_proof = proof(&fixture.peer, &expired, &device).expect("proof fixture");
     assert!(
         expired_proof
             .verify(
@@ -234,7 +238,7 @@ fn actual_peer_signatures_refuse_forgery_replay_rebinding_and_wrong_installed_ro
             )
             .is_err()
     );
-    fixture.finish();
+    fixture.finish().expect("qualification child exits");
     assert!(
         original
             .verify(&binding, &[17; 32], &fixture.peer, &cert, &list)
@@ -244,11 +248,11 @@ fn actual_peer_signatures_refuse_forgery_replay_rebinding_and_wrong_installed_ro
 
 #[test]
 fn epoch_refuses_changed_session_and_never_revives_after_restoration_or_revoke() {
-    let mut fixture = PeerFixture::start();
+    let mut fixture = PeerFixture::start().expect("root proof qualification fixture");
     let root = SigningKey::from_bytes(&[9; 32]);
     let device = SigningKey::from_bytes(&[7; 32]);
-    let cert = certificate(&root, &device);
-    let original = proof(&fixture.peer, &cert, &device);
+    let cert = certificate(&root, &device).expect("certificate fixture");
+    let original = proof(&fixture.peer, &cert, &device).expect("proof fixture");
     let binding = original.claims.binding.clone();
     let list = RevocationList::new();
     let epoch = original
@@ -256,13 +260,13 @@ fn epoch_refuses_changed_session_and_never_revives_after_restoration_or_revoke()
         .unwrap();
     let mut fresh = original.clone();
     fresh.claims.challenge = [19; 32];
-    resign(&mut fresh, &device);
+    resign(&mut fresh, &device).expect("proof signature");
     epoch
         .revalidate(&fresh, &[19; 32], &fixture.peer, &cert, &list)
         .unwrap();
     let mut changed = fresh.clone();
     changed.claims.execution_id = "6671df0d-2be1-484b-9220-08e1b0f2f9b2".into();
-    resign(&mut changed, &device);
+    resign(&mut changed, &device).expect("proof signature");
     assert!(
         epoch
             .revalidate(&changed, &[19; 32], &fixture.peer, &cert, &list)
@@ -282,20 +286,20 @@ fn epoch_refuses_changed_session_and_never_revives_after_restoration_or_revoke()
             .revalidate(&fresh, &[19; 32], &fixture.peer, &cert, &list)
             .is_err()
     );
-    fixture.finish();
+    fixture.finish().expect("qualification child exits");
 }
 
 #[test]
 fn signed_revocations_require_exact_root_and_outer_proof_before_monotonic_merge() {
-    let mut fixture = PeerFixture::start();
+    let mut fixture = PeerFixture::start().expect("root proof qualification fixture");
     let root = SigningKey::from_bytes(&[9; 32]);
     let device = SigningKey::from_bytes(&[7; 32]);
-    let cert = certificate(&root, &device);
-    let mut current = proof(&fixture.peer, &cert, &device);
+    let cert = certificate(&root, &device).expect("certificate fixture");
+    let mut current = proof(&fixture.peer, &cert, &device).expect("proof fixture");
     let binding = current.claims.binding.clone();
     let mut held = RevocationList::new();
-    current.claims.revocations = vec![revocation(&root, [31; 32])];
-    resign(&mut current, &device);
+    current.claims.revocations = vec![revocation(&root, [31; 32]).expect("revocation fixture")];
+    resign(&mut current, &device).expect("proof signature");
     let updates = current
         .authenticated_revocations(&binding, &[17; 32], &fixture.peer, &cert, &held)
         .unwrap();
@@ -309,7 +313,7 @@ fn signed_revocations_require_exact_root_and_outer_proof_before_monotonic_merge(
     let mut omitted = current.clone();
     omitted.claims.revocations.clear();
     omitted.claims.challenge = [19; 32];
-    resign(&mut omitted, &device);
+    resign(&mut omitted, &device).expect("proof signature");
     epoch
         .revalidate(&omitted, &[19; 32], &fixture.peer, &cert, &held)
         .unwrap();
@@ -321,8 +325,8 @@ fn signed_revocations_require_exact_root_and_outer_proof_before_monotonic_merge(
     revoked
         .claims
         .revocations
-        .push(revocation(&root, cert.device_public_key));
-    resign(&mut revoked, &device);
+        .push(revocation(&root, cert.device_public_key).expect("revocation fixture"));
+    resign(&mut revoked, &device).expect("proof signature");
     let updates = revoked
         .authenticated_revocations(&binding, &[17; 32], &fixture.peer, &cert, &held)
         .unwrap();
@@ -353,24 +357,24 @@ fn signed_revocations_require_exact_root_and_outer_proof_before_monotonic_merge(
             .is_err(),
         "restored root bytes cannot revive an epoch after observed revocation"
     );
-    fixture.finish();
+    fixture.finish().expect("qualification child exits");
 }
 
 #[test]
 fn signed_revocations_refuse_wrong_issuer_entry_outer_signatures_and_overflow() {
-    let mut fixture = PeerFixture::start();
+    let mut fixture = PeerFixture::start().expect("root proof qualification fixture");
     let root = SigningKey::from_bytes(&[9; 32]);
     let device = SigningKey::from_bytes(&[7; 32]);
-    let cert = certificate(&root, &device);
-    let mut current = proof(&fixture.peer, &cert, &device);
+    let cert = certificate(&root, &device).expect("certificate fixture");
+    let mut current = proof(&fixture.peer, &cert, &device).expect("proof fixture");
     let binding = current.claims.binding.clone();
     let held = RevocationList::new();
-    current.claims.revocations = vec![revocation(&root, [31; 32])];
-    resign(&mut current, &device);
+    current.claims.revocations = vec![revocation(&root, [31; 32]).expect("revocation fixture")];
+    resign(&mut current, &device).expect("proof signature");
     let mut wrong_issuer = current.clone();
     wrong_issuer.claims.revocations =
-        vec![revocation(&SigningKey::from_bytes(&[13; 32]), [32; 32])];
-    resign(&mut wrong_issuer, &device);
+        vec![revocation(&SigningKey::from_bytes(&[13; 32]), [32; 32]).expect("revocation fixture")];
+    resign(&mut wrong_issuer, &device).expect("proof signature");
     assert!(
         wrong_issuer
             .authenticated_revocations(&binding, &[17; 32], &fixture.peer, &cert, &held)
@@ -378,7 +382,7 @@ fn signed_revocations_refuse_wrong_issuer_entry_outer_signatures_and_overflow() 
     );
     let mut bad_entry = current.clone();
     bad_entry.claims.revocations[0].signature[0] ^= 1;
-    resign(&mut bad_entry, &device);
+    resign(&mut bad_entry, &device).expect("proof signature");
     assert!(
         bad_entry
             .authenticated_revocations(&binding, &[17; 32], &fixture.peer, &cert, &held)
@@ -386,7 +390,7 @@ fn signed_revocations_refuse_wrong_issuer_entry_outer_signatures_and_overflow() 
     );
     let mut maximum = current.clone();
     maximum.claims.revocations = vec![current.claims.revocations[0].clone(); 256];
-    resign(&mut maximum, &device);
+    resign(&mut maximum, &device).expect("proof signature");
     assert_eq!(
         maximum
             .authenticated_revocations(&binding, &[17; 32], &fixture.peer, &cert, &held)
@@ -410,9 +414,11 @@ fn signed_revocations_refuse_wrong_issuer_entry_outer_signatures_and_overflow() 
             .is_err()
     );
 
-    let mut contaminated = held.clone();
+    let mut contaminated = held;
     contaminated
-        .insert(revocation(&SigningKey::from_bytes(&[13; 32]), [32; 32]))
+        .insert(
+            revocation(&SigningKey::from_bytes(&[13; 32]), [32; 32]).expect("revocation fixture"),
+        )
         .unwrap();
     assert!(
         current
@@ -420,22 +426,22 @@ fn signed_revocations_refuse_wrong_issuer_entry_outer_signatures_and_overflow() 
             .is_err(),
         "a valid signature under another root cannot contaminate the root-held person list"
     );
-    fixture.finish();
+    fixture.finish().expect("qualification child exits");
 }
 
 #[test]
 fn correctly_signed_other_workspace_binding_cannot_borrow_personal_source_context() {
-    let mut fixture = PeerFixture::start();
+    let mut fixture = PeerFixture::start().expect("root proof qualification fixture");
     let root = SigningKey::from_bytes(&[9; 32]);
     let device = SigningKey::from_bytes(&[7; 32]);
-    let cert = certificate(&root, &device);
-    let mut foreign = proof(&fixture.peer, &cert, &device);
+    let cert = certificate(&root, &device).expect("certificate fixture");
+    let mut foreign = proof(&fixture.peer, &cert, &device).expect("proof fixture");
     foreign.claims.binding.room = "ee242d82-6913-4b20-a719-aeb96a6e052a".into();
     assert_ne!(
         foreign.claims.binding.room,
         personal_cluster(&cert.user_public_key)
     );
-    resign(&mut foreign, &device);
+    resign(&mut foreign, &device).expect("proof signature");
     // Expected request agrees with the foreign workspace and the outer signature is
     // genuine. Rejection must come from the person's own cluster.
     assert!(
@@ -460,15 +466,15 @@ fn correctly_signed_other_workspace_binding_cannot_borrow_personal_source_contex
             )
             .is_err()
     );
-    fixture.finish();
+    fixture.finish().expect("qualification child exits");
 }
 
 #[test]
 fn genuinely_signed_future_and_invalid_interval_certificates_fail_both_time_checks() {
-    let mut fixture = PeerFixture::start();
+    let mut fixture = PeerFixture::start().expect("root proof qualification fixture");
     let root = SigningKey::from_bytes(&[9; 32]);
     let device = SigningKey::from_bytes(&[7; 32]);
-    let trusted = certificate(&root, &device);
+    let trusted = certificate(&root, &device).expect("certificate fixture");
     let held = RevocationList::new();
     for (issued, expires, expected) in [
         (
@@ -499,7 +505,7 @@ fn genuinely_signed_future_and_invalid_interval_certificates_fail_both_time_chec
         // All signatures are genuinely valid: only current-time admission
         // rejects them. Proof also has a genuine admitted-device signature.
         tilo_user_identity::verify_device_cert(&invalid).unwrap();
-        let signed = proof(&fixture.peer, &invalid, &device);
+        let signed = proof(&fixture.peer, &invalid, &device).expect("proof fixture");
         for installed in [&invalid, &trusted] {
             let error = signed
                 .verify(
@@ -520,17 +526,17 @@ fn genuinely_signed_future_and_invalid_interval_certificates_fail_both_time_chec
             );
         }
     }
-    fixture.finish();
+    fixture.finish().expect("qualification child exits");
 }
 
 #[test]
 fn observed_installed_expiry_failure_retires_epoch_even_when_valid_custody_is_restored() {
-    let mut fixture = PeerFixture::start();
+    let mut fixture = PeerFixture::start().expect("root proof qualification fixture");
     let root = SigningKey::from_bytes(&[9; 32]);
     let device = SigningKey::from_bytes(&[7; 32]);
-    let trusted = certificate(&root, &device);
+    let trusted = certificate(&root, &device).expect("certificate fixture");
     let held = RevocationList::new();
-    let original = proof(&fixture.peer, &trusted, &device);
+    let original = proof(&fixture.peer, &trusted, &device).expect("proof fixture");
     let epoch = original
         .verify(
             &original.claims.binding,
@@ -544,9 +550,9 @@ fn observed_installed_expiry_failure_retires_epoch_even_when_valid_custody_is_re
     expired.expires_at_ns = Some(2);
     tilo_user_identity::sign_device_cert(&mut expired, &root).unwrap();
     tilo_user_identity::verify_device_cert(&expired).unwrap();
-    let mut fresh = original.clone();
+    let mut fresh = original;
     fresh.claims.challenge = [19; 32];
-    resign(&mut fresh, &device);
+    resign(&mut fresh, &device).expect("proof signature");
     let error = epoch
         .revalidate(&fresh, &[19; 32], &fixture.peer, &expired, &held)
         .unwrap_err();
@@ -557,12 +563,12 @@ fn observed_installed_expiry_failure_retires_epoch_even_when_valid_custody_is_re
         Some(&tilo_user_identity::DeviceCertError::Expired)
     );
     fresh.claims.challenge = [21; 32];
-    resign(&mut fresh, &device);
+    resign(&mut fresh, &device).expect("proof signature");
     assert!(
         epoch
             .revalidate(&fresh, &[21; 32], &fixture.peer, &trusted, &held)
             .is_err(),
         "restoring valid root custody with a fresh valid proof cannot revive the observed failed epoch"
     );
-    fixture.finish();
+    fixture.finish().expect("qualification child exits");
 }
