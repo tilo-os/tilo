@@ -1021,14 +1021,11 @@ people-panel-stop-following = Stop
 # The people overlay: the roster pinned out of the bar, floating over windows
 people-panel-unpin = Put back in the bar
 a11y-people-unpin = Put who is here back in the bar
-people-panel-screen-private = { $name } keeps where they are to themselves
-people-panel-nothing-open = Nothing open on { $name }’s screen
+people-panel-screen-private = Keeps their place private
+people-panel-nothing-open = Nothing open on their screen
 people-panel-pin = Keep on screen
 a11y-people-pin = Keep who is here on screen
 a11y-people-overlay = Who is here
-people-overlay-unpin = Put back in the bar
-people-overlay-screen-private = { $name } keeps where they are to themselves
-people-overlay-empty-desk = Nothing open on { $name }’s screen
 a11y-people-follow = Follow { $name }
 a11y-people-stop-following = Stop following { $name }
 launchpad-subtitle = Pick a way to start. Everyone in this workspace sees what you make here.

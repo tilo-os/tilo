@@ -15,7 +15,7 @@ use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::collaborators::{
     CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay, RosterRow,
-    collaborator_roster_rows_named, doing_line,
+    collaborator_roster_rows_named,
 };
 use tilo_desktop::desk_edges::{self, DockEdge, EdgeDrag, Item};
 use tilo_desktop::here::Screen;
@@ -450,26 +450,16 @@ impl Published for People {
                 .map_or_else(Vec::new, |layer| layer.accessible_labels());
         }
         let shown = self.shown.borrow();
+        // The panel's own tree, opened from the bar or kept on screen: the same names, rows and
+        // controls either way.
         let mut labels = Vec::new();
-        if self.open.get() {
-            let mut pending = vec![shown.overlay.accessibility_snapshot()];
-            while let Some(node) = pending.pop() {
-                labels.extend(node.name.clone());
-                labels.extend(node.value.clone());
-                // What the row says of the person: where they are and how they said they are.
-                labels.extend(node.description.clone());
-                pending.extend(node.children);
-            }
-        }
-        if shown.standing() {
-            for row in &shown.rows {
-                if row.invited || row.own_device {
-                    continue;
-                }
-                labels.push(row.label.clone());
-                labels.extend(row.activity.clone());
-                labels.extend(doing_line(row));
-            }
+        let mut pending = vec![shown.overlay.accessibility_snapshot()];
+        while let Some(node) = pending.pop() {
+            labels.extend(node.name.clone());
+            labels.extend(node.value.clone());
+            // What the row says of the person: where they are and how they said they are.
+            labels.extend(node.description.clone());
+            pending.extend(node.children);
         }
         // Where everyone else is working: their pointer over a window of this desk says so, beside
         // their name. A pointer the roster cannot put a name to is drawn all the same, but says
@@ -892,9 +882,9 @@ impl Panel {
     }
 
     /// Read who is here, as the plane wrote them into the desk's collaborators this frame: the
-    /// roster, each person's screen with its windows named by the records this desk shows, and,
-    /// while the roster is open, the workspace it is of.
-    fn read_roster(&self, shown: &mut Shown, open: bool) {
+    /// roster, each person's screen with its windows named by the records this desk shows, and the
+    /// workspace it is of: the panel's title, kept on screen or opened from the bar.
+    fn read_roster(&self, shown: &mut Shown) {
         let own = self
             .sync
             .as_ref()
@@ -947,9 +937,7 @@ impl Panel {
         };
         shown.rows = rows;
         shown.screens = screens;
-        if open {
-            shown.workspace = workspace;
-        }
+        shown.workspace = workspace;
     }
 
     /// Act on what a press or a key on the roster meant.
@@ -1122,7 +1110,7 @@ impl Panel {
         // roster's cards, and for the banner that names whose view this is.
         let following = self.sync.as_ref().and_then(|sync| sync.own().following);
         if open || shown.pinned.is_some() || !pointers.drawn.is_empty() || following.is_some() {
-            self.read_roster(shown, open);
+            self.read_roster(shown);
         }
         shown.pointers = pointers
             .drawn

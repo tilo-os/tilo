@@ -1040,14 +1040,11 @@ people-panel-stop-following = Beenden
 # The people overlay: the roster pinned out of the bar, floating over windows
 people-panel-unpin = Zurück in die Leiste
 a11y-people-unpin = Wer hier ist, zurück in die Leiste
-people-panel-screen-private = { $name } behält für sich, wo { $name } gerade ist
-people-panel-nothing-open = Auf dem Bildschirm von { $name } ist nichts offen
+people-panel-screen-private = Behält für sich, wo sie gerade sind
+people-panel-nothing-open = Auf ihrem Bildschirm ist nichts offen
 people-panel-pin = Auf dem Bildschirm halten
 a11y-people-pin = Wer hier ist, auf dem Bildschirm halten
 a11y-people-overlay = Wer hier ist
-people-overlay-unpin = Zurück in die Leiste
-people-overlay-screen-private = { $name } behält für sich, wo { $name } gerade ist
-people-overlay-empty-desk = Auf dem Bildschirm von { $name } ist nichts offen
 a11y-people-follow = { $name } folgen
 a11y-people-stop-following = { $name } nicht mehr folgen
 launchpad-subtitle = Wähle, wie du anfängst. Alle in diesem Arbeitsbereich sehen, was du hier machst.

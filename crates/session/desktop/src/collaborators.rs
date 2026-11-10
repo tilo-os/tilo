@@ -33,6 +33,7 @@ use crate::i18n::{t, t_args};
 
 mod roster;
 use roster::spoken_details;
+mod screen;
 pub use roster::{
     AGENT_ROLE_MARKER, PeopleNames, collaborator_is_agent, collaborator_roster_rows,
     collaborator_roster_rows_named, in_app, roster_colors_with_local_user,
@@ -298,6 +299,8 @@ struct RowPlace {
     join: Rect,
     /// What software works in, under its row (software has no screen to mirror).
     working_in: Rect,
+    /// The one line under a person's name saying why their screen is not shown there.
+    said: Rect,
     /// The open part under the row, its changes and "Their changes".
     details: Rect,
     change_rows: Vec<Rect>,
@@ -402,87 +405,6 @@ pub fn says_automatically(row: &RosterRow) -> bool {
         })
 }
 
-/// One of their windows inside their screen `screen`: its ground, its app's mark, what it is
-/// called here under it where there is room, and the ring of the one they work in.
-fn paint_screen_window(
-    scene: &mut Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
-    theme: &Theme,
-    screen_rect: Rect,
-    window: &crate::here::ScreenWindow,
-    colour: Color,
-) {
-    let tile = Rect::new(
-        screen_rect.x0 + window.rect.x0 * screen_rect.width(),
-        screen_rect.y0 + window.rect.y0 * screen_rect.height(),
-        screen_rect.x0 + window.rect.x1 * screen_rect.width(),
-        screen_rect.y0 + window.rect.y1 * screen_rect.height(),
-    )
-    .inset(-1.0);
-    if tile.width() < 4.0 || tile.height() < 4.0 {
-        return;
-    }
-    // The tile is a well in the screen's card, and its rest edge is the well's own.
-    let on = ui::widget::paint_surface(
-        scene,
-        transform,
-        tile,
-        ui::widget::SurfaceLevel::Raised,
-        theme,
-    );
-    let ink = on.tokens.colors.text_dim;
-    let style = on
-        .text(TextRole::Caption)
-        .with_weight(ui::text_render::TextWeight::Medium);
-    let line_h = f64::from(theme.text(TextRole::Caption).line_height_px());
-    let icon = (tile.height() * 0.3).clamp(10.0, 20.0);
-    let name = window
-        .name
-        .as_deref()
-        .filter(|_| tile.height() >= icon + line_h + 10.0 && tile.width() >= 44.0);
-    let block = if name.is_some() {
-        icon + 4.0 + line_h
-    } else {
-        icon
-    };
-    let top = tile.center().y - block / 2.0;
-    let mark = Rect::new(
-        tile.center().x - icon / 2.0,
-        top,
-        tile.center().x + icon / 2.0,
-        top + icon,
-    );
-    let glyph = match ui::icons::app_glyph(&window.app, None) {
-        Icon::AppWindow => Icon::Square,
-        glyph => glyph,
-    };
-    glyph.draw_with_stroke(scene, transform, mark, ink, 1.5);
-    if let Some(name) = name {
-        let lines = Rect::new(
-            tile.x0 + 4.0,
-            mark.y1 + 4.0,
-            tile.x1 - 4.0,
-            mark.y1 + 4.0 + line_h,
-        );
-        ui::widget::TextLineFace::styled(name, &style, TextRole::Caption).paint(
-            &mut ui::paint::PaintCtx::new(scene, transform, text, &on),
-            lines,
-            ink,
-        );
-    }
-    // The one they work in wears their colour: the surface's own edge stands everywhere else.
-    if window.focused {
-        scene.stroke(
-            &vello::kurbo::Stroke::new(2.0),
-            transform,
-            colour,
-            None,
-            &ui::surface::edge_outline(tile, ui::widget::SurfaceLevel::Raised.radius(theme)),
-        );
-    }
-}
-
 /// How tall each person's mirror of their screen stands: what the panel's room allows, in the screen's own shape, and none at all when that leaves no room for a picture.
 fn mirror_height(model: &CollaboratorsModel<'_>, width: f64, row_h: f64, theme: &Theme) -> f64 {
     if !model.pinned {
@@ -512,69 +434,45 @@ fn working_in_line(row: &RosterRow) -> (String, Option<String>) {
     }
 }
 
-/// What stands under row `index` beyond its line: a person's mirror of their screen, or, for
-/// software, the line naming the window it works in. None for a row with neither.
-fn under_height(row: &RosterRow, mirror_h: f64, theme: &Theme) -> f64 {
-    if !row.is_agent {
-        return mirror_h;
+/// What stands under a row beyond its line: a person's picture of their screen, a line saying why
+/// their screen is not shown there, or software's line naming the window it works in.
+fn under_height(row: &RosterRow, screen: Option<&Screen>, mirror_h: f64, theme: &Theme) -> f64 {
+    let line = f64::from(theme.tokens.metrics.bar_control_height);
+    if row.is_agent {
+        return if row.working_in.is_some() { line } else { 0.0 };
     }
-    if row.working_in.is_some() {
-        f64::from(theme.tokens.metrics.bar_control_height)
+    if sharing(row, screen) {
+        mirror_h
+    } else if mirror_h > 0.0 {
+        line
     } else {
         0.0
     }
 }
 
-/// Someone's screen as a small picture: a window card holding their windows where they stand,
-/// each named under its app's mark where there is room, the one they work in ringed in their
-/// colour, and a line where there is nothing to show.
-fn paint_screen(
-    scene: &mut Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    row: &RosterRow,
-    screen: Option<&Screen>,
-) {
-    if rect.width() <= 0.0 || rect.height() <= 0.0 {
-        return;
-    }
-    let aspect = screen.map_or(16.0 / 10.0, |screen| screen.size.0 / screen.size.1.max(1.0));
-    // Their screen keeps its shape inside the room the card gives it.
-    let (width, height) = if rect.width() / aspect <= rect.height() {
-        (rect.width(), rect.width() / aspect)
+/// Whether `row` is a person with a picture of their screen to show: they share where they are, and
+/// something stands open there.
+fn sharing(row: &RosterRow, screen: Option<&Screen>) -> bool {
+    !row.is_agent && screen.is_some_and(|screen| !screen.windows.is_empty())
+}
+
+/// `row`'s screen as the desk holds it: `None` while they keep where they are to themselves.
+fn screen_of<'a>(model: &'a CollaboratorsModel<'_>, row: &RosterRow) -> Option<&'a Screen> {
+    model
+        .screens
+        .iter()
+        .find(|(id, _)| *id == row.id)
+        .and_then(|(_, screen)| screen.as_ref())
+}
+
+/// Why a person's screen is not drawn under their row: they keep where they are private, or nothing
+/// stands open on it. Said under their name, so it never says the name again.
+fn screen_line(screen: Option<&Screen>) -> String {
+    t(if screen.is_some() {
+        "people-panel-nothing-open"
     } else {
-        (rect.height() * aspect, rect.height())
-    };
-    let screen_rect = Rect::from_center_size(rect.center(), (width, height));
-    let windows = screen
-        .map(|screen| screen.windows.as_slice())
-        .unwrap_or_default();
-    ui::widget::paint_window_card(scene, transform, screen_rect, theme, |scene, on| {
-        for window in windows {
-            paint_screen_window(scene, transform, text, on, screen_rect, window, row.color);
-        }
-        if windows.is_empty() {
-            let line = if screen.is_some() {
-                t_args(
-                    "people-panel-nothing-open",
-                    &[("name", row.label.clone().into())],
-                )
-            } else {
-                t_args(
-                    "people-panel-screen-private",
-                    &[("name", row.label.clone().into())],
-                )
-            };
-            ui::widget::TextLineFace::styled(&line, &on.text(TextRole::Caption), TextRole::Caption)
-                .paint(
-                    &mut ui::paint::PaintCtx::new(scene, transform, text, on),
-                    screen_rect,
-                    on.tokens.colors.text_dim,
-                );
-        }
-    });
+        "people-panel-screen-private"
+    })
 }
 
 /// The panel's header line: who is here besides this person, counted as the list is (the others, never this person, who is the "you" of the words; "2 here" over one row read as someone missing).
@@ -692,13 +590,16 @@ impl CollaboratorsOverlay {
         )
         .height;
         let sections = groups.iter().filter(|(_, group)| !group.is_empty()).count();
+        // A label earns its line only where it tells one section from another: with a single
+        // section the header already says who is here.
+        let labelled = sections > 1;
         let mirror_h = mirror_height(model, width, row_h, theme);
-        // What stands under each row: a person's mirror, software's where-it-works line, or nothing
-        // (software has no screen to mirror).
+        // What stands under each row: a person's picture of their screen, one line saying why there
+        // is none, software's where-it-works line, or nothing.
         let under: Vec<f64> = model
             .rows
             .iter()
-            .map(|row| under_height(row, mirror_h, theme))
+            .map(|row| under_height(row, screen_of(model, row), mirror_h, theme))
             .collect();
         let card_h = |index: usize| {
             row_h
@@ -717,12 +618,18 @@ impl CollaboratorsOverlay {
         let body_h = if sections == 0 {
             model.rows.first().map_or(0.0, |_| card_h(0))
         } else {
+            let heading = if labelled { heading_h } else { 0.0 };
+            let gap = if labelled {
+                f64::from(spacing.s2) * ui::num::f64_of_usize(sections.saturating_sub(1))
+            } else {
+                0.0
+            };
             groups
                 .iter()
                 .filter(|(_, group)| !group.is_empty())
-                .map(|(_, group)| heading_h + group.iter().map(|index| card_h(*index)).sum::<f64>())
+                .map(|(_, group)| heading + group.iter().map(|index| card_h(*index)).sum::<f64>())
                 .sum::<f64>()
-                + f64::from(spacing.s2) * ui::num::f64_of_usize(sections.saturating_sub(1))
+                + gap
         };
         let open_extra = if open_index.is_some() { revealed } else { 0.0 };
         self.body_height = body_h + open_extra;
@@ -733,6 +640,7 @@ impl CollaboratorsOverlay {
             model,
             &RowsPlan {
                 groups: &groups,
+                labelled,
                 open_index,
                 shown_changes,
                 revealed,
@@ -807,6 +715,7 @@ impl CollaboratorsOverlay {
         let control = f64::from(metrics.bar_control_height);
         let RowsPlan {
             groups,
+            labelled,
             open_index,
             shown_changes,
             revealed,
@@ -835,14 +744,16 @@ impl CollaboratorsOverlay {
             if group.is_empty() {
                 continue;
             }
-            if !self.headings.is_empty() {
-                y += f64::from(spacing.s2);
+            if labelled {
+                if !self.headings.is_empty() {
+                    y += f64::from(spacing.s2);
+                }
+                self.headings.push(Heading {
+                    text: t(key),
+                    rect: Rect::new(self.body.x0, y, self.body.x1, y + heading_h),
+                });
+                y += heading_h;
             }
-            self.headings.push(Heading {
-                text: t(key),
-                rect: Rect::new(self.body.x0, y, self.body.x1, y + heading_h),
-            });
-            y += heading_h;
             for &index in group {
                 let rect = Rect::new(self.body.x0 - bleed, y, self.body.x1 + bleed, y + row_h);
                 let Some(row) = model.rows.get(index) else {
@@ -856,12 +767,21 @@ impl CollaboratorsOverlay {
                 let under_h = under.get(index).copied().unwrap_or(0.0);
                 if under_h > 0.0 {
                     let strip = Rect::new(self.body.x0, y + gap, self.body.x1, y + gap + under_h);
-                    // A person's screen is a picture of where they are; software has none, so its
-                    // row names the window it works in, which pressing brings forward.
-                    if row.is_agent {
+                    // A person's screen is a picture of where they are, with room for one; where
+                    // there is none, their row says why in a line. Software's line names the window
+                    // it works in, which pressing brings forward.
+                    if sharing(row, screen_of(model, row)) {
+                        self.mirrors.push((index, strip));
+                    } else if row.is_agent {
                         place.working_in = strip;
                     } else {
-                        self.mirrors.push((index, strip));
+                        // The line stands in the column their name does, under it.
+                        place.said = Rect::new(
+                            self.body.x0 + FACE + f64::from(spacing.s3),
+                            strip.y0,
+                            strip.x1,
+                            strip.y1,
+                        );
                     }
                     y += gap + under_h;
                 }
@@ -1127,7 +1047,10 @@ impl CollaboratorsOverlay {
                 .find(|(index, _)| *index == place.index)
                 .map(|(_, rect)| *rect);
             // The card is its row and what stands under it: hovered or opened, they lift together.
-            let under = mirror.or_else(|| Some(place.working_in).filter(|rect| rect.area() > 0.0));
+            let under = [mirror, Some(place.working_in), Some(place.said)]
+                .into_iter()
+                .flatten()
+                .find(|rect| rect.area() > 0.0);
             let hovered = cursor.is_some_and(|p| {
                 place.rect.contains(p) || under.is_some_and(|under| under.contains(p))
             });
@@ -1347,20 +1270,23 @@ impl CollaboratorsOverlay {
                     place.working_in,
                 );
             }
-            if let Some(mirror) = mirror {
-                paint_screen(
-                    scene,
-                    scrolled,
-                    text,
-                    theme,
-                    mirror,
-                    row,
-                    model
-                        .screens
-                        .iter()
-                        .find(|(id, _)| *id == row.id)
-                        .and_then(|(_, screen)| screen.as_ref()),
-                );
+            if place.said.area() > 0.0 {
+                // Why their screen is not drawn here, in one quiet line under their name: the card
+                // says it without holding a picture of nothing.
+                let line = screen_line(screen_of(model, row));
+                let style = theme.text(TextRole::Caption);
+                ui::widget::TextLineFace::styled(&line, &style, TextRole::Caption)
+                    .start()
+                    .paint(
+                        &mut ui::paint::PaintCtx::new(scene, scrolled, text, theme),
+                        place.said,
+                        colors.text_dim,
+                    );
+            }
+            if let Some(mirror) = mirror
+                && let Some(screen) = screen_of(model, row)
+            {
+                screen::picture(scene, scrolled, text, theme, mirror, row, screen);
             }
             if following && mirror.is_some() {
                 // Their colour runs the card's whole height: whose view this is. It is the
@@ -2149,10 +2075,12 @@ fn text_width(text: &mut TextRenderer, label: &str, theme: &Theme) -> f64 {
 /// What [`CollaboratorsOverlay::place_rows`] places: the groups' row indices and the open row's details as the layout measured them.
 #[derive(Clone, Copy)]
 struct RowsPlan<'p> {
-    /// What stands under each row beyond its line, by row: a person's mirror of their screen,
-    /// software's where-it-works line, or nothing.
+    /// What stands under each row beyond its line, by row: a person's picture of their screen, a
+    /// line saying why there is none, software's where-it-works line, or nothing.
     under: &'p [f64],
     groups: &'p [(&'static str, Vec<usize>)],
+    /// Whether the sections are labelled: only where there is more than one to tell apart.
+    labelled: bool,
     open_index: Option<usize>,
     shown_changes: usize,
     revealed: f64,
@@ -2219,6 +2147,20 @@ mod tests {
         }
     }
 
+    /// A person's screen with one window on it, named by its app.
+    fn screen(app: &str) -> Screen {
+        Screen {
+            size: (1280.0, 800.0),
+            windows: vec![crate::here::ScreenWindow {
+                app: app.into(),
+                record: [7; 8],
+                rect: Rect::new(0.0, 0.0, 8000.0, 6000.0),
+                focused: true,
+                name: Some(app.into()),
+            }],
+        }
+    }
+
     fn paint(overlay: &mut CollaboratorsOverlay, rows: &[RosterRow], expanded: Option<&str>) {
         paint_in(overlay, rows, expanded, Rect::new(0.0, 0.0, 1400.0, 900.0));
     }
@@ -2228,6 +2170,35 @@ mod tests {
         rows: &[RosterRow],
         expanded: Option<&str>,
         host: Rect,
+    ) {
+        paint_over(overlay, rows, expanded, host, false, &[]);
+    }
+
+    /// The roster kept on screen at an edge, each person's screen under their row.
+    fn paint_kept(
+        overlay: &mut CollaboratorsOverlay,
+        rows: &[RosterRow],
+        screens: &[(String, Option<Screen>)],
+    ) {
+        paint_over(
+            overlay,
+            rows,
+            None,
+            Rect::new(0.0, 0.0, 900.0, 900.0),
+            true,
+            screens,
+        );
+    }
+
+    /// Draw the roster the way `host` shows it; `pinned` keeps it at an edge with each person's
+    /// screen under their row.
+    fn paint_over(
+        overlay: &mut CollaboratorsOverlay,
+        rows: &[RosterRow],
+        expanded: Option<&str>,
+        host: Rect,
+        pinned: bool,
+        screens: &[(String, Option<Screen>)],
     ) {
         let theme = Theme::dark();
         let mut scene = Scene::new();
@@ -2242,10 +2213,10 @@ mod tests {
                 workspace: "Lounge",
                 rows,
                 may_invite: true,
-                may_pin: false,
-                pinned: false,
+                may_pin: pinned,
+                pinned,
                 panel: None,
-                screens: &[],
+                screens,
                 followed_id: None,
                 following_pairs: &[],
                 expanded_id: expanded,
@@ -2254,6 +2225,16 @@ mod tests {
             },
             None,
         );
+    }
+
+    /// One section takes no label: the header already says who is here, so its rows stand where
+    /// the list begins.
+    #[test]
+    fn a_single_section_takes_no_label() {
+        let mut overlay = CollaboratorsOverlay::default();
+        paint(&mut overlay, &[row("ada", "Ada")], None);
+        assert!(overlay.headings.is_empty(), "{:?}", overlay.headings);
+        assert_eq!(overlay.rows[0].rect.y0, overlay.body.y0);
     }
 
     /// A phone's roster offers Follow on software's row: an agent is followed
@@ -2318,36 +2299,12 @@ mod tests {
         agent.is_agent = true;
         agent.working_in = Some((7, "Lounge notes".into()));
         let rows = vec![row("ada", "Ada"), agent];
+        let screens = [("ada".to_owned(), Some(screen("Notes")))];
         let mut overlay = CollaboratorsOverlay::default();
-        let host = Rect::new(0.0, 0.0, 900.0, 900.0);
-        let theme = Theme::dark();
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        overlay.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &CollaboratorsModel {
-                host,
-                workspace: "Lounge",
-                rows: &rows,
-                may_invite: true,
-                may_pin: true,
-                pinned: true,
-                panel: None,
-                screens: &[],
-                followed_id: None,
-                following_pairs: &[],
-                expanded_id: None,
-                waved: &[],
-                waved_until: None,
-            },
-            None,
-        );
+        paint_kept(&mut overlay, &rows, &screens);
         assert!(
             overlay.mirrors.iter().any(|(index, _)| *index == 0),
-            "a person's row keeps its mirror"
+            "a person's row keeps its picture"
         );
         assert!(
             !overlay.mirrors.iter().any(|(index, _)| *index == 1),
@@ -2387,6 +2344,61 @@ mod tests {
             .filter_map(|node| node.name.clone())
             .any(|name| name == "Lounge notes");
         assert!(named, "the line is offered to assistive technology too");
+    }
+
+    /// A person who keeps where they are to themselves gets no picture of nothing: their card is
+    /// their row and one quiet line, while the person beside them keeps their picture.
+    #[test]
+    fn a_private_screen_is_one_line_and_no_well() {
+        let rows = vec![row("ada", "Ada"), row("ben", "Ben"), row("cy", "Cy")];
+        let nothing_open = Screen {
+            size: (1280.0, 800.0),
+            windows: Vec::new(),
+        };
+        let screens = [
+            ("ada".to_owned(), None),
+            ("ben".to_owned(), Some(nothing_open)),
+            ("cy".to_owned(), Some(screen("Notes"))),
+        ];
+        let mut overlay = CollaboratorsOverlay::default();
+        paint_kept(&mut overlay, &rows, &screens);
+        let mut text = TextRenderer::new();
+        assert!(
+            !overlay.mirrors.iter().any(|(index, _)| *index < 2),
+            "no picture where there is no screen to show: {:?}",
+            overlay.mirrors
+        );
+        assert!(overlay.mirrors.iter().any(|(index, _)| *index == 2));
+        for (index, said) in [
+            (0, t("people-panel-screen-private")),
+            (1, t("people-panel-nothing-open")),
+        ] {
+            assert_eq!(screen_line(screens[index].1.as_ref()), said);
+            let place = overlay
+                .rows
+                .iter()
+                .find(|place| place.index == index)
+                .expect("the row is laid out");
+            assert!(place.said.area() > 0.0, "one line says why there is none");
+            let column = overlay.body.x0 + FACE + f64::from(Theme::dark().tokens.spacing.s3);
+            assert_eq!(
+                place.said.x0, column,
+                "the line stands in the column their name does"
+            );
+            assert!(
+                place.said.y0 >= place.rect.y1 && place.said.height() < place.rect.height() / 2.0,
+                "the card stays compact: {:?} under {:?}",
+                place.said,
+                place.rect
+            );
+            let (needs, _) =
+                text.measure_style(&said, None, &Theme::dark().text(TextRole::Caption));
+            assert!(
+                f64::from(needs) <= place.said.width(),
+                "{said} fits the line it stands on: {needs} in {}",
+                place.said.width()
+            );
+        }
     }
 
     /// Software's line says what it is doing and the window it does it in: its own now line where

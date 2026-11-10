@@ -1231,6 +1231,71 @@ fn the_roster_kept_on_screen_shows_who_is_here_and_follows_them() {
     );
 }
 
+/// Kept on screen from the start, the roster names the workspace it is of and says who is here
+/// without a label over them; one person shares their screen and one keeps where they are.
+#[test]
+fn the_roster_kept_on_screen_from_the_start_names_its_workspace() {
+    let _settled = ui::motion::testing::settled();
+    let (_home, _settings) = settings_home();
+    settings_store::desk_widgets::PEOPLE_OVERLAY
+        .set(settings_store::desk_widgets::PeopleOverlayPrefs {
+            pinned: true,
+            edge: settings_store::desk_widgets::DockEdge::Right,
+        })
+        .expect("the roster was kept on screen before");
+
+    let own = OwnPresence {
+        label: "Quinten".to_owned(),
+        ..OwnPresence::default()
+    };
+    let sync = Rc::new(Client::untethered(device(0xf0), own));
+    // Ada shares her screen, Chat in front of Notes; Cy keeps where they are to themselves. Drawn
+    // at twice the scale, so the panel is captured as a person with a dense display sees it.
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", WIDTH * 2, HEIGHT * 2).with_scale(2.0)],
+        Options {
+            sync: Some(Rc::clone(&sync)),
+            scale: 2.0,
+            ..Options::default()
+        },
+    );
+    session.handle().replace_tree(desk());
+    for _ in 0..4 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    sync.hear(hello(0xaa, "Framework 16"));
+    arrived_as(&sync, 0xaa, "Ada");
+    screen_of(
+        &sync,
+        0xaa,
+        [1600, 1000],
+        vec![
+            ("so.tilo.notes", [1; 8], [0, 0, 5000, 10_000], false),
+            ("so.tilo.chat", [2; 8], [5000, 0, 10_000, 6000], true),
+        ],
+    );
+    sync.hear(hello(0xcc, "Orange Pi"));
+    arrived_as(&sync, 0xcc, "Cy");
+    for _ in 0..8 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+
+    capture(&mut session, "roster-kept-from-start");
+    // The panel's title is the workspace it is of, and its header counts who is here.
+    let panel = people(&session);
+    let said: Vec<String> = panel
+        .nodes
+        .iter()
+        .filter_map(|(_, node)| node.description().map(str::to_owned))
+        .collect();
+    assert!(
+        said.iter().any(|said| said.starts_with("Desk. ")),
+        "{said:?}"
+    );
+    let names = said_by(&panel);
+    assert!(names.iter().any(|name| name == "Ada"), "{names:?}");
+}
+
 /// What the desk shows now.
 fn frame(session: &mut Session) -> tilo_compositor::Screenshot {
     session
