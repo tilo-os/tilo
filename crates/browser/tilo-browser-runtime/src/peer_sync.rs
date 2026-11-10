@@ -494,13 +494,40 @@ pub(crate) fn view(peer: u32, workspace: &str) -> Option<BoardView> {
         page.workspaces
             .values()
             .find(|shown| shown.as_str() == workspace)?;
+        let (members, named) = with_persons(
+            page.client.members(workspace),
+            &page.handle.room_devices(workspace),
+        );
         Some(BoardView {
-            revision: page.client.here_revision(workspace),
+            // What is known here changed: the board, or how many of its members the workspace's
+            // governance names the person of.
+            revision: page
+                .client
+                .here_revision(workspace)
+                .wrapping_add(named << 32),
             own: page.client.own_here(),
-            members: page.client.members(workspace),
+            members,
             note: page.handle.live_note(),
         })
     })
+}
+
+/// `members` each as the person whose device they are: the workspace's governance names whose
+/// each member device is (`devices`, device to person), so a member the live plane never
+/// certified to this page is still shown, called and counted as their person. With how many of
+/// them the governance named.
+fn with_persons(
+    mut members: Vec<Shown>,
+    devices: &std::collections::BTreeMap<String, String>,
+) -> (Vec<Shown>, u64) {
+    let mut named = 0;
+    for member in &mut members {
+        if let Some(person) = devices.get(&member.publisher) {
+            member.user.get_or_insert_with(|| person.clone());
+            named += 1;
+        }
+    }
+    (members, named)
 }
 
 /// Everyone `peer`'s board for `workspace` has here, or `None` while this page takes no part there.
@@ -510,7 +537,13 @@ pub(crate) fn members(peer: u32, workspace: &str) -> Option<Vec<Shown>> {
         page.workspaces
             .values()
             .find(|shown| shown.as_str() == workspace)?;
-        Some(page.client.members(workspace))
+        Some(
+            with_persons(
+                page.client.members(workspace),
+                &page.handle.room_devices(workspace),
+            )
+            .0,
+        )
     })
 }
 

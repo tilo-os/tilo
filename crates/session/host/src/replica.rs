@@ -220,6 +220,30 @@ impl Replicas {
         .ok()
     }
 
+    /// Whose each of `workspace_id`'s member devices is, as its governance admitted them: device
+    /// (hex) to person (root key, hex), for every device a current member is here from. What
+    /// shows a device by its person (who is here, a call's roster) reads it off this.
+    pub(crate) fn member_devices(&self, workspace_id: u64) -> Option<BTreeMap<String, String>> {
+        self.with_workspace(workspace_id, |view| {
+            let members = view
+                .peer()
+                .governance()
+                .governed_members(SystemTime::now())?;
+            Ok(members
+                .into_iter()
+                .filter(|member| !member.removed)
+                .flat_map(|member| {
+                    let person = hex::encode(member.user_public_key);
+                    member
+                        .active_device_keys
+                        .into_iter()
+                        .map(move |device| (hex::encode(device), person.clone()))
+                })
+                .collect())
+        })?
+        .ok()
+    }
+
     /// The workspaces' governance, as the channels' directory reads it.
     pub(crate) fn owner(&self) -> NativeWorkspaceOwner {
         self.owner.clone()

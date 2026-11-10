@@ -294,6 +294,10 @@ pub struct PeerStatus {
     /// person id: what someone no longer among them made on the workspace's
     /// desktop is released ([`tilo_desktop_model::ownership::released`]).
     pub room_members: BTreeMap<String, BTreeSet<String>>,
+    /// Whose each member device of a joined workspace is, by workspace: device (hex) to person
+    /// (root key, hex), as the workspace's governance admitted them. Who is here is shown by
+    /// person from it, so someone the live plane never certified to this page is still theirs.
+    pub room_devices: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 /// Something the session produced for its consumers.
@@ -732,6 +736,7 @@ impl PeerHandle {
                 generation: 0,
                 channels: String::new(),
                 room_members: BTreeMap::new(),
+                room_devices: BTreeMap::new(),
             },
             queues: Vec::new(),
             wakes: Vec::new(),
@@ -1175,6 +1180,18 @@ impl PeerHandle {
     /// Current status.
     pub fn status(&self) -> PeerStatus {
         lock(&self.shared).status.clone()
+    }
+
+    /// Whose each member device of `workspace` is, as [`PeerStatus::room_devices`] says: device
+    /// (hex) to person (root key, hex), read without copying the rest of the status. Empty until
+    /// the workspace's governance admitted its members.
+    pub fn room_devices(&self, workspace: &str) -> BTreeMap<String, String> {
+        lock(&self.shared)
+            .status
+            .room_devices
+            .get(workspace)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Take every event produced since the last call on this handle's own
@@ -2839,13 +2856,20 @@ impl Task {
     /// and the channel commits that waited for a participant it now admits.
     fn follow_governance(&mut self, workspace_id: u64) {
         self.planes_due.insert(workspace_id);
-        if let Some((workspace, members)) = self.replicas.members(workspace_id)
-            && self.status().room_members.get(&workspace) != members.as_ref()
-        {
-            self.update(|status| match members {
-                Some(members) => _ = status.room_members.insert(workspace.clone(), members),
-                None => _ = status.room_members.remove(&workspace),
-            });
+        if let Some((workspace, members)) = self.replicas.members(workspace_id) {
+            if self.status().room_members.get(&workspace) != members.as_ref() {
+                self.update(|status| match members {
+                    Some(members) => _ = status.room_members.insert(workspace.clone(), members),
+                    None => _ = status.room_members.remove(&workspace),
+                });
+            }
+            let devices = self.replicas.member_devices(workspace_id);
+            if self.status().room_devices.get(&workspace) != devices.as_ref() {
+                self.update(|status| match devices {
+                    Some(devices) => _ = status.room_devices.insert(workspace.clone(), devices),
+                    None => _ = status.room_devices.remove(&workspace),
+                });
+            }
         }
         self.pump_channels(true);
         // A record opened before the governance admitted it waits with its
@@ -3687,6 +3711,7 @@ mod tests {
             generation: 0,
             channels: String::new(),
             room_members: BTreeMap::new(),
+            room_devices: BTreeMap::new(),
         }
     }
 

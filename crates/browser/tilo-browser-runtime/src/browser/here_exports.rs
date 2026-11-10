@@ -41,9 +41,10 @@ pub fn desktop_set_people(id: u64, people: &str) -> Result<(), JsValue> {
     })
 }
 
-/// Who the desktop shows as here, as its People list does: `[{id, label,
+/// Who the desktop shows as here, as its People list does: `[{id, user, label,
 /// agent, status}]`, one row per person however many devices they are here from,
-/// never this page's own person. `None` for a single application.
+/// never this page's own person, `user` their person (root key, hex) once a
+/// certificate named them. `None` for a single application.
 ///
 /// # Errors
 ///
@@ -62,7 +63,7 @@ pub fn desktop_here_people(id: u64) -> Result<Option<String>, JsValue> {
                         // What their status line says they are doing: for an agent,
                         // the call it is making, as its presence words it.
                         let status = person.status.map(|line| line.text);
-                        serde_json::json!({"id": person.id, "label": person.label, "agent": person.agent, "status": status})
+                        serde_json::json!({"id": person.id, "user": person.user, "label": person.label, "agent": person.agent, "status": status})
                     })
                     .collect();
                 serde_json::to_string(&people).map_err(error)
