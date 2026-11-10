@@ -1,18 +1,9 @@
-//! The person's notifications on the desktop: what apps sent the
-//! notifications daemon, shown by the banners app and kept in the desk's
-//! notification centre.
+//! The person's notifications on the desktop: what apps sent the notifications daemon, and what
+//! the session tells of its own, shown by the banners app and kept in the desk's centre.
 //!
-//! The daemon's arrivals (each with its pixels: a decoded `image-data`,
-//! `image-path` or portal icon) become the desktop's notifications in one
-//! [`DesktopNotifications`] log. The banners app is handed the live banners
-//! from it and what it asks is carried out on it; the desk surface shows
-//! the centre over the same log. What the person does reaches the sending
-//! app through the daemon: an action or a reply as they choose it, and the
-//! close once the banner leaves (dismissed, chosen or run out).
-//!
-//! A notification an app sent also continues on the person's other devices
-//! ([`mirror`]): each is projected to the ones online, shown there named
-//! after this device, and dismissed or acted on together.
+//! The daemon's arrivals become the desktop's notifications in one [`DesktopNotifications`] log,
+//! and what the person does reaches the sending app through the daemon. A notification an app sent
+//! also continues on the person's other devices ([`mirror`]).
 
 mod mirror;
 
@@ -51,8 +42,8 @@ use crate::platform::notice::{Closed, Notice, Notices, Place};
 use crate::portal_link::PortalSide;
 use crate::system_sounds::SystemSounds;
 
-/// `notice` as the notifications service carries it: the session's own word about the machine, or
-/// a role's, shown as any other notification and read back by the desk from it.
+/// `notice` as the notifications service carries it: the session's own word about the machine, or a
+/// role's, shown as any other notification.
 #[must_use]
 pub(crate) fn served(
     notice: &Notice,
@@ -77,8 +68,8 @@ pub(crate) fn served(
     }
 }
 
-/// Show `notice` through the notifications service, and say which notification went out: a
-/// producer whose notice the person acts on finds their answer by that id.
+/// Show `notice` through the notifications service, and say which notification went out: a producer
+/// whose notice the person acts on finds their answer by that id.
 pub(crate) fn tell_daemon(notice: &Notice, notifications: &Notifications) -> u32 {
     let notification = served(notice, notifications);
     let id = notification.id;
@@ -86,8 +77,7 @@ pub(crate) fn tell_daemon(notice: &Notice, notifications: &Notifications) -> u32
     id
 }
 
-/// Show `notice` on `desk` directly, for a session with no notifications service: what the session
-/// raises is kept there rather than lost, and it stays until the person lets it go. Says which
+/// Show `notice` on `desk` directly, for a session with no notifications service. Says which
 /// notification went out.
 pub(crate) fn tell_desk(notice: &Notice, desk: &DesktopNotifications) -> u64 {
     let severity = match notice.urgency {
@@ -503,7 +493,7 @@ pub(crate) struct SessionNotifications {
     history: Option<std::path::PathBuf>,
     /// What continues on the person's other devices, and what they showed here.
     mirror: Rc<mirror::Mirroring>,
-    /// The place each of a role's notices opens, by the desk's notification showing it.
+    /// Where each of a role's notices opens, by the desk's notification showing it.
     places: Places,
     /// What the person chose of them since it was last taken.
     places_chosen: PlacesChosen,
@@ -892,9 +882,8 @@ impl SessionNotifications {
         self.desktop.undo_clear();
     }
 
-    /// Tell the person `notice`: the machine's own news, or what a role knows they should know.
-    /// One showing under its tag replaces the one before, and where choosing it lands is kept, so
-    /// the place reaches the door that opens it.
+    /// Tell the person `notice`, replacing one showing under its tag: the machine's own news, or
+    /// what a role knows they should know.
     pub(crate) fn tell(&self, notice: &Notice) {
         // The session raises the notice, so it plays its sound here: a sender's category never
         // reaches the events only the session may claim, and the notification carries none for the

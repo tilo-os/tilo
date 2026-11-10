@@ -1,18 +1,14 @@
 //! Showing a person their notices, on one device.
 //!
 //! A notice is a record of the host's `Notice` type, written by `notify` in the change that told
-//! the person ([`tilolang_runtime::notify`]): it says who it is for, what it says, what choosing
-//! it opens, and whether they have seen it. Every device of the workspace reads it like any
-//! record; this shows it to that notice's person, and to no one else's, through the notifications
-//! the device's session serves — the same ones every app's notification goes through.
+//! the person ([`tilolang_runtime::notify`]). Every device of the workspace reads it like any
+//! record; this shows it to that notice's person, and to no one else's, as one
+//! [`tilo_session_core::notice::Notice`].
 //!
-//! What one device told is kept ([`Notices::kept`]) so a restart tells nothing twice, and what
-//! the record held when the device first looked is taken as old news ([`Notices::step`]): a
-//! record that reached it in a replay, or one it joined late, tells nothing of what is already
-//! there. What the person did with a notice on any device — dismissed it, or opened what it
-//! names — is the record's `seen` field ([`Notices::seen`]), so the devices they were not at
-//! take the notification back. Each notice is one of the session's own
-//! ([`tilo_session_core::notice::Notice`]), shown by whichever host runs this device.
+//! What one device told is kept ([`Notices::kept`]) so a restart tells nothing twice, and what the
+//! record held when it first looked is old news ([`Notices::step`]): a record that reached it in a
+//! replay tells nothing of what is already there. What the person did with a notice on any device
+//! is the record's `seen` field ([`Notices::seen`]), so the devices they were not at take it back.
 
 use std::collections::{BTreeMap, BTreeSet};
 

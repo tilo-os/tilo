@@ -14,6 +14,7 @@ use tilo_power_mgmt::inhibit::INHIBIT_IDLE;
 use tilo_session_power::PowerLink;
 
 use super::*;
+use crate::platform::notice::OPEN_ACTION;
 
 /// What an app with a launcher-verified identity sent.
 fn from_app(
@@ -419,6 +420,58 @@ fn a_replacement_takes_the_banners_place_and_a_withdrawal_takes_it_away() {
     rig.step();
     assert!(rig.feed().banners.is_empty());
     assert!(rig.history().is_empty(), "the app took it back");
+}
+
+/// A role's notice and the machine's own news are told the same way: the producer's words, urgency,
+/// choices and timing are what the banner shows, and choosing a notice that opens something hands
+/// its place to the role that told it.
+#[test]
+fn a_notice_is_told_as_its_producer_wrote_it_wherever_it_came_from() {
+    let rig = rig();
+    let role = RoleNotices::over(Rc::clone(&rig.bridge));
+    let place = Place {
+        app: "so.tilo.notes".into(),
+        record: "tab:00000000000000a1".into(),
+        resource: "notes.notebook/pages/p1".into(),
+    };
+    role.show(
+        &Notice::opens(
+            "Notes",
+            "Ada mentioned you",
+            "Ask about the date",
+            place.clone(),
+        )
+        .tagged(place.tag("u-bea"))
+        .choosing(vec![(OPEN_ACTION.to_owned(), "Open".to_owned())])
+        .staying(Some(Duration::from_secs(8))),
+    );
+    rig.step();
+    let banner = rig.banner();
+    assert_eq!(banner.title, "Ada mentioned you");
+    assert_eq!(banner.app_name.as_deref(), Some("Notes"));
+    assert_eq!(
+        banner.actions,
+        [(OPEN_ACTION.to_owned(), "Open".to_owned())]
+    );
+    assert_eq!(banner.dismiss_after, Duration::from_secs(8));
+
+    // The person chooses what it names: the place reaches the role, and the banner goes.
+    rig.desktop.invoke_action(banner.id, OPEN_ACTION);
+    rig.step();
+    assert_eq!(
+        role.take_chosen(),
+        vec![place],
+        "the place the notice named"
+    );
+    assert!(rig.feed().banners.is_empty(), "a chosen notice leaves");
+
+    // The machine's own news keeps its own name and mark, and its own urgency decides the banner.
+    role.show(&crate::notices::battery_notice(4, true, true));
+    rig.step();
+    let news = rig.banner();
+    assert_eq!(news.app_name.as_deref(), Some("Power"));
+    assert_eq!(news.severity, NotificationSeverity::Error);
+    assert!(news.machine_wide, "the whole machine's news");
 }
 
 #[test]

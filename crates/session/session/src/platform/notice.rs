@@ -5,7 +5,9 @@
 //! of showing one — the notifier its host serves — and the address an open of a notice's place is
 //! carried at.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
+
+use tilo_lock::MutexRecover as _;
 
 pub use tilo_session_core::notice::{
     Closed, Notice, Notices, OPEN_ACTION, Place, SCHEME, open_target,
@@ -30,7 +32,7 @@ impl Toolkit {
         let reporting = Arc::clone(&chosen);
         ui::notify::set_activation_handler(SCHEME, move |uri| {
             if let Some(place) = Place::from_activation(uri) {
-                lock(&reporting).push(place);
+                reporting.lock_recover().push(place);
             }
         });
         let closed: Arc<Mutex<Vec<(String, Closed)>>> = Arc::default();
@@ -38,7 +40,9 @@ impl Toolkit {
         let prefix = tags.to_owned();
         ui::notify::set_close_handler(tags, move |tag, reason| {
             if tag.starts_with(&prefix) {
-                lock(&closing).push((tag.to_owned(), closed_as(reason)));
+                closing
+                    .lock_recover()
+                    .push((tag.to_owned(), closed_as(reason)));
             }
         });
         Self {
@@ -72,14 +76,10 @@ impl Notices for Toolkit {
     }
 
     fn take_chosen(&self) -> Vec<Place> {
-        std::mem::take(&mut *lock(&self.chosen))
+        std::mem::take(&mut *self.chosen.lock_recover())
     }
 
     fn take_closed(&self) -> Vec<(String, Closed)> {
-        std::mem::take(&mut *lock(&self.closed))
+        std::mem::take(&mut *self.closed.lock_recover())
     }
-}
-
-fn lock<T>(held: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    held.lock().unwrap_or_else(PoisonError::into_inner)
 }
