@@ -694,8 +694,13 @@ def journal(ctx, word: str, lines: int = 25) -> str:
     except VmError as exc:
         return f"no journal: {exc}"
     text = out if isinstance(out, str) else str(out)
-    hits = [line for line in text.splitlines() if word.lower() in line.lower()]
+    plain = re.sub(r"\x1b\[[0-9;]*m|\\x1b\[[0-9;]*m", "", text)
+    hits = [line for line in plain.splitlines() if word.lower() in line.lower()]
     ctx.write(f"journal-{word}.txt", "\n".join(hits))
+    # The report's files are not kept for a failed run: the log carries them.
+    print(f"--- journal lines naming {word} ---", flush=True)
+    for line in hits[-150:]:
+        print(line[:600], flush=True)
     return " | ".join(line[-220:] for line in hits[-lines:])
 
 
@@ -757,6 +762,11 @@ def own_change(ctx, res):
     for e, other in ((one, two), (two, one)):
         agent = agents[e["name"]]
         if is_error(e["opened"]) is not False or not text_of(e["opened"]).startswith("ok"):
+            # Where the box says the app's instances publish, by workspace.
+            print(f"--- {e['opened_app']} rows ---", flush=True)
+            for row in ctx.vm.actions(e["opened_app"], programmatic=True)[:40]:
+                print(json.dumps({k: row.get(k) for k in ("application", "room", "provider", "record",
+                                                          "resource", "operation")}), flush=True)
             problems.append(f"{e['name']}: {e['opened_app']}#open did not answer ok: "
                             f"{text_of(e['opened'])[:300]} (journal: {journal(ctx, e['opened_app'])})")
         if is_error(e["new_note"]) is not False:
@@ -803,6 +813,12 @@ def asked_change(ctx, res):
         if is_error(e["new_file"]) is not False:
             # What the agent sees of Terminal, so a refusal says what it was refused against.
             seen = text_of(agents[e["name"]].tool("tilo_ls", {"path": "terminal"}))
+            print(f"--- {e['name']}: the person's Terminal rows ---", flush=True)
+            for row in terminal_rows(ctx)[:20]:
+                print(json.dumps({k: row.get(k) for k in ("application", "room", "provider", "record",
+                                                          "resource", "parent_resource", "operation")}),
+                      flush=True)
+            journal(ctx, "agent door")
             problems.append(f"{e['name']}: terminal#run was refused: {text_of(e['new_file'])[:300]} "
                             f"(tilo_ls terminal: {seen[:500]!r})")
             continue
