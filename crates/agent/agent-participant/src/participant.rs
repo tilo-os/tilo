@@ -38,6 +38,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::agents::{AgentStatus, AgentStep, TaskState};
 use tilo_relay_protocol::live::{LiveAnchor, LiveRecord};
+use tilo_session_client::content::Kept;
 use tilo_session_host::{
     Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle, TransportPhase,
 };
@@ -59,7 +60,6 @@ mod repairs;
 mod running;
 pub(crate) mod unopened;
 mod waits;
-mod workspace_content;
 
 pub(crate) use unopened::{SharedDesktop, desktop_route};
 
@@ -398,6 +398,8 @@ impl AgentParticipant {
         let woken = Arc::clone(&control);
         peer.on_change(Arc::new(move || woken.wake()));
         peer.join(workspace_id)?;
+        let kept = kept_content(&config.workspace, &config.content);
+        peer.keep_content(workspace_id, kept)?;
         let presence = tilo_session_host::saying::enter(
             &peer,
             &identity.cert,
@@ -683,11 +685,11 @@ impl AgentParticipant {
                 }
             }
             PeerEvent::Document(document) => self.document_said(&document),
-            PeerEvent::RemoteAction {
+            PeerEvent::Remote(tilo_session_host::session_actions::Heard::Action {
                 workspace_id,
                 from,
                 frame,
-            } if workspace_id == self.workspace_id && from != self.device() => {
+            }) if workspace_id == self.workspace_id && from != self.device() => {
                 self.remote.push((from, frame));
             }
             PeerEvent::LivePlane {
@@ -701,13 +703,6 @@ impl AgentParticipant {
                     self.presence
                         .heard_body(&self.workspace.clone(), from, &body);
                 }
-            }
-            PeerEvent::ContentWanted {
-                workspace_id,
-                from,
-                request,
-            } if workspace_id == self.workspace_id && from != self.device() => {
-                self.content_wanted(from, &request);
             }
             _ => {}
         }
@@ -2250,3 +2245,15 @@ impl AgentParticipant {
 
 #[cfg(test)]
 mod tests;
+
+/// What `workspace`'s store keeps (what the agent's records import or make), as the agent's
+/// session answers a member that asks for it.
+fn kept_content(workspace: &str, content: &tilo_content::ContentStore) -> Arc<dyn Kept> {
+    let (workspace, content) = (workspace.to_owned(), content.clone());
+    Arc::new(move |_app: &str, cluster: &str, hash: &str| {
+        cluster
+            .eq_ignore_ascii_case(&workspace)
+            .then(|| content.read(hash))
+            .flatten()
+    })
+}

@@ -16,6 +16,7 @@ use tilo_app::feedback::{MaskedScreenshot, ReviewText};
 use tilo_feedback_transport::{
     Capture, Enrollment, Identity, NoCapture, SignedReceipt, Startup, Transport,
 };
+use tilo_session_host::session_actions::Heard;
 use tilo_session_host::{PeerEvent, PeerEvents, PeerHandle};
 use tilo_user_identity::DeviceCert;
 
@@ -328,11 +329,11 @@ pub(crate) fn pump(id: u32) {
     for event in events {
         let mut state = connection.borrow_mut();
         match event {
-            PeerEvent::RemoteAction {
+            PeerEvent::Remote(Heard::Action {
                 workspace_id,
                 from,
                 frame,
-            } if workspace_id == state.workspace && from == state.owner.device_public_key => {
+            }) if workspace_id == state.workspace && from == state.owner.device_public_key => {
                 let Ok(RemoteActionFrame { message, .. }) = RemoteActionFrame::decode(&frame)
                 else {
                     continue;
@@ -402,9 +403,9 @@ pub(crate) fn pump(id: u32) {
                     }
                 }
             }
-            PeerEvent::RemoteActionUndeliverable {
+            PeerEvent::Remote(Heard::Undeliverable {
                 workspace_id, to, ..
-            } if workspace_id == state.workspace && to == state.owner.device_public_key => {
+            }) if workspace_id == state.workspace && to == state.owner.device_public_key => {
                 state.admission = None;
                 state.pending.clear();
                 state.settle_reviews();

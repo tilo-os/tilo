@@ -198,6 +198,10 @@ pub(crate) fn open(
 ) -> Result<(), String> {
     let workspace_id = tilo_relay_protocol::room_workspace_id(workspace)
         .map_err(|_| "a workspace must be a uuid")?;
+    peer.keep_content(
+        workspace_id,
+        Arc::new(kept_content(id, workspace.to_owned())),
+    )?;
     let joined = Joined {
         peer,
         device,
@@ -232,6 +236,29 @@ pub(crate) fn open(
     JOINED.with_borrow_mut(|replicas| replicas.insert(id, Rc::new(RefCell::new(joined))));
     pump(id);
     Ok(())
+}
+
+/// What peer `id`'s page answers a member asking for content of `workspace` from: any app surface
+/// it carries or kept (a reader needs the version a record was written with), and the files records
+/// of its open apps reference (the workspace's host asks for those to keep its own copy).
+fn kept_content(
+    id: u32,
+    workspace: String,
+) -> impl Fn(&str, &str, &str) -> Option<Vec<u8>> + 'static {
+    move |app, cluster, hash| {
+        if cluster != workspace {
+            return None;
+        }
+        tilo_session_host::surfaces::read(app, hash).or_else(|| {
+            let open = replica_of(id)?
+                .try_borrow()
+                .ok()?
+                .open_records()
+                .any(|(open, _)| open == app);
+            open.then(|| crate::page_content::page_content().read(hash))
+                .flatten()
+        })
+    }
 }
 
 /// How many changes to the workspace peer `id` made: records it sent, and
@@ -907,11 +934,6 @@ impl Joined {
                 } if workspace_id == self.workspace => {
                     content_arrived |= self.content_piece(&frame);
                 }
-                PeerEvent::ContentWanted {
-                    workspace_id,
-                    from,
-                    request,
-                } if workspace_id == self.workspace => self.content_wanted(from, &request),
                 PeerEvent::CommitRefused {
                     route,
                     changes,
@@ -999,33 +1021,6 @@ impl Joined {
                         lane.retry_want(hash);
                     }
                 }
-            }
-        }
-    }
-
-    /// Answer device `from`'s request for content of this workspace, from
-    /// what the page keeps: an app surface this page carries or kept, and a
-    /// file a record of an app it has open references, which the workspace's
-    /// host asks for to keep its own copy. A surface is public app metadata and
-    /// is answered for any app, open or not: a member reading a record this
-    /// page never opened still needs the version it was written with.
-    fn content_wanted(&self, from: [u8; 32], request: &[u8]) {
-        let device = self.peer.status().device;
-        let apps: BTreeSet<String> = self.open_records().map(|(app, _)| app).collect();
-        let pieces =
-            neighbour_wire::content::answer(&device, &from, request, |app, workspace, hash| {
-                if workspace != self.uuid {
-                    return None;
-                }
-                tilo_session_host::surfaces::read(app, hash).or_else(|| {
-                    apps.contains(app)
-                        .then(|| crate::page_content::page_content().read(hash))
-                        .flatten()
-                })
-            });
-        for piece in pieces {
-            if self.peer.send_content(self.workspace, from, piece).is_err() {
-                return;
             }
         }
     }

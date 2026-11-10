@@ -353,7 +353,8 @@ pub(super) async fn handle_content_want(
             "content wanted before subscribing to workspace".into(),
         ));
     }
-    let frame = std::mem::take(frame);
+    // The members fanned out to read the same request the host answers.
+    let frame = frame.clone();
     *from_device_public_key = peer.device_public_key;
     let ws = session.workspaces.lock().await.get(&workspace_id).cloned();
     let Some(ws) = ws else {

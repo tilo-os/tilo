@@ -21,6 +21,7 @@ use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use std::time::Duration;
+use tilo_session_client::content::Kept;
 use tilo_session_core::remote::Heard;
 
 use collab_types::DocumentMutation;
@@ -338,17 +339,9 @@ pub enum PeerEvent {
         /// Canonical live frame.
         frame: Vec<u8>,
     },
-    /// A remote-action frame (`tilo_actions::remote::RemoteActionFrame`
-    /// bytes) another device of the workspace addressed to this one: a request
-    /// to answer, or the answer to one this device sent.
-    RemoteAction {
-        /// The workspace id.
-        workspace_id: u64,
-        /// Host-stamped sending device.
-        from: [u8; 32],
-        /// Opaque frame.
-        frame: Vec<u8>,
-    },
+    /// A remote-action frame another device of the workspace addressed to this one (a request, or
+    /// the answer to one this device sent), or word that one it sent could not be delivered.
+    Remote(Heard),
     /// A piece of content a workspace's records reference, sent to this device
     /// alone by a member that keeps it (the host's own device included),
     /// in answer to [`PeerHandle::want_content`].
@@ -359,26 +352,6 @@ pub enum PeerEvent {
         from: [u8; 32],
         /// A `NeighbourMsg::RecordContentPiece`, postcard-encoded.
         frame: Vec<u8>,
-    },
-    /// A member asked the workspace for content a record references: answer
-    /// with [`PeerHandle::send_content`] when this page keeps it. The workspace's host asks this way for a copy of what members
-    /// post, so a visitor's file stays after they leave.
-    ContentWanted {
-        /// The workspace id.
-        workspace_id: u64,
-        /// Host-stamped publishing device.
-        from: [u8; 32],
-        /// A `NeighbourMsg::RecordContentWant`, postcard-encoded.
-        request: Vec<u8>,
-    },
-    /// The host could not deliver a remote-action frame this device sent.
-    RemoteActionUndeliverable {
-        /// The workspace id.
-        workspace_id: u64,
-        /// The addressed device.
-        to: [u8; 32],
-        /// Why.
-        reason: String,
     },
     /// A frame another member published on the workspace's live plane
     /// ([`plane`]), opened with the scope's channel keys: what a device
@@ -472,11 +445,11 @@ fn addressed(envelope: Envelope) -> Option<PeerEvent> {
             from_device_public_key,
             frame,
             ..
-        } => Some(PeerEvent::RemoteAction {
+        } => Some(PeerEvent::Remote(Heard::Action {
             workspace_id,
             from: from_device_public_key,
             frame,
-        }),
+        })),
         Envelope::RecordContent {
             workspace_id,
             from_device_public_key,
@@ -491,11 +464,11 @@ fn addressed(envelope: Envelope) -> Option<PeerEvent> {
             workspace_id,
             to_device_public_key,
             reason,
-        } => Some(PeerEvent::RemoteActionUndeliverable {
+        } => Some(PeerEvent::Remote(Heard::Undeliverable {
             workspace_id,
             to: to_device_public_key,
             reason,
-        }),
+        })),
         _ => None,
     }
 }
@@ -537,7 +510,8 @@ enum Command {
     SealLive(u64, Vec<u8>, LiveCompletion),
     RemoteAction(u64, [u8; 32], Vec<u8>),
     WantContent(u64, Vec<u8>),
-    SendContent(u64, [u8; 32], Vec<u8>),
+    /// What this device keeps of the workspace's content, answered to the members that ask.
+    KeepContent(u64, Arc<dyn Kept>),
     Barrier(Completion),
     /// Presence frames for the workspace's plane, said as this device.
     Presence(u64, Vec<collab_types::presence::Presence>),
@@ -785,6 +759,7 @@ impl PeerHandle {
             shared: shared.clone(),
             workspaces: BTreeSet::new(),
             planes_due: BTreeSet::new(),
+            kept: BTreeMap::new(),
             placing: BTreeMap::new(),
             planes: plane::Planes::default(),
             outbox: record.outbox.iter().cloned().collect(),
@@ -990,17 +965,10 @@ impl PeerHandle {
         self.send(Command::WantContent(workspace_id, request))
     }
 
-    /// Send device `to` of workspace `workspace_id` one piece of content it asked
-    /// for ([`PeerEvent::ContentWanted`]): `frame` is a postcard-encoded
-    /// `NeighbourMsg::RecordContentPiece`. Dropped while disconnected: the
-    /// asker asks again.
-    pub fn send_content(
-        &self,
-        workspace_id: u64,
-        to: [u8; 32],
-        frame: Vec<u8>,
-    ) -> Result<(), String> {
-        self.send(Command::SendContent(workspace_id, to, frame))
+    /// Answer `workspace_id`'s members that ask for content its records reference from `kept`,
+    /// for as long as this session runs.
+    pub fn keep_content(&self, workspace_id: u64, kept: Arc<dyn Kept>) -> Result<(), String> {
+        self.send(Command::KeepContent(workspace_id, kept))
     }
 
     /// Publish the page's microphone `frames` on `workspace_id`'s plane as
@@ -1293,6 +1261,8 @@ struct Task {
     /// channel tick. A page in many workspaces pays for the ones that
     /// changed, not for all of them on every frame it reads.
     planes_due: BTreeSet<u64>,
+    /// What this device keeps of each workspace's content ([`PeerHandle::keep_content`]).
+    kept: BTreeMap<u64, Arc<dyn Kept>>,
     /// Workspaces of this device's person joined once the host governs them:
     /// each one's UUID and name, until the host answered its placement.
     placing: BTreeMap<u64, (String, String)>,
@@ -1920,6 +1890,9 @@ impl Task {
                             }
                             continue;
                         }
+                        if self.content_wanted(&envelope, &client) {
+                            continue;
+                        }
                         let admitted = match &envelope {
                             Envelope::Ready { workspace_id, .. } => Some(*workspace_id),
                             _ => None,
@@ -1976,11 +1949,11 @@ impl Task {
                 frame,
             });
         } else {
-            self.emit(&PeerEvent::RemoteActionUndeliverable {
+            self.emit(&PeerEvent::Remote(Heard::Undeliverable {
                 workspace_id,
                 to,
                 reason: "not connected to the host".into(),
-            });
+            }));
         }
     }
 
@@ -2065,15 +2038,8 @@ impl Task {
                 self.want_content(workspace_id, request, client);
                 true
             }
-            Command::SendContent(workspace_id, to, frame) => {
-                if let Some(client) = client {
-                    let _ = client.send(Envelope::RecordContent {
-                        workspace_id,
-                        to_device_public_key: to,
-                        from_device_public_key: self.config.cert.device_public_key,
-                        frame,
-                    });
-                }
+            Command::KeepContent(workspace_id, kept) => {
+                self.kept.insert(workspace_id, kept);
                 true
             }
             Command::InstallCipher(route, cipher) => {
@@ -2718,11 +2684,6 @@ impl Task {
                 self.fail("protocol-rejected", reason.clone());
                 self.acknowledge(op, Err(reason));
             }
-            Envelope::RecordContentWant {
-                workspace_id,
-                from_device_public_key,
-                frame,
-            } => self.content_wanted(workspace_id, from_device_public_key, frame),
             Envelope::RecordContent { ref frame, .. } => {
                 // A surface this page asked for is the peer's, not a record's
                 // content: it is kept for deciding, and what waited for it is
@@ -2754,16 +2715,34 @@ impl Task {
         lock(&self.shared).fetch_proxy = Some(hex::encode(token));
     }
 
-    /// One member asked for `frame` of `workspace_id`'s record content: a
-    /// request this device did not make is the page's to answer.
-    fn content_wanted(&self, workspace_id: u64, from: [u8; 32], frame: Vec<u8>) {
-        if from != self.config.cert.device_public_key {
-            self.emit(&PeerEvent::ContentWanted {
-                workspace_id,
-                from,
-                request: frame,
+    /// Whether `envelope` is a member's ask for a workspace's record content, answered to that
+    /// member alone from what this device keeps of it; a workspace it keeps nothing of is left.
+    fn content_wanted(&self, envelope: &Envelope, client: &RelayClient) -> bool {
+        let Envelope::RecordContentWant {
+            workspace_id,
+            from_device_public_key: from,
+            frame,
+        } = envelope
+        else {
+            return false;
+        };
+        let device = self.config.cert.device_public_key;
+        let Some(kept) = self.kept.get(workspace_id).filter(|_| *from != device) else {
+            return true;
+        };
+        let pieces =
+            neighbour_wire::content::answer(&device, from, frame, |app, workspace, hash| {
+                kept.read(app, workspace, hash)
+            });
+        for piece in pieces {
+            let _ = client.send(Envelope::RecordContent {
+                workspace_id: *workspace_id,
+                to_device_public_key: *from,
+                from_device_public_key: device,
+                frame: piece,
             });
         }
+        true
     }
 
     /// Take this device into `route`'s channel, with the participants its
@@ -3881,24 +3860,7 @@ impl tilo_session_core::remote::RemoteSession for Asking {
             .drain()
             .into_iter()
             .filter_map(|event| match event {
-                PeerEvent::RemoteAction {
-                    workspace_id,
-                    from,
-                    frame,
-                } => Some(Heard::Action {
-                    workspace_id,
-                    from,
-                    frame,
-                }),
-                PeerEvent::RemoteActionUndeliverable {
-                    workspace_id,
-                    to,
-                    reason,
-                } => Some(Heard::Undeliverable {
-                    workspace_id,
-                    to,
-                    reason,
-                }),
+                PeerEvent::Remote(heard) => Some(heard),
                 _ => None,
             })
             .collect()

@@ -15,6 +15,7 @@
 pub mod arrivals;
 pub mod channels;
 pub mod client;
+pub mod content;
 pub mod custody;
 pub mod engine;
 pub mod gate;

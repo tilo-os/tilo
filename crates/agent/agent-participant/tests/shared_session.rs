@@ -71,6 +71,7 @@ use tilo_relay_protocol::agents::{
     agent_resource,
 };
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
+use tilo_session_host::session_actions::Heard;
 use tilo_session_host::{PeerEvent, PeerHandle, certify};
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, UserIdentity,
@@ -228,7 +229,7 @@ async fn call(
             agent.pump();
         }
         let receipt = events.drain().into_iter().find_map(|event| match event {
-            PeerEvent::RemoteAction { from, frame, .. } if from == host_device => {
+            PeerEvent::Remote(Heard::Action { from, frame, .. }) if from == host_device => {
                 match RemoteActionFrame::decode(&frame).unwrap().message {
                     RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation => {
                         Some(receipt)
@@ -236,7 +237,7 @@ async fn call(
                     _ => None,
                 }
             }
-            PeerEvent::RemoteActionUndeliverable { reason, .. } => {
+            PeerEvent::Remote(Heard::Undeliverable { reason, .. }) => {
                 panic!("undeliverable: {reason}")
             }
             _ => None,

@@ -32,6 +32,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::agents::{
     AGENTS_PROVIDER, AgentsStatus, STATUS_ACTION, SUPERVISOR_RESOURCE,
 };
+use tilo_session_host::session_actions::Heard;
 use tilo_session_host::{Host, PeerEvent, PeerEvents, PeerHandle};
 
 use super::hosted::Hosted;
@@ -138,11 +139,13 @@ impl Page {
     pub fn pump(&mut self) {
         for event in self.events.drain() {
             match self.take(event) {
-                Some(PeerEvent::RemoteAction { from, frame, .. }) if from == self.host_key => {
+                Some(PeerEvent::Remote(Heard::Action { from, frame, .. }))
+                    if from == self.host_key =>
+                {
                     self.answers
                         .push(RemoteActionFrame::decode(&frame).unwrap().message);
                 }
-                Some(PeerEvent::RemoteActionUndeliverable { reason, .. }) => {
+                Some(PeerEvent::Remote(Heard::Undeliverable { reason, .. })) => {
                     panic!("undeliverable: {reason}")
                 }
                 Some(_) | None => {}

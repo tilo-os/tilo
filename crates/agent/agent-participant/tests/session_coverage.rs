@@ -52,6 +52,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::agents::{AgentStatus, TaskState};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_session_host::PeerEvent;
+use tilo_session_host::session_actions::Heard;
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
 use support::{WORKSPACE, enrol, ready, start_host, start_peer, wait_for, workspace};
@@ -107,11 +108,11 @@ async fn ask(
         let mut answer = None;
         for event in events.drain() {
             match event {
-                PeerEvent::RemoteAction { from, frame, .. } if from == agent_key => {
+                PeerEvent::Remote(Heard::Action { from, frame, .. }) if from == agent_key => {
                     answer
                         .get_or_insert_with(|| RemoteActionFrame::decode(&frame).unwrap().message);
                 }
-                PeerEvent::RemoteActionUndeliverable { reason, .. } => {
+                PeerEvent::Remote(Heard::Undeliverable { reason, .. }) => {
                     panic!("undeliverable: {reason}")
                 }
                 PeerEvent::Document(document) => documents.push(*document),
