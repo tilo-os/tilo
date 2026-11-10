@@ -1168,7 +1168,9 @@ fn attach(row: Element, swipe: Option<SwipeActionProps>, attached: Attachments) 
 /// A message of a transcript: its item's row, under its author and the time when the item
 /// names them. A run of one author's messages, each within [`RUN_WINDOW_SECS`] of the one
 /// before it on the same day, shows the author's avatar and name once, over its first message;
-/// the others line up under it. The first message of a day has the day's divider over it.
+/// the others line up under it. The first message of a day has the day's divider over it, and
+/// where it is also the first message the reader has not seen, the day and the place reading
+/// starts again are one band, in the accent, saying both.
 ///
 /// Each message is one row of the page's column: a run's next line stands a tight gap under
 /// the one before, a new run a section's gap under the last.
@@ -1269,16 +1271,25 @@ fn message_of(
     // stays.
     let message = attach(Box::new(message), swipe, attached);
     let gap = if continues { Rhythm::Tight } else { RUN_GAP };
-    let shown = match day.filter(|_| new_day) {
-        Some(day) => Box::new(
+    // The band over this line: the day it opens, the place reading starts again, or — where the
+    // day turns over at the reader's first unseen line — one band in the accent saying both,
+    // never a day's divider stacked over the unread one.
+    let divider = match (day.filter(|_| new_day), first_unread) {
+        (Some(day), true) => Some(SectionDivider::unread_day(&clock.day_label(day))),
+        (Some(day), false) => Some(SectionDivider::new(clock.day_label(day))),
+        (None, true) => Some(SectionDivider::unread()),
+        (None, false) => None,
+    };
+    let shown = match divider {
+        Some(divider) => Box::new(
             Stack::stack()
                 .gap(RUN_GAP)
-                .push(Box::new(SectionDivider::new(clock.day_label(day))))
+                .push(Box::new(divider))
                 .push(message),
         ) as Element,
         None => message,
     };
-    page_row(under_unread(shown, first_unread), gap, measure)
+    page_row(shown, gap, measure)
 }
 
 /// The faces of those who have read to the row `key`, small, at the trailing end of its line:
@@ -1984,19 +1995,21 @@ mod tests {
             rect_of(node, "ListRow", &format!("message {at}"))
                 .unwrap_or_else(|| panic!("the message {at} shows"))
         };
-        // The row the divider stands over keeps the column and the size it has without it: the
-        // divider adds its band over the row and moves nothing else.
+        // The row the band stands over keeps the column and the size it has without it: the
+        // day the reader left off at says it in the day's own band, and adds no band over it.
         let unread = message(&marked, 2);
         let alone = message(&plain, 2);
         assert_eq!(
-            [unread[0], unread[2], unread[3]],
-            [alone[0], alone[2], alone[3]],
-            "the message under the divider has the box it has without it: {unread:?} against \
+            unread, alone,
+            "the message under the band has the box it has without it: {unread:?} against \
              {alone:?}"
         );
+        // The line the reader has not seen still shows where reading starts, so it says so
+        // with a band the line alone does not have.
+        let opened = message(&marked, 3);
         assert!(
-            unread[1] > alone[1],
-            "the divider stands over the row, taking room of its own: {unread:?} against {alone:?}"
+            opened[1] > unread[1],
+            "the day the reader left off at stands over its line: {opened:?} against {unread:?}"
         );
         // Every message of one run starts on one line: the one under the divider stands on the
         // column of the messages around it, the one over it and the one under it alike.
@@ -2009,13 +2022,15 @@ mod tests {
             );
         }
         // The two dividers of one conversation are one component and rule the same column: the
-        // day's over the third message, and the "New messages" one over it.
+        // day's over the first message, and the one over the third, which opens a day at the
+        // first line the reader has not seen, so the two are one band saying both.
         let mut dividers = Vec::new();
         rects_of_widget(&marked, "SectionDivider", &mut dividers);
         assert_eq!(
             dividers.len(),
-            3,
-            "the two days and the place the unread part starts, all one component: {dividers:?}"
+            2,
+            "a day's band and the band where reading starts again, never a day's stacked over \
+             it: {dividers:?}"
         );
         for (edge, divider) in dividers.iter().enumerate() {
             assert_eq!(
@@ -2024,6 +2039,20 @@ mod tests {
                 "divider {edge} ends where the first does: {dividers:?}"
             );
         }
+        // The band over the third message says the day and that reading starts there: one
+        // divider, in the accent, saying what the two would have said apart.
+        let mut said = Vec::new();
+        find_widget(&marked, "SectionDivider", &mut said);
+        let clock = ConversationClock::local();
+        let day = clock.day(1_790_090_000);
+        assert_eq!(
+            said,
+            vec![
+                clock.day_label(clock.day(1_790_000_000)),
+                crate::widget::conversation::band::day_with_unread(&clock.day_label(day)),
+            ],
+            "the day the reader left off at says the day and that it is where reading starts"
+        );
     }
 
     /// Who has read to a line shows on that line alone: each reader's face stands once, on the

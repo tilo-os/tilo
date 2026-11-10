@@ -688,6 +688,26 @@ pub fn edge_on_with(surface: Color, alpha: u8) -> Color {
     Colors::hairline_on(surface, alpha)
 }
 
+/// The 1 px rule `ink` draws when it is painted on `ground`: the ink's own hue at the
+/// smallest alpha that visibly moves that ground ([`crate::tokens::colors::HAIRLINE_MIN_DELTA`]),
+/// or the ink whole where even that leaves the ground where it was.
+///
+/// [`edge_on`] derives the neutral edge of a surface it *is*: it picks black or white from the
+/// surface and is then painted on a ground of another tone, where a rule drawn in a colour of
+/// its own (a divider in the accent where reading starts again) would vanish. A rule meant to
+/// carry a colour is derived against the ground it lands on, never against itself.
+#[must_use]
+pub fn hairline_of(ink: Color, ground: Color) -> Color {
+    let [r, g, b, _] = ink.to_rgba8().to_u8_array();
+    for alpha in EDGE_ALPHA_STEPS {
+        let wash = Color::from_rgba8(r, g, b, *alpha);
+        if edge_delta(wash, ground) >= crate::tokens::colors::HAIRLINE_MIN_DELTA {
+            return wash;
+        }
+    }
+    ink
+}
+
 /// The outline a crisp 1 px edge is stroked on: half a pixel inside `rect`,
 /// so a 1 px stroke covers exactly the outermost pixel row of the surface
 /// and never bleeds onto the ground beside it.

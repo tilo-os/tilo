@@ -36,23 +36,35 @@ pub enum DividerTone {
 }
 
 impl DividerTone {
-    /// The ink a divider of this tone is drawn in: the accent where reading starts again, and
-    /// dimmed text over a hairline for a day of the conversation.
+    /// The ink a divider of this tone is drawn in over `ground`, the surface it lands on: a day
+    /// is dimmed text over the ground's own hairline, the place reading starts again is the
+    /// accent over a rule in that accent.
+    ///
+    /// The rule is derived against `ground` and not against the ink: a rule in the accent
+    /// derived as an edge of the accent is black or white at a wash, and painted on the
+    /// conversation's ground it moves nothing, so the divider reads as bare text.
     #[must_use]
-    pub fn ink(self, theme: &Theme) -> DividerInk {
+    pub fn ink_on(self, theme: &Theme, ground: Color) -> DividerInk {
         match self {
             Self::Quiet => DividerInk {
                 label: theme.text_dim,
-                rule: theme.tokens.colors.surfaces.content,
+                rule: crate::surface::edge_on(ground),
             },
             Self::Accent => {
                 let accent = theme.tokens.colors.intent.accent_ink;
                 DividerInk {
                     label: accent,
-                    rule: accent,
+                    rule: crate::surface::hairline_of(accent, ground),
                 }
             }
         }
+    }
+
+    /// The ink a divider of this tone is drawn in over a conversation's ground: the content the
+    /// lines of the conversation stand on.
+    #[must_use]
+    pub fn ink(self, theme: &Theme) -> DividerInk {
+        self.ink_on(theme, theme.tokens.colors.surfaces.content)
     }
 }
 
@@ -122,7 +134,7 @@ pub fn paint(
     tone: DividerTone,
 ) -> DividerParts {
     let theme = paint.theme;
-    let ink = tone.ink(theme);
+    let ink = tone.ink_on(theme, theme.tokens.colors.surfaces.content);
     let style = theme.text(TextRole::Caption);
     let gap = f64::from(theme.tokens.spacing.s3);
     let room = crate::num::f32_of_f64((trailing - leading).max(0.0));
@@ -168,6 +180,16 @@ pub fn paint(
 #[must_use]
 pub fn unread_label() -> String {
     super::t("conversation-new-messages")
+}
+
+/// The words of the one band a conversation draws where the day turns over at the first line the
+/// reader has not seen: the day and that reading starts there ("Yesterday · New").
+///
+/// A day's band stacked over the unread one reads as two dividers saying two things about one
+/// place; a conversation that meets them draws one band, in the accent, saying both.
+#[must_use]
+pub fn day_with_unread(day: &str) -> String {
+    crate::i18n::widget_format("conversation-day-new", &[("day", day.into())])
 }
 
 /// A divider drawn where a canvas painter places it: the day a run of lines turns over, or the
@@ -257,6 +279,14 @@ impl SectionDivider {
     #[must_use]
     pub fn unread() -> Self {
         Self::accent(unread_label())
+    }
+
+    /// The one band where a day turns over at the first line the reader has not seen, saying
+    /// both in the accent ([`day_with_unread`]): one divider, never a day's over the unread
+    /// one.
+    #[must_use]
+    pub fn unread_day(day: &str) -> Self {
+        Self::accent(day_with_unread(day))
     }
 
     /// The height a divider takes: one list row, at every text scale.

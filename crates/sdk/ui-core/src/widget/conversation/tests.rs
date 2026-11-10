@@ -111,6 +111,7 @@ fn both_dividers_of_a_conversation_rule_the_column_on_each_side_of_their_label()
         // The day is dimmed text over a hairline; the place reading starts again is the
         // person's colour, as an unread count is.
         let colors = &theme.tokens.colors;
+        let ground = colors.surfaces.content;
         assert_eq!(DividerTone::Quiet.ink(&theme).label, theme.text_dim);
         assert_eq!(
             DividerTone::Accent.ink(&theme).label,
@@ -120,6 +121,37 @@ fn both_dividers_of_a_conversation_rule_the_column_on_each_side_of_their_label()
             DividerTone::Quiet.ink(&theme).rule,
             DividerTone::Accent.ink(&theme).rule,
             "the two dividers are apart in the ink of their rules"
+        );
+        // Each rule moves the ground it is painted on, whichever tone it is drawn in: a rule
+        // derived as an edge of its own ink, and then painted over the conversation's ground,
+        // leaves the divider reading as bare text.
+        for tone in [DividerTone::Quiet, DividerTone::Accent] {
+            let rule = tone.ink_on(&theme, ground).rule;
+            assert!(
+                crate::surface::edge_delta(rule, ground)
+                    >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                "{tone:?} divider's rule visibly moves the ground it lands on: {rule:?} on \
+                 {ground:?}"
+            );
+        }
+        // And the unread one carries the person's colour itself, not a wash of black or white
+        // over it.
+        let accent = colors.intent.accent_ink;
+        let accent_rule = DividerTone::Accent.ink_on(&theme, ground).rule;
+        let drawn = accent_rule.to_rgba8();
+        let ink = accent.to_rgba8();
+        assert_eq!(
+            (drawn.r, drawn.g, drawn.b),
+            (ink.r, ink.g, ink.b),
+            "the accent divider's rule is drawn in the accent: {accent_rule:?}"
+        );
+        // A rule derived as the edge of its own ink — black or white at a wash, which is what
+        // the accent would get from `surface::edge_on` — leaves the ground where it was: that
+        // is the divider that reads as bare text.
+        assert!(
+            crate::surface::edge_delta(crate::surface::edge_on(accent), ground)
+                < crate::tokens::colors::HAIRLINE_MIN_DELTA,
+            "an edge of the accent itself carries none of it onto the ground: {ground:?}"
         );
         // The toolkit's own unread divider is that accent one, saying where reading starts.
         let built = <SectionDivider as crate::component::Described>::from_props(
