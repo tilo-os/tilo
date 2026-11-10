@@ -2,9 +2,8 @@ counter = Wert: { $count }
 tab-modified = Nicht gespeicherte Änderungen
 tab-search-in = In { $title } suchen
 tab-held-by = Fenster von { $name }
-tab-controls-desktop = Steuert deinen Desktop
-tab-dev-build = Entwicklungsversion von { $installer }
-tab-shared-with = Geteilt mit { $place }
+tab-opened-by = { $agent } hat dieses Fenster geöffnet
+tab-opened-by-run = { $run }
 standalone-search-title = Suchen
 
 history-mode-title = Verlauf

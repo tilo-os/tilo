@@ -167,6 +167,7 @@ mod tests {
             run: Some(OpenedBy {
                 run: "agent-run:7".into(),
                 label: "Scribe".into(),
+                title: "File the receipts".into(),
             }),
         }
     }

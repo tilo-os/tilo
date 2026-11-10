@@ -272,12 +272,12 @@ fn show(session: &Arc<Session>, request: &Value, answer: &Value) {
     // The workspace sees the agent present, doing this and where: its own
     // presence says it, as every desktop reads it.
     let said = Arc::clone(session);
-    let (call, acted, changed) = (
+    let (call, worked, run) = (
         request.clone(),
-        session.server.acted(),
-        session.server.take_changed(),
+        (session.server.acted(), session.server.take_changed()),
+        session.server.run_of(request),
     );
-    tokio::spawn(async move { said.presence.called(&call, failed, acted, changed).await });
+    tokio::spawn(async move { said.presence.called(&call, failed, worked, run).await });
 }
 
 #[cfg(test)]

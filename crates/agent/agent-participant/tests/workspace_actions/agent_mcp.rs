@@ -181,7 +181,12 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         "the call changed the workbook"
     );
     presence
-        .called(&new_sheet, false, Some(acted), changed)
+        .called(
+            &new_sheet,
+            false,
+            (Some(acted), changed),
+            server.run_of(&new_sheet),
+        )
         .await;
     // And it writes in the document the other device made.
     let (wrote, failed) = tool(
@@ -324,7 +329,12 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         record: sheets.record.clone(),
     };
     presence
-        .called(&new_sheet, false, server.acted(), vec![again])
+        .called(
+            &new_sheet,
+            false,
+            (server.acted(), vec![again]),
+            server.run_of(&new_sheet),
+        )
         .await;
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
     assert_eq!(
@@ -929,8 +939,8 @@ async fn an_agent_that_comes_back_is_heard_by_an_open_page_every_time() {
                 &json!({"method": "tools/call",
                         "params": {"name": "tilo_read", "arguments": {"path": path}}}),
                 false,
+                (None, Vec::new()),
                 None,
-                Vec::new(),
             )
             .await;
         let opened = Instant::now();

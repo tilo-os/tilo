@@ -1608,3 +1608,92 @@ fn u32_of(v: f64) -> u32 {
     let out = v as u32;
     out
 }
+
+/// A window an agent opened names the agent in its bar, and that mark is the keyboard's next stop
+/// after the window's tab list: Tab lands on it, it wears the toolkit's focus ring, and Enter there
+/// hands the host the run that opened the window, as a press does.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn the_agents_mark_is_the_keyboards_stop_after_the_tab_list() {
+    const AGENT: &str = "Jane Doe's agent";
+    let _settled = crate::motion::testing::settled();
+    let mut g = WindowGroup::new(
+        10,
+        vec![(
+            TabDescriptor::new(1, "Application.pdf"),
+            TileContent::Notice {
+                title: "Form".into(),
+                detail: String::new(),
+            },
+        )],
+        1,
+        WindowWidth::Normal,
+    );
+    assert!(g.set_tab_opened_by(
+        1,
+        Some(tilo_desktop_model::ownership::OpenedBy {
+            run: "agent-run:7".into(),
+            label: AGENT.into(),
+            title: "Fill Jane Doe's visa application".into(),
+        })
+    ));
+    let mut frame = crate::headless::FrameHarness::for_root(
+        crate::State::new(),
+        g,
+        (u32_of(W), u32_of(H)),
+        Theme::dark().with_reduce_motion(true),
+    );
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    let stops: Vec<(crate::a11y::Role, Option<String>)> = frame
+        .focus_access_nodes()
+        .into_iter()
+        .map(|node| (node.role, node.name))
+        .collect();
+    let at = stops
+        .iter()
+        .position(|(_, name)| name.as_deref() == Some(AGENT))
+        .unwrap_or_else(|| panic!("the mark is a stop of the keyboard's: {stops:?}"));
+    assert!(
+        at > 0 && stops[at - 1].0 == crate::a11y::Role::TabBar,
+        "right after the window's tab list: {stops:?}"
+    );
+    let mark = frame
+        .root_mut::<WindowGroup>()
+        .bar
+        .opened_by_stop()
+        .map(|(rect, _)| rect)
+        .expect("the mark stands in the bar");
+    assert_eq!(
+        ring_pixels(&frame, mark),
+        0,
+        "no ring before the keyboard comes"
+    );
+
+    let mut walked = Vec::new();
+    for _ in 0..=stops.len() {
+        frame.key("Tab");
+        walked.push(focused_stop(&frame));
+        if walked.last().cloned().flatten().as_deref() == Some(AGENT) {
+            break;
+        }
+    }
+    assert_eq!(
+        walked.last().cloned().flatten().as_deref(),
+        Some(AGENT),
+        "Tab reaches the mark: {walked:?} of {stops:?}"
+    );
+    frame.relayout();
+    assert!(
+        ring_pixels(&frame, mark) > 0,
+        "the mark the keyboard is on wears the toolkit's focus ring"
+    );
+    frame.key("Enter");
+    frame.relayout();
+    assert_eq!(
+        frame.root_mut::<WindowGroup>().take_opened_by_press(),
+        Some((1, "agent-run:7".to_owned())),
+        "Enter on the mark opens its run, as a press does"
+    );
+}

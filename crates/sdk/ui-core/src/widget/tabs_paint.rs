@@ -136,9 +136,7 @@ impl TabBar {
             self.draw_keyboard_focus(scene, transform, theme)
         });
         self.draw_new_tab_chip(scene, transform, tr, theme);
-        self.draw_desktop_control_chip(scene, transform, tr, theme);
-        self.draw_dev_build_chip(scene, transform, tr, theme);
-        self.draw_shared_chip(scene, transform, tr, theme, presence);
+        self.draw_opened_by_chip(scene, transform, tr, theme);
         if self.window_controls {
             // The window's own controls: one pill, and the app's History
             // toggle standing on the window's ground before it.
@@ -271,17 +269,6 @@ impl TabBar {
                 });
             }
         }
-        // The faces the share mark shows draw as their people look now.
-        self.shared.for_each_person(&self.tabs, |tab, user| {
-            seen.push(PersonSeen {
-                tab,
-                colour: presence.color_for(user),
-                dims: presence.availability_of(user).dims(),
-                agent: presence.is_agent(user),
-                name: presence.names.get(user).cloned(),
-                user: user.clone(),
-            });
-        });
         seen
     }
 
@@ -315,15 +302,7 @@ impl TabBar {
                 at += 1;
             }
         }
-        let mut same = true;
-        let mut shared = 0;
-        self.shared.for_each_person(&self.tabs, |tab, user| {
-            same &= seen
-                .get(at + shared)
-                .is_some_and(|drawn| drawn.matches(tab, user, presence));
-            shared += 1;
-        });
-        same && at + shared == seen.len()
+        at == seen.len()
     }
 
     /// [`Widget::draw`] — a bar at rest whose own state, theme, placement

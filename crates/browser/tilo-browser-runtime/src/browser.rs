@@ -737,8 +737,9 @@ impl Desktop {
     }
 
     /// Tell the surface who holds each window this page's person may not
-    /// close or move, on a desktop shared through a workspace. Whether that
-    /// changed anything.
+    /// close or move, and which agent run opened each window an agent
+    /// opened, on a desktop shared through a workspace. Whether that changed
+    /// anything.
     fn refresh_holders(&self, in_workspace: bool) -> bool {
         let holders = if in_workspace {
             let here = self.here.borrow();
@@ -776,7 +777,9 @@ impl Desktop {
                 .role()
                 .is_none_or(|role| role.includes(tilo_action_policy::Role::Editor));
         let opened = self.handle.set_opens(opens);
-        self.handle.set_holders(holders) | opened
+        let runs = in_workspace.then(|| self.shared.opened_by.borrow().clone());
+        let named = self.handle.set_opened_by(runs.unwrap_or_default());
+        self.handle.set_holders(holders) | opened | named
     }
 }
 

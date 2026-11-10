@@ -52,6 +52,10 @@ pub struct OpenedBy {
     pub run: String,
     /// What the run is called: the agent's name.
     pub label: String,
+    /// What the run was asked to do, as History names it ("Fill Jane Doe's
+    /// visa application"); empty when the agent said nothing of it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
 }
 
 /// A shared desktop as a workspace holds it: the tree and who made what.

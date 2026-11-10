@@ -44,6 +44,7 @@ impl Shared {
             // placed, and swapping it in whole keeps the windows this device shows where its own
             // view left them.
             self.handle.replace_tree(tree.clone());
+            self.handle.set_opened_by(self.desktops.opened_by());
         }
         // A window the person opens here is this device's to place: the record lacks it until the
         // next write, and folding keeps it.

@@ -2275,6 +2275,7 @@ impl Worker {
             .map(|group| tilo_desktop_model::ownership::OpenedBy {
                 run: group.id,
                 label: group.label,
+                title: said_run_title(request).unwrap_or_default().to_owned(),
             });
         let title = self
             .catalogue
@@ -2705,6 +2706,20 @@ impl Worker {
             resources: Vec::new(),
         })
     }
+}
+
+/// The name the run `request` says it is a step of goes by, as History shows its changes under:
+/// the title the agent gave the run (`_meta` run.title), else the session's own name for its run.
+/// Words for people to read, never the run itself, which is the host's to say
+/// ([`caller_context`]).
+fn said_run_title(request: &InvokeRequest) -> Option<&str> {
+    request
+        .context
+        .as_ref()?
+        .group
+        .as_ref()
+        .filter(|group| group.kind == tilo_actions::context::AGENT_RUN_GROUP)
+        .map(|group| group.label.as_str())
 }
 
 /// The arguments an invocation carries, as the door binds them.

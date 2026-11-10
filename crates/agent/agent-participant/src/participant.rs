@@ -2179,7 +2179,7 @@ impl AgentParticipant {
             beside: beside.as_deref(),
         };
         // The window is the person's the agent works for; the run says it
-        // was this agent's task that opened it.
+        // was this agent's task that opened it, and what it was asked.
         let delegation = &self.identity.delegation;
         let person = hex::encode(delegation.user_public_key);
         let opener = crate::desk::Opener {
@@ -2190,6 +2190,11 @@ impl AgentParticipant {
                     |running| running.id.clone(),
                 ),
                 label: delegation.label.clone(),
+                title: self
+                    .running
+                    .as_ref()
+                    .map(|running| running.request.clone())
+                    .unwrap_or_default(),
             }),
         };
         let name = self.workspace_name.as_deref();

@@ -35,6 +35,7 @@ impl Shared {
         Self {
             tree,
             holders: HashMap::new(),
+            opened_by: std::collections::BTreeMap::new(),
             window_offers: Vec::new(),
             asking: std::collections::BTreeSet::new(),
             opens: true,

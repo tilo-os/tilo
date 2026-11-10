@@ -29,13 +29,12 @@ use crate::motion::{Direction, Disclose, ListChange, MotionSpec, Snap};
 mod paint;
 #[path = "tabs_pill_layout.rs"]
 mod pill_layout;
+#[path = "tabs_press.rs"]
+mod press;
 #[path = "tabs_rename.rs"]
 mod rename;
 #[path = "tabs_status_chips.rs"]
 mod status_chips;
-pub use status_chips::{SharedBy, SharedWith};
-#[path = "tabs_press.rs"]
-mod press;
 #[path = "tabs_tips.rs"]
 mod tips;
 #[path = "tabs_title_menu.rs"]
@@ -412,12 +411,9 @@ pub struct TabBar {
     /// Tabs someone else holds ([`TabHolder`]), by id. Sidecar for the same
     /// reason as the three above.
     held_ids: HashMap<u64, TabHolder>,
-    /// Tabs whose app may control the desktop beyond its workspace, and
-    /// where their chip was last painted ([`status_chips`]).
-    desktop_control: status_chips::DesktopControlChip,
-    dev_build: status_chips::DevBuildChip,
-    /// Tabs shared with their workspace, and who sees them.
-    shared: status_chips::SharedChip,
+    /// Tabs an agent opened for their person, and where the agent's mark was
+    /// last painted ([`status_chips`]).
+    opened: status_chips::OpenedByChip,
     /// A drag on a held tab, pulling it or springing it back.
     resist: Option<Resist>,
     /// Whether the hover-reveal maximize chip is offered: a host whose tabs are documents inside a
@@ -623,9 +619,7 @@ impl TabBar {
             accent_ids: HashMap::new(),
             modified_ids: HashSet::new(),
             held_ids: HashMap::new(),
-            desktop_control: status_chips::DesktopControlChip::default(),
-            dev_build: status_chips::DevBuildChip::default(),
-            shared: status_chips::SharedChip::default(),
+            opened: status_chips::OpenedByChip::default(),
             resist: None,
             show_maximize: true,
             closable: true,
@@ -3231,7 +3225,7 @@ impl TabBar {
         if self.controls.hit(p).is_some()
             || (self.active_toolbar().is_some() && self.toolbar_row.control_hit(p))
             || (self.new_tab_rect.area() > 0.0 && self.new_tab_rect.contains(p))
-            || self.desktop_control_hit(p)
+            || self.opened_by_hit(p)
             || self.action_chip_at(p).is_some()
         {
             return true;
@@ -4620,9 +4614,6 @@ impl Widget for TabBar {
                 }
             })
             .collect();
-        tab_children.extend(self.desktop_control_access());
-        tab_children.extend(self.dev_build_access());
-        tab_children.extend(self.shared_access());
         if self.new_tab {
             let new_tab = AccessNode::new(Role::Button).with_name(NEW_TAB);
             let new_tab = if self.new_tab_rect.area() > 0.0 {
@@ -4723,8 +4714,8 @@ impl Widget for TabBar {
         if self.window_controls && self.toolbar_row.perform(target) {
             return true;
         }
-        if target == status_chips::DESKTOP_CONTROL_TARGET {
-            return self.activate_desktop_control();
+        if target == status_chips::OPENED_BY_TARGET {
+            return self.activate_opened_by();
         }
         if self.window_controls {
             let active = self.active_id;

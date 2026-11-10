@@ -75,7 +75,7 @@ impl TabBar {
             *handled = true;
             return;
         }
-        if self.press_desktop_control(cursor_pos) {
+        if self.press_opened_by(cursor_pos) {
             *handled = true;
             return;
         }

@@ -49,6 +49,10 @@ pub(crate) struct SharedDesktops {
     /// window there.
     notes: std::sync::Arc<crate::continuations::Continuations>,
     /// The heads each workspace's record was folded in at, by workspace.
+    /// The agent run that opened each window an agent opened, by workspace and tab, as each
+    /// workspace's record last said ([`Self::opened_by`]).
+    opened_by:
+        RefCell<HashMap<WorkspaceId, BTreeMap<u64, tilo_desktop_model::ownership::OpenedBy>>>,
     folded: RefCell<HashMap<WorkspaceId, Vec<ChangeHash>>>,
     /// The revision each workspace's record was last captured at: the next read asks for the record
     /// against it, so a record that did not move between passes is answered from the admitted heads
@@ -204,10 +208,11 @@ impl SharedDesktops {
                 continue;
             }
             folded.insert(room, heads);
-            if shared_record::read(&doc, None).is_none() {
+            let Some(desk) = shared_record::read(&doc, None) else {
                 // A record that holds no desktop yet: nothing of it to show.
                 continue;
-            }
+            };
+            self.opened_by.borrow_mut().insert(room, desk.opened_by);
             let mine = |id: u64| local != 0 && peer_salt_of(id) == local;
             let closed = self.closed_since_written(room, workspace);
             let kept = device::Kept {
@@ -224,6 +229,16 @@ impl SharedDesktops {
             changed |= device::fold(&doc, workspace, device, &kept);
         }
         changed
+    }
+
+    /// The agent run that opened each window an agent opened, by tab, across the workspaces this
+    /// device shows: what each window's bar names ([`tilo_desktop_surface::DesktopHandle::set_opened_by`]).
+    pub(crate) fn opened_by(&self) -> BTreeMap<u64, tilo_desktop_model::ownership::OpenedBy> {
+        self.opened_by
+            .borrow()
+            .values()
+            .flat_map(|runs| runs.iter().map(|(tab, run)| (*tab, run.clone())))
+            .collect()
     }
 
     /// Write what this device changed about the workspace in front's desk into the workspace's

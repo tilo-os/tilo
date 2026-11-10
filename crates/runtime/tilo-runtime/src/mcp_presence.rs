@@ -189,13 +189,14 @@ impl Presence {
     /// worked in (`acted`): the line the person reads under the agent's
     /// face, and where following it brings them. The records the call made
     /// or changed (`changed`) are opened as windows first, so the frame that
-    /// names one finds it shown.
+    /// names one finds it shown, each said to be opened in `run`, the run the call was a step of
+    /// ([`crate::mcp::McpServer::run_of`]).
     pub async fn called(
         &self,
         request: &Value,
         failed: bool,
-        acted: Option<ActedRecord>,
-        changed: Vec<ActedRecord>,
+        (acted, changed): (Option<ActedRecord>, Vec<ActedRecord>),
+        run: Option<tilo_actions::WorkGroup>,
     ) {
         let line = now_line(request, failed);
         let focus = acted.map(|worked| LiveRecord {
@@ -203,10 +204,13 @@ impl Presence {
             record: worked.record,
         });
         for record in changed {
-            self.open(&LiveRecord {
-                app: record.app,
-                record: record.record,
-            })
+            self.open(
+                &LiveRecord {
+                    app: record.app,
+                    record: record.record,
+                },
+                run.clone(),
+            )
             .await;
         }
         if line.is_none() && focus.is_none() {
@@ -228,8 +232,8 @@ impl Presence {
     /// agent acts through ([`open_request`]), and wait while the host opens
     /// it. Whether it opened is no matter to the agent's work: a record the
     /// host cannot show is still where the agent acts.
-    async fn open(&self, focus: &LiveRecord) {
-        let request = open_request(&self.cluster, focus);
+    async fn open(&self, focus: &LiveRecord, run: Option<tilo_actions::WorkGroup>) {
+        let request = open_request(&self.cluster, focus, run);
         let invocation = request.invocation;
         let Some(Ok(receipt)) = self.actions.invoke(&self.caller, request).await else {
             return;
@@ -371,8 +375,13 @@ impl Presence {
 }
 
 /// What opens the record `focus` names in workspace `cluster`: its app's
-/// `open` on that record, or on the app's own record when it names none.
-fn open_request(cluster: &str, focus: &LiveRecord) -> InvokeRequest {
+/// `open` on that record, or on the app's own record when it names none, as a step of `run`:
+/// the window says which run opened it.
+fn open_request(
+    cluster: &str,
+    focus: &LiveRecord,
+    run: Option<tilo_actions::WorkGroup>,
+) -> InvokeRequest {
     let resource = format!("{APPLICATION_RESOURCE_PREFIX}{}", focus.app);
     let target = if focus.record.is_empty() {
         application_action_target(cluster, &focus.app, resource, APPLICATION_OPEN_ACTION)
@@ -389,7 +398,10 @@ fn open_request(cluster: &str, focus: &LiveRecord) -> InvokeRequest {
         invocation: InvocationId::new(),
         target,
         argument: InvokeArgument::None,
-        context: None,
+        context: run.map(|run| tilo_actions::ActionContext {
+            group: Some(run),
+            ..tilo_actions::ActionContext::default()
+        }),
         confirmation: None,
         revision: None,
         on_behalf_of: None,

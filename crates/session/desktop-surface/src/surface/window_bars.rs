@@ -186,7 +186,41 @@ impl DesktopHandle {
     }
 }
 
+impl DesktopHandle {
+    /// Name the agent run that opened each window an agent opened for its person, by tab, as the
+    /// workspace's shared desk says: the window's bar names the agent, and opens the run in History.
+    /// Whether that changed anything.
+    pub fn set_opened_by(
+        &self,
+        opened_by: std::collections::BTreeMap<u64, tilo_desktop_model::ownership::OpenedBy>,
+    ) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        if shared.opened_by == opened_by {
+            return false;
+        }
+        shared.opened_by = opened_by;
+        shared.changed();
+        true
+    }
+}
+
 impl DesktopSurface {
+    /// Bring the agent run `run` up in History, which opens or comes forward for it: what pressing
+    /// the agent's mark in a window's bar does.
+    pub(super) fn open_run(&self, run: String) {
+        let mut shared = self.shared.borrow_mut();
+        let open = crate::navigation::resolve_open(&shared.tree, super::ACTIVITY_APP);
+        shared.activity_focus = Some((
+            crate::navigation::ActivityView::Explore,
+            crate::activity::ActivityDeepLink {
+                group_id: Some(run),
+                ..crate::activity::ActivityDeepLink::default()
+            },
+        ));
+        shared.queue.push(open);
+        shared.changed();
+    }
+
     /// Show every window's declared slots in its bar, hand each app what the person did with them,
     /// and close the tabs whose app asked to. Returns whether the desktop shows something new or an
     /// app has something to hear.

@@ -97,6 +97,20 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Some((step, label))
     }
 
+    /// The run the tool call `request` was a step of, by the name history shows its changes
+    /// under: the title its `_meta` run names, else this session's own run. What a window the
+    /// call opened says it was opened in.
+    #[must_use]
+    pub fn run_of(&self, request: &Value) -> Option<tilo_actions::WorkGroup> {
+        let mut run = self.agent_run()?;
+        if let Ok(Some(title)) = Self::step_title(request.pointer("/params/_meta"))
+            && !title.is_empty()
+        {
+            run.label = title;
+        }
+        Some(run)
+    }
+
     /// The name the run a tool call joins goes by, when its
     /// `_meta["so.tilo.mcp"].run` names one: what the changes of the call are
     /// attributed to, as history shows them. `Some("")` for a call that

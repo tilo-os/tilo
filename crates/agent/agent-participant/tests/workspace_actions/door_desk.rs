@@ -11,6 +11,23 @@ use tilo_desktop_model::ownership::SharedDesktop;
 
 const PDF: &str = "so.tilo.pdf-viewer";
 
+/// The run the agent fills the form in, by the title it gives it.
+const RUN: &str = "Fill Jane Doe's visa application";
+
+/// What `tilo_do` of `path` with `args` answered as a step of [`RUN`], which it ran.
+async fn did_in_run(agent: &mut Mcp<'_>, path: &str, args: serde_json::Value) -> serde_json::Value {
+    let (status, reply) = agent
+        .post(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                     "params": {"name": "tilo_do", "arguments": {"path": path, "args": args},
+                                "_meta": {"so.tilo.mcp": {"structured": true,
+                                                          "run": {"id": "visa-1", "title": RUN}}}}}))
+        .await;
+    assert_eq!(status, 200, "{reply}");
+    let answer = &reply["result"]["structuredContent"];
+    assert_eq!(answer["status"], "ok", "{path} ran: {reply}");
+    answer["result"].clone()
+}
+
 /// The windows of `desktop` that show an `app` record, by tab id.
 fn windows_of(desktop: &SharedDesktop, app: &str) -> Vec<u64> {
     desktop
@@ -58,17 +75,18 @@ async fn what_a_door_agent_changes_opens_on_the_workspaces_desk() {
     };
     assert_eq!(agent.initialize().await.0, 200);
 
-    // The agent uploads the applicant's form, fills a field and writes a
-    // letter, exported as Word; nobody's page is open meanwhile.
+    // The agent uploads the applicant's form and fills a field in a run it
+    // names, then writes a letter outside it, exported as Word; nobody's page
+    // is open meanwhile.
     let (status, put) = upload(&agent, &workspace, &application_pdf()).await;
     assert_eq!(status, 201, "{put}");
     let form = put["content"].as_str().unwrap().to_owned();
-    agent
-        .did(
-            "pdf-viewer#import-pdf-content",
-            json!({"content": form, "name": "application.pdf"}),
-        )
-        .await;
+    did_in_run(
+        &mut agent,
+        "pdf-viewer#import-pdf-content",
+        json!({"content": form, "name": "application.pdf"}),
+    )
+    .await;
     let read = agent
         .tilo_do(json!({"path": "pdf-viewer#read-form-fields"}))
         .await;
@@ -82,12 +100,12 @@ async fn what_a_door_agent_changes_opens_on_the_workspaces_desk() {
         .clone();
     let edit = json!({"path": surname["path"], "op": "set",
                       "value": {"kind": "text", "value": "Okafor"}});
-    agent
-        .did(
-            "pdf-viewer/application.pdf#field-edit",
-            json!({"edit": edit}),
-        )
-        .await;
+    did_in_run(
+        &mut agent,
+        "pdf-viewer/application.pdf#field-edit",
+        json!({"edit": edit}),
+    )
+    .await;
     agent
         .did(
             "word-processor#append-paragraph",
@@ -162,4 +180,17 @@ async fn what_a_door_agent_changes_opens_on_the_workspaces_desk() {
         assert!(opened.run.starts_with("agent-run:"), "{opened:?}");
         assert!(!opened.label.is_empty(), "{opened:?}");
     }
+    // The form's window says it was opened in the run the agent named; the
+    // letter's, made outside any, in the run the session goes by.
+    let opened_in = |tab: u64| desktop.opened_by.get(&tab).map(|run| run.title.clone());
+    assert_eq!(
+        opened_in(form_windows[0]).as_deref(),
+        Some(RUN),
+        "{desktop:?}"
+    );
+    let letter = opened_in(letter_windows[0]).unwrap_or_default();
+    assert!(
+        !letter.is_empty() && letter != RUN,
+        "the letter's window names the session's run: {desktop:?}"
+    );
 }

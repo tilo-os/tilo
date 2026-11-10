@@ -97,8 +97,11 @@ mod frame_spring;
 mod held_bar;
 #[path = "window_group_held_controls.rs"]
 mod held_controls;
+#[path = "window_group_opened_by.rs"]
+mod opened_by;
 use frame_spring::FrameSpring;
 use held_controls::HeldControl;
+use opened_by::OpenedByStop;
 
 impl WindowGroup {
     /// Whether the slot width is still moving — the window is opening, or a
@@ -182,6 +185,8 @@ pub struct WindowGroup {
     /// the window's Tab order after the app's own header controls, and assistive technology reads
     /// them. Only while a row holds the bar.
     held_controls: [HeldControl; crate::widget::window_header::ROW_CONTROLS.len()],
+    /// The keyboard's stop on the agent's mark in the bar, laid out right after the bar.
+    opened_by: OpenedByStop,
     /// Which control of the held row's furniture the pointer is on and has pressed.
     held_hover: Option<WindowControl>,
     held_pressed: Option<WindowControl>,
@@ -450,6 +455,7 @@ impl WindowGroup {
             held_bar: None,
             held: crate::widget::window_header::RowFurniture::default(),
             held_controls: crate::widget::window_header::ROW_CONTROLS.map(HeldControl::new),
+            opened_by: OpenedByStop::default(),
             held_hover: None,
             held_pressed: None,
             held_new_tab_hover: false,
@@ -2225,18 +2231,6 @@ impl WindowGroup {
         self.bar.set_new_tab(on)
     }
 
-    /// Press the bar's "Controls your desktop" chip without a pointer, as an
-    /// assistive technology does. Whether the bar shows it.
-    pub fn activate_desktop_control(&mut self) -> bool {
-        self.bar.activate_desktop_control()
-    }
-
-    /// A press on the bar's "Controls your desktop" chip, once: the tab and
-    /// where the chip stands, for the host's menu.
-    pub fn take_desktop_control_press(&mut self) -> Option<(u64, vello::kurbo::Rect)> {
-        self.bar.take_desktop_control_press()
-    }
-
     /// Whether someone else holds any of the window's tabs, so it does not
     /// move as a whole.
     pub fn is_held(&self) -> bool {
@@ -3212,6 +3206,7 @@ impl Widget for WindowGroup {
         // redraw) the same way.
         if self.navigation_bar_visible() {
             children.push(&self.bar);
+            children.push(&self.opened_by);
         }
         let active = self.bar.active_id();
         if let Some((id, host)) = self.hosts.iter().find(|(id, _)| *id == active) {
@@ -3261,6 +3256,7 @@ impl Widget for WindowGroup {
         let mut children: Vec<&mut dyn Widget> = Vec::new();
         if band {
             children.push(&mut self.bar);
+            children.push(&mut self.opened_by);
         }
         if let Some((id, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) {
             host.set_panic_scope(*id);
@@ -3315,6 +3311,7 @@ impl Widget for WindowGroup {
         // press on the window's own furniture in the row its app draws.
         let pressed = self.drain_chip_presses();
         let furniture = self.drain_held_controls();
+        let opened = self.opened_by.take_press() && self.bar.activate_opened_by();
         // The search follows the active tab, and the content under it: a
         // match count that follows edits, a list that follows its rows.
         self.follow_search_tab();
@@ -3339,7 +3336,7 @@ impl Widget for WindowGroup {
                 detached = true;
             }
         }
-        focused || detached || pressed || furniture || searched || bar
+        focused || detached || pressed || furniture || opened || searched || bar
     }
     fn build_layout(
         &mut self,
@@ -3390,6 +3387,7 @@ impl Widget for WindowGroup {
             .iter()
             .map(|&node| (node, taffy.style(node).cloned().unwrap_or_default()))
             .collect();
+        self.build_opened_by_stop(taffy, theme, node_map, &mut nodes, bar_node.is_some());
         self.build_held_controls(taffy, theme, node_map, &mut nodes);
         self.style_children(taffy);
         let style = self.own_style();
@@ -3409,7 +3407,7 @@ impl Widget for WindowGroup {
             }
         }
         let active_id = self.bar.active_id();
-        let tile_index = usize::from(self.navigation_bar_visible());
+        let tile_index = self.tile_child_index();
         if let (Some((_, h)), Some(&tile_child)) = (
             self.hosts.iter_mut().find(|(i, _)| *i == active_id),
             children.get(tile_index),
@@ -3445,6 +3443,8 @@ impl Widget for WindowGroup {
         presence: &PresenceCtx,
     ) {
         self.reduce_motion = theme.reduce_motion;
+        // The bar rings the agent's mark while the keyboard is on its stop.
+        self.bar.set_opened_by_focused(self.opened_by.focused());
         // The slide is a layout offset: lay out again on every frame of it.
         if self.top_slide_in_flight() {
             self.style_dirty = true;
@@ -3585,8 +3585,7 @@ impl Widget for WindowGroup {
         self.draw_closing_hosts(scene, transform, tr, theme, presence);
         self.draw_bar_over_content(bar_over, scene, transform, tr, theme, presence);
         if self.navigation_bar_visible() {
-            let band = self.bar.get_rect().inflate(0.0, 6.0);
-            self.bar.draw_holder_chip(scene, transform, tr, theme, band);
+            self.draw_bar_tips(scene, transform, tr, theme, presence);
         }
         // Only after the pointer rests on an edge, or while dragging: at
         // rest nothing marks the edges, and the east-west cursor already
@@ -3613,9 +3612,7 @@ impl Widget for WindowGroup {
             .navigation_bar_visible()
             .then(|| children.first().copied())
             .flatten();
-        let tile_child = children
-            .get(usize::from(self.navigation_bar_visible()))
-            .copied();
+        let tile_child = children.get(self.tile_child_index()).copied();
         if matches!(
             event,
             WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
@@ -3629,7 +3626,7 @@ impl Widget for WindowGroup {
         }
         // What is typed goes to whoever has the keyboard: on the window's own furniture in the row
         // its app draws, Enter and Space activate the control it is on, as on any control.
-        if self.held_control_takes_keys(event) {
+        if self.held_control_takes_keys(event) || self.opened_by_takes_keys(event) {
             return;
         }
         // The window's furniture in its app's row is the window's, not the app's under it.
@@ -3789,6 +3786,7 @@ impl Widget for WindowGroup {
             || self.held_dirty
             || edge_due
             || self.held_control_needs_repaint()
+            || self.opened_by.needs_repaint()
             || (self.navigation_bar_visible()
                 && (self.bar.needs_redraw() || self.bar.needs_animation_frame()))
             || (self.shows_its_bar()
@@ -3801,6 +3799,7 @@ impl Widget for WindowGroup {
         self.held_dirty = false;
         self.next_frame();
         self.mark_held_controls_painted();
+        self.opened_by.mark_painted();
         // The bar, its search and the active host: what the group draws. A
         // host drawing a card over the desk draws that card here too, so what
         // it recorded is this frame's.
@@ -4015,7 +4014,8 @@ mod tests {
     #[test]
     fn external_navigation_omits_bar_from_layout_and_semantics_but_retains_tabs() {
         let mut group = make_group();
-        assert_eq!(group.children().len(), 3);
+        // The bar, the keyboard's stop on its agent's mark, the tile and the search.
+        assert_eq!(group.children().len(), 4);
         group.set_external_navigation(true);
         let mut tree = TaffyTree::new();
         let node = group.build_layout(&mut tree, &Theme::default(), &mut Default::default());

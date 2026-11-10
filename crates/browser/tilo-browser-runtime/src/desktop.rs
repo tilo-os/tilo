@@ -358,6 +358,9 @@ pub(crate) struct Shared {
     opened_content: Rc<RefCell<HashMap<TabId, String>>>,
     /// Who made each strip and opened each window, by strip or tab id.
     pub authors: Authors,
+    /// The agent run that opened each window an agent opened, by tab, as the
+    /// workspace's desk last said.
+    pub opened_by: Rc<RefCell<BTreeMap<TabId, tilo_desktop_model::ownership::OpenedBy>>>,
     /// The workspace renamed since the mount last looked, for a notice when
     /// someone else did it.
     pub renames: Rc<RefCell<Vec<tilo_desktop_surface::history_log::WorkspaceRename>>>,
@@ -1530,7 +1533,7 @@ pub(crate) fn shared_value(
         tree,
         records,
         authors,
-        opened_by: std::collections::BTreeMap::new(),
+        opened_by: shared.opened_by.borrow().clone(),
     }
 }
 
@@ -1554,6 +1557,7 @@ pub(crate) fn apply_shared(
             authors.entry(*id).or_insert_with(|| author.clone());
         }
         drop(authors);
+        shared.opened_by.borrow_mut().clone_from(&desktop.opened_by);
         let mut records = shared.records.borrow_mut();
         for (tab, checkout) in bound {
             if records

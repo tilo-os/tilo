@@ -73,6 +73,10 @@ pub enum ChipStyle {
     /// as a primary action's, so the number is the selection's colour and
     /// reads white in every theme.
     Accent,
+    /// Someone's own colour, for a chip naming them: their presence colour
+    /// washed into the body and drawn as the edge, and their name inked in
+    /// it, as legible on the wash as any label.
+    Identity(Color),
 }
 
 /// The resolved colours of one pill.
@@ -132,6 +136,21 @@ impl ChipStyle {
                     lead: colors.ink_on(fill, tint, NON_TEXT_MIN_CONTRAST),
                 }
             }
+            Self::Identity(identity) => {
+                let tint = colors.presence.of(identity);
+                let fill = mix8(ground, tint, TINT_FILL);
+                let fill = if hovered {
+                    colors.lift_on(fill, 0.5)
+                } else {
+                    fill
+                };
+                ChipColors {
+                    fill,
+                    edge: Some(mix8(ground, tint, TINT_EDGE)),
+                    ink: colors.ink_on(fill, tint, SMALL_TEXT_MIN_CONTRAST),
+                    lead: colors.ink_on(fill, tint, NON_TEXT_MIN_CONTRAST),
+                }
+            }
             Self::Accent => ChipColors {
                 fill: colors.intent.accent,
                 edge: None,
@@ -166,6 +185,9 @@ pub enum ChipLead {
     /// A person's face: the initials of the chip's label (their name) on
     /// their presence colour, as their avatar shows them everywhere.
     Face(Color),
+    /// An agent's face: the identity mark every surface names an agent by,
+    /// on its presence colour, where a person's chip shows their initials.
+    Agent(Color),
 }
 
 /// A pill's geometry in one theme: everything the text scale moves.
@@ -208,7 +230,7 @@ impl PillMetrics {
             ChipLead::None => 0.0,
             ChipLead::Dot(_) => self.dot,
             ChipLead::Glyph(_) => self.glyph,
-            ChipLead::Face(_) => self.face(),
+            ChipLead::Face(_) | ChipLead::Agent(_) => self.face(),
         }
     }
 
@@ -580,6 +602,19 @@ pub(crate) fn paint_pill(
                 crate::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
             x += metrics.glyph + metrics.gap;
+        }
+        ChipLead::Agent(colour) => {
+            let side = metrics.face();
+            let mark = Rect::from_center_size(Point::new(x + side / 2.0, cy), (side, side));
+            crate::agent_identity::draw_agent_identity_mark(
+                scene,
+                transform,
+                mark,
+                fade(theme.tokens.colors.presence.of(colour)),
+                theme,
+                crate::agent_identity::AgentIdentityStyle::Solid,
+            );
+            x += side + metrics.gap;
         }
     }
     if label_w > 0.0 {

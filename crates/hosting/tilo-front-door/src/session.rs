@@ -266,9 +266,10 @@ impl Session {
         if let Some(call) = call {
             let failed = answer.pointer("/result/isError") == Some(&Value::Bool(true))
                 || answer.get("error").is_some();
-            let (acted, changed) = (run.server.acted(), run.server.take_changed());
+            let worked = (run.server.acted(), run.server.take_changed());
+            let step = run.server.run_of(&call);
             let shown = Arc::clone(&run);
-            tokio::spawn(async move { shown.presence.called(&call, failed, acted, changed).await });
+            tokio::spawn(async move { shown.presence.called(&call, failed, worked, step).await });
         }
         Reply::one(answer)
     }

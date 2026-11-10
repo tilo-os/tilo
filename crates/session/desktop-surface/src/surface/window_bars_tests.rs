@@ -171,7 +171,7 @@ fn shown_tabs(frame: &ui::headless::FrameHarness) -> Vec<(u64, u64)> {
     reason = "one test, from the declaration to the press it sends back"
 )]
 fn an_apps_own_process_declares_its_slots_and_hears_the_press_on_its_connection() {
-    let (surface, handle) = crate::surface::tests::desktop(2);
+    let (surface, handle) = crate::surface::tests::desk_with(2, Box::new(WithHistory));
     let mut frame = ui::headless::FrameHarness::for_root(
         ui::state::State::new(),
         surface,
@@ -452,4 +452,111 @@ fn every_bar_ask_brings_the_desk_its_next_pass() {
         asked.replace(false),
         "dropping what a closed connection asked for asks for its pass"
     );
+}
+
+/// Windows that show their title, and History when it is opened.
+struct WithHistory;
+
+impl TileSource for WithHistory {
+    fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
+        TileHost::new(TileContent::Notice {
+            title: tab.title.clone(),
+            detail: String::new(),
+        })
+    }
+
+    fn launch(&mut self, _: &Workspace, id: u64, app: &str) -> Option<Tab> {
+        (app == tilo_actions::remote::workspace_activity::APP_ID).then(|| Tab {
+            id,
+            title: "History".into(),
+            tile: tilo_desktop_model::TileContent::LocalApp {
+                app_id: app.into(),
+                label: "History".into(),
+                note: String::new(),
+            },
+            app_title: None,
+            view: String::new(),
+            pinned: false,
+        })
+    }
+}
+
+/// A window an agent opened for its person names the agent in its bar: a button, in the agent's
+/// colour, described by the run that opened it, which brings that run up in History. It is the
+/// keyboard's stop right after the window's tab list. A window a person opened names no agent.
+#[test]
+fn a_window_an_agent_opened_names_the_agent_and_its_run_and_one_a_person_opened_does_not() {
+    const AGENT: &str = "Jane Doe's agent";
+    let (surface, handle) = crate::surface::tests::desk_with(2, Box::new(WithHistory));
+    let tabs: Vec<u64> = handle.read(|tree| tree.tabs().map(|tab| tab.id).collect());
+    let run = tilo_desktop_model::ownership::OpenedBy {
+        run: "agent-run:7".into(),
+        label: AGENT.into(),
+        title: "Fill Jane Doe's visa application".into(),
+    };
+    assert!(handle.set_opened_by(std::collections::BTreeMap::from([(tabs[0], run)])));
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1600, 800),
+        ui::Theme::dark(),
+    );
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let named = |frame: &ui::headless::FrameHarness| -> Vec<ui::accesskit::Node> {
+        frame
+            .a11y_nodes()
+            .into_iter()
+            .map(|(_, node)| node)
+            .filter(|node| node.label() == Some(AGENT))
+            .collect()
+    };
+    let agents = named(&frame);
+    assert_eq!(agents.len(), 1, "only the agent's window names it");
+    let mark = &agents[0];
+    assert_eq!(mark.role(), ui::accesskit::Role::Button);
+    assert_eq!(
+        mark.description(),
+        Some("Fill Jane Doe's visa application"),
+        "the run alone: the mark names the agent already"
+    );
+
+    // It is the keyboard's stop right after the window's tab list.
+    let stops: Vec<(ui::a11y::Role, Option<String>)> = frame
+        .focus_access_nodes()
+        .into_iter()
+        .map(|node| (node.role, node.name))
+        .collect();
+    let at = stops
+        .iter()
+        .position(|(_, name)| name.as_deref() == Some(AGENT))
+        .unwrap_or_else(|| panic!("the mark is a stop of the keyboard's: {stops:?}"));
+    assert!(
+        at > 0 && stops[at - 1].0 == ui::a11y::Role::TabBar,
+        "right after the window's tab list: {stops:?}"
+    );
+
+    // Pressing it brings the run up in History.
+    let bounds = mark.bounds().expect("the mark stands in the bar");
+    let (x, y) = (bounds.x0.midpoint(bounds.x1), bounds.y0.midpoint(bounds.y1));
+    frame.click_at(x, y);
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    let history = tilo_actions::remote::workspace_activity::APP_ID;
+    assert!(
+        handle.read(|tree| tree.tabs().any(|tab| matches!(
+            &tab.tile,
+            tilo_desktop_model::TileContent::LocalApp { app_id, .. } if app_id == history
+        ))),
+        "History opened for the run"
+    );
+
+    // Once the desk says no agent opened it, the window names none.
+    assert!(handle.set_opened_by(std::collections::BTreeMap::new()));
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    assert!(named(&frame).is_empty(), "no window names an agent");
 }

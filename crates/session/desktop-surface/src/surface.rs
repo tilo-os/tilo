@@ -184,6 +184,9 @@ struct Shared {
     tree: DesktopTree,
     /// Whoever holds each window someone else opened, by tab ([`DesktopHandle::set_holders`]).
     holders: HashMap<TabId, ui::widget::TabHolder>,
+    /// The agent run that opened each window an agent opened, by tab
+    /// ([`DesktopHandle::set_opened_by`]).
+    opened_by: std::collections::BTreeMap<TabId, tilo_desktop_model::ownership::OpenedBy>,
     /// The windows the sharing app lists for its picker, as last published
     /// ([`DesktopSurface::offer_window_shares`]): a window's menu offers the share row exactly for
     /// these.
@@ -202,7 +205,7 @@ struct Shared {
     queue: Vec<Admitted>,
     /// What the Activity app was last asked to show (a view, and whose doings when one person's),
     /// until the activity model is up to offer it.
-    activity_focus: Option<(ActivityView, Option<String>)>,
+    activity_focus: Option<(ActivityView, crate::activity::ActivityDeepLink)>,
     minter: IdMinter,
     /// Logical width the strip lays out against.
     viewport_width: f64,
@@ -974,8 +977,9 @@ impl DesktopSurface {
         }
     }
 
-    /// Give every live window the holders the host named ([`DesktopHandle::set_holders`]). Whether
-    /// that changed what one offers.
+    /// Give every live window the holders and the agent runs the host named
+    /// ([`DesktopHandle::set_holders`], [`DesktopHandle::set_opened_by`]), and open in History the
+    /// run whose mark the person pressed. Whether that changed what one offers.
     fn apply_holders(&mut self) -> bool {
         {
             // The person is looking at the focused window, however they got there; a closed window
@@ -987,15 +991,23 @@ impl DesktopSurface {
         }
         let shared = self.shared.borrow();
         let mut changed = false;
+        let mut runs = Vec::new();
         for row in self.rows.values_mut() {
             for group in &mut row.groups {
                 let tabs: Vec<TabId> = group.tabs().iter().map(|tab| tab.id).collect();
                 changed |= group.set_new_tab(shared.opens);
                 for tab in tabs {
                     changed |= group.set_tab_holder(tab, shared.holders.get(&tab).cloned());
+                    changed |= group.set_tab_opened_by(tab, shared.opened_by.get(&tab).cloned());
                     changed |= group.set_tab_attention(tab, shared.asking.contains(&tab));
                 }
+                runs.extend(group.take_opened_by_press().map(|(_, run)| run));
             }
+        }
+        drop(shared);
+        if let Some(run) = runs.pop() {
+            self.open_run(run);
+            changed = true;
         }
         changed
     }
@@ -1632,7 +1644,11 @@ impl DesktopSurface {
                     // The workspace's history is the Activity app's to show: it opens, or comes
                     // forward, and is offered the view.
                     Admitted::Activity(_, view, author) => {
-                        shared.activity_focus = Some((view, author));
+                        let link = crate::activity::ActivityDeepLink {
+                            author,
+                            ..crate::activity::ActivityDeepLink::default()
+                        };
+                        shared.activity_focus = Some((view, link));
                         navigation::resolve_open(&shared.tree, ACTIVITY_APP)
                     }
                     other => other,

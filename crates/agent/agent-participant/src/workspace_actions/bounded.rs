@@ -277,15 +277,10 @@ pub(super) fn question(
     };
     // The run as the agent titled it (`_meta` run.title); a run that goes
     // by the agent's own name says nothing more.
-    let run = request
-        .context
-        .as_ref()
-        .and_then(|context| context.group.as_ref())
-        .filter(|group| {
-            group.kind == tilo_actions::context::AGENT_RUN_GROUP && group.label != agent
-        })
-        .map(|group| group.label.clone())
-        .unwrap_or_default();
+    let run = super::said_run_title(request)
+        .filter(|run| *run != agent)
+        .unwrap_or_default()
+        .to_owned();
     let contract = &about.descriptor.contract;
     Ok(ConfirmationQuestion {
         id,

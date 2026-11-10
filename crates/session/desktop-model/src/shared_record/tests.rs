@@ -487,6 +487,7 @@ fn the_run_that_opened_a_window_stays_until_the_window_closes() {
     let run = crate::ownership::OpenedBy {
         run: "agent-run:7".into(),
         label: "Jane Doe's agent".into(),
+        title: "Fill Jane Doe's visa application".into(),
     };
     let page = desktop(&[(1, 100, "ada"), (2, 200, "ada")]);
     let mut opened = page.clone();
