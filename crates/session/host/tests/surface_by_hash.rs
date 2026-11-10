@@ -30,9 +30,9 @@ use collab_types::{
     document_artifact_id, document_attestation_id, document_channel_id,
 };
 use neighbour_wire::NeighbourMsg;
-use tilo_session_host::{PeerEvent, PeerHandle};
 use tilo_relay::workspaces::WorkspaceContent;
 use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
+use tilo_session_host::{PeerEvent, PeerHandle};
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
 use support::{

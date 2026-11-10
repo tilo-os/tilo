@@ -23,8 +23,8 @@ tilo_automerge_isolate::test_worker!();
 use std::collections::BTreeMap;
 
 use collab_types::DocumentMutation;
-use tilo_session_host::{PeerEvent, PeerHandle};
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_session_host::{PeerEvent, PeerHandle};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{enrol, ready, route, start_host, start_peer, wait_for, workspace};

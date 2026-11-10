@@ -26,8 +26,8 @@ use std::time::Duration;
 use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_session_host::{PeerEvent, PeerHandle};
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_session_host::{PeerEvent, PeerHandle};
 use tilo_user_identity::DeviceCapabilities;
 
 use support::{TestHost, door, enrol, ready, redeem, start_peer, start_workspace_host, wait_for};

@@ -19,8 +19,8 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use collab_types::DocumentMutation;
-use tilo_session_host::{PeerEvent, PeerHandle, PeerSnapshot};
 use tilo_relay_protocol::workspaces::WorkspacesRequest;
+use tilo_session_host::{PeerEvent, PeerHandle, PeerSnapshot};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{enrol, ready, route, start_host_at, start_peer, wait_for};

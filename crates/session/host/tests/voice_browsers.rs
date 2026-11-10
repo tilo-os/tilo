@@ -26,7 +26,6 @@ use collab_types::scope::Scope;
 use iroh::{Endpoint, RelayMode, SecretKey};
 use serde_json::{Value, json};
 use test_http::{Reply, Responder};
-use tilo_session_host::{PeerEvent, PeerHandle, VoiceEvent};
 use tilo_live::live::Track;
 use tilo_live::plane::Heard;
 use tilo_live::plane::{Join, Plane};
@@ -34,6 +33,7 @@ use tilo_live::roster::Roster;
 use tilo_live::video::{Codec, Layer, Source, VideoObject};
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, VoiceGrant};
+use tilo_session_host::{PeerEvent, PeerHandle, VoiceEvent};
 use tilo_test_env::SpawnUnderEnvLockAsync as _;
 
 /// One tick of the native participant: a page publishes its pictures as its

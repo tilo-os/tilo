@@ -13,10 +13,10 @@ mod support;
 
 use http_body_util::BodyExt as _;
 use test_http::{Reply, Responder};
-use tilo_session_host::PeerHandle;
 use tilo_net::proxy::{self, Proxy};
 use tilo_net::{HeaderMap, HeaderValue, Url};
 use tilo_relay::web::FetchProxySetup;
+use tilo_session_host::PeerHandle;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{HostSettings, enrol, start_host_plain, start_host_serving, start_peer, wait_for};

@@ -31,8 +31,8 @@ use collab_types::{
     Surfaces, document_artifact_id, document_attestation_id, document_channel_id,
 };
 use neighbour_wire::NeighbourMsg;
-use tilo_session_host::PeerEvent;
 use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
+use tilo_session_host::PeerEvent;
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
 use support::{Device, WORKSPACE, enrol, ready, route, start_host, start_peer, workspace};

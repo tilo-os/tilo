@@ -29,10 +29,10 @@ use collab_types::{
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use neighbour_wire::NeighbourMsg;
-use tilo_session_host::PeerEvent;
-use tilo_session_host::invite::guest_certificate;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
+use tilo_session_host::PeerEvent;
+use tilo_session_host::invite::guest_certificate;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, UserIdentity};
 
 use support::{door, enrol, enter, redeem, start_workspace_host, wait_for};
