@@ -18,6 +18,20 @@ static USERS_GLYPH: &[ui::icons::Icon] = &[ui::icons::Icon::Users];
 /// The invite seat's glyph: a person-plus in the empty seat.
 static INVITE_GLYPH: &[ui::icons::Icon] = &[ui::icons::Icon::UserPlus];
 
+/// The width a bar chip carrying one glyph takes, measured as the people and invite buttons are
+/// drawn, so a bar that lays controls out by their width keeps one rule for both.
+fn glyph_chip_width(
+    name: &str,
+    glyph: &[ui::icons::Icon],
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) -> f64 {
+    ui::widget::BarChipFace::new(name, &[])
+        .icons(glyph)
+        .at_height(BAR_CONTROL_PX)
+        .width(text_renderer, theme)
+}
+
 impl TopBarChrome {
     pub(super) const CONTROL_INVITE: &'static str = "topbar:invite";
 
@@ -124,6 +138,45 @@ impl TopBarChrome {
         pill.x0 - f64::from(theme.tokens.spacing.s1)
     }
 
+    /// Whether the invite button has room without pressing into the banner's lane. While this
+    /// person follows someone, the bar's middle lane belongs to the banner that says whose view
+    /// this is, and the controls beside it keep the bar's own control gap clear of it. A bar too
+    /// narrow for the invite, the people button and the banner keeps the banner and who is here:
+    /// the invite waits in the panel the people button opens, and comes back when following ends.
+    fn invite_clears_the_lane(
+        &self,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        right_x: f64,
+    ) -> bool {
+        if !self.following || self.center_lane.is_zero_area() {
+            return true;
+        }
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let seat = f64::from(theme.tokens.spacing.s1);
+        let watching = self.watching();
+        let watching_w = if watching == 0 {
+            0.0
+        } else {
+            let label = t_args("topbar-watching-count", &[("count", watching.into())]);
+            ui::widget::BarChipFace::new(&label, &[])
+                .label(&label)
+                .at_height(BAR_CONTROL_PX)
+                .width(text_renderer, theme)
+                + gap
+        };
+        let invite_w = glyph_chip_width(&t("topbar-invite"), INVITE_GLYPH, text_renderer, theme);
+        let people_w = glyph_chip_width(
+            &t("topbar-show-collaborators"),
+            USERS_GLYPH,
+            text_renderer,
+            theme,
+        );
+        // The people button ends where the invite leaves it, and its own gap on either side is
+        // the bar's: what stands left of this cluster must still clear the lane by one gap.
+        right_x - invite_w - gap - watching_w - people_w - seat >= self.center_lane.x1 + gap
+    }
+
     /// The invite button, ending at `right_x` : a person-plus glyph in an outlined empty seat, the
     /// seat the next person takes. Its words ("Invite") are its accessible name. Returns where the
     /// controls before it end.
@@ -137,7 +190,7 @@ impl TopBarChrome {
         right_x: f64,
     ) -> f64 {
         use ui::widget::BarChipFace;
-        if !self.can_invite() {
+        if !self.can_invite() || !self.invite_clears_the_lane(text_renderer, theme, right_x) {
             self.invite_rect = Rect::ZERO;
             return right_x;
         }
@@ -372,6 +425,14 @@ mod tests {
         bar.sync_from_tree(tree);
         super::super::tests::lay_out_and_draw(&mut bar, 1600.0);
         (bar, chrome)
+    }
+
+    /// How far apart two rects stand: zero when they touch or overlap, else the straight
+    /// distance between their nearest edges.
+    fn apart(a: Rect, b: Rect) -> f64 {
+        let dx = (a.x0 - b.x1).max(b.x0 - a.x1).max(0.0);
+        let dy = (a.y0 - b.y1).max(b.y0 - a.y1).max(0.0);
+        dx.hypot(dy)
     }
 
     fn press(bar: &mut TopBarChrome, at: Point) -> bool {
@@ -639,14 +700,39 @@ mod tests {
                 ("the notifications", bar.tray_hit_rect),
             ];
             beside.extend(bar.face_rects.iter().map(|rect| ("a face", *rect)));
+            // The gap the bar keeps between its own controls: a neighbour the banner merely
+            // misses reads as one control with it, so the banner keeps this, not zero.
+            let gap = f64::from(theme.tokens.spacing.s2);
             for (what, rect) in beside.into_iter().filter(|(_, rect)| !rect.is_zero_area()) {
                 assert!(
                     chip.intersect(rect).is_zero_area(),
                     "the banner covers no {what} at {width}: {chip:?} over {rect:?}"
                 );
                 assert!(
+                    apart(chip, rect) >= gap,
+                    "the banner keeps the bar's gap from {what} at {width}: {chip:?} beside {rect:?}"
+                );
+                assert!(
                     stop.intersect(rect).is_zero_area(),
                     "nor Stop over {what} at {width}: {stop:?} over {rect:?}"
+                );
+                assert!(
+                    apart(stop, rect) >= gap,
+                    "and Stop keeps it from {what} at {width}: {stop:?} beside {rect:?}"
+                );
+            }
+            // Whatever the bar can hold, nothing of who is here stands in the banner's lane...
+            assert!(
+                people.x0 >= bar.center_lane.x1 + gap,
+                "the people button keeps clear of the banner at {width}: {people:?}"
+            );
+            // ...and where it cannot hold the invite too, the invite waits in the panel the
+            // people button opens, rather than pressing the button into the banner.
+            if !bar.invite_rect.is_zero_area() {
+                assert!(
+                    apart(bar.invite_rect, people) >= gap,
+                    "the invite keeps its seat at {width}: {:?} beside {people:?}",
+                    bar.invite_rect
                 );
             }
             assert!(
