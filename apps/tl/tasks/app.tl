@@ -20,14 +20,6 @@ enum Priority {
     urgent (icon: .triangle_alert, tone: .danger)
 }
 
-/// What the place a task's row stands in already says, and the row therefore leaves out.
-enum RowPlace {
-    /// The day it is grouped under, as a list of a day is.
-    day
-    /// Its project, as a project's list is of one.
-    project
-}
-
 /// Something to do: what, by when, by whom, and in which project.
 type Task {
     title: Text
@@ -605,7 +597,7 @@ view home(t: Tasks) {
                 foot: {
                     stack {
                         if all_done {
-                            task_list(shown, kids, by_day, done_place, folds, opened, .day)
+                            task_list(shown, kids, by_day, done_place, folds, opened, project)
                         }
                         // A task typed in Today that names no day is due today, so it stands
                         // where it was typed.
@@ -618,7 +610,7 @@ view home(t: Tasks) {
                 } else if shown.is_empty() {
                     ui.EmptyState("No tasks here", icon: .list_checks)
                 } else {
-                    task_list(shown, kids, by_day, done_place, folds, opened, .day)
+                    task_list(shown, kids, by_day, done_place, folds, opened, project)
                 }
             }
         }
@@ -633,7 +625,7 @@ view task_list(
     done_place: Bool,
     folds: Bool,
     opened: State<Option<Task>>,
-    place: RowPlace,
+    project: Option<Project>,
 ) {
     std.list(
         items,
@@ -651,7 +643,7 @@ view task_list(
                 p
             }
         }
-        task_item(x, at, place, heading, done_place, tail, above, subtask_count(kids, x))
+        task_item(x, at, project, heading, done_place, tail, above, subtask_count(kids, x))
     }
 }
 
@@ -659,7 +651,7 @@ view task_list(
 view task_item(
     t: Task,
     at: Option<Principal>,
-    place: RowPlace,
+    project: Option<Project>,
     group: Option<Date>,
     group_done: Bool,
     tail: Bool,
@@ -685,7 +677,8 @@ view task_item(
             remove,
         ],
     ) {
-        task_row(t, place, t.parent)
+        // The row leaves out the project the window is of, and the day its group is headed by.
+        task_row(t, project, group != .none, t.parent)
         detail: {
             task_body(t)
         }
@@ -718,7 +711,7 @@ view project_list(p: Project) {
                 if listed.is_empty() {
                     ui.EmptyState("No tasks yet", icon: .folder)
                 } else {
-                    task_list(listed, kids, false, false, false, opened, .project)
+                    task_list(listed, kids, false, false, false, opened, .some(p))
                 }
             }
         }
@@ -739,7 +732,7 @@ view project_board(p: Project) {
                         std.add_entry("New task", new_task(tasks, p: p))
                     }
                     for t in loose {
-                        task_card(t, sections)
+                        task_card(t, p, sections)
                     }
                 }
                 for s in sections {
@@ -750,7 +743,7 @@ view project_board(p: Project) {
                             std.add_entry("New task", new_task(tasks, p: p, s: s))
                         }
                         for t in cards {
-                            task_card(t, sections)
+                            task_card(t, p, sections)
                         }
                     }
                 }
@@ -760,7 +753,7 @@ view project_board(p: Project) {
 }
 
 /// A task on a board: its row, opening in a window of its own, with its lane moves in its menu.
-view task_card(t: Task, sections: List<Section>) {
+view task_card(t: Task, p: Project, sections: List<Section>) {
     ui.BoardCard(t, actions: [check(primary: true), schedule(group: "Plan"), assign, remove]) {
         on activate: open(t)
         menu: {
@@ -777,19 +770,21 @@ view task_card(t: Task, sections: List<Section>) {
                 }
             }
         }
-        task_row(t, .project, .none)
+        task_row(t, .some(p), false, .none)
     }
 }
 
-/// One task as a row, leaving out what the list and the row over it already say.
-view task_row(t: Task, place: RowPlace, under: Option<Task>) {
-    let project = if place != .project { t.project?.name }
-    let due = if place != .day { own_due(t, under) }
+/// One task as a row, leaving out what the window and the row over it already say: the project
+/// the window is of (`none` for a place that gathers the tasks of every project), and the day
+/// the row's group is headed by.
+view task_row(t: Task, project: Option<Project>, day: Bool, under: Option<Task>) {
+    let place = if t.project != project { t.project?.name }
+    let due: Option<Date> = if day { .none } else { own_due(t, under) }
     row(
         t.title,
         checkbox: t.done,
         check: check(t),
-        secondary: project,
+        secondary: place,
         note: proposal_note(t),
         meta: due,
         mark: t.priority,

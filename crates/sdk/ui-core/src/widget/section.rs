@@ -89,6 +89,13 @@ struct HeaderMetrics {
     action_pad: f64,
 }
 
+/// How far below the top of `rect` the header's own box stands: room the box holds past the
+/// header's height is the finger's, and stands over the header's line, never between it and
+/// what it heads.
+fn foot(rect: Rect, header_h: f64) -> f64 {
+    (rect.height() - header_h).max(0.0)
+}
+
 impl HeaderMetrics {
     fn new(theme: &Theme) -> Self {
         Self {
@@ -412,7 +419,7 @@ impl<'a> SectionHeaderFace<'a> {
         let width = self.action_width(text, theme);
         let line = f64::from(theme.text(self.level.role()).line_height_px());
         let height = m.height(line);
-        let cy = rect.y0 + height / 2.0;
+        let cy = rect.y0 + foot(rect, height) + height / 2.0;
         Some(Rect::new(
             rect.x1 + m.action_pad - width,
             cy - m.control / 2.0,
@@ -432,9 +439,14 @@ impl<'a> SectionHeaderFace<'a> {
         let (title_w, title_h) = ctx.text.measure_style(self.title, Some(wrap), &style);
         let first_line = f64::from(style.line_height_px());
         let header_h = m.height(first_line);
-        let cy = rect.y0 + header_h / 2.0;
+        // Room past the header's own height is the finger's, where the box that holds it grew
+        // for a touch: it stands over the line, so a heading keeps its line the same distance
+        // from what it heads however tall the band a finger needs is.
+        let own = header_h.max(f64::from(title_h));
+        let down = foot(rect, own);
+        let cy = rect.y0 + down + header_h / 2.0;
         let top = if f64::from(title_h) > header_h {
-            rect.y0
+            rect.y0 + down
         } else {
             cy - f64::from(title_h) / 2.0
         };

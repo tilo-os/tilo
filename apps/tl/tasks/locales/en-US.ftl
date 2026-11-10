@@ -114,15 +114,6 @@ d-clxahlh2 = High
 
 d-d6avlyc5 = Urgent
 
-d-3776c5yx = Row place
-    .doc = What the place a task's row stands in already says, and the row therefore leaves out.
-
-d-u4wzi4k4 = The day it is grouped under, as a list of a day is
-    .doc = The day it is grouped under, as a list of a day is.
-
-d-ifftrju4 = Its project, as a project's list is of one
-    .doc = Its project, as a project's list is of one.
-
 d-rs3ubifz = New task
     .doc = Adds a task to the inbox or to `p`, in the lane `s` of its board: the entry at a list's end fills `title` with the words nothing else there takes, and the day, moment and person they name, so "Call the landlord fri 10am @Bo" is a task due Friday at ten, for Bo.
 

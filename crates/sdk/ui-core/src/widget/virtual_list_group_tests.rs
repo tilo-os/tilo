@@ -256,6 +256,63 @@ fn a_finger_gets_a_heading_band_it_can_hit() {
     );
 }
 
+/// The room the painted heading of the first group leaves between its lowest ink and the row
+/// it heads: the gap a person sees, which a finger's taller band must not widen.
+fn heading_gap(list: &mut VirtualList<Grouped>, theme: &Theme) -> f64 {
+    let top = list.groups.bands.first().map_or(0.0, |band| band.top);
+    let row_top = list.row_box(0).expect("a mounted first row").y0;
+    let surface = theme.tokens.colors.surfaces.content;
+    let wanted = [0, 1, 2].map(|channel| f64::from(surface.components[channel]) * 255.0);
+    let rgba = painted(list, theme);
+    let mut lowest: Option<f64> = None;
+    for y in 0..400_u32 {
+        let at = f64::from(y);
+        if at < top || at + 1.0 > row_top {
+            continue;
+        }
+        let inked = (0..300_u32).any(|x| {
+            let pixel = usize::try_from((y * 300 + x) * 4).unwrap_or(0);
+            rgba.get(pixel..pixel + 3).is_some_and(|rgb: &[u8]| {
+                rgb.iter()
+                    .zip(wanted)
+                    .any(|(found, want)| (f64::from(*found) - want).abs() > 30.0)
+            })
+        });
+        if inked {
+            lowest = Some(at + 1.0);
+        }
+    }
+    row_top - lowest.unwrap_or(top)
+}
+
+#[test]
+fn a_heading_keeps_one_gap_to_the_row_it_heads_at_every_width() {
+    let _settled = crate::motion::testing::settled();
+    let theme = Theme::dark();
+    let mut list = week();
+    list.set_interaction_environment(crate::interaction::InteractionEnvironment::POINTER);
+    let _ = settle(&mut list);
+    let pointer = heading_gap(&mut list, &theme);
+    list.set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
+    let _ = settle(&mut list);
+    let touch_band = list.groups.height;
+    let target = f64::from(crate::interaction::InteractionEnvironment::TOUCH.minimum_target());
+    assert!(
+        touch_band >= target - 0.5,
+        "the band is a target a finger presses: {touch_band} of {target}"
+    );
+    let touch = heading_gap(&mut list, &theme);
+    assert!(
+        pointer > 0.0,
+        "the heading stands over its row, not on it: {pointer}"
+    );
+    assert!(
+        (pointer - touch).abs() < 1.0,
+        "the room a finger needs stands over the heading's line, never between it and its \
+         first row: {pointer} on a pointer, {touch} under a finger"
+    );
+}
+
 /// The heading holding the keyboard, by name.
 fn focused_heading(list: &VirtualList<Grouped>) -> Option<&str> {
     list.focused_group
