@@ -22,6 +22,25 @@ export interface Bookmark {
   title: string;
 }
 
+export interface RememberedForm {
+  signature: string;
+  label: string;
+  pages: string[];
+  questions: RememberedQuestion[];
+  submit: string[];
+  follows: string;
+  grew_from: string;
+  seen: number;
+}
+
+export interface RememberedQuestion {
+  name: string;
+  kind: string;
+  choices: string[];
+  required: boolean;
+  fallback: string;
+}
+
 export interface Settings {
   adblock_enabled: boolean;
   clear_on_exit: boolean;
@@ -47,6 +66,39 @@ export interface Visit {
   count: number;
 }
 
+export interface Answer {
+  name: string;
+  value: string;
+}
+
+export interface PageAction {
+  seq: number;
+  time_ms: number;
+  actor: string;
+  how: string;
+  action: string;
+  ok: boolean;
+  code: string;
+  message: string;
+  url: string;
+  to_url: string;
+  navigation: string;
+  frame: string;
+  role: string;
+  name: string;
+  nth: number;
+  text: string | null;
+  values: string[] | null;
+  answers: Answer[];
+}
+
+export interface Tab {
+  last: number;
+  dropped: number;
+  at: number;
+  device: string;
+}
+
 export interface AddressProfile {
   id: string;
   label: string;
@@ -65,6 +117,7 @@ export interface Application extends tilo.Resource {
   bookmarks: Bookmark[];
   preferences: Settings;
   readonly site_exceptions: string[];
+  readonly site_forms: Record<string, RememberedForm>;
   addBookmark(args: {
     url: string;
     title?: string;
@@ -75,6 +128,13 @@ export interface Application extends tilo.Resource {
   setSiteProtection(args: {
     origin: string;
     enabled: boolean;
+  }): Promise<tilo.Run | void>;
+  rememberForms(args: {
+    origin: string;
+    page: string;
+    forms: RememberedForm[];
+    whole: boolean;
+    at: number;
   }): Promise<tilo.Run | void>;
 }
 
@@ -139,6 +199,17 @@ export interface BrowsingHistory extends tilo.Resource {
 /** The `browser.browsing-history` kind at `path`. */
 export function browsingHistory(ws: tilo.Workspace, path: string): BrowsingHistory {
   return resourceProxy(ws, path) as unknown as BrowsingHistory;
+}
+
+/** Page record — `browser.page-record`. */
+export interface PageRecord extends tilo.Resource {
+  readonly actions: Record<string, PageAction>;
+  readonly tabs: Record<string, Tab>;
+}
+
+/** The `browser.page-record` kind at `path`. */
+export function pageRecord(ws: tilo.Workspace, path: string): PageRecord {
+  return resourceProxy(ws, path) as unknown as PageRecord;
 }
 
 /** Address book — `browser.address-book`. */

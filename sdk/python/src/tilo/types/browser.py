@@ -19,20 +19,43 @@ from tilo import Resource, Run
 
 __all__ = [
     "Bookmark",
+    "RememberedForm",
+    "RememberedQuestion",
     "Settings",
     "Added",
     "ImportedVisit",
     "Visit",
+    "Answer",
+    "PageAction",
+    "Tab",
     "AddressProfile",
     "Application",
     "PersonalBookmarks",
     "BrowsingHistory",
+    "PageRecord",
     "AddressBook",
 ]
 
 class Bookmark(TypedDict):
     url: str
     title: str
+
+class RememberedForm(TypedDict):
+    signature: str
+    label: str
+    pages: list[str]
+    questions: list[RememberedQuestion]
+    submit: list[str]
+    follows: str
+    grew_from: str
+    seen: int
+
+class RememberedQuestion(TypedDict):
+    name: str
+    kind: str
+    choices: list[str]
+    required: bool
+    fallback: str
 
 class Settings(TypedDict):
     adblock_enabled: bool
@@ -55,6 +78,36 @@ class Visit(TypedDict):
     last: int
     count: int
 
+class Answer(TypedDict):
+    name: str
+    value: str
+
+class PageAction(TypedDict):
+    seq: int
+    time_ms: int
+    actor: str
+    how: str
+    action: str
+    ok: bool
+    code: str
+    message: str
+    url: str
+    to_url: str
+    navigation: str
+    frame: str
+    role: str
+    name: str
+    nth: int
+    text: str | None
+    values: list[str] | None
+    answers: list[Answer]
+
+class Tab(TypedDict):
+    last: int
+    dropped: int
+    at: int
+    device: str
+
 class AddressProfile(TypedDict):
     id: str
     label: str
@@ -75,6 +128,10 @@ class Application(Resource):
     def site_exceptions(self) -> list[str]:
         """Read only."""
         return self.fields["site_exceptions"]
+    @property
+    def site_forms(self) -> dict[str, RememberedForm]:
+        """Read only."""
+        return self.fields["site_forms"]
 
     def add_bookmark(self,
         *,
@@ -99,6 +156,17 @@ class Application(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("set-site-protection", origin=origin, enabled=enabled)
+
+    def remember_forms(self,
+        *,
+        origin: str,
+        page: str,
+        forms: list[RememberedForm],
+        whole: bool,
+        at: int,
+    ) -> Run | None:
+        """Runs the app's action."""
+        return self.action("remember-forms", origin=origin, page=page, forms=forms, whole=whole, at=at)
 
 
 class PersonalBookmarks(Resource):
@@ -200,6 +268,18 @@ class BrowsingHistory(Resource):
     def clear_history(self) -> Run | None:
         """Runs the app's action."""
         return self.action("clear-history")
+
+
+class PageRecord(Resource):
+    """Page record — `browser.page-record`."""
+    @property
+    def actions(self) -> dict[str, PageAction]:
+        """Read only."""
+        return self.fields["actions"]
+    @property
+    def tabs(self) -> dict[str, Tab]:
+        """Read only."""
+        return self.fields["tabs"]
 
 
 class AddressBook(Resource):
