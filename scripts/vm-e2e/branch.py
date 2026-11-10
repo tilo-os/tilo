@@ -344,29 +344,30 @@ def boot_box(facts: dict, run: Run, disk: Path, memory: int) -> None:
            f"product_uuid {m.get('UUID')!r} (tilo-device-branch.service: {m.get('BRANCH-UNIT')})")
 
 
-def lists_terminal(vm: TiloVm) -> bool:
-    """Whether the session answers and its app catalogue lists Terminal, which every image
-    carries: a fresh session publishes the catalogue a few seconds after it starts."""
+def desk_up(vm: TiloVm) -> bool:
+    """Whether the session shows its desk, unlocked, with no setup over it: what a person who
+    turns the box on finds, read as e2e-remote reads it."""
     keep_awake(vm)
     try:
-        vm.state()
-        # The app's row is ranked among every window's own actions that name Terminal.
-        listed = vm.control_json("actions", "list", "Terminal", "--json", "--limit", "2000")
-    except VmError:
+        dump = vm.state()
+        names = [str(t.get("name")) for t in vm.targets()]
+    except (VmError, ValueError):
         return False
-    return any(row.get("provider") == "applications"
-               and str(row.get("id", "")).split("\x1f")[-1] == "so.tilo.terminal"
-               for row in listed.get("actions", []))
+    state = dump.get("state") or dump
+    chrome = state.get("chrome") or {}
+    return ("workspace_tree" in state and not chrome.get("session_locked")
+            and any(n.startswith("DesktopChrome") for n in names)
+            and not any(n.startswith("OnboardingView") for n in names) and "Setup" not in names)
 
 
 def wait_session(vm: TiloVm, timeout: float = 300) -> bool:
     """Until the person's session answers and lists its apps; a slot whose session did not
     come up with the box is started as tilo-vm starts it. Whether it had to be."""
-    if wait_until(lambda: lists_terminal(vm), timeout, interval=1.0):
+    if wait_until(lambda: desk_up(vm), timeout, interval=1.0):
         return False
     vm.run("slot", "restart", SLOT, timeout=300, slot=False)
-    if not wait_until(lambda: lists_terminal(vm), timeout, interval=1.0):
-        raise Failed(f"{vm.vm}'s session never answered with its apps within {timeout:.0f}s")
+    if not wait_until(lambda: desk_up(vm), timeout, interval=1.0):
+        raise Failed(f"{vm.vm}'s session never showed its desk within {timeout:.0f}s")
     return True
 
 
@@ -426,8 +427,8 @@ def desk_at_boot(run: Run, name: str, label: str) -> list[str]:
     its way (setup or identity recovery, or a session that listed no apps), with what the
     session's own identity check answers now kept as evidence. Empty when the desk is up."""
     vm = run.vm(name)
-    up = wait_until(lambda: lists_terminal(vm) or bool(setup_shown(vm)), 300, interval=1.0)
-    shown = setup_shown(vm) if up else [f"the session listed no apps within 300s: {what_shows(vm)}"]
+    up = wait_until(lambda: desk_up(vm) or bool(setup_shown(vm)), 300, interval=1.0)
+    shown = setup_shown(vm) if up else [f"the desk did not come up within 300s: {what_shows(vm)}"]
     if shown:
         run.write(f"{label}-{name}-verify-session.txt",
                   f"== what the session shows\n{'; '.join(shown)}\n" + identity_diagnosis(vm))
@@ -832,7 +833,10 @@ def open_window(vm: TiloVm, ws: dict) -> object:
     open_app(vm, "so.tilo.terminal")
     new = wait_until(lambda: [g for g in groups_in(vm.state(), ws["room"]) if g["id"] not in before],
                      60, interval=0.5)
-    expect(new, f"{vm.vm} opened no window in the workspace")
+    if not new:
+        st = vm.state()
+        where = {w.get("name"): [g["id"] for g in groups_in(st, w.get("room"))] for w in workspaces(st)}
+        raise Failed(f"{vm.vm} opened no window in the workspace {ws['room']}: its desk holds {where}")
     return new[0]["id"]
 
 
