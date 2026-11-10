@@ -1662,12 +1662,46 @@ impl Device {
     }
 
     /// Wait until a window of the app `app` is open on this device's desk.
+    ///
+    /// An app that started and stopped before its window came is not one to wait longer for: the
+    /// wait ends with what the session logged of it, which is where a sandbox that could not start
+    /// (or a launcher that refused) says why. Waiting out the hang bound instead would report a
+    /// picture of the desk and nothing about the launch.
     pub fn wait_for_window(&self, app: &str) {
-        tilo_test_env::wait_until(NoWindow { device: self, app }, || {
-            self.ask(&json!({"op": "windows"}))["answer"]["windows"]
-                .as_array()
-                .is_some_and(|rows| rows.iter().any(|row| row["app_id"].as_str() == Some(app)))
+        let already_logged = self.log().lines().count();
+        let ended = tilo_test_env::wait_for(NoWindow { device: self, app }, || {
+            if self.shows_window(app) {
+                return Some(None);
+            }
+            self.ended_since(already_logged, app).map(Some)
         });
+        if let Some(why) = ended {
+            panic!("{} did not start {app}: {why}", self.label);
+        }
+    }
+
+    /// Whether this device's desk shows a window of `app` .
+    fn shows_window(&self, app: &str) -> bool {
+        self.ask(&json!({"op": "windows"}))["answer"]["windows"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["app_id"].as_str() == Some(app)))
+    }
+
+    /// What this device's session logged of `app` ending, once the log had `already_logged` lines:
+    /// the app stopping, and the lines the app itself printed before it did.
+    fn ended_since(&self, already_logged: usize, app: &str) -> Option<String> {
+        let log = self.log();
+        let lines: Vec<&str> = log.lines().skip(already_logged).collect();
+        let stopped = lines.iter().position(|line| {
+            line.contains("an app stopped") && line.contains(&format!("app={app}"))
+        })?;
+        let said: Vec<&str> = lines[stopped..]
+            .iter()
+            .copied()
+            .filter(|line| line.contains(&format!("app={app}")) || line.contains("tilo-launcher"))
+            .take(20)
+            .collect();
+        Some(said.join("\n"))
     }
 }
 
