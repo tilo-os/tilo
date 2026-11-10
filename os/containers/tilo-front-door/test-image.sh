@@ -57,7 +57,11 @@ port=18080
 issuer=https://door.image.test
 web_entry=https://tilo.example.test
 relay=https://relay.example.test
-started=$(date +%s)
+# Every file of the root filesystem, as it stands: what the run below may not change. The
+# listing is what the run is compared with, not the files' timestamps against the clock, which
+# the archive's own times would answer for.
+snapshot() { (cd "$root" && find . -xdev -mindepth 1 -printf '%p %s %T@ %m\n' | sort); }
+before=$(snapshot)
 b run --user 65532:65532 -v "$state:/state" \
   -e TILO_DOOR_LISTEN=127.0.0.1:$port \
   -e TILO_DOOR_ISSUER=$issuer \
@@ -105,15 +109,19 @@ answer=$(request POST /register '{"client_name":"front door image test","redirec
   || die "/state/door.json is $(stat -c '%u:%g %a' "$state/door.json"), not 65532:65532 0600"
 grep -Fq 'front door image test' "$state/door.json" || die 'the registered client is not on the volume'
 
-# Read-only root filesystem: the only file the run wrote is the one on the volume.
-outside=$(find "$root" -xdev -mindepth 1 -newermt "@$started" \
-  -not -path "$root/run" -not -path "$root/run/*" \
-  -not -path "$root/dev" -not -path "$root/dev/*" \
-  -not -path "$root/proc" -not -path "$root/proc/*" \
-  -not -path "$root/sys" -not -path "$root/sys/*" \
-  -not -path "$root/etc/hosts" -not -path "$root/etc/hostname" \
-  -not -path "$root/etc/resolv.conf" -not -path "$root/state" -not -path "$root/state/*" \
-  -print -quit)
-[[ -z $outside ]] || die "the run wrote $outside, which a read-only root filesystem refuses"
+# Read-only root filesystem: the run wrote nothing outside the volume. The volume (a bind
+# mount) and the files the buildah step puts in the rootfs for its own bookkeeping (`/run`,
+# `/dev`, `/proc`, `/sys`, the name, hosts and resolver the chroot gets) are the step's, not the
+# image's, and are left out.
+kill "$door" 2>/dev/null || true
+wait "$door" 2>/dev/null || true
+door=
+outside=$(diff <(printf '%s\n' "$before") <(snapshot) \
+  | sed -n 's/^[<>] //p' \
+  | awk '$1 !~ /^\.\/(state|run|dev|proc|sys)(\/|$)/ && $1 !~ /^\.\/etc\/(hosts|hostname|resolv\.conf|mtab)$/ { print $1 }' \
+  | sort -u)
+if [[ -n $outside ]]; then
+  die "the run changed $(grep -c . <<< "$outside") paths outside the volume, among them $(head -3 <<< "$outside" | tr '\n' ' '), which a read-only root filesystem refuses"
+fi
 
 echo "the front door image runs as 65532, serves $port from TILO_DOOR_LISTEN, names $issuer, and keeps its state on /state"
