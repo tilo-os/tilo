@@ -1066,6 +1066,9 @@ impl Walk<'_> {
                     ),
                 );
             }
+        }
+    }
+
     /// A section's heading standing no further from the block over it than from the content it
     /// opens: a heading belongs to what follows it, so it keeps clearly more room under the
     /// block it stands below than over its own content. The gaps are the layout's own, whatever
