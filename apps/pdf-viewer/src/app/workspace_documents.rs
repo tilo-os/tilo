@@ -90,10 +90,13 @@ impl PdfApp {
                 || "That document".to_owned(),
                 |document| document.name.clone(),
             );
+        // The list stays: what the host refused may be the paper's own state,
+        // not the choice, so the person picks again rather than being left on
+        // an error surface.
+        tracing::info!(%target, %reason, "a workspace document did not open");
         self.status_note.show(crate::t_args(
             "pdf-note-document-not-opened",
-            &[("name", name.clone().into())],
+            &[("name", name.into())],
         ));
-        self.load_error = Some(format!("{name} did not open: {reason}"));
     }
 }

@@ -542,10 +542,10 @@ fn paint_empty_state(
                 illustration: None,
                 title: &waiting.title,
                 message: waiting.message.as_deref(),
-                // What a workspace holds is what the host has not confirmed.
-                documents: &[],
                 // While the host cannot be reached, the person works on what
-                // this device has: the app's action stays.
+                // this device has: the app's action, and the documents kept
+                // here, stay.
+                documents: content.documents,
                 action_label: content.action_label.filter(|_| waiting.keeps_action()),
                 error: false,
             };
