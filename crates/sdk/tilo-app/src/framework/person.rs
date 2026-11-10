@@ -174,6 +174,10 @@ impl<P: Resource> PersonRecord<P> {
     }
 
     /// Apply the action `invoke` names, as [`Self::apply`].
+    ///
+    /// This, with [`Self::invoke_as`], is how the app applies what its
+    /// resource keeps for itself (`#[action(by_app)]`): such an action is
+    /// declared to no caller, and the record's door refuses it.
     pub fn invoke(&self, invoke: &Invoke<P>) -> Result<(), ActionError> {
         let action = invoke
             .build(tilo_resource::origin_now_ms())

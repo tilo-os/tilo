@@ -1173,6 +1173,7 @@ impl<C: ChildRecord> ChildrenState<C> {
                 }
                 let typed: C::Action = tilo_actions::decode_json(&request.action.payload)
                     .map_err(|error| error.to_string())?;
+                super::record::not_by_app::<C>(&typed)?;
                 let resources = self
                     .apply_to(&request.child, &typed, invoker)
                     .map_err(|error| error.to_string())?;

@@ -1059,6 +1059,7 @@ impl<P: Chained> RecordDoor for ChainState<P> {
         }
         let action: P::Action =
             tilo_actions::decode_json(&action.payload).map_err(|error| error.to_string())?;
+        super::record::not_by_app::<P>(&action)?;
         self.apply_as(&action, invoker)
             .map(drop)
             .map_err(|error| error.to_string())
@@ -1085,6 +1086,7 @@ impl<P: Chained> RecordDoor for ChainState<P> {
         }
         let action: P::Action =
             tilo_actions::decode_json(&action.payload).map_err(|error| error.to_string())?;
+        super::record::not_by_app::<P>(&action)?;
         let (_, resources) = ChainState::apply_answering(self, &action, invoker)
             .map_err(|error| error.to_string())?;
         Ok(tilo_actions::ActionOutput {
