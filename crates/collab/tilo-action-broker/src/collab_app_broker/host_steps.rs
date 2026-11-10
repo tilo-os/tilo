@@ -16,6 +16,20 @@ use tilo_actions::remote::{
     ActionHostError, Caller, InvocationReceipt, InvokeRequest, Pending, Reservation,
 };
 
+/// What admitting a turn's host step found.
+enum TurnStep {
+    /// The step runs now, with these arguments (the person's edits, where
+    /// they confirmed it, and nothing else).
+    Run {
+        argument: Option<String>,
+        confirmed: bool,
+    },
+    /// The person's question stands on the system's sheet: nothing runs
+    /// until they answer there, and the asker is told so in the words the
+    /// app action's held child hears.
+    Held { reason: String },
+}
+
 impl AppBrokerState {
     /// Admit a host step marked for turns ([`HostStepServices::for_turns`]) as the turn's own,
     /// exactly as the same agent's app action in that turn is admitted: the run the agent works
@@ -23,8 +37,16 @@ impl AppBrokerState {
     /// the agent's and the run's live grants, and refused in the same words the app action
     /// hears. A caller working no turn takes none of them.
     ///
+    /// A step whose grants ask first is a turn's question on the system's own sheet, through the
+    /// one path the app action's ask takes ([`Self::conversation_gate`]): it is held here, and
+    /// the next invocation with the same arguments runs it once the person answered there.
+    /// `confirmed` says the person's answer is this invocation's already (what the effect
+    /// barrier re-decides with): the turn's grants then decide it as answered, never asked
+    /// twice.
+    ///
     /// # Errors
-    /// The caller works no turn, the turn ended, or the turn's grants refuse the step.
+    /// The caller works no turn, the turn ended, the turn's grants refuse the step, or the
+    /// person declined it.
     fn admit_turn_step(
         &self,
         caller: &Caller,
@@ -32,7 +54,107 @@ impl AppBrokerState {
         steps: &dyn HostStepServices,
         (descriptor, argument): (&tilo_actions::ActionDescriptor, &Option<String>),
         turn: Option<&tilo_action_policy::turn::Turn>,
-    ) -> Result<(), ActionHostError> {
+        confirmed: bool,
+    ) -> Result<TurnStep, ActionHostError> {
+        let (_, run) = self.turn_step_run(caller, workspace, turn)?;
+        if confirmed {
+            return self
+                .authorize_turn_step(workspace, steps, descriptor, argument, &run, true)
+                .map_err(|reason| ActionHostError::Refused { reason })
+                .map(|()| TurnStep::Run {
+                    argument: argument.clone(),
+                    confirmed: true,
+                });
+        }
+        if let Err(reason) =
+            self.authorize_turn_step(workspace, steps, descriptor, argument, &run, false)
+        {
+            // The turn's grants refuse it, in the words the app action hears; the one answer
+            // that is not a refusal is a question still to be put to the person, below.
+            if !crate::services::NativeTaskActionRequirement::awaits_confirmation(&reason) {
+                return Err(ActionHostError::Refused { reason });
+            }
+        } else {
+            return Ok(TurnStep::Run {
+                argument: argument.clone(),
+                confirmed: false,
+            });
+        }
+        // The turn's grants ask first. A turn that answers a person's message has no issue to
+        // hang the question on: it goes to the system's own sheet, exactly as the same agent's
+        // app action in the turn does (`super::conversation_ask`).
+        if !crate::services::is_conversation_turn(&run.issue) {
+            // A run of an issue asks on its issue, which a session step has no sheet for:
+            // nothing is asked, and the caller is told so at once — never that a question
+            // waits, since none does.
+            return Err(ActionHostError::Refused {
+                reason: format!(
+                    "{} asks the person to confirm it first, and a session step has no sheet to \
+                     ask them on",
+                    descriptor.action_label
+                ),
+            });
+        }
+        let gate = self
+            .conversation_gate(
+                &run.issue,
+                descriptor,
+                (&descriptor.address.resource, &descriptor.address.action),
+                argument.as_deref(),
+                |contract_argument| {
+                    self.authorize_turn_step(
+                        workspace,
+                        steps,
+                        descriptor,
+                        &contract_argument
+                            .map(str::to_owned)
+                            .or_else(|| argument.clone()),
+                        &run,
+                        false,
+                    )
+                },
+            )
+            .map_err(|reason| ActionHostError::Refused { reason })?;
+        match gate {
+            super::conversation_ask::AskGate::Proceed => Ok(TurnStep::Run {
+                argument: argument.clone(),
+                confirmed: false,
+            }),
+            super::conversation_ask::AskGate::Confirmed {
+                argument: answered,
+                confirmation: _,
+            } => {
+                // What the person confirmed is what runs, decided as their answer. A step that
+                // collected nothing has nothing they could have edited: it runs with none.
+                let answered = argument.as_ref().map(|_| answered);
+                self.authorize_turn_step(workspace, steps, descriptor, &answered, &run, true)
+                    .map_err(|reason| ActionHostError::Refused { reason })?;
+                Ok(TurnStep::Run {
+                    argument: answered,
+                    confirmed: true,
+                })
+            }
+            super::conversation_ask::AskGate::Held { reason } => Ok(TurnStep::Held { reason }),
+            super::conversation_ask::AskGate::Declined { reason } => {
+                Err(ActionHostError::Refused { reason })
+            }
+        }
+    }
+
+    /// The run a turn's host step answers: the going run of `caller`'s agent for `turn`, and the
+    /// workspace's tracker that decides it.
+    fn turn_step_run(
+        &self,
+        caller: &Caller,
+        workspace: &str,
+        turn: Option<&tilo_action_policy::turn::Turn>,
+    ) -> Result<
+        (
+            Arc<dyn crate::services::TrackerRuns>,
+            crate::services::TrackerRun,
+        ),
+        ActionHostError,
+    > {
         let actor = super::BrokerActor::for_caller(caller);
         let turn = turn
             .or_else(|| actor.turn())
@@ -44,7 +166,8 @@ impl AppBrokerState {
             .tracker_runs(workspace)
             .ok_or_else(|| ActionHostError::Unavailable {
                 reason: "this workspace's turns are not at hand".into(),
-            })?;
+            })?
+            .clone();
         let run = service
             .runs(workspace)
             .map_err(|reason| ActionHostError::Unavailable { reason })?
@@ -56,6 +179,24 @@ impl AppBrokerState {
         service
             .check_agent(workspace, &run)
             .map_err(|reason| ActionHostError::Refused { reason })?;
+        Ok((service, run))
+    }
+
+    /// Decide `descriptor`'s step for `run`, with `argument`: the turn's grants over the person's,
+    /// the agent's and the run's live grants, with the person's own answer (`confirmed`) where
+    /// they gave one.
+    fn authorize_turn_step(
+        &self,
+        workspace: &str,
+        steps: &dyn HostStepServices,
+        descriptor: &tilo_actions::ActionDescriptor,
+        argument: &Option<String>,
+        run: &crate::services::TrackerRun,
+        confirmed: bool,
+    ) -> Result<(), String> {
+        let service = self
+            .tracker_runs(workspace)
+            .ok_or("this workspace's turns are not at hand")?;
         let requirement = crate::services::NativeTaskActionRequirement {
             binding: crate::services::NativeTaskBinding {
                 task_id: run.issue.clone(),
@@ -72,17 +213,9 @@ impl AppBrokerState {
             need: descriptor.contract.need(),
             consequential: descriptor.contract.asks_for_argument(argument.as_deref()),
             attended: descriptor.contract.is_attended(),
-            confirmed: false,
+            confirmed,
         };
-        service
-            .authorize_action(workspace, &run, &requirement)
-            .map_err(|reason| {
-                if crate::services::NativeTaskActionRequirement::awaits_confirmation(&reason) {
-                    ActionHostError::ConfirmationRequired
-                } else {
-                    ActionHostError::Refused { reason }
-                }
-            })
+        service.authorize_action(workspace, run, &requirement)
     }
 }
 
@@ -269,9 +402,37 @@ impl AppBrokerState {
         // record where the turn already held it to the same person's live grants.
         let by_turn = steps.for_turns() && policy.is_agent();
         let turn = turn.or_else(|| caller.turn());
+        // The argument the step runs with: the person's edits, where this
+        // turn's grants asked and they confirmed it.
+        let mut run_argument = argument.clone();
+        let mut turn_confirmed = false;
         if by_turn {
-            self.admit_turn_step(caller, workspace_id, steps, (&descriptor, &argument), turn)
-                .map_err(abandon)?;
+            match self
+                .admit_turn_step(
+                    caller,
+                    workspace_id,
+                    steps,
+                    (&descriptor, &argument),
+                    turn,
+                    false,
+                )
+                .map_err(abandon)?
+            {
+                TurnStep::Run {
+                    argument,
+                    confirmed,
+                } => {
+                    run_argument = argument;
+                    turn_confirmed = confirmed;
+                }
+                TurnStep::Held { reason } => {
+                    // The question stands on the person's sheet, in the words the app
+                    // action's held child hears. Nothing ran and no row is written: the
+                    // invocation is not admitted yet, and its next ask with the same
+                    // arguments runs it once they answer there.
+                    return Err(abandon(ActionHostError::Refused { reason }));
+                }
+            }
         } else {
             self.framework_policy(
                 (&workspace, &policy, now),
@@ -282,15 +443,28 @@ impl AppBrokerState {
             )
             .map_err(abandon)?;
         }
-        if !Self::confirmed_as_asked(
-            &policy,
-            &descriptor,
-            argument.as_deref(),
-            request.confirmation.as_ref(),
-            witnessed,
-        ) {
+        // The turn's own grant is the answer where it let the step go: the step's contract
+        // still asks the person where it asks them every time. Everything else is asked here.
+        if !turn_confirmed
+            && !Self::confirmed_as_asked(
+                &policy,
+                &descriptor,
+                run_argument.as_deref(),
+                request.confirmation.as_ref(),
+                witnessed,
+            )
+        {
             return Err(abandon(ActionHostError::ConfirmationRequired));
         }
+        let mut request = request.clone();
+        if by_turn && run_argument != argument {
+            request.argument = run_argument
+                .as_deref()
+                .map_or(tilo_actions::remote::InvokeArgument::None, |text| {
+                    tilo_actions::remote::InvokeArgument::Text(text.into())
+                });
+        }
+        let request = &request;
         let admitted = self
             .admit_host_action(
                 caller,
@@ -312,24 +486,39 @@ impl AppBrokerState {
         let policy = self.framework_effect_ready(&admitted, || {
             let (workspace, policy, now) =
                 self.current_framework_authority(caller, origin, workspace_id)?;
-            if !Self::confirmed_as_asked(
-                &policy,
-                &descriptor,
-                argument.as_deref(),
-                request.confirmation.as_ref(),
-                witnessed,
-            ) {
+            if !turn_confirmed
+                && !Self::confirmed_as_asked(
+                    &policy,
+                    &descriptor,
+                    run_argument.as_deref(),
+                    request.confirmation.as_ref(),
+                    witnessed,
+                )
+            {
                 return Err(ActionHostError::ConfirmationRequired);
             }
             if by_turn {
-                // The turn still goes, and still lets this agent take this step.
-                self.admit_turn_step(caller, workspace_id, steps, (&descriptor, &argument), turn)?;
+                // The turn still goes, and still lets this agent take this step, with what the
+                // person confirmed where they answered it.
+                match self.admit_turn_step(
+                    caller,
+                    workspace_id,
+                    steps,
+                    (&descriptor, &run_argument),
+                    turn,
+                    turn_confirmed,
+                )? {
+                    TurnStep::Run { .. } => {}
+                    TurnStep::Held { reason } => {
+                        return Err(ActionHostError::Refused { reason });
+                    }
+                }
             } else {
                 self.admit_answer(
                     (&workspace, &policy, now),
                     steps.app_id(),
                     &descriptor,
-                    (argument.as_deref(), request.confirmation.as_ref()),
+                    (run_argument.as_deref(), request.confirmation.as_ref()),
                     witnessed,
                 )?;
             }
@@ -339,7 +528,7 @@ impl AppBrokerState {
             workspace: workspace_id,
             actor: &policy,
             address,
-            argument: argument.as_deref(),
+            argument: run_argument.as_deref(),
             task_run: run.map(|run| run as &dyn tilo_broker_core::steps::TaskRun),
         };
         if descriptor.contract.is_live() {

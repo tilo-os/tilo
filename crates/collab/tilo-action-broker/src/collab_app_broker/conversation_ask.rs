@@ -90,6 +90,24 @@ impl ConversationAsks {
     }
 }
 
+/// What a conversation's ask decides for one step, whichever door the step
+/// came in by: an app action's child and a turn's own host step wait on the
+/// same question, on the same sheet.
+pub(super) enum AskGate {
+    /// Nothing asks first: the step runs as asked.
+    Proceed,
+    /// The person confirmed it: with these arguments, as they changed them.
+    Confirmed {
+        argument: String,
+        confirmation: String,
+    },
+    /// The question stands on the person's sheet: nothing runs until they
+    /// answer there.
+    Held { reason: String },
+    /// The person declined it, in their words.
+    Declined { reason: String },
+}
+
 impl AppBrokerState {
     /// [`super::native_confirmation_for`] for a run that answers a person's
     /// message in a conversation: the question goes to the system's sheet.
@@ -101,6 +119,65 @@ impl AppBrokerState {
         (resource, action): (&str, &str),
         argument: Option<&str>,
     ) -> Result<NativeGate, String> {
+        let descriptor = offered.descriptor(tilo_actions::ExecutionLocus::ClientLocal);
+        let mut current_binding = run.native.clone();
+        current_binding.revision = runtime_collab::native_task_revision(lease)
+            .ok_or("invalid native lease")?
+            .1;
+        let app = app.to_owned();
+        let gate = self.conversation_gate(
+            &run.task_id,
+            &descriptor,
+            (resource, action),
+            argument,
+            |contract_argument| {
+                let current = self.tracker_run_of(run)?;
+                let requirement = crate::services::NativeTaskActionRequirement {
+                    binding: current_binding.clone(),
+                    app: app.clone(),
+                    resource_kind: descriptor.resource_kind.clone(),
+                    resource: tilo_actions::selection::logical_resource_id(resource).into_owned(),
+                    action: descriptor.address.action.clone(),
+                    need: descriptor.contract.need(),
+                    consequential: descriptor
+                        .contract
+                        .asks_for_argument(contract_argument.or(argument)),
+                    attended: descriptor.contract.is_attended(),
+                    confirmed: false,
+                };
+                self.tracker_runs(&run.cluster_id)
+                    .ok_or("the tracker is unavailable")?
+                    .authorize_action(&run.cluster_id, &current, &requirement)
+            },
+        )?;
+        Ok(match gate {
+            AskGate::Proceed => NativeGate::Proceed,
+            AskGate::Confirmed {
+                argument,
+                confirmation,
+            } => NativeGate::Confirmed {
+                argument,
+                confirmation,
+            },
+            // The app action's child hears the wait it always did, and the
+            // person's decline in their own words.
+            AskGate::Held { reason } | AskGate::Declined { reason } => return Err(reason),
+        })
+    }
+
+    /// The person's answer to one step a conversation turn takes — an app's
+    /// action or the session's own step — through the system's sheet, or the
+    /// refusal the workspace's grants give. The step's own authorization is
+    /// `authorize`, given the exact argument slot the grants are decided
+    /// with.
+    pub(super) fn conversation_gate(
+        &self,
+        task: &str,
+        descriptor: &tilo_actions::ActionDescriptor,
+        (resource, action): (&str, &str),
+        argument: Option<&str>,
+        authorize: impl FnOnce(Option<&str>) -> Result<(), String>,
+    ) -> Result<AskGate, String> {
         let prefixed =
             argument.and_then(|text| text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX));
         let json = prefixed.or(argument);
@@ -109,16 +186,15 @@ impl AppBrokerState {
                 .map_err(|_| "task action arguments are not a JSON object")?,
             None => serde_json::Map::new(),
         };
-        let descriptor = offered.descriptor(tilo_actions::ExecutionLocus::ClientLocal);
-        let draft = Draft::render(&descriptor, &arguments);
+        let draft = Draft::render(descriptor, &arguments);
         let logical = tilo_actions::selection::logical_resource_id(resource).into_owned();
-        let key = question_key(&run.task_id, &logical, action, &arguments);
+        let key = question_key(task, &logical, action, &arguments);
         // The person's answer, where they gave one: what it decides.
         match self.conversation_asks.take_answered(&key) {
             Some(Answered::Confirmed(edits)) => {
                 let edited = draft.apply_edits(&arguments, &edits)?;
                 let edited = serde_json::Value::Object(edited).to_string();
-                return Ok(NativeGate::Confirmed {
+                return Ok(AskGate::Confirmed {
                     argument: if prefixed.is_some() {
                         format!("{}{edited}", tilo_actions::ARGUMENTS_JSON_PREFIX)
                     } else {
@@ -128,52 +204,34 @@ impl AppBrokerState {
                 });
             }
             Some(Answered::Declined) => {
-                return Err(conversation_declined(&draft.action_label));
+                return Ok(AskGate::Declined {
+                    reason: conversation_declined(&draft.action_label),
+                });
             }
             Some(Answered::Waiting) | None => {}
         }
-        let mut current_binding = run.native.clone();
-        current_binding.revision = runtime_collab::native_task_revision(lease)
-            .ok_or("invalid native lease")?
-            .1;
         let contract_argument =
             json.map(|text| format!("{}{text}", tilo_actions::ARGUMENTS_JSON_PREFIX));
-        let requirement = crate::services::NativeTaskActionRequirement {
-            binding: current_binding,
-            app: app.to_owned(),
-            resource_kind: descriptor.resource_kind.clone(),
-            resource: logical.clone(),
-            action: descriptor.address.action.clone(),
-            need: descriptor.contract.need(),
-            consequential: descriptor
-                .contract
-                .asks_for_argument(contract_argument.as_deref().or(argument)),
-            attended: descriptor.contract.is_attended(),
-            confirmed: false,
-        };
-        let current = self.tracker_run_of(run)?;
-        match self
-            .tracker_runs(&run.cluster_id)
-            .ok_or("the tracker is unavailable")?
-            .authorize_action(&run.cluster_id, &current, &requirement)
-        {
+        match authorize(contract_argument.as_deref().or(argument)) {
             Ok(()) => {
                 // Nothing asks: a question left from an earlier shape of the
                 // arguments goes, so the sheet never shows a stale one.
                 self.conversation_asks.remove(&key);
-                Ok(NativeGate::Proceed)
+                Ok(AskGate::Proceed)
             }
             Err(error)
                 if crate::services::NativeTaskActionRequirement::awaits_confirmation(&error) =>
             {
                 self.raise_conversation_ask(
                     &key,
-                    &run.task_id,
+                    task,
                     &draft,
                     (&logical, action),
                     prefixed.is_some(),
                 )?;
-                Err(conversation_awaiting(&draft.action_label))
+                Ok(AskGate::Held {
+                    reason: conversation_awaiting(&draft.action_label),
+                })
             }
             Err(error) => Err(error),
         }
