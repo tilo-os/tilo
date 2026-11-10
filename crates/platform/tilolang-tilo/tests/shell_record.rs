@@ -573,19 +573,21 @@ fn the_macos_bar_carries_the_focused_windows_own_commands() {
             "the window's menu runs the app's {command}: {commands:?}",
         );
     }
-    // No menu is the shell's own: the bar names the window's commands, and the app's menus stand
-    // in its view, where the app declares them (`File`, its imports and its export).
-    let bar_menus: Vec<String> = nodes(&macos, "ui.MenuButton")
+    // No menu is the shell's own: the bar's menus are the windows' and the shell's own, and the
+    // app's menus stand in its view, where the app declares them (`File`, its imports and its
+    // export). A menu the shell made up would be one of its own named `File`.
+    let shell_menus: Vec<String> = nodes(&macos, "ui.MenuButton")
         .into_iter()
         .filter(|menu| menu.props.get("role") == Some(&Value::Text("bar".to_owned())))
+        .filter(|menu| !menu.props.contains_key("subject"))
         .filter_map(|menu| match menu.props.get("label") {
             Some(Value::Text(label)) => Some(label.clone()),
             _ => None,
         })
         .collect();
     assert!(
-        !bar_menus.iter().any(|label| label == "File"),
-        "no menu the shell made up: {bar_menus:?}"
+        !shell_menus.iter().any(|label| label == "File"),
+        "no menu the shell made up: {shell_menus:?}"
     );
 }
 
