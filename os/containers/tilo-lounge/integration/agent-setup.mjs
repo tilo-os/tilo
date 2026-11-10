@@ -55,6 +55,7 @@ const finish = async (code, message) => {
     report[`${name}Text`] = await pageText(tab);
     // What the page kept of the workspaces it entered and the hosts it is a
     // member of: which way it took in on its next load.
+    report[`${name}People`] = await tab.evaluate(`JSON.stringify(globalThis.tiloMount?.people?.() ?? null)`).catch(() => '');
     report[`${name}Kept`] = await tab.evaluate(`JSON.stringify(Object.fromEntries(Object.keys(localStorage)
       .filter(key => /workspace|membership|entered/i.test(key)).map(key => [key, localStorage.getItem(key)])))`).catch(() => '');
   }
@@ -65,7 +66,7 @@ const finish = async (code, message) => {
       const lines = (tab.log ?? []).slice(-30);
       if (lines.length) console.error(`--- ${name} said:\n${lines.join('\n')}`);
     }
-    for (const {name} of tabs) console.error(`--- ${name} kept: ${report[`${name}Kept`]}`);
+    for (const {name} of tabs) console.error(`--- ${name} kept: ${report[`${name}Kept`]}\n--- ${name} people: ${report[`${name}People`]}`);
     console.error(`FAIL: ${message}`);
   }
   console.log(JSON.stringify(report));
