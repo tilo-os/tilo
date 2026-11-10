@@ -38,6 +38,25 @@ build; a thin build runs only against a session's runtime library) and opens the
 window. `--runtime BIN` runs a binary you built yourself instead, and a new build of it
 restarts the window on it.
 
+What the loop counts as a save: anything that changes what a build reads. That is every
+`.tl` file of the package and of the packages it uses, the translations in their
+`locales/`, and entries added, removed or renamed anywhere below their directories, a
+whole package directory moved in included (the loop watches the directory above each
+package, so a package replaced whole is taken again). Then it compiles once: the events of
+one save, and of one build writing a file in steps, are gathered for a few tens of
+milliseconds first.
+
+A `--runtime BIN` build counts too, and the loop starts the window again only once the new
+program is whole: a build that copies the binary in place, or replaces its directory, is
+taken as soon as the file has stopped growing and is executable (up to 60 seconds). The
+window comes back on its checkpoint: the document, the route, the view state and the
+caret. The old process is stopped first, with time to flush.
+
+If the sources use a type this build of the tool does not know (`E013 unknown type`) and
+the checkout's own sources are newer than the tool, the loop says so instead of leaving the
+error to look like a mistake in the package: rebuild the tool and start `tilolang dev`
+again.
+
 The profile is not a detail of this loop: it compiles each saved package, interprets it and
 draws every frame of its window, and an unoptimised build of it does each of those several
 times slower. `fast` is the workspace's answer for a local build that must run at

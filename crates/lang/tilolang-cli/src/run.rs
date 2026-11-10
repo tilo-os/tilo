@@ -203,7 +203,7 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
         version: "0.1.0".to_owned(),
     };
     let identity = crate::identity_at(&crate::state_dir().join("publisher.json"))?;
-    let mut dev = Dev::in_session(build, identity, peers, build_dir.join("bin"));
+    let mut dev = Dev::in_session(build, identity, peers, build_dir.join("bin"), &repo);
     // The sessions install them as they start.
     let apps = dev.build_for_start()?;
 

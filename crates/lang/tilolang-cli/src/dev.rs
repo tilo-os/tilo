@@ -2,7 +2,10 @@
 //!
 //! The tool watches the package's sources (and those of the packages it uses). On every save it
 //! compiles in-process; a compile error is printed and the app keeps running the last good
-//! build.
+//! build. A save is anything that changes what a build reads: a `.tl` file, a translation in the
+//! package's `locales/`, an entry added or removed anywhere below the package's directory. The
+//! packages are watched as trees, and each directory's own directory with them, so a package or
+//! a build's output directory made, replaced or moved in is a change too.
 //!
 //! Without `--session` the package runs as an ordinary window on this desktop, started here: the
 //! tool publishes each build into a directory of numbered generations
@@ -12,7 +15,10 @@
 //! windows; when it cannot read the state the old one wrote ([`tilolang_tilo::upgrade`]), the
 //! tool says why in one line and the app starts over on the new build with its data, as its next
 //! start would. The runtime binary is `--runtime BIN`, or a build of `apps/tilolang` the tool
-//! makes with cargo and remakes on every change of its sources, restarting the window on it.
+//! makes with cargo and remakes on every change of its sources, restarting the window on it. A
+//! binary built by hand is taken when the file it was written to is whole again, by whichever
+//! of the events a build makes: the tool watches the binary's directory, and the one above it,
+//! and starts the window again on the new program once it has stopped growing.
 //!
 //! With `--session` the package is developed inside a running nested session: a good build is
 //! signed into a `.tapp` and installed with `tilo-install`, exactly as any install: verified,
@@ -96,6 +102,33 @@ const RUNTIME_LIBRARY: &str = "target/tilolang-runtime/libruntime_dylib.so";
 
 /// How long the app gets to flush its checkpoint when the tool restarts or stops it.
 const STOP_GRACE: Duration = Duration::from_secs(10);
+
+/// How long the loop gathers the events of one change before it acts on them: an editor's save,
+/// and a build that writes a file in steps, arrive as several events, and one build is one
+/// rebuild or one restart.
+const SETTLE: Duration = Duration::from_millis(60);
+
+/// The longest a change is gathered: a build writing into a watched tree must not hold the loop.
+const SETTLE_LIMIT: Duration = Duration::from_millis(500);
+
+/// How often a file a build replaced is measured while it is being written.
+const COMPLETE_POLL: Duration = Duration::from_millis(20);
+
+/// How long a file a build replaced is given to be whole. A build elsewhere copies a large
+/// runtime binary here over several seconds.
+const COMPLETE_WAIT: Duration = Duration::from_secs(60);
+
+/// How long a program a build took away is waited for: a build that replaces one takes it away
+/// for a moment at most.
+const MISSING_WAIT: Duration = Duration::from_secs(2);
+
+/// The sources of the tool itself: the checkout's answers, which can be newer than the tool.
+const TOOL_SOURCES: [&str; 4] = [
+    "crates/lang/tilolang/src",
+    "crates/lang/tilolang-runtime/src",
+    "crates/platform/tilolang-tilo/src",
+    "apps/tilolang/src",
+];
 
 /// The variable the launcher names the package's signed id with.
 const PACKAGE_ID_ENV: &str = "TILO_PACKAGE_ID";
@@ -502,10 +535,22 @@ pub(crate) struct Dev {
     reload_pending: Option<(PathBuf, std::time::SystemTime)>,
     /// What wakes the loop while it waits on the app the tool runs.
     wake: Option<Arc<WakeFd>>,
+    /// The checkout the tool was built from: whose sources being newer than the tool mean the
+    /// tool cannot know all the types they declare.
+    repo: PathBuf,
+    /// The package directories a build reads: every change of what is below one is a build.
+    sources: BTreeSet<PathBuf>,
+    /// The program of a runtime built by hand that the window was last started on.
+    runtime_taken: Option<Program>,
 }
 
 impl Dev {
-    fn new(build: BuildOptions, identity: SigningIdentity, delivery: Delivery) -> Self {
+    fn new(
+        build: BuildOptions,
+        identity: SigningIdentity,
+        delivery: Delivery,
+        repo: &Path,
+    ) -> Self {
         Self {
             build,
             identity,
@@ -515,6 +560,9 @@ impl Dev {
             runtime: None,
             reload_pending: None,
             wake: None,
+            repo: repo.to_path_buf(),
+            sources: BTreeSet::new(),
+            runtime_taken: None,
         }
     }
 
@@ -524,8 +572,9 @@ impl Dev {
         identity: SigningIdentity,
         peers: Vec<Peer>,
         bin: PathBuf,
+        repo: &Path,
     ) -> Self {
-        Self::new(build, identity, Delivery::Session { peers, bin })
+        Self::new(build, identity, Delivery::Session { peers, bin }, repo)
     }
 
     /// The loop over the app the tool runs itself on this desktop.
@@ -533,11 +582,13 @@ impl Dev {
         build: BuildOptions,
         identity: SigningIdentity,
         root: &Path,
+        repo: &Path,
     ) -> Result<Self, String> {
         Ok(Self::new(
             build,
             identity,
             Delivery::Local(Local::new(root)?),
+            repo,
         ))
     }
 
@@ -690,8 +741,33 @@ impl Dev {
         let saved = Instant::now();
         if let Err(error) = self.build_and_deliver(saved) {
             eprintln!("{error}");
+            if let Some(hint) = self.build_failure_hint(&error) {
+                eprintln!("==> {hint}");
+            }
             eprintln!("==> the app keeps running the last good build");
         }
+    }
+
+    /// What a build's errors most likely mean beyond the errors themselves: a type the
+    /// checkout's sources declare, which this build of the tool is too old to know, is answered
+    /// by rebuilding the tool, not by editing the package.
+    fn build_failure_hint(&self, error: &str) -> Option<&'static str> {
+        (error.contains("E013") && self.older_than_sources())
+            .then_some("the tilolang CLI is older than the sources: rebuild it and start dev again")
+    }
+
+    /// Whether the checkout's sources of the tool are newer than the tool itself.
+    fn older_than_sources(&self) -> bool {
+        let Ok(built) = std::env::current_exe()
+            .and_then(std::fs::metadata)
+            .and_then(|meta| meta.modified())
+        else {
+            return false;
+        };
+        TOOL_SOURCES
+            .iter()
+            .filter_map(|dir| newest_source(&self.repo.join(dir)))
+            .any(|newest| newest > built)
     }
 
     /// Bake the runtime binary into a signed bundle and install it as the development runtime
@@ -771,6 +847,8 @@ impl Dev {
         };
         if let Err(error) = result {
             eprintln!("{error}");
+        } else {
+            self.take_note_of_runtime();
         }
     }
 
@@ -843,21 +921,31 @@ impl Dev {
             .collect())
     }
 
+    /// Watch what a build reads, the runtime, and the session, so that every change of them
+    /// wakes the loop. A watch whose directory is gone, or was replaced ([`ends_watch`]), is let
+    /// go before this and taken again once the directory is there: watching the directory above
+    /// each one is what reports that it is back.
     fn watch(
-        &self,
+        &mut self,
         wakes: &mpsc::Sender<Wake>,
         watching: &mut BTreeMap<PathBuf, ChangeWatch>,
     ) -> Result<(), String> {
-        let mut dirs: Vec<(PathBuf, bool)> = self
-            .watched_dirs()?
-            .into_iter()
-            .map(|dir| (dir, false))
-            .collect();
+        self.sources = self.watched_dirs()?;
+        // The package's own directory, and the one above it, where the package itself may be
+        // made, replaced or moved in.
+        let mut dirs: Vec<(PathBuf, bool)> = Vec::new();
+        for dir in &self.sources {
+            dirs.push((dir.clone(), true));
+            dirs.extend(dir.parent().map(|above| (above.to_path_buf(), false)));
+        }
         if let Some(runtime) = self.runtime.as_ref() {
             if let Some(repo) = runtime.built_in() {
                 dirs.extend(RUNTIME_SOURCES.iter().map(|dir| (repo.join(dir), true)));
             } else if let Some(dir) = runtime.binary().and_then(Path::parent) {
+                // The binary's directory, and the one above it, where a build may replace the
+                // directory itself.
                 dirs.push((dir.to_path_buf(), false));
+                dirs.extend(dir.parent().map(|above| (above.to_path_buf(), false)));
             }
         }
         // The running window writes what a rebuild it was handed cost it beside the library:
@@ -865,7 +953,13 @@ impl Dev {
         if let Some(session) = self.local().map(|local| local.session.clone()) {
             dirs.push((session, false));
         }
+        // A watch of a directory that went away ends: it is taken again below when the
+        // directory is back, and until then what is below it is not watched.
+        watching.retain(|dir, _| dir.is_dir());
         for (dir, tree) in dirs {
+            if !dir.is_dir() {
+                continue;
+            }
             if let std::collections::btree_map::Entry::Vacant(slot) = watching.entry(dir) {
                 let watcher = if tree {
                     Watcher::tree(slot.key())
@@ -960,19 +1054,16 @@ impl Dev {
         let mut watching = BTreeMap::new();
         self.watch(sender, &mut watching)?;
         loop {
-            let mut events = match wakes.recv() {
+            let events = match wakes.recv() {
                 Ok(Wake::File(events)) => events,
                 Ok(Wake::Ended(status)) => return ended(status),
                 Err(_) => return Err("the file watcher stopped".to_owned()),
             };
-            // An editor's save, or a link of the runtime, is several events: take every one
-            // already queued with these.
-            while let Ok(wake) = wakes.try_recv() {
-                match wake {
-                    Wake::Ended(status) => return ended(status),
-                    Wake::File(more) => events.extend(more),
-                }
-            }
+            let events = match Self::gather(wakes, events)? {
+                Next::Changed(events) => events,
+                Next::Ended(status) => return ended(status),
+            };
+            watching.retain(|dir, _| !ends_watch(dir, &events));
             self.handle(&events);
             if let Err(error) = self.watch(sender, &mut watching) {
                 eprintln!("{error}");
@@ -1018,10 +1109,15 @@ impl Dev {
             if events.is_empty() {
                 continue;
             }
+            let events = match Self::gather(wakes, events)? {
+                Next::Changed(events) => events,
+                Next::Ended(status) => return ended(status),
+            };
             // The deliverer may stop and start the app, so it is its owner while work happens.
             if let Some(local) = self.local_mut() {
                 local.child = Some(child);
             }
+            watching.retain(|dir, _| !ends_watch(dir, &events));
             self.handle(&events);
             if let Err(error) = self.watch(sender, &mut watching) {
                 eprintln!("{error}");
@@ -1033,6 +1129,27 @@ impl Dev {
         }
     }
 
+    /// Take the events of one change: these, and every event that arrives before the change
+    /// has been quiet for [`SETTLE`], or for [`SETTLE_LIMIT`] at most.
+    fn gather(wakes: &mpsc::Receiver<Wake>, mut events: Vec<WatchEvent>) -> Result<Next, String> {
+        let started = Instant::now();
+        loop {
+            match wakes.recv_timeout(SETTLE) {
+                Ok(Wake::File(more)) => {
+                    events.extend(more);
+                    if started.elapsed() >= SETTLE_LIMIT {
+                        return Ok(Next::Changed(events));
+                    }
+                }
+                Ok(Wake::Ended(status)) => return Ok(Next::Ended(status)),
+                Err(mpsc::RecvTimeoutError::Timeout) => return Ok(Next::Changed(events)),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("the file watcher stopped".to_owned());
+                }
+            }
+        }
+    }
+
     /// What a batch of file events asks for: a build, a rebuild of the runtime, or both.
     fn handle(&mut self, events: &[WatchEvent]) {
         let mut source = false;
@@ -1040,7 +1157,7 @@ impl Dev {
         let mut runtime_source = false;
         let mut startup = false;
         for event in events {
-            source |= is_source_edit(event);
+            source |= self.is_source_edit(event);
             runtime |= self.is_runtime_change(event);
             runtime_source |= self.is_runtime_source_edit(event);
             startup |= self.is_runtime_startup_edit(event);
@@ -1058,8 +1175,16 @@ impl Dev {
                 }
             }
         } else if runtime_source || runtime {
-            self.runtime_changed(false);
-        } else {
+            match self.new_runtime_program() {
+                Ok(true) => self.runtime_changed(false),
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("{error}");
+                    eprintln!("==> the app keeps running on the last good runtime");
+                }
+            }
+        }
+        if source {
             self.rebuild();
         }
     }
@@ -1072,16 +1197,59 @@ impl Dev {
             .is_some_and(|runtime| runtime.reloads_in_place && runtime.built_in.is_some())
     }
 
+    /// Whether `event` changed what a build reads: anything in a package's directory, wherever
+    /// it is, or changes in one that may have been missed.
+    fn is_source_edit(&self, event: &WatchEvent) -> bool {
+        if event.kind == ChangeKind::Rescan {
+            // A rescan of a package's directory, or of the directory above it, may have hidden
+            // a change of the package.
+            return self
+                .sources
+                .iter()
+                .any(|dir| event.path == *dir || dir.starts_with(&event.path));
+        }
+        self.sources.iter().any(|dir| event.path.starts_with(dir)) && !is_ids_lock(&event.path)
+    }
+
+    /// Wait until the binary a build by hand replaced is a whole program, and answer whether it
+    /// is one the window is not running yet: the events of a change already taken restart
+    /// nothing.
+    fn new_runtime_program(&self) -> Result<bool, String> {
+        let Some(binary) = self
+            .runtime
+            .as_ref()
+            .filter(|runtime| runtime.built_in.is_none())
+            .and_then(DevRuntime::binary)
+        else {
+            // A runtime the tool builds itself is what its own build made.
+            return Ok(true);
+        };
+        Ok(whole_program(binary, MISSING_WAIT, COMPLETE_WAIT)?
+            && program(binary) != self.runtime_taken)
+    }
+
+    /// Note the program the window runs now, so that the rest of its change's events ask for
+    /// nothing.
+    fn take_note_of_runtime(&mut self) {
+        self.runtime_taken = self
+            .runtime
+            .as_ref()
+            .filter(|runtime| runtime.built_in.is_none())
+            .and_then(DevRuntime::binary)
+            .and_then(program);
+    }
+
     /// An edit of what the runtime process runs before any window exists: a running window
-    /// cannot take it, so the process starts again on it.
+    /// cannot take it, so the process starts again on it. Changes that may have been missed
+    /// anywhere in the runtime's sources start it again too: they may have been such an edit.
     fn is_runtime_startup_edit(&self, event: &WatchEvent) -> bool {
         let Some(repo) = self.runtime.as_ref().and_then(DevRuntime::built_in) else {
             return false;
         };
-        event.kind != ChangeKind::Rescan
-            && RUNTIME_STARTUP
-                .iter()
-                .any(|path| event.path == repo.join(path))
+        RUNTIME_STARTUP
+            .iter()
+            .any(|path| event.path == repo.join(path))
+            || (event.kind == ChangeKind::Rescan && self.in_runtime_sources(&event.path))
     }
 
     /// Say how long the window took to draw the rebuild of the runtime it was handed, once it
@@ -1122,7 +1290,8 @@ impl Dev {
         self.reload_pending = None;
     }
 
-    /// A new binary of a runtime built by hand.
+    /// A new binary of a runtime built by hand: the program itself, the directory that holds
+    /// it, or the one above, which a build may replace whole.
     fn is_runtime_change(&self, event: &WatchEvent) -> bool {
         let Some(binary) = self
             .runtime
@@ -1132,21 +1301,31 @@ impl Dev {
         else {
             return false;
         };
-        matches!(event.kind, ChangeKind::Created | ChangeKind::Changed) && event.path == binary
+        binary.starts_with(&event.path)
     }
 
     /// An edit of the sources of a runtime the tool builds.
     fn is_runtime_source_edit(&self, event: &WatchEvent) -> bool {
+        let path = &event.path;
+        if !self.in_runtime_sources(path) {
+            return false;
+        }
+        // Changes below the runtime's sources may have been missed.
+        if event.kind == ChangeKind::Rescan {
+            return true;
+        }
+        path.extension().is_some_and(|extension| extension == "rs")
+            || path.file_name().is_some_and(|name| name == "Cargo.toml")
+    }
+
+    /// Whether `path` is inside the sources of a runtime the tool builds.
+    fn in_runtime_sources(&self, path: &Path) -> bool {
         let Some(repo) = self.runtime.as_ref().and_then(DevRuntime::built_in) else {
             return false;
         };
-        let path = &event.path;
-        event.kind != ChangeKind::Rescan
-            && RUNTIME_SOURCES
-                .iter()
-                .any(|dir| path.starts_with(repo.join(dir)))
-            && (path.extension().is_some_and(|extension| extension == "rs")
-                || path.file_name().is_some_and(|name| name == "Cargo.toml"))
+        RUNTIME_SOURCES
+            .iter()
+            .any(|dir| path.starts_with(repo.join(dir)))
     }
 }
 
@@ -1171,13 +1350,116 @@ fn report(title: &str, plan: Option<Upgrade>, built: Duration, delivered: Durati
     }
 }
 
-/// Whether `event` changed a package's source, or changes may have been missed.
-pub(crate) fn is_source_edit(event: &WatchEvent) -> bool {
-    event.kind == ChangeKind::Rescan
-        || event
-            .path
-            .extension()
-            .is_some_and(|extension| extension == "tl")
+/// What a gathered change asks of the loop.
+enum Next {
+    /// Act on these changes.
+    Changed(Vec<WatchEvent>),
+    /// The session the loop follows ended.
+    Ended(std::io::Result<std::process::ExitStatus>),
+}
+
+/// Whether the events report the watch of `dir` itself gone, which ends that watch: kept, it
+/// would never report `dir` again.
+fn ends_watch(dir: &Path, events: &[WatchEvent]) -> bool {
+    events
+        .iter()
+        .any(|event| event.kind == ChangeKind::Removed && event.path == dir)
+}
+
+/// Whether `path` is a package's ids lock, which a build writes itself: its change is the
+/// loop's own and not a save.
+fn is_ids_lock(path: &Path) -> bool {
+    path.file_name() == Some(std::ffi::OsStr::new(tilolang::source::IDS_FILE))
+}
+
+/// Wait up to `missing` for a program at `path` to appear, and up to `writing` for it to stop
+/// growing: a build writes a file in steps, and a program that is still being written cannot be
+/// started. `false` when the build has made no program at all, which the change that writes one
+/// reports again; why when what it wrote is never whole.
+fn whole_program(path: &Path, missing: Duration, writing: Duration) -> Result<bool, String> {
+    let started = Instant::now();
+    let mut previous: Option<Program> = None;
+    loop {
+        let now = program(path).filter(|program| program.size > 0 && is_executable(path));
+        if now.is_some() && now == previous {
+            return Ok(true);
+        }
+        let waited = started.elapsed();
+        match program(path) {
+            None if waited >= missing => return Ok(false),
+            Some(_) if waited >= writing => {
+                return Err(format!(
+                    "{} is not a whole program after {} s of writing: the build did not finish",
+                    path.display(),
+                    writing.as_secs()
+                ));
+            }
+            _ => {}
+        }
+        previous = now;
+        std::thread::sleep(COMPLETE_POLL);
+    }
+}
+
+/// What tells one build of a program from another: the file the build made, its length, and
+/// when it wrote it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Program {
+    /// The file itself, where the platform numbers files: a build that replaces the program
+    /// renames a new one over it.
+    inode: u64,
+    size: u64,
+    written: std::time::SystemTime,
+}
+
+/// The program at `path` as it is now.
+fn program(path: &Path) -> Option<Program> {
+    let meta = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    let inode = std::os::unix::fs::MetadataExt::ino(&meta);
+    #[cfg(not(unix))]
+    let inode = 0;
+    Some(Program {
+        inode,
+        size: meta.len(),
+        written: meta.modified().ok()?,
+    })
+}
+
+/// Whether `path` is a file the platform will run.
+fn is_executable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::metadata(path).is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
+}
+
+/// When the newest file below `dir` was written.
+fn newest_source(dir: &Path) -> Option<std::time::SystemTime> {
+    let mut newest = None;
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => pending.push(entry.path()),
+                Ok(_) => {
+                    if let Ok(modified) = entry.metadata().and_then(|meta| meta.modified()) {
+                        newest = newest.max(Some(modified));
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+    }
+    newest
 }
 
 /// Start `watcher`, its changes sent to `wakes`; with a `ring`, the wait on the app is woken
@@ -1533,7 +1815,7 @@ fn dev_in_session(
         tilolang_runtime,
         version: "0.1.0".to_owned(),
     };
-    let mut dev = Dev::in_session(build, identity, vec![peer], bin);
+    let mut dev = Dev::in_session(build, identity, vec![peer], bin, repo);
     dev.runtime = runtime;
     if dev.runtime.is_some() {
         dev.build_runtime()?;
@@ -1579,7 +1861,7 @@ fn dev_on_desktop(
         tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.to_owned(),
         version: "0.1.0".to_owned(),
     };
-    let mut dev = Dev::on_desktop(build, identity, &root)?;
+    let mut dev = Dev::on_desktop(build, identity, &root, repo)?;
     dev.runtime = Some(DevRuntime {
         binary: runtime,
         built_in,
@@ -1615,6 +1897,7 @@ fn dev_on_desktop(
         .local_mut()
         .ok_or_else(|| "the app is not run here".to_owned())?;
     local.start(app, &binary, &loaders)?;
+    dev.take_note_of_runtime();
     eprintln!(
         "==> {} is open; a saved .tl file reaches it, and so does a new build of the runtime",
         dev.opened
@@ -1679,5 +1962,90 @@ mod tests {
         assert!(error.contains("is not built for"), "{error}");
         std::fs::write(&path, b"#!/bin/sh\nexit 0\n# not an ELF file at all").unwrap();
         assert!(check_architecture(&path).is_err());
+    }
+
+    /// How long a test gives a program to appear and to be written.
+    const PATIENCE: Duration = Duration::from_secs(1);
+
+    /// Write a program that says `note`, and that the platform may run.
+    #[cfg(unix)]
+    fn write_program(path: &Path, note: &str) {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::write(path, format!("#!/bin/sh\n{note}\n")).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// A program a build is still writing is taken once it has stopped growing, and one it has
+    /// not written yet answers that there is none.
+    #[cfg(unix)]
+    #[test]
+    fn a_program_is_taken_once_it_is_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tilolang-app");
+        assert_eq!(
+            whole_program(&path, Duration::from_millis(50), PATIENCE),
+            Ok(false)
+        );
+        write_program(&path, "half");
+        let written = path.clone();
+        let writing = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            write_program(&written, "half and the other half");
+        });
+        assert_eq!(whole_program(&path, PATIENCE, PATIENCE), Ok(true));
+        writing.join().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "#!/bin/sh\nhalf and the other half\n",
+            "the answer waited for the whole program"
+        );
+    }
+
+    /// The program of a build is the file the build made: one renamed over the old is another
+    /// program, even when it is as long and as old.
+    #[cfg(unix)]
+    #[test]
+    fn a_program_renamed_over_the_old_one_is_another_program() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tilolang-app");
+        write_program(&path, "one");
+        let first = program(&path).unwrap();
+        write_program(&dir.path().join(".staged"), "one");
+        std::fs::rename(dir.path().join(".staged"), &path).unwrap();
+        let second = program(&path).unwrap();
+        assert_eq!((first.size, first.written), (second.size, second.written));
+        assert_ne!(first, second, "a renamed program is a new file");
+    }
+
+    /// A build's ids lock is written by the tool itself: a save it is not.
+    #[test]
+    fn a_builds_ids_lock_is_no_save() {
+        assert!(is_ids_lock(
+            &Path::new("/app/notes").join(tilolang::source::IDS_FILE)
+        ));
+        assert!(!is_ids_lock(Path::new("/app/notes/app.tl")));
+        assert!(!is_ids_lock(Path::new("/app/notes/locales/de-DE.ftl")));
+    }
+
+    /// A watch whose directory the events report gone ends, even where the directory is there
+    /// again: the watch of it was of the directory that went away.
+    #[test]
+    fn a_watch_ends_with_the_directory_it_reports_gone() {
+        let dir = PathBuf::from("/repo/target/debug");
+        let gone = WatchEvent {
+            path: dir.clone(),
+            kind: ChangeKind::Removed,
+        };
+        let inside = WatchEvent {
+            path: dir.join("tilolang-app"),
+            kind: ChangeKind::Removed,
+        };
+        let created = WatchEvent {
+            path: dir.clone(),
+            kind: ChangeKind::Created,
+        };
+        assert!(ends_watch(&dir, &[gone]));
+        assert!(!ends_watch(&dir, &[inside]));
+        assert!(!ends_watch(&dir, &[created]));
     }
 }
