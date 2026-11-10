@@ -785,6 +785,87 @@ fn competing_geneses_keep_the_lower_digest() {
     assert_eq!(loser.epoch(), Some(1));
 }
 
+/// A device admitted by Welcome never saw its group's genesis, yet judges a
+/// competing one as the group's founder does: whichever genesis reaches it
+/// first, it ends up in the winner's group.
+#[test]
+fn a_welcomed_member_judges_competing_geneses_by_its_own_group() {
+    let channel = ChannelId::new();
+    let mut alice = Device::creating(1, channel);
+    let mut bob = Device::creating(2, channel);
+    let from_alice = alice.take().remove(0);
+    let from_bob = bob.take().remove(0);
+    let alice_wins = from_alice.digest().unwrap() < from_bob.digest().unwrap();
+    let (mut winner, mut loser, winning, losing) = if alice_wins {
+        (alice, bob, from_alice, from_bob)
+    } else {
+        (bob, alice, from_bob, from_alice)
+    };
+    let mut in_winner = Device::waiting(3, channel);
+    let mut in_loser = Device::waiting(4, channel);
+    let everyone = allowed(&[&winner, &loser, &in_winner, &in_loser]);
+    for (founder, joiner) in [(&mut winner, &mut in_winner), (&mut loser, &mut in_loser)] {
+        founder
+            .peer
+            .learn_request(joiner.ask(false), &vault())
+            .unwrap();
+        founder.peer.reconcile_now(&everyone, &vault()).unwrap();
+        deliver(&founder.take(), &mut [joiner], &everyone);
+        assert_eq!(joiner.epoch(), Some(1));
+    }
+
+    // Each joiner hears the other group's genesis before its own.
+    assert_eq!(
+        in_winner.receive(&losing, &everyone).unwrap(),
+        PeerEvent::Ignored
+    );
+    assert_eq!(in_winner.epoch(), Some(1), "the winning group keeps it");
+    assert_eq!(
+        in_winner.receive(&winning, &everyone).unwrap(),
+        PeerEvent::Duplicate
+    );
+    assert_eq!(
+        in_loser.receive(&winning, &everyone).unwrap(),
+        PeerEvent::Desynchronised
+    );
+    assert_eq!(in_loser.peer.access(), Access::Waiting);
+    assert_eq!(
+        in_loser.receive(&losing, &everyone).unwrap(),
+        PeerEvent::Ignored
+    );
+
+    // The winner's group admits it.
+    winner
+        .peer
+        .learn_request(in_loser.ask(false), &vault())
+        .unwrap();
+    winner.peer.reconcile_now(&everyone, &vault()).unwrap();
+    deliver(&winner.take(), &mut [&mut in_loser], &everyone);
+    assert_eq!(in_loser.epoch(), winner.epoch());
+
+    // A device welcomed into the losing group after it learnt of the winner
+    // starts over at once, and tells the group that admitted it.
+    let mut late = Device::waiting(5, channel);
+    let everyone = allowed(&[&winner, &loser, &in_winner, &in_loser, &late]);
+    assert_eq!(
+        late.receive(&winning, &everyone).unwrap(),
+        PeerEvent::Genesis
+    );
+    loser.peer.learn_request(late.ask(false), &vault()).unwrap();
+    loser.peer.reconcile_now(&everyone, &vault()).unwrap();
+    let welcome = loser
+        .take()
+        .into_iter()
+        .find(|frame| frame.join_material().is_some())
+        .unwrap();
+    assert_eq!(
+        late.receive(&welcome, &everyone).unwrap(),
+        PeerEvent::Desynchronised
+    );
+    assert_eq!(late.peer.access(), Access::Waiting);
+    assert_eq!(late.take(), vec![winning]);
+}
+
 #[test]
 fn state_survives_a_restart_and_an_export() {
     let scratch = tempfile::tempdir().unwrap();

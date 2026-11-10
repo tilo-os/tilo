@@ -515,7 +515,8 @@ impl ChannelPeer {
                 MemberKey::for_device(&self.device)?
             }
         };
-        let group = match ChannelGroup::create(self.channel, member) {
+        let founded_by = digest(&genesis)?;
+        let group = match ChannelGroup::found(self.channel, member, founded_by) {
             Ok(group) => group,
             Err(error) => {
                 self.record = MemberRecord::Waiting(Box::new(MemberKey::for_device(&self.device)?));
@@ -524,7 +525,7 @@ impl ChannelPeer {
         };
         self.record = MemberRecord::Joined(Box::new(group));
         self.parent = None;
-        self.genesis = Some(digest(&genesis)?);
+        self.genesis = Some(founded_by);
         self.genesis_frame = Some(genesis.clone());
         self.restart_branch(genesis.clone());
         self.outbox.push(genesis);
@@ -1354,7 +1355,15 @@ impl ChannelPeer {
         vault: &VaultKey,
     ) -> Result<PeerEvent> {
         match self.genesis {
-            Some(known) if known == incoming => Ok(PeerEvent::Duplicate),
+            Some(known) if known == incoming => {
+                // A member admitted by Welcome knew its genesis by digest
+                // only: keep the frame to publish again.
+                if self.genesis_frame.is_none() {
+                    self.genesis_frame = Some(frame.clone());
+                    self.save(vault)?;
+                }
+                Ok(PeerEvent::Duplicate)
+            }
             Some(known) if known < incoming => {
                 if let Some(winner) = &self.genesis_frame
                     && !self.outbox.contains(winner)
@@ -1633,10 +1642,34 @@ impl ChannelPeer {
             Ok(group) => {
                 let epoch = group.epoch();
                 debug_assert_eq!(epoch, frame.epoch, "{incoming:?}");
+                let founded_by = group.genesis();
                 self.record = MemberRecord::Joined(Box::new(group));
                 self.restart_branch(frame);
                 self.parent = Some(parent);
                 self.settle_orphaned();
+                // The group names the genesis it grew from, so this device
+                // judges a competing genesis as its founder does. A group
+                // named at random (founded by an earlier build) names none.
+                if let Some(founded_by) = founded_by {
+                    match self.genesis {
+                        Some(known) if known < founded_by => {
+                            // Admitted to a group whose genesis lost: start
+                            // over for the winner's, and tell the members
+                            // that admitted it of the winner.
+                            if let Some(winner) = &self.genesis_frame
+                                && !self.outbox.contains(winner)
+                            {
+                                self.outbox.push(winner.clone());
+                            }
+                            return self.desynchronise(vault);
+                        }
+                        Some(known) if known == founded_by => {}
+                        _ => {
+                            self.genesis = Some(founded_by);
+                            self.genesis_frame = None;
+                        }
+                    }
+                }
                 self.save(vault)?;
                 Ok(PeerEvent::Joined { epoch })
             }

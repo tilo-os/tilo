@@ -127,6 +127,41 @@ impl ChannelGroup {
             owner.credential_with_key(),
         )
         .map_err(Error::openmls)?;
+        Self::created(channel_id, owner, group)
+    }
+
+    /// [`Self::create`] for the group a channel's genesis frame founds: the
+    /// group is named after the genesis' digest, so every member, a joiner
+    /// that never saw that frame included, knows which genesis its group
+    /// grew from ([`Self::genesis`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::create`].
+    pub(crate) fn found(
+        channel_id: ChannelId,
+        owner: MemberKey,
+        genesis: [u8; 32],
+    ) -> Result<Self> {
+        let group = MlsGroup::new_with_group_id(
+            &owner.provider,
+            &owner.signer,
+            &group_create_config(),
+            GroupId::from_slice(&genesis),
+            owner.credential_with_key(),
+        )
+        .map_err(Error::openmls)?;
+        Self::created(channel_id, owner, group)
+    }
+
+    /// The digest of the genesis frame this group was founded by, as every
+    /// member's MLS group context carries it. `None` for a group named at
+    /// random, as groups were before they were named after their genesis.
+    pub(crate) fn genesis(&self) -> Option<[u8; 32]> {
+        self.group.group_id().as_slice().try_into().ok()
+    }
+
+    fn created(channel_id: ChannelId, owner: MemberKey, group: MlsGroup) -> Result<Self> {
         let mut created = Self {
             channel_id,
             member: owner,
