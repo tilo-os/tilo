@@ -72,14 +72,7 @@ impl Widget for Probe {
     fn needs_redraw(&self) -> bool {
         true
     }
-    fn draw(
-        &mut self,
-        _: &mut Scene,
-        _: Affine,
-        _: &mut TextRenderer,
-        _: &Theme,
-        _: &PresenceCtx,
-    ) {
+    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
         // What the frame drew asked for its parts to be laid out again.
         if self.seen.landing.replace(false) {
             self.seen.landed.set(true);
