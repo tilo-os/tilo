@@ -97,7 +97,13 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     if(!pending_->awaiting_load) pending_->awaiting_load=true;
   }
   void NavigationFinished() {
-    if(pending_ && pending_->awaiting_load) Succeed(pending_->message,std::nullopt);
+    if(!pending_ || !pending_->awaiting_load) return;
+    // The load an action waits for can end before the page's fence has said
+    // what the action set off (a form posted to a server that answers at
+    // once). The page began this navigation while it handled the action,
+    // which is what the answer then says: it is not one still to come.
+    if(pending_->navigation=="possible" && navigations_!=pending_->navigations) pending_->navigation="started";
+    Succeed(pending_->message,std::nullopt);
   }
   // The page's renderer is gone (it crashed, or was replaced): no answer can
   // come from a document that no longer exists. The action in flight is
