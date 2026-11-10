@@ -55,6 +55,14 @@ const MAX_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
 /// Someone a workspace has in it: the person, as their user key in hex, the name the workspace
 /// knows them by, and the part they take in it.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    all(target_arch = "wasm32", target_os = "unknown"),
+    allow(
+        clippy::struct_field_names,
+        reason = "a desktop's held workspaces export this type, which keeps its field names there; \
+                  the page holds none, so only its build sees the type as private"
+    )
+)]
 pub struct Person {
     /// The person (user root, hex).
     pub person: String,
@@ -1228,6 +1236,13 @@ pub(crate) trait RevocationsOf: collab_types::signer::MaybeSendSync {
 
 /// What a workspace of this device's engine revokes, for the callers that ask from another thread.
 /// A session that holds no workspace knows of none.
+#[cfg_attr(
+    all(target_arch = "wasm32", target_os = "unknown"),
+    allow(
+        clippy::arc_with_non_send_sync,
+        reason = "a page has one thread, and the engine it shares is `MaybeSendSync`, never `Send` there"
+    )
+)]
 pub(crate) fn revocations_of(engine: Option<&Arc<Engine>>) -> Revocations {
     struct Held(Option<Arc<Engine>>);
 
