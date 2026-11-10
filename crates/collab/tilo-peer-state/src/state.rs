@@ -2008,46 +2008,20 @@ impl StatePeer {
         if let Some(policy) = &media {
             self.validate_media_bindings(policy, false)?;
         }
-        let mut metadata_changed = self.import_governed_certificates(&candidate, now)?;
+        let metadata_changed = self.import_governed_certificates(&candidate, now)?;
         self.core.receipts = receipts;
         self.core.workspace_doc = Some(candidate.into());
         // The governance may name a record this replica holds nothing of and
         // that no one can send it: an empty one. Held before the writes
         // waiting on it are tried, so the first one builds on the record.
         covered_records::hold_covered_empty_records(self)?;
-        let pending = std::mem::take(&mut self.core.pending);
-        self.core.pending_bytes = 0;
-        let mut applied = changed;
-        let mut rejected = 0usize;
-        let mut settled = Vec::new();
-        let mut dropped = Vec::new();
-        for (author, message, replayed) in pending {
-            match self.receive_with_context(author, message, now, replayed, strict_report) {
-                Ok(outcome) => {
-                    applied |= outcome.changed;
-                    metadata_changed |= outcome.metadata_changed;
-                    rejected = rejected.saturating_add(outcome.rejected);
-                    settled.extend(outcome.settled);
-                    dropped.extend(outcome.summary.dropped);
-                }
-                Err(error) => {
-                    if self.core.native_cut_publisher.is_some() {
-                        return Err(error);
-                    }
-                    rejected = rejected.saturating_add(1);
-                }
-            }
-        }
         let mut report = AdmissionReport::metadata(ReceiveOutcome {
-            changed: applied,
+            changed,
             metadata_changed,
-            incomplete: self.incomplete_reason(),
-            deferred: !self.core.pending.is_empty(),
-            rejected,
-            dropped,
             ..Default::default()
         });
-        report.settled = settled;
+        self.retry_held(&mut report, now, strict_report)?;
+        report.incomplete = self.incomplete_reason();
         Ok(report)
     }
     fn receive_document(
@@ -2065,26 +2039,7 @@ impl StatePeer {
         if outcome.deferred || self.core.pending.is_empty() {
             return Ok(outcome);
         }
-        let pending = std::mem::take(&mut self.core.pending);
-        self.core.pending_bytes = 0;
-        for (author, pending_message, replayed) in pending {
-            match self.receive_with_context(author, pending_message, now, replayed, strict_report) {
-                Ok(applied) => {
-                    outcome.changed |= applied.changed;
-                    outcome.metadata_changed |= applied.metadata_changed;
-                    outcome.rejected = outcome.rejected.saturating_add(applied.rejected);
-                    outcome.settled.extend(applied.settled);
-                    outcome.dropped.extend(applied.summary.dropped);
-                }
-                Err(error) => {
-                    if self.core.native_cut_publisher.is_some() {
-                        return Err(error);
-                    }
-                    outcome.rejected = outcome.rejected.saturating_add(1);
-                }
-            }
-        }
-        outcome.deferred = !self.core.pending.is_empty();
+        self.retry_held(&mut outcome, now, strict_report)?;
         Ok(outcome)
     }
     /// Host-local SDK publication after its certified connection was admitted.

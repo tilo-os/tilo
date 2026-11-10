@@ -168,6 +168,9 @@ struct Inner {
     /// link. The other one decides the retained history it asks for next
     /// against that governance, so the history waits for it.
     catch_up_written: watch::Sender<bool>,
+    /// Asks the link this device dialled to read the other device's retained
+    /// history again ([`DirectSync::ask_replay`]).
+    replay: Arc<tokio::sync::Notify>,
     /// This device is the workspace's host on its links: what they bring in,
     /// it sends on to its other links, so a member's frame reaches every
     /// member through one path.
@@ -222,6 +225,7 @@ impl DirectSync {
             changed: watch::channel(0).0,
             caught_up: watch::channel(false).0,
             catch_up_written: watch::channel(false).0,
+            replay: Arc::default(),
             fan_out: std::sync::atomic::AtomicBool::new(false),
             hearing: None,
         }))
@@ -245,6 +249,7 @@ impl DirectSync {
             changed: self.0.changed.clone(),
             caught_up: self.0.caught_up.clone(),
             catch_up_written: self.0.catch_up_written.clone(),
+            replay: Arc::clone(&self.0.replay),
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
             hearing: self.0.hearing.clone(),
         }))
@@ -262,6 +267,7 @@ impl DirectSync {
             changed: self.0.changed.clone(),
             caught_up: self.0.caught_up.clone(),
             catch_up_written: self.0.catch_up_written.clone(),
+            replay: Arc::clone(&self.0.replay),
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
             hearing: Some(hearing),
         }))
@@ -296,6 +302,7 @@ impl DirectSync {
             changed: self.0.changed.clone(),
             caught_up: self.0.caught_up.clone(),
             catch_up_written: self.0.catch_up_written.clone(),
+            replay: Arc::clone(&self.0.replay),
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
             hearing: self.0.hearing.clone(),
         }))
@@ -366,6 +373,16 @@ impl DirectSync {
     #[must_use]
     pub fn heard(&self) -> broadcast::Receiver<Heard> {
         self.0.heard.subscribe()
+    }
+
+    /// Read the other device's retained history again, from where this
+    /// device's replica stands, on the link this device dialled: what a write
+    /// let go here unapplied waited for has landed
+    /// ([`crate::ReceiveOutcome::replay_wanted`]), and the other device
+    /// still keeps the write. Asked while the link reads the history
+    /// already, it reads it once more after.
+    pub fn ask_replay(&self) {
+        self.0.replay.notify_one();
     }
 
     /// Whether the other device's retained history is in hand yet: true once
@@ -571,20 +588,24 @@ impl DirectSync {
         let sending = send_authored(self, send, remote, catch_up, live);
         let receiving = self.receive_all(connection);
         let history = async {
-            let done = if dialing {
-                self.ask_store(control).await
-            } else {
-                self.answer_store(control).await
-            };
-            match done {
-                // The history is in hand: the control stream has nothing more
-                // to carry, and the frames from here on are the live ones the
-                // link brings.
-                Ok(()) => {
-                    self.0.caught_up.send_replace(true);
-                    std::future::pending().await
-                }
-                Err(error) => Err(error),
+            let mut control = control;
+            if !dialing {
+                // The other device asks for the history as the link starts,
+                // and again whenever it wants what it let go.
+                self.answer_store(&mut control).await?;
+                self.0.caught_up.send_replace(true);
+                return std::future::pending().await;
+            }
+            self.ask_store(&mut control).await?;
+            // The history is in hand: the frames from here on are the live
+            // ones the link brings. A write this device let go unapplied
+            // waits in the other device's history; once what it waited for
+            // lands here, the history is read again from where the replica
+            // stands.
+            self.0.caught_up.send_replace(true);
+            loop {
+                self.0.replay.notified().await;
+                self.ask_store(&mut control).await?;
             }
         };
         tokio::select! {
@@ -597,7 +618,7 @@ impl DirectSync {
     /// Ask the other device's store for the frames this device lacks, round
     /// by round while it says more are left, and return once it says no more
     /// are: the history is in hand.
-    async fn ask_store(&self, mut control: Control) -> Result<(), String> {
+    async fn ask_store(&self, control: &mut Control) -> Result<(), String> {
         let mut cursors = self.cursors();
         write_link(&mut control.send, &LinkFrame::Cursors(cursors.clone())).await?;
         while let Some(frame) = read_link(&mut control.recv, MAX_FRAME_BYTES).await? {
@@ -618,8 +639,10 @@ impl DirectSync {
         Err("the device's store ended the history before the last frame".into())
     }
 
-    /// Answer the dialling device's cursors from this device's store.
-    async fn answer_store(&self, mut control: Control) -> Result<(), String> {
+    /// Answer the dialling device's cursors from this device's store, for as
+    /// long as it asks: the history is in its hands once the first answer
+    /// with no more left is sent, and it asks again for what it let go.
+    async fn answer_store(&self, control: &mut Control) -> Result<(), String> {
         // The history this answers is decided by the other device against the
         // governance it has not been sent yet: it arrives with the catch-up,
         // and the frames asked for before it are the ones it cannot admit.
@@ -637,6 +660,9 @@ impl DirectSync {
             };
             let (frames, more) = self.replay(&cursors)?;
             write_link(&mut control.send, &LinkFrame::Frames { frames, more }).await?;
+            if !more {
+                self.0.caught_up.send_replace(true);
+            }
         }
         Ok(())
     }
@@ -767,6 +793,15 @@ impl DirectSync {
         self.keep(&heard.message);
         if heard.landed {
             self.0.changed.send_modify(bump);
+        }
+        // What a write let go here waited for came with this frame: the
+        // write is still in the other device's history, read again for it.
+        if heard
+            .report
+            .as_ref()
+            .is_ok_and(|report| report.replay_wanted)
+        {
+            self.ask_replay();
         }
         // The workspace's host is its members' one path: what one member's
         // link brings reaches every other, under the member's own name.

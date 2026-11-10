@@ -184,11 +184,23 @@ pub enum InputDisposition {
     MetadataOnly,
     UnsupportedFamily,
 }
+/// A message that waited in the prerequisite queue and was taken in with
+/// the input a report is about: what it waited for came with that input.
+#[derive(Clone, Debug)]
+pub struct Released {
+    /// The device that wrote it.
+    pub author: [u8; 32],
+    pub message: neighbour_wire::NeighbourMsg,
+    /// Whether it came as retained history rather than live.
+    pub retained: bool,
+}
 #[derive(Clone, Debug)]
 pub struct AdmissionReport {
     pub(crate) primary: InputDisposition,
     pub(crate) settled: Vec<DocumentAdmission>,
     pub(crate) summary: ReceiveOutcome,
+    /// The held messages taken in with this input, in the order they were.
+    pub(crate) released: Vec<Released>,
 }
 impl AdmissionReport {
     pub fn primary(&self) -> &InputDisposition {
@@ -196,6 +208,12 @@ impl AdmissionReport {
     }
     pub fn settled(&self) -> &[DocumentAdmission] {
         &self.settled
+    }
+    /// The messages that waited for something this input brought, taken in
+    /// with it: a reader of what was admitted reads these as well, or it
+    /// misses writes that came before the ones they build on.
+    pub fn released(&self) -> &[Released] {
+        &self.released
     }
     pub fn summary(&self) -> &ReceiveOutcome {
         &self.summary
@@ -209,7 +227,27 @@ impl AdmissionReport {
             primary,
             settled,
             summary,
+            released: Vec::new(),
         }
+    }
+    /// What deciding the held `message` again took in: the message itself
+    /// when it was accepted now, after whatever it released in turn.
+    pub(crate) fn taken_in(
+        &self,
+        author: [u8; 32],
+        message: neighbour_wire::NeighbourMsg,
+        retained: bool,
+    ) -> Vec<Released> {
+        let mut taken = Vec::new();
+        if matches!(self.primary, InputDisposition::Accepted(_)) {
+            taken.push(Released {
+                author,
+                message,
+                retained,
+            });
+        }
+        taken.extend(self.released.iter().cloned());
+        taken
     }
     pub(crate) fn metadata(summary: ReceiveOutcome) -> Self {
         Self::new(InputDisposition::MetadataOnly, summary)

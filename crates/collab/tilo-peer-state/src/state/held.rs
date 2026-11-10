@@ -57,7 +57,7 @@ impl Missed {
 
 /// A held message decided again when its place was needed.
 enum Decided {
-    Admitted(Vec<DocumentAdmission>),
+    Admitted(Vec<DocumentAdmission>, Vec<crate::Released>),
     LetGo(DroppedInput),
 }
 
@@ -145,6 +145,7 @@ impl StatePeer {
         }
         let mut dropped = Vec::new();
         let mut settled = Vec::new();
+        let mut released = Vec::new();
         while full(self.core.pending.len(), self.core.pending_bytes) {
             let Some((author, oldest, replayed)) = self.core.pending.pop_front() else {
                 break;
@@ -152,7 +153,10 @@ impl StatePeer {
             let size = crate::postcard_sink::encoded_len(&oldest, usize::MAX).map_err(err)?;
             self.core.pending_bytes = self.core.pending_bytes.saturating_sub(size);
             match self.decide_held(author, &oldest, replayed, now) {
-                Decided::Admitted(admitted) => settled.extend(admitted),
+                Decided::Admitted(admitted, taken) => {
+                    settled.extend(admitted);
+                    released.extend(taken);
+                }
                 Decided::LetGo(input) => {
                     self.remember_missed(&input);
                     dropped.push(input);
@@ -165,7 +169,42 @@ impl StatePeer {
             .push_back((source, message, retained_replay));
         let mut report = deferred(dropped);
         report.settled.extend(settled);
+        report.released = released;
         Ok(report)
+    }
+    /// Decide every held message again now that the input `into` reports on
+    /// landed: what each takes in is added to `into`, released writes
+    /// included, and one that still waits is held again.
+    pub(super) fn retry_held(
+        &mut self,
+        into: &mut AdmissionReport,
+        now: SystemTime,
+        strict_report: bool,
+    ) -> Result<(), AdmissionError> {
+        let pending = std::mem::take(&mut self.core.pending);
+        self.core.pending_bytes = 0;
+        for (author, message, replayed) in pending {
+            let held = message.clone();
+            match self.receive_with_context(author, message, now, replayed, strict_report) {
+                Ok(applied) => {
+                    into.changed |= applied.changed;
+                    into.metadata_changed |= applied.metadata_changed;
+                    into.rejected = into.rejected.saturating_add(applied.rejected);
+                    into.released
+                        .extend(applied.taken_in(author, held, replayed));
+                    into.settled.extend(applied.settled);
+                    into.summary.dropped.extend(applied.summary.dropped);
+                }
+                Err(error) => {
+                    if self.core.native_cut_publisher.is_some() {
+                        return Err(error);
+                    }
+                    into.rejected = into.rejected.saturating_add(1);
+                }
+            }
+        }
+        into.deferred = !self.core.pending.is_empty();
+        Ok(())
     }
     /// Decide the held `message` again on a copy of this peer, holding
     /// nothing else: admitted there, the copy becomes this peer, keeping what
@@ -193,7 +232,8 @@ impl StatePeer {
                 probe.core.pending = std::mem::take(&mut self.core.pending);
                 probe.core.pending_bytes = self.core.pending_bytes;
                 *self = probe;
-                Decided::Admitted(report.settled)
+                let released = report.taken_in(author, message.clone(), replayed);
+                Decided::Admitted(report.settled, released)
             }
             Err(error) => Decided::LetGo(dropped_input(
                 &author,

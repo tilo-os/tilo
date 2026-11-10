@@ -525,23 +525,25 @@ impl Joined {
         let input = Input::heard(Arc::clone(scope), heard);
         match input.admit() {
             Ok(report) => {
-                let Some(write) = input.app_write(&report) else {
-                    return;
-                };
-                // Another member's write reaches this profile's apps on its route.
-                collab_inbound::deliver(
-                    &self.channels,
-                    &self.fanout,
-                    RemoteDocument {
-                        app_id: write.app_id,
-                        cluster_id: write.cluster_id,
-                        record_id: write.record_id,
-                        author: write.author,
-                        replayed: write.replayed,
-                        envelope: write.envelope,
-                    },
-                    |_| format!("peer@{}", hex::encode(author)),
-                );
+                // Another member's write reaches this profile's apps on its
+                // route, and so does every held write it brought what that
+                // write waited for.
+                for write in input.app_writes(&report) {
+                    let author = write.envelope.author.as_bytes().to_owned();
+                    collab_inbound::deliver(
+                        &self.channels,
+                        &self.fanout,
+                        RemoteDocument {
+                            app_id: write.app_id,
+                            cluster_id: write.cluster_id,
+                            record_id: write.record_id,
+                            author: write.author,
+                            replayed: write.replayed,
+                            envelope: write.envelope,
+                        },
+                        |_| format!("peer@{}", hex::encode(author)),
+                    );
+                }
             }
             Err(reason) => {
                 tracing::debug!(%reason, %workspace, "a joined workspace's frame was not taken in");

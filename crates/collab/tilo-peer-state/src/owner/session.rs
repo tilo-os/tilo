@@ -567,6 +567,29 @@ impl Input {
             took_in(report, self.heard.retained),
         )
     }
+    /// Every app write `report` took in from other devices, for this device's
+    /// apps, in the order the workspace took them: the frame's own
+    /// ([`Self::app_write`]), then each held write it brought what it waited
+    /// for ([`crate::AdmissionReport::released`]). A held write reaches the
+    /// apps only this way: when it came, nothing of it was taken in.
+    #[must_use]
+    pub fn app_writes(&self, report: &crate::AdmissionReport) -> Vec<AppWrite> {
+        let own = self.scope.device.device_public_key;
+        self.app_write(report)
+            .into_iter()
+            .chain(report.released().iter().filter_map(|released| {
+                app_write(
+                    &self.scope.connect.owner,
+                    self.workspace(),
+                    own,
+                    released.author,
+                    &released.message,
+                    released.retained,
+                    true,
+                )
+            }))
+            .collect()
+    }
     /// The author's current standing in the workspace: the workspace's policy, and
     /// the bound on a device not theirs.
     pub fn standing(&self) -> Result<tilo_action_policy::Standing, String> {

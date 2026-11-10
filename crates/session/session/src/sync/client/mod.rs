@@ -1747,13 +1747,18 @@ impl PeerDocuments {
         }
     }
 
-    /// Hand one admitted input's app document to this device's apps on its route.
+    /// Hand one admitted input's app documents to this device's apps on their routes: its own,
+    /// and every held write it brought what that write waited for, which reach the apps no other
+    /// way.
     fn deliver(&self, input: &native_ingress::Input, report: &tilo_peer_state::AdmissionReport) {
-        let Some(write) = input.app_write(report) else {
-            return;
-        };
-        let author = input.author();
-        let workspace = input.workspace().to_string();
+        for write in input.app_writes(report) {
+            self.deliver_write(&input.workspace().to_string(), write);
+        }
+    }
+
+    /// Hand one app write another device made to this device's apps on its route.
+    fn deliver_write(&self, workspace: &str, write: tilo_peer_state::owner::session::AppWrite) {
+        let author = write.envelope.author.as_bytes().to_owned();
         let (app, record) = (write.app_id.clone(), write.record_id.clone());
         tilo_action_broker::collab_inbound::deliver(
             &self.channels,
@@ -1770,7 +1775,7 @@ impl PeerDocuments {
         );
         // What search holds of the record is read again from what the peer wrote into it.
         if let Some(changes) = &self.changes {
-            changes.changed(&workspace, &app, &record);
+            changes.changed(workspace, &app, &record);
         }
         // A read of the record that this device held none of until now waits for it, and one that
         // holds it open reads what landed: a write on its route answers both, and nothing else
@@ -1779,7 +1784,7 @@ impl PeerDocuments {
             arrivals.landed();
         }
         if let Some(state) = self.fanout.app_broker() {
-            state.wake_record_reads(&workspace, &app, &record);
+            state.wake_record_reads(workspace, &app, &record);
         }
     }
 }

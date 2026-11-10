@@ -1418,12 +1418,18 @@ impl ActorState {
                 }
             }
             // A workspace's link brings what its host retains when it starts,
-            // and every frame after it live: nothing is held back to ask for.
+            // and every frame after it live. A write this device let go
+            // unapplied waits in that history: once what it waited for lands,
+            // the link reads the history again from where the workspace stands.
             Some(NetCmd::NativeReplay { ws }) => {
-                tracing::debug!(
-                    ws,
-                    "a workspace's link replays as it starts; nothing to ask"
-                );
+                if let Some(link) = self.native_links.get(&ws) {
+                    link.link.ask_replay();
+                } else {
+                    tracing::debug!(
+                        ws,
+                        "no link of the workspace is up; the next one replays as it starts"
+                    );
+                }
             }
             Some(NetCmd::OpenRecord { ws, channel }) => {
                 tracing::debug!(ws, channel = %hex::encode(channel), "a sealed record's frames come with its workspace's link");
