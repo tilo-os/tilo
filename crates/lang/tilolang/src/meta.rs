@@ -504,6 +504,15 @@ pub struct FieldMeta {
     pub default: Option<serde_json::Value>,
 }
 
+impl FieldMeta {
+    /// Whether the field holds text as it is written: a `Text`, or a `RichText`, which the
+    /// store reads as the text it is written as (search.md, "What a type declares").
+    #[must_use]
+    pub fn holds_text(&self) -> bool {
+        matches!(self.ty.trim(), "Text" | "RichText" | "std.RichText")
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParamMeta {
     pub name: String,

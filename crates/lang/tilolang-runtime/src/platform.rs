@@ -2053,10 +2053,7 @@ impl Core {
             .iter()
             .enumerate()
             .find(|(_, ty)| ty.name == made.name)?;
-        let title = ty
-            .fields
-            .iter()
-            .find(|field| matches!(field.ty.trim(), "Text" | "RichText" | "std.RichText"))?;
+        let title = ty.fields.iter().find(|field| field.holds_text())?;
         let root = action.params.first().and_then(|param| {
             meta.roots
                 .iter()

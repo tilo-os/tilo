@@ -45,6 +45,7 @@ enum Status {
 /// A message in a mailbox.
 type Message {
     subject: Text
+    body: RichText
     from: std.Identifier = std.Identifier("tel:+10")
     unread: Bool = true
     received: Time = Time("2026-01-01T00:00:00Z")
@@ -63,7 +64,7 @@ action seed(b: Board) {
     c.tags.add("work")
     b.tasks.insert(Task(title: "d", effort: 1, done: true, due: Date("2026-11-02"), status: .waiting, contact: std.Identifier("ada@yc.com")))
     b.messages.insert(Message(subject: "fresh from yc", from: std.Identifier("jane@yc.com"), received: Time("2026-10-25T08:00:00Z")))
-    b.messages.insert(Message(subject: "old from yc", from: std.Identifier("jane@yc.com"), received: Time("2026-09-01T08:00:00Z")))
+    b.messages.insert(Message(subject: "old from yc", body: RichText("Lead with the offline editor."), from: std.Identifier("jane@yc.com"), received: Time("2026-09-01T08:00:00Z")))
     b.messages.insert(Message(subject: "read from yc", from: std.Identifier("bo@yc.com"), unread: false, received: Time("2026-10-26T08:00:00Z")))
     b.messages.insert(Message(subject: "fresh from acme", from: std.Identifier("bo@acme.com"), received: Time("2026-10-26T09:00:00Z")))
 }
@@ -238,6 +239,8 @@ view sorted(b: Board, q: Text) {
             ["fresh from acme"]
         );
         assert!(t.shows("typed_mail", Some("nothing says this")).is_empty());
+        // A rich text's words find it too: what the store reads of it, whoever reads it.
+        assert_eq!(t.shows("typed_mail", Some("offline")), ["old from yc"]);
     }
 
     #[test]

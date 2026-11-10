@@ -421,13 +421,13 @@ fn names_type(named: &str, ty: &TypeMeta) -> bool {
 /// text field holds none of it.
 ///
 /// A rich text is compared as the text it is written as ([`crate::store::field_lit_of`]), which
-/// is what a person reads of it in a list and what their search finds it by: a note's body is
-/// found by its words as its title is.
+/// is the same for every reader, since what its references read as is not what it holds: free
+/// text finds a word in any field the store indexes as text (search.md, "What a type declares").
 fn text_pred(words: &[String], ty: &TypeMeta) -> Pred<String> {
     let fields: Vec<&str> = ty
         .fields
         .iter()
-        .filter(|f| matches!(f.ty.trim(), "Text" | "RichText"))
+        .filter(|f| f.holds_text())
         .map(|f| f.id.as_str())
         .collect();
     let each: Vec<Pred<String>> = words

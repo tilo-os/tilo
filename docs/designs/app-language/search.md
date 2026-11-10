@@ -164,9 +164,8 @@ known by (the registry's keywords: "youtube" for an app called Tube) are not par
   resource. The list's filters are the type's filters, and typing narrows the list in place.
 - **In views:** `list(query(Message, in: box, unread: true, sort: .received_newest))`. The
   arguments are the type's filters, type-checked; the result loads what's shown. A view's query
-  compares the type's `Text` fields: a rich text reads differently for each person (its
-  references say what they hold), so searching its words is the session's search, for the person
-  searching, and not a filter a query runs.
+  finds free text in the type's text fields: a rich text compares as the text it is written as,
+  the same for every reader, since what its references read as is not what it holds.
 - **Agents:** `find` takes the same query; `describe(type)` lists its filters. Results carry
   their filter values and a match anchor the agent can cite. Agents only see what their task
   may read.
