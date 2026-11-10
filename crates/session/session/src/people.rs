@@ -1155,17 +1155,11 @@ impl Panel {
             }
         }
         let area = shown.area;
-        let bar = f64::from(tilo_desktop::topbar::topbar_height(theme));
-        let below_bar = Rect::new(area.x0, area.y0 + bar, area.x1, area.y1);
-        // A window's bar, which carries the buttons its end: the banner keeps off every one of
-        // them, as it never stands on a control of the person's own.
-        let title = f64::from(theme.tokens.metrics.bar_height);
-        let window_bars: Vec<Rect> = self
-            .handle
-            .shown_tiles()
-            .into_iter()
-            .map(|(_, window)| Rect::new(window.x0, window.y0, window.x1, window.y0 + title))
-            .collect();
+        let bar_h = f64::from(tilo_desktop::topbar::topbar_height(theme));
+        let below_bar = Rect::new(area.x0, area.y0 + bar_h, area.x1, area.y1);
+        // The banner docks in the top bar, above every window's content: it stands on nothing the
+        // person reads, at any width.
+        let bar = Rect::new(area.x0, area.y0, area.x1, area.y0 + bar_h);
         let kept = self.banner.draw(
             scene,
             transform,
@@ -1173,8 +1167,7 @@ impl Panel {
             theme,
             tilo_desktop::follow_banner::BannerFrame {
                 work_area: below_bar,
-                viewport: below_bar,
-                window_bars: &window_bars,
+                bar,
                 cursor: shown.cursor,
                 motion: theme.motion(),
             },

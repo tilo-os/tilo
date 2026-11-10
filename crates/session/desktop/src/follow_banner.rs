@@ -1,11 +1,12 @@
 //! The "Following Ada" banner: what says, while this person's view tracks someone else's, whose
 //! view it is and how to stop.
-//! A 2 px frame in their colour runs round the work area, and a small bar hangs centred under the
-//! top bar with their face, "Following Ada" and Stop: centred so it never stands on a window's
-//! buttons, which sit at its ends, and clear of any window's bar a host names. When the person's own
-//! input ends it, the bar says "Stopped following" for a moment. The native shell and the browser
-//! paint the same banner; each host keeps its own follow state and tells the banner when following
-//! starts and ends.
+//! A 2 px frame in their colour runs round the work area, and a small bar docks in the top bar
+//! with their face, "Following Ada" and Stop. It stands in the bar's own strip, above every
+//! window's content at every width, so it never covers what the person is reading; its height and
+//! length follow the bar's, so it stays inside it however narrow the display is. When the person's
+//! own input ends it, the bar says "Stopped following" for a moment. The native shell and the
+//! browser paint the same banner; each host keeps its own follow state and tells the banner when
+//! following starts and ends.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -24,15 +25,17 @@ use crate::i18n::{t, t_args};
 /// How long "Stopped following" stays after the person's own input ended following.
 pub const STOPPED_FOR: Duration = Duration::from_secs(1);
 
-/// Where the banner may go this frame, and how it moves.
+/// The height the banner's bar asks for: what a floating card would take, cut down to the top
+/// bar's strip where that is shorter, so the banner stands in the bar and on nothing else.
+const CHIP_HEIGHT: f64 = 40.0;
+
+/// Where the banner goes this frame, and how it moves.
 #[derive(Clone, Copy, Debug)]
-pub struct BannerFrame<'a> {
+pub struct BannerFrame {
     /// The work area the frame runs round: the screen under the top bar.
     pub work_area: Rect,
-    /// The transients' zone the bar hangs in.
-    pub viewport: Rect,
-    /// Window bars the bar keeps off.
-    pub window_bars: &'a [Rect],
+    /// The top bar, where the banner docks: the strip above every window's content.
+    pub bar: Rect,
     pub cursor: Option<Point>,
     pub motion: EffectiveMotion,
 }
@@ -144,7 +147,7 @@ impl FollowBanner {
         transform: Affine,
         text: &mut TextRenderer,
         theme: &Theme,
-        place: BannerFrame<'_>,
+        place: BannerFrame,
         following: Option<Option<RosterRow>>,
     ) -> bool {
         let BannerFrame { cursor, motion, .. } = place;
@@ -203,7 +206,7 @@ impl FollowBanner {
         self.chip = chip;
         self.stop = if is_following { stop } else { Rect::ZERO };
         self.said = (label.clone(), stop_label.clone());
-        // The bar comes down from the top bar it hangs under.
+        // The bar comes down into the top bar it stands in.
         let pose = Appear::pose(
             f64::from(openness),
             Direction::of(is_following),
@@ -233,17 +236,22 @@ impl FollowBanner {
     }
 }
 
-/// Where the bar and its Stop go: centred across the top of the work area, under the bar and below
-/// any window bar it would cover. Their face, `label` and, while following, Stop.
+/// Where the bar and its Stop go: in the top bar's strip, centred, with their face, `label` and,
+/// while following, Stop. It asks for a card's height and gives way to the bar's where the bar is
+/// shorter, so it never reaches past the bar onto a window.
 fn rects(
     text: &mut TextRenderer,
     theme: &Theme,
     (label, stop_label): (&str, &str),
-    place: BannerFrame<'_>,
+    place: BannerFrame,
     following: bool,
 ) -> (Rect, Rect) {
     let spacing = &theme.tokens.spacing;
-    let face = f64::from(theme.tokens.metrics.avatar_inline);
+    let inset = f64::from(spacing.s1);
+    // The height the bar has room for decides their face too: the bar's strip is shorter than a
+    // card on every display.
+    let height = CHIP_HEIGHT.min((place.bar.height() - 2.0 * inset).max(0.0));
+    let face = face_side(theme, height);
     let label_style = theme.text(TextRole::Label).with_weight(TextWeight::Medium);
     let (label_w, _) = text.measure_style(label, None, &label_style);
     let (stop_w, _) = text.measure_style(stop_label, None, &theme.text(TextRole::Body));
@@ -263,51 +271,34 @@ fn rects(
             0.0
         }
         + pad;
-    let chip = centred_slot(
-        place.viewport,
-        place.work_area,
-        (width, 40.0),
-        place.window_bars,
-        f64::from(spacing.s3),
-    );
+    let chip = docked_in(place.bar, (width, height), inset);
+    // Stop keeps the bar's control height where the bar has it, and the banner's own where the bar
+    // is shorter.
+    let stop_h = (chip.height() - 6.0).clamp(16.0, 28.0);
     let stop = Rect::new(
         chip.x1 - pad - stop_width,
-        chip.center().y - 14.0,
+        chip.center().y - stop_h / 2.0,
         chip.x1 - pad,
-        chip.center().y + 14.0,
+        chip.center().y + stop_h / 2.0,
     );
     (chip, stop)
 }
 
-/// Where a bar of `size` hangs: centred across `work_area`, its top `inset` under the higher of the
-/// work area's and `viewport`'s top, and lower still while it would stand on one of `window_bars`.
-/// Centred, its ends never reach a window's buttons.
-fn centred_slot(
-    viewport: Rect,
-    work_area: Rect,
-    size: (f64, f64),
-    window_bars: &[Rect],
-    inset: f64,
-) -> Rect {
+/// Where a bar of `size` docks: inside `bar`, centred, as long and as tall as the bar has room for.
+/// The top bar stands above every window's content, so a bar inside it stands on nothing the person
+/// reads, however narrow the display is.
+fn docked_in(bar: Rect, size: (f64, f64), inset: f64) -> Rect {
     let (width, height) = size;
-    let x0 = work_area.center().x - width / 2.0;
-    let mut y0 = viewport.y0.max(work_area.y0) + inset;
-    // Each shift clears at least one bar, so this ends.
-    for _ in 0..=window_bars.len() {
-        let slot = Rect::new(x0, y0, x0 + width, y0 + height);
-        let below = window_bars
-            .iter()
-            .filter(|bar| bar.intersect(slot).area() > 0.0)
-            .map(|bar| bar.y1 + inset)
-            .fold(None, |most: Option<f64>, y| {
-                Some(most.map_or(y, |m| m.max(y)))
-            });
-        match below {
-            Some(y) if y > y0 => y0 = y,
-            _ => break,
-        }
-    }
-    Rect::new(x0, y0, x0 + width, y0 + height)
+    let room_w = (bar.width() - 2.0 * inset).max(0.0);
+    let room_h = (bar.height() - 2.0 * inset).max(0.0);
+    Rect::from_center_size(bar.center(), (width.min(room_w), height.min(room_h)))
+}
+
+/// Their face in a banner `height` tall: what the strip leaves, never more than the inline avatar.
+fn face_side(theme: &Theme, height: f64) -> f64 {
+    (height - 8.0)
+        .max(12.0)
+        .min(f64::from(theme.tokens.metrics.avatar_inline))
 }
 
 /// The bar's contents: their face, `label` and, while following, Stop.
@@ -322,7 +313,8 @@ fn paint_contents(
     let theme = ctx.theme;
     let spacing = &theme.tokens.spacing;
     let pad = f64::from(spacing.s3);
-    let face = f64::from(theme.tokens.metrics.avatar_inline);
+    // Their face takes what the bar leaves: the bar's own strip is shorter than a card.
+    let face = face_side(theme, chip.height());
     let label_style = theme.text(TextRole::Label).with_weight(TextWeight::Medium);
     let (_, label_h) = ctx.text.measure_style(label, None, &label_style);
     let mut their_face = ui::presence::Face::new(&row.label, &row.id, row.color);
@@ -357,5 +349,94 @@ fn paint_contents(
                 .role(ButtonRole::Plain)
                 .hovered(cursor.is_some_and(|p| stop.contains(p))),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::topbar::topbar_height;
+    use ui::kurbo::Rect;
+
+    /// Where the banner's bar and Stop stand on a display `width` wide, its top bar the height the
+    /// desktop gives it, the desk under it filled from edge to edge by a window's content.
+    fn placed(width: f64, following: bool) -> (Rect, Rect, Rect, Rect, Vec<Rect>) {
+        let theme = Theme::default();
+        let mut text = TextRenderer::new();
+        let bar = Rect::new(0.0, 0.0, width, f64::from(topbar_height(&theme)));
+        let work_area = Rect::new(0.0, bar.y1, width, bar.y1 + 760.0);
+        let label = t_args("follow-label", &[("person", "Claude Code".into())]);
+        let stop_label = t("follow-stop");
+        let (chip, stop) = rects(
+            &mut text,
+            &theme,
+            (&label, &stop_label),
+            BannerFrame {
+                work_area,
+                bar,
+                cursor: None,
+                motion: theme.motion(),
+            },
+            following,
+        );
+        // A desk with a window filling it: its content starts where the bar ends.
+        let windows = vec![Rect::new(0.0, work_area.y0, width, work_area.y1)];
+        (bar, work_area, chip, stop, windows)
+    }
+
+    /// The banner stands in the top bar and on nothing else: no window's content lies under it, at
+    /// a wide display or a phone's, and nothing of it reaches past the bar's ends either.
+    #[test]
+    fn the_pill_stands_on_no_window_content_at_any_width() {
+        for width in [1280.0, 390.0, 360.0] {
+            for following in [true, false] {
+                let (bar, _work_area, chip, stop, windows) = placed(width, following);
+                assert!(
+                    chip.width() > 0.0 && chip.height() > 0.0,
+                    "the banner stands at {width}: {chip:?}"
+                );
+                assert!(
+                    chip.x0 >= bar.x0
+                        && chip.x1 <= bar.x1
+                        && chip.y0 >= bar.y0
+                        && chip.y1 <= bar.y1,
+                    "inside the bar at {width} ({following}): {chip:?} in {bar:?}"
+                );
+                for window in &windows {
+                    assert_eq!(
+                        window.intersect(chip).area(),
+                        0.0,
+                        "covering no content at {width} ({following}): {chip:?} over {window:?}"
+                    );
+                    assert_eq!(
+                        window.intersect(stop).area(),
+                        0.0,
+                        "Stop covering no content at {width} ({following})"
+                    );
+                }
+                if following {
+                    assert!(
+                        stop.x1 <= chip.x1 && stop.x0 >= chip.x0,
+                        "Stop inside the banner at {width}"
+                    );
+                } else {
+                    assert!(stop.is_zero_area(), "no Stop while stopped at {width}");
+                }
+            }
+        }
+    }
+
+    /// A display narrower than the words still keeps the banner inside its bar: it gives way to the
+    /// bar's width rather than reaching past it onto what the person reads.
+    #[test]
+    fn a_bar_narrower_than_its_words_keeps_them_inside_it() {
+        let (bar, _work_area, chip, _stop, windows) = placed(160.0, true);
+        assert!(
+            chip.x0 >= bar.x0 && chip.x1 <= bar.x1,
+            "{chip:?} in {bar:?}"
+        );
+        for window in &windows {
+            assert_eq!(window.intersect(chip).area(), 0.0);
+        }
     }
 }
