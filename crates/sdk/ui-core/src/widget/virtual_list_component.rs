@@ -649,7 +649,10 @@ impl ListModel for DescribedRows {
                 .parent
                 .as_ref()
                 .and_then(|parent| DescribedRows::key_presenting(self, &parent.0));
-            super::TreeRow { parent }
+            super::TreeRow {
+                parent,
+                depth: None,
+            }
         })
     }
 

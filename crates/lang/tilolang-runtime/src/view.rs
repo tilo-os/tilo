@@ -14,10 +14,11 @@ use crate::value::{ResourceRef, Value};
 use crate::view_state::StateKey;
 
 /// Whether nodes of `kind` hold a virtual list: rows built only when the host shows them,
-/// absent from the tree until then. The content's `list`, and the toolkit's `VirtualList`.
+/// absent from the tree until then. The content's `list`, and the toolkit's `VirtualList` and
+/// `TreeView`, whose rows are built the same way and stand in the same rows on the wire.
 #[must_use]
 pub fn is_virtual(kind: &str) -> bool {
-    kind == "list" || kind == "ui.VirtualList"
+    matches!(kind, "list" | "ui.VirtualList" | "ui.TreeView")
 }
 
 /// The property of a `list` in a card: how many of its rows it shows (`tilolang::prims::

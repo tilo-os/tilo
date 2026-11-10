@@ -55,6 +55,18 @@ mod cases {
             note
         }
 
+        /// The notebook's window, its rows built as a host shows them: the tree holds the rows
+        /// the window asked for, and none other.
+        fn shown(&self) -> ViewInstance {
+            self.rt
+                .open_view(
+                    &me(),
+                    &self.app.view("notebook"),
+                    vec![Value::resource(&self.nb)],
+                )
+                .unwrap()
+        }
+
         /// The notebook's window, every row of its tree drawn.
         fn window(&self) -> ViewInstance {
             let mut view = self
@@ -112,6 +124,15 @@ mod cases {
             .into_iter()
             .find(|node| text_prop(node, "label") == title)
             .unwrap_or_else(|| panic!("no node {title} in\n{}", dump(view.tree())))
+    }
+
+    /// Whether the tree node's flag `name` is set: a node says it as a boolean or as one.
+    fn flag(node: &UiNode, name: &str) -> bool {
+        match node.props.get(name) {
+            Some(Value::Bool(flag)) => *flag,
+            Some(Value::Int(number)) => *number != 0,
+            _ => false,
+        }
     }
 
     /// The parent a tree node names, as the tree indents it.
@@ -258,6 +279,57 @@ mod cases {
             "the page edits the note the person chose"
         );
         assert_eq!(n.title_of(&plan), "Q3 plan");
+    }
+
+    /// The tree is a list of rows built as the window shows them: opening a notebook draws no
+    /// row of it, a row is read from the view when the window asks for it — of a thousand notes
+    /// as of three — and what it reads says where the note stands and whether it holds any.
+    #[test]
+    fn the_tree_builds_the_rows_the_window_shows() {
+        let n = Notes::new();
+        let plan = n.titled("Q3 plan");
+        let meetings = n.child_of(&plan);
+        n.call(
+            "retitle",
+            vec![Value::resource(&meetings), Value::text("Meetings")],
+        );
+        n.titled("Notes");
+        let mut view = n.shown();
+        let tree = the_tree(&view);
+        let key = tree.key.clone();
+        assert_eq!(view.list_len(&key), Some(3), "the tree holds three notes");
+        assert!(
+            of_kind(view.tree(), "ui.TreeViewNode").is_empty(),
+            "no row is built before the window shows it: {}",
+            dump(view.tree())
+        );
+
+        // The row the window shows first: the note it reads, how deep it stands, and that it
+        // holds one of its own.
+        let row = view.row(&key, 0).unwrap().expect("shown").clone();
+        let node = of_kind(&row, "ui.TreeViewNode")[0];
+        assert_eq!(text_prop(node, "label"), "Q3 plan");
+        assert_eq!(
+            node.props.get("depth"),
+            Some(&Value::Int(0)),
+            "the top row stands at the top"
+        );
+        assert!(flag(node, "branch"), "the note holds one of its own");
+
+        // The second row stands under it, one deep.
+        let under = view.row(&key, 1).unwrap().expect("shown").clone();
+        let child = of_kind(&under, "ui.TreeViewNode")[0];
+        assert_eq!(text_prop(child, "label"), "Meetings");
+        assert_eq!(
+            child.props.get("depth"),
+            Some(&Value::Int(1)),
+            "the note it holds stands one deep"
+        );
+        assert!(
+            !flag(child, "branch"),
+            "a note with none of its own holds none"
+        );
+        assert_eq!(parent_of_node(child), Some(plan));
     }
 
     /// Dropping a note on a row makes it a note of that one: the tree indents it under the row

@@ -1066,7 +1066,8 @@ fn pane_blocks() -> Vec<Block> {
                         node("Type.md", 3, Some(1), false),
                         node("Roadmap.md", 4, Some(0), false),
                         node("Notes.md", 5, Some(0), false),
-                    ],
+                    ]
+                    .into(),
                     expanded: Some(vec![ResourceId("0".into()), ResourceId("1".into())]),
                     selection: Some(vec![ResourceId("3".into())]),
                     ..TreeViewProps::default()

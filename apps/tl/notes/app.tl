@@ -78,6 +78,16 @@ action move_to(nb: Notebook, moved: Note, parent: Option<Note>, before: Option<N
     }
 }
 
+/// Moves a note to just after `n` and every note under it: the place a drop after a row asks
+/// for, which names the row it lands after rather than the row after that one.
+action move_after(nb: Notebook, moved: Note, n: Note) (label: "Move to") {
+    require not within(nb.notes, n, moved) "A note cannot go inside itself"
+    moved.parent = n.parent
+    if let last = last_below(nb.notes, n) {
+        nb.notes.move(moved, after: last)
+    } else { nb.notes.move(moved, after: n) }
+}
+
 /// Copies a note, with every note under it, just after the one it copies.
 action duplicate(nb: Notebook, n: Note) -> Note (
     icon: .copy,
@@ -291,10 +301,13 @@ view notebook(nb: Notebook) {
         nb,
         nb.notes,
         parent: n -> n.parent,
+        depth: n -> .some(depth_of(n)),
+        branch: n -> holds_any(nb, n),
         label: n -> meta(n).title,
         place: (moved, parent, before) -> move_to(nb, moved, parent, before),
+        place_after: (moved, x) -> move_after(nb, moved, x),
         add: add_child,
-        path: n -> trail(nb.notes, n),
+        path: n -> trail(n),
         doc: note_page,
     ) { n ->
         // A note with no title yet is called what its type calls it, as in every list of it.
@@ -584,17 +597,26 @@ fn page_ref(folder: Text, path: Text) -> Option<Text> {
 }
 
 /// The note that ends the run `t` begins: the last note under it, or `t` itself.
-fn last_below(items: List<Note>, t: Note) -> Option<Note> {
-    items.filter(x -> x == t or items.ancestors(x, .parent).any(a -> a == t)).last()
+fn last_below(notes: List<Note>, t: Note) -> Option<Note> {
+    .some(notes.descendants(t, .parent).last() ?? t)
+}
+
+/// How deep `n` stands in the notebook: the notes it is under, counted.
+fn depth_of(n: Note) -> Int {
+    if let p = n.parent { 1 + depth_of(p) } else { 0 }
+}
+
+/// Whether `n` holds notes of its own, which the tree shows folded away or open.
+fn holds_any(nb: Notebook, n: Note) -> Bool {
+    nb.notes.filter(x -> x.parent == n).count() > 0
 }
 
 /// Where `n` stands, as the bar over its page names it: the notes it is under, root first.
-fn trail(items: List<Note>, n: Note) -> Text {
-    items
-        .take(items.index_of(n) ?? 0)
-        .filter(a -> items.ancestors(n, .parent).contains(a))
-        .map(a -> a.title)
-        .join(" / ")
+fn trail(n: Note) -> Text {
+    if let p = n.parent {
+        let over = trail(p)
+        if over == "" { p.title } else { "{over} / {p.title}" }
+    } else { "" }
 }
 
 /// A notebook a week into a project: two branches of notes, one of them three deep, a few of

@@ -187,6 +187,7 @@ where
                 .get(index)
                 .and_then(|key| parents.get(key))
                 .cloned(),
+            depth: None,
         })
     }
 }

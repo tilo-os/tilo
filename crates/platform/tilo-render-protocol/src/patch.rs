@@ -47,12 +47,13 @@ pub mod validate;
 /// The version both ends name. A newer end must still read this one's messages.
 pub const VERSION: u16 = 1;
 
-/// Whether a node of `kind` is a virtual list on the wire: a `ui.VirtualList`, whose rows the
-/// app sends apart from the tree ([`ToUi::Rows`]) as the list shows them. A `list` in a view's
-/// content is drawn whole (a card's is its preview), so its rows travel in the tree.
+/// Whether a node of `kind` is a virtual list on the wire: a `ui.VirtualList` or a
+/// `ui.TreeView`, whose rows the app sends apart from the tree ([`ToUi::Rows`]) as the list
+/// shows them. A `list` in a view's content is drawn whole (a card's is its preview), so its
+/// rows travel in the tree.
 #[must_use]
 pub fn is_virtual_list(kind: &str) -> bool {
-    kind == "ui.VirtualList"
+    matches!(kind, "ui.VirtualList" | "ui.TreeView")
 }
 
 /// One window's two views: the app's root, and the view of the resource `open(r)` (or a

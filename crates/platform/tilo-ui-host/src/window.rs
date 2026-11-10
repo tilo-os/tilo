@@ -761,28 +761,29 @@ impl AppWindow {
 
     /// Keep rows for every virtual list of the views, and drop the rows of lists gone.
     fn track_rows(&self) {
-        let mut wanted: Vec<(String, Lane, String, &'static str)> = Vec::new();
+        let mut wanted: Vec<(String, Lane, String, &'static str, String)> = Vec::new();
         for (view, lane, prefix) in [
             (self.root.as_ref(), Lane::Root, ""),
             (self.detail.as_ref(), Lane::Detail, DETAIL),
         ] {
             let Some(view) = view else { continue };
-            for list in virtual_lists(&view.tree) {
-                wanted.push((format!("{prefix}{list}"), lane, list, prefix));
+            for (list, item) in virtual_lists(&view.tree) {
+                wanted.push((format!("{prefix}{list}"), lane, list, prefix, item.clone()));
             }
         }
         let mut registry = self.rows.borrow_mut();
         registry.retain(|key, rows| {
             wanted
                 .iter()
-                .any(|(want, lane, list, _)| want == key && rows.borrow().reads(*lane, list))
+                .any(|(want, lane, list, _, _)| want == key && rows.borrow().reads(*lane, list))
         });
-        for (key, lane, list, prefix) in wanted {
+        for (key, lane, list, prefix, item) in wanted {
             registry.entry(key).or_insert_with(|| {
                 let reader = Rc::new(RefCell::new(Reconciler::sharing(&self.reconciler.borrow())));
                 Rc::new(RefCell::new(RemoteRows::new(
                     lane,
                     &list,
+                    &item,
                     prefix,
                     reader,
                     Rc::clone(&self.bound),
@@ -2175,11 +2176,17 @@ fn field_after_enter(tree: &UiNode, key: &str) -> Option<String> {
         .map(|node| node.key.clone())
 }
 
-/// The virtual lists of a view's tree, by key.
-fn virtual_lists(tree: &UiNode) -> Vec<String> {
-    fn walk(node: &UiNode, out: &mut Vec<String>) {
+/// The virtual lists of a view's tree, by key, with the kind of the component each holds its
+/// rows as (`ui.ListItem`, a tree's `ui.TreeViewNode`).
+fn virtual_lists(tree: &UiNode) -> Vec<(String, String)> {
+    fn walk(node: &UiNode, out: &mut Vec<(String, String)>) {
         if crate::is_virtual(&node.kind) {
-            out.push(node.key.clone());
+            let item = if node.kind == "ui.TreeView" {
+                crate::adapter::kind("TreeViewNode")
+            } else {
+                crate::adapter::kind("ListItem")
+            };
+            out.push((node.key.clone(), item));
         }
         for child in &node.children {
             walk(child, out);

@@ -86,7 +86,8 @@ fn build_tree() -> Box<dyn Widget> {
                 node("main.rs", 3, Some(2), false),
                 node("lib.rs", 4, Some(2), false),
                 node("README.md", 5, Some(1), false),
-            ],
+            ]
+            .into(),
             expanded: Some(vec![ResourceId("1".into()), ResourceId("2".into())]),
             ..TreeViewProps::default()
         },

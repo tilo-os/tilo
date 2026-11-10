@@ -20,7 +20,7 @@ use tilo_render_protocol::patch::RowChange;
 use ui::component::{RowSource, Source};
 use ui::widget::virtual_list::ListModelChange;
 
-use crate::adapter::{NodeSource, description_of, kind};
+use crate::adapter::{NodeSource, description_of};
 use crate::reconcile::Reconciler;
 use crate::shell::prefixed;
 use crate::{Lane, UiNode};
@@ -34,6 +34,8 @@ pub struct RemoteRows {
     lane: Lane,
     /// The key of the list node in its view.
     list: String,
+    /// The kind of the component a row is: the list's item, or a tree's node.
+    item: String,
     /// What the keys of the view's nodes carry in the window's tree (the detail's carry one).
     prefix: String,
     /// Reads the rows as the window's other components are read, reporting to the same place.
@@ -74,6 +76,7 @@ impl RemoteRows {
     pub fn new(
         lane: Lane,
         list: &str,
+        item: &str,
         prefix: &str,
         reconciler: Rc<RefCell<Reconciler>>,
         bound: BoundValues,
@@ -81,6 +84,7 @@ impl RemoteRows {
         Self {
             lane,
             list: list.to_owned(),
+            item: item.to_owned(),
             prefix: prefix.to_owned(),
             reconciler,
             bound,
@@ -362,8 +366,7 @@ impl RowSource for RemoteRows {
             let Some(row) = self.rows.get(key) else {
                 return Ok(false);
             };
-            let item_kind = kind("ListItem");
-            let Some(item) = find_kind(row, &item_kind) else {
+            let Some(item) = find_kind(row, &self.item) else {
                 return Ok(false);
             };
             prefixed(item, &self.prefix)
@@ -408,11 +411,19 @@ impl RowSource for RemoteRows {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter::kind;
     use crate::{Binding, Value};
 
     fn rows() -> RemoteRows {
         let reconciler = Rc::new(RefCell::new(Reconciler::new(Rc::default())));
-        RemoteRows::new(Lane::Root, "list", "", reconciler, Rc::default())
+        RemoteRows::new(
+            Lane::Root,
+            "list",
+            &kind("ListItem"),
+            "",
+            reconciler,
+            Rc::default(),
+        )
     }
 
     #[test]
@@ -457,6 +468,7 @@ mod tests {
         let mut rows = RemoteRows::new(
             Lane::Root,
             "list",
+            &kind("ListItem"),
             "",
             Rc::clone(&reconciler),
             Rc::clone(&bound),

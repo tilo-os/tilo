@@ -170,7 +170,10 @@ fn gate(app: &str, records: &[Record], misses: &mut Vec<String>) {
                 ));
             }
         }
-    } else if matches!(app, "todo" | "notes") {
+    } else if matches!(app, "todo") {
+        // A window whose sidebar is a list of places is asked for one. The notebook's sidebar is
+        // its notes as a tree: what a person filters by, the pinned ones, stands over the tree
+        // as a filtered tree, and its query is read as the window opens.
         misses.push(format!("{app}: no filter was chosen"));
     }
     let nodes = |size: &str| find(records, "open", size).and_then(|r| r.meta.get("nodes"));

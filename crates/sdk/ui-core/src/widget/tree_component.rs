@@ -9,11 +9,21 @@
 //! it stands, and the selection follows what the view says. Folding, keyboard navigation,
 //! focus, type-ahead, the row's menu and its drag all come from the list, so a tree here
 //! behaves as any other list of rows does.
+//!
+//! The rows are virtual: a host renders them as the list shows them
+//! ([`crate::component::RowSource`]), so a notebook of ten thousand notes costs the rows on
+//! screen. What the list needs of a row it does not hold — whether it opens, how deep it
+//! stands — a row says itself ([`TreeViewNodeProps::branch`], [`TreeViewNodeProps::depth`]), so
+//! the window it shows needs no row outside it.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::ops::Deref;
 use std::rc::Rc;
 
-use crate::component::{Component, Described, Event, ResourceId, Value};
+use crate::component::{
+    Accepts, Component, Described, Event, ResourceId, SharedRows, SlotType, Source, Value,
+};
 use crate::icons::Icon;
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::selection::KeySelection;
@@ -86,6 +96,11 @@ pub struct TreeViewNodeProps {
     pub label: String,
     /// The resource of the node it stands under; without one it is a top-level node.
     pub parent: Option<ResourceId>,
+    /// How deep it stands, when the view says it: 0 at the top level. Given, the tree indents
+    /// the row by it rather than by the rows over it, so a row whose parent stands off screen
+    /// keeps its place, and a tree whose rows the host renders as it shows them indents rows it
+    /// never built.
+    pub depth: Option<i64>,
     /// The node the view shows just over this one under the same parent: the place the actions
     /// offered on it take when one reads a place (`above`). None for a first child.
     pub above: Option<ResourceId>,
@@ -109,6 +124,12 @@ pub struct TreeViewNodeProps {
     /// the keyboard: carries the node that moved.
     #[component(event(value = ResourceId))]
     pub into: Event,
+    /// A node was dropped just after this one and all its subtasks, or moved there by the
+    /// keyboard: carries the node that moved. The view places it after this node's own, which
+    /// only the view can name: what stands after them is a row the tree shows, and the rows it
+    /// does not show are none of its business.
+    #[component(event(value = ResourceId))]
+    pub after: Event,
     /// This node's checkbox was pressed: the owner toggles what the box stands for.
     #[component(event)]
     pub check: Event,
@@ -126,6 +147,79 @@ pub struct TreeViewNodeProps {
 crate::component::part_slot!(TreeViewNodeProps);
 crate::component::part_slot!(TreeViewRowProps);
 crate::component::part_slot!(ButtonProps);
+
+impl TreeViewRows {
+    /// The nodes the view gave whole, as it wrote them.
+    #[must_use]
+    pub fn given(nodes: Vec<TreeViewNodeProps>) -> Self {
+        Self {
+            nodes: Held::Given(nodes),
+        }
+    }
+
+    /// How many nodes the tree holds, rendered or not: what a host says it renders of them all.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        match &self.nodes {
+            Held::Nothing => 0,
+            Held::Given(nodes) => nodes.len(),
+            Held::Rendered(rows) => rows.try_borrow().map_or(0, |rows| rows.len()),
+        }
+    }
+
+    /// Whether the tree holds no node.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl From<Vec<TreeViewNodeProps>> for TreeViewRows {
+    fn from(nodes: Vec<TreeViewNodeProps>) -> Self {
+        Self::given(nodes)
+    }
+}
+
+/// The nodes of a tree: the ones the view gives whole, or the rows a host renders as the list
+/// shows them. Either way the list reads them one at a time, as it mounts the rows it shows.
+#[derive(Default)]
+pub struct TreeViewRows {
+    nodes: Held,
+}
+
+/// Where the nodes of a tree come from.
+#[derive(Default)]
+enum Held {
+    /// None: an empty tree.
+    #[default]
+    Nothing,
+    /// The nodes the view gave whole, as it wrote them.
+    Given(Vec<TreeViewNodeProps>),
+    /// The nodes a host renders as the list shows them, one row at a time.
+    Rendered(SharedRows),
+}
+
+impl SlotType for TreeViewRows {
+    const MANY: bool = true;
+
+    fn accepts() -> Accepts {
+        Accepts::Component(TreeViewNodeProps::NAME.into())
+    }
+
+    fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String> {
+        if let Some(rows) = source.rows(slot) {
+            self.nodes = Held::Rendered(rows);
+            return Ok(());
+        }
+        let mut given = Vec::new();
+        source.components(slot, &mut |child| {
+            given.push(TreeViewNodeProps::from_source(child).map_err(|error| error.to_string())?);
+            Ok(())
+        })?;
+        self.nodes = Held::Given(given);
+        Ok(())
+    }
+}
 
 /// A tree of nodes: a file explorer, a project's files, the layers of a drawing, a book's
 /// pages. Each node is the resource it stands for; opening a branch shows the nodes under it,
@@ -160,7 +254,7 @@ pub struct TreeViewProps {
     pub tab_indents: bool,
     /// The nodes, in order, parents before their children.
     #[component(slot(default))]
-    pub nodes: Vec<TreeViewNodeProps>,
+    pub nodes: TreeViewRows,
     /// The nodes open now, by the resource each stands for. Given, it is where the view says
     /// the tree is; without it the tree keeps what a person opened.
     #[component(state)]
@@ -189,9 +283,10 @@ pub struct DescribedTreeView {
     /// The widget id the tree was made with, kept so a change builds it again under the same
     /// id.
     key: String,
-    list: VirtualList<Nodes>,
-    /// What the rows are: every node, its parent and its row's parts, read once.
-    nodes: Nodes,
+    list: VirtualList<TreeRows>,
+    /// Where the rows are: the nodes the view gave whole, or the rows a host renders as the
+    /// list shows them.
+    rows: TreeRows,
     /// What the list works out of the rows as it mounts them, and what the person folded.
     marks: Rc<TreeMarks<String>>,
 }
@@ -200,18 +295,27 @@ pub struct DescribedTreeView {
 const TOP_LEVEL: &str = "";
 
 /// One row of a tree, its parts read once.
+#[derive(Clone)]
 struct Node {
     key: String,
+    /// The resource it stands for, which its events carry.
+    item: ResourceId,
     label: String,
     /// The row it stands under, as the list sees it: the tree's own row over a top-level node,
     /// or none where the tree hides that row.
     parent: Option<String>,
+    /// How deep it stands, when the view says it: the list indents by it rather than by the
+    /// rows over it.
+    depth: Option<u32>,
+    /// Whether it opens to show nodes under it, whether or not any of them stands in the list.
+    branch: bool,
     row: Option<TreeViewRowProps>,
     progress: Option<String>,
     menu: Vec<Command>,
     toolbar: Vec<ButtonProps>,
     drop: Event,
     into: Event,
+    after: Event,
     check: Event,
 }
 
@@ -243,8 +347,6 @@ struct Inner {
     /// The resource each node stands for, by its key, and the key each resource stands at.
     items: HashMap<String, ResourceId>,
     keys: HashMap<String, String>,
-    /// Whether the tree's own name is a row of the tree.
-    root_shown: bool,
     /// A node was dropped at the end of the top level.
     root_drop: Event,
     /// Whether any node offers a menu, which the list offers of its rows only then.
@@ -257,6 +359,7 @@ struct Part {
     item: ResourceId,
     label: String,
     parent: Option<String>,
+    depth: Option<u32>,
     branch: bool,
     row: Option<TreeViewRowProps>,
     progress: Option<String>,
@@ -264,10 +367,12 @@ struct Part {
     toolbar: Vec<ButtonProps>,
     drop: Event,
     into: Event,
+    after: Event,
     check: Event,
 }
 
 /// One command of a node's context menu, kept so the menu can be offered each time it opens.
+#[derive(Clone)]
 struct Command {
     label: String,
     icon: Option<Icon>,
@@ -339,6 +444,26 @@ impl Command {
     }
 }
 
+/// One node as the view wrote it, its parts kept as the list reads them.
+fn part_of(node: TreeViewNodeProps) -> Part {
+    Part {
+        key: node.item.0.clone(),
+        item: node.item,
+        label: node.label,
+        parent: node.parent.map(|parent| parent.0),
+        depth: node.depth.and_then(|depth| u32::try_from(depth).ok()),
+        branch: node.branch,
+        row: node.row,
+        progress: node.progress,
+        menu: node.menu,
+        toolbar: node.toolbar,
+        drop: node.drop,
+        into: node.into,
+        after: node.after,
+        check: node.check,
+    }
+}
+
 impl Nodes {
     /// The rows of `props`: the tree's own name over the nodes when it shows one, then every
     /// node, each naming the row it stands under.
@@ -350,20 +475,7 @@ impl Nodes {
     ) -> Self {
         let mut parts = Vec::with_capacity(props.len());
         for node in props {
-            parts.push(Part {
-                key: node.item.0.clone(),
-                item: node.item,
-                label: node.label,
-                parent: node.parent.map(|parent| parent.0),
-                branch: node.branch,
-                row: node.row,
-                progress: node.progress,
-                menu: node.menu,
-                toolbar: node.toolbar,
-                drop: node.drop,
-                into: node.into,
-                check: node.check,
-            });
+            parts.push(part_of(node));
         }
         let keys: HashSet<String> = parts.iter().map(|part| part.key.clone()).collect();
         let has_menu = parts.iter().any(|part| !part.menu.is_empty());
@@ -380,14 +492,18 @@ impl Nodes {
             branches.insert(TOP_LEVEL.to_owned());
             nodes.push(Node {
                 key: TOP_LEVEL.to_owned(),
+                item: ResourceId(TOP_LEVEL.to_owned()),
                 label: name.unwrap_or_default(),
                 parent: None,
+                depth: Some(0),
+                branch: true,
                 row: None,
                 progress: None,
                 menu: Vec::new(),
                 toolbar: Vec::new(),
                 drop: Event::None,
                 into: Event::None,
+                after: Event::None,
                 check: Event::None,
             });
         }
@@ -428,18 +544,22 @@ impl Nodes {
             index.insert(part.key.clone(), nodes.len());
             nodes.push(Node {
                 key: part.key.clone(),
+                item: part.item.clone(),
                 label: part.label,
                 parent: if root_shown {
                     Some(parent.unwrap_or_else(|| TOP_LEVEL.to_owned()))
                 } else {
                     parent
                 },
+                depth: part.depth,
+                branch: part.branch,
                 row: part.row,
                 progress: part.progress,
                 menu: part.menu.into_iter().map(Command::of).collect(),
                 toolbar: part.toolbar,
                 drop: part.drop,
                 into: part.into,
+                after: part.after,
                 check: part.check,
             });
             item_keys.insert(part.item.0.clone(), part.key.clone());
@@ -456,7 +576,12 @@ impl Nodes {
             }
             with_children.insert(under.clone());
         }
-        branches.extend(with_children);
+        for (key, branch) in with_children.iter().map(|key| (key.clone(), true)) {
+            branches.insert(key.clone());
+            if let Some(node) = index.get(&key).and_then(|at| nodes.get_mut(*at)) {
+                node.branch |= branch;
+            }
+        }
         Self {
             inner: Rc::new(Inner {
                 nodes,
@@ -465,7 +590,6 @@ impl Nodes {
                 branches,
                 items,
                 keys: item_keys,
-                root_shown,
                 root_drop,
                 has_menu,
             }),
@@ -501,13 +625,6 @@ impl Nodes {
             .map_or(&[], Vec::as_slice)
     }
 
-    /// The row a node stands under, among the nodes the owner names: none at the top level.
-    fn declared_parent(&self, key: &str) -> Option<String> {
-        self.node(key)
-            .and_then(|node| node.parent.clone())
-            .filter(|parent| parent != TOP_LEVEL)
-    }
-
     /// Which rows start folded, given the rows the view says it holds open: every branch but
     /// those, and never the tree's own row, which holds the whole tree.
     fn folded_at_first(&self, expanded: &[ResourceId]) -> Vec<String> {
@@ -520,96 +637,6 @@ impl Nodes {
             .filter(|key| key.as_str() != TOP_LEVEL && !open.contains(*key))
             .cloned()
             .collect()
-    }
-
-    /// Whether `source` may land at `target`: not on itself, not inside its own subtree, and
-    /// inside only a row that takes subtasks.
-    fn can_reorder(&self, source: &String, target: &DropTarget<String>) -> bool {
-        // The tree's own row stands for nothing to move.
-        if target.key == *source || !self.items.contains_key(source) {
-            return false;
-        }
-        if matches!(target.placement, DropPlacement::Inside) && !self.branches.contains(&target.key)
-        {
-            return false;
-        }
-        let mut at = match target.placement {
-            DropPlacement::Inside => Some(target.key.clone()),
-            DropPlacement::Before | DropPlacement::After => self.declared_parent(&target.key),
-        };
-        while let Some(key) = at {
-            if key == *source {
-                return false;
-            }
-            at = self.declared_parent(&key);
-        }
-        true
-    }
-
-    /// Where a dragged or keyed move lands, reported by the node it lands at: the node it goes
-    /// before, the node it goes inside of, or the end of the top level. Returns whether the
-    /// owner was told.
-    fn report(&self, dropped: &ReorderDrop<String>) -> bool {
-        let Some(value) = self.value_of(&dropped.source) else {
-            return false;
-        };
-        // The tree's own row, or a row the list does not hold: the top level's end.
-        let target = if (self.root_shown && dropped.target.key == TOP_LEVEL)
-            || !self.index.contains_key(&dropped.target.key)
-        {
-            None
-        } else {
-            Some(&dropped.target)
-        };
-        let (parent, next) = match target {
-            Some(target) => match target.placement {
-                DropPlacement::Inside => (
-                    Some(target.key.clone()),
-                    self.siblings_of(Some(&target.key)).first().cloned(),
-                ),
-                DropPlacement::Before => {
-                    (self.declared_parent(&target.key), Some(target.key.clone()))
-                }
-                DropPlacement::After => {
-                    let parent = self.declared_parent(&target.key);
-                    let siblings = self.siblings_of(parent.as_deref());
-                    let next = siblings
-                        .iter()
-                        .position(|sibling| sibling == &target.key)
-                        .and_then(|at| at.checked_add(1))
-                        .and_then(|at| siblings.get(at))
-                        .cloned();
-                    (parent, next)
-                }
-            },
-            None => (None, None),
-        };
-        if let Some(next) = next {
-            let Some(event) = self.node(&next).map(|node| node.drop.clone()) else {
-                return false;
-            };
-            event.fire(Some(value));
-            return true;
-        }
-        if let Some(parent) = parent {
-            let Some(event) = self.node(&parent).map(|node| node.into.clone()) else {
-                return false;
-            };
-            event.fire(Some(value));
-            return true;
-        }
-        if self.root_drop.is_none() {
-            return false;
-        }
-        self.root_drop.fire(Some(value));
-        true
-    }
-
-    /// The commands of the row's menu, as the list offers them.
-    fn menu_of(&self, key: Option<&String>) -> Vec<MenuItem> {
-        key.and_then(|key| self.node(key))
-            .map(|node| node.menu.iter().map(Command::entry).collect())
-            .unwrap_or_default()
     }
 }
 
@@ -631,6 +658,7 @@ impl ListModel for Nodes {
     fn tree_at(&self, index: usize) -> Option<TreeRow<Self::Key>> {
         Some(TreeRow {
             parent: self.nodes.get(index)?.parent.clone(),
+            depth: self.nodes.get(index)?.depth,
         })
     }
 
@@ -659,6 +687,459 @@ impl ListModel for Nodes {
     }
 }
 
+/// The rows of a tree, as its list reads them: the nodes the view gave whole, or the rows a
+/// host renders as the list shows them.
+#[derive(Clone)]
+struct TreeRows {
+    rows: Rows,
+}
+
+/// Where a tree's rows come from.
+#[derive(Clone)]
+enum Rows {
+    /// The nodes the view gave whole, read once with what the list asks of them.
+    Given(Nodes),
+    /// The nodes a host renders as the list shows them, read as the list mounts each row.
+    Rendered(Rc<Remote>),
+}
+
+/// The rows of a tree a host renders as the list shows them: a notebook of ten thousand notes
+/// costs the rows on screen, and none stands in the list until it is shown.
+struct Remote {
+    source: SharedRows,
+    /// The rows read so far, by key: a row the host has not rendered reads as none.
+    read: RefCell<HashMap<String, Option<Rc<Node>>>>,
+    /// What the list works out of the rows, for the rows the view says stand closed.
+    marks: RefCell<Option<Rc<TreeMarks<String>>>>,
+    /// The rows the view says it holds open, when it says which: a row read as a branch and not
+    /// among them folds what stands under it, as the rows a view gives whole do.
+    open: Option<Rc<HashSet<String>>>,
+    /// A node was dropped at the end of the top level.
+    root_drop: Event,
+    /// Whether any row offers a menu, which the list offers of its rows only then.
+    menu: std::cell::Cell<bool>,
+}
+
+impl Remote {
+    /// The row `key`, read from its host when it is rendered, and kept.
+    fn node(&self, key: &str) -> Option<Rc<Node>> {
+        if let Some(read) = self.read.borrow().get(key) {
+            return read.clone();
+        }
+        let read = self.read_row(key);
+        if let Some(node) = &read {
+            if !node.menu.is_empty() {
+                self.menu.set(true);
+            }
+            self.fold_if_told(node);
+        }
+        self.read.borrow_mut().insert(key.to_owned(), read.clone());
+        read
+    }
+
+    /// The row `key` as its host renders it, or none while it is not rendered.
+    fn read_row(&self, key: &str) -> Option<Rc<Node>> {
+        let mut read: Option<Part> = None;
+        let mut take = |source: &mut dyn Source| {
+            let props =
+                TreeViewNodeProps::from_source(source).map_err(|error| error.to_string())?;
+            read = Some(part_of(props));
+            Ok(())
+        };
+        let shown = self
+            .source
+            .try_borrow_mut()
+            .ok()?
+            .read(key, &mut take)
+            .ok()?;
+        let part = shown.then_some(read).flatten()?;
+        // A row stands under the row of the item it names, when the list holds one.
+        let parent = part
+            .parent
+            .as_ref()
+            .and_then(|parent| self.parent_key(parent));
+        Some(Rc::new(Node {
+            key: key.to_owned(),
+            item: part.item,
+            label: part.label,
+            parent,
+            depth: part.depth,
+            branch: part.branch,
+            row: part.row,
+            progress: part.progress,
+            menu: part.menu.into_iter().map(Command::of).collect(),
+            toolbar: part.toolbar,
+            drop: part.drop,
+            into: part.into,
+            after: part.after,
+            check: part.check,
+        }))
+    }
+
+    /// The key of the row showing the resource `parent`, when the list holds one.
+    fn parent_key(&self, parent: &str) -> Option<String> {
+        self.source.try_borrow().ok()?.key_presenting(parent)
+    }
+
+    /// Fold what stands under a row the view says stands closed, once it is read: the view's
+    /// word is the tree's, and the person's folding stands after it.
+    fn fold_if_told(&self, node: &Node) {
+        let Some(open) = &self.open else {
+            return;
+        };
+        let marks = self.marks.borrow();
+        let Some(marks) = marks.as_ref() else {
+            return;
+        };
+        if node.branch && !open.contains(&node.key) {
+            marks.fold(&node.key, true);
+        }
+    }
+
+    /// The rows read so far changed: those named are read again as the list mounts them.
+    fn forget(&self, keys: &[String]) {
+        let mut read = self.read.borrow_mut();
+        for key in keys {
+            read.remove(key);
+        }
+    }
+
+    /// Every row is read again.
+    fn clear(&self) {
+        self.read.borrow_mut().clear();
+        self.menu.set(true);
+    }
+}
+
+/// A row of a tree, held where the tree gave it or read from the host for this look.
+enum NodeRef<'a> {
+    Given(&'a Node),
+    Rendered(Rc<Node>),
+}
+
+impl Deref for NodeRef<'_> {
+    type Target = Node;
+
+    fn deref(&self) -> &Node {
+        match self {
+            Self::Given(node) => node,
+            Self::Rendered(node) => node,
+        }
+    }
+}
+
+impl TreeRows {
+    /// The rows of `nodes`: the tree's own name over them when it shows one, or the rows the
+    /// host renders as the list shows them, with the rows the view says stand open — `expanded`,
+    /// mapped to the rows of the items it names by `keyed`.
+    fn of(
+        nodes: TreeViewRows,
+        hide_root: bool,
+        name: Option<String>,
+        expanded: Option<&[ResourceId]>,
+        root_drop: Event,
+        marks: &Rc<TreeMarks<String>>,
+    ) -> Self {
+        let given = |props: Vec<TreeViewNodeProps>, root_drop: Event| {
+            let nodes = Nodes::of(props, hide_root, name.clone(), root_drop);
+            if let Some(expanded) = expanded {
+                marks.restore_folded(nodes.folded_at_first(expanded));
+            }
+            Rows::Given(nodes)
+        };
+        let rows = match nodes.nodes {
+            Held::Nothing => given(Vec::new(), root_drop),
+            Held::Given(props) => given(props, root_drop),
+            Held::Rendered(source) => Rows::Rendered(Rc::new(Remote {
+                source,
+                read: RefCell::default(),
+                marks: RefCell::new(Some(Rc::clone(marks))),
+                open: expanded.map(|expanded| {
+                    Rc::new(
+                        expanded
+                            .iter()
+                            .map(|id| id.0.clone())
+                            .collect::<HashSet<String>>(),
+                    )
+                }),
+                root_drop,
+                menu: std::cell::Cell::new(true),
+            })),
+        };
+        Self { rows }
+    }
+
+    /// The row `key`, or none when the tree does not hold it.
+    fn node(&self, key: &str) -> Option<NodeRef<'_>> {
+        match &self.rows {
+            Rows::Given(nodes) => nodes.node(key).map(NodeRef::Given),
+            Rows::Rendered(remote) => remote.node(key).map(NodeRef::Rendered),
+        }
+    }
+
+    /// The key of the row standing for the resource `id`, when the tree holds one.
+    fn key_of_item(&self, id: &str) -> Option<String> {
+        match &self.rows {
+            Rows::Given(nodes) => nodes.key_of_item(id),
+            Rows::Rendered(remote) => remote.parent_key(id),
+        }
+    }
+
+    /// Whether the tree holds the row `key`.
+    fn holds(&self, key: &str) -> bool {
+        match &self.rows {
+            Rows::Given(nodes) => nodes.index.contains_key(key),
+            Rows::Rendered(remote) => remote
+                .source
+                .try_borrow()
+                .is_ok_and(|rows| rows.index_of(key).is_some()),
+        }
+    }
+
+    /// The resource the row at `key` stands for, as an event carries it.
+    fn value_of(&self, key: &str) -> Option<Value> {
+        match &self.rows {
+            Rows::Given(nodes) => nodes.value_of(key),
+            Rows::Rendered(remote) => remote
+                .node(key)
+                .map(|node| Value::Resource(node.item.0.clone())),
+        }
+    }
+
+    /// Whether any row offers a menu, which the list offers of its rows only then.
+    fn has_menu(&self) -> bool {
+        match &self.rows {
+            Rows::Given(nodes) => nodes.has_menu,
+            Rows::Rendered(remote) => remote.menu.get(),
+        }
+    }
+
+    /// The commands of the row's menu, as the list offers them.
+    fn menu_of(&self, key: Option<&String>) -> Vec<MenuItem> {
+        key.and_then(|key| self.node(key))
+            .map(|node| node.menu.iter().map(Command::entry).collect())
+            .unwrap_or_default()
+    }
+
+    /// The row a node stands under: none at the top level.
+    fn declared_parent(&self, key: &str) -> Option<String> {
+        self.node(key)
+            .and_then(|node| node.parent.clone())
+            .filter(|parent| parent != TOP_LEVEL)
+    }
+
+    /// The row standing under `key` first, as the tree shows it.
+    fn first_child(&self, key: &str) -> Option<String> {
+        match &self.rows {
+            Rows::Given(nodes) => nodes.siblings_of(Some(key)).first().cloned(),
+            Rows::Rendered(remote) => {
+                let rows = remote.source.try_borrow().ok()?;
+                let at = rows.index_of(key)?.checked_add(1)?;
+                let child = rows.key_at(at)?;
+                drop(rows);
+                (self.declared_parent(&child)? == key).then_some(child)
+            }
+        }
+    }
+
+    /// Whether `source` may land at `target`: not on itself, not inside its own subtree, and
+    /// inside only a row that takes subtasks.
+    fn can_reorder(&self, source: &String, target: &DropTarget<String>) -> bool {
+        // The tree's own row stands for nothing to move.
+        if target.key == *source || self.value_of(source).is_none() {
+            return false;
+        }
+        if matches!(target.placement, DropPlacement::Inside)
+            && !self.node(&target.key).is_some_and(|node| node.branch)
+        {
+            return false;
+        }
+        let mut at = match target.placement {
+            DropPlacement::Inside => Some(target.key.clone()),
+            DropPlacement::Before | DropPlacement::After => self.declared_parent(&target.key),
+        };
+        while let Some(key) = at {
+            if key == *source {
+                return false;
+            }
+            at = self.declared_parent(&key);
+        }
+        true
+    }
+
+    /// Where a dragged or keyed move lands, reported by the row it lands at: that row's `drop`
+    /// when it lands before it, its `into` when it lands inside it, its `after` when it lands
+    /// after it and its own, or the tree's `drop` at the end of the top level. Returns whether
+    /// the owner was told.
+    fn report(&self, dropped: &ReorderDrop<String>) -> bool {
+        let Some(value) = self.value_of(&dropped.source) else {
+            return false;
+        };
+        // The tree's own row, or a row the list does not hold: the top level's end.
+        let target = if dropped.target.key == TOP_LEVEL || !self.holds(&dropped.target.key) {
+            None
+        } else {
+            Some(&dropped.target)
+        };
+        let event = match target {
+            Some(target) => match target.placement {
+                // Inside a row lands at the head of its own, before its first child.
+                DropPlacement::Inside => match self.first_child(&target.key) {
+                    Some(first) => self.node(&first).map(|node| node.drop.clone()),
+                    None => self.node(&target.key).map(|node| node.into.clone()),
+                },
+                DropPlacement::Before => self.node(&target.key).map(|node| node.drop.clone()),
+                DropPlacement::After => self.node(&target.key).map(|node| node.after.clone()),
+            },
+            None => Some(self.root_drop().clone()),
+        };
+        match event {
+            Some(event) if !event.is_none() => {
+                event.fire(Some(value));
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The node dropped at the end of the top level.
+    fn root_drop(&self) -> &Event {
+        match &self.rows {
+            Rows::Given(nodes) => &nodes.root_drop,
+            Rows::Rendered(remote) => &remote.root_drop,
+        }
+    }
+}
+
+impl ListModel for TreeRows {
+    type Key = String;
+
+    fn len(&self) -> usize {
+        match &self.rows {
+            Rows::Given(nodes) => nodes.len(),
+            Rows::Rendered(remote) => remote.source.try_borrow().map_or(0, |rows| rows.len()),
+        }
+    }
+
+    fn key_at(&self, index: usize) -> Option<Self::Key> {
+        match &self.rows {
+            Rows::Given(nodes) => nodes.key_at(index),
+            Rows::Rendered(remote) => remote.source.try_borrow().ok()?.key_at(index),
+        }
+    }
+
+    fn index_of(&self, key: &Self::Key) -> Option<usize> {
+        match &self.rows {
+            Rows::Given(nodes) => nodes.index_of(key),
+            Rows::Rendered(remote) => remote.source.try_borrow().ok()?.index_of(key),
+        }
+    }
+
+    fn request_range(&mut self, range: std::ops::Range<usize>, open: Option<&String>) {
+        if let Rows::Rendered(remote) = &self.rows
+            && let Ok(mut rows) = remote.source.try_borrow_mut()
+        {
+            rows.request_range(range, open.cloned());
+        }
+    }
+
+    fn row_state(&self, index: usize) -> crate::arriving::Arrival<(), &'static str> {
+        if let Rows::Rendered(remote) = &self.rows
+            && let Ok(rows) = remote.source.try_borrow()
+            && let Some(key) = rows.key_at(index)
+            && !rows.rendered(&key)
+        {
+            return crate::arriving::Arrival::local();
+        }
+        crate::arriving::Arrival::Ready(())
+    }
+
+    fn poll_changes(&mut self) -> Vec<crate::widget::virtual_list::ListModelChange<String>> {
+        let Rows::Rendered(remote) = &self.rows else {
+            return Vec::new();
+        };
+        let Ok(mut rows) = remote.source.try_borrow_mut() else {
+            return Vec::new();
+        };
+        let changes = rows.take_changes();
+        for change in &changes {
+            match change {
+                crate::widget::virtual_list::ListModelChange::RowsChanged { keys } => {
+                    remote.forget(keys);
+                }
+                crate::widget::virtual_list::ListModelChange::Reset => remote.clear(),
+                _ => {}
+            }
+        }
+        changes
+    }
+
+    fn needs_poll(&self) -> bool {
+        match &self.rows {
+            Rows::Given(_) => false,
+            Rows::Rendered(remote) => remote
+                .source
+                .try_borrow()
+                .is_ok_and(|rows| rows.has_changes()),
+        }
+    }
+
+    fn tree_at(&self, index: usize) -> Option<TreeRow<Self::Key>> {
+        match &self.rows {
+            Rows::Given(nodes) => Some(TreeRow {
+                parent: nodes.nodes.get(index)?.parent.clone(),
+                depth: nodes.nodes.get(index)?.depth,
+            }),
+            Rows::Rendered(remote) => {
+                let key = remote.source.try_borrow().ok()?.key_at(index)?;
+                let node = remote.node(&key)?;
+                Some(TreeRow {
+                    parent: node.parent.clone(),
+                    depth: node.depth,
+                })
+            }
+        }
+    }
+
+    fn accepts_children(&self, index: usize) -> bool {
+        self.has_subtasks(index)
+    }
+
+    fn has_subtasks(&self, index: usize) -> bool {
+        match &self.rows {
+            Rows::Given(nodes) => nodes.has_subtasks(index),
+            Rows::Rendered(remote) => {
+                let Ok(rows) = remote.source.try_borrow() else {
+                    return false;
+                };
+                let Some(key) = rows.key_at(index) else {
+                    return false;
+                };
+                drop(rows);
+                remote.node(&key).is_some_and(|node| node.branch)
+            }
+        }
+    }
+
+    fn discloses(&self) -> bool {
+        true
+    }
+
+    fn label(&self, index: usize) -> Option<String> {
+        match &self.rows {
+            Rows::Given(nodes) => nodes.label(index),
+            Rows::Rendered(remote) => {
+                let key = remote.source.try_borrow().ok()?.key_at(index)?;
+                Some(remote.node(&key)?.label.clone())
+            }
+        }
+    }
+
+    fn key_presenting(&self, id: &str) -> Option<Self::Key> {
+        self.key_of_item(id)
+    }
+}
+
 /// How far the branch under `node` got, said only while it is folded: open, its own rows say
 /// it. The row's own wording stands over the count its node states.
 fn progress_of(node: &Node, folded: bool) -> Option<String> {
@@ -672,12 +1153,12 @@ fn progress_of(node: &Node, folded: bool) -> Option<String> {
 /// The row of the node at `key`: its list row, indented to where it stands, with what its row
 /// part says of it.
 fn row_of(
-    nodes: &Nodes,
+    rows: &TreeRows,
     key: &str,
     feel: crate::motion::Feel,
     marks: &TreeMarks<String>,
 ) -> Element {
-    let Some(node) = nodes.node(key) else {
+    let Some(node) = rows.node(key) else {
         return Box::new(ListRow::new(key.to_owned(), ""));
     };
     let key_owned = key.to_owned();
@@ -706,7 +1187,7 @@ fn row_of(
         if let Some(text) = &props.trailing {
             row = row.value(text.clone());
         }
-        if let Some(progress) = progress_of(node, folded) {
+        if let Some(progress) = progress_of(&node, folded) {
             row = row.meta(progress);
         }
         if let Some(text) = &props.description {
@@ -735,8 +1216,17 @@ fn row_of(
 impl DescribedTreeView {
     /// The rows the tree was built from.
     #[cfg(test)]
+    fn rows(&self) -> &TreeRows {
+        &self.rows
+    }
+
+    /// The nodes the tree was given whole: what its rows are, read once.
+    #[cfg(test)]
     fn nodes(&self) -> &Nodes {
-        &self.nodes
+        match &self.rows.rows {
+            Rows::Given(nodes) => nodes,
+            Rows::Rendered(_) => panic!("a tree whose host renders its rows holds none"),
+        }
     }
 
     /// Whether the node at `key` is open.
@@ -749,7 +1239,7 @@ impl DescribedTreeView {
     /// name on screen.
     #[cfg(test)]
     pub(crate) fn row_key(&self, item: &str) -> Option<String> {
-        self.nodes.key_of_item(item)
+        self.rows.key_of_item(item)
     }
 
     /// The rows selected, by key.
@@ -761,7 +1251,7 @@ impl DescribedTreeView {
     /// The resource the node at `key` stands for.
     #[cfg(test)]
     pub(crate) fn item_of(&self, key: &str) -> Option<&ResourceId> {
-        self.nodes.resource_of(key)
+        self.nodes().resource_of(key)
     }
 
     /// The tree of `props`: its rows, and what it reports of them.
@@ -784,20 +1274,24 @@ impl DescribedTreeView {
             drop,
         } = props;
         let feel = motion.unwrap_or(crate::motion::Feel::Standard);
-        let nodes = Nodes::of(nodes, hide_root, name.clone(), drop);
         // What the rows of the tree are: the list fills it as it mounts them, and reads it as
         // it builds each one.
         let marks = Rc::new(TreeMarks::<String>::default());
         // A view that says which rows it holds open is where the tree is, every build; one that
         // says nothing leaves what a person folded to the list.
-        if let Some(open) = expanded.as_deref() {
-            marks.restore_folded(nodes.folded_at_first(open));
-        }
+        let rows = TreeRows::of(
+            nodes,
+            hide_root,
+            name.clone(),
+            expanded.as_deref(),
+            drop,
+            &marks,
+        );
         let row_marks = Rc::clone(&marks);
         let mut list = VirtualList::with_selection_delegate(
-            nodes.clone(),
+            rows.clone(),
             TREE_ROW_HEIGHT,
-            move |nodes, _, key, _| row_of(nodes, key, feel, &row_marks),
+            move |rows, _, key, _| row_of(rows, key, feel, &row_marks),
         )
         .with_tree(Rc::clone(&marks))
         .with_id(key)
@@ -824,8 +1318,8 @@ impl DescribedTreeView {
         }
         // Each event carries the resource its row shows.
         if !select.is_none() || !activate.is_none() {
-            let reporting = nodes.clone();
-            let picking = nodes.clone();
+            let reporting = rows.clone();
+            let picking = rows.clone();
             let select_single = single_click;
             let selected = select.clone();
             list = list
@@ -847,20 +1341,20 @@ impl DescribedTreeView {
                     activate.fire(value);
                 });
         }
-        if nodes.has_menu {
-            let menus = nodes.clone();
+        if rows.has_menu() {
+            let menus = rows.clone();
             list = list.with_context_menu(
-                move |_: &Nodes, key: Option<&String>| menus.menu_of(key),
+                move |_: &TreeRows, key: Option<&String>| menus.menu_of(key),
                 |_, _| {},
             );
         }
         if reorder {
-            let moves = nodes.clone();
+            let moves = rows.clone();
             list = list.with_reorder(
-                |nodes: &Nodes, source: &String, target: &DropTarget<String>| {
-                    nodes.can_reorder(source, target)
+                |rows: &TreeRows, source: &String, target: &DropTarget<String>| {
+                    rows.can_reorder(source, target)
                 },
-                move |_: &mut Nodes, dropped: ReorderDrop<String>| {
+                move |_: &mut TreeRows, dropped: ReorderDrop<String>| {
                     // The owner moves it; the rows show what the model then says.
                     moves.report(&dropped);
                     false
@@ -873,7 +1367,7 @@ impl DescribedTreeView {
         if let Some(selected) = &selection {
             let mut chosen = KeySelection::new();
             for id in selected {
-                if let Some(key) = nodes.key_of_item(&id.0) {
+                if let Some(key) = rows.key_of_item(&id.0) {
                     chosen.toggle(key);
                 }
             }
@@ -882,7 +1376,7 @@ impl DescribedTreeView {
         Self {
             key: key.to_owned(),
             list,
-            nodes,
+            rows,
             marks,
         }
     }
@@ -915,14 +1409,14 @@ impl Described for DescribedTreeView {
         if keep_selected {
             let mut chosen = KeySelection::new();
             for key in selected {
-                if self.nodes.index.contains_key(&key) {
+                if self.rows.holds(&key) {
                     chosen.toggle(key);
                 }
             }
             *self.list.selection_mut() = chosen;
         }
         if let Some(key) = focused {
-            if self.nodes.index.contains_key(&key) {
+            if self.rows.holds(&key) {
                 self.list.focus_row(key);
             }
         }
@@ -976,7 +1470,8 @@ pub(crate) fn items_tree(id: &str, name: Option<&str>, open: bool) -> DescribedT
             nodes: vec![
                 node("Root", "1", None, true),
                 node("Child", "2", Some("1"), false),
-            ],
+            ]
+            .into(),
             expanded: Some(if open {
                 vec![ResourceId("1".into())]
             } else {
@@ -1005,6 +1500,7 @@ mod tests {
             branch,
             drop: Event::View(Intent::new(queue, key, "drop")),
             into: Event::View(Intent::new(queue, key, "into")),
+            after: Event::View(Intent::new(queue, key, "after")),
             check: Event::View(Intent::new(queue, key, "check")),
             ..TreeViewNodeProps::default()
         }
@@ -1019,7 +1515,7 @@ mod tests {
             "tree",
             TreeViewProps {
                 hide_root,
-                nodes,
+                nodes: nodes.into(),
                 drop: root_drop,
                 ..TreeViewProps::default()
             },
@@ -1067,7 +1563,8 @@ mod tests {
                 nodes: vec![
                     node("a", None, false, &queue),
                     node("b", None, false, &queue),
-                ],
+                ]
+                .into(),
                 ..TreeViewProps::default()
             },
         );
@@ -1094,7 +1591,8 @@ mod tests {
                 nodes: vec![
                     node("a", None, false, &queue),
                     node("b", None, false, &queue),
-                ],
+                ]
+                .into(),
                 ..TreeViewProps::default()
             },
         );
@@ -1111,8 +1609,8 @@ mod tests {
         );
     }
 
-    /// A move is reported by the node it lands at: the next sibling it goes before, the node
-    /// it goes inside of, or the tree's own end.
+    /// A move is reported by the row it lands at: the row it goes before, the row it goes
+    /// inside of, the row it goes after — with all of that row's own — or the tree's own end.
     #[test]
     fn a_move_is_reported_by_the_node_it_lands_at() {
         let queue = crate::Intents::default();
@@ -1125,7 +1623,7 @@ mod tests {
             true,
             Event::View(Intent::new(&queue, "tree", "drop")),
         );
-        let nodes = tree.nodes();
+        let nodes = tree.rows();
         let moved = |key: &str| Some(Value::Resource(key.to_owned()));
 
         assert!(nodes.report(&ReorderDrop {
@@ -1166,6 +1664,21 @@ mod tests {
             [Fired {
                 key: "c".into(),
                 event: "into".into(),
+                value: moved("c"),
+            }]
+        );
+
+        // After a row: the row itself is told, so the owner places it past that row's own
+        // without the tree having to find the row after them, which may be one it never built.
+        assert!(nodes.report(&ReorderDrop {
+            source: "c".to_owned(),
+            target: DropTarget::new("a".to_owned(), DropPlacement::After),
+        }));
+        assert_eq!(
+            queue.take(),
+            [Fired {
+                key: "a".into(),
+                event: "after".into(),
                 value: moved("c"),
             }]
         );

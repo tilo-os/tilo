@@ -126,11 +126,15 @@ impl Chevrons {
 }
 
 /// What a row is in a tree of rows: the row of the item it is a subtask of, when that item is
-/// one of the list's rows.
+/// one of the list's rows, and how deep it stands when the model says it itself.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TreeRow<K> {
     /// The row of the item this row is a subtask of, when that item is a row of the list.
     pub parent: Option<K>,
+    /// How deep it stands, when the model says: the list indents the row by it rather than by
+    /// the rows over it, so a row whose parent stands off screen — a row the host renders as it
+    /// is shown, and one of a window deep in a long tree — keeps its place.
+    pub depth: Option<u32>,
 }
 
 /// What a tree list works out of its rows, for the rows it builds: how deep each stands, which
@@ -391,7 +395,9 @@ impl<M: ListModel> VirtualList<M> {
         let mut branches: Vec<M::Key> = Vec::new();
         let mut nested: Vec<M::Key> = Vec::new();
         for key in &keys {
-            let parent = self.tree_facts(key).and_then(|facts| facts.parent);
+            let facts = self.tree_facts(key);
+            let parent = facts.as_ref().and_then(|facts| facts.parent.clone());
+            let stated = facts.as_ref().and_then(|facts| facts.depth);
             let at = parent
                 .as_ref()
                 .and_then(|parent| over.iter().rposition(|(row, _, _)| row == parent));
@@ -404,6 +410,14 @@ impl<M: ListModel> VirtualList<M> {
                 nested.push(key.clone());
                 over.truncate(at + 1);
                 (depth + 1, hidden || self.folded(&parent))
+            } else if let Some(depth) = stated {
+                // The model says how deep it stands: a row whose parent the window does not
+                // hold keeps the place the model gives it, and the row it names still opens.
+                if let Some(parent) = parent.clone() {
+                    branches.push(parent);
+                }
+                over.clear();
+                (depth, false)
             } else {
                 // The list holds its order, not a tree: a row whose parent the sort put
                 // elsewhere stands on its own, and names the parent instead.
@@ -499,6 +513,9 @@ impl<M: ListModel> VirtualList<M> {
     /// How many rows under its top row `key` stands, read from what the model says of its
     /// parents rather than from the rows in view: a move reaches rows the window never built.
     pub(super) fn depth_of(&mut self, key: &M::Key) -> u32 {
+        if let Some(depth) = self.tree_facts(key).and_then(|facts| facts.depth) {
+            return depth;
+        }
         let mut depth = 0;
         let mut cursor = key.clone();
         while depth < TREE_DEPTH_GUARD {

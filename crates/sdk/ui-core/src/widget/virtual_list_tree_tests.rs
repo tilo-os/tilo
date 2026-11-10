@@ -40,7 +40,10 @@ impl ListModel for Nested {
             .get(&key)
             .copied()
             .filter(|parent| self.keys.contains(parent));
-        Some(TreeRow { parent })
+        Some(TreeRow {
+            parent,
+            depth: None,
+        })
     }
 }
 
@@ -269,7 +272,10 @@ impl ListModel for Movable {
             .get(&key)
             .copied()
             .filter(|parent| self.keys.contains(parent));
-        Some(TreeRow { parent })
+        Some(TreeRow {
+            parent,
+            depth: None,
+        })
     }
 
     fn accepts_children(&self, index: usize) -> bool {
@@ -844,7 +850,10 @@ impl ListModel for Headed {
             .get(&key)
             .copied()
             .filter(|parent| self.keys.contains(parent));
-        Some(TreeRow { parent })
+        Some(TreeRow {
+            parent,
+            depth: None,
+        })
     }
 
     fn group_at(&self, index: usize) -> Option<RowGroup> {
@@ -1039,6 +1048,7 @@ impl ListModel for OpenableTree {
         let key = self.key_at(index)?;
         Some(TreeRow {
             parent: self.parents.get(&key).copied(),
+            depth: None,
         })
     }
 

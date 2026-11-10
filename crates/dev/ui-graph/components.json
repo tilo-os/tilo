@@ -7284,6 +7284,13 @@
           }
         },
         {
+          "name": "depth",
+          "doc": "How deep it stands, when the view says it: 0 at the top level. Given, the tree indents the row by it rather than by the rows over it, so a row whose parent stands off screen keeps its place, and a tree whose rows the host renders as it shows them indents rows it never built.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
           "name": "above",
           "doc": "The node the view shows just over this one under the same parent: the place the actions offered on it take when one reads a place (`above`). None for a first child.",
           "type": {
@@ -7342,6 +7349,11 @@
         {
           "name": "into",
           "doc": "A node was dropped inside this one, at the end of its children, or indented here by the keyboard: carries the node that moved.",
+          "value": "resource"
+        },
+        {
+          "name": "after",
+          "doc": "A node was dropped just after this one and all its subtasks, or moved there by the keyboard: carries the node that moved. The view places it after this node's own, which only the view can name: what stands after them is a row the tree shows, and the rows it does not show are none of its business.",
           "value": "resource"
         },
         {

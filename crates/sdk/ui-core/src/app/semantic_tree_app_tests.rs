@@ -1614,7 +1614,8 @@ fn items_tree(id: &str, open: bool) -> Box<dyn Widget> {
         nodes: vec![
             node("Root", "1", None, true),
             node("Child", "2", Some("1"), false),
-        ],
+        ]
+        .into(),
         expanded: Some(if open {
             vec![crate::component::ResourceId("1".into())]
         } else {

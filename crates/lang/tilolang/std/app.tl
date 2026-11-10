@@ -294,23 +294,33 @@ view outline<T>(
     }
 }
 
-/// Items as the tree of a window's sidebar: `items`, each under the item it names as its
-/// parent (`parent`), its row the one `row` draws and its words `label`. The row chosen is the
-/// one the window has open (`opened`), and the tree keeps which branches a person opened. A move
-/// — a drag before, after or inside a row, `Tab` and `Shift-Tab`, `Alt-Up` and `Alt-Down` — is
-/// reported with the item it lands under and the item it lands before, and `place` puts it in
-/// the one place they name: `(moved, .none, .none)` is the end of the top level,
-/// `(moved, x, .none)` the end of `x`'s own, and `(moved, .none, x)` where `x` stands. `add`
-/// draws the button a row shows over its trailing corner while it is hovered or holds focus, so
-/// the tree makes what a person needs beside where it will stand. The tree is named `name` for a
-/// reader, and a tree taller than the room it is given scrolls itself (`fill`).
+/// Items as the tree of a window's sidebar: `items` — the collection itself, so the tree asks
+/// the store for the rows it shows and for the place of each — each under the item it names as
+/// its parent (`parent`), its row the one `row` draws and its words `label`. A row says how deep
+/// it stands (`depth`) and whether it holds any (`branch`), so the rows a person does not see
+/// cost nothing: the tree builds the rows the window shows, of ten notes as of ten thousand.
+///
+/// The row chosen is the one the window has open (`opened`), and the tree keeps which branches a
+/// person opened. A move — a drag before, after or inside a row, `Tab` and `Shift-Tab`, `Alt-Up`
+/// and `Alt-Down` — is reported with the item it lands under and the item it lands before, and
+/// `place` puts it in the one place they name: `(moved, .none, .none)` is the end of the top
+/// level, `(moved, x, .none)` the end of `x`'s own, and `(moved, .none, x)` where `x` stands.
+/// A move after a row and everything under it is `place_after(moved, x)`: what stands after
+/// them is a row the tree may not have built.
+///
+/// `add` draws the button a row shows over its trailing corner while it is hovered or holds
+/// focus, so the tree makes what a person needs beside where it will stand. The tree is named
+/// `name` for a reader, and a tree taller than the room it is given scrolls itself (`fill`).
 template view tree_rows<T>(
     name: Text,
-    items: List<T>,
+    items: Collection<T>,
     opened: State<Option<T>>,
     parent: (T) -> Option<T>,
+    depth: (T) -> Option<Int>,
+    branch: (T) -> Bool,
     label: (T) -> Text,
     place: (T, Option<T>, Option<T>) -> Action,
+    place_after: (T, T) -> Action,
     add: (T) -> View,
     fill: Bool = true,
     row: (T) -> View,
@@ -329,15 +339,24 @@ template view tree_rows<T>(
         on activate(x: T): set(opened, x)
         on drop(moved: T): place(moved, .none, .none)
         for x in items {
-            // The node just above this one under the same parent, as the tree shows them: the
-            // place the actions offered on it get. None for a first child.
-            let above = items
-                .take(items.index_of(x) ?? 0)
-                .filter(y -> parent(y) == parent(x))
-                .last()
-            ui.TreeViewNode(x, label(x), parent: parent(x), above: above) {
+            // The row over this one, when it is a row of the same parent: the place the actions
+            // offered on it get. None for a first child, and for a row the one over it does not
+            // stand beside — both cost the row it reads, never the rows before it.
+            let p = parent(x)
+            let above: Option<T> = if let over = items.previous(x) {
+                if parent(over) == p { .some(over) } else { .none }
+            } else { .none }
+            ui.TreeViewNode(
+                x,
+                label(x),
+                parent: p,
+                depth: depth(x),
+                branch: branch(x),
+                above: above,
+            ) {
                 on drop(moved: T): place(moved, .none, x)
                 on into(moved: T): place(moved, x, .none)
+                on after(moved: T): place_after(moved, x)
                 toolbar: {
                     add(x)
                 }
@@ -361,11 +380,14 @@ template view tree_rows<T>(
 /// says `empty` in its sidebar, and one with nothing open says so beside it.
 template view tree<R, T>(
     of: R,
-    items: List<T>,
+    items: Collection<T>,
     opened: State<Option<T>> = open_item,
     parent: (T) -> Option<T>,
+    depth: (T) -> Option<Int>,
+    branch: (T) -> Bool,
     label: (T) -> Text,
     place: (T, Option<T>, Option<T>) -> Action,
+    place_after: (T, T) -> Action,
     add: (T) -> View,
     path: (T) -> Text,
     above: List<Filter<T>> = [],
@@ -396,8 +418,11 @@ template view tree<R, T>(
                             held,
                             opened,
                             parent,
+                            depth,
+                            branch,
                             label,
                             place,
+                            place_after,
                             add,
                             fill: false,
                         ) { x ->
@@ -408,7 +433,18 @@ template view tree<R, T>(
                 if items.is_empty() {
                     ui.EmptyState(empty, icon: meta(of).icon)
                 } else {
-                    std.tree_rows(meta(of).title, items, opened, parent, label, place, add) { x ->
+                    std.tree_rows(
+                        meta(of).title,
+                        items,
+                        opened,
+                        parent,
+                        depth,
+                        branch,
+                        label,
+                        place,
+                        place_after,
+                        add,
+                    ) { x ->
                         row(x)
                     }
                 }
