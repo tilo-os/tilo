@@ -30,7 +30,7 @@ use tilo_service::Services;
 use tilo_session_power::{BATTERY, Battery};
 
 use crate::i18n::{t, t_args};
-use crate::keys::{MEDIA, NETWORK, SOUND};
+use crate::platform::keys::{MEDIA, NETWORK, SOUND};
 
 /// A charge at or below this percentage is low while the pack drains: the power policy's own
 /// default threshold, which the bar draws as a warning.

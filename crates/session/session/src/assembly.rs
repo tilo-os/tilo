@@ -99,11 +99,9 @@ pub(crate) struct Shared {
     /// action host.
     pub(crate) doors: tilo_session_core::door::Doors,
     /// Published actions keys and gestures asked for, waiting for the door.
-    #[cfg(target_os = "linux")]
     pub(crate) invocations: crate::keys::Invocations,
     /// Chords pressed that run a saved shortcut, waiting for the automation
     /// host.
-    #[cfg(target_os = "linux")]
     pub(crate) triggered: crate::keys::PressedChords,
     /// What the session's own resources asked of the compositor.
     #[cfg(target_os = "linux")]
@@ -114,7 +112,7 @@ pub(crate) struct Shared {
     /// The readouts of keys whose action a device took and has not answered
     /// yet.
     #[cfg(target_os = "linux")]
-    pub(crate) waiting: RefCell<Vec<crate::keys::PendingReadout>>,
+    pub(crate) waiting: RefCell<Vec<crate::platform::keys::PendingReadout>>,
     /// What the services last published of the machine: its connection, its
     /// sound and capture uses, its charge and what plays. The bar's status
     /// cluster, the lock screen and the desk read it.

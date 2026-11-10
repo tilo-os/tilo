@@ -313,3 +313,59 @@ pub(crate) fn switcher_view(
         app_scope: overlays.scope() == crate::overlays::SwitcherScope::App,
     })
 }
+
+/// Bring the window the switcher's walk reached to the front, and close the switcher. The walk
+/// counts from the window in front, over the windows its scope crosses, wrapping.
+pub(crate) fn commit_switcher(handle: &DesktopHandle, walk: &crate::overlays::Overlays) {
+    let windows = handle.read(|tree| windows(tree, handle));
+    let reached = reaching(walk, &windows).and_then(|at| windows.get(at));
+    // ignored-failure: a reached window whose key is no tab focuses nothing
+    if let Some(tab) = reached.and_then(|window| window.key.parse::<u64>().ok()) {
+        handle.focus_tab(tab);
+    }
+    walk.forget_walk();
+    walk.show(crate::overlays::Overlay::Rest);
+}
+
+/// Open the switcher on the window before the one in front, or walk it `steps` windows on. A
+/// walk over fewer than two windows has nowhere to go, and opens nothing: Alt+Tab with one
+/// window open does what it always has, which is nothing.
+pub(crate) fn walk_switcher(
+    handle: &DesktopHandle,
+    walk: &crate::overlays::Overlays,
+    scope: Option<&str>,
+    steps: i64,
+) {
+    let scope = scope
+        .and_then(crate::overlays::SwitcherScope::named)
+        .unwrap_or_default();
+    // Opening the walk is one window on, as Alt+Tab goes to the window before the one in front
+    // whichever way its press names.
+    let steps = if steps == 0 { 1 } else { steps };
+    if !walk.is_up() {
+        let windows = handle.read(|tree| windows(tree, handle));
+        let (walked, _) = walked(&windows, scope);
+        if walked.len() < 2 {
+            return;
+        }
+    }
+    walk.walk(Some(scope.name()), steps);
+}
+
+/// Choose the window `at` in the walk's order: `0` the first of them, `-1` the last. Home,
+/// End and a card under the pointer choose by place, without crossing the ones between.
+pub(crate) fn select_switcher(handle: &DesktopHandle, walk: &crate::overlays::Overlays, at: i64) {
+    if !walk.is_up() {
+        return;
+    }
+    let windows = handle.read(|tree| windows(tree, handle));
+    let (walked, front) = walked(&windows, walk.scope());
+    let count = i64::try_from(walked.len()).unwrap_or(1).max(1);
+    let at = if at < 0 {
+        count.saturating_add(at)
+    } else {
+        at.min(count.saturating_sub(1))
+    };
+    let front = i64::try_from(front.unwrap_or(0)).unwrap_or(0);
+    walk.select(at.saturating_sub(front));
+}

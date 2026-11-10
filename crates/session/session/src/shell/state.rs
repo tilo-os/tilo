@@ -112,8 +112,7 @@ kind = "outside"
 params = [{ name = "row", required = true, type = "text" }]
 "#;
 
-/// What stands over the windows, and in what order, in the session's catalogue: the surface stack.
-pub const OVERLAYS: &str = "desktop:overlays";
+use tilo_session_core::shell::OVERLAYS;
 
 /// What kind of resource [`OVERLAYS`] is.
 pub const OVERLAYS_KIND: &str = "desktop.overlays";

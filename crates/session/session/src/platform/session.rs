@@ -37,12 +37,13 @@ pub use crate::desk_migration::shell::shell_state_path;
 pub use crate::devices::RESOURCE as DEVICES_RESOURCE;
 pub use crate::engine::Person;
 pub use crate::env::SessionEnvironment;
-pub use crate::keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA, MICROPHONE, QUICK_SETTINGS};
+pub use crate::keys::{Invocation, QUICK_SETTINGS};
 pub use crate::launches::Launches;
 pub use crate::lists::{AppLists, Lists};
 pub use crate::notifications::RESOURCE as NOTIFICATIONS_RESOURCE;
 use crate::options::start_collaboration;
 pub use crate::options::{ActionPlane, Machine, Options, no_session_actions};
+pub use crate::platform::keys::{KEYBOARD_BACKLIGHT, MEDIA, MICROPHONE};
 pub use crate::records::Records;
 pub use crate::rotation::Accelerometer;
 pub use crate::run::{Backend, Reach};
@@ -1262,7 +1263,8 @@ impl Session {
         let directory_store = Rc::new(crate::directory::Store::default());
         let clipboard = Rc::new(crate::clipboard::Clipboard::new(options.wake.handle()));
         let boot_join = crate::boot_join::BootJoin::at_boot(&directory_store, &handle);
-        let community = crate::community::Community::for_site(crate::platform::directory::community_site());
+        let community =
+            crate::community::Community::for_site(crate::platform::directory::community_site());
         // The person's mentions in the workspaces' records: told through those notifications, kept
         // in the records' store, and opened through this session's own door to the apps.
         let mentions = records_store.clone().map(|store| {

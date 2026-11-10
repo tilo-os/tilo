@@ -20,7 +20,7 @@ use tilo_service::{Service, Started, decode, offer, reading};
 use tilo_session_core::shell::DESK_RESOURCE;
 use tilo_session_core::shell::{self, DeskReading};
 
-use crate::desk_windows::{reaching, walked, windows};
+use crate::desk_windows::{reaching, windows};
 use crate::i18n::t;
 use crate::notifications::NoticeSignals;
 
@@ -676,59 +676,6 @@ fn strip_in_front(tree: &DesktopTree) -> String {
 }
 
 impl Desk {
-    /// Bring the window the switcher's walk reached to the front, and close the switcher. The walk
-    /// counts from the window in front, over the windows its scope crosses, wrapping.
-    fn commit_switcher(&self) {
-        let windows = self.handle.read(|tree| windows(tree, &self.handle));
-        let reached = reaching(&self.surfaces.overlays, &windows).and_then(|at| windows.get(at));
-        // ignored-failure: a reached window whose key is no tab focuses nothing
-        if let Some(tab) = reached.and_then(|window| window.key.parse::<u64>().ok()) {
-            self.handle.focus_tab(tab);
-        }
-        self.surfaces.overlays.forget_walk();
-        self.surfaces.overlays.show(crate::overlays::Overlay::Rest);
-    }
-
-    /// Open the switcher on the window before the one in front, or walk it `steps` windows on. A
-    /// walk over fewer than two windows has nowhere to go, and opens nothing: Alt+Tab with one
-    /// window open does what it always has, which is nothing.
-    fn walk_switcher(&self, scope: Option<&str>, steps: i64) {
-        let scope = scope
-            .and_then(crate::overlays::SwitcherScope::named)
-            .unwrap_or_default();
-        // Opening the walk is one window on, as Alt+Tab goes to the window before the one in front
-        // whichever way its press names.
-        let steps = if steps == 0 { 1 } else { steps };
-        if !self.surfaces.overlays.is_up() {
-            let windows = self.handle.read(|tree| windows(tree, &self.handle));
-            let (walked, _) = walked(&windows, scope);
-            if walked.len() < 2 {
-                return;
-            }
-        }
-        self.surfaces.overlays.walk(Some(scope.name()), steps);
-    }
-
-    /// Choose the window `at` in the walk's order: `0` the first of them, `-1` the last. Home,
-    /// End and a card under the pointer choose by place, without crossing the ones between.
-    fn select_switcher(&self, at: i64) {
-        if !self.surfaces.overlays.is_up() {
-            return;
-        }
-        let windows = self.handle.read(|tree| windows(tree, &self.handle));
-        let (walked, front) = walked(&windows, self.surfaces.overlays.scope());
-        let count = i64::try_from(walked.len()).unwrap_or(1).max(1);
-        let at = if at < 0 {
-            count.saturating_add(at)
-        } else {
-            at.min(count.saturating_sub(1))
-        };
-        let front = i64::try_from(front.unwrap_or(0)).unwrap_or(0);
-        self.surfaces.overlays.select(at.saturating_sub(front));
-    }
-}
-
-impl Desk {
     /// The id of the desk's workspace `key`, or of the workspace in front when the caller names
     /// none.
     fn workspace_id(&self, workspace: Option<&str>) -> Result<WorkspaceId, DoorError> {
@@ -1068,15 +1015,20 @@ impl Service for Desk {
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::WalkSwitcher { steps, scope } = &effect {
-            self.walk_switcher(scope.as_deref(), steps.unwrap_or(1));
+            crate::desk_windows::walk_switcher(
+                &self.handle,
+                &self.surfaces.overlays,
+                scope.as_deref(),
+                steps.unwrap_or(1),
+            );
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::SelectSwitcher { at } = &effect {
-            self.select_switcher(*at);
+            crate::desk_windows::select_switcher(&self.handle, &self.surfaces.overlays, *at);
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if matches!(effect, DeskEffect::CommitSwitcher) {
-            self.commit_switcher();
+            crate::desk_windows::commit_switcher(&self.handle, &self.surfaces.overlays);
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::ActOnNotice { notice, action } = &effect {

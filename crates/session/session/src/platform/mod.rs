@@ -20,6 +20,10 @@ pub mod session;
 /// What a host lists as apps.
 pub mod apps;
 
+/// The keys this device has: the compositor's presses read into the session's.
+#[cfg(target_os = "linux")]
+pub(crate) mod keys;
+
 /// The clipboard a role hands the person something on.
 pub mod clipboard;
 

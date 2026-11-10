@@ -20,6 +20,11 @@ pub use tilo_desktop_search::CHROME_RESOURCE;
 /// door's own name for it, so the session, its broker and its views name one desk.
 pub use ui::tilo_actions::remote::session_actions::DESK_RESOURCE;
 
+/// What stands over the windows, and in what order, in the session's catalogue: the surface stack.
+pub const OVERLAYS: &str = "desktop:overlays";
+/// The resource the session publishes of its displays.
+pub const DISPLAYS_RESOURCE: &str = "session:displays";
+
 /// The shell's own record: the package's named root `shell` (`root shell: Shell`), reached in
 /// its views as `shell`.
 pub const SHELL_RECORD: &str = "shell";

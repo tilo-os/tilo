@@ -163,7 +163,9 @@ pub enum Watch {
 }
 
 impl Watch {
-    /// Whether a change noted in `workspace` is one this watch follows.
+    /// Whether a change noted in `workspace` is one this watch follows: what the worker that reads
+    /// it again listens for.
+    #[cfg(target_os = "linux")]
     fn follows(&self, workspace: &str) -> bool {
         match self {
             Self::Workspace(watched) => watched == workspace,

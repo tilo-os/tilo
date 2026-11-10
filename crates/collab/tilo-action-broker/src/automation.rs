@@ -379,7 +379,7 @@ pub fn chord_target(workspace: &str, shortcut_id: &str) -> ActionChordTarget {
 /// Whether `target` runs a saved shortcut.
 #[must_use]
 pub fn is_shortcut_target(target: &ActionChordTarget) -> bool {
-    target.action == SHORTCUT_RUN_ACTION && shortcut_id_of(&target.resource).is_some()
+    tilo_automation::runs_shortcut(&target.resource, &target.action)
 }
 
 /// Replace the shortcut chords in `keymap` with `chords`, keeping every

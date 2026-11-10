@@ -12,6 +12,7 @@ use tilo_sheets::shortcut_guide::State as GuideState;
 
 use crate::keys::{ControllerKeys, DeskKeys, Invocations, PressedChords, Presses, SessionKeys};
 use crate::panels::{ActivityLayer, Readout, ReadoutPlace, ReadoutPlaces, Reserved};
+use crate::platform::keys::NativeKeys;
 use crate::setup::Setup;
 use crate::{BeforeDesk, SessionCommand};
 use tilo_session_core::door::Doors;
@@ -108,14 +109,13 @@ pub(crate) fn mount_controls(
     // The press that falls outside a surface the session placed closes it,
     // which only the input path knows the place of.
     crate::press_outside::mount(compositor, &overlays);
-    compositor.add_host(Rc::new(RefCell::new(
+    compositor.add_host(Rc::new(RefCell::new(NativeKeys::new(
         SessionKeys::new(
             shortcuts,
             Presses {
                 invocations: Rc::clone(&invocations),
                 triggered: Rc::clone(&triggered),
             },
-            portal,
             guide,
             DeskKeys::new(fold, overlays)
                 .with_switcher(desk)
@@ -126,9 +126,10 @@ pub(crate) fn mount_controls(
                 own: controller_keys,
             },
             reveals,
-        )
-        .with_commands(Rc::clone(&commands)),
-    )));
+        ),
+        portal,
+        Rc::clone(&commands),
+    ))));
     (
         commands,
         controls_reading,

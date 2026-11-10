@@ -143,6 +143,9 @@ serde_json.workspace = true
 # search reads them from, as the apps that write them keep them.
 tilo-app-state = { path = "../../system/app-state" }
 tilo-sheets = { path = "../sheets" }
+# The shortcuts a person saved and the triggers that start them without
+# anyone invoking them.
+tilo-automation = { path = "../../collab/automation" }
 tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
 # The public workspaces sites list, their doors, and where a join stands.
 tilo-workspace-directory = { path = "../workspace-directory" }
@@ -229,9 +232,6 @@ tilo-system-stats = { path = "../../system/system-stats" }
 # provider seam it asks for what the services publish. Its channel encryption
 # service governs the sealed channels a workspace's content is carried in.
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
-# The shortcuts a person saved and the triggers that start them without
-# anyone invoking them.
-tilo-automation = { path = "../../collab/automation" }
 # A branch of a workspace takes an app's own copy of a record into the
 # workspace's, as every incoming change is taken in.
 tilo-automerge = { path = "../../doc/tilo-automerge" }

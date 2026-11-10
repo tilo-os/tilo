@@ -237,7 +237,7 @@ pub fn arrange(mode: DisplayMode, outputs: &[OutputInfo]) -> Vec<OutputChange> {
 }
 
 /// The resource the session publishes of its displays.
-pub const RESOURCE: &str = "session:displays";
+pub use tilo_session_core::shell::DISPLAYS_RESOURCE as RESOURCE;
 
 /// What kind of resource [`RESOURCE`] is.
 pub const KIND: &str = "session.displays";
