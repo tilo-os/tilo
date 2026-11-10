@@ -319,7 +319,7 @@ impl RemoteRows {
 }
 
 /// The first node of `kind` at or under `node`.
-fn find_kind<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
+pub(crate) fn find_kind<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
     if node.kind == kind {
         return Some(node);
     }

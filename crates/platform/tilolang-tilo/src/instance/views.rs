@@ -15,7 +15,7 @@ use super::rows::{FIRST_ROWS, ListRows};
 use super::wire;
 use super::{
     HistoryAsk, Instance, Shown, bound_values, convert_with, patch_in_place, referenced_resource,
-    rows_message, show_content_rows, sort, virtual_list_paths, virtual_lists, window_tree,
+    rows_message, show_content_rows, sort, virtual_list_paths, window_tree,
 };
 use crate::host::Host;
 use crate::runtime::Store as _;
@@ -198,12 +198,13 @@ impl Instance {
         let Some(view) = self.lane_mut(lane) else {
             return;
         };
-        let lists = virtual_lists(view.view.borrow().tree());
+        let lists = virtual_list_paths(view.view.borrow().tree());
         let handle = Rc::clone(&view.view);
-        view.lists
-            .retain(|key, rows| lists.contains(key) && rows.reads(&handle, key));
+        view.lists.retain(|key, rows| {
+            lists.iter().any(|(list, _)| list == key) && rows.reads(&handle, key)
+        });
         let mut sent = Vec::new();
-        for list in lists {
+        for (list, _) in lists {
             if view.lists.contains_key(&list) {
                 continue;
             }
@@ -329,9 +330,9 @@ impl Instance {
                 }
             }
             self.out.extend(messages);
-            if sorted.content {
-                self.track_lists(lane);
-            }
+            // A row that changed can hold a list it did not (the document of a row that opened),
+            // and the content one.
+            self.track_lists(lane);
         }
         if changed {
             self.send_bound(Lane::Root);

@@ -140,7 +140,7 @@ pub fn offers_switch(shell: &UiNode) -> bool {
 /// `node` without the rows a virtual list holds: the list reads those as it shows them.
 #[must_use]
 pub fn without_rows(node: &UiNode) -> UiNode {
-    let virtual_list = crate::is_virtual(&node.kind);
+    let virtual_list = tilo_render_protocol::patch::is_virtual_list(&node.kind);
     UiNode {
         kind: node.kind.clone(),
         key: node.key.clone(),

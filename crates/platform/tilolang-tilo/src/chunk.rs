@@ -413,15 +413,6 @@ impl Chunks {
             .collect()
     }
 
-    /// Whether the store holds every change of `heads`, in one chunk or another.
-    #[must_use]
-    pub fn holds_heads(&self, heads: &[ChangeHash]) -> bool {
-        heads.iter().all(|head| {
-            self.docs()
-                .any(|(_, doc)| doc.committed_document().get_change_by_hash(head).is_some())
-        })
-    }
-
     /// Whether the store holds every change the stamps name, in the chunk each is stamped for:
     /// whether an index stamped with them reflects what the store holds.
     #[must_use]

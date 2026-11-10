@@ -1598,6 +1598,8 @@ impl Instance {
         let requested = rows.request(range, open);
         let message = rows_message(&host, &*names, &handle, lane, list, requested);
         self.out.push(message);
+        // The rows rendered can hold lists of their own, and those scrolled away took theirs.
+        self.track_lists(lane);
         self.send_bound(lane);
     }
 
@@ -2355,14 +2357,6 @@ pub fn spliced(current: &str, at: usize, delete: usize, insert: &str) -> String 
     text
 }
 
-/// The virtual lists of a view's tree, by key.
-fn virtual_lists(tree: &UiNode) -> Vec<String> {
-    virtual_list_paths(tree)
-        .into_iter()
-        .map(|(key, _)| key)
-        .collect()
-}
-
 /// The virtual lists of a view's tree, by key, with their keys from the root.
 fn virtual_list_paths(tree: &UiNode) -> Vec<(String, Vec<String>)> {
     fn walk(node: &UiNode, path: &mut Vec<String>, out: &mut Vec<(String, Vec<String>)>) {
@@ -2519,29 +2513,40 @@ fn sort(patches: Vec<Patch>, lists: &[(String, Vec<String>)]) -> Sorted {
             | Patch::SetEvent { path, .. }
             | Patch::SetAnchor { path, .. } => (path.as_slice(), false),
         };
-        let mut taken = false;
-        for (list, at) in lists {
-            if structural && path == at.as_slice() {
-                sorted.list(list).structure.push(patch.clone());
-                taken = true;
-                break;
+        // The innermost list the patch is of: a list inside a row — the document of a row
+        // standing open can hold one — takes the changes of its own rows, and the list of that
+        // row the rest of the row.
+        let of_list = lists
+            .iter()
+            .filter(|(_, at)| {
+                (structural && path == at.as_slice())
+                    || (path.len() > at.len() && path.starts_with(at))
+            })
+            .max_by_key(|(_, at)| at.len());
+        // What holds a list changed: the list may be another now. A row inserted, removed or
+        // moved carries the lists inside it along.
+        if structural && of_list.is_none_or(|(_, at)| path != at.as_slice()) {
+            for (list, at) in lists {
+                if at.len() > path.len() && at.starts_with(path) {
+                    sorted.list(list).reread = true;
+                }
             }
-            if path.len() > at.len() && path.starts_with(at) {
+        }
+        match of_list {
+            Some((list, at)) if path == at.as_slice() => {
+                sorted.list(list).structure.push(patch.clone());
+            }
+            Some((list, at)) => {
                 if let Some(row) = path.get(at.len()) {
                     let changes = sorted.list(list);
                     if !changes.rows.contains(row) {
                         changes.rows.push(row.clone());
                     }
                 }
-                taken = true;
-                break;
             }
-            if structural && at.starts_with(path) {
-                // What holds the list changed: the list may be another now.
-                sorted.list(list).reread = true;
-            }
+            None => {}
         }
-        if !taken {
+        if of_list.is_none() {
             sorted.content = true;
             if let Some(changed) = &mut sorted.changed {
                 changed.push(path.to_vec());

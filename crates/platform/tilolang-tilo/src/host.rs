@@ -1146,17 +1146,6 @@ impl Host {
         self.inner.availability_reading(resource, action)
     }
 
-    /// The resource `action` returned when the person last ran it here, once: a window opens
-    /// what its primary action made.
-    #[must_use]
-    pub fn take_produced(&self, action: &str) -> Option<ResourceRef> {
-        let mut produced = self.inner.produced.borrow_mut();
-        match produced.as_ref() {
-            Some((made_by, _)) if made_by == action => produced.take().map(|(_, made)| made),
-            _ => None,
-        }
-    }
-
     /// The resource `action` returned when it was last planned here, for whoever invoked it,
     /// once: what its invocation answers.
     #[must_use]
@@ -1662,12 +1651,6 @@ impl Host {
     /// by the package versions this host loaded.
     pub fn with_schemas<R>(&self, work: impl FnOnce() -> R) -> R {
         self.inner.store.with_schemas(work)
-    }
-
-    /// Whether the type `ty` is registered (a package of it was loaded here).
-    #[must_use]
-    pub fn knows_type(ty: &str) -> bool {
-        lookup(ty).is_some()
     }
 }
 

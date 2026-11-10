@@ -659,11 +659,6 @@ impl Reconciler {
         self.navigation.clone()
     }
 
-    /// Forget the split of the last view built, before building another.
-    pub fn clear_navigation(&mut self) {
-        self.navigation = None;
-    }
-
     /// Show `text` in the input or text node `key`, whatever widget shows it, reporting whether
     /// that changed what it shows.
     pub fn set_text(&self, key: &str, text: &str) -> bool {
@@ -1597,7 +1592,7 @@ impl Reconciler {
             .children
             .iter()
             .map(|item| {
-                let row = find(item, &row_kind).unwrap_or(item);
+                let row = crate::rows::find_kind(item, &row_kind).unwrap_or(item);
                 self.build(row)
             })
             .collect();
@@ -1983,15 +1978,6 @@ fn collect_panes<'a>(widget: &'a mut dyn ui::widget::Widget, out: &mut Vec<&'a m
     for child in widget.children_mut() {
         collect_panes(child, out);
     }
-}
-
-/// The first node of `kind` under `node`.
-fn find<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
-    node.children.iter().find_map(|child| {
-        (child.kind == kind)
-            .then_some(child)
-            .or_else(|| find(child, kind))
-    })
 }
 
 /// Whether `a` and `b` have the same shell but for their property `name`, which the widget

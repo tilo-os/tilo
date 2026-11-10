@@ -582,6 +582,9 @@ impl AppWindow {
                 } => self.take_bound(lane, &key, value, acked),
                 rows @ (ToUi::Rows { .. } | ToUi::RowsChanged { .. }) => {
                     self.take_rows(rows);
+                    // A row that arrived can hold a list of its own (the document of a row
+                    // standing open), whose rows the app sends next.
+                    self.track_rows();
                     arrived = true;
                 }
                 ToUi::Notice { words, kind, undo } => self.notice(&words, kind, undo),
@@ -759,7 +762,8 @@ impl AppWindow {
         }
     }
 
-    /// Keep rows for every virtual list of the views, and drop the rows of lists gone.
+    /// Keep rows for every virtual list of the views and of the rows they hold, and drop the
+    /// rows of lists gone.
     fn track_rows(&self) {
         let mut wanted: Vec<(String, Lane, String, &'static str, String)> = Vec::new();
         for (view, lane, prefix) in [
@@ -770,6 +774,29 @@ impl AppWindow {
             for (list, item) in virtual_lists(&view.tree) {
                 wanted.push((format!("{prefix}{list}"), lane, list, prefix, item.clone()));
             }
+        }
+        // A row a list holds can hold a list of its own — the document of a row standing open
+        // where it stands — and so can that list's rows.
+        let mut at = 0;
+        while let Some((key, lane, _, prefix, _)) = wanted.get(at) {
+            let (lane, prefix) = (*lane, *prefix);
+            let inner: Vec<(String, String)> = self
+                .rows
+                .borrow()
+                .get(key)
+                .map(|rows| {
+                    let rows = rows.borrow();
+                    rows.rendered()
+                        .iter()
+                        .filter_map(|row| rows.row(row))
+                        .flat_map(virtual_lists)
+                        .collect()
+                })
+                .unwrap_or_default();
+            for (list, item) in inner {
+                wanted.push((format!("{prefix}{list}"), lane, list, prefix, item));
+            }
+            at = at.saturating_add(1);
         }
         let mut registry = self.rows.borrow_mut();
         registry.retain(|key, rows| {
@@ -2200,7 +2227,7 @@ fn field_after_enter(tree: &UiNode, key: &str) -> Option<String> {
 /// rows as (`ui.ListItem`, a tree's `ui.TreeViewNode`).
 fn virtual_lists(tree: &UiNode) -> Vec<(String, String)> {
     fn walk(node: &UiNode, out: &mut Vec<(String, String)>) {
-        if crate::is_virtual(&node.kind) {
+        if tilo_render_protocol::patch::is_virtual_list(&node.kind) {
             let item = if node.kind == "ui.TreeView" {
                 crate::adapter::kind("TreeViewNode")
             } else {
@@ -2555,7 +2582,7 @@ impl AppWindow {
     /// a tree's rows counting as a list's do.
     fn shown_rows(&self) -> Option<usize> {
         fn first_list(node: &UiNode) -> Option<&str> {
-            if crate::is_virtual(&node.kind) {
+            if tilo_render_protocol::patch::is_virtual_list(&node.kind) {
                 return Some(&node.key);
             }
             node.children.iter().find_map(first_list)

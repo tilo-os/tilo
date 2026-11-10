@@ -2016,7 +2016,7 @@ mod tests {
                 .expect("the task's row is a row of the list");
             {
                 let root = &staged.harness().inspection().root;
-                row_named(root, label).expect("the row shows before it opens");
+                named(root, ROWS, label).expect("the row shows before it opens");
                 assert!(
                     !shows_open(root, label),
                     "the row stands closed before anyone presses it"
@@ -2027,7 +2027,7 @@ mod tests {
                         "a narrow window opens no row into its item at {width}×{height}"
                     );
                     assert!(
-                        row_named(root, answered).is_some(),
+                        named(root, ROWS, answered).is_some(),
                         "the task the scenario answers with is a row of the place's list at \
                          {width}×{height}"
                     );
@@ -2069,7 +2069,7 @@ mod tests {
                     "the shell's back puts the page away again at {width}×{height}"
                 );
                 assert!(
-                    row_named(root, label).is_some(),
+                    named(root, ROWS, label).is_some(),
                     "the list comes back with its rows at {width}×{height}"
                 );
                 continue;
@@ -2127,7 +2127,7 @@ mod tests {
                     "a narrow window opens no row into its item at {width}×{height}"
                 );
                 assert!(
-                    row_named(root, label).is_some(),
+                    named(root, ROWS, label).is_some(),
                     "the task the scenario answers with is a row of the place's list at \
                      {width}×{height}"
                 );
@@ -2140,6 +2140,25 @@ mod tests {
                     shown_named(root, "Subtasks"),
                     "the row holds the task's document at {width}×{height}"
                 );
+                // The document lists the task's subtasks: a list inside the row standing open
+                // gets its rows, and the row grows to hold them.
+                let outline =
+                    named(root, &[ui::a11y::Role::Tree], "Subtasks").expect("the task's outline");
+                for subtask in [
+                    "Find the last service date",
+                    "Ask whether Tuesday morning works",
+                ] {
+                    let row = named(outline, ROWS, subtask).unwrap_or_else(|| {
+                        panic!("the outline shows {subtask:?} at {width}×{height}")
+                    });
+                    let ([_, top, _, tall], [_, start, _, extent]) = (row.rect, outline.rect);
+                    assert!(
+                        tall > 0.0 && top >= start - 0.5 && top + tall <= start + extent + 0.5,
+                        "the outline holds its row {subtask:?} at {width}×{height}: {:?} in {:?}",
+                        row.rect,
+                        outline.rect
+                    );
+                }
             }
             // The window states the place the task belongs to, not the place it stood on: what
             // waits in the inbox does not stand in the list, and what is due today does.
@@ -2253,7 +2272,7 @@ mod tests {
             // A phone keeps one thing on screen: the list comes back at rest, its rows closed.
             if width <= 390 {
                 assert!(
-                    row_named(root, label).is_some(),
+                    named(root, ROWS, label).is_some(),
                     "the place's list comes back with its rows at {width}×{height}"
                 );
                 assert!(
@@ -2300,23 +2319,24 @@ mod tests {
             || node.children.iter().any(|child| shown_named(child, label))
     }
 
-    /// The list row named `label`, as the window shows it.
-    fn row_named<'a>(
+    /// The rows of a list or a tree, as the window reads them.
+    const ROWS: &[ui::a11y::Role] = &[ui::a11y::Role::ListItem, ui::a11y::Role::TreeItem];
+
+    /// What the window shows named `label` in one of `roles`.
+    fn named<'a>(
         node: &'a ui::headless::InspectionNode,
+        roles: &[ui::a11y::Role],
         label: &str,
     ) -> Option<&'a ui::headless::InspectionNode> {
-        let is_row = node.semantics.as_ref().is_some_and(|access| {
-            matches!(
-                access.role,
-                ui::a11y::Role::ListItem | ui::a11y::Role::TreeItem
-            ) && access.name.as_deref() == Some(label)
+        let is_it = node.semantics.as_ref().is_some_and(|access| {
+            roles.contains(&access.role) && access.name.as_deref() == Some(label)
         });
-        if is_row {
+        if is_it {
             return Some(node);
         }
         node.children
             .iter()
-            .find_map(|child| row_named(child, label))
+            .find_map(|child| named(child, roles, label))
     }
 
     /// The rows of the menus a row carries: the one its view places on it, and the actions the

@@ -336,15 +336,6 @@ pub fn at_lit(value: &FieldValue) -> Lit {
     Stamp::of_value(value).map_or(Lit::Absent, |stamp| Lit::Time(stamp.version.at))
 }
 
-/// The version `change` made, whoever made it: a package action's, or a step on the record
-/// (an undo, a revert).
-#[must_use]
-pub fn change_stamp(change: &automerge::Change) -> Option<Stamp> {
-    stamp_of(change)
-        .map(|(stamp, _)| stamp)
-        .or_else(|| step_stamp(change))
-}
-
 /// The version `change` made, and the resources it changed (as the runtime writes them), when
 /// it is a tilolang action's change.
 #[must_use]

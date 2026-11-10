@@ -670,7 +670,7 @@ impl Source for NodeSource<'_> {
             .description
             .slot(slot)
             .is_some_and(|s| s.default && s.many);
-        if !is_rows || !crate::is_virtual(&self.node.kind) {
+        if !is_rows || !tilo_render_protocol::patch::is_virtual_list(&self.node.kind) {
             return None;
         }
         self.reconciler.rows_of(&self.node.key)
@@ -711,7 +711,7 @@ impl Source for NodeSource<'_> {
 #[must_use]
 pub fn same_data(a: &UiNode, b: &UiNode, description: &Description) -> bool {
     // The rows of a virtual list change through the host's rows, never through the node.
-    let virtual_rows = crate::is_virtual(&b.kind);
+    let virtual_rows = tilo_render_protocol::patch::is_virtual_list(&b.kind);
     a.props == b.props
         && a.binding == b.binding
         && a.events == b.events
