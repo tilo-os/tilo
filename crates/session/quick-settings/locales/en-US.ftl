@@ -158,16 +158,6 @@ qs-wifi-settings = Wi-Fi settings
 qs-network-settings = Network settings
 qs-wifi-turn-on = Turn on Wi-Fi
 qs-wired-network = Wired network
-status-battery = Battery { $percent }%
-status-battery-charging = Battery { $percent }%, charging
-status-muted = Muted
-status-offline = Offline
-status-summary-empty = System status
-status-volume = Volume { $percent }%
-status-wifi = Wi-Fi
-status-wifi-named = Wi-Fi: { $name }
-status-wired = Wired
-status-wired-named = Wired: { $name }
 
 # The panel as an app: its pages, the clipboard's search, the password
 # prompt and arranging the controls.

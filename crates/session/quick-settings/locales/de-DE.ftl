@@ -158,16 +158,6 @@ qs-wifi-settings = WLAN-Einstellungen
 qs-network-settings = Netzwerkeinstellungen
 qs-wifi-turn-on = WLAN einschalten
 qs-wired-network = Kabelnetzwerk
-status-battery = Akku { $percent } %
-status-battery-charging = Akku { $percent } %, wird geladen
-status-muted = Stummgeschaltet
-status-offline = Offline
-status-summary-empty = Systemstatus
-status-volume = Lautstärke { $percent } %
-status-wifi = WLAN
-status-wifi-named = WLAN: { $name }
-status-wired = Kabelgebunden
-status-wired-named = Kabelgebunden: { $name }
 
 # The panel as an app: its pages, the clipboard's search, the password
 # prompt and arranging the controls.

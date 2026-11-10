@@ -17,6 +17,9 @@
 #[cfg(target_os = "linux")]
 pub mod session;
 
+/// What a host reads of the machine it runs on.
+pub mod readings;
+
 /// What a host lists as apps.
 pub mod apps;
 

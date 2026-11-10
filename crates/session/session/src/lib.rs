@@ -335,8 +335,7 @@ pub mod slots;
 mod sockets;
 #[cfg(target_os = "linux")]
 pub mod startup;
-#[cfg(target_os = "linux")]
-mod status;
+pub mod status;
 #[cfg(target_os = "linux")]
 pub mod surfaces;
 pub mod switcher;

@@ -116,7 +116,6 @@ pub(crate) struct Shared {
     /// What the services last published of the machine: its connection, its
     /// sound and capture uses, its charge and what plays. The bar's status
     /// cluster, the lock screen and the desk read it.
-    #[cfg(target_os = "linux")]
     pub(crate) readings: crate::status::Shared,
     /// The system services, reached for their readings.
     pub(crate) services: Rc<RefCell<tilo_service::Services>>,
