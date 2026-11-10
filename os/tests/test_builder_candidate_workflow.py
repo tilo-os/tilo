@@ -84,7 +84,7 @@ class BuilderCandidates(unittest.TestCase):
     def test_browser_regressions_gate_publication(self):
         script = canary_arm('browser-tests')
         self.assertNotIn('|| true', script)
-        for binary in ('end_to_end', 'passkey_root', 'node_workspace', 'voice_browsers'):
+        for binary in ('carriers', 'passkey_root', 'node_workspace', 'voice_browsers'):
             self.assertIn(f'binary({binary})', script)
             self.assertIn(f'--test {binary}', script)
             self.assertTrue((ROOT / f'crates/session/host/tests/{binary}.rs').is_file())
