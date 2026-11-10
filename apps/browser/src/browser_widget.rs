@@ -68,6 +68,7 @@ mod continuity;
 mod dialog;
 mod download_read;
 mod engine_runtime;
+mod form_actions;
 mod http_fallback;
 mod library;
 #[cfg(test)]
@@ -682,6 +683,9 @@ pub struct BrowserWidget {
     /// Where this tab's engine stands against the tab's record, which is
     /// Browser's resource ([`crate::page_record`]).
     page_record: crate::page_record::TabRecorder,
+    /// What the window knows of its page's forms: the actions the page
+    /// publishes for them, from a read of it or from site memory.
+    forms: crate::page_forms::PageForms,
     /// Effects waiting on an operation this window accepted.
     pending_replies: Vec<(ui::tilo_actions::InvocationId, ui::framework::EffectReply)>,
     page_request_seq: u32,
@@ -1587,6 +1591,7 @@ impl BrowserWidget {
             page_record_reads: Vec::new(),
             page_record_answers: Vec::new(),
             page_record: crate::page_record::TabRecorder::default(),
+            forms: crate::page_forms::PageForms::default(),
             pending_replies: Vec::new(),
             page_request_seq: 0,
             pending_pip: None,
@@ -1651,6 +1656,7 @@ impl BrowserWidget {
         }
         self.apply_preferences(state.preferences.clone());
         self.site_exceptions = state.exceptions();
+        self.forms.present(&state.site_forms);
         self.site
             .present_exceptions(&self.engine, &self.site_exceptions, self.bootstrap_done);
     }
@@ -2045,6 +2051,9 @@ impl BrowserWidget {
             BrowserOperation::Page(_) => {
                 return Err("page actions report their result; start them as an invocation".into());
             }
+            BrowserOperation::Form(_) => {
+                return Err("form actions report their result; start them as an invocation".into());
+            }
         }
         Ok(())
     }
@@ -2202,6 +2211,7 @@ impl BrowserWidget {
             return;
         };
         self.note_text_entered(&operation.acted);
+        let result = self.hear_forms(&operation, result);
         // The reader view follows the request the page answered, whichever
         // actor's it was and however long it waited its turn.
         if let PageRequest::Reader { enabled } = operation.acted
@@ -5580,6 +5590,8 @@ impl BrowserWidget {
                 spec.unavailable("no_web_page", "Open a web page first")
             });
         }
+        // Each form the page is known to ask is an action of its own.
+        page.actions.extend(self.form_actions());
 
         let mut session = ResourceSpec::new(
             "browser.session",
@@ -6138,6 +6150,10 @@ impl BrowserWidget {
                 return Ok(ui::framework::Effected::value(value));
             }
             _ => {}
+        }
+        if let BrowserOperation::Form(run) = operation {
+            self.start_form_run(invocation, actor, &run)?;
+            return Ok(ui::framework::Effected::Pending);
         }
         if let BrowserOperation::Page(request) = operation {
             self.start_page_operation(invocation, actor, request)?;

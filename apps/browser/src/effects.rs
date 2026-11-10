@@ -851,6 +851,34 @@ pub enum BrowserEffect {
         #[param("Allow sending the form to another site than the page's own (default false)")]
         cross_origin: Option<bool>,
     },
+    /// Answer a form of the page
+    ///
+    /// What a form's own action on the page runs: the form of this signature
+    /// answered through the parameters the page publishes for its questions,
+    /// as `fill-page-form` answers it, with the same report for each answer.
+    /// Nothing is sent. A page that no longer holds a form of this signature
+    /// refuses it as changed, and nothing is placed.
+    #[effect(row, job, cancellable, returns, untrusted)]
+    AnswerForm {
+        #[param(flatten)]
+        run: crate::page_forms::FormAnswers,
+    },
+    /// Send a form of the page
+    ///
+    /// What a form's own send action on the page runs: the form of this
+    /// signature sent as it is answered now. It is not sent while a required
+    /// question is empty or an answer is invalid, and the answer says which.
+    /// A page that no longer holds a form of this signature refuses it as
+    /// changed.
+    #[effect(row, job, cancellable, returns, untrusted)]
+    SendForm {
+        #[param("The form's signature, as read-page-forms gives it")]
+        form: String,
+        #[param("The label of the button that sends it; its first button when absent")]
+        button: Option<String>,
+        #[param("Allow sending the form to another site than the page's own (default false)")]
+        cross_origin: Option<bool>,
+    },
     /// Answer the page's question
     ///
     /// What its Close, Allow, Send, Leave or Reload button does: the page
@@ -1177,6 +1205,23 @@ impl BrowserEffect {
                     cross_origin: cross_origin.unwrap_or(false),
                 })
             }
+            Self::AnswerForm { run } => BrowserOperation::Form(crate::page_forms::FormRun {
+                form: run.form,
+                answers: run.answers,
+                send: None,
+            }),
+            Self::SendForm {
+                form,
+                button,
+                cross_origin,
+            } => BrowserOperation::Form(crate::page_forms::FormRun {
+                form,
+                answers: serde_json::Map::new(),
+                send: Some(crate::page_forms::FormSend {
+                    button: button.filter(|label| !label.trim().is_empty()),
+                    cross_origin: cross_origin.unwrap_or(false),
+                }),
+            }),
             Self::FindPageElement {
                 role,
                 name,
@@ -1432,6 +1477,9 @@ pub enum BrowserOperation {
         id: String,
     },
     Page(PageRequest),
+    /// Answer or send one of the page's forms, as the form's own action
+    /// on the page does.
+    Form(crate::page_forms::FormRun),
     /// Answer the page's question `dialog`: OK, Leave or Reload when
     /// `accept`, else Cancel, with a prompt's `text`.
     AnswerPageDialog {
