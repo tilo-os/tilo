@@ -19,6 +19,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // to them leaves the catalog as it was and doesn't run this script again.
         let out = std::env::var_os("OUT_DIR").ok_or("cargo sets OUT_DIR for build scripts")?;
         let root = PathBuf::from(out).join("fonts");
+        // The catalog is this script's own output, and a build directory can hold the script's
+        // fingerprint without the tree it wrote: a build carried from another machine, or one
+        // whose outputs were cached before the catalog was there. Such a build would otherwise
+        // stay fresh forever with no catalog compiled in, and every binary it made would set
+        // text in the host's faces. Watching the catalog's manifest makes a build that lost it
+        // run this script again (`cargo::rerun-if-changed` names a path that is not there, which
+        // cargo reads as changed), and the manifest of a catalog that is there keeps its mtime,
+        // so a build that has one runs nothing.
+        println!(
+            "cargo::rerun-if-changed={}",
+            root.join("manifest.toml").display()
+        );
         // `prepare` publishes only into a new directory; this is the previous run's catalog.
         if root.exists() {
             std::fs::remove_dir_all(&root)?;
