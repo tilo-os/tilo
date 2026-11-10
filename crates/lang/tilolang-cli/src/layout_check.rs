@@ -356,6 +356,9 @@ pub fn read_allow(path: &Path) -> Result<BTreeSet<String>, String> {
 /// dates.
 pub fn check(options: &Options) -> Result<Report, String> {
     let started = std::time::Instant::now();
+    // Every worker below takes a core, so a second check at the same time only slows both: the
+    // machine is held for the whole check, the views it opens under the same lock.
+    let _machine = machine_lock()?;
     let (apps, allow) = open(options)?;
     let scenes = scenes_of(&apps);
     let mut planned = Vec::with_capacity(scenes.len().saturating_mul(3));
@@ -363,9 +366,9 @@ pub fn check(options: &Options) -> Result<Report, String> {
         planned.extend(scene.units());
     }
     let mut phase = run(&apps, &planned, options)?;
-    // The views nothing showed yet, opened on the scenario whose resources they take, with
-    // what every scene before it showed: the scenes of one app decide in order, as the check
-    // ran them one after another, while the apps decide at the same time.
+    // The views nothing showed yet, opened on the scenario whose resources they take, with what
+    // every scene before it showed: the scenes of one app decide in order, as the check ran them
+    // one after another, while the apps decide at the same time.
     let (mut opened, shown) = run_opens(&apps, &scenes, &phase, options)?;
     // A dump is read as a page of one layout after another: the units ran at the same time, and
     // their pages are printed where the work stands, in the order the check would have done it
@@ -720,6 +723,43 @@ enum What {
     Push,
 }
 
+/// What a staging costs against one layout of a window: the scenario is made and written down
+/// once, at several layouts' cost, before any layout runs.
+const STAGING: usize = 6;
+
+impl Unit {
+    /// What this unit will cost, in layouts of a window: every window it stages and every
+    /// layout it reads, so the units run costliest first.
+    fn weight(&self, apps: &[App]) -> usize {
+        let layouts = layouts().len();
+        let sizes = SIZES.len();
+        match &self.what {
+            // The scenario's window, and the views it opens on it: each one laid out every way.
+            What::Scenario => layouts.saturating_add(STAGING),
+            What::Opens { .. } => layouts.saturating_mul(2).saturating_add(STAGING),
+            // One window at each size, each pressed: only the sizes whose window carries the
+            // control are pressed again, of which none is known here.
+            What::Press => {
+                let labels = apps
+                    .get(self.scene.app)
+                    .map_or(0, |app| primary_labels(&app.meta).len());
+                let pressed = labels.saturating_mul(sizes).min(sizes);
+                sizes
+                    .saturating_add((pressed.saturating_add(1)).saturating_mul(STAGING))
+                    .saturating_add(pressed)
+            }
+            // A window at each size held in the hand, the row it opened tapped, and the sizes'
+            // layouts read after the tap and after the window's way back.
+            What::Push => {
+                let touch = SIZES.iter().filter(|size| size.touch).count();
+                touch
+                    .saturating_mul(STAGING + 1 + 2 * 2)
+                    .saturating_add(layouts)
+            }
+        }
+    }
+}
+
 /// What one unit of work found.
 #[derive(Default)]
 struct Found {
@@ -812,13 +852,16 @@ fn run(apps: &[App], units: &[Unit], options: &Options) -> Result<Vec<Found>, St
     if units.is_empty() {
         return Ok(Vec::new());
     }
-    // Every worker below takes a core, so a second check at the same time only slows both.
-    let _machine = machine_lock()?;
     let workers = std::thread::available_parallelism()
         .map_or(1, std::num::NonZero::get)
         .min(units.len());
     let taken: Vec<Mutex<Option<Result<Found, String>>>> =
         units.iter().map(|_| Mutex::new(None)).collect();
+    // The costliest units first: a worker takes the next one when it is free, so the sweep ends
+    // when its heaviest unit does, and leaving those for last would hold every other worker
+    // waiting. What each unit costs is read off what it lays out, not measured.
+    let mut order: Vec<usize> = (0..units.len()).collect();
+    order.sort_by_key(|&at| std::cmp::Reverse(units.get(at).map_or(0, |unit| unit.weight(apps))));
     let next = AtomicUsize::new(0);
     let stopped = AtomicBool::new(false);
     let unstarted: Mutex<Option<String>> = Mutex::new(None);
@@ -834,6 +877,9 @@ fn run(apps: &[App], units: &[Unit], options: &Options) -> Result<Vec<Found>, St
                 };
                 while !stopped.load(Ordering::Relaxed) {
                     let at = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(&at) = order.get(at) else {
+                        break;
+                    };
                     let Some(unit) = units.get(at) else {
                         break;
                     };
@@ -870,9 +916,6 @@ fn run(apps: &[App], units: &[Unit], options: &Options) -> Result<Vec<Found>, St
     Ok(out)
 }
 
-/// What opening the views of one scene found, under the index of the scene it was staged on.
-type Opened = Vec<(usize, Found)>;
-
 /// Run `chain` for each app of `busy` at once, each on a worker of its own, and write what it found
 /// in that app's slot. A worker that cannot start is reported, never left to leave its slot empty.
 fn opens_together(
@@ -904,6 +947,9 @@ fn opens_together(
         None => Ok(()),
     }
 }
+
+/// What opening the views of one scene found, under the index of the scene it was staged on.
+type Opened = Vec<(usize, Found)>;
 
 /// Run the views no layout showed yet, on the scene whose resources they take, for every app:
 /// an app's scenes one after another, each seeing what the ones before it showed, and the apps
@@ -1556,10 +1602,22 @@ impl AppCheck<'_> {
     /// lays the window out afresh. A layout that only a fresh pass puts right (a header row left
     /// where a frame of the motion put it) shows here.
     fn press(&mut self, packages: &Rc<stage::Packages>, unit: &Unit) -> Result<(), String> {
-        for label in primary_labels(self.meta) {
-            for size in SIZES {
+        let labels = primary_labels(self.meta);
+        if labels.is_empty() {
+            return Ok(());
+        }
+        // Which of the window's primary controls each size carries, read off one window laid
+        // out at every size in turn: a control the window does not show at a size is one
+        // nobody presses there, and a window staged for it would be a window thrown away.
+        let carried = self.controls_of_each_size(packages, unit, &labels)?;
+        for (index, label) in labels.iter().enumerate() {
+            for (at, size) in SIZES.iter().enumerate() {
+                if !carried.get(at).is_some_and(|here| here.contains(&index)) {
+                    continue;
+                }
+                let label = *label;
                 let layout = Layout {
-                    size,
+                    size: *size,
                     display_scale: 1.0,
                     text_scale: 1.0,
                 };
@@ -1600,6 +1658,51 @@ impl AppCheck<'_> {
         }
         Ok(())
     }
+
+    /// The indices of `labels` the window carries at each size, each read off the one window
+    /// laid out at that size: the scenario as staged, with the motion a press reaches it by.
+    fn controls_of_each_size(
+        &self,
+        packages: &Rc<stage::Packages>,
+        unit: &Unit,
+        labels: &[&str],
+    ) -> Result<Vec<BTreeSet<usize>>, String> {
+        let Some(first) = SIZES.first().copied() else {
+            return Ok(Vec::new());
+        };
+        let mut staged = stage::Staged::over(
+            &self.meta.app,
+            packages,
+            &unit.scene.scenario,
+            (first.width, first.height),
+            ui::Theme::light(),
+            unit.scene.root.as_deref(),
+            self.states,
+        )?;
+        let mut carried = Vec::with_capacity(SIZES.len());
+        for size in SIZES {
+            let layout = Layout {
+                size,
+                display_scale: 1.0,
+                text_scale: 1.0,
+            };
+            staged.lay_out_moving((size.width, size.height), layout.theme(), layout.input())?;
+            let root = &staged.harness().inspection().root;
+            carried.push(
+                labels
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, label)| {
+                        button_named(root, label).is_some()
+                            || painted_button_named(root, label).is_some()
+                    })
+                    .map(|(index, _)| index)
+                    .collect(),
+            );
+        }
+        Ok(carried)
+    }
+
     /// What a person holding the window comes to after choosing what to read: at every size it
     /// is held in the hand, a row of the list the window shows tapped as a finger taps it,
     /// which pushes what the row opens in front of that list. The list itself comes forward by
