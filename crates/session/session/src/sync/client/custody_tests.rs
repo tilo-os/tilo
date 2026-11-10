@@ -206,6 +206,7 @@ impl Device {
                 hosts: Vec::new(),
                 continuity: Continuity::default(),
                 wake: std::sync::Arc::new(|| ()),
+                fabric: None,
             },
             Some(std::sync::Arc::clone(&engine)),
             None,

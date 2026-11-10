@@ -2369,6 +2369,7 @@ mod transfers_between_devices {
                 hosts: Vec::new(),
                 continuity: permitted(),
                 wake: Arc::new(|| {}),
+                fabric: None,
             },
             None,
             None,

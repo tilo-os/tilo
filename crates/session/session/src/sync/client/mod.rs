@@ -1027,6 +1027,9 @@ pub struct Entry {
     pub continuity: Continuity,
     /// What tells the peer actor the network speaks.
     pub wake: Arc<dyn Fn() + Send + Sync>,
+    /// Where this device keeps its part of the person's device fabric between runs, one
+    /// checkpoint per device key; `None` keeps nothing (a test, a stand-in session).
+    pub fabric: Option<std::path::PathBuf>,
 }
 
 impl Client {
@@ -1045,8 +1048,7 @@ impl Client {
         mut beside: tilo_network_actor::local_host::Protocols,
         documents: Option<PeerDocuments>,
     ) -> std::io::Result<Self> {
-        let identity = entry.identity;
-        let wake = entry.wake;
+        let (identity, wake) = (entry.identity, entry.wake);
         let (commands, host_commands) = tokio::sync::mpsc::unbounded_channel();
         let (arrivals, arrived) = std::sync::mpsc::channel();
         let (host_events, host_arrived) = std::sync::mpsc::channel();
@@ -1058,7 +1060,12 @@ impl Client {
         };
         let outgoing: Arc<dyn Outbox> = Arc::new(host_outbox.clone());
         let link_outbox = host_outbox.clone();
-        let fabric = restored_fabric(identity.as_ref(), host_outbox, entry.continuity);
+        let fabric = restored_fabric(
+            identity.as_ref(),
+            host_outbox,
+            entry.continuity,
+            entry.fabric,
+        );
         // What the actor serves is installed before it starts: every actor built after answers it.
         let versions = crate::network::install(fabric.as_ref(), questions);
         // The channels' side of the plane is the engine's, opened before the plane starts.
@@ -1667,25 +1674,46 @@ fn certified_as(identity: Option<&HostIdentity>) -> (Option<[u8; 32]>, String) {
 
 /// This device's fabric before the endpoint runs, so a device that proves itself at the actor's
 /// first tick is recorded with it: the record it keeps is this device's, named by its certificate.
+/// What it kept in its last run under `state` is restored, so its record continues its own line of
+/// revisions: a record said again from revision one is one the person's other devices already hold
+/// something else at, and refuse.
 #[cfg(target_os = "linux")]
 fn restored_fabric(
     identity: Option<&HostIdentity>,
     outgoing: HostOutbox,
     continuity: Continuity,
+    state: Option<std::path::PathBuf>,
 ) -> Option<Arc<SessionFabric>> {
     let identity = identity?;
     let device = (
         DeviceId::new(hex::encode(identity.device_cert.device_public_key)).ok()?,
         identity.device_cert.device_label.clone(),
     );
-    let runtime = FabricRuntime::restored(Some(device), None).ok()?;
+    let kept = state.map(|state| fabric_checkpoint(&state, &device.0));
+    let checkpoint = kept.as_deref().and_then(|path| std::fs::read(path).ok());
+    let runtime = match FabricRuntime::restored(Some(device.clone()), checkpoint.as_deref()) {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            tracing::warn!(%error, "this device's kept fabric does not read; it starts anew");
+            FabricRuntime::restored(Some(device), None).ok()?
+        }
+    };
     Some(SessionFabric::new(
         runtime,
         outgoing,
         identity.device_cert.user_public_key,
         identity.signing_key().ok()?,
         continuity,
+        kept,
     ))
+}
+
+/// The file under `state` the fabric of the device `device` names is kept in: one per device key,
+/// so a machine copied from another, re-keyed at its first boot, starts a line of its own rather
+/// than continuing the one it was copied with.
+#[cfg(target_os = "linux")]
+pub(crate) fn fabric_checkpoint(state: &std::path::Path, device: &DeviceId) -> std::path::PathBuf {
+    state.join(format!("{}.fabric", device.as_str()))
 }
 
 /// The endpoint the peer actor binds, and the relays held back from it until something needs this

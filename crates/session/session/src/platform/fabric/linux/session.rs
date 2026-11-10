@@ -90,6 +90,8 @@ pub(crate) struct SessionFabric {
     /// This session's Nearby Send, once the session made it: where the bytes of a transfer one of
     /// the person's devices offers or streams come in.
     nearby: Mutex<Option<Arc<crate::nearby_transfer::NearbyTransfer>>>,
+    /// Where this device's fabric is kept for its next run, if anywhere.
+    kept: Option<std::path::PathBuf>,
 }
 
 impl std::fmt::Debug for SessionFabric {
@@ -107,6 +109,7 @@ impl SessionFabric {
         user_public_key: [u8; 32],
         device_signing_key: ed25519_dalek::SigningKey,
         continuity: Continuity,
+        kept: Option<std::path::PathBuf>,
     ) -> Arc<Self> {
         Arc::new(Self {
             runtime: Arc::new(Mutex::new(runtime)),
@@ -115,6 +118,7 @@ impl SessionFabric {
             device_signing_key,
             continuity,
             nearby: Mutex::new(None),
+            kept,
         })
     }
 
@@ -237,7 +241,18 @@ impl SessionFabric {
         if let Ok(snapshot) = runtime.own_snapshot() {
             self.publish(None, PersonalFabricPayload::Snapshot(snapshot));
         }
+        // What this device said is kept before it is said again: its next run continues from
+        // here, at a revision past every one it announced.
+        let checkpoint = self
+            .kept
+            .as_ref()
+            .and_then(|_| runtime.device_fabric().encode_checkpoint().ok());
         drop(runtime);
+        if let (Some(path), Some(checkpoint)) = (&self.kept, checkpoint)
+            && let Err(error) = keep_checkpoint(path, &checkpoint)
+        {
+            tracing::warn!(%error, path = %path.display(), "this device's fabric was not kept");
+        }
         self.announce_display();
     }
 
@@ -275,6 +290,27 @@ impl SessionFabric {
     fn publish(&self, target: Option<EndpointId>, payload: PersonalFabricPayload) {
         self.outgoing.fabric(self.user_public_key, target, payload);
     }
+}
+
+/// Write `checkpoint` to `path` whole or not at all, readable by this account alone: a run cut off
+/// mid-write leaves the one before.
+fn keep_checkpoint(path: &std::path::Path, checkpoint: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let dir = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("no directory"))?;
+    std::fs::create_dir_all(dir)?;
+    let staged = path.with_extension("fabric.new");
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&staged)?;
+    file.write_all(checkpoint)?;
+    file.sync_all()?;
+    std::fs::rename(&staged, path)
 }
 
 impl FabricLink for SessionFabric {

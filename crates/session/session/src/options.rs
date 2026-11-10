@@ -294,6 +294,7 @@ pub(crate) fn start_collaboration(
             hosts: sync::configured_hosts(),
             continuity,
             wake: options.wake.handle(),
+            fabric: tilo_paths::state_dir().map(|root| root.join("tilo/fabric")),
         },
         engine,
         options.questions.clone(),

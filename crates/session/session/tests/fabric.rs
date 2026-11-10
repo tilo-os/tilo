@@ -70,6 +70,16 @@ fn permitted() -> Continuity {
 
 /// One of the person's devices, certified by `person` , on its own key.
 fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Device {
+    kept_device(person, seed, label, None)
+}
+
+/// [`device`], keeping its fabric under `kept` between runs as a session does.
+fn kept_device(
+    person: &ed25519_dalek::SigningKey,
+    seed: u8,
+    label: &str,
+    kept: Option<&std::path::Path>,
+) -> Device {
     let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
     let mut cert = DeviceCert {
         user_public_key: person.verifying_key().to_bytes(),
@@ -89,6 +99,7 @@ fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Device {
             hosts: Vec::new(),
             continuity: permitted(),
             wake: Arc::new(|| {}),
+            fabric: kept.map(std::path::Path::to_path_buf),
         },
         None,
         None,
@@ -170,6 +181,49 @@ fn a_remote_audio_route_gets_the_clock_it_plays_the_other_device_by() {
     assert!(
         offset_us.abs() < 1_000,
         "the desk's clock is this device's: {offset_us} us off"
+    );
+}
+
+/// A device whose session starts again goes on from the revision it last said, so its other
+/// devices take what it says now over what they kept of it; a record said again from the first
+/// revision was refused as a conflict ("same device revision carried conflicting state", box of
+/// e2e-branch after both boxes rebooted). A machine copied from it, under a key of its own,
+/// starts a line of its own and does not take up the one it was copied with.
+#[test]
+fn a_device_that_starts_again_continues_its_own_revisions() {
+    let person = person();
+    let kept = tempfile::tempdir().expect("a state directory");
+    let desk = device(&person, 2, "Desk");
+    let laptop = kept_device(&person, 1, "Laptop", Some(kept.path()));
+    let id = laptop.id.clone();
+    laptop.client.connect(desk.client.endpoint_addr());
+    assert!(
+        until(&[&laptop, &desk], || both_online(&laptop, &desk)),
+        "the two devices' sessions came up"
+    );
+    let held = |desk: &Device| {
+        desk.fabric()
+            .device_fabric()
+            .snapshots()
+            .get(&id)
+            .map(|record| record.presence.stamp.clone())
+    };
+    let before = held(&desk).expect("the desk holds what the laptop said");
+    drop(laptop);
+
+    let laptop = kept_device(&person, 1, "Laptop", Some(kept.path()));
+    laptop.client.connect(desk.client.endpoint_addr());
+    assert!(
+        until(&[&laptop, &desk], || {
+            held(&desk).is_some_and(|now| now.is_newer_than(&before))
+        }),
+        "the desk took what the laptop said after starting again: it still holds {before:?}"
+    );
+
+    let copy = kept_device(&person, 3, "Branch", Some(kept.path()));
+    assert!(
+        !copy.fabric().device_fabric().snapshots().contains_key(&id),
+        "a machine with a key of its own does not take up the laptop's kept fabric"
     );
 }
 
