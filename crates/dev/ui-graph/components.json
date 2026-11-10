@@ -7338,6 +7338,13 @@
             "component": "Button"
           },
           "many": true
+        },
+        {
+          "name": "change",
+          "doc": "What someone else changed of the row's resource that the person has not seen yet: the row shows it, in their colour, on its trailing edge. The UI host places it (task-legibility §3).",
+          "accepts": {
+            "component": "ChangeMark"
+          }
         }
       ],
       "events": [
