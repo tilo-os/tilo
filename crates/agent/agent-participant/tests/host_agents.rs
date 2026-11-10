@@ -546,7 +546,8 @@ impl Page {
 
 /// An agent's later task edits the record people have open as live as its
 /// first one did, and a session that joins afterwards replays both edits
-/// once each.
+/// once each. A task that only reads opens nothing; the first edit starts the
+/// workspace's desk, under the workspace's name, holding the record's window.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -558,10 +559,10 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
     let _laptop = participant::Participant::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
-    browser.put_desk();
 
     // The person opens a workbook before any agent exists, and it is in the
     // workspace (sealed and durable on the host) before the agent arrives.
+    // Nobody has opened a desk in the workspace yet.
     let mut page = Page::create(&browser, SHEETS);
     page.until_sheets(&mut browser, &["Sheet1"]).await;
     browser.durable().await;
@@ -574,13 +575,40 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
             InvokeArgument::Json(
                 serde_json::json!({
                     "grant": grant,
-                    "task": "Add a new sheet named \"Budget\"",
+                    "task": "Read the cells of the sheet \"Sheet1\"",
                     "room": WORKSPACE,
                 })
                 .as_object()
                 .unwrap()
                 .clone(),
             ),
+        )
+        .await
+        .unwrap();
+    browser
+        .until("the reading task to read and end", |status| {
+            status.agents.iter().any(|agent| {
+                agent.id == grant
+                    && agent.tasks.first().is_some_and(|task| {
+                        task.state != TaskState::Running
+                            && task
+                                .steps
+                                .iter()
+                                .any(|step| step.action == "read-cells" && step.error.is_none())
+                    })
+            })
+        })
+        .await;
+    assert!(
+        browser.desk().is_none(),
+        "a task that only read opened nothing"
+    );
+
+    browser
+        .call(
+            &agent_resource(&grant),
+            MESSAGE_ACTION,
+            InvokeArgument::Text("Add a new sheet named \"Budget\"".into()),
         )
         .await
         .unwrap();
@@ -597,12 +625,11 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
     page.until_sheets(&mut browser, &["Sheet1", "Budget", "Q4"])
         .await;
     browser
-        .until("both tasks to complete", |status| {
+        .until("every task to complete", |status| {
             status.agents.iter().any(|agent| {
                 agent.id == grant
-                    && agent.tasks.len() == 2
-                    && agent
-                        .tasks
+                    && agent.tasks.len() == 3
+                    && agent.tasks[1..]
                         .iter()
                         .all(|task| task.state == TaskState::Completed)
             })
@@ -645,7 +672,8 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     // The workbook the agent worked in is open on the workspace's desk, once,
-    // as a window of the person's that the agent's run opened.
+    // as a window of the person's that the agent's run opened, on the desk the
+    // agent started under the workspace's name.
     let person = hex::encode(root.verifying_key().to_bytes());
     loop {
         let desktop = reloaded.desk();
@@ -657,6 +685,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
             .collect();
         if let (Some(desktop), [tab]) = (&desktop, windows.as_slice()) {
             assert_eq!(desktop.authors.get(tab), Some(&person), "{desktop:?}");
+            assert_eq!(desktop.tree.workspaces[0].name, "Workspace", "{desktop:?}");
             let run = desktop.opened_by.get(tab);
             assert!(
                 run.is_some_and(|run| !run.run.is_empty() && !run.label.is_empty()),

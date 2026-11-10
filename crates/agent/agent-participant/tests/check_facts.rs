@@ -130,6 +130,7 @@ async fn a_check_is_shown_the_facts_of_the_record_its_task_changed() {
             host: host.iroh(),
             host_cert: host_device.cert.clone(),
             workspace: WORKSPACE.into(),
+            workspace_name: None,
             content: tilo_content::ContentStore::memory(),
         },
         AgentIdentity {
@@ -333,6 +334,7 @@ async fn ed_planning_with(
             host: host.iroh(),
             host_cert: host_device.cert.clone(),
             workspace: WORKSPACE.into(),
+            workspace_name: None,
             content: tilo_content::ContentStore::memory(),
         },
         AgentIdentity {

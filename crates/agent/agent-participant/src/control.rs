@@ -722,6 +722,14 @@ pub trait AgentHostLink: Send + Sync {
     /// Refuse the agent device from now on.
     fn withdraw(&self, device_public_key: [u8; 32]);
 
+    /// What the workspace whose channels are `workspace` is called, which a
+    /// desk the agent starts there is named after; `None` when the host does
+    /// not govern it.
+    fn workspace_name(&self, workspace: u64) -> Option<String> {
+        let _ = workspace;
+        None
+    }
+
     /// The host of the person `delegation` names, which puts an action the
     /// agent's grants leave to them to them on their own device. `None`: no
     /// such host here, and the agent's actions that ask first are refused.

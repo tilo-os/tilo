@@ -164,6 +164,11 @@ impl AgentHostLink for RelayAgentLink {
         });
     }
 
+    fn workspace_name(&self, workspace: u64) -> Option<String> {
+        self.runtime
+            .block_on(self.workspaces.as_ref()?.workspace_name(workspace))
+    }
+
     fn witness(&self, delegation: &Delegation) -> Option<Witness> {
         Some(Arc::new(RelayWitness {
             certification: self.certification.clone(),

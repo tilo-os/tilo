@@ -233,6 +233,7 @@ async fn every_web_app_over_the_session() {
             host: host.iroh(),
             host_cert: host_device.cert.clone(),
             workspace: WORKSPACE.into(),
+            workspace_name: None,
             content: tilo_content::ContentStore::memory(),
         },
         AgentIdentity {
@@ -688,6 +689,7 @@ async fn planning_agent_labelled(
             host: host.iroh(),
             host_cert: host_device.cert.clone(),
             workspace: WORKSPACE.into(),
+            workspace_name: None,
             content: store,
         },
         AgentIdentity {

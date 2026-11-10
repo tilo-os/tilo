@@ -189,6 +189,10 @@ pub struct ParticipantConfig {
     pub host_cert: DeviceCert,
     /// The workspace uuid.
     pub workspace: String,
+    /// What the workspace is called, which a desk the agent starts there is
+    /// named after, as the first page in names its own; `None` when the host
+    /// does not know it, and the agent starts no desk.
+    pub workspace_name: Option<String>,
     /// The workspace's content store: content the agent's operations name is
     /// read from it, and content its apps store is kept in it.
     pub content: tilo_content::ContentStore,
@@ -223,6 +227,8 @@ pub struct AgentParticipant {
     events: PeerEvents,
     workspace: String,
     workspace_id: u64,
+    /// What the workspace is called ([`ParticipantConfig::workspace_name`]).
+    workspace_name: Option<String>,
     catalogue: AppCatalogue,
     /// The planner, on a thread of its own.
     planning: planning::Planning,
@@ -384,22 +390,7 @@ impl AgentParticipant {
             );
 
         let planning = planning::Planning::start(planner, Arc::clone(&control))?;
-        let peer = PeerHandle::start(
-            PeerConfig {
-                host: config.host,
-                cert: identity.cert.clone(),
-                host_cert: config.host_cert,
-                revocations: RevocationList::new(),
-            },
-            Arc::new(identity.key.clone()),
-            store,
-        );
-        let events = peer.events();
-        let woken = Arc::clone(&control);
-        peer.on_change(Arc::new(move || woken.wake()));
-        peer.join(workspace_id)?;
-        let kept = kept_content(&config.workspace, &config.content);
-        peer.keep_content(workspace_id, kept)?;
+        let (peer, events) = join(&config, &identity, workspace_id, store, &control)?;
         let presence = tilo_session_host::saying::enter(
             &peer,
             &identity.cert,
@@ -423,6 +414,7 @@ impl AgentParticipant {
             events,
             workspace: config.workspace,
             workspace_id,
+            workspace_name: config.workspace_name,
             catalogue,
             planning,
             checks_work,
@@ -1971,14 +1963,19 @@ impl AgentParticipant {
             self.unopened.forget(seeded);
         }
         let route = route(app.wire_record());
-        if let Some(mutation) = app.take_mutation().map_err(|error| error.to_string())? {
-            self.peer.publish(route.clone(), &mutation)?;
+        let made = app.take_mutation().map_err(|error| error.to_string())?;
+        if let Some(mutation) = &made {
+            self.peer.publish(route.clone(), mutation)?;
         }
         self.apps.insert(route.clone(), app);
         self.hold_waiting_parts(&route);
         self.introduce_in_chat(&route);
         self.generation = self.generation.wrapping_add(1);
-        self.show_on_desk(&route);
+        // A record it made opens in front of the people; one it only opened
+        // to read does not.
+        if made.is_some() {
+            self.show_on_desk(&route);
+        }
         self.focus = Some(LiveRecord {
             app: route.app_id.clone(),
             record: route.record.clone(),
@@ -2098,19 +2095,23 @@ impl AgentParticipant {
             outcome => outcome.map_err(Refusal::Door)?,
         };
         let output = running::content_named_in_value(output);
-        if let Some(mutation) = app
+        let changed = app
             .take_mutation()
-            .map_err(|error| Refusal::Agent(error.to_string()))?
-        {
+            .map_err(|error| Refusal::Agent(error.to_string()))?;
+        if let Some(mutation) = &changed {
             self.generation = self.generation.wrapping_add(1);
             self.peer
-                .publish(route.clone(), &mutation)
+                .publish(route.clone(), mutation)
                 .map_err(Refusal::Agent)?;
         }
         let place = app.presence();
         // A post goes to the chat's head part, held beside the record.
-        self.publish_parts(route).map_err(Refusal::Agent)?;
-        self.show_on_desk(route);
+        let posted = self.publish_parts(route).map_err(Refusal::Agent)?;
+        // What the step made or changed opens in front of the people; a read
+        // opens nothing.
+        if changed.is_some() || posted {
+            self.show_on_desk(route);
+        }
         self.focus = Some(LiveRecord {
             app: route.app_id.clone(),
             record: route.record.clone(),
@@ -2140,9 +2141,11 @@ impl AgentParticipant {
             .map(|activity| tilo_session_client::presence::activity(&activity))
     }
 
-    /// Put the view of the record at `route` on the workspace's shared desktop
-    /// when no tab shows it, beside the view the agent worked in last, so
-    /// the people see where it acts ([`crate::desk`]).
+    /// Put the view of the record at `route`, which the agent made or
+    /// changed, on the workspace's shared desktop when no tab shows it, beside
+    /// the view the agent worked in last, so the people see what it did
+    /// ([`crate::desk`]). A workspace with no desk yet gets one, under its
+    /// name.
     fn show_on_desk(&mut self, route: &DocumentRoute) {
         let desktop = desktop_route(&self.workspace);
         let Some(record) = self
@@ -2190,16 +2193,14 @@ impl AgentParticipant {
                 label: delegation.label.clone(),
             }),
         };
+        let name = self.workspace_name.as_deref();
         let place = |doc: &automerge::AutoCommit| {
-            crate::desk::place_view(doc, (&self.workspace, None), &opener, &view)
+            crate::desk::place_view(doc, (&self.workspace, name), &opener, &view)
         };
-        let change = match self.unopened.desktop() {
-            Some(doc) => place(doc),
-            None => self
-                .apps
-                .get(&desktop)
-                .and_then(|app| app.read(place))
-                .flatten(),
+        let change = match (self.unopened.desktop(), self.apps.get(&desktop)) {
+            (Some(doc), _) => place(doc),
+            (None, Some(app)) => app.read(place).flatten(),
+            (None, None) => place(&automerge::AutoCommit::new()),
         };
         let Some(change) = change else {
             return;
@@ -2260,6 +2261,36 @@ mod tests;
 
 /// What `workspace`'s store keeps (what the agent's records import or make), as the agent's
 /// session answers a member that asks for it.
+/// The agent's session with the workspace's host, joined to the workspace and keeping its content,
+/// waking the agent whenever something arrives.
+fn join(
+    config: &ParticipantConfig,
+    identity: &AgentIdentity,
+    workspace_id: u64,
+    store: Arc<dyn tilo_session_host::PeerStore>,
+    control: &Arc<AgentControl>,
+) -> Result<(PeerHandle, PeerEvents), String> {
+    let peer = PeerHandle::start(
+        PeerConfig {
+            host: config.host.clone(),
+            cert: identity.cert.clone(),
+            host_cert: config.host_cert.clone(),
+            revocations: RevocationList::new(),
+        },
+        Arc::new(identity.key.clone()),
+        store,
+    );
+    let events = peer.events();
+    let woken = Arc::clone(control);
+    peer.on_change(Arc::new(move || woken.wake()));
+    peer.join(workspace_id)?;
+    peer.keep_content(
+        workspace_id,
+        kept_content(&config.workspace, &config.content),
+    )?;
+    Ok((peer, events))
+}
+
 fn kept_content(workspace: &str, content: &tilo_content::ContentStore) -> Arc<dyn Kept> {
     let (workspace, content) = (workspace.to_owned(), content.clone());
     Arc::new(move |_app: &str, cluster: &str, hash: &str| {

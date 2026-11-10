@@ -400,6 +400,11 @@ fn run_agent(
             return;
         }
     };
+    let workspace_name = shared
+        .link
+        .get()
+        .zip(tilo_relay_protocol::room_workspace_id(&workspace).ok())
+        .and_then(|(link, id)| link.workspace_name(id));
     let session = Arc::clone(
         shared
             .sessions
@@ -412,6 +417,7 @@ fn run_agent(
             host: endpoint.host,
             host_cert: endpoint.host_cert,
             workspace,
+            workspace_name,
             content,
         },
         identity,

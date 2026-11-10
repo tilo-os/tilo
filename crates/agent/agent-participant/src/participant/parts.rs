@@ -101,15 +101,16 @@ impl AgentParticipant {
     }
 
     /// Publish what the record at `holder` changed of the parts it holds
-    /// beside it, each on the part's own route.
-    pub(super) fn publish_parts(&mut self, holder: &DocumentRoute) -> Result<(), String> {
+    /// beside it, each on the part's own route. Whether it published any.
+    pub(super) fn publish_parts(&mut self, holder: &DocumentRoute) -> Result<bool, String> {
         let Some(app) = self.apps.get(holder) else {
-            return Ok(());
+            return Ok(false);
         };
         let taken = app
             .take_record_mutations()
             .map_err(|error| error.to_string())?;
         let known = self.peer.status().routes;
+        let published = !taken.is_empty();
         for (record, mutation) in taken {
             let part = DocumentRoute {
                 app_id: holder.app_id.clone(),
@@ -132,6 +133,6 @@ impl AgentParticipant {
             self.peer.publish(part.clone(), &mutation)?;
             self.beside.insert(part, holder.clone());
         }
-        Ok(())
+        Ok(published)
     }
 }
