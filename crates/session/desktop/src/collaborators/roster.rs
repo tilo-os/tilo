@@ -1,15 +1,19 @@
 //! Who the desk says is here: the roster's rows and the names it gives people.
 //!
 //! A row is one person or agent of the active workspace, with what the tree
-//! says of them, the colour they are drawn in and the tab they are in. The
-//! overlay paints what this derives; nothing here measures or paints.
+//! says of them, the colour they are drawn in, the tab they are in and, for
+//! software, the window it works in. The overlay paints what this derives;
+//! nothing here measures or paints.
 
 use std::collections::HashMap;
 
-use tilo_desktop_model::{Collaborator, DesktopTree};
 use vello::peniko::Color;
 
-use super::RosterRow;
+use tilo_desktop_model::{Collaborator, DesktopTree};
+
+use crate::i18n::{t, t_args};
+
+use super::{RosterRow, doing_line};
 
 /// Every person and agent in the active workspace as the roster lists them.
 pub fn collaborator_roster_rows(desktop: &DesktopTree, local_user: &str) -> Vec<RosterRow> {
@@ -137,6 +141,14 @@ fn rows_of(
                     .map(|title| {
                         crate::i18n::t_args("people-panel-viewing", &[("title", title.into())])
                     }),
+                // Software works in a window of this workspace, the same tab everyone here sees:
+                // its row names it, and pressing it brings that window forward.
+                working_in: is_agent
+                    .then(|| {
+                        let tab = participant.active_tab?;
+                        Some((tab, tab_title_in(workspace, tab)?))
+                    })
+                    .flatten(),
                 status: None,
                 // Everyone here can be followed, software included: following
                 // an agent that has published no view yet keeps its run in
@@ -268,4 +280,22 @@ fn tab_title_in(workspace: Option<&tilo_desktop_model::Workspace>, tab_id: u64) 
         .map(|tab| tab.title.trim())
         .filter(|title| !title.is_empty())
         .map(ToString::to_string)
+}
+
+/// What a screen reader says about a present row beyond its name: an agent, what they are on now, what they are doing.
+pub(super) fn spoken_details(row: &RosterRow) -> String {
+    let mut details = Vec::new();
+    if row.is_agent {
+        details.push(t("a11y-shell-people-agent"));
+    }
+    if let Some(activity) = &row.activity {
+        details.push(t_args(
+            "a11y-shell-people-now",
+            &[("activity", activity.into())],
+        ));
+    }
+    if let Some(doing) = doing_line(row) {
+        details.push(doing);
+    }
+    details.join("; ")
 }

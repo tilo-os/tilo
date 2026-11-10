@@ -32,6 +32,7 @@ use crate::here::Screen;
 use crate::i18n::{t, t_args};
 
 mod roster;
+use roster::spoken_details;
 pub use roster::{
     AGENT_ROLE_MARKER, PeopleNames, collaborator_is_agent, collaborator_roster_rows,
     collaborator_roster_rows_named, in_app, roster_colors_with_local_user,
@@ -64,6 +65,8 @@ pub enum CollaboratorsHit {
     OpenChange(usize, usize),
     /// Open History at everything the person at this row index changed.
     OpenChanges(usize),
+    /// Bring forward the window the software at this row index works in.
+    OpenTab(usize),
     /// Inside the panel, but not on an action.
     Absorb,
     /// Outside the panel; the host closes it.
@@ -89,6 +92,10 @@ pub struct RosterRow {
     pub invited: bool,
     /// Where they are: the app or document in front of them.
     pub activity: Option<String>,
+    /// The window of this workspace a piece of software is working in: its tab, and what that tab is
+    /// called here. Software has no screen to mirror, so its row shows this instead, and pressing it
+    /// brings that window forward.
+    pub working_in: Option<(u64, String)>,
     /// Short participant intention, marked by its [`LineSource`] so model-suggested words cannot be mistaken for a direct quote.
     pub status: Option<RosterStatus>,
     /// What they changed recently in this workspace, newest first: a row with none does not open.
@@ -121,6 +128,7 @@ impl RosterRow {
             role: None,
             invited: false,
             activity: None,
+            working_in: None,
             status: status.filter(|status| !status.text.trim().is_empty()),
             recent: Vec::new(),
             followable: false,
@@ -288,6 +296,8 @@ struct RowPlace {
     follow: Rect,
     wave: Rect,
     join: Rect,
+    /// What software works in, under its row (software has no screen to mirror).
+    working_in: Rect,
     /// The open part under the row, its changes and "Their changes".
     details: Rect,
     change_rows: Vec<Rect>,
@@ -516,9 +526,40 @@ fn mirror_height(model: &CollaboratorsModel<'_>, width: f64, row_h: f64, theme: 
         return 0.0;
     }
     let room = (model.host.height() * 0.5 - row_h).max(0.0);
-    let each = room / ui::num::f64_of_usize(model.rows.len().max(1));
+    // Software has no screen to mirror, so its rows take none of the room people's mirrors share.
+    let people = model.rows.iter().filter(|row| !row.is_agent).count();
+    let each = room / ui::num::f64_of_usize(people.max(1));
     let natural = (width - 2.0 * FloatingPanelFace::body_inset(theme)) / 1.6;
     if each < 64.0 { 0.0 } else { each.min(natural) }
+}
+
+/// Software's where-it-works line: what it is doing now (its own now line, as its name and its card
+/// say it) and, where there is one, the record it is working in.
+fn working_in_line(row: &RosterRow) -> (String, Option<String>) {
+    let record = row
+        .working_in
+        .as_ref()
+        .map_or_else(String::new, |(_, title)| title.clone());
+    match doing_line(row) {
+        Some(now) if !now.trim().is_empty() => {
+            let record = (!record.is_empty()).then_some(record);
+            (now, record)
+        }
+        _ => (record, None),
+    }
+}
+
+/// What stands under row `index` beyond its line: a person's mirror of their screen, or, for
+/// software, the line naming the window it works in. None for a row with neither.
+fn under_height(row: &RosterRow, mirror_h: f64, theme: &Theme) -> f64 {
+    if !row.is_agent {
+        return mirror_h;
+    }
+    if row.working_in.is_some() {
+        f64::from(theme.tokens.metrics.bar_control_height)
+    } else {
+        0.0
+    }
 }
 
 /// Someone's screen as a small picture: their windows where they stand, each named under its app's mark where there is room, the one they work in ringed in their colour.
@@ -713,25 +754,40 @@ impl CollaboratorsOverlay {
         .height;
         let sections = groups.iter().filter(|(_, group)| !group.is_empty()).count();
         let mirror_h = mirror_height(model, width, row_h, theme);
-        let card_h = row_h
-            + if mirror_h > 0.0 {
-                mirror_h + f64::from(spacing.s2)
-            } else {
-                0.0
-            };
+        // What stands under each row: a person's mirror, software's where-it-works line, or nothing
+        // (software has no screen to mirror).
+        let under: Vec<f64> = model
+            .rows
+            .iter()
+            .map(|row| under_height(row, mirror_h, theme))
+            .collect();
+        let card_h = |index: usize| {
+            row_h
+                + under.get(index).copied().map_or_else(
+                    || 0.0,
+                    |under| {
+                        if under > 0.0 {
+                            under + f64::from(spacing.s2)
+                        } else {
+                            0.0
+                        }
+                    },
+                )
+        };
+        let tallest = (0..model.rows.len()).map(card_h).fold(row_h, f64::max);
         let body_h = if sections == 0 {
-            card_h
+            model.rows.first().map_or(0.0, |_| card_h(0))
         } else {
             groups
                 .iter()
                 .filter(|(_, group)| !group.is_empty())
-                .map(|(_, group)| heading_h + card_h * ui::num::f64_of_usize(group.len()))
+                .map(|(_, group)| heading_h + group.iter().map(|index| card_h(*index)).sum::<f64>())
                 .sum::<f64>()
                 + f64::from(spacing.s2) * ui::num::f64_of_usize(sections.saturating_sub(1))
         };
         let open_extra = if open_index.is_some() { revealed } else { 0.0 };
         self.body_height = body_h + open_extra;
-        self.place_panel(theme, model, &face, width, card_h);
+        self.place_panel(theme, model, &face, width, tallest);
         self.place_rows(
             text,
             theme,
@@ -741,7 +797,7 @@ impl CollaboratorsOverlay {
                 open_index,
                 shown_changes,
                 revealed,
-                mirror_h,
+                under: &under,
             },
         );
     }
@@ -815,7 +871,7 @@ impl CollaboratorsOverlay {
             open_index,
             shown_changes,
             revealed,
-            mirror_h,
+            under,
         } = *plan;
         self.rows.clear();
         self.headings.clear();
@@ -858,12 +914,17 @@ impl CollaboratorsOverlay {
                 // The open part's lines end where Follow ends.
                 let line_right = follow_right + bleed;
                 y += row_h;
-                if mirror_h > 0.0 {
-                    self.mirrors.push((
-                        index,
-                        Rect::new(self.body.x0, y + gap, self.body.x1, y + gap + mirror_h),
-                    ));
-                    y += gap + mirror_h;
+                let under_h = under.get(index).copied().unwrap_or(0.0);
+                if under_h > 0.0 {
+                    let strip = Rect::new(self.body.x0, y + gap, self.body.x1, y + gap + under_h);
+                    // A person's screen is a picture of where they are; software has none, so its
+                    // row names the window it works in, which pressing brings forward.
+                    if row.is_agent {
+                        place.working_in = strip;
+                    } else {
+                        self.mirrors.push((index, strip));
+                    }
+                    y += gap + under_h;
                 }
                 if open_index == Some(index) {
                     place.details = Rect::new(self.body.x0, y, self.body.x1, y + revealed);
@@ -1146,15 +1207,16 @@ impl CollaboratorsOverlay {
                 .iter()
                 .find(|(index, _)| *index == place.index)
                 .map(|(_, rect)| *rect);
-            // The card is its row and its mirror: hovered or opened, they lift together.
+            // The card is its row and what stands under it: hovered or opened, they lift together.
+            let under = mirror.or_else(|| Some(place.working_in).filter(|rect| rect.area() > 0.0));
             let hovered = cursor.is_some_and(|p| {
-                place.rect.contains(p) || mirror.is_some_and(|mirror| mirror.contains(p))
+                place.rect.contains(p) || under.is_some_and(|under| under.contains(p))
             });
             let opened = model.expanded_id == Some(row.id.as_str());
             let following = model.followed_id == Some(row.id.as_str());
-            let card = mirror.map_or(place.rect, |mirror| place.rect.union(mirror));
+            let card = under.map_or(place.rect, |under| place.rect.union(under));
             let lifted = hovered || opened || following;
-            if mirror.is_some() && lifted {
+            if under.is_some() && lifted {
                 let radius = f64::from(theme.tokens.radii.control);
                 scene.fill(
                     vello::peniko::Fill::NonZero,
@@ -1348,6 +1410,25 @@ impl CollaboratorsOverlay {
                 }
                 scene.pop_layer();
             }
+            if place.working_in.area() > 0.0 {
+                // What software is doing now, and the window it does it in: pressing the line brings
+                // that window forward.
+                let (line, record) = working_in_line(row);
+                let mut face = ListRowFace::new(&line);
+                if let Some(record) = &record {
+                    face = face.meta(record);
+                }
+                face.interaction(ui::widget::Interaction {
+                    hovered: cursor.is_some_and(|p| place.working_in.contains(p)),
+                    pressed: false,
+                    focused: self.keyboard_focus == Some(CollaboratorsHit::OpenTab(place.index)),
+                    disabled: false,
+                })
+                .paint(
+                    &mut ui::paint::PaintCtx::new(scene, scrolled, text, theme),
+                    place.working_in,
+                );
+            }
             if let Some(mirror) = mirror {
                 paint_screen(
                     scene,
@@ -1442,6 +1523,7 @@ impl CollaboratorsOverlay {
                 id_of(index).map(|id| format!("details:{id}"))
             }
             CollaboratorsHit::OpenChanges(index) => id_of(index).map(|id| format!("changes:{id}")),
+            CollaboratorsHit::OpenTab(index) => id_of(index).map(|id| format!("work:{id}")),
             CollaboratorsHit::OpenChange(index, k) => {
                 id_of(index).map(|id| format!("change:{id}:{k}"))
             }
@@ -1759,6 +1841,9 @@ impl CollaboratorsOverlay {
             if place.join.contains(point) {
                 return CollaboratorsHit::JoinCall(place.index);
             }
+            if place.working_in.contains(point) {
+                return CollaboratorsHit::OpenTab(place.index);
+            }
             if place.details.contains(point) {
                 if place.settled && place.changes.contains(point) {
                     return CollaboratorsHit::OpenChanges(place.index);
@@ -1794,6 +1879,9 @@ impl CollaboratorsOverlay {
             }
             if place.wave.area() > 0.0 {
                 order.push(CollaboratorsHit::Wave(place.index));
+            }
+            if place.working_in.area() > 0.0 {
+                order.push(CollaboratorsHit::OpenTab(place.index));
             }
             if place.follow.area() > 0.0 {
                 order.push(if self.is_followed(place.index) {
@@ -1838,6 +1926,7 @@ impl CollaboratorsOverlay {
             CollaboratorsHit::JoinCall(index) => place(index).map(|place| place.join),
             CollaboratorsHit::ToggleDetails(index) => place(index).map(|place| place.rect),
             CollaboratorsHit::OpenChanges(index) => place(index).map(|place| place.changes),
+            CollaboratorsHit::OpenTab(index) => place(index).map(|place| place.working_in),
             CollaboratorsHit::OpenChange(index, k) => {
                 place(index).and_then(|place| place.change_rows.get(k).copied())
             }
@@ -1995,6 +2084,11 @@ impl CollaboratorsOverlay {
                     ),
                     t("a11y-shell-people-changes-description"),
                 ),
+                // The window software works in, by what it is called here.
+                CollaboratorsHit::OpenTab(index) => (
+                    self.working_in_name(index),
+                    t("a11y-shell-people-change-description"),
+                ),
                 CollaboratorsHit::Invite => {
                     (t("a11y-shell-invite"), t("a11y-shell-invite-description"))
                 }
@@ -2026,6 +2120,17 @@ impl CollaboratorsOverlay {
                 t("a11y-shell-people-description")
             ))
             .with_children(children)
+    }
+
+    /// What software's where-it-works line says, as a reader hears it: the window's name here.
+    fn working_in_name(&self, index: usize) -> String {
+        let Some(row) = self.shown_rows.get(index) else {
+            return String::new();
+        };
+        match working_in_line(row) {
+            (line, Some(record)) => format!("{line}, {record}"),
+            (line, None) => line,
+        }
     }
 
     /// [`Self::accessibility_snapshot`] with each control's bounds and its focus place as the reader's target (`people:<n>`), which [`Self::hit_for_target`] turns back into what it does.
@@ -2122,29 +2227,12 @@ fn text_width(text: &mut TextRenderer, label: &str, theme: &Theme) -> f64 {
     )
 }
 
-/// What a screen reader says about a present row beyond its name: an agent, what they are on now, what they are doing.
-fn spoken_details(row: &RosterRow) -> String {
-    let mut details = Vec::new();
-    if row.is_agent {
-        details.push(t("a11y-shell-people-agent"));
-    }
-    if let Some(activity) = &row.activity {
-        details.push(t_args(
-            "a11y-shell-people-now",
-            &[("activity", activity.into())],
-        ));
-    }
-    if let Some(doing) = doing_line(row) {
-        details.push(doing);
-    }
-    details.join("; ")
-}
-
 /// What [`CollaboratorsOverlay::place_rows`] places: the groups' row indices and the open row's details as the layout measured them.
 #[derive(Clone, Copy)]
 struct RowsPlan<'p> {
-    /// How tall each person's mirror of their screen is; none while the roster is in the bar.
-    mirror_h: f64,
+    /// What stands under each row beyond its line, by row: a person's mirror of their screen,
+    /// software's where-it-works line, or nothing.
+    under: &'p [f64],
     groups: &'p [(&'static str, Vec<usize>)],
     open_index: Option<usize>,
     shown_changes: usize,
@@ -2188,7 +2276,6 @@ impl ButtonWidths {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_desktop_model::{Collaborator, DesktopTree};
 
     fn row(id: &str, label: &str) -> RosterRow {
         RosterRow {
@@ -2201,6 +2288,7 @@ mod tests {
             role: None,
             invited: false,
             activity: Some(format!("Viewing {label}'s notes")),
+            working_in: None,
             status: None,
             recent: Vec::new(),
             followable: true,
@@ -2300,6 +2388,107 @@ mod tests {
             .filter_map(|node| node.name.clone())
             .any(|name| name == t_args("a11y-shell-follow", &[("name", "Claude Code".into())]));
         assert!(named, "the roster offers Follow Claude Code");
+    }
+
+    /// A kept roster draws people's screens and never a screen for software: an agent's row names
+    /// the window it works in instead, and pressing that line brings the window forward.
+    #[test]
+    fn an_attached_agent_row_names_its_window_instead_of_mirroring_one() {
+        let mut agent = row("claude", "Claude Code");
+        agent.is_agent = true;
+        agent.working_in = Some((7, "Lounge notes".into()));
+        let rows = vec![row("ada", "Ada"), agent];
+        let mut overlay = CollaboratorsOverlay::default();
+        let host = Rect::new(0.0, 0.0, 900.0, 900.0);
+        let theme = Theme::dark();
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        overlay.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &CollaboratorsModel {
+                host,
+                workspace: "Lounge",
+                rows: &rows,
+                may_invite: true,
+                may_pin: true,
+                pinned: true,
+                panel: None,
+                screens: &[],
+                followed_id: None,
+                following_pairs: &[],
+                expanded_id: None,
+                waved: &[],
+                waved_until: None,
+            },
+            None,
+        );
+        assert!(
+            overlay.mirrors.iter().any(|(index, _)| *index == 0),
+            "a person's row keeps its mirror"
+        );
+        assert!(
+            !overlay.mirrors.iter().any(|(index, _)| *index == 1),
+            "software has no screen to mirror: {:?}",
+            overlay.mirrors
+        );
+        let place = overlay
+            .rows
+            .iter()
+            .find(|place| place.index == 1)
+            .expect("the agent's row is laid out");
+        assert!(
+            place.working_in.area() > 0.0,
+            "its row names the window it works in"
+        );
+        // The card is the row and that line, as a person's is the row and their mirror: the
+        // panel's own body holds it, none of it reaching past the card's edge.
+        assert!(
+            place.working_in.y0 >= place.rect.y1 && place.working_in.y1 <= overlay.body.y1,
+            "{:?} under {:?}",
+            place.working_in,
+            place.rect
+        );
+        assert_eq!(
+            overlay.hit_test(place.working_in.center()),
+            CollaboratorsHit::OpenTab(1)
+        );
+        assert_eq!(
+            overlay.rect_for_hit(CollaboratorsHit::OpenTab(1)),
+            Some(place.working_in)
+        );
+        // It is named for a reader by what it says, not by a control's glyph.
+        let named = overlay
+            .accessibility_snapshot()
+            .children
+            .iter()
+            .filter_map(|node| node.name.clone())
+            .any(|name| name == "Lounge notes");
+        assert!(named, "the line is offered to assistive technology too");
+    }
+
+    /// Software's line says what it is doing and the window it does it in: its own now line where
+    /// it has one, the record's name alone where it has none.
+    #[test]
+    fn software_names_its_now_line_and_its_window() {
+        let mut agent = row("cc", "Claude Code");
+        agent.is_agent = true;
+        agent.working_in = Some((7, "Lounge notes".into()));
+        assert_eq!(working_in_line(&agent), ("Lounge notes".into(), None));
+        agent.status = Some(RosterStatus {
+            text: "searching the workspace".into(),
+            source: LineSource::Written,
+        });
+        assert_eq!(
+            working_in_line(&agent),
+            (
+                "searching the workspace".into(),
+                Some("Lounge notes".into())
+            ),
+            "what it is doing, then the window it is doing it in"
+        );
     }
 
     /// Software that has published no view yet is still followed: its row

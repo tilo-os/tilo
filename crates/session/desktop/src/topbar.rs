@@ -167,6 +167,9 @@ struct CacheFingerprint {
     collaborator_names: Vec<String>,
     collaborator_agents: Vec<bool>,
     collaborator_overflow: usize,
+    /// How many of the people present the bar stood faces for: a narrower bar folds more of them
+    /// into the count badge, which repaints the bar.
+    faces_shown: usize,
     /// Each face's live look: dimmed, its call ring's level and its bounce, quantised, so presence
     /// repaints the bar only when a face changes.
     faces: Vec<(bool, Option<u8>, u16)>,
@@ -368,6 +371,9 @@ pub struct TopBarChrome {
     /// they are in a call, as the roster they were read from says. `None` for a face the roster
     /// says nothing of, which the presence beside the bar answers instead.
     collaborator_presence: Vec<Option<(ui::Availability, bool)>>,
+    /// How many of the people present the last draw stood a face for: the rest the "+N" badge
+    /// counts. The bar stands as many as it has room for, the one this person follows first.
+    faces_shown: usize,
     /// Same index as `collaborator_initials` : how each face looks now, read from presence at each
     /// draw.
     face_looks: Vec<FaceLook>,
@@ -510,6 +516,7 @@ impl TopBarChrome {
             face_rects: Vec::new(),
             call_since: None,
             collaborator_overflow: 0,
+            faces_shown: 0,
             status: crate::chrome::SystemStatus::default(),
             chrome: None,
             clock: ClockSnapshot::default(),
@@ -581,6 +588,7 @@ impl TopBarChrome {
             collaborator_names: self.collaborator_names.clone(),
             collaborator_agents: self.collaborator_agents.clone(),
             collaborator_overflow: self.collaborator_overflow,
+            faces_shown: self.faces_shown,
             faces: self
                 .face_looks
                 .iter()
@@ -946,14 +954,22 @@ impl TopBarChrome {
         self.collaborator_ids.clear();
         self.collaborator_presence.clear();
         let now = tilo_clock::unix_now();
-        // Counted with the same `present` filter as the avatars, so the overflow chip agrees with
-        // the row.
-        let peer_count = roster.iter().filter(present).count();
         // Settled over the whole workspace, so a peer's avatar matches the colour their cursor is
         // drawn in elsewhere on the desktop.
         let colors = roster_colors(roster, local.unwrap_or(""));
-        let (shown, _) = ui::presence::FaceStack::BAR.split(peer_count);
-        for c in roster.iter().filter(present).take(shown) {
+        // Everyone present, the one this person follows first: the bar stands as many faces as it
+        // has room for and folds the rest into the count badge, so a narrow bar keeps the face
+        // being watched and never drops anyone uncounted.
+        let mut here: Vec<&tilo_desktop_model::Collaborator> =
+            roster.iter().filter(present).collect();
+        here.sort_by_key(|c| !c.following);
+        let peer_count = here.len();
+        // How many of them could stand at all, before the bar knows its width: a draw folds this
+        // further into what the bar has room for.
+        let (stand, counted) = ui::presence::FaceStack::BAR.split(peer_count);
+        self.faces_shown = stand;
+        self.collaborator_overflow = counted;
+        for c in here {
             let Some(ch) = c.name.chars().next() else {
                 continue;
             };
@@ -992,7 +1008,6 @@ impl TopBarChrome {
                     }),
             );
         }
-        self.collaborator_overflow = peer_count.saturating_sub(self.collaborator_initials.len());
         self.sync_strips(tree);
     }
 

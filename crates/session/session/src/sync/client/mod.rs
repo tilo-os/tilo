@@ -790,7 +790,9 @@ impl Roster {
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<Person> {
         let people = self.people(tree, records, app_name);
-        tilo_desktop::here::overlay_collaborators(tree, &people);
+        // Whose view this person follows, so the bar keeps that face when it has room for only one.
+        let following = self.here.borrow().following().map(str::to_owned);
+        tilo_desktop::here::overlay_collaborators(tree, &people, following.as_deref());
         people
     }
 

@@ -42,6 +42,7 @@ impl TopBarChrome {
         self.collaborator_ids
             .iter()
             .position(|shown| shown == id)
+            .filter(|index| *index < self.faces_shown)
             .and_then(|index| self.face_rects.get(index).copied())
     }
 
@@ -200,17 +201,29 @@ impl TopBarChrome {
                 }
             })
             .collect();
-        // The faces keep right of the clock's lane: on a narrow bar the ones that do not fit join
-        // the "+N" badge, and with no room for even the badge the people button beside them is
-        // who is here.
         let stack = ui::presence::FaceStack::BAR;
-        let room = if self.center_lane.is_zero_area() {
-            f64::INFINITY
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let pill_right = self.ws_pill_rect.x1.max(self.rect.x0);
+        // The faces keep off the clock's lane, standing between it and the people cluster where
+        // that is room enough. What does not fit joins the "+N" badge, and with no room for even
+        // the badge the people button beside them is who is here. A phone-wide bar has no room
+        // right of the clock and the gap before it where they fit: they stand there rather than
+        // folding everyone out of the bar, so the agent this person follows is still on it.
+        let (anchor, room) = if self.center_lane.is_zero_area() {
+            (stack_right_x, stack_right_x - pill_right)
         } else {
-            stack_right_x - self.center_lane.x1 - f64::from(theme.tokens.spacing.s2)
+            let right_of_clock = stack_right_x - self.center_lane.x1 - gap;
+            if right_of_clock >= stack.width_of(1, 0) {
+                (stack_right_x, right_of_clock)
+            } else {
+                let before_clock = (self.center_lane.x0 - gap).max(pill_right);
+                (before_clock, (before_clock - pill_right).max(0.0))
+            }
         };
         let mut faces = faces;
-        let mut more = self.collaborator_overflow;
+        let (most, past) = stack.split(faces.len());
+        faces.truncate(most);
+        let mut more = past;
         while !faces.is_empty() && stack.width_of(faces.len(), more) > room {
             faces.pop();
             more = more.saturating_add(1);
@@ -218,9 +231,11 @@ impl TopBarChrome {
         if stack.width_of(0, more) > room {
             more = 0;
         }
+        self.faces_shown = faces.len();
+        self.collaborator_overflow = more;
         let (rects, badge) = stack.paint(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-            (stack_right_x, center_y),
+            (anchor, center_y),
             (&faces, more),
             // The bar's own ground (`draw_overlay_surface`), so the gap between faces and their
             // rings is the bar, not a grey halo.
@@ -232,9 +247,9 @@ impl TopBarChrome {
         }
         let width = stack.width_of(faces.len(), more);
         Rect::new(
-            stack_right_x - width,
+            anchor - width,
             center_y - BAR_CONTROL_PX / 2.0,
-            stack_right_x,
+            anchor,
             center_y + BAR_CONTROL_PX / 2.0,
         )
     }
@@ -515,6 +530,83 @@ mod tests {
             bar.people_left_x > bar.center_rect.x1,
             "and keeps off the clock"
         );
+    }
+
+    /// On a phone-wide bar an agent is never silently dropped: every face the bar has room for
+    /// stands, the one this person follows first, and the badge counts everyone past them. The
+    /// faces never reach past the bar's own left lane, where they would be lost off its edge.
+    #[test]
+    fn a_phone_wide_bar_keeps_the_followed_agent_or_counts_it() {
+        let mut tree = desk(&[("ada", "Ada Lovelace"), ("cc", "Claude Code")]);
+        tree.workspaces[0].collaborators[1].role_id = Some("agent".into());
+        tree.workspaces[0].collaborators[1].following = true;
+        for width in [390.0, 360.0] {
+            let (mut bar, _chrome) = bar_over(&tree, true);
+            super::super::tests::lay_out_and_draw(&mut bar, width);
+            let bar_rect = bar.bar_rect();
+            let agent = bar.face_rect("cc");
+            let person = bar.face_rect("ada");
+            for rect in bar.face_rects.iter() {
+                assert!(
+                    rect.x0 >= bar_rect.x0 && rect.x1 <= bar_rect.x1,
+                    "a face stays in the bar at {width}: {rect:?} in {bar_rect:?}"
+                );
+                assert!(
+                    rect.x0 >= bar.ws_pill_rect.x1,
+                    "and past the workspace pill at {width}: {rect:?} over {:?}",
+                    bar.ws_pill_rect
+                );
+            }
+            // Someone present is either a face or counted: never neither.
+            let stood = usize::from(agent.is_some()) + usize::from(person.is_some());
+            assert_eq!(
+                stood + bar.collaborator_overflow(),
+                2,
+                "both people are accounted for at {width}"
+            );
+            if stood == 1 {
+                assert!(
+                    agent.is_some(),
+                    "the one face the bar keeps is the agent this person follows, at {width}"
+                );
+            }
+            if stood == 0 {
+                assert!(
+                    bar.collaborator_overflow() >= 2,
+                    "the badge counts them both"
+                );
+            }
+        }
+    }
+
+    /// Where the bar stands only some of the faces, the one this person follows is always among
+    /// them, and everyone else is counted.
+    #[test]
+    fn a_crowded_bar_keeps_the_followed_face() {
+        let crowd: Vec<(String, String)> = (0..6)
+            .map(|i| (format!("p{i}"), format!("Person {i}")))
+            .collect();
+        let mut tree = desk(
+            &crowd
+                .iter()
+                .map(|(a, b)| (a.as_str(), b.as_str()))
+                .collect::<Vec<_>>(),
+        );
+        tree.workspaces[0].collaborators[4].following = true;
+        for width in [640.0, 720.0, 900.0] {
+            let (mut bar, _chrome) = bar_over(&tree, true);
+            super::super::tests::lay_out_and_draw(&mut bar, width);
+            assert!(bar.faces_shown > 0, "some faces stand at {width}");
+            assert!(
+                bar.face_rect("p4").is_some(),
+                "the followed one is among them at {width}"
+            );
+            assert_eq!(
+                bar.faces_shown + bar.collaborator_overflow(),
+                6,
+                "and the badge counts the rest at {width}"
+            );
+        }
     }
 
     /// A count arriving on the bell, or growing, never moves a face: the pointer already on its way

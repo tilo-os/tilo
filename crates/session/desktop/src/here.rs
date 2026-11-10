@@ -1080,11 +1080,16 @@ fn names(text: &str, name: &str) -> bool {
 
 /// `people` as the active workspace's collaborators, for the bar's avatars: read from a copy of the
 /// tree, never written to the workspace's document.
-pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person]) {
+pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person], following: Option<&str>) {
     let active = tree.active;
     let Some(workspace) = tree.workspaces.iter_mut().find(|w| w.slot == active) else {
         return;
     };
+    // Following is said again each frame, like where everyone is: someone no longer followed, or
+    // no longer here, carries none.
+    for known in &mut workspace.collaborators {
+        known.following = false;
+    }
     for person in people {
         // Who a known member is belongs to the workspace; where they are and how available they are
         // is presence's, and is said again every frame.
@@ -1093,6 +1098,12 @@ pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person]) {
             .iter_mut()
             .find(|c| c.id == person.id)
         {
+            // Whose view this desk follows: the bar keeps that face when it is too narrow to stand
+            // everyone's. Following names a publisher, which is a person's own device as often as
+            // the person.
+            known.following = following.is_some_and(|followed| {
+                followed == person.id || person.devices.iter().any(|device| device.id == followed)
+            });
             known.active_tab = person.tab;
             known.availability = Some(person.availability.id().to_owned());
             known.call = person.call.as_ref().map(ui::CallPresence::encode);
@@ -1110,7 +1121,11 @@ pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person]) {
             continue;
         }
         let (r, g, b) = ui::presence::user_color(&person.id);
+        let follows = following.is_some_and(|followed| {
+            followed == person.id || person.devices.iter().any(|device| device.id == followed)
+        });
         workspace.collaborators.push(Collaborator {
+            following: follows,
             id: person.id.clone(),
             name: person.label.clone(),
             active_tab: person.tab,
@@ -2126,6 +2141,54 @@ mod tests {
         );
     }
 
+    /// Whose view this desk follows is said on their row and no other's, each frame: the bar keeps
+    /// that face when it has room for only one.
+    #[test]
+    fn collaborators_overlay_marks_whom_this_desk_follows() {
+        let mut tree = DesktopTree::default();
+        let workspace = tilo_desktop_model::WorkspaceSlot::default();
+        tree.workspaces
+            .push(tilo_desktop_model::Workspace::new(workspace, "Design"));
+        tree.active = workspace;
+        let people: Vec<Person> = ["ada", "cc"]
+            .into_iter()
+            .map(|id| Person {
+                id: id.into(),
+                user: None,
+                label: id.into(),
+                devices: Vec::new(),
+                rgb: (1, 2, 3),
+                agent: id == "cc",
+                tab: None,
+                focus_app: None,
+                place: None,
+                status: None,
+                availability: ui::Availability::Available,
+                call: None,
+            })
+            .collect();
+        overlay_collaborators(&mut tree, &people, Some("cc"));
+        let following: Vec<String> = tree
+            .active_workspace()
+            .expect("a workspace")
+            .collaborators
+            .iter()
+            .filter(|c| c.following)
+            .map(|c| c.id.clone())
+            .collect();
+        assert_eq!(following, ["cc"], "the followed one, and only they");
+        // Stopping says so on every row, not just the one that was followed.
+        overlay_collaborators(&mut tree, &people, None);
+        assert!(
+            tree.active_workspace()
+                .expect("a workspace")
+                .collaborators
+                .iter()
+                .all(|c| !c.following),
+            "nobody is followed"
+        );
+    }
+
     #[test]
     fn collaborators_overlay_marks_agents_and_keeps_existing_rows() {
         let mut tree = DesktopTree::default();
@@ -2147,7 +2210,7 @@ mod tests {
             availability: ui::Availability::Available,
             call: None,
         }];
-        overlay_collaborators(&mut tree, &people);
+        overlay_collaborators(&mut tree, &people, None);
         let workspace = tree.active_workspace().expect("a workspace");
         let bot = workspace
             .collaborators
@@ -2161,7 +2224,7 @@ mod tests {
             Some(format!("#{r:02x}{g:02x}{b:02x}").as_str()),
             "the colour their pointer is drawn in"
         );
-        overlay_collaborators(&mut tree, &people);
+        overlay_collaborators(&mut tree, &people, None);
         assert_eq!(
             tree.active_workspace().map(|w| w
                 .collaborators
@@ -2199,7 +2262,7 @@ mod tests {
             availability: ui::Availability::Available,
             call: None,
         }];
-        overlay_collaborators(&mut tree, &people);
+        overlay_collaborators(&mut tree, &people, None);
         let workspace = tree.active_workspace().expect("a workspace");
         let bot = workspace
             .collaborators

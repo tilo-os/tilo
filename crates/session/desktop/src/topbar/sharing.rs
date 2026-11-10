@@ -32,6 +32,7 @@ impl TopBarChrome {
         let mut faces: Vec<AccessNode> = self
             .collaborator_names
             .iter()
+            .take(self.faces_shown)
             .enumerate()
             .map(|(index, name)| {
                 let name = if self

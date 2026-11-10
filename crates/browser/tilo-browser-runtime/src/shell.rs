@@ -205,7 +205,10 @@ impl ChromeSource for PageChrome {
 
     fn place_people(&self, tree: &mut DesktopTree) {
         let people = self.people(tree);
-        tilo_desktop::here::overlay_collaborators(tree, &people);
+        // Whom this page follows, as its own presence says: the bar keeps that face when it has
+        // room for only one.
+        let following = self.here.borrow().following().map(str::to_owned);
+        tilo_desktop::here::overlay_collaborators(tree, &people, following.as_deref());
     }
 
     fn with_standing<R>(&self, answer: impl FnOnce(&Standing<'_>) -> R) -> R {

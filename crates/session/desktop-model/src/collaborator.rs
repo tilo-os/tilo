@@ -50,6 +50,12 @@ pub struct Collaborator {
     /// `None` when they are in no call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call: Option<String>,
+    /// This person's view is the one the desk follows, placed by the host
+    /// each frame from its own presence: their face is the one the bar keeps
+    /// when it is too narrow to show everyone. Never synced — following is the
+    /// person at this desk's own.
+    #[serde(skip)]
+    pub following: bool,
 }
 
 impl Collaborator {
@@ -68,6 +74,7 @@ impl Collaborator {
             own_device: false,
             availability: None,
             call: None,
+            following: false,
         }
     }
 

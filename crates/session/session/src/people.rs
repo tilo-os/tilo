@@ -24,7 +24,7 @@ use tilo_desktop::profile_card::{
     OtherPerson, ProfileAction, ProfileCard, ProfileChoice, ProfileGroup, ProfileModel,
 };
 use tilo_desktop_surface::DesktopHandle;
-use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect};
+use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, DeskEffect};
 use tilo_session_core::door::{Look, Published};
 use ui::host_operation::ResourceOperationStart;
 use ui::kurbo::{Affine, Point, Rect, Size, Vec2};
@@ -972,6 +972,23 @@ impl Panel {
                 if let Some(sync) = &self.sync {
                     sync.wave(&id);
                     shown.waved = Some((id, ui::time::Instant::now()));
+                }
+            }
+            // The window software works in: brought forward, so what it is on stands in front of
+            // this person.
+            CollaboratorsHit::OpenTab(index) => {
+                let tab = shown
+                    .rows
+                    .get(index)
+                    .and_then(|row| row.working_in.as_ref())
+                    .map(|(tab, _)| *tab);
+                if let Some(tab) = tab {
+                    let command = DeskEffect::Focus {
+                        tab: tab.to_string(),
+                    };
+                    if let Err(error) = self.handle.dispatch(command) {
+                        tracing::warn!(%error, "the window software works in could not come forward");
+                    }
                 }
             }
             // Their recent changes, where this workspace's history has them.
