@@ -265,6 +265,10 @@ pub(crate) struct Channels {
     /// Content keys a host handed this session for a record whose group it
     /// is not admitted to itself ([`Self::install_handed`]), by unit.
     handed: HashMap<ChannelId, ChannelContentKeys>,
+    /// Each group's state as last sealed for the durable store.
+    exported: HashMap<ChannelId, SavedMember>,
+    /// Groups whose state changed since they were last sealed.
+    stale: HashSet<ChannelId>,
     dirty: bool,
 }
 
@@ -281,6 +285,8 @@ impl Channels {
             saved: HashMap::new(),
             saved_requests: HashMap::new(),
             handed: HashMap::new(),
+            exported: HashMap::new(),
+            stale: HashSet::new(),
             dirty: false,
         }
     }
@@ -333,18 +339,30 @@ impl Channels {
         if !std::mem::take(&mut self.dirty) {
             return None;
         }
-        let mut members: HashMap<ChannelId, SavedMember> = self.saved.clone();
-        for (channel, group) in &self.groups {
-            if let Ok(sealed) = group.peer.export_sealed(&self.vault) {
-                members.insert(
-                    *channel,
-                    SavedMember {
-                        channel: *channel,
-                        sealed,
-                    },
-                );
+        // Only the groups that changed are sealed again: a session in many
+        // workspaces sealed every group on each change, tens of ms a frame
+        // that held up every answer it was reading.
+        for channel in std::mem::take(&mut self.stale) {
+            match self
+                .groups
+                .get(&channel)
+                .map(|group| group.peer.export_sealed(&self.vault))
+            {
+                Some(Ok(sealed)) => {
+                    self.exported
+                        .insert(channel, SavedMember { channel, sealed });
+                }
+                Some(Err(_)) | None => {
+                    self.exported.remove(&channel);
+                }
             }
         }
+        let mut members: HashMap<ChannelId, SavedMember> = self.saved.clone();
+        members.extend(
+            self.exported
+                .iter()
+                .map(|(channel, member)| (*channel, member.clone())),
+        );
         let mut members: Vec<SavedMember> = members.into_values().collect();
         members.compact_sort_by_key(|member| member.channel.0);
         Some(SavedChannels { members })
@@ -509,6 +527,7 @@ impl Channels {
             },
         );
         self.deferred.retain(|waiting| waiting != route);
+        self.stale.insert(scope);
         self.dirty = true;
         for frame in self.unopened.remove(&scope).unwrap_or_default() {
             self.apply(scope, frame, policy, now_ms, &mut changes);
@@ -666,6 +685,7 @@ impl Channels {
             return;
         };
         if event.is_some_and(|event| !matches!(event, PeerEvent::Duplicate | PeerEvent::Ignored)) {
+            self.stale.insert(channel);
             self.dirty = true;
         }
         // Ask again with a fresh member key: the request sent before was
@@ -707,6 +727,7 @@ impl Channels {
                 .unsigned_access_request(now_ms / 1000, fresh, &self.vault)
                 .ok()
                 .flatten();
+            self.stale.insert(channel);
             self.dirty = true;
         }
         let Some(request) = group.request.clone() else {

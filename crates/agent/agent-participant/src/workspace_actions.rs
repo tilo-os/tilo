@@ -57,7 +57,7 @@ pub use content::MAX_PUT_BYTES;
 pub use terminal::{ShellRan, TERMINAL_APP, Watching, WorkspaceShell};
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
@@ -378,6 +378,9 @@ enum Job {
         length: u64,
         done: Completer<Result<tilo_actions::remote::ContentGetAnswer, ActionHostError>>,
     },
+    /// A workspace requests wait to be joined to changed: those it joined
+    /// run.
+    Joined(u64),
 }
 
 impl Job {
@@ -389,6 +392,7 @@ impl Job {
             Self::Ran(_) => "ran",
             Self::Content { .. } => "content",
             Self::ContentGet { .. } => "content-get",
+            Self::Joined(_) => "joined",
         }
     }
 
@@ -399,7 +403,7 @@ impl Job {
             | Self::Invoke { workspace_id, .. }
             | Self::Content { workspace_id, .. }
             | Self::ContentGet { workspace_id, .. } => Some(*workspace_id),
-            Self::Feedback { .. } | Self::Ran(_) => None,
+            Self::Feedback { .. } | Self::Ran(_) | Self::Joined(_) => None,
         }
     }
 }
@@ -514,7 +518,7 @@ impl WorkspaceActions {
         if joins.contains_key(&workspace_id) {
             return;
         }
-        match Workspace::join(member, workspace_id) {
+        match Workspace::join(member, workspace_id, &self.shared) {
             Ok(workspace) => {
                 joins.insert(workspace_id, Some(workspace));
                 drop(joins);
@@ -732,7 +736,7 @@ impl WorkspaceActions {
         // A run in the host's shell ends there, as on a Ctrl+C, and settles
         // as cancelled once what it printed is recorded.
         if let Some(stop) = &entry.stop {
-            stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            stop.store(true, Ordering::SeqCst);
             return Ok(());
         }
         if running {
@@ -909,6 +913,9 @@ struct Workspace {
     events: PeerEvents,
     /// Signalled whenever the session's status or events change.
     wake: Arc<(Mutex<bool>, Condvar)>,
+    /// Set while requests wait for the workspace to be joined: its next
+    /// change hands the service's thread [`Job::Joined`].
+    awaited: Arc<AtomicBool>,
     ready: bool,
     /// What earlier waits for keys gave up on.
     gave_up: GaveUp,
@@ -920,7 +927,11 @@ struct Workspace {
 }
 
 impl Workspace {
-    fn join(member: &WorkspaceMember, workspace_id: u64) -> Result<Self, String> {
+    fn join(
+        member: &WorkspaceMember,
+        workspace_id: u64,
+        shared: &Arc<Shared>,
+    ) -> Result<Self, String> {
         let _runtime = member.runtime.enter();
         let peer = PeerHandle::start(
             PeerConfig {
@@ -934,17 +945,26 @@ impl Workspace {
         );
         let events = peer.events();
         let wake = Arc::new((Mutex::new(false), Condvar::new()));
+        let awaited = Arc::new(AtomicBool::new(false));
         let signal = Arc::clone(&wake);
+        let (waiting, service) = (Arc::clone(&awaited), Arc::downgrade(shared));
         peer.on_change(Arc::new(move || {
             let (flag, condvar) = &*signal;
             *flag.lock_recover() = true;
             condvar.notify_all();
+            if waiting.swap(false, Ordering::SeqCst)
+                && let Some(shared) = service.upgrade()
+                && let Some(jobs) = shared.jobs.lock_recover().as_ref()
+            {
+                let _ = jobs.send((Instant::now(), Job::Joined(workspace_id)));
+            }
         }));
         peer.join(workspace_id)?;
         Ok(Self {
             peer,
             events,
             wake,
+            awaited,
             ready: false,
             gave_up: GaveUp::default(),
             log: Vec::new(),
@@ -995,8 +1015,10 @@ impl Workspace {
         )
     }
 
-    /// Join, then wait for the keys of what `needs` reads. Every wait is
-    /// woken by the session (a key arriving wakes it), never polled.
+    /// Wait for the keys of what `needs` reads in the joined workspace. Every
+    /// wait is woken by the session (a key arriving wakes it), never polled.
+    /// A request reaches here once the workspace joined, or once it waited
+    /// [`JOIN_WAIT`] for that in vain ([`Worker::admit`]).
     ///
     /// A record to act on whose keys do not arrive within [`KEYS_WAIT`] is
     /// refused: nothing acts on a record seen only in part. A listing gives
@@ -1008,10 +1030,7 @@ impl Workspace {
         needs: Needs<'_>,
         link: Option<&dyn WorkspaceRecordsLink>,
     ) -> Result<(), ActionHostError> {
-        let joined = Instant::now()
-            .checked_add(JOIN_WAIT)
-            .unwrap_or_else(Instant::now);
-        self.settle(workspace_id, joined, |workspace| workspace.ready);
+        self.pump(workspace_id);
         if !self.ready {
             return Err(ActionHostError::Unavailable {
                 reason: "the host has not joined the workspace yet".into(),
@@ -1182,6 +1201,9 @@ struct Worker {
     bounded: BTreeMap<bounded::BoundedKey, bounded::BoundedReplica>,
     /// The route of the mounted record each part is held beside.
     beside: HashMap<DocumentRoute, DocumentRoute>,
+    /// Requests waiting for their workspace to be joined, oldest first, by
+    /// workspace: the thread answers others meanwhile.
+    joining: HashMap<u64, VecDeque<(Instant, Job)>>,
     clock: u64,
 }
 
@@ -1288,24 +1310,122 @@ impl Worker {
             mounted: BTreeMap::new(),
             bounded: BTreeMap::new(),
             beside: HashMap::new(),
+            joining: HashMap::new(),
             clock: 0,
         }
     }
 
     fn run(mut self, jobs: &mpsc::Receiver<(Instant, Job)>) {
-        while let Ok((queued, job)) = jobs.recv() {
-            let started = Instant::now();
-            let kind = job.kind();
-            self.take(job);
-            let (waited, ran) = (started.duration_since(queued), started.elapsed());
-            if waited.max(ran) >= SLOW_JOB {
-                tracing::warn!(
-                    kind,
-                    waited_ms = waited.as_millis(),
-                    ran_ms = ran.as_millis(),
-                    "workspace actions: a request waited or ran long"
-                );
+        loop {
+            let next = match self.joining_until() {
+                Some(until) => jobs.recv_timeout(until.saturating_duration_since(Instant::now())),
+                None => jobs
+                    .recv()
+                    .map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+            };
+            match next {
+                Ok((queued, job)) => self.admit(queued, job),
+                Err(mpsc::RecvTimeoutError::Timeout) => self.give_up_joining(),
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
+        }
+    }
+
+    /// Run `job`, or have it wait for its workspace to be joined: a fresh
+    /// workspace's first requests wait for its join while the thread answers
+    /// requests of workspaces it has joined, instead of every request waiting
+    /// for every join before it. A workspace's requests run in the order they
+    /// came.
+    fn admit(&mut self, queued: Instant, job: Job) {
+        if let Some(workspace_id) = job.workspace()
+            && (self.joining.contains_key(&workspace_id) || !self.joined(workspace_id))
+        {
+            self.joining
+                .entry(workspace_id)
+                .or_default()
+                .push_back((queued, job));
+            self.resume(workspace_id);
+            return;
+        }
+        self.timed(queued, job);
+    }
+
+    /// Run the requests waiting for `workspace_id` once it joined; until
+    /// then, its next change wakes the thread to look again.
+    fn resume(&mut self, workspace_id: u64) {
+        if !self.joining.contains_key(&workspace_id) {
+            return;
+        }
+        // Asked before looking, so a change in between still wakes it.
+        if let Some(workspace) = self.workspaces.get(&workspace_id) {
+            workspace.awaited.store(true, Ordering::SeqCst);
+        }
+        if !self.joined(workspace_id) {
+            return;
+        }
+        if let Some(workspace) = self.workspaces.get(&workspace_id) {
+            workspace.awaited.store(false, Ordering::SeqCst);
+        }
+        for (queued, job) in self.joining.remove(&workspace_id).unwrap_or_default() {
+            self.timed(queued, job);
+        }
+    }
+
+    /// Whether a request for `workspace_id` can run now: the workspace is
+    /// joined, or it could not be joined at all, which the request reports.
+    fn joined(&mut self, workspace_id: u64) -> bool {
+        match self.membership(workspace_id) {
+            Ok(workspace) => {
+                workspace.pump(workspace_id);
+                workspace.ready
+            }
+            Err(_) => true,
+        }
+    }
+
+    /// When the oldest request waiting for a join has waited [`JOIN_WAIT`].
+    fn joining_until(&self) -> Option<Instant> {
+        self.joining
+            .values()
+            .filter_map(VecDeque::front)
+            .filter_map(|(queued, _)| queued.checked_add(JOIN_WAIT))
+            .min()
+    }
+
+    /// Run the requests that waited [`JOIN_WAIT`] for their workspace in
+    /// vain: each is told it was not joined.
+    fn give_up_joining(&mut self) {
+        let now = Instant::now();
+        let overdue = |(queued, _): &(Instant, Job)| {
+            queued
+                .checked_add(JOIN_WAIT)
+                .is_none_or(|until| until <= now)
+        };
+        let mut due = Vec::new();
+        self.joining.retain(|_, waiting| {
+            while waiting.front().is_some_and(overdue) {
+                due.extend(waiting.pop_front());
+            }
+            !waiting.is_empty()
+        });
+        for (queued, job) in due {
+            self.timed(queued, job);
+        }
+    }
+
+    /// Take `job`, queued at `queued`, logging one that waited or ran long.
+    fn timed(&mut self, queued: Instant, job: Job) {
+        let started = Instant::now();
+        let kind = job.kind();
+        self.take(job);
+        let (waited, ran) = (started.duration_since(queued), started.elapsed());
+        if waited.max(ran) >= SLOW_JOB {
+            tracing::warn!(
+                kind,
+                waited_ms = waited.as_millis(),
+                ran_ms = ran.as_millis(),
+                "workspace actions: a request waited or ran long"
+            );
         }
     }
 
@@ -1349,6 +1469,7 @@ impl Worker {
                     done,
                 } => done.complete(self.invoke(workspace_id, invocation)),
                 Job::Ran(ended) => self.ran(&ended),
+                Job::Joined(workspace_id) => self.resume(workspace_id),
                 Job::Content {
                     workspace_id,
                     caller,
@@ -1379,11 +1500,9 @@ impl Worker {
     /// The member's view of `workspace_id`, joining the workspace first and
     /// holding the keys of what `needs` reads, and every change the mounted
     /// records have not merged yet.
-    fn refresh(
-        &mut self,
-        workspace_id: u64,
-        needs: Needs<'_>,
-    ) -> Result<WorkspaceState, ActionHostError> {
+    /// The service's membership of `workspace_id`: the one joined when its
+    /// first request arrived, or joined now.
+    fn membership(&mut self, workspace_id: u64) -> Result<&mut Workspace, ActionHostError> {
         if !self.workspaces.contains_key(&workspace_id) {
             let ahead = self
                 .shared
@@ -1393,11 +1512,24 @@ impl Worker {
                 .flatten();
             let workspace = match ahead {
                 Some(workspace) => workspace,
-                None => Workspace::join(&self.member, workspace_id)
+                None => Workspace::join(&self.member, workspace_id, &self.shared)
                     .map_err(|reason| ActionHostError::Unavailable { reason })?,
             };
             self.workspaces.insert(workspace_id, workspace);
         }
+        self.workspaces
+            .get_mut(&workspace_id)
+            .ok_or_else(|| ActionHostError::Unavailable {
+                reason: "the workspace was not joined".into(),
+            })
+    }
+
+    fn refresh(
+        &mut self,
+        workspace_id: u64,
+        needs: Needs<'_>,
+    ) -> Result<WorkspaceState, ActionHostError> {
+        self.membership(workspace_id)?;
         let workspace =
             self.workspaces
                 .get_mut(&workspace_id)
