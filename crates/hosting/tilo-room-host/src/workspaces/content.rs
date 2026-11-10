@@ -173,9 +173,11 @@ impl Workspaces {
     /// which content the workspace still references, now or in a version it
     /// can go back to. Read from a copy of the governor's state, taken in a
     /// moment: the workspace takes writes while its records are read.
-    /// `None` when a record cannot be read whole (sealed for a channel this
-    /// host has no keys of, or with sealed writes that do not open or merge
-    /// yet), so the caller knows it does not see all the workspace references.
+    /// A record that cannot be read whole (sealed for a channel this host has
+    /// no keys of, or with sealed writes that do not open or merge yet) is
+    /// logged with why and listed in [`WholeRecords::unread`], and the rest
+    /// are read all the same: a caller that must see every reference checks
+    /// [`WholeRecords::is_whole`].
     ///
     /// # Errors
     ///
@@ -184,7 +186,7 @@ impl Workspaces {
         &self,
         workspace: &str,
         only: Option<&BTreeSet<(String, String)>>,
-    ) -> Result<Option<WholeRecords>, CollaborationError> {
+    ) -> Result<WholeRecords, CollaborationError> {
         let state = self.workspace(workspace).await?;
         let (peer, device) = {
             let governed = state.lock().await;
@@ -210,18 +212,37 @@ impl Workspaces {
             #[cfg(not(any(feature = "agents", feature = "web")))]
             let document = {
                 let _ = &device;
-                (!peer.publication().is_sealed_record(&app, &record))
-                    .then(|| peer.document(&app, &record))
-                    .flatten()
+                if peer.publication().is_sealed_record(&app, &record) {
+                    Err("it is sealed and this host opens no sealed records".to_owned())
+                } else {
+                    peer.document(&app, &record)
+                        .ok_or_else(|| "the host holds no copy of it".to_owned())
+                }
             };
-            let (Some(document), Some(revision)) = (document, peer.record_revision(&app, &record))
-            else {
-                return Ok(None);
-            };
-            read.documents.push(document);
-            read.revisions.insert((app, record), revision);
+            let document = document.and_then(|document| {
+                peer.record_revision(&app, &record)
+                    .map(|revision| (document, revision))
+                    .ok_or_else(|| "it has no revision yet".to_owned())
+            });
+            match document {
+                Ok((document, revision)) => {
+                    read.revisions
+                        .insert((app.clone(), record.clone()), revision);
+                    read.documents.push(((app, record), document));
+                }
+                Err(why) => {
+                    tracing::warn!(
+                        workspace,
+                        %app,
+                        %record,
+                        %why,
+                        "a record of the workspace does not read whole"
+                    );
+                    read.unread.push(((app, record), why));
+                }
+            }
         }
-        Ok(Some(read))
+        Ok(read)
     }
 
     /// Run `act` while `workspace` takes no write, if none of the records
@@ -448,19 +469,32 @@ impl Workspaces {
 }
 
 /// Records of a workspace read whole ([`Workspaces::whole_records`]), with
-/// the revision each was read at.
+/// the revision each was read at, and those that did not read whole.
 #[derive(Default)]
 pub struct WholeRecords {
-    /// Each record saved with all of its history.
-    pub documents: Vec<Vec<u8>>,
+    /// Each record, by its app and id, saved with all of its history.
+    pub documents: Vec<((String, String), Vec<u8>)>,
+    /// Each record that did not read whole, by its app and id, with why.
+    pub unread: Vec<((String, String), String)>,
     revisions: BTreeMap<(String, String), [u8; 32]>,
 }
 
 impl WholeRecords {
+    /// Every record read whole: what they name is all the workspace names.
+    #[must_use]
+    pub fn is_whole(&self) -> bool {
+        self.unread.is_empty()
+    }
+
     /// Take in `newer`, records read again: their revisions are the ones
-    /// read last.
+    /// read last, and each read again is unread only if it is unread now.
     pub fn extend(&mut self, newer: Self) {
+        self.unread.retain(|(route, _)| {
+            !newer.revisions.contains_key(route)
+                && !newer.unread.iter().any(|(again, _)| again == route)
+        });
         self.documents.extend(newer.documents);
+        self.unread.extend(newer.unread);
         self.revisions.extend(newer.revisions);
     }
 }

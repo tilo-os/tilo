@@ -1412,3 +1412,42 @@ async fn a_member_linked_directly_hears_the_nodes_channel_governance() {
     drop(workspaces);
     relay.shutdown().await;
 }
+
+/// A record whose sealed writes do not all merge is named with why, and the
+/// workspace's other records are read all the same: what a reader that
+/// places content by what records name needs from a workspace with one
+/// broken record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_record_that_does_not_read_whole_leaves_the_others_read() {
+    let lounge = Box::new(lounge().await);
+    let (workspaces, workspace) = (&lounge.workspaces, lounge.workspace.as_str());
+    workspaces
+        .author_room_record(workspace, &lounge.governor, (APP, "other"), |doc| {
+            doc.put(ROOT, "title", "Other").map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+    // A write the node never gets: the member's next one waits on it.
+    let _never_sent = lounge.member.seal(workspace, |document| {
+        document.put(ROOT, "title", "Lost").unwrap();
+        document.commit_edit("fixture", "title");
+    });
+    set_title(&lounge.member, workspaces, workspace, "After").await;
+
+    let read = workspaces.whole_records(workspace, None).await.unwrap();
+    assert!(!read.is_whole());
+    let unread: Vec<_> = read.unread.iter().map(|(route, _)| route.clone()).collect();
+    assert_eq!(unread, [(APP.to_owned(), RECORD.to_owned())]);
+    assert!(
+        read.unread[0].1.contains("do not merge"),
+        "why it is unread: {}",
+        read.unread[0].1
+    );
+    assert!(
+        read.documents
+            .iter()
+            .any(|(route, _)| *route == (APP.to_owned(), "other".to_owned())),
+        "the other record is read"
+    );
+    lounge.relay.shutdown().await;
+}

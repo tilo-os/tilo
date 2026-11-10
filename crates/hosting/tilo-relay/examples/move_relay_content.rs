@@ -29,9 +29,11 @@
 //! - removes an old item only with `--remove-sources`, and only once it is
 //!   intact everywhere it went.
 //!
-//! A workspace whose records do not all read whole names nothing here; its
-//! blobs go to `unassigned/` and it is listed, so a later run (the items stay
-//! where they were without `--remove-sources`) can place them.
+//! A record that does not read whole (one a repair has to rebuild first) is
+//! listed with why, and the move goes on with what the workspace's other
+//! records name: a blob only it names goes to `unassigned/`, so a run after
+//! the repair (the items stay where they were without `--remove-sources`)
+//! can place it.
 //!
 //! Build it for the host, and run it as the user that owns the state, after a
 //! fresh backup and with the host stopped:
@@ -51,9 +53,9 @@
 //! it acts as the host itself and changes nothing in their governance. Running it
 //! again is safe: what is in place and intact is left alone. It exits
 //! non-zero when an item did not match its name or could not be moved, or a
-//! workspace's records did not read whole.
+//! record did not read whole.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -115,7 +117,8 @@ struct Report {
     unassigned: Vec<(String, u64)>,
     mismatched: Vec<PathBuf>,
     failed: Vec<(PathBuf, String)>,
-    unread: Vec<String>,
+    /// Records that did not read whole: workspace, app, record, why.
+    unread: Vec<(String, String, String, String)>,
 }
 
 fn main() -> ExitCode {
@@ -157,9 +160,11 @@ fn run(args: &Args) -> anyhow::Result<Report> {
         .block_on(Box::pin(named_by_workspace(args, &relay_root)))
         .map_err(|error| anyhow::anyhow!("{error:?}"))??;
     let mut report = Report::default();
-    for (workspace, names) in &named {
-        if names.is_none() {
-            report.unread.push(workspace.clone());
+    for (workspace, found) in &named {
+        for ((app, record), why) in &found.unread {
+            report
+                .unread
+                .push((workspace.clone(), app.clone(), record.clone(), why.clone()));
         }
     }
     let content = relay_root.join(tilo_relay::content::DIRECTORY);
@@ -176,7 +181,7 @@ fn run(args: &Args) -> anyhow::Result<Report> {
     for (hash, source) in flat(&relay_root.join(BLOBS)) {
         let mut targets: Vec<PathBuf> = named
             .iter()
-            .filter(|(_, names)| names.as_ref().is_some_and(|names| names.contains(&hash)))
+            .filter(|(_, found)| found.names.contains(&hash))
             .map(|(workspace, _)| sharded_path(&content.join(workspace), &hash))
             .collect();
         if targets.is_empty() {
@@ -189,8 +194,8 @@ fn run(args: &Args) -> anyhow::Result<Report> {
     Ok(report)
 }
 
-/// What the records of each workspace the host governs name, by workspace;
-/// `None` for one whose records do not all read whole.
+/// What the records of each workspace the host governs name, by workspace,
+/// with the records that did not read whole.
 #[allow(
     clippy::significant_drop_tightening,
     reason = "the host is open until every workspace's records are read"
@@ -198,7 +203,7 @@ fn run(args: &Args) -> anyhow::Result<Report> {
 async fn named_by_workspace(
     args: &Args,
     relay_root: &Path,
-) -> anyhow::Result<BTreeMap<String, Option<BTreeSet<String>>>> {
+) -> anyhow::Result<BTreeMap<String, tilo_relay::content::collection::Named>> {
     let root = read_root(&args.root_file)?;
     let host = read_host_key(&args.state.join("host-device.key"))?;
     let cert = host_cert(&root, &host, &args.persistent)?;
@@ -251,13 +256,20 @@ async fn named_by_workspace(
                 .chain(own.iter().map(|dir| dir.join(shard).join(hash)))
                 .find_map(|path| std::fs::read(path).ok())
         };
-        let found = tilo_relay::content::collection::named(&workspaces, &workspace, read).await;
+        let found = tilo_relay::content::collection::named(&workspaces, &workspace, read)
+            .await
+            .with_context(|| format!("read the records of {workspace}"))?;
         println!(
-            "{workspace}: {}",
-            found.as_ref().map_or_else(
-                || "its records do not all read whole; it names nothing here".to_owned(),
-                |found| format!("names {} content addresses", found.len()),
-            )
+            "{workspace}: names {} content addresses{}",
+            found.names.len(),
+            if found.unread.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "; {} records do not read whole, what only they name is unassigned",
+                    found.unread.len()
+                )
+            }
         );
         named.insert(workspace, found);
     }
@@ -468,8 +480,10 @@ fn print(report: &Report) {
             println!("  {hash}  {len} bytes");
         }
     }
-    for workspace in &report.unread {
-        eprintln!("not every record of {workspace} read whole: run again once they do");
+    for (workspace, app, record, why) in &report.unread {
+        eprintln!(
+            "record {app}/{record:?} of {workspace} does not read whole ({why}): what only it names is in {UNASSIGNED}/; run again once it is repaired"
+        );
     }
     for source in &report.mismatched {
         eprintln!(

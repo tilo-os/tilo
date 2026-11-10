@@ -139,11 +139,12 @@ async fn whole_records(
     only: Option<&BTreeSet<(String, String)>>,
 ) -> Option<WholeRecords> {
     match workspaces.whole_records(workspace, only).await {
-        Ok(Some(records)) => Some(records),
-        Ok(None) => {
-            tracing::debug!(
+        Ok(records) if records.is_whole() => Some(records),
+        Ok(records) => {
+            tracing::info!(
                 workspace,
-                "not every record of the workspace reads whole yet; its content is kept as it is"
+                unread = records.unread.len(),
+                "not every record of the workspace reads whole; its content is kept as it is"
             );
             None
         }
@@ -154,55 +155,95 @@ async fn whole_records(
     }
 }
 
-/// Every content address `documents` name; `None` when one does not load.
-async fn names(workspace: &str, documents: &[Vec<u8>]) -> Option<BTreeSet<String>> {
+/// A record by its app and id.
+type Route = (String, String);
+
+/// Every content address `documents` name, and the records among them that
+/// do not load, with why; each of those is logged.
+async fn names_read(
+    workspace: &str,
+    documents: &[(Route, Vec<u8>)],
+) -> (BTreeSet<String>, Vec<(Route, String)>) {
     let documents = documents.to_vec();
     let workspace = workspace.to_owned();
     // Reading every record is work for a thread that may block.
     tokio::task::spawn_blocking(move || {
         let mut live = BTreeSet::new();
-        for record in &documents {
-            if !named_in(record, &mut live) {
+        let mut unread = Vec::new();
+        for ((app, record), document) in documents {
+            if let Err(why) = named_in(&document, &mut live) {
                 tracing::warn!(
                     workspace,
-                    "a record of the workspace does not load; its content is kept as it is"
+                    %app,
+                    %record,
+                    %why,
+                    "a record of the workspace does not load"
                 );
-                return None;
+                unread.push(((app, record), format!("it does not load: {why}")));
             }
         }
-        Some(live)
+        (live, unread)
     })
     .await
-    .ok()
-    .flatten()
+    .unwrap_or_else(|_| {
+        (
+            BTreeSet::new(),
+            vec![(Route::default(), "reading the records stopped".to_owned())],
+        )
+    })
 }
 
-/// Every content address the records of `workspace` name, in any version of
-/// them, with what that content is made of: the chunks of each file
-/// manifest `read` finds among them. `None` when the workspace's records
-/// cannot all be read whole, so what they name is not known.
+/// Every content address `documents` name; `None` when one does not load.
+async fn names(workspace: &str, documents: &[(Route, Vec<u8>)]) -> Option<BTreeSet<String>> {
+    let (live, unread) = names_read(workspace, documents).await;
+    unread.is_empty().then_some(live)
+}
+
+/// What the records of a workspace that read name ([`named`]).
+pub struct Named {
+    /// Every content address they name, with what that content is made of.
+    pub names: BTreeSet<String>,
+    /// The records that do not read whole or load, by app and id, with why:
+    /// what they name is not among [`Self::names`].
+    pub unread: Vec<(Route, String)>,
+}
+
+/// Every content address the records of `workspace` that read whole name, in
+/// any version of them, with what that content is made of: the chunks of
+/// each file manifest `read` finds among them. A record that does not read
+/// whole is logged and listed in [`Named::unread`], and the rest are read all
+/// the same. `None` when the workspace is not governed here.
 pub async fn named(
     workspaces: &Workspaces,
     workspace: &str,
     read: impl Fn(&str) -> Option<Vec<u8>> + Send + 'static,
-) -> Option<BTreeSet<String>> {
-    let records = whole_records(workspaces, workspace, None).await?;
-    let mut live = names(workspace, &records.documents).await?;
-    tokio::task::spawn_blocking(move || {
+) -> Option<Named> {
+    let records = match workspaces.whole_records(workspace, None).await {
+        Ok(records) => records,
+        Err(error) => {
+            tracing::warn!(workspace, %error, "a workspace's records are not readable here");
+            return None;
+        }
+    };
+    let (mut live, mut unread) = names_read(workspace, &records.documents).await;
+    unread.extend(records.unread);
+    let names = tokio::task::spawn_blocking(move || {
         made_of(&read, &mut live);
         live
     })
     .await
-    .ok()
+    .ok()?;
+    Some(Named { names, unread })
 }
 
 /// Add every content address `record` (a saved Automerge document) names to
 /// `live`: in any value its history ever held, and in the text it holds now.
-/// `false` when it does not load.
-fn named_in(record: &[u8], live: &mut BTreeSet<String>) -> bool {
-    let Ok(mut doc) = AutoCommit::load(record) else {
-        return false;
-    };
+///
+/// # Errors
+///
+/// Why it does not load.
+fn named_in(record: &[u8], live: &mut BTreeSet<String>) -> Result<(), String> {
+    let mut doc = AutoCommit::load(record).map_err(|error| error.to_string())?;
     for change in doc.get_changes(&[]) {
         // Text typed in one change lies in one run of its values.
         addresses_in(change.raw_bytes(), live);
@@ -224,7 +265,7 @@ fn named_in(record: &[u8], live: &mut BTreeSet<String>) -> bool {
     // Text is written a character at a time: an address in it is whole only
     // in the text it makes.
     texts_in(&doc, &automerge::ROOT, live);
-    true
+    Ok(())
 }
 
 /// Add the addresses in the text objects under `obj` of `doc` to `live`.
@@ -326,7 +367,7 @@ mod tests {
             doc.commit();
         }
         let mut live = BTreeSet::new();
-        assert!(named_in(&doc.save(), &mut live));
+        named_in(&doc.save(), &mut live).unwrap();
         for address in [first, second.to_ascii_lowercase(), typed, hex::encode(raw)] {
             assert!(live.contains(&address), "{address} is named: {live:?}");
         }
@@ -444,6 +485,6 @@ mod tests {
 
     #[test]
     fn a_record_that_does_not_load_names_nothing_and_says_so() {
-        assert!(!named_in(b"not a document", &mut BTreeSet::new()));
+        assert!(named_in(b"not a document", &mut BTreeSet::new()).is_err());
     }
 }

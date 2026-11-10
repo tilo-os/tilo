@@ -179,20 +179,30 @@ impl GovernedWorkspace {
 /// `record` of `app` of `workspace` with every write of its history, saved,
 /// read from `peer`, a copy of the governor's state, and opened with
 /// `device`'s keys where it is sealed: what a reader that must see all of a
-/// record reads without holding the workspace while it does. `None` while a
-/// sealed write of it does not open or merge, or its channel's keys are not
-/// here.
+/// record reads without holding the workspace while it does.
+///
+/// # Errors
+///
+/// Why it does not read whole: a sealed write of it does not open or merge,
+/// or its channel's keys are not here.
 pub(super) async fn whole_document(
     peer: &StatePeer,
     device: Option<&super::DeviceKeys>,
     workspace: &str,
     (app, record): (&str, &str),
-) -> Option<Vec<u8>> {
+) -> Result<Vec<u8>, String> {
     if !peer.publication().is_sealed_record(app, record) {
-        return peer.document(app, record);
+        return peer
+            .document(app, record)
+            .ok_or_else(|| "the host holds no copy of it".to_owned());
     }
+    let device = device.ok_or("it is sealed and this host has no channel keys")?;
     let route = collab_types::ChannelRoute::new(app, record);
-    let keys = device?.channel_keys(workspace, &route, false).await?.ok()?;
+    let keys = match device.channel_keys(workspace, &route, false).await {
+        None => return Err("it is sealed for a channel this host holds no keys of".to_owned()),
+        Some(Err(error)) => return Err(format!("its channel's keys did not open: {error}")),
+        Some(Ok(keys)) => keys,
+    };
     let keys = RecordKeys {
         keys,
         artifact: collab_types::document_artifact_id(app, workspace, record),
@@ -200,8 +210,18 @@ pub(super) async fn whole_document(
     let opened = peer
         .publication()
         .opened_document(app, record, &mut keys.open())
-        .ok()??;
-    opened.unmerged.is_empty().then_some(opened.document)
+        .map_err(|error| format!("its sealed history does not open: {error}"))?
+        .ok_or("its sealed history holds no write")?;
+    if opened.unmerged.is_empty() {
+        Ok(opened.document)
+    } else {
+        let writes: Vec<String> = opened.unmerged.iter().map(ToString::to_string).collect();
+        Err(format!(
+            "{} sealed writes of its history do not merge: {}",
+            writes.len(),
+            writes.join("; ")
+        ))
+    }
 }
 
 /// Publish `changes` to `record` of `app` into `candidate` as `key`'s write:
