@@ -382,6 +382,44 @@ const find = (tab, name) => tab.evaluate(`(() => {
   if (root) walk(root);
   return JSON.stringify(found.find(n => n.name === ${JSON.stringify(name)} && n.bounds) ?? null);
 })()`);
+// The page point at the centre of a node's `bounds`, in canvas coordinates.
+const centreOfNode = async (tab, node) => {
+  const [x0, y0, x1, y1] = Array.isArray(node.bounds)
+    ? node.bounds
+    : [node.bounds.x0 ?? node.bounds.x, node.bounds.y0 ?? node.bounds.y,
+       node.bounds.x1 ?? node.bounds.x + node.bounds.width, node.bounds.y1 ?? node.bounds.y + node.bounds.height];
+  const corner = JSON.parse(await canvasTopLeft(tab));
+  return {x: Math.round(corner.x + (x0 + x1) / 2), y: Math.round(corner.y + (y0 + y1) / 2)};
+};
+// Where Sheets' cell B2 is drawn, once the desktop publishes it.
+const sheetCell = async tab => {
+  for (let tries = 0; tries < 20; tries++) {
+    await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+    await sleep(200);
+    const node = JSON.parse(await find(tab, 'B2'));
+    if (node) return centreOfNode(tab, node);
+  }
+  return null;
+};
+// The names of the nodes drawn at page point (x, y), innermost first.
+const namesAt = async (tab, x, y) => {
+  const corner = JSON.parse(await canvasTopLeft(tab));
+  return JSON.parse(await tab.evaluate(`(() => {
+    const [px, py] = [${x - corner.x}, ${y - corner.y}];
+    const hits = [];
+    const box = b => Array.isArray(b) ? b : [b.x0 ?? b.x, b.y0 ?? b.y, b.x1 ?? b.x + b.width, b.y1 ?? b.y + b.height];
+    // As \`find\` reads the tree: each widget's semantics, and theirs below.
+    const node = s => {
+      const b = s.bounds ?? s.rect;
+      if (b) { const [x0, y0, x1, y1] = box(b); if (px >= x0 && px <= x1 && py >= y0 && py <= y1) hits.push([(x1 - x0) * (y1 - y0), s.name ?? '']); }
+      (s.children || []).forEach(node);
+    };
+    const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
+    const root = globalThis.tiloMount?.state()?.semantics?.root;
+    if (root) walk(root);
+    return JSON.stringify(hits.sort((a, b) => a[0] - b[0]).map(h => h[1]).filter(Boolean).slice(0, 6));
+  })()`).catch(() => '[]'));
+};
 const press = async (tab, name) => {
   const node = JSON.parse(await find(tab, name));
   if (!node) return false;
@@ -1044,13 +1082,18 @@ try {
 
   // The same gesture over Sheets, whose grid scrolls sideways itself: the app
   // takes it and the strip stays where it was.
+  // The fingers rest on Sheets' grid, wherever on the strip the search
+  // brought its window: the middle of the desk can be another window's then,
+  // whose sideways wheel the strip takes, as it should.
   await search(a.tab, a.command, 'sheets', 'Sheets');
   await settle(a.tab, 2);
+  const cell = await sheetCell(a.tab);
+  if (!cell) failed('Sheets shows no cell B2 to swipe over');
   const keptPan = await panOf(a.tab);
   const sheetBefore = await picture(a.tab);
-  await sidewaysSwipe(a.tab, centre.x, centre.y, forward);
+  await sidewaysSwipe(a.tab, cell.x, cell.y, forward);
   const sheetPan = await panOf(a.tab);
-  report.sheets = {before: keptPan, after: sheetPan};
+  report.sheets = {before: keptPan, after: sheetPan, cell, underCentre: await namesAt(a.tab, centre.x, centre.y)};
   if ((sheetPan?.offset ?? 0) !== (keptPan?.offset ?? 0)) {
     failed(`the strip panned under a sideways wheel Sheets scrolled with: ${JSON.stringify(report.sheets)}`);
   }

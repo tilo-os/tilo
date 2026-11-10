@@ -222,10 +222,25 @@ for (const [name, app] of [['Sheets', 'so.tilo.sheets'], ['Calculator', 'so.tilo
 const away = await panOf();
 await open('Sheets', 'so.tilo.sheets');
 await settled(2);
-const centre = JSON.parse(await tab.evaluate(`JSON.stringify((() => {
-  const r = globalThis.tiloMount?.canvas?.getBoundingClientRect();
-  return {x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2)};
-})())`));
+// The fingers rest on Sheets' grid: its cell B2, wherever its window is.
+let centre = null;
+for (let tries = 0; tries < 20 && !centre; tries++) {
+  await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+  await sleep(200);
+  centre = JSON.parse(await tab.evaluate(`(() => {
+    let found = null;
+    const node = s => { if (!found && s.name === 'B2' && (s.bounds ?? s.rect)) found = s.bounds ?? s.rect; (s.children || []).forEach(node); };
+    const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
+    const root = globalThis.tiloMount?.state()?.semantics?.root;
+    if (root) walk(root);
+    if (!found) return 'null';
+    const [x0, y0, x1, y1] = Array.isArray(found) ? found : [found.x0 ?? found.x, found.y0 ?? found.y,
+      found.x1 ?? found.x + found.width, found.y1 ?? found.y + found.height];
+    const r = globalThis.tiloMount.canvas.getBoundingClientRect();
+    return JSON.stringify({x: Math.round(r.x + (x0 + x1) / 2), y: Math.round(r.y + (y0 + y1) / 2)});
+  })()`).catch(() => 'null'));
+}
+if (!centre) await fail('Sheets shows no cell B2 to swipe over');
 const before = await panOf();
 if (!before || !(before.max > 0)) await fail(`the strip does not overflow, so a pan could not show: ${JSON.stringify(before)}`);
 const swipe = [];
