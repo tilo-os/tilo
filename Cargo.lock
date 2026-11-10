@@ -17722,6 +17722,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
+ "tilo-clock",
  "tilo-desktop-model",
  "tilo-peer-state",
  "tilo-user-identity",

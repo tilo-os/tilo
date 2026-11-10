@@ -4,6 +4,13 @@
 //! changing a shortcut stays the person's `shortcuts` settings section's action. The broker loads
 //! the keymap and decides who may read it; this only answers from the table it hands over.
 
+// Nothing compiled for the web installs this here yet: the page's session wires it with its own
+// host.
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(dead_code, reason = "the page's session wires this with its own host")
+)]
+
 use std::sync::Arc;
 
 use tilo_actions::ActionAddress;

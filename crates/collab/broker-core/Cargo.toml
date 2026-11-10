@@ -24,6 +24,8 @@ settings-store = { version = "0.1.0", path = "../../system/settings-store" }
 # control types — without the native client transport.
 runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", default-features = false }
 tracing.workspace = true
+# The wall clock a policy question is decided at, as every host reads it.
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 uuid.workspace = true
 ed25519-dalek.workspace = true
 serde.workspace = true

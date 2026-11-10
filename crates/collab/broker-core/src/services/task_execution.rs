@@ -80,7 +80,7 @@ impl NativeTaskActionRequirement {
         peer: &tilo_peer_state::StatePeer,
         workspace: &str,
         run: &TrackerRun,
-        now: std::time::SystemTime,
+        now: tilo_clock::SystemTime,
     ) -> Result<(), String> {
         let doc = peer
             .admitted_workspace()
@@ -104,7 +104,7 @@ impl NativeTaskActionRequirement {
         workspace: &str,
         run: &TrackerRun,
         looked: Option<&tilo_action_policy::turn::Looked>,
-        now: std::time::SystemTime,
+        now: tilo_clock::SystemTime,
     ) -> Result<(), String> {
         use tilo_action_policy::{Answer, Authority, Context, roles};
         let node = tilo_actions::action_node(
