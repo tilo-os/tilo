@@ -559,7 +559,13 @@ impl AppWindow {
                     self.forget_lane(lane);
                     let view = View { target, tree };
                     match lane {
-                        Lane::Root => self.root = Some(view),
+                        Lane::Root => {
+                            self.root = Some(view);
+                            // What the window's own view showed in place is no part of a view
+                            // that opened again.
+                            self.shown_in_place = None;
+                            self.page_focus = None;
+                        }
                         Lane::Detail => self.detail = Some(view),
                     }
                     self.track_rows();
