@@ -223,11 +223,11 @@ d-pu34cefb = Size
 
 d-7y5fd5tj-filter-size = Size
 
-d-quhjeqzv = File
+d-quhjeqzv = Node
     .doc = One file of the tree: where it stands, and what it is.
     .noun = { $count ->
-        [one] file
-       *[other] files
+        [one] node
+       *[other] nodes
     }
 
 d-sartpsxo = Title

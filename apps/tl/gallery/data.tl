@@ -5,7 +5,7 @@ type Data {
     /// The rows of the table: each an item with what its columns read.
     rows: Collection<Row>
     /// The files of the tree, each naming its parent by its key.
-    files: Collection<File>
+    files: Collection<Node>
     /// The messages of the conversation, oldest first.
     messages: Collection<Message>
     /// The cards of the grid.
@@ -22,10 +22,10 @@ type Row {
 }
 
 /// One file of the tree: where it stands, and what it is.
-type File {
+type Node {
     title: Text
     /// The file it stands under; none at the top of the tree.
-    parent: Option<File> = .none
+    parent: Option<Node> = .none
     folder: Bool
     size: Int
 }
@@ -91,8 +91,8 @@ view data(d: Data) {
                         }
                     }
                 }
-                on select(x: File): open(x, front: false)
-                on activate(x: File): open(x)
+                on select(x: Node): open(x, front: false)
+                on activate(x: Node): open(x)
             }
         }
         ui.Section("Conversation") {
@@ -134,9 +134,9 @@ scenario "data" {
     d.rows.insert(Row(title: "Readme.md", state: "Edited", size: 1204))
     d.rows.insert(Row(title: "release.toml", state: "New", size: 312))
     d.rows.insert(Row(title: "notes.txt", state: "Locked", size: 48))
-    let project = d.files.insert(File(title: "Project", folder: true))
-    let src = d.files.insert(File(title: "src", parent: project, folder: true, size: 0))
-    d.files.insert(File(title: "main.rs", parent: src, folder: false, size: 880))
+    let project = d.files.insert(Node(title: "Project", folder: true))
+    let src = d.files.insert(Node(title: "src", parent: project, folder: true, size: 0))
+    d.files.insert(Node(title: "main.rs", parent: src, folder: false, size: 880))
     d.messages.insert(
         Message(
             title: "a",
