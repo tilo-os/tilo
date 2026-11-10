@@ -934,8 +934,21 @@ fn menu_window() -> (
     std::rc::Rc<std::cell::RefCell<crate::window_toolbar::WindowToolbar>>,
     std::rc::Rc<std::cell::RefCell<Vec<crate::window_toolbar::ToolbarEvent>>>,
 ) {
+    menu_window_with(menu_slots(), W)
+}
+
+/// The same, in a window `width` wide whose app declares `slots` at first.
+fn menu_window_with(
+    slots: crate::window_toolbar::WindowToolbar,
+    width: f64,
+) -> (
+    crate::headless::FrameHarness,
+    crate::hosted_window::HostedWindow,
+    std::rc::Rc<std::cell::RefCell<crate::window_toolbar::WindowToolbar>>,
+    std::rc::Rc<std::cell::RefCell<Vec<crate::window_toolbar::ToolbarEvent>>>,
+) {
     crate::window_toolbar::set_hosted(true);
-    let toolbar = std::rc::Rc::new(std::cell::RefCell::new(menu_slots()));
+    let toolbar = std::rc::Rc::new(std::cell::RefCell::new(slots));
     let heard = std::rc::Rc::default();
     let app = MenuApp {
         content: crate::widget::Column::new().push(Box::new(crate::widget::Text::new("Body"))),
@@ -958,7 +971,7 @@ fn menu_window() -> (
     let mut frame = crate::headless::FrameHarness::for_root(
         crate::State::new(),
         g,
-        (u32_of(W), u32_of(H)),
+        (u32_of(width), u32_of(H)),
         Theme::dark().with_reduce_motion(true),
     );
     for _ in 0..2 {
@@ -1090,6 +1103,159 @@ fn a_press_on_a_menu_survives_the_app_declaring_its_slots_again() {
     let (open, labels) = menu(&mut frame);
     assert!(open, "the press ends on the command it began on");
     assert_eq!(labels, ["Everything", "Title"], "the sort menu opened");
+}
+
+/// The slots an app with a menu before the location declares: its visitor button, listing the way
+/// into a window of the person's own.
+fn leading_menu_slots() -> crate::window_toolbar::WindowToolbar {
+    crate::window_toolbar::WindowToolbar {
+        leading: vec![
+            crate::window_toolbar::ToolbarAction::new("custody", "bot", "Visitor window")
+                .with_items(vec![crate::window_toolbar::ToolbarAction::new(
+                    "custody~open",
+                    "",
+                    "Open in your window",
+                )]),
+        ],
+        ..crate::window_toolbar::WindowToolbar::default()
+    }
+}
+
+/// The leading button `id` in the bar, where it stands.
+fn leading_button(frame: &mut crate::headless::FrameHarness, id: &str) -> Point {
+    let g = frame.root_mut::<WindowGroup>();
+    let row = g.bar.toolbar_row();
+    let index = row
+        .toolbar()
+        .and_then(|toolbar| toolbar.leading.iter().position(|action| action.id == id))
+        .expect("the app declares the leading button");
+    let rect = row
+        .slots()
+        .leading
+        .get(index)
+        .copied()
+        .expect("the leading button's place");
+    assert!(rect.area() > 0.0, "the row shows {id} where it stands");
+    rect.center()
+}
+
+/// The bar's overflow button, where it stands.
+fn overflow_button(frame: &mut crate::headless::FrameHarness) -> Point {
+    let g = frame.root_mut::<WindowGroup>();
+    let rect = g.bar.toolbar_row().slots().overflow;
+    assert!(rect.area() > 0.0, "the bar has an overflow button");
+    rect.center()
+}
+
+/// A menu before the location opens on one click, stays open while the person reads it (and while
+/// the app declares its slots again), closes on a second click on its button, and the row chosen
+/// in it runs for that button, as one after the location does.
+#[test]
+fn a_menu_before_the_location_opens_like_one_after_it() {
+    let _settled = crate::motion::testing::settled();
+    let (mut frame, window, toolbar, heard) = menu_window_with(leading_menu_slots(), W);
+    let mut slots = crate::window_slots::WindowSlots::default();
+    frame_of(&mut frame, &mut slots, &window);
+    let button = leading_button(&mut frame, "custody");
+
+    frame.click_at(button.x, button.y);
+    frame_of(&mut frame, &mut slots, &window);
+    let (open, labels) = menu(&mut frame);
+    assert!(open, "one click opens the menu of a leading button");
+    assert_eq!(labels, ["Open in your window"], "the menu's rows are up");
+    assert!(
+        heard.borrow().is_empty(),
+        "opening the menu runs none of its rows"
+    );
+
+    // It stays up while it is read, and while the app declares its slots again with another
+    // command before the menu's button.
+    for _ in 0..3 {
+        frame_of(&mut frame, &mut slots, &window);
+    }
+    assert!(menu(&mut frame).0, "the menu stays open while it is read");
+    toolbar.borrow_mut().leading.insert(
+        0,
+        crate::window_toolbar::ToolbarAction::new("site", "arrow-left", "Back to site"),
+    );
+    frame_of(&mut frame, &mut slots, &window);
+    assert!(
+        menu(&mut frame).0,
+        "the menu stays open while the app declares its slots again"
+    );
+
+    // The row chosen runs for the menu it stands in, not for whatever now leads the row.
+    let row = menu_row(&mut frame, "Open in your window");
+    frame.click_at(row.center().x, row.center().y);
+    frame_of(&mut frame, &mut slots, &window);
+    assert_eq!(
+        heard.borrow().as_slice(),
+        [crate::window_toolbar::ToolbarEvent::Action {
+            id: "custody~open".into()
+        }],
+        "the row chosen runs for the button the menu belongs to"
+    );
+    assert!(!menu(&mut frame).0, "choosing a row closes the menu");
+
+    // A click opens it again, and a second click on the button closes it.
+    let button = leading_button(&mut frame, "custody");
+    frame.click_at(button.x, button.y);
+    frame_of(&mut frame, &mut slots, &window);
+    assert!(menu(&mut frame).0, "the button opens it again");
+    frame.click_at(button.x, button.y);
+    frame_of(&mut frame, &mut slots, &window);
+    assert!(
+        !menu(&mut frame).0,
+        "a second click on the button closes it"
+    );
+}
+
+/// A leading menu the row has no room for lists its items in the overflow menu, under its name, and
+/// a row chosen there runs for it: never one dead row standing for the button.
+#[test]
+fn a_folded_leading_menu_lists_its_items_in_the_overflow_menu() {
+    let _settled = crate::motion::testing::settled();
+    let mut declared = leading_menu_slots();
+    declared.location = Some(crate::window_toolbar::ToolbarLocation {
+        label: "tilo.coffee".into(),
+        value: "https://tilo.coffee/".into(),
+        editable: true,
+        ..crate::window_toolbar::ToolbarLocation::default()
+    });
+    let (mut frame, window, _toolbar, heard) = menu_window_with(declared, 220.0);
+    let mut slots = crate::window_slots::WindowSlots::default();
+    frame_of(&mut frame, &mut slots, &window);
+    {
+        let g = frame.root_mut::<WindowGroup>();
+        let leading = g.bar.toolbar_row().slots().leading.clone();
+        assert_eq!(
+            leading.first().map(|rect| rect.area()),
+            Some(0.0),
+            "no room: the leading menu is in the overflow menu"
+        );
+    }
+
+    let more = overflow_button(&mut frame);
+    frame.click_at(more.x, more.y);
+    frame_of(&mut frame, &mut slots, &window);
+    let (open, labels) = menu(&mut frame);
+    assert!(open, "the overflow menu opens");
+    assert_eq!(
+        labels,
+        ["Visitor window", "Open in your window"],
+        "the folded menu's name, then its rows"
+    );
+
+    let row = menu_row(&mut frame, "Open in your window");
+    frame.click_at(row.center().x, row.center().y);
+    frame_of(&mut frame, &mut slots, &window);
+    assert_eq!(
+        heard.borrow().as_slice(),
+        [crate::window_toolbar::ToolbarEvent::Action {
+            id: "custody~open".into()
+        }],
+        "the row chosen runs for the folded menu"
+    );
 }
 
 /// `v` as a logical pixel count: the fixtures' sizes are small.

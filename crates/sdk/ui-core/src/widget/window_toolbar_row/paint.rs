@@ -335,7 +335,8 @@ pub(super) fn paint_slots(
     }
     for (i, (action, rect)) in toolbar.leading.iter().zip(&slots.leading).enumerate() {
         let slot = Slot::Leading(i);
-        let lifted = face(slot.clone(), action.enabled, shows_on(toolbar, &slot));
+        let mut lifted = face(slot.clone(), action.enabled, shows_on(toolbar, &slot));
+        lifted.hovered |= interaction.is_some_and(|it| it.menu_open == Some(Slot::Leading(i)));
         if action.labelled && slots.labelled && rect.area() > 0.0 {
             let face = labelled_face(*rect, &action.name, action.primary)
                 .hovered(lifted.hovered && lifted.enabled)
