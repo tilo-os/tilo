@@ -2211,7 +2211,9 @@ struct Published {
     operation: &'static str,
     specs: Box<dyn Fn() -> Vec<ActionSpec>>,
     /// What the vocabulary declares, independent of any view: what its
-    /// surface publishes of it.
+    /// surface publishes of it. Only the headless host, which writes the
+    /// surface, reads it.
+    #[cfg(not(target_arch = "wasm32"))]
     rows: fn() -> Vec<tilo_resource::effect::EffectRow>,
 }
 
@@ -2685,6 +2687,7 @@ impl<R: Resource> Effects<R> {
             alive,
             operation: E::OPERATION,
             specs: Box::new(specs),
+            #[cfg(not(target_arch = "wasm32"))]
             rows: E::rows,
         });
     }
@@ -2812,6 +2815,7 @@ impl<R: Resource> Effects<R> {
 
     /// What every published vocabulary declares, whether or not a view of it
     /// is showing: what its surface publishes.
+    #[cfg(not(target_arch = "wasm32"))]
     #[inline(never)]
     pub(crate) fn rows(&self) -> Vec<tilo_resource::effect::EffectRow> {
         self.inner.borrow_mut().rows()
@@ -2943,6 +2947,7 @@ impl Inner {
             .collect()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn rows(&mut self) -> Vec<tilo_resource::effect::EffectRow> {
         self.prune();
         self.published
