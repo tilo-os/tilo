@@ -90,7 +90,9 @@ impl BlockEditor {
             // invocation out rather than naming it a second time.
             ctx.presence.note_shown(interaction.invocation);
             let name = ctx.presence.interaction_status_label(&interaction);
-            ctx.presence.draw_peer_caret_labeled_in(
+            // The chip says what the invocation is doing here, and so does
+            // what a reader is told of its caret.
+            ctx.presence.draw_action_caret_labeled_in(
                 ctx.scene,
                 ctx.theme,
                 ctx.text_renderer,

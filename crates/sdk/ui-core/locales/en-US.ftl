@@ -604,6 +604,10 @@ interaction-committed = Committed
 interaction-failed = Failed
 interaction-cancelled = Cancelled
 interaction-progress = { $label } - { $done }/{ $total }
+# A peer whose caret a text widget draws in its own text: where they are, said
+# to a reader. A selection says that instead.
+presence-writing-here = { $name } is writing here
+presence-selecting-here = { $name } is selecting here
 participant-unknown-agent = Unknown agent
 
 

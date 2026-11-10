@@ -13,6 +13,7 @@ mod interaction;
 mod key;
 mod labels;
 mod layer;
+mod mark;
 mod placed;
 pub(crate) mod render;
 pub use caret_tag::{CaretTag, LabeledCaret, hide_names_beside_caret_tags, tag_gap, tags_crowd};
@@ -31,6 +32,7 @@ pub use labels::{ParticipantLabels, name_key};
 #[cfg(feature = "native")]
 pub use layer::LayerMarks;
 pub use layer::{PresenceLayer, WidgetPresence};
+pub use mark::PresenceMark;
 pub use placed::PlacedPointer;
 pub use render::{
     FOLLOWED_POINTER_REACH, PeerCursor, PillPlacement, PillRequest, contrast_ink, contrast_ink_dim,
@@ -569,6 +571,11 @@ pub struct PresenceCtx {
     /// coordinates, so the pointer layer drawn after the windows can leave
     /// out a second tag with the same name right beside it.
     caret_tags: std::cell::RefCell<Vec<CaretTag>>,
+    /// Where this frame drew each peer inside a text widget — the caret
+    /// painted in their name, or the band across their selection — in scene
+    /// coordinates, and what the words drawn with it say of them. What a
+    /// reader is told of a peer writing in text ([`Self::mark_words`]).
+    presence_marks: std::cell::RefCell<Vec<PresenceMark>>,
     /// The authority the subtree being drawn holds, scoped by whoever hands
     /// it one (a host, a bound component) through [`Self::with_permissions`]
     /// and read by gated widgets through [`Self::permits`]. `None` gates
@@ -686,6 +693,48 @@ impl PresenceCtx {
 
     pub(crate) fn note_caret_tag(&self, tag: CaretTag) {
         self.caret_tags.borrow_mut().push(tag);
+    }
+
+    /// Forget the peers' carets and selections drawn in text so far: a host
+    /// calls it before a frame that draws every window again.
+    pub fn clear_presence_marks(&self) {
+        self.presence_marks.borrow_mut().clear();
+    }
+
+    /// The peers' carets and selections a text widget drew since
+    /// [`Self::clear_presence_marks`], in scene coordinates.
+    pub fn presence_marks(&self) -> Vec<PresenceMark> {
+        self.presence_marks.borrow().clone()
+    }
+
+    pub(crate) fn note_presence_mark(&self, mark: PresenceMark) {
+        self.presence_marks.borrow_mut().push(mark);
+    }
+
+    /// The caret just noted says, in the words drawn beside it, what its peer
+    /// is doing here (an action's own label): a reader is told that rather
+    /// than that the peer is writing.
+    pub(crate) fn note_caret_saying(&self, words: &str) {
+        if let Some(mark) = self.presence_marks.borrow_mut().last_mut() {
+            mark.saying = Some(words.to_owned());
+        }
+    }
+
+    /// What a reader is told of one peer's caret or selection drawn in text:
+    /// the words the widget drew with it when they say what the peer is doing
+    /// there, else that the peer is writing — or selecting — there.
+    pub fn mark_words(&self, mark: &PresenceMark) -> String {
+        if let Some(saying) = &mark.saying {
+            return saying.clone();
+        }
+        crate::i18n::widget_format(
+            if mark.selection {
+                "presence-selecting-here"
+            } else {
+                "presence-writing-here"
+            },
+            &[("name", self.display_name(&mark.user).into())],
+        )
     }
 }
 

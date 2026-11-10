@@ -603,6 +603,10 @@ interaction-committed = Übernommen
 interaction-failed = Fehlgeschlagen
 interaction-cancelled = Abgebrochen
 interaction-progress = { $label } - { $done }/{ $total }
+# Eine mitwirkende Person, deren Schreibmarke ein Textfeld zeichnet: wo sie
+# ist, für eine Vorlesehilfe gesagt. Bei einer Auswahl steht das stattdessen.
+presence-writing-here = { $name } schreibt hier
+presence-selecting-here = { $name } markiert hier
 participant-unknown-agent = Unbekannter Agent
 
 

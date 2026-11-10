@@ -190,6 +190,40 @@ mod tests {
         assert!(ctx.caret_tags().is_empty());
     }
 
+    #[test]
+    fn drawing_a_caret_notes_where_a_reader_is_told_the_peer_is_writing() {
+        let mut ctx = PresenceCtx::empty();
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        let theme = Theme::default();
+        let user = UserId("claude".into());
+        ctx.set_display_name(user.clone(), "Claude Code");
+        let caret = Rect::new(30.0, 40.0, 32.0, 60.0);
+        ctx.draw_action_caret_labeled_in(
+            &mut scene,
+            &theme,
+            &mut text,
+            Affine::scale(2.0),
+            &user,
+            "Claude Code: Appending paragraph",
+            LabeledCaret::within(caret, 40.0),
+        );
+        let marks = ctx.presence_marks();
+        let [mark] = marks.as_slice() else {
+            panic!("one caret mark");
+        };
+        assert_eq!(mark.user, user);
+        assert_eq!(mark.rect, Affine::scale(2.0).transform_rect_bbox(caret));
+        assert!(!mark.selection);
+        assert_eq!(
+            ctx.mark_words(mark),
+            "Claude Code: Appending paragraph",
+            "an action's own words say who is writing and what they are doing"
+        );
+        ctx.clear_presence_marks();
+        assert!(ctx.presence_marks().is_empty());
+    }
+
     const VIEWPORT: Rect = Rect::new(0.0, 0.0, 1440.0, 900.0);
 
     /// Which of `pointers` keep their names beside `tags`.

@@ -100,6 +100,14 @@ impl PresenceCtx {
     ) {
         let color = color_for(self, user, theme);
         scene.fill(Fill::NonZero, transform, color, None, &rect);
+        // The caret is where they are, whether or not it wears their name:
+        // noted so a reader is told it too.
+        self.note_presence_mark(super::PresenceMark {
+            user: user.clone(),
+            rect: transform.transform_rect_bbox(rect),
+            selection: false,
+            saying: None,
+        });
         if self.is_agent(user) {
             draw_agent_identity_mark(
                 scene,
@@ -127,6 +135,14 @@ impl PresenceCtx {
     ) {
         let color = color_for(self, user, theme).with_alpha_factor(0.35);
         scene.fill(Fill::NonZero, transform, color, None, &rect);
+        // Where they select is told to a reader too: a peer's band is as much
+        // a place they are as their caret.
+        self.note_presence_mark(super::PresenceMark {
+            user: user.clone(),
+            rect: transform.transform_rect_bbox(rect),
+            selection: true,
+            saying: None,
+        });
     }
 
     /// Draw an authorship "marker": translucent underlay in the author's
@@ -237,6 +253,32 @@ impl PresenceCtx {
             label: name.to_owned(),
             rect: transform.transform_rect_bbox(chip_rect),
         });
+        // Who is writing here, where: the caret this widget just painted in
+        // their name, as a reader is told it.
+        self.note_presence_mark(super::PresenceMark {
+            user: user.clone(),
+            rect: transform.transform_rect_bbox(caret_rect),
+            selection: false,
+            saying: None,
+        });
+    }
+
+    /// [`Self::draw_peer_caret_labeled_in`] for the caret of an action writing
+    /// into this text: `words` say who is writing and what they are doing
+    /// there ("Claude Code: Appending paragraph"), so a reader is told them
+    /// rather than that the peer is writing.
+    pub fn draw_action_caret_labeled_in(
+        &self,
+        scene: &mut Scene,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        transform: Affine,
+        user: &UserId,
+        words: &str,
+        caret: LabeledCaret,
+    ) {
+        self.draw_peer_caret_labeled_in(scene, theme, text_renderer, transform, user, words, caret);
+        self.note_caret_saying(words);
     }
 
     /// Outline `rect` in the peer's colour — "this peer has *this object*

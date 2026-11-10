@@ -4059,6 +4059,7 @@ impl FrameHarness {
             crate::retained_present::PanFrame::Replayed | crate::retained_present::PanFrame::Moved
         ) {
             self.presence.clear_caret_tags();
+            self.presence.clear_presence_marks();
         }
         self.pan_frames = self.pan_frames.wrapping_add(1);
         let replay_scope = crate::retained_present::PanReplay::begin(pan_frame, self.pan_frames);
@@ -5326,40 +5327,94 @@ impl FrameHarness {
             .paint(current, text, theme, scene, transform, viewport);
     }
 
-    /// The painted tooltip as the accessibility tree reads it: a tooltip
-    /// naming what the control under the pointer does, where it shows.
-    /// The agents at work on this surface, as a reader is told them: one node per agent, named
-    /// with what it is doing where it acts. The mark's own pixels travel frame by frame, so the
-    /// node carries no bounds: what a reader needs is whose work it is, and the tree then changes
-    /// when that changes rather than sixty times a second.
-    fn agent_marker_inspection(&self) -> Vec<InspectionNode> {
-        let mut agents: Vec<InspectionNode> = Vec::new();
-        for marker in &self.drawn_action_markers {
-            let path = format!("agent-marker-{}", marker.interaction.actor.id);
-            let label = self.presence.interaction_status_label(&marker.interaction);
-            let node = InspectionNode {
-                path: path.clone(),
-                widget: "AgentMarker".into(),
-                test_id: Some("agent-marker".into()),
-                focusable: false,
-                rect: [0.0, 0.0, 0.0, 0.0],
-                child_clip: None,
-                page_title: None,
-                layout: None,
-                paint_key: None,
-                semantics: Some(
-                    crate::a11y::AccessNode::new(crate::a11y::Role::Image).with_name(label),
-                ),
-                children: Vec::new(),
-            };
-            match agents.iter_mut().find(|shown| shown.path == path) {
-                Some(shown) => *shown = node,
-                None => agents.push(node),
+    /// The peers writing on this surface, as a reader is told them: one node
+    /// per peer, at the caret or selection their text widget drew — so it
+    /// stands in the record's own text — named with who is there, and with
+    /// what they are doing when an action of theirs is what is being written.
+    ///
+    /// An agent whose mark rests on a control rather than in text keeps its
+    /// node without bounds: the mark's own pixels travel frame by frame, and
+    /// what a reader needs is whose work it is, and the tree then changes when
+    /// that changes rather than sixty times a second.
+    fn presence_inspection(&self) -> Vec<InspectionNode> {
+        let to_surface = self.capture_draw_transform().inverse();
+        // One mark per peer: a selection sent for a whole document arrives as
+        // a band per line, and a caret beside it is the same place.
+        let mut drawn: Vec<crate::presence::PresenceMark> = Vec::new();
+        for mark in self.presence.presence_marks() {
+            let rect = to_surface.transform_rect_bbox(mark.rect);
+            match drawn.iter().position(|drawn| drawn.user == mark.user) {
+                Some(index) => {
+                    if let Some(drawn) = drawn.get_mut(index) {
+                        drawn.rect = drawn.rect.union(rect);
+                        drawn.selection &= mark.selection;
+                        if drawn.saying.is_none() {
+                            drawn.saying = mark.saying;
+                        }
+                    }
+                }
+                None => drawn.push(crate::presence::PresenceMark { rect, ..mark }),
             }
         }
-        agents
+        let mut peers: Vec<InspectionNode> = Vec::new();
+        let mut written: Vec<String> = Vec::new();
+        for mut mark in drawn {
+            if mark.rect.width() <= 0.0 || mark.rect.height() <= 0.0 {
+                continue;
+            }
+            // An action of theirs says what they are doing here: the words its
+            // own mark carries are what a reader is told instead.
+            if mark.saying.is_none() {
+                mark.saying = self
+                    .drawn_action_markers
+                    .iter()
+                    .find(|marker| marker.interaction.actor.id == mark.user.0)
+                    .map(|marker| self.presence.interaction_status_label(&marker.interaction));
+            }
+            let path = format!("presence-mark-{}", mark.user.0);
+            let name = self.presence.mark_words(&mark);
+            peers.push(Self::presence_node(&path, Some(mark.rect), name));
+            written.push(mark.user.0);
+        }
+        for marker in &self.drawn_action_markers {
+            // One peer is one node: an action whose caret is drawn in text is
+            // already told where it writes.
+            let actor = &marker.interaction.actor.id;
+            if written.contains(actor) {
+                continue;
+            }
+            let path = format!("agent-marker-{actor}");
+            let name = self.presence.interaction_status_label(&marker.interaction);
+            peers.push(Self::presence_node(&path, None, name));
+        }
+        peers
     }
 
+    /// One peer of [`Self::presence_inspection`]: a mark a reader finds by
+    /// name, where it is drawn when it is drawn in text.
+    fn presence_node(path: &str, bounds: Option<Rect>, name: String) -> InspectionNode {
+        let rect = bounds.unwrap_or(Rect::ZERO);
+        let spoken = crate::a11y::AccessNode::new(crate::a11y::Role::Image).with_name(name);
+        InspectionNode {
+            path: path.to_owned(),
+            widget: "PresenceMark".into(),
+            test_id: Some("presence-mark".into()),
+            focusable: false,
+            rect: [rect.x0, rect.y0, rect.width(), rect.height()],
+            child_clip: None,
+            page_title: None,
+            layout: None,
+            paint_key: None,
+            semantics: Some(match bounds {
+                Some(bounds) => spoken.with_bounds(bounds),
+                None => spoken,
+            }),
+            children: Vec::new(),
+        }
+    }
+
+    /// The painted tooltip as the accessibility tree reads it: a tooltip
+    /// naming what the control under the pointer does, where it shows.
     fn tooltip_inspection(&self) -> Option<InspectionNode> {
         let (text, chip) = self.tooltips.drawn()?;
         Some(InspectionNode {
@@ -5909,7 +5964,7 @@ impl FrameHarness {
             root.children.splice(0..0, self.slot_row_inspection());
         }
         root.children.extend(self.tooltip_inspection());
-        root.children.extend(self.agent_marker_inspection());
+        root.children.extend(self.presence_inspection());
         fn owner_path(
             node: &InspectionNode,
             targets: &HashMap<String, NodeId>,
@@ -9200,6 +9255,51 @@ mod tests {
                 "{spec} is {pressed} with {expected:?} held"
             );
         }
+    }
+
+    /// Someone else's caret in a text widget is told to a reader where the
+    /// widget drew it: a peer writing in a note is a node a screen reader — or
+    /// anything reading the frame's semantics, the browser page included —
+    /// finds by name at the caret itself, not only a mark on the glass.
+    #[test]
+    fn a_remote_caret_in_a_text_widget_is_a_node_at_the_caret() {
+        let field = TextInput::new(vec![crate::presence::PathSegment::Field("body".into())]);
+        let key = crate::presence::capability::presence_key(&field)
+            .expect("a text field publishes where its caret is");
+        let mut frame = FrameHarness::for_root(State::new(), field, (480, 160), Theme::default());
+        let peer = crate::permissions::UserId("claude".into());
+        frame
+            .presence_mut()
+            .set_display_name(peer.clone(), "Claude Code");
+        frame.presence_mut().set_caret(&key, peer.clone(), 0);
+        frame.relayout();
+
+        let node = frame
+            .inspection()
+            .root
+            .children
+            .into_iter()
+            .find(|node| node.test_id.as_deref() == Some("presence-mark"))
+            .expect("the peer's caret is a node a reader finds");
+        let spoken = node.semantics.expect("the node says who is writing");
+        assert_eq!(spoken.role, crate::a11y::Role::Image);
+        assert_eq!(spoken.name.as_deref(), Some("Claude Code is writing here"));
+        // The node stands where the caret is drawn: the field's own caret
+        // geometry, which is what it painted in the peer's colour.
+        let caret = frame
+            .root::<TextInput>()
+            .caret_rect(frame.theme(), 0)
+            .round();
+        let bounds = spoken
+            .bounds
+            .expect("the node has the caret's bounds")
+            .to_rect();
+        assert_eq!(bounds.round(), caret);
+        assert!(bounds.width() > 0.0 && bounds.height() > 0.0, "{bounds:?}");
+        assert_eq!(
+            node.rect,
+            [bounds.x0, bounds.y0, bounds.width(), bounds.height()]
+        );
     }
 
     /// A theme change repaints everything on the next frame, retained caches
