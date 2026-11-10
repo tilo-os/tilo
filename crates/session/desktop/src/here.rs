@@ -353,6 +353,36 @@ fn availability_of(member: &LiveMember) -> ui::Availability {
 }
 
 /// What someone says they are doing in their own words, as their live presence carries it.
+/// The row already listed for the agent at `device`: the same publisher, or the same person's
+/// agent going by the same name (one agent heard through two publishers). Two sessions of one
+/// client are told apart by their names ("Claude Code #2"), so they stay two rows.
+fn same_agent<'a>(
+    people: &'a mut [Person],
+    device: &str,
+    user: Option<&str>,
+    label: &str,
+) -> Option<&'a mut Person> {
+    let label = label.trim();
+    people.iter_mut().find(|row| {
+        row.agent
+            && (row.id == device
+                || (!label.is_empty()
+                    && row.label == label
+                    && user.is_some()
+                    && row.user.as_deref() == user))
+    })
+}
+
+/// What the host read off the device `l` names fills what `row` does not say itself.
+fn fill_from_line(row: &mut Person, l: &HostLine) {
+    if row.status.is_none() {
+        row.status = host_line(&l.status, l.generated);
+    }
+    if row.recent.is_none() {
+        row.recent = host_line(&l.recent, l.generated);
+    }
+}
+
 fn own_words(member: &LiveMember) -> Option<Line> {
     member
         .activity
@@ -919,6 +949,21 @@ impl HereState {
             if (!agent && self.is_own_person(&member.publisher)) || persons.contains(&person) {
                 continue;
             }
+            if agent
+                && let Some(row) = same_agent(
+                    &mut people,
+                    &member.publisher,
+                    self.user_of(&member.publisher),
+                    &member.label,
+                )
+            {
+                // The same agent heard twice (its own presence and a second publisher of it) is
+                // one row: what it says of itself wins, what the host read fills in.
+                if row.status.is_none() {
+                    row.status = own_words(member);
+                }
+                continue;
+            }
             persons.push(person);
             // An agent names the record it works in; a person's page says which window they are in.
             let tab = member
@@ -959,14 +1004,23 @@ impl HereState {
                 call: member.call.as_deref().and_then(ui::CallPresence::decode),
             });
         }
-        // Without the live layer the host's lines are all there is; a line the person stopped
-        // refreshing has left.
+        // A line the person stopped refreshing has left. An agent the host names is listed even beside the live layer, whose frame of it may not
+        // have reached this desk yet, and even when it works for this page's own person: it is its
+        // own row, never one of their devices.
         let fresh = |l: &HostLine| {
-            self.members.is_none()
+            (self.members.is_none() || l.agent)
                 && now_ms.saturating_sub(self.lines_at_ms) < HOST_ONLY_FRESH_MS
-                && !self.is_own_person(&l.device)
+                && (l.agent || !self.is_own_person(&l.device))
         };
         for l in self.lines.iter().filter(|l| fresh(l)) {
+            let user = Some(l.user.as_str()).filter(|user| !user.is_empty());
+            if l.agent
+                && let Some(row) = same_agent(&mut people, &l.device, user, &l.label)
+            {
+                // The agent's live presence and the host's line for it are one row.
+                fill_from_line(row, l);
+                continue;
+            }
             // An agent is its own person here, as it is on the board: it is the session the device
             // declared, not a device of the person it works for.
             let person = if l.agent {
@@ -978,27 +1032,7 @@ impl HereState {
                 continue;
             }
             persons.push(person);
-            let tab = shown_window(tree, l);
-            let status = host_line(&l.status, l.generated);
-            people.push(Person {
-                id: l.device.clone(),
-                user: Some(l.user.clone()).filter(|user| !user.is_empty()),
-                label: Some(l.label.trim())
-                    .filter(|label| !label.is_empty())
-                    .map_or_else(guest_label, str::to_owned),
-                devices: self.devices_of(&l.device),
-                rgb: color_in(&colors, &l.device),
-                agent: l.agent,
-                tab,
-                focus_app: None,
-                place: tab.and_then(|tab| worded_place(tree, tab, app_name, status.as_ref())),
-                status,
-                recent: host_line(&l.recent, l.generated),
-                screen: None,
-                // The host's lines say what a person does, never whether they are at their machine.
-                availability: ui::Availability::Available,
-                call: None,
-            });
+            people.push(self.line_person(l, tree, app_name, &colors));
         }
         people.compact_sort_by_key(|person| person.agent);
         let labels = self.labels();
@@ -1009,6 +1043,37 @@ impl HereState {
             person.label = labels.label(&person_of, &person.label);
         }
         people
+    }
+
+    /// The row the host's line `l` lists, for a device the live layer did not.
+    fn line_person(
+        &self,
+        l: &HostLine,
+        tree: &DesktopTree,
+        app_name: &dyn Fn(&str) -> Option<String>,
+        colors: &HashMap<String, (u8, u8, u8)>,
+    ) -> Person {
+        let tab = shown_window(tree, l);
+        let status = host_line(&l.status, l.generated);
+        Person {
+            id: l.device.clone(),
+            user: Some(l.user.clone()).filter(|user| !user.is_empty()),
+            label: Some(l.label.trim())
+                .filter(|label| !label.is_empty())
+                .map_or_else(guest_label, str::to_owned),
+            devices: self.devices_of(&l.device),
+            rgb: color_in(colors, &l.device),
+            agent: l.agent,
+            tab,
+            focus_app: None,
+            place: tab.and_then(|tab| worded_place(tree, tab, app_name, status.as_ref())),
+            status,
+            recent: host_line(&l.recent, l.generated),
+            screen: None,
+            // The host's lines say what a person does, never whether they are at their machine.
+            availability: ui::Availability::Available,
+            call: None,
+        }
     }
 
     /// This page's own name as everyone here is shown it: numbered when someone else here goes by
@@ -2080,6 +2145,103 @@ mod tests {
             "an agent's line is its own activity"
         );
         assert_eq!(here.own_status().map(|l| l.text), Some("Mine".into()));
+    }
+
+    /// One agent is one row, however it reaches this desk: its live presence and the host's line for
+    /// the same device merge (its own words first), a live layer that has not heard the agent yet
+    /// still lists it from the host, the person's own agent is listed, and the same agent heard
+    /// through a second publisher is not drawn twice. A second session of the client stays its own
+    /// row.
+    #[test]
+    fn one_agent_is_one_row_whichever_way_it_is_heard() {
+        let tree = DesktopTree::default();
+        let agent_line = |device: &str, label: &str| HostLine {
+            device: device.into(),
+            user: "ann-root".into(),
+            label: label.into(),
+            agent: true,
+            status: "Edited Welcome note".into(),
+            ..HostLine::default()
+        };
+        let live_agent = |publisher: &str| LiveMember {
+            user: Some("ann-root".into()),
+            activity: Some("Looking at the apps".into()),
+            ..member(publisher, "agent", "Claude Code")
+        };
+        let rows = |here: &HereState, label: &str| {
+            here.people(&tree, &[], &|_| None, 0)
+                .into_iter()
+                .filter(|person| person.label == label)
+                .collect::<Vec<_>>()
+        };
+        let text = |person: &Person| person.status.as_ref().map(|line| line.text.clone());
+
+        // Live presence and the host's line for the same device.
+        let mut here = HereState::default();
+        here.set_lines(vec![agent_line("claude", "Claude Code")], 0);
+        here.set_members(
+            Some(member("me", "person", "Me")),
+            Some(vec![live_agent("claude")]),
+        );
+        let listed = rows(&here, "Claude Code");
+        assert_eq!(listed.len(), 1, "one row for one agent: {listed:?}");
+        assert!(listed[0].agent);
+        assert_eq!(
+            text(&listed[0]).as_deref(),
+            Some("Looking at the apps"),
+            "its own words win"
+        );
+
+        // The live layer is up but has not heard the agent: the host's line lists it.
+        let mut here = HereState::default();
+        here.set_lines(vec![agent_line("claude", "Claude Code")], 0);
+        here.set_members(
+            Some(member("me", "person", "Me")),
+            Some(vec![member("bob", "person", "Bob")]),
+        );
+        let listed = rows(&here, "Claude Code");
+        assert_eq!(listed.len(), 1, "the host names the agent: {listed:?}");
+        assert_eq!(text(&listed[0]).as_deref(), Some("Edited Welcome note"));
+
+        // The page's own person's agent, from the host's lines alone.
+        let mut here = HereState::default();
+        here.set_lines(vec![agent_line("claude", "Claude Code")], 0);
+        here.set_members(
+            Some(LiveMember {
+                user: Some("ann-root".into()),
+                ..member("me", "person", "Me")
+            }),
+            None,
+        );
+        assert_eq!(
+            rows(&here, "Claude Code").len(),
+            1,
+            "their own agent is listed"
+        );
+
+        // The same agent through a second publisher, and a second session of the client.
+        let mut here = HereState::default();
+        here.set_lines(
+            vec![
+                agent_line("claude", "Claude Code"),
+                agent_line("claude-2", "Claude Code #2"),
+            ],
+            0,
+        );
+        here.set_members(
+            Some(member("me", "person", "Me")),
+            Some(vec![live_agent("claude-presence")]),
+        );
+        assert_eq!(
+            rows(&here, "Claude Code").len(),
+            1,
+            "one agent heard twice is one row"
+        );
+        assert_eq!(
+            rows(&here, "Claude Code #2").len(),
+            1,
+            "a second session is its own row"
+        );
     }
 
     /// A line from a device that says it runs an agent lists it as one, under the name its client
