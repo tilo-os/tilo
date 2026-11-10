@@ -35,7 +35,31 @@ work=${3:-$scratch/lounge-integration}
 rm -rf "$work"
 mkdir -p "$work"
 log=$work/lounge.log
-fail() { echo "FAIL: $*" >&2; [[ ! -s $log ]] || { echo '--- the Lounge said:' >&2; tail -40 "$log" >&2; }; exit 1; }
+# What the Lounge complained about while it ran: each error and warning it
+# logged, without its time, with how often. Said on every run, passing or not,
+# and before each restart empties the log: a failing check keeps no outputs,
+# and a passing one should still show what went wrong along the way, so two
+# runs (main's and a change's) are compared by their log alone.
+complaints() {
+  [[ -s $log ]] || return 0
+  local said
+  said=$(sed -E 's/\x1b\[[0-9;]*m//g' "$log" \
+    | grep -E '^[0-9T:.-]+Z +(ERROR|WARN) ' \
+    | sed -E 's/^[0-9T:.-]+Z +//' | sort | uniq -c | sort -rn || true)
+  if [[ -n $said ]]; then
+    echo '--- the Lounge complained (count, level, where, what):' >&2
+    echo "$said" >&2
+  else
+    echo '--- the Lounge logged no errors or warnings' >&2
+  fi
+}
+# A new start's log begins empty; what the last one complained about is said first.
+new_log() { complaints; : > "$log"; }
+fail() {
+  echo "FAIL: $*" >&2
+  [[ ! -s $log ]] || { echo '--- the Lounge said:' >&2; tail -40 "$log" >&2; complaints; }
+  exit 1
+}
 
 # An archive path, or a reference as it is.
 reference() { if [[ -f $1 ]]; then printf 'oci-archive:%s' "$1"; else printf '%s' "$1"; fi; }
@@ -190,7 +214,7 @@ stop_image() {
 start_on() {
   stop_image
   prepare_volume "$1"
-  : > "$log"
+  new_log
   start_image
 }
 still_running() { kill -0 "$image_pid" 2>/dev/null; }
@@ -293,7 +317,7 @@ echo 'ok: the directory lists the Lounge, joined at its door as an editor'
 # The same volume again: what it kept is the workspace it serves, so a restart
 # is the same workspace and not a second one beside it.
 stop_image
-: > "$log"
+new_log
 start_image
 wait_ready || fail "the image did not start again on its own volume: $(tail -20 "$log")"
 verify_records_read
@@ -356,7 +380,7 @@ echo 'ok: a shared link opened the one document full tab, live, for the second p
 earlier=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["chat"])' \
   "$work/people/report.json") || fail 'the two people left no chat message behind'
 stop_image
-: > "$log"
+new_log
 start_image
 wait_ready || fail "the image did not start again on the volume people wrote in: $(tail -20 "$log")"
 verify_records_read
@@ -365,4 +389,5 @@ node "$here/integration/people.mjs" "$site_url" "$relay_origin" "$relay_origin" 
   || fail 'a person joining after the restart did not find the chat the workspace kept'
 echo 'ok: a person joining after a restart reads the chat earlier pages wrote and writes in it'
 
+complaints
 echo "ok: the Lounge image runs, opens a fresh volume, and hosts people ($revision)"
