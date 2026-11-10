@@ -4728,7 +4728,7 @@ outputs = ["/target/publish/lounge/release/payload.json", "/target/publish/loung
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 requires = ["arch=any"]
-on = ["stable", "tag:v[0-9]*.[0-9]*.[0-9]*"]
+on = ["stable", "tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
 
 [[check]]
 name = "publish-lounge"
@@ -4871,7 +4871,7 @@ outputs = ["/target/publish/front-door/payload.json", "/target/publish/front-doo
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 requires = ["arch=any"]
-on = ["stable"]
+on = ["stable", "dispatch"]
 
 [[check]]
 name = "publish-front-door"
