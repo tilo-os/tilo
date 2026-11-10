@@ -5,7 +5,11 @@
 //! Serialized with camelCase field names so the page can hand the value to
 //! JavaScript unchanged.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::Serialize;
+use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_peer_state::owner::RecordWrites;
 
 use crate::session::{Failure, FailureSubject, LocalState, PeerStatus, TransportPhase};
 
@@ -381,9 +385,61 @@ fn failure_scope(code: &str) -> (&'static str, &'static str, Vec<RecoveryRequest
     }
 }
 
+/// Each record's health: this device's `writes` to it and its local store state.
+fn record_health(
+    status: &PeerStatus,
+    writes: &BTreeMap<DocumentRoute, RecordWrites>,
+    blocked: bool,
+    connected: bool,
+) -> Vec<RecordHealth> {
+    let routes: BTreeSet<&DocumentRoute> = writes.keys().chain(status.local.keys()).collect();
+    routes
+        .into_iter()
+        .map(|route| {
+            (
+                route,
+                writes.get(route).copied().unwrap_or_default(),
+                status.local.get(route).copied(),
+            )
+        })
+        .map(|(route, writes, local)| RecordHealth {
+            record: RecordRef {
+                app_id: route.app_id.clone(),
+                room: route.cluster_id.clone(),
+                record_id: route.record.clone(),
+            },
+            editing: if blocked {
+                "blocked"
+            } else if connected {
+                "online"
+            } else {
+                "offline-queued"
+            },
+            local: local_state(local),
+            outgoing: Outgoing {
+                pending_operations: writes.pending,
+                durable_operations: writes.durable,
+                refused_operations: writes.refused,
+            },
+            acknowledgement: if writes.pending > 0 {
+                "pending"
+            } else if writes.durable > 0 {
+                "covered"
+            } else {
+                "unknown"
+            },
+            acknowledged_seq: writes.last_order,
+        })
+        .collect()
+}
+
 impl PeerSnapshot {
-    /// Derive the snapshot from a session status.
-    pub fn from_status(status: &PeerStatus) -> Self {
+    /// Derive the snapshot from a session status and this device's `writes` to each record, as
+    /// its replica's custody keeps them.
+    pub fn from_status(
+        status: &PeerStatus,
+        writes: &BTreeMap<DocumentRoute, RecordWrites>,
+    ) -> Self {
         let waiting_workspaces = status.workspaces.values().filter(|ready| !**ready).count();
         let connected = status.phase == TransportPhase::Connected;
         let phase = match status.phase {
@@ -396,38 +452,7 @@ impl PeerSnapshot {
         };
         let failures: Vec<SessionFailure> = status.failures.iter().map(session_failure).collect();
         let blocked = status.phase == TransportPhase::Failed;
-        let records = status
-            .routes
-            .iter()
-            .map(|(route, route_status)| RecordHealth {
-                record: RecordRef {
-                    app_id: route.app_id.clone(),
-                    room: route.cluster_id.clone(),
-                    record_id: route.record.clone(),
-                },
-                editing: if blocked {
-                    "blocked"
-                } else if connected {
-                    "online"
-                } else {
-                    "offline-queued"
-                },
-                local: local_state(route_status.local),
-                outgoing: Outgoing {
-                    pending_operations: route_status.pending_operations,
-                    durable_operations: route_status.durable_operations,
-                    refused_operations: route_status.refused_operations,
-                },
-                acknowledgement: if route_status.pending_operations > 0 {
-                    "pending"
-                } else if route_status.durable_operations > 0 {
-                    "covered"
-                } else {
-                    "unknown"
-                },
-                acknowledged_seq: route_status.last_seq,
-            })
-            .collect();
+        let records = record_health(status, writes, blocked, connected);
         let newest = status.failures.last();
         Self {
             entry: status.entry.as_ref().map(EntryHealth::of),
@@ -487,29 +512,18 @@ impl PeerSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use super::*;
 
     fn snapshot(failures: Vec<Failure>) -> serde_json::Value {
         let status = PeerStatus {
             phase: TransportPhase::Connected,
             authenticated: true,
-            attempt: 0,
-            next_attempt_at_ms: None,
-            last_contact_at_ms: None,
-            workspaces: BTreeMap::new(),
-            routes: BTreeMap::new(),
             failures,
-            outgoing_pending: 0,
-            device: [0; 32],
             generation: 7,
-            channels: String::new(),
-            room_members: std::collections::BTreeMap::new(),
-            room_devices: std::collections::BTreeMap::new(),
-            entry: None,
+            ..PeerStatus::connecting([0; 32])
         };
-        serde_json::to_value(PeerSnapshot::from_status(&status).health).unwrap_or_default()
+        serde_json::to_value(PeerSnapshot::from_status(&status, &BTreeMap::new()).health)
+            .unwrap_or_default()
     }
 
     fn failure(code: &'static str, subject: FailureSubject) -> Failure {

@@ -25,7 +25,7 @@ tilo_automerge_isolate::test_worker!();
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::DocumentMutation;
 use tilo_automerge::ApplyIncoming as _;
-use tilo_session_host::{PeerEvent, PeerHandle};
+use tilo_session_host::PeerHandle;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{enrol, ready, route, start_host, start_peer, wait_for};
@@ -97,25 +97,9 @@ async fn a_checkpoint_missing_a_concurrent_change_keeps_it_for_late_joiners() {
 
     let joiner = start_peer(https(), c.cert, host_device.cert.clone(), c.key);
     joiner.join_placed(support::WORKSPACE, "Workspace").unwrap();
-    let mut doc = AutoCommit::new();
-    wait_for("the late joiner to converge", || {
-        for event in joiner.drain() {
-            if let PeerEvent::Document(document) = event {
-                match document.mutation().unwrap() {
-                    DocumentMutation::Snapshot(bytes) => {
-                        doc.merge_incoming(&mut AutoCommit::load(&bytes).unwrap())
-                            .unwrap();
-                    }
-                    DocumentMutation::Incremental(bytes) => {
-                        doc.load_incoming(&bytes).unwrap();
-                    }
-                }
-            }
-        }
-        let done = read(&doc, "from_b").is_some() && read(&doc, "from_a").is_some();
-        async move { done.then_some(()) }
-    })
-    .await;
+    let mut all = on_a.fork();
+    all.merge_incoming(&mut on_b).unwrap();
+    let doc = support::holds(&joiner, &route(), &all).await;
     assert_eq!(read(&doc, "title").as_deref(), Some("base"));
     assert_eq!(read(&doc, "from_a").as_deref(), Some("own"));
     assert_eq!(read(&doc, "from_b").as_deref(), Some("concurrent"));

@@ -3,7 +3,7 @@
 use super::{AutoCommit, Route, StatePeer, SystemTime, backend::PeerDocument};
 use automerge::ChangeHash;
 use automerge::transaction::Transactable as _;
-use collab_types::{DocumentMutation, Ed25519PublicKey, OpKind, SealedCompaction, SignedOp};
+use collab_types::{Ed25519PublicKey, OpKind, SealedCompaction, SignedOp};
 
 /// The most bytes one capture hands out, whatever the caller allows.
 const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
@@ -249,16 +249,23 @@ fn open_history(
         None => AutoCommit::new(),
     };
     let mut writes = Vec::with_capacity(document.sealed.len());
+    // A write too large for one frame was written as segments, each a sealed write of its own:
+    // it is read once all of them are held.
+    let mut transfers = crate::document_frame::Transfers::default();
     for (index, op) in document.sealed.iter().enumerate() {
         let plaintext = open(op).map_err(PeerDocumentReadError::Opening)?;
         remaining = remaining
             .checked_sub(plaintext.len())
             .ok_or(PeerDocumentReadError::Capacity)?;
-        writes.push((
-            index,
-            DocumentMutation::decode(&plaintext)
-                .map_err(|error| PeerDocumentReadError::Opening(error.to_string()))?,
-        ));
+        if let Some(mutation) = transfers
+            .take(*op.author.as_bytes(), &plaintext)
+            .map_err(PeerDocumentReadError::Opening)?
+        {
+            writes.push((index, mutation));
+        }
+    }
+    if !transfers.is_empty() {
+        return Err(PeerDocumentReadError::Incomplete);
     }
     // Admission order may differ from causal order on a keyless replica. A
     // write whose sequences the record already holds is folded away: the

@@ -22,11 +22,9 @@ tilo_automerge_isolate::test_worker!();
 
 use std::time::{Duration, Instant};
 
-use collab_types::DocumentMutation;
-use tilo_session_host::PeerEvent;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{enrol, ready, route, start_host, start_peer, wait_for};
+use support::{enrol, ready, route, start_host, start_peer};
 
 const MESSAGES: usize = 20;
 
@@ -54,25 +52,20 @@ async fn a_message_reaches_the_other_page_without_waiting_for_a_poll() {
         )
     };
     let (a, b) = (page(&sender), page(&receiver));
-    let b_events = b.events();
     for peer in [&a, &b] {
         peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
     }
     ready(&[&a, &b]).await;
 
     let mut took = Vec::new();
+    let mut doc = automerge::AutoCommit::new();
     for index in 0..=MESSAGES {
-        let message = DocumentMutation::Incremental(format!("message-{index}").into_bytes());
+        let text = format!("message-{index}");
+        let message = support::say(&mut doc, &text);
         let sent = Instant::now();
         a.publish(route(), &message).unwrap();
-        let arrived = wait_for("the other page to hold the message", || {
-            let held = b_events.drain().into_iter().any(|event| {
-                matches!(event, PeerEvent::Document(document)
-                    if document.mutation().as_ref() == Some(&message))
-            });
-            async move { held.then(Instant::now) }
-        })
-        .await;
+        support::hears(&b, &route(), &text).await;
+        let arrived = Instant::now();
         // The first one also opens the record's channel.
         if index > 0 {
             took.push(arrived - sent);

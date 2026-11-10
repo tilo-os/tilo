@@ -17,23 +17,6 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_user_identity::DeviceCert;
 
-/// One commit the host has not acknowledged yet.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OutboxEntry {
-    /// Commit id, reused when the commit is resent.
-    pub op: [u8; 16],
-    /// Relay workspace the commit targets.
-    pub workspace_id: u64,
-    /// Document route the commit belongs to.
-    pub route: tilo_peer_state::document_frame::DocumentRoute,
-    /// Retention channel ([`neighbour_wire::retention()`]) of the body.
-    pub channel: [u8; 32],
-    /// Whether the body is a retained checkpoint rather than a delta.
-    pub checkpoint: bool,
-    /// Encoded `NeighbourMsg` body.
-    pub body: Vec<u8>,
-}
-
 /// The durable part of a device's session.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerRecord {
@@ -41,8 +24,6 @@ pub struct PeerRecord {
     pub cert: Option<DeviceCert>,
     /// The host certificate pinned at certification.
     pub host_cert: Option<DeviceCert>,
-    /// Commits not yet acknowledged, in submission order.
-    pub outbox: Vec<OutboxEntry>,
 }
 
 /// Persistence for a [`PeerRecord`]. The page implements it over `IndexedDB`
@@ -269,6 +250,28 @@ impl channel_crypto::PeerStates for StoredPeers {
                 .remove(&(self.workspace, channel.0.into_bytes()));
         });
         Ok(())
+    }
+}
+
+/// A page's or agent's proof that it still holds custody of a workspace: its host session
+/// authenticated this device's certificate, and its host refuses a commit under any other. The
+/// replica commits only while the workspace is held under that certificate.
+pub(crate) struct SessionCustody;
+
+impl tilo_session_client::custody::Custody for SessionCustody {
+    fn check(
+        &self,
+        owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
+        workspace: tilo_desktop_model::WorkspaceId,
+        identity: &tilo_identity_host::custody::HostIdentity,
+    ) -> Result<(), String> {
+        owner.with_current(workspace, |view| {
+            if view.device() == &identity.device_cert {
+                Ok(())
+            } else {
+                Err("the workspace is held under another certificate of this device".to_owned())
+            }
+        })
     }
 }
 

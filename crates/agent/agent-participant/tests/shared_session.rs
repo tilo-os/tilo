@@ -275,7 +275,7 @@ async fn status(
 /// each was authored by `author`, until the record contains `text`.
 async fn receive_until(
     agent: &mut AgentParticipant,
-    events: &tilo_session_host::PeerEvents,
+    (browser, events): (&PeerHandle, &tilo_session_host::PeerEvents),
     route: &DocumentRoute,
     page: &mut Replica,
     author: [u8; 32],
@@ -293,13 +293,29 @@ async fn receive_until(
             agent.peer().status().channels,
         );
         agent.pump();
+        let mut landed = false;
         for event in events.drain() {
-            if let PeerEvent::Document(document) = event
-                && document.route == *route
+            if let PeerEvent::Landed {
+                route: changed,
+                author: wrote,
+            } = event
+                && changed == *route
             {
-                assert_eq!(document.author, author, "only the agent edits here");
-                page.apply(&document.mutation().unwrap()).unwrap();
+                assert!(
+                    wrote.is_none_or(|wrote| wrote == author),
+                    "only the agent edits here"
+                );
+                landed = true;
             }
+        }
+        if landed
+            && let Ok(Some(bytes)) =
+                browser
+                    .engine()
+                    .record(&route.cluster_id, &route.app_id, &route.record)
+        {
+            page.apply(&collab_types::DocumentMutation::Snapshot(bytes))
+                .unwrap();
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -462,7 +478,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // order, authored by the agent's device.
     receive_until(
         &mut agent,
-        &browser_events,
+        (&browser, &browser_events),
         &route,
         &mut page,
         agent_cert.device_public_key,
@@ -549,10 +565,9 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     assert_eq!(held.agents[0].status, AgentStatus::Paused);
     assert_eq!(held.agents[0].tasks[1].state, TaskState::Queued);
     assert!(
-        !browser_events
-            .drain()
-            .iter()
-            .any(|event| matches!(event, PeerEvent::Document(document) if document.route == route)),
+        !browser_events.drain().iter().any(
+            |event| matches!(event, PeerEvent::Landed { route: changed, .. } if *changed == route)
+        ),
         "a paused agent edits nothing"
     );
     completed(
@@ -567,7 +582,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     );
     receive_until(
         &mut agent,
-        &browser_events,
+        (&browser, &browser_events),
         &route,
         &mut page,
         agent_cert.device_public_key,
@@ -626,7 +641,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     );
     receive_until(
         &mut agent,
-        &browser_events,
+        (&browser, &browser_events),
         &route,
         &mut page,
         agent_cert.device_public_key,
@@ -688,7 +703,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     );
     receive_until(
         &mut agent,
-        &browser_events,
+        (&browser, &browser_events),
         &route,
         &mut page,
         agent_cert.device_public_key,
@@ -722,7 +737,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let no_edit = |what: &str| {
         assert!(
             !browser_events.drain().iter().any(
-                |event| matches!(event, PeerEvent::Document(document) if document.route == route)
+                |event| matches!(event, PeerEvent::Landed { route: changed, .. } if *changed == route)
             ),
             "{what}"
         );
@@ -793,7 +808,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
             );
             receive_until(
                 &mut agent,
-                &browser_events,
+                (&browser, &browser_events),
                 &route,
                 &mut page,
                 agent_cert.device_public_key,

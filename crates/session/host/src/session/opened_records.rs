@@ -74,20 +74,8 @@ impl Task {
 
     /// The host sent everything it holds of a record this page opened.
     pub(super) fn record_opened(&mut self, workspace_id: u64, channel: [u8; 32], frames: u32) {
-        if let Some(route) = self.owed_replays.remove(&channel) {
-            let artifact =
-                collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record);
-            let given_up = self
-                .held_inbound
-                .get_mut(&route)
-                .map(|held| held.give_up_owed(artifact))
-                .unwrap_or_default();
-            for owed in given_up {
-                let error = format!("the host's replay has no document {owed}");
-                self.refused = (self.refused.0.saturating_add(1), error.clone());
-                self.emit(&PeerEvent::DocumentRejected(error));
-            }
-        }
+        // Its frames are in the replica before anyone hears the record opened.
+        self.keep_arrived();
         if let Some((_, route)) = self.opened_records.get(&channel) {
             self.emit(&PeerEvent::RecordOpened {
                 workspace_id,

@@ -25,18 +25,14 @@ use tilo_session_client::content::Kept;
 use tilo_session_core::remote::Heard;
 
 use collab_types::DocumentMutation;
-use collab_types::inbound::{InboundHold, OpKey};
 use tilo_relay_client::{CoeditPayload, DeviceSigner};
 use tilo_relay_protocol::Envelope;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
-use crate::custody::{OutboxEntry, PeerRecord, PeerStore};
-use crate::document::sign_frame;
+use crate::custody::{PeerRecord, PeerStore};
 use tilo_lock::MutexRecover as _;
-use tilo_peer_state::document_frame::{
-    Ciphers, ContentCipher, DocumentRoute, OpenedDocument, Reassembly, open_frame,
-};
+use tilo_peer_state::document_frame::{Ciphers, ContentCipher, DocumentRoute};
 use tilo_relay_client::LinkError;
 use tilo_relay_session::RelayClient;
 
@@ -47,6 +43,7 @@ mod governance;
 mod host_voice;
 mod inbound;
 mod opened_records;
+mod outbound;
 mod plane;
 mod voice;
 
@@ -58,20 +55,18 @@ pub use entry::Entry;
 pub use entry::EntryCompletion;
 use entry::{Refusal, refusal};
 use governance::HostGovernance;
-use inbound::{HeldFrame, HoldReason};
 
 /// Longest wait between reconnect attempts.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Keep-alive interval on an idle session.
 const PING_INTERVAL: Duration = Duration::from_secs(15);
+/// Envelopes the session takes from the host before it settles what they changed.
+const MAX_TAKEN_AT_ONCE: usize = 256;
 /// How often overdue channel access requests are sent again.
 const CHANNEL_TICK: Duration = Duration::from_secs(1);
 /// The most envelopes the session reads in one pass before it looks at its
 /// commands and timers again.
 const MAX_READ_AT_ONCE: usize = 256;
-/// Documents held per route while this device waits for its keys; past it
-/// the oldest is owed by the host's replay of the record.
-const MAX_HELD_DOCUMENTS: usize = 4096;
 /// Consecutive refusals with no reason (an iroh host closing the handshake)
 /// after which the host is taken to no longer admit this device rather than
 /// to be unreachable. A refusal that says why decides at once.
@@ -215,38 +210,8 @@ pub enum LocalState {
     Failed,
 }
 
-/// Per-route bookkeeping behind `RecordHealth`.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RouteStatus {
-    /// Commits sent and not yet acknowledged.
-    pub pending_operations: usize,
-    pub durable_operations: u64,
-    /// Commits the host refused this session ([`PeerEvent::CommitRefused`]).
-    pub refused_operations: u64,
-    /// Host order of the latest acknowledged commit.
-    pub last_seq: Option<u64>,
-    /// Local store state, as reported with [`PeerHandle::set_local_state`].
-    pub local: Option<LocalState>,
-    /// Sealed documents that arrived before this device held the route's
-    /// keys; they open once the keys do.
-    pub awaiting_keys: usize,
-    /// Documents that arrived written by an app version whose surface this
-    /// page does not hold; they are decided once the workspace answers it.
-    pub awaiting_surface: usize,
-    /// Documents that arrived before the workspace's governance could decide
-    /// them (its author, the workspace, or the app version it runs).
-    pub awaiting_governance: usize,
-}
-
-impl RouteStatus {
-    /// The documents this route holds, undecided, whatever they wait for.
-    #[must_use]
-    pub fn waiting(&self) -> usize {
-        self.awaiting_keys
-            .saturating_add(self.awaiting_surface)
-            .saturating_add(self.awaiting_governance)
-    }
-}
+/// A write in this device's custody: its id, bytes, channel and retention.
+type CustodyEntry = ([u8; 32], Vec<u8>, [u8; 32], neighbour_wire::Retention);
 
 /// Everything a snapshot is derived from.
 #[derive(Clone, Debug)]
@@ -262,8 +227,8 @@ pub struct PeerStatus {
     pub last_contact_at_ms: Option<u64>,
     /// Joined workspaces and whether the host answered `Ready`.
     pub workspaces: BTreeMap<u64, bool>,
-    /// Per-route status.
-    pub routes: BTreeMap<DocumentRoute, RouteStatus>,
+    /// Each record's local store state, as reported with [`PeerHandle::set_local_state`].
+    pub local: BTreeMap<DocumentRoute, LocalState>,
     /// Current failures, newest last.
     pub failures: Vec<Failure>,
     /// Commits not yet acknowledged, over every route.
@@ -289,8 +254,8 @@ pub struct PeerStatus {
 }
 
 impl PeerStatus {
-    /// `device`'s session as it starts: connecting, nothing joined yet.
-    fn connecting(device: [u8; 32]) -> Self {
+    /// A session of `device` that has not connected yet.
+    pub(crate) fn connecting(device: [u8; 32]) -> Self {
         Self {
             phase: TransportPhase::Connecting,
             authenticated: false,
@@ -298,7 +263,7 @@ impl PeerStatus {
             next_attempt_at_ms: None,
             last_contact_at_ms: None,
             workspaces: BTreeMap::new(),
-            routes: BTreeMap::new(),
+            local: BTreeMap::new(),
             failures: Vec::new(),
             outgoing_pending: 0,
             device,
@@ -314,11 +279,23 @@ impl PeerStatus {
 /// Something the session produced for its consumers.
 #[derive(Clone, Debug)]
 pub enum PeerEvent {
-    /// A verified document frame from another device (or this device's own,
-    /// replayed from the host after a reconnect).
-    Document(Box<OpenedDocument>),
-    /// A document that failed verification and was dropped.
-    DocumentRejected(String),
+    /// A write to `route` landed in this device's replica of its workspace, or keys arrived
+    /// that open what it holds of it: read it again with
+    /// [`tilo_session_client::engine::Engine::read_record`].
+    Landed {
+        route: DocumentRoute,
+        /// The device whose write landed; `None` when keys arrived that open what the replica
+        /// held sealed.
+        author: Option<[u8; 32]>,
+    },
+    /// The host refused a write this device made to `route`: `changes` are the Automerge
+    /// changes it would have brought, which whoever holds the record withdraws, and `reason`
+    /// the host's words.
+    Refused {
+        route: DocumentRoute,
+        changes: Vec<[u8; 32]>,
+        reason: String,
+    },
     /// The host admitted a workspace subscription.
     Ready {
         /// The workspace id.
@@ -329,26 +306,6 @@ pub enum PeerEvent {
         /// ([`PeerHandle::open_record`]), and is new only once the host
         /// answered it has none ([`PeerEvent::RecordOpened`]).
         records_when_opened: bool,
-    },
-    /// A commit became durable on the host.
-    Committed {
-        route: DocumentRoute,
-        /// Host order.
-        seq: u64,
-    },
-    /// The host refused a commit of this device: nothing of it was kept
-    /// or passed on, and it is no longer outstanding. Its changes are
-    /// shared state nowhere but in this device's replica, and every later
-    /// local change depends on them, so the record's owner withdraws them
-    /// and tells whoever made them.
-    CommitRefused {
-        route: DocumentRoute,
-        /// The Automerge hashes of the changes it carried, as its claims
-        /// name them; empty for a snapshot.
-        changes: Vec<[u8; 32]>,
-        /// The host's reason, for logs
-        /// ([`tilo_relay_protocol::refusal::plain_reason`] tells a person).
-        reason: String,
     },
     /// A live frame another member published, opened with its record's
     /// channel keys.
@@ -431,21 +388,10 @@ pub enum PeerEvent {
         /// The sources a device needs a keyframe of.
         keyframes: Vec<tilo_live::video::Source>,
     },
-    /// The host holds a long sealed history of `route` it cannot read and
-    /// asks this device for a snapshot. Answer with
-    /// [`PeerHandle::compact`] after applying every [`PeerEvent::Document`]
-    /// received before this event: the snapshot is taken to contain them.
-    /// A consumer without the document ignores it.
-    CompactionRequested {
-        route: DocumentRoute,
-        /// Echo in [`PeerHandle::compact`].
-        request: [u8; 16],
-    },
     /// What the host said about this device's calls.
     Voice(crate::voice::VoiceEvent),
     /// The host sent everything it holds of a record this device opened
-    /// ([`PeerHandle::open_record`]) as [`PeerEvent::Document`]s, before
-    /// this event; its changes keep arriving from now on.
+    /// ([`PeerHandle::open_record`]), each landed before this event; its changes keep arriving from now on.
     RecordOpened {
         /// The workspace id.
         workspace_id: u64,
@@ -672,6 +618,8 @@ struct Shared {
 #[derive(Clone)]
 pub struct PeerHandle {
     commands: mpsc::UnboundedSender<Command>,
+    /// This device's replicas of its workspaces, and what reads their records.
+    engine: Arc<tilo_session_client::engine::Engine>,
     shared: Arc<Mutex<Shared>>,
     events: Queue,
 }
@@ -776,10 +724,27 @@ impl PeerHandle {
         let replicas = crate::replica::Replicas::new(config.cert.clone(), Arc::clone(&store));
         let channel_state = crate::custody::StoredChannels::load(store.as_ref());
         let gates = Arc::new(tilo_channels::Gates::default());
-        let channels = open_channels(&replicas, &channel_state, vault, &signer, &gates);
+        let channels = tilo_channels::ChannelKeyAccess::new(open_channels(
+            &replicas,
+            &channel_state,
+            vault,
+            &signer,
+            &gates,
+        ));
+        let engine = Arc::new(tilo_session_client::engine::Engine::holding(
+            replicas.owner(),
+            Arc::default(),
+            tilo_identity_host::custody::HostIdentity::kept(
+                config.cert.clone(),
+                Arc::clone(&signer),
+            ),
+            Arc::new(crate::custody::SessionCustody),
+        ));
+        engine.keys().set(Some(channels.clone()));
         #[cfg(feature = "toolkit")]
         crate::surfaces::decide_with_kept_surfaces();
         let task = Task {
+            engine: Arc::clone(&engine),
             replicas,
             commands: commands.downgrade(),
             config,
@@ -793,37 +758,37 @@ impl PeerHandle {
             kept: BTreeMap::new(),
             placing: BTreeMap::new(),
             planes: plane::Planes::default(),
-            outbox: record.outbox.iter().cloned().collect(),
-            resending: BTreeSet::new(),
             record,
             ciphers: Ciphers::new(),
             channels,
             governance: HostGovernance::default(),
             held_outbound: channel_state.held().into_iter().collect(),
+            outbound_due: false,
+            answered: Vec::new(),
+            arrived: Vec::new(),
+            let_go: BTreeSet::new(),
+            held_inbound: BTreeMap::new(),
             channel_state,
-            gates,
             route_keys: BTreeMap::new(),
             new_keys: Vec::new(),
             keys_generation: 0,
-            opened: BTreeMap::new(),
             refused: (0, String::new()),
-            held_inbound: BTreeMap::new(),
             surface_wants: neighbour_wire::content::ContentWants::default(),
-            surfaces_arrived: false,
-            owed_replays: BTreeMap::new(),
             held_live: crate::held_live::HeldLive::new(),
-            reassembly: Reassembly::default(),
             positions: BTreeMap::new(),
             opened_records: BTreeMap::new(),
             opened_routes: BTreeSet::new(),
             when_opened: BTreeSet::new(),
-            doc_seq: 0,
             barriers: Vec::new(),
+            sent: BTreeMap::new(),
+            awaiting_surface: BTreeMap::new(),
+            surfaces_arrived: false,
+            compactions: Vec::new(),
+            replays: BTreeSet::new(),
             held_barriers: Vec::new(),
             admission_since: None,
             delivered: BTreeMap::new(),
             received: BTreeSet::new(),
-            compactions: BTreeMap::new(),
             voice: crate::voice::Participations::default(),
             rooms_pending: BTreeMap::new(),
             rooms_next: 0,
@@ -832,23 +797,46 @@ impl PeerHandle {
             held_actions: Vec::new(),
             begun: BTreeSet::new(),
         };
-        task.update(|status| {
-            status.outgoing_pending = task.outbox.len();
-            for entry in &task.outbox {
-                let pending = &mut status
-                    .routes
-                    .entry(entry.route.clone())
-                    .or_default()
-                    .pending_operations;
-                *pending = pending.saturating_add(1);
-            }
-        });
         n0_future::task::spawn(task.run(receiver));
         Self {
             commands,
+            engine,
             shared,
             events,
         }
+    }
+
+    /// This device's replicas of its workspaces: what reads a record whose writes
+    /// [`PeerEvent::Landed`] said arrived.
+    #[must_use]
+    pub fn engine(&self) -> &Arc<tilo_session_client::engine::Engine> {
+        &self.engine
+    }
+
+    /// This session's health: its status, and this device's writes to each record as its
+    /// replica's custody keeps them.
+    pub fn snapshot(&self) -> crate::PeerSnapshot {
+        let owner = self.engine.owner();
+        let writes =
+            self.engine
+                .workspaces()
+                .into_iter()
+                .flat_map(|workspace| {
+                    owner.record_writes(workspace).into_iter().map(
+                        move |((app_id, record), writes)| {
+                            (
+                                DocumentRoute {
+                                    app_id,
+                                    cluster_id: workspace.to_string(),
+                                    record,
+                                },
+                                writes,
+                            )
+                        },
+                    )
+                })
+                .collect();
+        crate::PeerSnapshot::from_status(&self.status(), &writes)
     }
 
     /// Why this page shows no live presence, in the words it shows in its
@@ -915,16 +903,6 @@ impl PeerHandle {
             .encode_frames()
             .map_err(|error| error.to_string())?;
         self.send(Command::Publish(route, frames))
-    }
-
-    /// Answer [`PeerEvent::CompactionRequested`] `request` with `snapshot`,
-    /// an Automerge save of the route that contains every document this
-    /// session delivered for it before the request. The snapshot is
-    /// committed like any publication, sealed on an encrypted route, and
-    /// the host then drops exactly the history it was told the snapshot
-    /// holds.
-    pub fn compact(&self, request: [u8; 16], snapshot: Vec<u8>) -> Result<(), String> {
-        self.send(Command::Compact(request, snapshot))
     }
 
     /// Seal `route`'s documents with `cipher` from now on.
@@ -1091,7 +1069,7 @@ impl PeerHandle {
     /// storage failure; it clears once no route's store state is failed.
     pub fn set_local_state(&self, route: DocumentRoute, state: LocalState) {
         self.change(|status| {
-            status.routes.entry(route).or_default().local = Some(state);
+            status.local.insert(route, state);
             if state == LocalState::Failed {
                 upsert(
                     status,
@@ -1104,9 +1082,9 @@ impl PeerHandle {
                 );
             } else if state == LocalState::Durable
                 && !status
-                    .routes
+                    .local
                     .values()
-                    .any(|route| route.local == Some(LocalState::Failed))
+                    .any(|state| *state == LocalState::Failed)
             {
                 status
                     .failures
@@ -1256,6 +1234,31 @@ enum Exit {
     Unproved(LinkError),
 }
 
+/// The host's answer to a write in custody, waiting to retire from it.
+struct Answered {
+    workspace: tilo_desktop_model::WorkspaceId,
+    /// The custody entry.
+    id: [u8; 32],
+    /// Durable at this order, or refused with the host's reason.
+    outcome: Result<u64, String>,
+    /// What a refusal withdraws from the replica.
+    withdrawn: Option<PeerEvent>,
+}
+
+/// A document the host delivered, waiting for its workspace's replica to decide it.
+struct Arrived {
+    workspace_id: u64,
+    author: [u8; 32],
+    /// Whether it came with the host's replay of the workspace.
+    retained: bool,
+    message: neighbour_wire::NeighbourMsg,
+    route: DocumentRoute,
+    /// Its entry id, as the host names it.
+    entry: [u8; 32],
+    /// The app surface a change names.
+    surface: Option<[u8; 32]>,
+}
+
 struct Task {
     /// This session's own command queue, for answers it waits on in the
     /// background; weak, so the session still ends with its last handle.
@@ -1284,49 +1287,44 @@ struct Task {
     /// This page's own live plane per joined workspace
     /// ([`crate::session::plane`]).
     planes: plane::Planes,
-    outbox: VecDeque<OutboxEntry>,
-    /// The outbox entries this session still owes its host on this
-    /// connection: a page that recorded while it was away owes more than the
-    /// transport takes at once, so they go as the host's answers make room.
-    resending: BTreeSet<[u8; 16]>,
     record: PeerRecord,
     ciphers: Ciphers,
     /// This device's side of the workspaces' encrypted channels: the engine every participant runs,
     /// here as a reader that asks for access and follows the participants' commits.
-    channels: tilo_channels::ChannelEncryption,
+    channels: tilo_channels::ChannelKeyAccess,
     /// What the channels say to and hear from the host.
     governance: HostGovernance,
     /// The channels' state and the writes held for their keys, in the store.
     channel_state: crate::custody::StoredChannels,
-    /// The gate of every channel this device knows has a group.
-    gates: Arc<tilo_channels::Gates>,
     /// Every route this session opened, and the keys it holds for it.
     route_keys: BTreeMap<DocumentRoute, RouteKeys>,
     /// Keys installed since the session last acted on them.
     new_keys: Vec<(DocumentRoute, channel_crypto::ChannelContentKeys)>,
     /// The channels' generation the keys were last read at.
     keys_generation: u64,
-    /// Documents opened per route, and those refused with the last reason,
-    /// for the diagnostics.
-    opened: BTreeMap<(DocumentRoute, [u8; 4]), u64>,
+    /// Documents refused, with the last reason, for the diagnostics.
     refused: (u64, String),
-    /// Sealed documents that arrived before this device held their keys,
-    /// with their authenticated authors.
-    held_inbound: BTreeMap<DocumentRoute, InboundHold<HeldFrame>>,
     /// App surfaces this page asked its workspaces for, by the route whose
     /// writes named them: they arrive as pieces of record content.
     surface_wants: neighbour_wire::content::ContentWants<()>,
-    /// Whether an app surface arrived since the session last decided what it
-    /// held for one.
-    surfaces_arrived: bool,
-    /// Records the host is replaying for documents a full hold let go of.
-    owed_replays: BTreeMap<[u8; 32], DocumentRoute>,
     /// Live frames waiting for their record's keys.
     held_live: crate::held_live::HeldLive,
-    /// Frames published on an encrypted route before this device held its
-    /// keys; they are sealed and committed once the keys arrive.
+    /// Frames published and not committed yet: before this device held the route's keys, or
+    /// while custody had no room; they are sealed and committed once they may.
     held_outbound: BTreeMap<DocumentRoute, Vec<Vec<u8>>>,
-    reassembly: Reassembly,
+    /// Writes were published, or the host answered writes in custody, since held writes were
+    /// last committed: what waits may commit ([`Self::commit_held`]).
+    outbound_due: bool,
+    /// Documents the host delivered that the replica decides together ([`Self::keep_arrived`]).
+    arrived: Vec<Arrived>,
+    /// Records of writes the replica let go undecided, its queue of undecided writes full: the
+    /// host replays them once what they waited for landed.
+    let_go: BTreeSet<DocumentRoute>,
+    /// What the host answered of the writes this connection sent, retired from custody
+    /// together: the workspace, the custody entry, the answer and what a refusal withdraws.
+    answered: Vec<Answered>,
+    /// The records whose last write the replica did not take in, and why.
+    held_inbound: BTreeMap<DocumentRoute, String>,
     /// The host's last position per workspace, presented when resubscribing so
     /// the host replays only what came after it. Kept for the session task's
     /// lifetime only: it describes what this page has received.
@@ -1340,8 +1338,30 @@ struct Task {
     opened_routes: BTreeSet<DocumentRoute>,
     /// The workspaces whose host said they send records only when opened.
     when_opened: BTreeSet<u64>,
-    doc_seq: u64,
-    barriers: Vec<([u8; 16], Completion)>,
+    /// Each waits for the writes that were in this device's custody when it was called, and
+    /// completes with the host's refusal of any of them.
+    barriers: Vec<(BTreeSet<[u8; 32]>, Option<String>, Completion)>,
+    /// The writes in custody this connection sent its host, by the op it sent each as: the
+    /// workspace, the custody entry and its route.
+    sent: BTreeMap<
+        [u8; 16],
+        (
+            tilo_desktop_model::WorkspaceId,
+            [u8; 32],
+            Option<DocumentRoute>,
+        ),
+    >,
+    /// Writes the owner holds for an app surface this page does not have, by that surface: the
+    /// routes the host replays once it arrived.
+    awaiting_surface: BTreeMap<[u8; 32], (u64, DocumentRoute)>,
+    /// Whether an app surface arrived since the session last asked for what waited for one.
+    surfaces_arrived: bool,
+    /// Compactions the host asked for and this session has not answered yet.
+    compactions: Vec<(u64, [u8; 16], DocumentRoute)>,
+    /// Records whose writes the replica asked to hear again, replayed by the host.
+    replays: BTreeSet<DocumentRoute>,
+    /// This device's replicas, as the page's and agents' readers read them.
+    engine: Arc<tilo_session_client::engine::Engine>,
     /// Barriers called while frames were held, with the routes those frames
     /// are held on: each waits for them to enter the outbox, then for the
     /// outbox as it stands then.
@@ -1357,9 +1377,6 @@ struct Task {
     received: BTreeSet<[u8; 32]>,
     /// Each joined workspace as its governance admits it.
     replicas: crate::replica::Replicas,
-    /// Open compaction requests: workspace, route and the entries delivered when
-    /// the request arrived.
-    compactions: BTreeMap<[u8; 16], Compaction>,
     /// This device's participation in the workspaces' calls.
     voice: crate::voice::Participations,
     /// The workspace administration this session asked its host and has not
@@ -1385,9 +1402,6 @@ struct Task {
     begun: BTreeSet<u64>,
 }
 
-/// An open compaction request: workspace, route, and the entries it covers.
-type Compaction = (u64, DocumentRoute, Vec<[u8; 32]>);
-
 /// One action frame held until the host admits this session to its workspace.
 struct HeldAction {
     workspace_id: u64,
@@ -1405,6 +1419,8 @@ const MAX_COMPACTIONS: usize = 16;
 /// given up: an action that waited for a session's admission longer than this
 /// many actions is better refused than delivered late.
 const MAX_HELD_ACTIONS: usize = 64;
+/// The most of a record this session reads to compact it.
+const MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 
 impl Task {
     fn note_delivered(&mut self, route: &DocumentRoute, entries: &[[u8; 32]]) {
@@ -1505,63 +1521,61 @@ impl Task {
         true
     }
 
+    /// Note `request`, the host's ask for a snapshot of `route`: answered from this device's
+    /// replica at the top of the session loop ([`Self::compact`]).
     fn compaction_requested(&mut self, workspace_id: u64, request: [u8; 16], route: DocumentRoute) {
         if !self.workspaces.contains(&workspace_id)
             || route.workspace_id().ok() != Some(workspace_id)
         {
             return;
         }
-        let covered = self
+        if self.compactions.len() >= MAX_COMPACTIONS {
+            self.compactions.remove(0);
+        }
+        self.compactions.push((workspace_id, request, route));
+    }
+
+    /// Commit a snapshot of `route` as this device's replica holds it for request `request`,
+    /// then send the signed statement of what it covers: every entry delivered for the route
+    /// before. Returns `false` when the session could not take an envelope.
+    async fn compact(
+        &mut self,
+        (workspace_id, request, route): (u64, [u8; 16], DocumentRoute),
+        client: &RelayClient,
+    ) -> bool {
+        let covered: Vec<[u8; 32]> = self
             .delivered
             .get(&route)
             .map(|known| known.iter().copied().collect())
             .unwrap_or_default();
-        if self.compactions.len() >= MAX_COMPACTIONS
-            && let Some(oldest) = self.compactions.keys().next().copied()
-        {
-            self.compactions.remove(&oldest);
-        }
-        self.compactions
-            .insert(request, (workspace_id, route.clone(), covered));
-        self.emit(&PeerEvent::CompactionRequested { route, request });
-    }
-
-    /// Commit `snapshot` for request `request`, then send the signed
-    /// statement of what it covers. Returns `false` when the session could
-    /// not take an envelope.
-    async fn compact(
-        &mut self,
-        request: [u8; 16],
-        snapshot: Vec<u8>,
-        client: Option<&RelayClient>,
-    ) -> bool {
-        let Some(client) = client else {
-            return true;
-        };
-        let Some((workspace_id, route, covered)) = self.compactions.remove(&request) else {
+        // A record this device cannot read whole yet is compacted by another member.
+        let Ok(tilo_session_client::engine::RecordReading::Captured {
+            bytes: snapshot, ..
+        }) = self.engine.read_record(
+            &route.cluster_id,
+            &route.app_id,
+            &route.record,
+            None,
+            MAX_SNAPSHOT_BYTES,
+        )
+        else {
             return true;
         };
         let Ok(frames) = DocumentMutation::Snapshot(snapshot.clone()).encode_frames() else {
             return true;
         };
-        let before = self.outbox.len();
-        if !self.publish(route.clone(), frames, Some(client)).await {
-            return false;
-        }
-        let snapshot_entries: Vec<[u8; 32]> = self
-            .outbox
-            .iter()
-            .skip(before)
-            .map(|entry| tilo_relay_protocol::compaction::entry_id(&entry.body))
-            .collect();
+        let snapshot_entries = self.commit_frames(&route, frames, true).await;
         if snapshot_entries.is_empty() {
-            // Held for the route's keys: nothing was committed to cover with.
+            // Custody has no room for the whole snapshot now: the host asks again as the record
+            // grows.
             return true;
+        }
+        if !self.send_custody(workspace_id, client) {
+            return false;
         }
         let statement = tilo_relay_protocol::compaction::CoverageStatement {
             workspace_id,
-            channel: *blake3::hash(format!("app\0{}\0{}", route.app_id, route.record).as_bytes())
-                .as_bytes(),
+            channel: neighbour_wire::app_document_channel(&route.app_id, &route.record),
             request,
             snapshot: snapshot_entries,
             covered,
@@ -1626,8 +1640,7 @@ impl Task {
         });
     }
 
-    fn persist(&mut self) {
-        self.record.outbox = self.outbox.iter().cloned().collect();
+    fn persist(&self) {
         if let Err(error) = self.store.save(&self.record) {
             self.fail_on(FailureSubject::Storage, "storage-transaction-failed", error);
         }
@@ -1832,9 +1845,7 @@ impl Task {
                             self.received.clear();
                             break;
                         }
-                        Some(command) => {
-                            self.apply(command, None).await;
-                        }
+                        Some(command) => self.apply_offline(command).await,
                     },
                     () = &mut sleep => break,
                 }
@@ -1867,9 +1878,7 @@ impl Task {
                     self.received.clear();
                     return true;
                 }
-                Some(command) => {
-                    self.apply(command, None).await;
-                }
+                Some(command) => self.apply_offline(command).await,
             }
         }
     }
@@ -1889,6 +1898,34 @@ impl Task {
                 *ready = false;
             }
         });
+    }
+
+    /// Hand the host what this session owes it before waiting for the next event: its planes,
+    /// the app surfaces it asks for, the compactions it was asked for and its custody. Returns
+    /// `false` when the session could not take an envelope.
+    async fn settle_owed(&mut self, client: &RelayClient) -> bool {
+        self.settle_planes();
+        // App surfaces this page holds documents for go out with what the
+        // session owes, and a surface that arrived decides what waited
+        // for it before anything else is read.
+        self.ask_surfaces(client);
+        if std::mem::take(&mut self.surfaces_arrived) || !self.replays.is_empty() {
+            self.replay_surfaced(client);
+        }
+        for compaction in std::mem::take(&mut self.compactions) {
+            if !self.compact(compaction, client).await {
+                return false;
+            }
+        }
+        // What this device's custody still owes the host goes as its queue takes it:
+        // every answer from the host, every command, every tick is a
+        // chance to hand it more.
+        for workspace_id in self.workspaces.clone() {
+            if !self.send_custody(workspace_id, client) {
+                break;
+            }
+        }
+        true
     }
 
     /// Ask the host for every joined workspace whole again, as a refresh
@@ -1925,41 +1962,30 @@ impl Task {
             if !self.settle_channels(Some(&client)).await {
                 return Exit::Lost("host session saturated".into());
             }
-            self.settle_planes();
-            // App surfaces this page holds documents for go out with what the
-            // session owes, and a surface that arrived decides what waited
-            // for it before anything else is read.
-            self.ask_surfaces(&client);
-            if std::mem::take(&mut self.surfaces_arrived) {
-                self.decide_held_surfaces(&client);
+            if !self.settle_owed(&client).await {
+                return Exit::Lost("host session saturated".into());
             }
-            // What the outbox still owes the host goes as its queue takes it:
-            // every answer from the host, every command, every tick is a
-            // chance to hand it more.
-            self.flush_outbox(&client);
             tokio::select! {
                 biased;
-                command = commands.recv() => match command {
-                    None | Some(Command::Close) => {
-                        client.disconnect().await;
-                        return Exit::Closed;
-                    }
-                    Some(Command::Reconnect) => {
-                        // The next session dials from this same endpoint.
-                        client.disconnect().await;
-                        return Exit::Reconnect;
-                    }
-                    Some(Command::Refresh) => {
-                        if !self.refresh(&client) {
-                            return Exit::Lost("host session saturated".into());
+                command = commands.recv() => {
+                    // What else was asked already is taken before the session settles: the
+                    // writes it publishes commit together.
+                    let mut next = command;
+                    let mut taken = 0_usize;
+                    loop {
+                        if let Some(exit) = self.take_command(&client, next).await {
+                            return exit;
+                        }
+                        taken = taken.saturating_add(1);
+                        match (taken < MAX_TAKEN_AT_ONCE)
+                            .then(|| n0_future::future::now_or_never(commands.recv()))
+                            .flatten()
+                        {
+                            Some(command) => next = command,
+                            None => break,
                         }
                     }
-                    Some(command) => {
-                        if !self.apply(command, Some(&client)).await {
-                            return Exit::Lost("host session saturated".into());
-                        }
-                    }
-                },
+                }
                 envelope = client.recv() => {
                     let Some(mut envelope) = envelope else {
                         return client.handshake_failure().map_or_else(
@@ -2014,6 +2040,31 @@ impl Task {
                     }
                 }
             }
+        }
+    }
+
+    /// Take one command while connected; `None` when the handles are gone. Returns how the
+    /// session ends, if it does.
+    async fn take_command(
+        &mut self,
+        client: &RelayClient,
+        command: Option<Command>,
+    ) -> Option<Exit> {
+        match command {
+            None | Some(Command::Close) => {
+                client.disconnect().await;
+                Some(Exit::Closed)
+            }
+            Some(Command::Reconnect) => {
+                // The next session dials from this same endpoint.
+                client.disconnect().await;
+                Some(Exit::Reconnect)
+            }
+            Some(Command::Refresh) => {
+                (!self.refresh(client)).then(|| Exit::Lost("host session saturated".into()))
+            }
+            Some(command) => (!self.apply(command, Some(client)).await)
+                .then(|| Exit::Lost("host session saturated".into())),
         }
     }
 
@@ -2167,6 +2218,12 @@ impl Task {
         }
     }
 
+    /// Apply one command while disconnected; what it publishes commits at once.
+    async fn apply_offline(&mut self, command: Command) {
+        self.apply(command, None).await;
+        self.commit_held().await;
+    }
+
     /// Apply one command; `client` is the live session, if any. Returns
     /// `false` when the session could not take a durable envelope.
     #[allow(
@@ -2248,11 +2305,13 @@ impl Task {
                 self.opened_routes.insert(route);
                 asked
             }
-            Command::Publish(route, frames) => self.publish(route, frames, client).await,
-            Command::Compact(request, snapshot) => self.compact(request, snapshot, client).await,
+            Command::Publish(route, frames) => {
+                self.publish(route, frames);
+                true
+            }
             Command::Barrier(done) => {
                 if self.held_outbound.is_empty() {
-                    self.await_outbox(done);
+                    self.await_custody(done);
                 } else {
                     let held = self.held_outbound.keys().cloned().collect();
                     self.held_barriers.push((held, done));
@@ -2404,38 +2463,17 @@ impl Task {
         }
         // What this page recorded while it was away is owed again, oldest
         // first: as much as the transport takes now, the rest as the host's
-        // answers make room ([`Self::flush_outbox`]).
-        self.resending = self.outbox.iter().map(|entry| entry.op).collect();
-        self.flush_outbox(client);
+        // answers make room ([`Self::send_custody`]).
+        self.sent.clear();
+        for workspace_id in self.workspaces.clone() {
+            if !self.send_custody(workspace_id, client) {
+                break;
+            }
+        }
         for join in self.voice.resume() {
             sent_ok &= client.send(join).is_ok();
         }
         sent_ok
-    }
-
-    /// Hand the host as much of the outbox as its queue takes, oldest first;
-    /// what does not fit stays owed and is sent on the next chance the host's
-    /// answers bring. A page that recorded a lot while it was away owes more
-    /// than the transport holds at once, which is no reason to give up the
-    /// session.
-    fn flush_outbox(&mut self, client: &RelayClient) {
-        let owed: Vec<[u8; 16]> = self
-            .outbox
-            .iter()
-            .map(|entry| entry.op)
-            .filter(|op| self.resending.contains(op))
-            .collect();
-        for op in owed {
-            let Some(entry) = self.outbox.iter().find(|entry| entry.op == op) else {
-                self.resending.remove(&op);
-                continue;
-            };
-            if client.send(commit(entry, &self.config.cert)).is_err() {
-                // The transport takes no more right now.
-                return;
-            }
-            self.resending.remove(&op);
-        }
     }
 
     /// Ask the host `request` of its workspace administration: over the
@@ -2656,81 +2694,6 @@ impl Task {
             .map_or(Opening::Dropped, Opening::Opened)
     }
 
-    async fn publish(
-        &mut self,
-        route: DocumentRoute,
-        frames: Vec<Vec<u8>>,
-        client: Option<&RelayClient>,
-    ) -> bool {
-        let Ok(workspace_id) = route.workspace_id() else {
-            self.fail(
-                "protocol-rejected",
-                "A document names an invalid workspace.",
-            );
-            return true;
-        };
-        self.open_channel(&route);
-        if !self.ciphers.contains_key(&route) {
-            // Never in the clear: the frames wait for this device's keys.
-            self.held_outbound.entry(route).or_default().extend(frames);
-            self.persist_channels(true);
-            return true;
-        }
-        let mut delivered = true;
-        for frame in frames {
-            let now = tilo_clock::unix_now_ns();
-            self.doc_seq = now.max(self.doc_seq.saturating_add(1));
-            let Some(cipher) = self.ciphers.get_mut(&route) else {
-                self.fail("signature-rejected", "the route's channel keys went away");
-                return delivered;
-            };
-            let signed = match sign_frame(
-                &route,
-                frame,
-                self.signer.as_ref(),
-                cipher,
-                self.doc_seq,
-                now,
-            )
-            .await
-            {
-                Ok(signed) => signed,
-                Err(error) => {
-                    self.fail("signature-rejected", error.to_string());
-                    return delivered;
-                }
-            };
-            // What this device publishes, its own replica holds.
-            self.note_delivered(
-                &route,
-                &[tilo_relay_protocol::compaction::entry_id(&signed.body)],
-            );
-            let entry = OutboxEntry {
-                op: rand::random(),
-                workspace_id,
-                route: route.clone(),
-                channel: signed.channel,
-                checkpoint: signed.checkpoint,
-                body: signed.body,
-            };
-            if let Some(client) = client {
-                delivered &= client.send(commit(&entry, &self.config.cert)).is_ok();
-            }
-            self.outbox.push_back(entry);
-            self.update(|status| {
-                status.outgoing_pending = status.outgoing_pending.saturating_add(1);
-                let pending = &mut status
-                    .routes
-                    .entry(route.clone())
-                    .or_default()
-                    .pending_operations;
-                *pending = pending.saturating_add(1);
-            });
-        }
-        self.persist();
-        delivered
-    }
-
     /// Hold `token` for the rest of this session: what a page sends with
     /// every read through its host's fetch proxy.
     fn grant_fetch_proxy(&self, token: &[u8; 32]) {
@@ -2789,8 +2752,7 @@ impl Task {
         if all {
             self.read_all_keys(now);
         }
-        self.channels
-            .pump(&self.governance, now, tilo_clock::unix_now());
+        self.channels.pump_at(&self.governance, now);
         if self.channels.generation() != self.keys_generation {
             self.read_all_keys(now);
         }
@@ -2816,7 +2778,7 @@ impl Task {
             return false;
         };
         let named = collab_types::ChannelRoute::new(route.app_id.as_str(), route.record.as_str());
-        let (unit, access) = self.channels.access_record(workspace, &named, now);
+        let (unit, access, _) = self.channels.record_access(workspace, &named, now);
         let tilo_channels::ChannelAccess::Ready(keys) = access else {
             return false;
         };
@@ -2837,58 +2799,6 @@ impl Task {
             self.new_keys.push((route.clone(), keys));
         }
         true
-    }
-
-    /// The verdict on an op for `route` from the gate of the group carrying it
-    /// ([`crate::document_admission`], or [`crate::document_history_admission`] for what the host
-    /// replays).
-    fn admission(
-        &self,
-        route: &DocumentRoute,
-        (governance_known, sealed): (bool, bool),
-        retained: bool,
-        encryption: Option<&collab_types::EncryptionMetadata>,
-    ) -> collab_types::inbound::OpAdmission {
-        let gate = self.gates.gate_for(&route.cluster_id, unit(route));
-        if retained {
-            crate::document_history_admission(gate, governance_known, sealed, route, encryption)
-        } else {
-            crate::document_admission(gate, governance_known, sealed, route, encryption)
-        }
-    }
-
-    /// Follow what `workspace_id`'s governance says now: who its members are,
-    /// and the channel commits that waited for a participant it now admits.
-    fn follow_governance(&mut self, workspace_id: u64) {
-        self.planes_due.insert(workspace_id);
-        if let Some((workspace, members)) = self.replicas.members(workspace_id) {
-            if self.status().room_members.get(&workspace) != members.as_ref() {
-                self.update(|status| match members {
-                    Some(members) => _ = status.room_members.insert(workspace.clone(), members),
-                    None => _ = status.room_members.remove(&workspace),
-                });
-            }
-            let devices = self.replicas.member_devices(workspace_id);
-            if self.status().room_devices.get(&workspace) != devices.as_ref() {
-                self.update(|status| match devices {
-                    Some(devices) => _ = status.room_devices.insert(workspace.clone(), devices),
-                    None => _ = status.room_devices.remove(&workspace),
-                });
-            }
-        }
-        self.pump_channels(true);
-        // A record opened before the governance admitted it waits with its
-        // channel unopened: opening it here asks the participants for the keys
-        // the writes it holds wait on.
-        let unopened: Vec<DocumentRoute> = self.held_outbound.keys().cloned().collect();
-        for route in unopened {
-            self.open_channel(&route);
-        }
-        // Writes held for a certificate or governance the workspace now has; the
-        // workspace's `Ready` decides those of its replay.
-        if lock(&self.shared).status.workspaces.get(&workspace_id) == Some(&true) {
-            self.decide_held(workspace_id);
-        }
     }
 
     /// Store channel state and held edits when either changed, so a
@@ -2913,6 +2823,8 @@ impl Task {
     /// session could not take an envelope.
     async fn settle_channels(&mut self, client: Option<&RelayClient>) -> bool {
         let mut delivered = true;
+        self.keep_arrived();
+        self.retire_answered();
         if self.channels.signing() {
             self.channels.signatures().await;
             self.pump_channels(false);
@@ -2921,17 +2833,7 @@ impl Task {
             delivered &= self.send_governance(client);
         }
         loop {
-            let keys = std::mem::take(&mut self.new_keys);
-            if keys.is_empty() {
-                self.persist_channels(false);
-                let channels = self.describe_channels();
-                if lock(&self.shared).status.channels != channels {
-                    self.update(|status| status.channels = channels);
-                }
-                return delivered;
-            }
-            let held_before = self.held_outbound.len();
-            for (route, keys) in keys {
+            for (route, keys) in std::mem::take(&mut self.new_keys) {
                 if let Ok(workspace_id) = route.workspace_id() {
                     self.planes_due.insert(workspace_id);
                 }
@@ -2940,18 +2842,21 @@ impl Task {
                     Box::new(tilo_peer_state::document_frame::KeysCipher(keys)),
                 );
                 self.release_live(&route);
-                // Open what waited first: a reader that sees the route no
-                // longer awaiting keys has its documents among the events.
-                self.decide_route(&route, client);
-                if let Some(frames) = self.held_outbound.remove(&route) {
-                    delivered &= self.publish(route, frames, client).await;
-                }
+                // What the replica holds sealed for these keys opens now.
+                self.landed(&route, None);
+                self.outbound_due |= self.held_outbound.contains_key(&route);
             }
-            if self.held_outbound.len() != held_before {
-                self.persist_channels(true);
-                self.release_barriers();
+            self.commit_held().await;
+            if self.new_keys.is_empty() {
+                break;
             }
         }
+        self.persist_channels(false);
+        let channels = self.describe_channels();
+        if lock(&self.shared).status.channels != channels {
+            self.update(|status| status.channels = channels);
+        }
+        delivered
     }
 
     /// The channels' diagnostics: each workspace, route, plane and held write.
@@ -2971,49 +2876,19 @@ impl Task {
                 unit(route)
             );
         }
+        // A write the replica holds undecided says what it waits for, so a reader is told what
+        // the record wants (an app version this device does not run), not only its keys.
+        for (route, reason) in &self.held_inbound {
+            let _ = write!(
+                channels,
+                "\nheld {}/{}: {reason}",
+                route.app_id, route.record
+            );
+        }
         let planes = self.planes.describe();
         if !planes.is_empty() {
             channels.push('\n');
             channels.push_str(&planes);
-        }
-        for ((route, from), count) in &self.opened {
-            let _ = write!(
-                channels,
-                "\nopened {}/{} from {}: {count}",
-                route.app_id,
-                route.record,
-                hex::encode(from)
-            );
-        }
-        for (route, held) in &self.held_inbound {
-            let mut reasons = Vec::new();
-            let mut waiting = [0_usize; 3];
-            for (_, frame) in held.held() {
-                let counted = match frame.reason {
-                    HoldReason::Keys => &mut waiting[0],
-                    HoldReason::Surface(_) => &mut waiting[1],
-                    HoldReason::Governance => &mut waiting[2],
-                };
-                *counted = counted.saturating_add(1);
-            }
-            for (count, reason) in
-                waiting
-                    .into_iter()
-                    .zip(["its keys", "its app surface", "governance"])
-            {
-                if count > 0 {
-                    reasons.push(format!("{count} for {reason}"));
-                }
-            }
-            if !reasons.is_empty() {
-                let _ = write!(
-                    channels,
-                    "\nheld {}/{}: {}",
-                    route.app_id,
-                    route.record,
-                    reasons.join(", ")
-                );
-            }
         }
         if self.refused.0 > 0 {
             let _ = write!(channels, "\nrefused {}: {}", self.refused.0, self.refused.1);
@@ -3079,96 +2954,6 @@ fn unit(route: &DocumentRoute) -> collab_types::ChannelId {
     collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record)
 }
 
-impl Task {
-    /// Complete `done` once every entry now in the outbox is retired.
-    fn await_outbox(&mut self, done: Completion) {
-        match self.outbox.back() {
-            None => done(Ok(())),
-            Some(last) => self.barriers.push((last.op, done)),
-        }
-    }
-
-    /// Move each held barrier whose routes hold nothing any more on to the
-    /// outbox, which now carries what those routes held.
-    fn release_barriers(&mut self) {
-        let (waiting, released): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held_barriers)
-            .into_iter()
-            .partition(|(routes, _)| {
-                routes
-                    .iter()
-                    .any(|route| self.held_outbound.contains_key(route))
-            });
-        self.held_barriers = waiting;
-        for (_, done) in released {
-            self.await_outbox(done);
-        }
-    }
-
-    /// Retire outbox entry `op`: acknowledged at host order `seq`, or refused
-    /// (`Err` with the host's reason; it can never become durable).
-    fn acknowledge(&mut self, op: [u8; 16], outcome: Result<u64, String>) {
-        let seq = outcome.as_ref().ok().copied();
-        // The host read this commit and would not take it: the session is
-        // fine, and saying so keeps the app connected. What the host said is
-        // what the person is owed, so it travels with the refusal.
-        let refusal = outcome.as_ref().err().map(|reason| refusal_text(reason));
-        let Some(index) = self.outbox.iter().position(|entry| entry.op == op) else {
-            return;
-        };
-        let Some(entry) = self.outbox.remove(index) else {
-            return;
-        };
-        self.resending.remove(&op);
-        self.persist();
-        let route = entry.route;
-        let emitted = route.clone();
-        self.update(|status| {
-            status.outgoing_pending = status.outgoing_pending.saturating_sub(1);
-            let route_status = status.routes.entry(route).or_default();
-            route_status.pending_operations = route_status.pending_operations.saturating_sub(1);
-            match seq {
-                Some(seq) => {
-                    route_status.durable_operations =
-                        route_status.durable_operations.saturating_add(1);
-                    route_status.last_seq = Some(seq);
-                }
-                None => {
-                    route_status.refused_operations =
-                        route_status.refused_operations.saturating_add(1);
-                }
-            }
-        });
-        match outcome {
-            Ok(seq) => self.emit(&PeerEvent::Committed {
-                route: emitted,
-                seq,
-            }),
-            Err(reason) => self.emit(&PeerEvent::CommitRefused {
-                route: emitted,
-                changes: tilo_peer_state::document_frame::claimed_changes(&entry.body),
-                reason,
-            }),
-        }
-        let outstanding: BTreeSet<[u8; 16]> = self.outbox.iter().map(|entry| entry.op).collect();
-        let result = refusal.map_or(Ok(()), Err);
-        let (waiting, done): (Vec<_>, Vec<_>) = std::mem::take(&mut self.barriers)
-            .into_iter()
-            .partition(|(target, _)| outstanding.contains(target));
-        self.barriers = waiting;
-        for (target, complete) in done {
-            complete(if target == op { result.clone() } else { Ok(()) });
-        }
-    }
-}
-
-/// What this session reports when the host would not take a change it read.
-fn refusal_text(reason: &str) -> String {
-    format!("{REFUSAL}: {}", reason.trim())
-}
-
-/// The phrasing this session uses for the one answer that is a refusal.
-const REFUSAL: &str = "the workspace refused the change";
-
 /// This device's certificate for a workspace's other members, and the
 /// revocations its person's root signed. A native shell accepts a member's
 /// edits only from a device whose certificate it holds, and a browser has no
@@ -3201,25 +2986,11 @@ fn identity_hello(
     })
 }
 
-fn commit(entry: &OutboxEntry, cert: &DeviceCert) -> Envelope {
-    let payload = if entry.checkpoint {
-        CoeditPayload::Checkpoint {
-            channel: entry.channel,
-            body: entry.body.clone(),
-        }
-    } else {
-        CoeditPayload::RetainedDelta {
-            channel: entry.channel,
-            body: entry.body.clone(),
-        }
-    };
-    Envelope::Commit {
-        workspace_id: entry.workspace_id,
-        op: entry.op,
-        author_device_public_key: cert.device_public_key,
-        authored_at_ns: tilo_clock::unix_now_ns(),
-        delta: payload.encode().unwrap_or_default(),
-    }
+/// The record a write in custody names, for its health.
+fn route_of(payload: &CoeditPayload) -> Option<DocumentRoute> {
+    let (CoeditPayload::Checkpoint { body, .. } | CoeditPayload::RetainedDelta { body, .. }) =
+        payload;
+    DocumentRoute::of_message(&postcard::from_bytes(body).ok()?)
 }
 
 /// The reply `frame` carries, or the refusal a page shows when it does not
@@ -3263,19 +3034,8 @@ mod tests {
         PeerStatus {
             phase: TransportPhase::Connected,
             authenticated: true,
-            attempt: 0,
-            next_attempt_at_ms: None,
-            last_contact_at_ms: None,
             workspaces: workspaces.iter().copied().collect(),
-            routes: BTreeMap::new(),
-            failures: Vec::new(),
-            outgoing_pending: 0,
-            device: [0; 32],
-            generation: 0,
-            channels: String::new(),
-            room_members: BTreeMap::new(),
-            room_devices: BTreeMap::new(),
-            entry: None,
+            ..PeerStatus::connecting([0; 32])
         }
     }
 
@@ -3422,7 +3182,8 @@ mod tests {
 impl From<&PeerHandle> for Arc<dyn tilo_session_core::remote::RemoteSession> {
     fn from(peer: &PeerHandle) -> Self {
         Arc::new(Asking {
-            peer: peer.clone(),
+            commands: peer.commands.clone(),
+            shared: Arc::clone(&peer.shared),
             events: peer.events(),
         })
     }
@@ -3430,7 +3191,8 @@ impl From<&PeerHandle> for Arc<dyn tilo_session_core::remote::RemoteSession> {
 
 /// One asker of another device's actions over a session.
 struct Asking {
-    peer: PeerHandle,
+    commands: mpsc::UnboundedSender<Command>,
+    shared: Arc<Mutex<Shared>>,
     events: PeerEvents,
 }
 
@@ -3441,7 +3203,9 @@ impl tilo_session_core::remote::RemoteSession for Asking {
         device: [u8; 32],
         frame: Vec<u8>,
     ) -> Result<(), String> {
-        self.peer.send_remote_action(workspace_id, device, frame)
+        self.commands
+            .send(Command::RemoteAction(workspace_id, device, frame))
+            .map_err(|_| "peer session is closed".to_string())
     }
 
     fn take_heard(&self) -> Vec<Heard> {
@@ -3456,7 +3220,9 @@ impl tilo_session_core::remote::RemoteSession for Asking {
     }
 
     fn on_change(&self, wake: Arc<dyn Fn() + Send + Sync>) {
-        self.peer.on_event(&self.events, wake);
+        lock(&self.shared)
+            .listeners
+            .push((Arc::downgrade(&self.events.0), wake));
     }
 }
 

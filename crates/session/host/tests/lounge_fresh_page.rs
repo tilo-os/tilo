@@ -46,11 +46,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tilo_session_host::HttpFuture;
 
-use collab_types::DocumentMutation;
 use collab_types::presence::Presence;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_automerge::ApplyIncoming as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent};
 use tilo_relay_protocol::workspaces::{WorkspaceRole, WorkspacesReply, WorkspacesRequest};
@@ -458,19 +456,15 @@ async fn fresh_page(lounge: &Lounge, who: &Person, invitation: &[u8]) -> PeerHan
 }
 
 /// The messages of `channel` in the page's Chat, read through Chat's own
-/// model over the record and message parts the page received.
-fn chat_messages(
-    frames: &std::collections::BTreeMap<DocumentRoute, Vec<DocumentMutation>>,
-    workspace: &str,
-    channel: &str,
-) -> Vec<chat::model::Message> {
+/// model over the record and message parts the page's replica holds.
+fn chat_messages(page: &PeerHandle, workspace: &str, channel: &str) -> Vec<chat::model::Message> {
     let record = DocumentRoute {
         app_id: CHAT_APP.to_owned(),
         cluster_id: workspace.to_owned(),
         record: String::new(),
     };
-    let Some(chat_doc) = frames.get(&record).and_then(|frames| record_of(frames)) else {
-        println!("the page received no frames of Chat's record");
+    let Some(chat_doc) = support::record_of(page, &record) else {
+        println!("the page holds none of Chat's record");
         return Vec::new();
     };
     let state = chat::projection::read(&chat_doc);
@@ -490,7 +484,7 @@ fn chat_messages(
             cluster_id: workspace.to_owned(),
             record: chat::parts::part(index).route().to_owned(),
         };
-        let Some(document) = frames.get(&part).and_then(|frames| record_of(frames)) else {
+        let Some(document) = support::record_of(page, &part) else {
             continue;
         };
         if let Ok(held) = tilo_app::tilo_resource::Reader::<chat::parts::ChatPart>::read(&document)
@@ -567,11 +561,8 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
 
     // 2. Chat's history: its record and message parts open, and the messages
     // read through Chat's own model, as the window shows them.
-    // Chat's record and its message part, gathered until both arrive or the
-    // page says it stopped waiting for them; what still waits is said as the
-    // page says it.
-    let mut frames: std::collections::BTreeMap<DocumentRoute, Vec<DocumentMutation>> =
-        std::collections::BTreeMap::default();
+    // Chat's record and its message part, read once both are in the page's
+    // replica.
     let part = DocumentRoute {
         app_id: CHAT_APP.to_owned(),
         cluster_id: lounge.workspace.clone(),
@@ -579,42 +570,22 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     };
     let started = std::time::Instant::now();
     let wait = tokio::time::Instant::now() + Duration::from_secs(300);
-    let mut arrived_at = None;
-    loop {
-        for event in page.drain() {
-            if let PeerEvent::Document(document) = event
-                && let Some(mutation) = document.mutation()
-            {
-                frames
-                    .entry(document.route.clone())
-                    .or_default()
-                    .push(mutation);
-            }
-        }
-        let waiting = held_frames(&page);
-        if frames.contains_key(&chat) && frames.contains_key(&part) {
-            arrived_at.get_or_insert_with(|| started.elapsed());
-        }
-        // Done once nothing waits any more, or once the record and its part
-        // have been here a while and the page says no more will come.
-        if (arrived_at.is_some() && waiting.is_empty()) || tokio::time::Instant::now() >= wait {
-            break;
-        }
+    while !(support::record_of(&page, &chat).is_some()
+        && support::record_of(&page, &part).is_some())
+        && tokio::time::Instant::now() < wait
+    {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    println!("the page received Chat's record after {arrived_at:?}");
-    let history = chat_messages(&frames, &lounge.workspace, "c_general");
+    println!("the page read Chat's record after {:?}", started.elapsed());
+    let history = chat_messages(&page, &lounge.workspace, "c_general");
     println!(
         "CHECK chat history: {} message(s) in #general",
         history.len()
     );
-    println!("--- what the page still waits on:\n{}", held_frames(&page));
 
     // 3. The desk: the members' windows, as the shared desktop record holds
     // them, read through the desktop model the window draws.
-    let desk = frames
-        .get(&desktop)
-        .and_then(|frames| record_of(frames))
+    let desk = support::record_of(&page, &desktop)
         .and_then(|doc| tilo_desktop_model::shared_record::read(&doc, None));
     let windows: Vec<String> = desk
         .as_ref()
@@ -818,55 +789,6 @@ async fn wait_for_plane(page: &PeerHandle) {
 /// The workspace's id as a page numbers it.
 fn room_id(lounge: &Lounge) -> u64 {
     tilo_relay_protocol::room_workspace_id(&lounge.workspace).unwrap()
-}
-
-/// The record `route`'s frames make, applied in the order they arrived.
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "the frames are a route's, taken as they came"
-)]
-fn record_of(frames: &[DocumentMutation]) -> Option<automerge::AutoCommit> {
-    let mut doc: Option<automerge::AutoCommit> = None;
-    for mutation in frames {
-        match mutation {
-            DocumentMutation::Snapshot(bytes) => {
-                doc = automerge::AutoCommit::load(bytes).ok();
-            }
-            // A change over a base the page never saw (a tail without its
-            // checkpoint) applies to nothing here; the checkpoint decides
-            // what a reader of the window has.
-            DocumentMutation::Incremental(bytes) => {
-                if let Some(doc) = doc.as_mut() {
-                    // A change whose base the page did not receive applies
-                    // to nothing: it is a tail without its checkpoint, and
-                    // what a reader of the window has is the checkpoint.
-                    let _ = doc.load_incoming(bytes);
-                }
-            }
-        }
-    }
-    doc
-}
-
-/// What `page` says it still waits on, per record: its own account of what
-/// each held frame wants.
-fn held_frames(page: &PeerHandle) -> String {
-    let status = page.status();
-    let mut lines = Vec::new();
-    for (route, held) in &status.routes {
-        if held.waiting() > 0 {
-            lines.push(format!(
-                "{}/{}: {} waiting — {} for its keys, {} for its app surface, {} for its governance",
-                route.app_id,
-                route.record,
-                held.waiting(),
-                held.awaiting_keys,
-                held.awaiting_surface,
-                held.awaiting_governance
-            ));
-        }
-    }
-    lines.join("\n")
 }
 
 /// Every presence frame `page` heard over `secs`, and the devices that said

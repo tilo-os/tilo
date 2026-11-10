@@ -65,7 +65,7 @@ pub use link::{
 };
 pub use terminal::{ShellRan, TERMINAL_APP, Watching, WorkspaceShell};
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -73,9 +73,9 @@ use std::time::{Duration, Instant};
 
 use crate::apps::{AppCatalogue, Seed};
 use crate::host::CatalogueFactory;
-use crate::participant::SharedDesktop;
 use crate::participant::actions::{Outcome, door_outcome, open_row, record_of, record_provider};
 use crate::worker::{ConfinedReplica, ConfinedViews};
+use crate::workspace_records::WorkspaceRecords;
 use collab_types::DocumentMutation;
 use keys::{Keys, catalogue_keys, invoke_keys};
 use run_context::{caller_context, said_run_title};
@@ -703,11 +703,11 @@ impl HostActions {
 /// One record held on the service thread, in its own app worker.
 struct Mounted {
     app: ConfinedReplica,
-    /// Digests of the bodies already merged into it.
-    seen: HashSet<[u8; 32]>,
+    /// The revision of its record merged into it last.
+    merged: Option<[u8; 32]>,
     /// The records held beside it (the parts of a chain its app keeps), by
-    /// route, with the digests of their bodies already merged.
-    parts: HashMap<DocumentRoute, HashSet<[u8; 32]>>,
+    /// route, with the revision of each merged last.
+    parts: HashMap<DocumentRoute, Option<[u8; 32]>>,
     used: u64,
 }
 
@@ -718,29 +718,41 @@ fn is_part(record: &str) -> bool {
     ui::record::RecordId::parse(record).is_some_and(|id| id.chain_part().is_some())
 }
 
-/// A record's whole document, from its changes in order.
-fn whole(changes: &[Change]) -> Result<Vec<u8>, String> {
-    let mut doc = automerge::AutoCommit::new();
-    for (_, bytes) in changes {
-        tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes)
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(doc.save())
-}
+/// A record saved, and the revision it was saved at.
+type Saved = (Vec<u8>, [u8; 32]);
 
-/// One change of a record: a digest naming it, and its bytes.
-type Change = ([u8; 32], Vec<u8>);
-
-#[derive(Default)]
+/// A workspace as the session's replica holds it when a request is served.
 struct WorkspaceState {
     workspace: Option<String>,
-    /// Each record's changes in the order the member took them.
-    records: BTreeMap<DocumentRoute, Vec<Change>>,
-    /// When each record last changed, as a position in that order.
-    changed: HashMap<DocumentRoute, usize>,
-    /// The records open on the workspace's shared desktop.
-    on_desktop: HashSet<String>,
-    revision: usize,
+    /// Its records, those open on its shared desktop first, then the most
+    /// recently changed.
+    records: Vec<DocumentRoute>,
+    engine: Arc<tilo_session_client::engine::Engine>,
+    /// How many writes landed in it.
+    revision: u64,
+}
+
+impl WorkspaceState {
+    fn holds(&self, route: &DocumentRoute) -> bool {
+        self.records.contains(route)
+    }
+
+    /// The record at `route`, saved, with its revision, unless it is still at
+    /// `known`.
+    fn document_since(
+        &self,
+        route: &DocumentRoute,
+        known: Option<[u8; 32]>,
+    ) -> Result<Option<Saved>, String> {
+        self.engine
+            .record_since(&route.cluster_id, &route.app_id, &route.record, known)
+    }
+
+    /// The record at `route`, saved, with its revision.
+    fn document(&self, route: &DocumentRoute) -> Result<Saved, String> {
+        self.document_since(route, None)?
+            .ok_or_else(|| format!("the workspace has no record {} open here", route.record))
+    }
 }
 
 /// What a request must have opened before it reads the workspace.
@@ -773,7 +785,7 @@ struct GaveUp {
 /// documents that arrived and open only once the member holds their keys, or
 /// has the surface they were written with and their workspace's governance.
 fn sealed_for(
-    routes: &BTreeMap<DocumentRoute, tilo_session_host::session::RouteStatus>,
+    routes: &BTreeSet<DocumentRoute>,
     workspace_id: u64,
     needs: Needs<'_>,
     gave_up: &GaveUp,
@@ -793,9 +805,8 @@ fn sealed_for(
     };
     routes
         .iter()
-        .filter(|(route, status)| {
-            status.waiting() > 0
-                && room_workspace_id(&route.cluster_id).ok() == Some(workspace_id)
+        .filter(|route| {
+            room_workspace_id(&route.cluster_id).ok() == Some(workspace_id)
                 && match needs {
                     Needs::Joined => false,
                     Needs::Workspace => !gave_up.listed,
@@ -805,7 +816,7 @@ fn sealed_for(
                     Needs::Act { app_id, record } => named(route, app_id, record),
                 }
         })
-        .map(|(route, _)| route.clone())
+        .cloned()
         .collect()
 }
 
@@ -828,11 +839,12 @@ struct Workspace {
     absent: HashSet<DocumentRoute>,
     /// What earlier waits for keys gave up on.
     gave_up: GaveUp,
-    /// Every change the member opened or wrote, in order.
-    log: Vec<(DocumentRoute, Change)>,
-    /// The shared desktop of the workspace the log names first, merged as its
-    /// changes arrive; they are admitted only through the isolate.
-    desktop: SharedDesktop,
+    /// Records whose writes landed in the session's replica that it cannot open yet: their
+    /// keys, surface or deciding governance have not arrived.
+    undecided: BTreeSet<DocumentRoute>,
+    /// The workspace's records in the session's replica, once a write to one
+    /// named the workspace.
+    records: Option<WorkspaceRecords>,
 }
 
 impl Workspace {
@@ -877,8 +889,8 @@ impl Workspace {
             asked: HashSet::new(),
             absent: HashSet::new(),
             gave_up: GaveUp::default(),
-            log: Vec::new(),
-            desktop: SharedDesktop::new(),
+            undecided: BTreeSet::new(),
+            records: None,
         })
     }
 
@@ -903,26 +915,47 @@ impl Workspace {
                         self.absent.insert(route);
                     }
                 }
-                PeerEvent::Document(document) => {
-                    if room_workspace_id(&document.route.cluster_id).ok() != Some(workspace_id) {
+                PeerEvent::Landed { route, .. } => {
+                    if room_workspace_id(&route.cluster_id).ok() != Some(workspace_id) {
                         continue;
                     }
-                    let Some(mutation) = document.mutation() else {
-                        continue;
-                    };
-                    let bytes = bytes_of(&mutation);
-                    let digest = change_digest(&document.author, &bytes);
-                    let workspace = self
-                        .log
-                        .first()
-                        .map_or(&document.route.cluster_id, |(first, _)| &first.cluster_id);
-                    if document.route == crate::participant::desktop_route(workspace) {
-                        self.desktop.receive(bytes.clone());
+                    let opens = self
+                        .peer
+                        .engine()
+                        .record(&route.cluster_id, &route.app_id, &route.record)
+                        .is_ok_and(|read| read.is_some());
+                    if opens {
+                        self.undecided.remove(&route);
+                    } else {
+                        self.undecided.insert(route.clone());
                     }
-                    self.log.push((document.route, (digest, bytes)));
+                    self.records
+                        .get_or_insert_with(|| {
+                            WorkspaceRecords::new(&route.cluster_id, Arc::clone(self.peer.engine()))
+                        })
+                        .landed(&route);
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// The workspace as the session's replica holds it now.
+    fn state(&mut self) -> WorkspaceState {
+        let engine = Arc::clone(self.peer.engine());
+        match &mut self.records {
+            Some(records) => WorkspaceState {
+                workspace: Some(records.workspace().to_owned()),
+                records: records.people_first(),
+                engine,
+                revision: records.landings(),
+            },
+            None => WorkspaceState {
+                workspace: None,
+                records: Vec::new(),
+                engine,
+                revision: 0,
+            },
         }
     }
 
@@ -930,12 +963,7 @@ impl Workspace {
     /// undecided documents: they open once what the documents wait for
     /// arrives.
     fn sealed(&self, workspace_id: u64, needs: Needs<'_>) -> Vec<DocumentRoute> {
-        sealed_for(
-            &self.peer.status().routes,
-            workspace_id,
-            needs,
-            &self.gave_up,
-        )
+        sealed_for(&self.undecided, workspace_id, needs, &self.gave_up)
     }
 
     /// Take the keys of what `needs` reads in the joined workspace from the
@@ -1059,20 +1087,15 @@ impl Workspace {
     /// The cluster id of the workspace `workspace_id` names, from what the member has
     /// seen of it: its records, or, in a workspace with none yet, its governance.
     fn cluster_id(&self, workspace_id: u64) -> Option<String> {
-        let of_workspace =
-            |route: &DocumentRoute| room_workspace_id(&route.cluster_id).ok() == Some(workspace_id);
-        if let Some((route, _)) = self.log.iter().find(|(route, _)| of_workspace(route)) {
-            return Some(route.cluster_id.clone());
+        if let Some(records) = &self.records {
+            return Some(records.workspace().to_owned());
         }
-        let status = self.peer.status();
-        let named = |name: &String| room_workspace_id(name).ok() == Some(workspace_id);
-        status
-            .routes
-            .into_keys()
-            .find(|route| of_workspace(route))
-            .map(|route| route.cluster_id)
-            .or_else(|| status.room_members.into_keys().find(named))
-            .or_else(|| status.room_devices.into_keys().find(named))
+        self.peer
+            .engine()
+            .workspaces()
+            .into_iter()
+            .map(|workspace| workspace.to_string())
+            .find(|workspace| room_workspace_id(workspace).ok() == Some(workspace_id))
     }
 }
 
@@ -1080,13 +1103,6 @@ fn bytes_of(mutation: &DocumentMutation) -> Vec<u8> {
     match mutation {
         DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes.clone(),
     }
-}
-
-fn change_digest(author: &[u8; 32], bytes: &[u8]) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(author);
-    hasher.update(bytes);
-    *hasher.finalize().as_bytes()
 }
 
 /// A request held off the service's thread until its workspace is ready for
@@ -1140,33 +1156,32 @@ fn acts_for(caller: &Caller, person: &str) -> bool {
 }
 
 /// Merge into `mounted` what `state` holds of its record and its parts that
-/// it has not merged yet.
+/// changed since it merged them last.
 fn catch_up(route: &DocumentRoute, mounted: &mut Mounted, state: &WorkspaceState) {
-    if let Some(changes) = state.records.get(route) {
-        for (digest, bytes) in changes {
-            if mounted.seen.insert(*digest)
-                && let Err(error) = mounted
-                    .app
-                    .apply(&DocumentMutation::Incremental(bytes.clone()))
-            {
+    match state.document_since(route, mounted.merged) {
+        Ok(Some((bytes, revision))) => {
+            if let Err(error) = mounted.app.apply(&DocumentMutation::Snapshot(bytes)) {
                 tracing::warn!(%error, "workspace actions: a change did not merge");
             }
+            mounted.merged = Some(revision);
         }
+        Ok(None) => {}
+        Err(error) => tracing::debug!(%error, "workspace actions: a record does not read"),
     }
-    for (part, seen) in &mut mounted.parts {
-        let (Some(changes), Ok(record)) = (state.records.get(part), reads::record_id(&part.record))
-        else {
+    for (part, merged) in &mut mounted.parts {
+        let Ok(record) = reads::record_id(&part.record) else {
             continue;
         };
-        for (digest, bytes) in changes {
-            if seen.insert(*digest)
-                && let Err(error) = mounted
-                    .app
-                    .apply_record(&record, &DocumentMutation::Incremental(bytes.clone()))
-            {
-                tracing::warn!(%error, "workspace actions: a change to a part did not merge");
-            }
+        let Ok(Some((bytes, revision))) = state.document_since(part, *merged) else {
+            continue;
+        };
+        if let Err(error) = mounted
+            .app
+            .apply_record(&record, &DocumentMutation::Snapshot(bytes))
+        {
+            tracing::warn!(%error, "workspace actions: a change to a part did not merge");
         }
+        *merged = Some(revision);
     }
 }
 
@@ -1621,20 +1636,7 @@ impl Worker {
             needs,
             self.shared.link.get().map(|link| &**link),
         )?;
-        let mut state = WorkspaceState::default();
-        for (position, (route, change)) in workspace.log.iter().enumerate() {
-            state
-                .workspace
-                .get_or_insert_with(|| route.cluster_id.clone());
-            state.changed.insert(route.clone(), position);
-            state
-                .records
-                .entry(route.clone())
-                .or_default()
-                .push(change.clone());
-        }
-        state.revision = workspace.log.len();
-        state.on_desktop.clone_from(workspace.desktop.tabs());
+        let state = workspace.state();
         for (route, mounted) in &mut self.mounted {
             catch_up(route, mounted, &state);
         }
@@ -1681,15 +1683,11 @@ impl Worker {
             self.mount_own(&holder, state)?;
             return Ok(holder);
         }
-        let changes = state
-            .records
-            .get(route)
-            .ok_or_else(|| format!("the workspace has no record {}", route.record))?;
+        let (bytes, revision) = state.document(route)?;
         let record = reads::record_id(&route.record)?;
-        let bytes = whole(changes)?;
         let holders: Vec<DocumentRoute> = state
             .records
-            .keys()
+            .iter()
             .filter(|held| {
                 held.app_id == route.app_id
                     && held.cluster_id == route.cluster_id
@@ -1711,10 +1709,7 @@ impl Worker {
                 .apply_record(&record, &DocumentMutation::Snapshot(bytes.clone()))
             {
                 Ok(()) => {
-                    mounted.parts.insert(
-                        route.clone(),
-                        changes.iter().map(|(digest, _)| *digest).collect(),
-                    );
+                    mounted.parts.insert(route.clone(), Some(revision));
                     self.beside.insert(route.clone(), holder.clone());
                     return Ok(holder);
                 }
@@ -1734,10 +1729,7 @@ impl Worker {
         self.clock = self.clock.wrapping_add(1);
         let clock = self.clock;
         if !self.mounted.contains_key(route) {
-            let changes = state
-                .records
-                .get(route)
-                .ok_or_else(|| format!("the workspace has no record {}", route.record))?;
+            let (bytes, revision) = state.document(route)?;
             while self.mounted.len() >= MAX_MOUNTED {
                 let Some(oldest) = self
                     .mounted
@@ -1758,7 +1750,7 @@ impl Worker {
                 &crate::ReplicaActor::Owner,
                 Seed::Existing {
                     record: reads::record_id(&route.record)?,
-                    changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
+                    changes: vec![bytes],
                 },
             )
             .map_err(|error| error.to_string())?;
@@ -1767,7 +1759,7 @@ impl Worker {
                 route.clone(),
                 Mounted {
                     app,
-                    seen: changes.iter().map(|(digest, _)| *digest).collect(),
+                    merged: Some(revision),
                     parts: HashMap::new(),
                     used: clock,
                 },
@@ -1804,20 +1796,12 @@ impl Worker {
     }
 
     fn records(&self, state: &WorkspaceState) -> Vec<DocumentRoute> {
-        let on_desktop = &state.on_desktop;
-        let mut routes: Vec<DocumentRoute> = state
+        state
             .records
-            .keys()
+            .iter()
             .filter(|route| self.catalogue.get(&route.app_id).is_some())
             .cloned()
-            .collect();
-        routes.sort_by_key(|route| {
-            (
-                !on_desktop.contains(&route.record),
-                std::cmp::Reverse(state.changed.get(route).copied().unwrap_or(0)),
-            )
-        });
-        routes
+            .collect()
     }
 
     fn view_catalogue_page(
@@ -2399,7 +2383,7 @@ impl Worker {
                 .unwrap_or_default()
                 .to_owned(),
         };
-        if !state.records.contains_key(&route) {
+        if !state.holds(&route) {
             return Err(Outcome::Rejected(ActionHostError::Refused {
                 reason: format!("this workspace has no {app} record {}", route.record),
             }));
@@ -2419,19 +2403,20 @@ impl Worker {
             record: &route.record,
             beside: None,
         };
+        let desktop = workspace
+            .records
+            .as_ref()
+            .and_then(WorkspaceRecords::desktop)
+            .unwrap_or_default();
         let opener = crate::desk::Opener {
             person: &person,
             run,
         };
-        let Some(change) = crate::desk::place_view(
-            workspace.desktop.doc(),
-            (named, name.as_deref()),
-            &opener,
-            &view,
-        ) else {
+        let Some(change) =
+            crate::desk::place_view(&desktop, (named, name.as_deref()), &opener, &view)
+        else {
             return Ok(ActionOutput::default());
         };
-        workspace.desktop.receive(change.clone());
         self.commit(workspace_id, &desk, &DocumentMutation::Incremental(change))
             .map_err(|reason| commit_failed(reason, true))?;
         Ok(ActionOutput::default())
@@ -2585,7 +2570,7 @@ impl Worker {
             .map_err(|error| refused(error.to_string()))?;
         if let (Some(permissions), Some(mutation)) = (&permissions, &genesis) {
             let unwritable =
-                bounded::refused_writes(permissions, (app, None), &[], mutation, false)
+                bounded::refused_writes(permissions, (app, None), None, mutation, false)
                     .map_err(|reason| commit_failed(reason, false))?;
             if !unwritable.is_empty() {
                 return Err(Outcome::Rejected(ActionHostError::NotPermitted));

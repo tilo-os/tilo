@@ -60,11 +60,11 @@ mod record_door;
 mod records;
 mod repairs;
 mod running;
-pub(crate) mod unopened;
 mod waits;
 
-pub(crate) use unopened::{SharedDesktop, desktop_route};
+pub(crate) use crate::workspace_records::desktop_route;
 
+use crate::workspace_records::{Reading, WorkspaceRecords};
 use context::picture_head;
 use logs::{record_action, record_ended, record_plan};
 use running::{
@@ -256,8 +256,11 @@ pub struct AgentParticipant {
     beside: BTreeMap<DocumentRoute, DocumentRoute>,
     /// The workspace's content store, lent to every record the agent holds.
     content: tilo_content::ContentStore,
-    /// Records the agent has not mounted, each merged as it changes.
-    unopened: unopened::Unopened,
+    /// The workspace's records in the session's replica the agent has not opened.
+    unopened: WorkspaceRecords,
+    /// Records whose writes landed in the session's replica that it cannot open yet: their
+    /// keys, surface or the governance that decides them have not arrived.
+    undecided: BTreeSet<DocumentRoute>,
     focus: Option<LiveRecord>,
     /// Where in the focused record its last operation left it.
     place: Option<(LiveAnchor, LiveAnchor)>,
@@ -416,7 +419,6 @@ impl AgentParticipant {
             &config.workspace,
         )
         .ok_or_else(|| "the agent's certificate names no device".to_string())?;
-        let unopened = unopened::Unopened::new(&config.workspace);
         // The workspace's own pictures go to the model's provider only where the
         // person running the agent said so.
         let workspace_pictures =
@@ -428,6 +430,7 @@ impl AgentParticipant {
         Ok(Self {
             identity,
             control,
+            unopened: WorkspaceRecords::new(&config.workspace, Arc::clone(peer.engine())),
             peer,
             events,
             workspace: config.workspace,
@@ -441,7 +444,7 @@ impl AgentParticipant {
             apps: BTreeMap::new(),
             beside: BTreeMap::new(),
             content: config.content,
-            unopened,
+            undecided: BTreeSet::new(),
             focus: None,
             place: None,
             presence,
@@ -519,9 +522,6 @@ impl AgentParticipant {
         for event in self.events.drain() {
             self.receive(event);
         }
-        // What arrived for the shared desktop is admitted through the
-        // isolate in one batch, before any plan reads it.
-        self.unopened.settle();
         self.answer_reads();
         self.take_plans();
         if self.left {
@@ -633,37 +633,53 @@ impl AgentParticipant {
         pumped
     }
 
-    /// A durable change from the workspace: news for a running task, and merged into the record
-    /// it changes, held until opened when no app holds it yet.
-    fn document_said(&mut self, document: &tilo_peer_state::document_frame::OpenedDocument) {
-        if document.author != self.identity.cert.device_public_key
-            && document.route.cluster_id == self.workspace
-            && MESSAGE_APPS.contains(&document.route.app_id.as_str())
-            && self.identity.delegation.permits_app(&document.route.app_id)
+    /// A write `author` made to `route` landed in the session's replica (or keys arrived that
+    /// open it): news for a running task, and the record as the replica holds it merged into the
+    /// app that holds it, held until opened when no app does yet.
+    fn document_said(&mut self, route: DocumentRoute, author: Option<[u8; 32]>) {
+        let bytes = match self
+            .peer
+            .engine()
+            .record(&route.cluster_id, &route.app_id, &route.record)
+        {
+            Ok(Some(bytes)) => {
+                self.undecided.remove(&route);
+                bytes
+            }
+            Ok(None) => {
+                self.undecided.insert(route);
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "agent: a record that landed does not read");
+                return;
+            }
+        };
+        if author.is_some()
+            && author != Some(self.identity.cert.device_public_key)
+            && route.cluster_id == self.workspace
+            && MESSAGE_APPS.contains(&route.app_id.as_str())
+            && self.identity.delegation.permits_app(&route.app_id)
             && (self.running.is_some() || self.planning.busy() || self.coordinator.is_some())
         {
             self.news_from
-                .insert(document.route.clone(), document.author);
-            if !self.news.contains(&document.route) {
-                // Read before the change merges below.
-                let before = self.record_messages(&document.route).unwrap_or_default();
-                self.news_before.insert(document.route.clone(), before);
-                self.news.push(document.route.clone());
+                .insert(route.clone(), author.unwrap_or_default());
+            if !self.news.contains(&route) {
+                let before = self.messages_before(&route).unwrap_or_default();
+                self.news_before.insert(route.clone(), before);
+                self.news.push(route.clone());
             }
             // What a coordinated task's waits look for, whatever
             // takes the news.
-            self.before_others_change(&document.route);
+            self.before_others_change(&route);
         }
-        if document.route.cluster_id != self.workspace {
+        if route.cluster_id != self.workspace {
             return;
         }
-        if document.author != self.identity.cert.device_public_key {
-            self.others_wrote.insert(document.route.clone());
+        if author.is_some_and(|author| author != self.identity.cert.device_public_key) {
+            self.others_wrote.insert(route.clone());
         }
-        let Some(mutation) = document.mutation() else {
-            return;
-        };
-        let route = document.route.clone();
+        let mutation = collab_types::DocumentMutation::Snapshot(bytes);
         if parts::is_part(&route.record) && self.merge_part(&route, &mutation).is_some() {
             self.generation = self.generation.wrapping_add(1);
             self.last_merge = Some(Instant::now());
@@ -674,15 +690,17 @@ impl AgentParticipant {
                 tracing::warn!(%error, "agent: a durable change did not merge");
             }
         } else {
-            let (collab_types::DocumentMutation::Snapshot(bytes)
-            | collab_types::DocumentMutation::Incremental(bytes)) = mutation;
             if self.settling.is_some()
                 && self.identity.delegation.permits_app(&route.app_id)
-                && !self.unopened.routes().contains(&route)
+                && self.unopened.changed(&route).is_none()
             {
                 self.settling = Some(Instant::now());
             }
-            self.unopened.receive(route, bytes);
+            self.unopened.landed(&route);
+            if MESSAGE_APPS.contains(&route.app_id.as_str()) {
+                // Read now, so the next write's news is what it added.
+                let _ = self.unopened.text(&route, Reading::Messages);
+            }
         }
     }
 
@@ -710,7 +728,7 @@ impl AgentParticipant {
                 route,
                 frames,
             } if workspace_id == self.workspace_id => self.record_answered(route, frames),
-            PeerEvent::Document(document) => self.document_said(&document),
+            PeerEvent::Landed { route, author } => self.document_said(route, author),
             PeerEvent::Remote(tilo_session_host::session_actions::Heard::Action {
                 workspace_id,
                 from,
@@ -1619,13 +1637,7 @@ impl AgentParticipant {
     /// not decide yet: waiting for their keys, their surface or the
     /// workspace's governance.
     fn step_record_pending(&self, step: &Step) -> bool {
-        let status = self.peer.status();
-        let held = |route: &DocumentRoute| {
-            status
-                .routes
-                .get(route)
-                .is_some_and(|route| route.waiting() > 0)
-        };
+        let held = |route: &DocumentRoute| self.undecided.contains(route);
         // By app: the record a step names may not be open yet.
         self.apps
             .keys()
@@ -1638,21 +1650,17 @@ impl AgentParticipant {
         let Some(running) = &self.running else {
             return false;
         };
-        let status = self.peer.status();
-        running.touched.iter().any(|route| {
-            status
-                .routes
-                .get(route)
-                .is_some_and(|route| route.waiting() > 0)
-        })
+        running
+            .touched
+            .iter()
+            .any(|route| self.undecided.contains(route))
     }
 
     /// Whether a record of the workspace the agent may work on holds edits it
     /// could not decide yet: until then the workspace is only half seen.
     fn keys_pending_for(&self, task: &str) -> bool {
-        self.peer.status().routes.iter().any(|(route, status)| {
-            status.waiting() > 0
-                && route.cluster_id == self.workspace
+        self.undecided.iter().any(|route| {
+            route.cluster_id == self.workspace
                 && self.identity.delegation.permits_app(&route.app_id)
                 && crate::model::task_names_app(task, &route.app_id)
         })
@@ -2260,25 +2268,22 @@ impl AgentParticipant {
             crate::desk::place_view(doc, (&self.workspace, name), &opener, &view)
         };
         let change = match (self.unopened.desktop(), self.apps.get(&desktop)) {
-            (Some(doc), _) => place(doc),
+            (Some(doc), _) => place(&doc),
             (None, Some(app)) => app.read(place).flatten(),
             (None, None) => place(&automerge::AutoCommit::new()),
         };
         let Some(change) = change else {
             return;
         };
-        let mutation = collab_types::DocumentMutation::Incremental(change.clone());
+        let mutation = collab_types::DocumentMutation::Incremental(change);
         if let Err(error) = self.peer.publish(desktop.clone(), &mutation) {
             tracing::warn!(%error, "agent: its view did not reach the desk");
             return;
         }
-        match self.apps.get(&desktop) {
-            Some(app) => {
-                if let Err(error) = app.apply(&mutation) {
-                    tracing::warn!(%error, "agent: the desk it holds did not take its view");
-                }
-            }
-            None => self.unopened.receive(desktop, change),
+        if let Some(app) = self.apps.get(&desktop)
+            && let Err(error) = app.apply(&mutation)
+        {
+            tracing::warn!(%error, "agent: the desk it holds did not take its view");
         }
     }
 

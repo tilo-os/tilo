@@ -23,19 +23,18 @@ use std::collections::BTreeSet;
 
 use channel_crypto::{ChannelPeer, VaultKey};
 use collab_types::{
-    ContentRetention, DocumentFrame, DocumentMutation, Ed25519PublicKey, MlsGovernanceFrame,
-    OpKind, SignedOp, document_artifact_id, document_attestation_id, document_channel_id,
+    ContentRetention, DocumentFrame, Ed25519PublicKey, MlsGovernanceFrame, OpKind, SignedOp,
+    document_artifact_id, document_attestation_id, document_channel_id,
 };
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
-use tilo_session_host::PeerEvent;
 use tilo_session_host::invite::guest_certificate;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, UserIdentity};
 
-use support::{door, enrol, enter, redeem, start_workspace_host, wait_for};
+use support::{door, enrol, enter, hears, redeem, say, start_workspace_host};
 
 /// A device certificate for `root`'s page, as the person's own root signs it.
 async fn page_cert(root: &SigningKey, label: &str) -> (SigningKey, DeviceCert) {
@@ -200,7 +199,10 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
     bob.open_record(workspace.workspace_id, route.clone())
         .unwrap();
     bob.open_route(route.clone()).unwrap();
-    let message = DocumentMutation::Incremental(b"a message from Bob's page".to_vec());
+    let message = say(
+        &mut automerge::AutoCommit::new(),
+        "a message from Bob's page",
+    );
     bob.publish(route.clone(), &message).unwrap();
 
     // The desktop admits the page to the record's channel when it asks, then
@@ -214,8 +216,9 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
             .await
             .unwrap_or_else(|_| {
                 panic!(
-                    "the page's message to reach the desktop; the page's channels:\n{}",
-                    bob.status().channels
+                    "the page's message to reach the desktop; the page's channels:\n{}\n{:?}",
+                    bob.status().channels,
+                    bob.status().failures
                 )
             })
             .expect("the desktop's session open");
@@ -274,9 +277,12 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
     );
 
     // The desktop writes back, sealed the same way; the page reads it live.
-    let frame = DocumentMutation::Incremental(b"and one back from Alice's desktop".to_vec())
-        .encode()
-        .unwrap();
+    let frame = say(
+        &mut automerge::AutoCommit::new(),
+        "and one back from Alice's desktop",
+    )
+    .encode()
+    .unwrap();
     let (metadata, sealed) = desktop_channel
         .content_keys()
         .unwrap()
@@ -304,26 +310,8 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
             envelope: Box::new(op),
         },
     );
-    let reader = bob.clone();
-    let reply = wait_for("the desktop's message on the conversation's record", || {
-        let (reader, route) = (reader.clone(), route.clone());
-        async move {
-            reader.drain().into_iter().find_map(|event| match event {
-                PeerEvent::Document(document)
-                    if document.route == route && document.author == alice_device =>
-                {
-                    document.mutation()
-                }
-                _ => None,
-            })
-        }
-    })
-    .await;
-    assert_eq!(
-        reply,
-        DocumentMutation::Incremental(b"and one back from Alice's desktop".to_vec()),
-        "the page reads what the desktop wrote"
-    );
+    // The page reads what the desktop wrote.
+    hears(&bob, &route, "and one back from Alice's desktop").await;
 
     desktop.close().await;
     bob.close();

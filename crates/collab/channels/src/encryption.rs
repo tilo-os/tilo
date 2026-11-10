@@ -1317,18 +1317,47 @@ impl ChannelEncryption {
     /// Await every signature the device's custody owes, keeping each signed request for the next
     /// [`Self::pump`] to send.
     pub async fn signatures(&mut self) {
-        for entry in self.peers.values_mut() {
-            let Some((mut request, signing)) = entry.signing.take() else {
-                continue;
-            };
-            match signing.await {
-                Ok(signature) => {
+        for (channel, request, signing) in self.take_signing() {
+            let signed = signing.await;
+            self.signed(channel, request, signed);
+        }
+    }
+
+    /// The access requests whose signatures the device's custody owes, taken out of the service
+    /// so a shared one is not held while they are awaited; each answer goes back with
+    /// [`Self::signed`].
+    pub fn take_signing(
+        &mut self,
+    ) -> Vec<(
+        ChannelId,
+        MlsAccessRequestV1,
+        collab_types::signer::SignFuture<'static>,
+    )> {
+        self.peers
+            .iter_mut()
+            .filter_map(|(channel, entry)| {
+                let (request, signing) = entry.signing.take()?;
+                Some((*channel, request, signing))
+            })
+            .collect()
+    }
+
+    /// Keep `request`, signed by the device's custody, for the next [`Self::pump`] to send.
+    pub fn signed(
+        &mut self,
+        channel: ChannelId,
+        mut request: MlsAccessRequestV1,
+        signed: Result<[u8; 64], collab_types::signer::SignError>,
+    ) {
+        match signed {
+            Ok(signature) => {
+                if let Some(entry) = self.peers.get_mut(&channel) {
                     request.signature = collab_types::Signature::from_bytes(signature);
                     entry.request = Some(request);
                     self.queued = true;
                 }
-                Err(error) => tracing::warn!(%error, "channel access request was not signed"),
             }
+            Err(error) => tracing::warn!(%error, "channel access request was not signed"),
         }
     }
 
@@ -2175,6 +2204,34 @@ impl ChannelKeyAccess {
         Some(operation(&mut service))
     }
 
+    /// See [`ChannelEncryption::ask_on_entry`]; the custody's signature is awaited without
+    /// holding the service.
+    pub async fn ask_on_entry(
+        &self,
+        workspace: WorkspaceId,
+        now: Instant,
+        wall: u64,
+    ) -> Option<MlsAccessRequestV1> {
+        match self.run(|service| service.entry_request(workspace, now, wall))?? {
+            entry::EntryRequest::Signed(request) => Some(request),
+            entry::EntryRequest::Unsigned(scope, mut request, signing) => {
+                let signature = signing
+                    .await
+                    .inspect_err(
+                        |error| tracing::warn!(%error, "channel access request was not signed"),
+                    )
+                    .ok()?;
+                request.signature = collab_types::Signature::from_bytes(signature);
+                self.run(|service| service.entry_signed(scope, request, now))
+            }
+        }
+    }
+
+    /// See [`ChannelEncryption::scope_told`].
+    pub fn scope_told(&self, workspace: WorkspaceId, route: &ChannelRoute, scope: ChannelId) {
+        self.run(|service| service.scope_told(workspace, route, scope));
+    }
+
     /// Forget `workspace`, deleted ([`ChannelEncryption::forget_workspace`]).
     ///
     /// # Errors
@@ -2253,6 +2310,34 @@ impl ChannelKeyAccess {
         (access, generation)
     }
 
+    /// [`ChannelEncryption::signatures`] on the shared service, never holding it while the
+    /// device's custody signs.
+    pub async fn signatures(&self) {
+        let Some(owed) = self.run(ChannelEncryption::take_signing) else {
+            return;
+        };
+        let mut answered = Vec::with_capacity(owed.len());
+        for (channel, request, signing) in owed {
+            answered.push((channel, request, signing.await));
+        }
+        let queued = self.run(|service| {
+            for (channel, request, signed) in answered {
+                service.signed(channel, request, signed);
+            }
+            std::mem::take(&mut service.queued)
+        });
+        if queued == Some(true)
+            && let Some(wake) = &self.wake
+        {
+            wake();
+        }
+    }
+
+    /// Whether the device's custody owes a signature ([`ChannelEncryption::signing`]).
+    pub fn signing(&self) -> bool {
+        self.run(|service| service.signing()).unwrap_or(false)
+    }
+
     /// See [`ChannelEncryption::access_record`]; also returns the service's
     /// generation, as [`Self::access`] does.
     pub fn access_record(
@@ -2260,22 +2345,39 @@ impl ChannelKeyAccess {
         workspace: WorkspaceId,
         route: &ChannelRoute,
     ) -> (ChannelAccess, u64) {
+        let (_, access, generation) = self.record_access(workspace, route, Instant::now());
+        (access, generation)
+    }
+
+    /// [`Self::access_record`] at the caller's own `now`, with the channel the route's access
+    /// is to.
+    pub fn record_access(
+        &self,
+        workspace: WorkspaceId,
+        route: &ChannelRoute,
+        now: Instant,
+    ) -> (ChannelId, ChannelAccess, u64) {
         // As `ChannelEncryption::access_record` asks: the route only when it
         // is the channel's.
-        let Some((access, generation, queued)) = self.run(|service| {
-            let (_, access) = service.access_record(workspace, route, Instant::now());
+        let Some((channel, access, generation, queued)) = self.run(|service| {
+            let (channel, access) = service.access_record(workspace, route, now);
             (
+                channel,
                 access,
                 service.generation(),
                 std::mem::take(&mut service.queued),
             )
         }) else {
-            return (ChannelAccess::Unavailable, 0);
+            return (
+                route.channel(&workspace.to_string()),
+                ChannelAccess::Unavailable,
+                0,
+            );
         };
         if queued && let Some(wake) = &self.wake {
             wake();
         }
-        (access, generation)
+        (channel, access, generation)
     }
 
     /// Open `envelope`, a new sealed write to one of `workspace`'s channels, for

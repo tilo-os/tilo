@@ -1,5 +1,5 @@
-//! Edits a browser makes over HTTPS while its host is down stay in the
-//! persisted outbox and are replayed, in order, once the host is back on the
+//! Edits a browser makes over HTTPS while its host is down stay in its
+//! replica's persisted custody and are replayed once the host is back on the
 //! same address; a peer that joins afterwards receives them from the host.
 
 #![allow(
@@ -21,15 +21,22 @@ tilo_automerge_isolate::test_worker!();
 
 use std::sync::Arc;
 
-use collab_types::DocumentMutation;
-use tilo_session_host::{
-    MemoryPeerStore, PeerConfig, PeerHandle, PeerSnapshot, PeerStore, TransportPhase,
-};
+use automerge::AutoCommit;
+use tilo_session_host::{MemoryPeerStore, PeerConfig, PeerHandle, TransportPhase};
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
 use support::{
-    admitted, enrol, next_document, ready, route, start_host, start_host_at, start_peer, wait_for,
+    admitted, enrol, holds, ready, route, say, start_host, start_host_at, start_peer, wait_for,
 };
+
+/// How many of `peer`'s writes to the workspace its replica's custody still holds.
+fn unadmitted(peer: &PeerHandle) -> usize {
+    let workspace = tilo_desktop_model::WorkspaceId::parse(support::WORKSPACE).unwrap();
+    peer.engine()
+        .owner()
+        .unadmitted_writes(workspace)
+        .unwrap_or_default()
+}
 
 /// An edit published before the page holds its route's keys waits for
 /// them; a barrier called meanwhile waits with it until the host has made it
@@ -57,7 +64,7 @@ async fn a_barrier_covers_an_edit_held_for_the_workspaces_replay() {
     // Before the page joins, it holds no keys.
     peer.publish(
         route(),
-        &DocumentMutation::Snapshot(b"written before the replay".to_vec()),
+        &say(&mut AutoCommit::new(), "written before the replay"),
     )
     .unwrap();
     let receipt = peer.barrier().unwrap();
@@ -66,10 +73,12 @@ async fn a_barrier_covers_an_edit_held_for_the_workspaces_replay() {
         .await
         .unwrap();
     let durable = peer
-        .status()
-        .routes
-        .get(&route())
-        .map_or(0, |route| route.durable_operations);
+        .snapshot()
+        .health
+        .records
+        .into_iter()
+        .find(|record| record.record.record_id == route().record)
+        .map_or(0, |note| note.outgoing.durable_operations);
     assert_eq!(
         durable, 1,
         "a barrier completes only once what was published before it is durable"
@@ -119,26 +128,19 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
 
     drop(host.web);
     host.relay.shutdown().await;
-    let offline = [
-        DocumentMutation::Snapshot(b"snapshot while offline".to_vec()),
-        DocumentMutation::Incremental(b"typed while offline".to_vec()),
-    ];
-    for mutation in &offline {
-        peer.publish(route(), mutation).unwrap();
+    let mut offline = AutoCommit::new();
+    for text in ["written while offline", "typed while offline"] {
+        peer.publish(route(), &say(&mut offline, text)).unwrap();
     }
     // The outbox persists an edit before the link to the stopped host has
     // reported its end, so wait for the peer to see the host gone as well.
     wait_for("both edits in the persisted outbox, the host gone", || {
-        let queued = store.load().is_some_and(|record| record.outbox.len() == 2)
-            && peer.status().phase != TransportPhase::Connected;
+        let queued = unadmitted(&peer) == 2 && peer.status().phase != TransportPhase::Connected;
         async move { queued.then_some(()) }
     })
     .await;
     assert_ne!(peer.status().phase, TransportPhase::Connected);
-    assert_eq!(
-        PeerSnapshot::from_status(&peer.status()).synchronization,
-        "pending"
-    );
+    assert_eq!(peer.snapshot().synchronization, "pending");
 
     let host = start_host_at(&root, &host_device, state.path(), listen, iroh_listen).await;
     laptop.reconnect(&host.relay, &root).await;
@@ -149,7 +151,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     })
     .await
     .unwrap();
-    assert!(store.load().unwrap().outbox.is_empty());
+    assert_eq!(unadmitted(&peer), 0);
 
     support::place(&host.relay, &observer.cert).await;
     let observer_peer = start_peer(
@@ -162,10 +164,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
         .join_placed(support::WORKSPACE, "Workspace")
         .unwrap();
     observer_peer.open_route(route()).unwrap();
-    let mut events = Vec::new();
-    for mutation in &offline {
-        assert_eq!(&next_document(&observer_peer, &mut events).await, mutation);
-    }
+    holds(&observer_peer, &route(), &offline).await;
     peer.close();
     observer_peer.close();
     host.relay.shutdown().await;

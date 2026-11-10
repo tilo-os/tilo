@@ -1,6 +1,8 @@
 //! Local exact retries use the signed author, never an invented carrier origin.
 
-use super::{AdmissionError, DocumentAdmission, LocalWrite, SignedOp, StatePeer, SystemTime};
+use super::{
+    AdmissionError, DocumentAdmission, LocalWrite, Route, SignedOp, StatePeer, SystemTime,
+};
 
 impl StatePeer {
     /// Look up an already recorded local envelope with current authority,
@@ -108,6 +110,75 @@ impl StatePeer {
                 && entry.author() == author
         }) {
             return Err("native local document has no exact admission evidence".into());
+        }
+        Ok(())
+    }
+
+    /// Take `envelope`, this device's own write to `app`'s `record`, back out of the record:
+    /// the workspace refused it, so the record holds what it would without it. A sealed write
+    /// leaves the record's sealed history; a write in the clear takes the changes it brought
+    /// out of the document, with every change of this replica built on them.
+    ///
+    /// # Errors
+    /// The document left holds changes that no longer apply.
+    pub fn withdraw_local_document(
+        &mut self,
+        app: &str,
+        record: &str,
+        envelope: &SignedOp,
+    ) -> Result<(), String> {
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        let Some(document) = self.core.documents.get(&route) else {
+            return Ok(());
+        };
+        if document
+            .sealed
+            .iter()
+            .any(|held| held.signature == envelope.signature)
+        {
+            let kept: Vec<SignedOp> = document
+                .sealed
+                .iter()
+                .filter(|held| held.signature != envelope.signature)
+                .cloned()
+                .collect();
+            if let Some(document) = self.core.documents.get_mut(&route) {
+                document.sealed = kept.into();
+            }
+            return Ok(());
+        }
+        let mut withdrawn: std::collections::BTreeSet<automerge::ChangeHash> = envelope
+            .claims
+            .iter()
+            .map(|claim| claim.change)
+            .chain(super::personal::change_hashes(&envelope.payload))
+            .map(automerge::ChangeHash)
+            .collect();
+        let mut doc = (*document.doc).clone();
+        if !withdrawn
+            .iter()
+            .any(|hash| doc.get_change_meta_by_hash(hash).is_some())
+        {
+            return Ok(());
+        }
+        let mut kept = Vec::new();
+        for change in doc.get_changes(&[]) {
+            if withdrawn.contains(&change.hash())
+                || change.deps().iter().any(|dep| withdrawn.contains(dep))
+            {
+                withdrawn.insert(change.hash());
+            } else {
+                kept.push(change);
+            }
+        }
+        let mut rebuilt = automerge::AutoCommit::new();
+        tilo_automerge::ApplyIncoming::apply_incoming(&mut rebuilt, kept)
+            .map_err(|error| error.to_string())?;
+        if let Some(document) = self.core.documents.get_mut(&route) {
+            document.doc = rebuilt.into();
         }
         Ok(())
     }

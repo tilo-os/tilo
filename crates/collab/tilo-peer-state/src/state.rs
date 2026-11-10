@@ -413,11 +413,6 @@ fn process_default() -> (collab_types::Surfaces, AppSurfaces) {
     defaults().lock_recover().clone()
 }
 
-/// Why a received change was neither admitted nor refused: the app surface
-/// it is decided against is not here yet. The same change is decided again
-/// once one is ([`collab_types::Surfaces`]).
-pub const HELD_FOR_SURFACE: &str = "document change held: its app surface is not here yet";
-
 /// The record `message` writes and its sequence, if it is a document write.
 fn written_route(message: &NeighbourMsg) -> Option<(Route, u64)> {
     match message {
@@ -1585,6 +1580,14 @@ impl StatePeer {
         if self.core.workspace_doc.is_none() || !self.core.certificates.contains_key(&source) {
             return Ok(None);
         }
+        // A write whose writer this peer's governance does not list yet is no recorded
+        // duplicate: the real admission holds it.
+        if matches!(
+            backend::member::legacy(&self.core, &source, now),
+            Err(MembershipError::Absent)
+        ) {
+            return Ok(None);
+        }
         self.lookup_exact_document(origin, message, now)
             .map(|exact| {
                 exact.map(|admitted| {
@@ -1639,7 +1642,8 @@ impl StatePeer {
             .authorize_document(&source, app, record, op, now)?
             .is_none()
         {
-            return Err(HELD_FOR_SURFACE.into());
+            // Held for its app surface: decided by the real admission, never a recorded one.
+            return Ok(None);
         }
         collab_types::validate_whole_document_payload_route(app, workspace, record, op)
             .map_err(err)?;
@@ -1804,6 +1808,34 @@ impl StatePeer {
                             now,
                         },
                     );
+                }
+                if matches!(
+                    backend::member::legacy(&self.core, &source, now),
+                    Err(MembershipError::Absent)
+                ) {
+                    // The governance that lists the writer's device has not arrived yet: a
+                    // replay or a delivery ahead of it. A write it would refuse is held and
+                    // decided again with every governance change; it is applied only once the
+                    // workspace lists its writer.
+                    return match self.receive_document(
+                        source,
+                        message.clone(),
+                        now,
+                        retained_replay,
+                        strict_report,
+                    ) {
+                        // ignored-failure: the write is held and decided again, not refused
+                        Err(_) => self.defer(
+                            source,
+                            message,
+                            Held {
+                                retained_replay,
+                                prerequisite: MissingPrerequisite::Governance,
+                                now,
+                            },
+                        ),
+                        decided => decided,
+                    };
                 }
                 self.receive_document(source, message, now, retained_replay, strict_report)
             }
@@ -1993,27 +2025,28 @@ impl StatePeer {
         let source = *envelope.author.as_bytes();
         if self.document(app, record).is_none() {
             // A local publication is an authored change to a record the
-            // workspace owns already. A write that is the whole record founds
-            // one, and so does the empty genesis a device the workspace lets
-            // create the record starts it with: the same founding write a peer
-            // sends takes. A record this device seals refuses the cleartext
-            // below, whichever of the two it is.
-            let creator = self.signed_by_owner(&source)
-                || self.may_create_record(
+            // workspace owns already, or a write that founds one: the whole
+            // record, which the member's own permissions decide as a peer's
+            // first write is, or the empty genesis only a device the workspace
+            // lets create the record starts it with, as a peer's genesis is
+            // held until it may. A record this device seals refuses the
+            // cleartext below, whichever of the two it is.
+            let genesis = empty_genesis_op(app, record, &self.core.workspace, &envelope);
+            if !envelope.is_whole_record() && !genesis {
+                return Err("local app publication cannot create a record owner".into());
+            }
+            if genesis
+                && !self.signed_by_owner(&source)
+                && !self.may_create_record(
                     &self.membership(source, now)?,
                     &Route {
                         app: app.into(),
                         record: record.into(),
                     },
                     now,
-                );
-            if !creator {
-                return Err("the workspace does not let this device create the record".into());
-            }
-            if !envelope.is_whole_record()
-                && !empty_genesis_op(app, record, &self.core.workspace, &envelope)
+                )
             {
-                return Err("local app publication cannot create a record owner".into());
+                return Err("the workspace does not let this device create the record".into());
             }
         }
         self.admit_document(

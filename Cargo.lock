@@ -21671,6 +21671,7 @@ dependencies = [
  "tilo-clock",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
+ "tilo-identity-host",
  "tilo-live",
  "tilo-lock",
  "tilo-media",

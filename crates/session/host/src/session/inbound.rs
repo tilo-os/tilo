@@ -2,62 +2,13 @@
 //!
 //! Every frame the host sends arrives here ([`Task::inbound`]) and is turned
 //! into what the page sees: a workspace's `Ready`, its bootstrap, one message
-//! the host relayed, or a live frame of its plane. A message is decided
-//! against its workspace's governance and its app's surface; a document that
-//! cannot be decided yet is held with the reason it waits ([`HoldReason`])
-//! until its route's keys, its app version's surface or the workspace's
-//! governance is here, and is decided again ([`Task::decide_held`]). Holding
-//! is bounded per route, and a hold that filled asks the host to replay the
-//! record instead.
+//! the host relayed, or a live frame of its plane. A message the workspace's
+//! governance or a record's write is taken into the session's replica, which
+//! decides it; a write it cannot decide yet waits there for its keys, its app
+//! version's surface or the workspace's governance, and the page hears of a
+//! record once the replica holds a change of it ([`Task::landed`]).
 
 use super::*;
-
-/// Why a document waits undecided.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum HoldReason {
-    /// Its route's keys, which carry it sealed.
-    Keys,
-    /// The app version it was written with, by that version's surface hash:
-    /// this page asks its workspace for it, and decides the document when it
-    /// arrives.
-    Surface([u8; 32]),
-    /// The workspace's governance: its author's certificate, the workspace's
-    /// document, or the app version the workspace runs.
-    Governance,
-}
-
-/// A frame held for its route, with its authenticated author, whether the
-/// host was replaying it, and what it waits for: its record's history is
-/// admitted where a live write is not, and a frame decided again keeps that
-/// verdict.
-pub(super) struct HeldFrame {
-    pub(super) body: Vec<u8>,
-    pub(super) author: [u8; 32],
-    pub(super) retained: bool,
-    pub(super) reason: HoldReason,
-}
-
-impl HeldFrame {
-    /// Whether this frame waits for an app surface an arrival can supply.
-    fn waits_for_surface(&self) -> bool {
-        matches!(self.reason, HoldReason::Surface(_))
-    }
-}
-
-/// Why `envelope`, a write this page cannot decide yet, waits: for the app
-/// version it was written with, a change naming a surface the page holds not
-/// (it asks the workspace for it), or for its workspace's governance.
-fn hold_reason(route: &DocumentRoute, envelope: &collab_types::SignedOp) -> HoldReason {
-    let surface = (envelope.kind == collab_types::OpKind::Change)
-        .then_some(envelope.surface)
-        .flatten();
-    match surface {
-        Some(surface) if !crate::surfaces::holds(&route.app_id, &surface) => {
-            HoldReason::Surface(surface)
-        }
-        _ => HoldReason::Governance,
-    }
-}
 
 /// Governance a workspace's host sent as consecutive frames, not admitted yet:
 /// admitted together when something else arrives or the frames already here
@@ -76,6 +27,16 @@ pub(super) struct GovernanceBatch {
 const GOVERNANCE_BATCH_BYTES: usize = 8 * 1024 * 1024;
 
 impl Task {
+    /// Tell this device's readers that `route` changed in its replica.
+    pub(super) fn landed(&mut self, route: &DocumentRoute, author: Option<[u8; 32]>) {
+        self.held_inbound.remove(route);
+        self.engine.arrivals().landed();
+        self.emit(&PeerEvent::Landed {
+            author,
+            route: route.clone(),
+        });
+    }
+
     /// The host no longer lets this device into `workspace_id`, for
     /// `reason`: its owner deleted it, or this device may not.
     fn not_authorised(&mut self, workspace_id: u64, reason: String) {
@@ -110,9 +71,9 @@ impl Task {
         self.update(|status| {
             status.workspaces.insert(workspace_id, true);
         });
-        // The replay's documents reach the page before its `Ready`, as they
-        // arrived.
-        self.decide_held(workspace_id);
+        // The workspace is ready once what the host replayed before it is in the replica:
+        // whoever waits for it reads every write the replay carried.
+        self.keep_arrived();
         self.emit(&PeerEvent::Ready {
             workspace_id,
             records_when_opened: when_opened,
@@ -138,7 +99,17 @@ impl Task {
             Envelope::WorkspaceBootstrap {
                 workspace_id,
                 bootstrap,
-            } => self.bootstrapped(workspace_id, &bootstrap),
+            } => {
+                self.keep_arrived();
+                match self
+                    .replicas
+                    .bootstrap(workspace_id, &bootstrap, web_time::SystemTime::now())
+                {
+                    Ok(true) => self.follow_governance(workspace_id),
+                    Ok(false) => {}
+                    Err(error) => self.fail("protocol-rejected", error),
+                }
+            }
             Envelope::Delta {
                 workspace_id,
                 author_device_public_key,
@@ -152,7 +123,7 @@ impl Task {
                 else {
                     return;
                 };
-                self.inbound_body(workspace_id, body, author_device_public_key);
+                self.inbound_body(workspace_id, &body, author_device_public_key);
             }
             Envelope::Position {
                 workspace_id,
@@ -191,7 +162,23 @@ impl Task {
                 self.fail("protocol-rejected", reason.clone());
                 self.acknowledge(op, Err(reason));
             }
-            content @ Envelope::RecordContent { .. } => self.record_content(content, now),
+            Envelope::RecordContent { ref frame, .. } => {
+                // A surface this page asked for is the peer's, not a record's
+                // content: it is kept for deciding, and what waited for it is
+                // decided at the top of the session loop.
+                let device = self.config.cert.device_public_key;
+                match self.surface_wants.piece(&device, frame, now) {
+                    Some(arrived) => {
+                        self.surfaces_arrived |=
+                            crate::surfaces::keep(&arrived.hash, arrived.bytes);
+                    }
+                    None => {
+                        if let Some(event) = addressed(envelope) {
+                            self.emit(&event);
+                        }
+                    }
+                }
+            }
             envelope => {
                 if let Some(event) = addressed(envelope) {
                     self.emit(&event);
@@ -200,32 +187,32 @@ impl Task {
         }
     }
 
-    /// The host's bootstrap of `workspace_id`, its member roster: once the
-    /// replica takes it, the workspace's governance is followed from it.
-    fn bootstrapped(&mut self, workspace_id: u64, bootstrap: &[u8]) {
-        match self
-            .replicas
-            .bootstrap(workspace_id, bootstrap, web_time::SystemTime::now())
-        {
-            Ok(true) => self.follow_governance(workspace_id),
-            Ok(false) => {}
-            Err(error) => self.fail("protocol-rejected", error),
-        }
-    }
-
-    /// A piece of record content the host sent. A surface this page asked
-    /// for is the peer's, not a record's content: it is kept for deciding,
-    /// and what waited for it is decided at the top of the session loop.
-    fn record_content(&mut self, envelope: Envelope, now: u64) {
-        if let Envelope::RecordContent { frame, .. } = &envelope {
-            let device = self.config.cert.device_public_key;
-            if let Some(arrived) = self.surface_wants.piece(&device, frame, now) {
-                self.surfaces_arrived |= crate::surfaces::keep(&arrived.hash, arrived.bytes);
-                return;
+    /// Follow what `workspace_id`'s governance says now: who its members are,
+    /// and the channel commits that waited for a participant it now admits.
+    pub(super) fn follow_governance(&mut self, workspace_id: u64) {
+        self.planes_due.insert(workspace_id);
+        if let Some((workspace, members)) = self.replicas.members(workspace_id) {
+            if self.status().room_members.get(&workspace) != members.as_ref() {
+                self.update(|status| match members {
+                    Some(members) => _ = status.room_members.insert(workspace.clone(), members),
+                    None => _ = status.room_members.remove(&workspace),
+                });
+            }
+            let devices = self.replicas.member_devices(workspace_id);
+            if self.status().room_devices.get(&workspace) != devices.as_ref() {
+                self.update(|status| match devices {
+                    Some(devices) => _ = status.room_devices.insert(workspace.clone(), devices),
+                    None => _ = status.room_devices.remove(&workspace),
+                });
             }
         }
-        if let Some(event) = addressed(envelope) {
-            self.emit(&event);
+        self.pump_channels(true);
+        // A record opened before the governance admitted it waits with its
+        // channel unopened: opening it here asks the participants for the keys
+        // the writes it holds wait on.
+        let unopened: Vec<DocumentRoute> = self.held_outbound.keys().cloned().collect();
+        for route in unopened {
+            self.open_channel(&route);
         }
     }
 
@@ -233,14 +220,16 @@ impl Task {
     /// the workspace's governance (a member's certificate, the workspace document)
     /// is admitted through the workspace's replica; channel governance and
     /// documents go on.
-    pub(super) fn inbound_body(&mut self, workspace_id: u64, body: Vec<u8>, author: [u8; 32]) {
+    pub(super) fn inbound_body(&mut self, workspace_id: u64, body: &[u8], author: [u8; 32]) {
         let retained = lock(&self.shared).status.workspaces.get(&workspace_id) != Some(&true);
-        match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body) {
+        match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body) {
             Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, room }) => {
                 self.gather_governance(workspace_id, author, retained, room, changes);
             }
             Ok(message @ neighbour_wire::NeighbourMsg::IdentityHello { .. }) => {
                 self.admit_governance();
+                // Governance is decided after the documents that came before it.
+                self.keep_arrived();
                 self.admit_governance_message(workspace_id, author, retained, message);
             }
             Ok(message) => {
@@ -298,6 +287,8 @@ impl Task {
         let Some(batch) = self.governance_batch.take() else {
             return;
         };
+        // Governance is decided after the documents that came before it.
+        self.keep_arrived();
         let GovernanceBatch {
             workspace_id,
             author,
@@ -334,32 +325,30 @@ impl Task {
         message: neighbour_wire::NeighbourMsg,
     ) -> bool {
         // Governance the replica refuses is not the workspace's.
-        let admitted = self.replicas.admit(
+        let Ok(report) = self.replicas.admit(
             workspace_id,
             author,
             retained,
             message,
             web_time::SystemTime::now(),
-        );
-        if admitted == Ok(true) {
+        ) else {
+            return false;
+        };
+        // Documents the replica held for this governance are decided now.
+        if let Some(workspace) = self.replicas.workspace(workspace_id) {
+            self.follow_report(&workspace.to_string(), &report);
+        }
+        if report.changed || report.metadata_changed {
             self.follow_governance(workspace_id);
         }
-        admitted.is_ok()
-    }
-
-    /// A held document, decided again; `retained` as it arrived.
-    pub(super) fn held_body(&mut self, body: Vec<u8>, author: [u8; 32], retained: bool) {
-        self.admit_governance();
-        if let Ok(message) = postcard::from_bytes(&body) {
-            self.inbound_message(body, message, author, retained);
-        }
+        true
     }
 
     /// Channel governance or a document `author` wrote, `retained` while the
     /// host replays the workspace.
     pub(super) fn inbound_message(
         &mut self,
-        body: Vec<u8>,
+        body: &[u8],
         message: neighbour_wire::NeighbourMsg,
         author: [u8; 32],
         retained: bool,
@@ -387,178 +376,187 @@ impl Task {
                 };
                 // A workspace the host resumes after it lagged can replay an entry
                 // its live deliveries already carried; the page takes it once.
-                if self
-                    .received
-                    .contains(&tilo_relay_protocol::compaction::entry_id(&body))
-                {
+                let entry = tilo_relay_protocol::compaction::entry_id(body);
+                if self.received.contains(&entry) {
                     return;
                 }
                 let Ok(workspace_id) = route.workspace_id() else {
                     return;
                 };
-                // The workspace's governance decides the write before any app
-                // sees it, and holds it while it cannot yet.
-                match self.replicas.decide_document(
+                // The channel carries the record's content keys, and which devices read it is
+                // its workspace's governance, not any one write: take part in it for every
+                // write that arrives, so a record whose writes are all sealed asks for them.
+                self.open_channel(&route);
+                let surface = (envelope.kind == collab_types::OpKind::Change)
+                    .then_some(envelope.surface)
+                    .flatten();
+                // The workspace's governance decides the write before any app reads it, with
+                // what else the host sent at once ([`Self::keep_arrived`]).
+                self.arrived.push(Arrived {
                     workspace_id,
                     author,
                     retained,
-                    message,
-                    web_time::SystemTime::now(),
-                ) {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        // The channel carries the record's content keys, and
-                        // which devices read it is its workspace's governance,
-                        // not any one write: take part in it for a write that
-                        // arrived here even when this page cannot decide it
-                        // yet. A record whose every write is held would
-                        // otherwise never ask for the keys the writes wait on.
-                        self.open_channel(&route);
-                        let reason = hold_reason(&route, envelope);
-                        self.hold_document(
-                            &route,
-                            OpKey::of(envelope),
-                            body,
-                            author,
-                            retained,
-                            reason,
-                        );
-                        return;
-                    }
-                    Err(error) => {
-                        self.refused = (self.refused.0.saturating_add(1), error.clone());
-                        self.emit(&PeerEvent::DocumentRejected(error));
-                        return;
-                    }
-                }
-                self.open_channel(&route);
-                match self.verdict(&route, envelope, retained) {
-                    Ok(None) => self.open_document(&body, author),
-                    Ok(Some(reason)) => {
-                        let key = OpKey::of(envelope);
-                        self.hold_document(&route, key, body, author, retained, reason);
-                    }
-                    Err(error) => {
-                        self.refused = (self.refused.0.saturating_add(1), error.to_owned());
-                        self.emit(&PeerEvent::DocumentRejected(error.to_owned()));
-                    }
-                }
+                    message: message.clone(),
+                    route,
+                    entry,
+                    surface,
+                });
             }
             _ => {}
         }
     }
 
-    /// Whether the page knows what governs `route`'s channel: the host answered
-    /// `Ready` for its workspace (it sent the governance it holds first, so the
-    /// page's mirror of its channels is what the workspace decided), or the
-    /// page holds the route's keys already. A group's participants admitted
-    /// the page to the group that carries the route, so its channel is sealed
-    /// and the page decides the route's replayed writes now: the record shows
-    /// while the rest of the workspace is still on its way.
-    pub(super) fn governance_known(&self, route: &DocumentRoute) -> bool {
-        self.ciphers.contains_key(route)
-            || route.workspace_id().is_ok_and(|workspace_id| {
-                lock(&self.shared).status.workspaces.get(&workspace_id) == Some(&true)
-            })
+    /// The host answered `Ready` for `workspace_id`: the action frames that waited for the
+    /// admission go out in the order they were made.
+    pub(super) fn admitted(&mut self, workspace_id: u64, client: &RelayClient) {
+        self.check_admission();
+        self.flush_held_actions(workspace_id, client);
     }
 
-    /// Decide again the documents held for the routes of `workspace_id`,
-    /// now that its governance is known: cleartext its channels admit
-    /// opens, cleartext they require sealed is refused, the rest waits on.
-    pub(super) fn decide_held(&mut self, workspace_id: u64) {
-        for route in self.held_routes(workspace_id) {
-            self.decide_route(&route, None);
-        }
-    }
-
-    /// What the write `envelope` waits for once its route's keys and the
-    /// channel's governance admit it: `None` when it opens now, or the error
-    /// for cleartext on a channel that requires it sealed.
-    pub(super) fn verdict(
-        &self,
-        route: &DocumentRoute,
-        envelope: &collab_types::SignedOp,
-        retained: bool,
-    ) -> Result<Option<HoldReason>, &'static str> {
-        let Some(metadata) = &envelope.encryption else {
-            let admission = self.admission(
-                route,
-                (
-                    self.governance_known(route),
-                    self.ciphers.contains_key(route),
-                ),
-                retained,
-                None,
-            );
-            return match admission.admits_cleartext() {
-                Some(true) => Ok(None),
-                Some(false) => Err("cleartext on a channel that requires it sealed"),
-                None => Ok(Some(HoldReason::Governance)),
-            };
-        };
-        Ok(self
-            .ciphers
-            .get(route)
-            .is_none_or(|cipher| !cipher.holds_epoch(metadata.epoch))
-            .then_some(HoldReason::Keys))
-    }
-
-    /// Take every document held for `route` and decide it again: what still
-    /// cannot be decided is held again with the reason it has now.
-    pub(super) fn decide_route(&mut self, route: &DocumentRoute, client: Option<&RelayClient>) {
-        let held = self
-            .held_inbound
-            .get_mut(route)
-            .map(InboundHold::take)
-            .unwrap_or_default();
-        for (_, frame) in held {
-            self.held_body(frame.body, frame.author, frame.retained);
-        }
-        self.recount(route);
-        self.replay_owed(route, client);
-    }
-
-    /// Decide again what the surfaces that arrived were waited for: every
-    /// document held for an app version this page has now.
-    pub(super) fn decide_held_surfaces(&mut self, client: &RelayClient) {
-        let routes: Vec<DocumentRoute> = self
-            .held_inbound
-            .iter()
-            .filter(|(_, held)| held.held().any(|(_, frame)| frame.waits_for_surface()))
-            .map(|(route, _)| route.clone())
-            .collect();
-        for route in routes {
-            self.decide_route(&route, Some(client));
-        }
-    }
-
-    /// Ask the workspaces for the app surfaces this page holds documents for
-    /// and does not have: the workspace keeps every version its history was
-    /// written with, and a member that wrote under one answers with it.
-    pub(super) fn ask_surfaces(&mut self, client: &RelayClient) {
-        let mut wants: BTreeMap<[u8; 32], (u64, String, String)> = BTreeMap::new();
-        for (route, held) in &self.held_inbound {
-            let Ok(workspace_id) = route.workspace_id() else {
-                continue;
-            };
-            for (_, frame) in held.held() {
-                if let HoldReason::Surface(surface) = frame.reason {
-                    wants.entry(surface).or_insert_with(|| {
-                        (workspace_id, route.app_id.clone(), route.cluster_id.clone())
-                    });
+    /// Keep the documents that arrived in their workspaces' replicas, one owner turn for each
+    /// workspace's run of them: the replica holds what it cannot decide yet, and decides it once
+    /// it can.
+    pub(super) fn keep_arrived(&mut self) {
+        let mut arrived = std::mem::take(&mut self.arrived).into_iter().peekable();
+        while let Some(first) = arrived.next() {
+            let workspace_id = first.workspace_id;
+            let mut run = vec![first];
+            while let Some(next) = arrived.next_if(|next| next.workspace_id == workspace_id) {
+                run.push(next);
+            }
+            let documents = run
+                .iter()
+                .map(|document| (document.author, document.retained, document.message.clone()))
+                .collect();
+            match self
+                .replicas
+                .keep(workspace_id, documents, web_time::SystemTime::now())
+            {
+                Ok(reports) => {
+                    for (document, report) in run.into_iter().zip(reports) {
+                        self.kept(document, report);
+                    }
+                }
+                Err(error) => {
+                    self.refused = (self.refused.0.saturating_add(run.len() as u64), error);
                 }
             }
         }
+    }
+
+    /// Act on what the replica made of `document`: tell its readers what landed, and say what
+    /// it holds undecided and why.
+    pub(super) fn kept(
+        &mut self,
+        document: Arrived,
+        report: Result<tilo_peer_state::AdmissionReport, String>,
+    ) {
+        let Arrived {
+            workspace_id,
+            author,
+            retained,
+            route,
+            entry,
+            surface,
+            ..
+        } = document;
+        let report = match report {
+            Ok(report) => report,
+            Err(error) => {
+                self.refused = (self.refused.0.saturating_add(1), error);
+                return;
+            }
+        };
+        let mut landed = BTreeMap::new();
+        if tilo_peer_state::owner::took_in(&report, retained) {
+            if self.received.len() < MAX_DELIVERED_ENTRIES {
+                self.received.insert(entry);
+            }
+            self.note_delivered(&route, &[entry]);
+            landed.insert(route.clone(), author);
+        } else if let (
+            tilo_peer_state::InputDisposition::RetryLater(
+                tilo_peer_state::MissingPrerequisite::AppSurface,
+            ),
+            Some(surface),
+        ) = (report.primary(), surface)
+        {
+            self.awaiting_surface
+                .insert(surface, (workspace_id, route.clone()));
+            self.held_inbound.insert(
+                route.clone(),
+                format!("for its app surface {}", hex::encode(surface)),
+            );
+        } else {
+            self.held_inbound
+                .insert(route.clone(), format!("{:?}", report.primary()));
+        }
+        if report.replay_wanted {
+            self.replays.insert(route.clone());
+        }
+        for (route, author) in landed {
+            self.landed(&route, Some(author));
+        }
+        self.follow_report(&route.cluster_id, &report);
+    }
+
+    /// Follow what else the replica did with `report`'s input to the workspace `cluster`: tell
+    /// readers of the documents it held and decided now that they landed, remember the records
+    /// of writes it let go undecided, and have the host replay those once what they waited for
+    /// landed.
+    pub(super) fn follow_report(
+        &mut self,
+        cluster: &str,
+        report: &tilo_peer_state::AdmissionReport,
+    ) {
+        for dropped in &report.summary().dropped {
+            if dropped.waiting_for.is_some() && !dropped.app.is_empty() {
+                self.let_go.insert(DocumentRoute {
+                    app_id: dropped.app.clone(),
+                    cluster_id: cluster.to_owned(),
+                    record: dropped.record.clone(),
+                });
+            }
+        }
+        if report.replay_wanted {
+            let let_go = std::mem::take(&mut self.let_go);
+            self.replays.extend(let_go);
+        }
+        let landed: BTreeMap<DocumentRoute, [u8; 32]> = report
+            .released()
+            .iter()
+            .filter_map(|released| match &released.message {
+                neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } => {
+                    DocumentRoute::of_message(&released.message)
+                        .map(|route| (route, *envelope.author.as_bytes()))
+                }
+                _ => None,
+            })
+            .collect();
+        for (route, author) in landed {
+            self.landed(&route, Some(author));
+        }
+    }
+
+    /// Ask the workspaces for the app surfaces their writes here wait for and this page does
+    /// not have: the workspace keeps every version its history was written with, and a member
+    /// that wrote under one answers with it.
+    pub(super) fn ask_surfaces(&mut self, client: &RelayClient) {
         let device = self.config.cert.device_public_key;
         let now = tilo_clock::unix_now_ms();
-        for (surface, (workspace_id, app_id, cluster_id)) in wants {
-            if crate::surfaces::holds(&app_id, &surface) {
+        let wants: Vec<_> = self
+            .awaiting_surface
+            .iter()
+            .map(|(surface, (workspace_id, route))| (*surface, *workspace_id, route.clone()))
+            .collect();
+        for (surface, workspace_id, route) in wants {
+            if crate::surfaces::holds(&route.app_id, &surface) {
                 continue;
             }
             let Some(request) = self.surface_wants.ask(
                 &device,
                 (),
-                (&app_id, &cluster_id),
+                (&route.app_id, &route.cluster_id),
                 &hex::encode(surface),
                 now,
             ) else {
@@ -568,144 +566,34 @@ impl Task {
         }
     }
 
-    /// Set `route`'s status from what it holds now, by the reason each
-    /// document waits.
-    pub(super) fn recount(&self, route: &DocumentRoute) {
-        let mut waiting = (0_usize, 0_usize, 0_usize);
-        if let Some(held) = self.held_inbound.get(route) {
-            for (_, frame) in held.held() {
-                let count = match frame.reason {
-                    HoldReason::Keys => &mut waiting.0,
-                    HoldReason::Surface(_) => &mut waiting.1,
-                    HoldReason::Governance => &mut waiting.2,
-                };
-                *count = count.saturating_add(1);
+    /// Ask the host to replay each record whose writes waited for an app surface that is here
+    /// now, and each one the replica asked to hear again: its writes are decided again.
+    pub(super) fn replay_surfaced(&mut self, client: &RelayClient) {
+        let arrived: Vec<[u8; 32]> = self
+            .awaiting_surface
+            .iter()
+            .filter(|(surface, (_, route))| crate::surfaces::holds(&route.app_id, surface))
+            .map(|(surface, _)| *surface)
+            .collect();
+        for surface in arrived {
+            if let Some((_, route)) = self.awaiting_surface.remove(&surface) {
+                self.replays.insert(route);
             }
         }
-        self.update(|status| {
-            let status = status.routes.entry(route.clone()).or_default();
-            (
-                status.awaiting_keys,
-                status.awaiting_surface,
-                status.awaiting_governance,
-            ) = waiting;
-        });
-    }
-
-    /// The host answered `Ready` for `workspace_id`: what the replay brought
-    /// before it and a full hold let go of is paged again, where the route
-    /// now opens it, and the action frames that waited for the admission go
-    /// out in the order they were made.
-    pub(super) fn admitted(&mut self, workspace_id: u64, client: &RelayClient) {
-        self.check_admission();
-        self.flush_held_actions(workspace_id, client);
-        for route in self.held_routes(workspace_id) {
-            let opens = self.ciphers.contains_key(&route)
-                // What the host replays is the record's history, whose
-                // cleartext base opens where a live write would wait.
-                || self
-                    .admission(&route, (true, false), true, None)
-                    .admits_cleartext()
-                    == Some(true);
-            if opens {
-                self.replay_owed(&route, Some(client));
-            }
-        }
-    }
-
-    /// The routes of `workspace_id` holding documents, or owing them.
-    pub(super) fn held_routes(&self, workspace_id: u64) -> Vec<DocumentRoute> {
-        self.held_inbound
-            .keys()
-            .filter(|route| route.workspace_id().ok() == Some(workspace_id))
-            .cloned()
-            .collect()
-    }
-
-    /// Hold a document until the reason it names goes away: its route's keys,
-    /// the app surface it was written with, or its workspace's governance.
-    pub(super) fn hold_document(
-        &mut self,
-        route: &DocumentRoute,
-        key: OpKey,
-        body: Vec<u8>,
-        author: [u8; 32],
-        retained: bool,
-        reason: HoldReason,
-    ) {
-        let held = self
-            .held_inbound
-            .entry(route.clone())
-            .or_insert_with(|| InboundHold::new(MAX_HELD_DOCUMENTS));
-        held.hold(
-            key,
-            HeldFrame {
-                body,
-                author,
-                retained,
-                reason,
-            },
-        );
-        self.recount(route);
-    }
-
-    /// Ask the host to replay the records whose full holds let documents
-    /// go, now that `route` can open them.
-    pub(super) fn replay_owed(&mut self, route: &DocumentRoute, client: Option<&RelayClient>) {
-        let owed = self
-            .held_inbound
-            .get(route)
-            .is_some_and(|held| !held.owed_pages().is_empty());
-        let (Some(client), Ok(workspace_id)) = (client, route.workspace_id()) else {
-            return;
-        };
-        if !owed {
-            return;
-        }
-        let channel = neighbour_wire::app_document_channel(&route.app_id, &route.record);
-        if client
-            .send(Envelope::OpenRecord {
-                workspace_id,
-                channel,
-            })
-            .is_ok()
-        {
-            self.owed_replays.insert(channel, route.clone());
-        }
-    }
-
-    pub(super) fn open_document(&mut self, body: &[u8], author: [u8; 32]) {
-        match open_frame(body, author, &mut self.ciphers).and_then(|document| match document {
-            Some(document) => self.reassembly.accept(document),
-            None => Ok(None),
-        }) {
-            Ok(Some(document)) => {
-                let from: [u8; 4] = author
-                    .get(..4)
-                    .and_then(|b| b.try_into().ok())
-                    .unwrap_or_default();
-                let opened = self
-                    .opened
-                    .entry((document.route.clone(), from))
-                    .or_default();
-                *opened = opened.saturating_add(1);
-                let route = document.route.clone();
-                if let Some(held) = self.held_inbound.get_mut(&route) {
-                    held.settle(&OpKey::of(&document.envelope));
-                }
-                let entries = document.entries().to_vec();
-                self.emit(&PeerEvent::Document(Box::new(document)));
-                for entry in &entries {
-                    if self.received.len() < MAX_DELIVERED_ENTRIES {
-                        self.received.insert(*entry);
-                    }
-                }
-                self.note_delivered(&route, &entries);
-            }
-            Ok(None) => {}
-            Err(error) => {
-                self.refused = (self.refused.0.saturating_add(1), error.to_string());
-                self.emit(&PeerEvent::DocumentRejected(error.to_string()));
+        for route in std::mem::take(&mut self.replays) {
+            let Ok(workspace_id) = route.workspace_id() else {
+                continue;
+            };
+            let channel = neighbour_wire::app_document_channel(&route.app_id, &route.record);
+            if client
+                .send(Envelope::OpenRecord {
+                    workspace_id,
+                    channel,
+                })
+                .is_err()
+            {
+                self.replays.insert(route);
+                return;
             }
         }
     }

@@ -24,9 +24,9 @@
 //! or anything a viewer's action wrote, is never saved.
 
 use super::{
-    ActionHostError, Arc, Caller, CallerPrincipal, Change, ConfinedReplica, Confirmation,
-    DocumentMutation, DocumentRoute, HashMap, HashSet, Instant, InvocationId, InvokeRequest,
-    Mounted, Mutex, Outcome, Seed, Worker, WorkspaceState, bytes_of, reads, whole,
+    ActionHostError, Arc, Caller, CallerPrincipal, ConfinedReplica, Confirmation, DocumentMutation,
+    DocumentRoute, HashMap, HashSet, Instant, InvocationId, InvokeRequest, Mounted, Mutex, Outcome,
+    Seed, Worker, WorkspaceState, bytes_of, reads,
 };
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{
@@ -185,13 +185,13 @@ fn key_of(prop: &automerge::Prop) -> String {
 /// The storage keys `mutation` writes at, each top down to what it put or
 /// deleted, in a record whose changes so far are `before`.
 fn written_keys(
-    before: &[Change],
+    before: Option<&[u8]>,
     mutation: &DocumentMutation,
 ) -> Result<Vec<Vec<String>>, String> {
     use automerge::PatchAction;
     use tilo_automerge::ApplyIncoming as _;
     let mut doc = automerge::AutoCommit::new();
-    for (_, bytes) in before {
+    if let Some(bytes) = before {
         doc.load_incoming(bytes)
             .map_err(|error| error.to_string())?;
     }
@@ -226,7 +226,7 @@ fn written_keys(
 pub(super) fn refused_writes(
     permissions: &ui::permissions::PermissionContext,
     (app, declared): (&str, Option<&str>),
-    before: &[Change],
+    before: Option<&[u8]>,
     mutation: &DocumentMutation,
     confirmed: bool,
 ) -> Result<Vec<TreePath>, String> {
@@ -512,10 +512,9 @@ impl Worker {
                 };
                 self.bounded.remove(&oldest);
             }
-            let changes = state
-                .records
-                .get(&holder)
-                .ok_or(ActionHostError::UnknownAction)?;
+            let (bytes, revision) = state
+                .document(&holder)
+                .map_err(|_| ActionHostError::UnknownAction)?;
             let app = ConfinedReplica::open(
                 &self.catalogue,
                 &holder.app_id,
@@ -524,7 +523,7 @@ impl Worker {
                 &member_actor(&policy, who)?,
                 Seed::Existing {
                     record: reads::record_id(&holder.record).map_err(unavailable)?,
-                    changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
+                    changes: vec![bytes],
                 },
             )
             .map_err(|error| unavailable(error.to_string()))?;
@@ -534,7 +533,7 @@ impl Worker {
                 BoundedReplica {
                     held: Mounted {
                         app,
-                        seen: changes.iter().map(|(digest, _)| *digest).collect(),
+                        merged: Some(revision),
                         parts: HashMap::new(),
                         used: clock,
                     },
@@ -550,21 +549,17 @@ impl Worker {
             .ok_or_else(|| unavailable("the record did not mount".into()))?;
         held.held.used = clock;
         if holder != *route && !held.held.parts.contains_key(route) {
-            let part = state
-                .records
-                .get(route)
-                .ok_or(ActionHostError::UnknownAction)?;
+            let (part, revision) = state
+                .document(route)
+                .map_err(|_| ActionHostError::UnknownAction)?;
             held.held
                 .app
                 .apply_record(
                     &reads::record_id(&route.record).map_err(unavailable)?,
-                    &DocumentMutation::Snapshot(whole(part).map_err(unavailable)?),
+                    &DocumentMutation::Snapshot(part),
                 )
                 .map_err(|error| unavailable(error.to_string()))?;
-            held.held.parts.insert(
-                route.clone(),
-                part.iter().map(|(digest, _)| *digest).collect(),
-            );
+            held.held.parts.insert(route.clone(), Some(revision));
         }
         Ok(key)
     }
@@ -763,11 +758,11 @@ impl Worker {
             .map_err(Outcome::Rejected)?;
         let permissions = bounded_permissions(&policy, who).map_err(Outcome::Rejected)?;
         for (changed, mutation) in &taken {
-            let before = state.records.get(changed).map_or(&[][..], Vec::as_slice);
+            let before = state.document(changed).ok().map(|(bytes, _)| bytes);
             let refused = refused_writes(
                 &permissions,
                 (&changed.app_id, declared.as_deref()),
-                before,
+                before.as_deref(),
                 mutation,
                 confirmed,
             )
@@ -876,7 +871,7 @@ mod tests {
 
     /// A record holding a title and an issue's comments, its one change, and
     /// the document to write the next change on.
-    fn record() -> (Vec<Change>, automerge::AutoCommit) {
+    fn record() -> (Vec<u8>, automerge::AutoCommit) {
         let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "title", "Launch").unwrap();
         let issues = doc
@@ -889,7 +884,7 @@ mod tests {
             .unwrap();
         doc.commit();
         let genesis = doc.save();
-        (vec![([0; 32], genesis)], doc)
+        (genesis, doc)
     }
 
     /// The change `write` makes on `doc`, as an increment.
@@ -928,7 +923,7 @@ mod tests {
             doc.put(automerge::ROOT, "title", "Renamed").unwrap();
         });
         let refused = |role, mutation: &DocumentMutation| {
-            refused_writes(&as_role(role), (APP, None), &before, mutation, false).unwrap()
+            refused_writes(&as_role(role), (APP, None), Some(&before), mutation, false).unwrap()
         };
         assert!(refused(Role::Commenter, &commented).is_empty());
         assert_eq!(
@@ -950,7 +945,7 @@ mod tests {
             refused_writes(
                 &as_role(role),
                 (APP, Some(policy::roles::COMMENTS_FIELD)),
-                &before,
+                Some(&before),
                 &retitled,
                 false,
             )

@@ -22,12 +22,13 @@ tilo_automerge_isolate::test_worker!();
 
 use std::collections::BTreeMap;
 
+use automerge::AutoCommit;
 use collab_types::DocumentMutation;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session_host::{PeerEvent, PeerHandle};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{enrol, ready, route, start_host, start_peer, wait_for, workspace};
+use support::{enrol, hears, ready, route, say, start_host, start_peer, wait_for, workspace};
 
 fn record(record: String) -> DocumentRoute {
     DocumentRoute { record, ..route() }
@@ -37,19 +38,28 @@ fn part(index: u64) -> DocumentRoute {
     record(neighbour_wire::record_part("chat", index))
 }
 
-fn change(text: &str) -> DocumentMutation {
-    DocumentMutation::Incremental(text.as_bytes().to_vec())
+/// Each record's document as its author writes it, by record.
+#[derive(Default)]
+struct Author(BTreeMap<String, AutoCommit>);
+
+impl Author {
+    fn change(&mut self, route: &DocumentRoute, text: &str) -> DocumentMutation {
+        say(self.0.entry(route.record.clone()).or_default(), text)
+    }
+
+    /// A record's first publication, which the host keeps as its checkpoint.
+    fn first(&mut self, route: &DocumentRoute, text: &str) -> DocumentMutation {
+        let doc = self.0.entry(route.record.clone()).or_default();
+        say(doc, text);
+        DocumentMutation::Snapshot(doc.save())
+    }
 }
 
-/// A record's first publication, which the host keeps as its checkpoint.
-fn first(text: &str) -> DocumentMutation {
-    DocumentMutation::Snapshot(text.as_bytes().to_vec())
-}
-
-/// What a page received, by record.
+/// What landed in a page's replica, by record: how many writes, and the records
+/// it opened.
 #[derive(Default)]
 struct Received {
-    documents: BTreeMap<String, Vec<DocumentMutation>>,
+    documents: BTreeMap<String, usize>,
     opened: Vec<(String, u32)>,
 }
 
@@ -57,13 +67,12 @@ impl Received {
     fn take(&mut self, peer: &PeerHandle) {
         for event in peer.drain() {
             match event {
-                PeerEvent::Document(document) => {
-                    if let Some(mutation) = document.mutation() {
-                        self.documents
-                            .entry(document.route.record.clone())
-                            .or_default()
-                            .push(mutation);
-                    }
+                PeerEvent::Landed {
+                    route,
+                    author: Some(_),
+                } => {
+                    let landed = self.documents.entry(route.record).or_default();
+                    *landed = landed.saturating_add(1);
                 }
                 PeerEvent::RecordOpened { route, frames, .. } => {
                     self.opened.push((route.record, frames));
@@ -73,8 +82,8 @@ impl Received {
         }
     }
 
-    fn of(&self, route: &DocumentRoute) -> &[DocumentMutation] {
-        self.documents.get(&route.record).map_or(&[], Vec::as_slice)
+    fn of(&self, route: &DocumentRoute) -> usize {
+        self.documents.get(&route.record).copied().unwrap_or(0)
     }
 }
 
@@ -131,10 +140,19 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
     ready(&[&author]).await;
     let note = route();
     let archive = record(neighbour_wire::on_demand_record("uuid:archive"));
-    author.publish(note.clone(), &first("note")).unwrap();
-    author.publish(archive.clone(), &first("archive")).unwrap();
-    author.publish(part(0), &first("part 0")).unwrap();
-    author.publish(part(1), &first("part 1")).unwrap();
+    let mut writes = Author::default();
+    author
+        .publish(note.clone(), &writes.first(&note, "note"))
+        .unwrap();
+    author
+        .publish(archive.clone(), &writes.first(&archive, "archive"))
+        .unwrap();
+    author
+        .publish(part(0), &writes.first(&part(0), "part 0"))
+        .unwrap();
+    author
+        .publish(part(1), &writes.first(&part(1), "part 1"))
+        .unwrap();
     durable(&author).await;
 
     // Two pages join: each is replayed the note and the chain's head only.
@@ -145,16 +163,13 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
     let (mut at_early, mut at_reader) = (Received::default(), Received::default());
     for (page, received) in [(&early, &mut at_early), (&reader, &mut at_reader)] {
         until("the eager records", page, received, |received| {
-            !received.of(&note).is_empty() && !received.of(&part(1)).is_empty()
+            received.of(&note) > 0 && received.of(&part(1)) > 0
         })
         .await;
         ready(&[page]).await;
         received.take(page);
-        assert!(received.of(&part(0)).is_empty(), "an earlier part waits");
-        assert!(
-            received.of(&archive).is_empty(),
-            "an on-demand record waits"
-        );
+        assert_eq!(received.of(&part(0)), 0, "an earlier part waits");
+        assert_eq!(received.of(&archive), 0, "an on-demand record waits");
     }
 
     // The reader opens the earlier part and the archive: their history
@@ -164,43 +179,47 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
     // The host's answer comes once it sent the history; the history opens
     // once a participant admitted the page to each record.
     until("the opened records", &reader, &mut at_reader, |received| {
-        received.opened.len() == 2
-            && !received.of(&part(0)).is_empty()
-            && !received.of(&archive).is_empty()
+        received.opened.len() == 2 && received.of(&part(0)) > 0 && received.of(&archive) > 0
     })
     .await;
-    assert_eq!(at_reader.of(&part(0)), [first("part 0")]);
-    assert_eq!(at_reader.of(&archive), [first("archive")]);
+    hears(&reader, &part(0), "part 0").await;
+    hears(&reader, &archive, "archive").await;
     assert!(at_reader.opened.contains(&(part(0).record, 1)));
 
-    author.publish(part(0), &change("an edit")).unwrap();
-    author.publish(archive.clone(), &change("filed")).unwrap();
+    author
+        .publish(part(0), &writes.change(&part(0), "an edit"))
+        .unwrap();
+    author
+        .publish(archive.clone(), &writes.change(&archive, "filed"))
+        .unwrap();
     // A later part starts the chain anew; the part before it is still
     // followed by the pages that held it.
-    author.publish(part(2), &first("part 2")).unwrap();
-    author.publish(part(1), &change("a reaction")).unwrap();
-    author.publish(note.clone(), &change("marker")).unwrap();
+    author
+        .publish(part(2), &writes.first(&part(2), "part 2"))
+        .unwrap();
+    author
+        .publish(part(1), &writes.change(&part(1), "a reaction"))
+        .unwrap();
+    author
+        .publish(note.clone(), &writes.change(&note, "marker"))
+        .unwrap();
     durable(&author).await;
     for (page, received) in [(&early, &mut at_early), (&reader, &mut at_reader)] {
         // The new part opens once a participant admitted the page to it; a
         // change that reached a page it should not have would have opened
         // by then too.
         until("the marker and the new part", page, received, |received| {
-            received.of(&note).len() == 2
-                && received.of(&part(1)).len() == 2
-                && !received.of(&part(2)).is_empty()
+            received.of(&note) == 2 && received.of(&part(1)) == 2 && received.of(&part(2)) > 0
         })
         .await;
-        assert_eq!(received.of(&part(2)), [first("part 2")]);
-        assert_eq!(
-            received.of(&part(1)),
-            [first("part 1"), change("a reaction")]
-        );
+        hears(page, &part(2), "part 2").await;
+        hears(page, &part(1), "a reaction").await;
     }
-    assert_eq!(at_reader.of(&part(0)), [first("part 0"), change("an edit")]);
-    assert_eq!(at_reader.of(&archive), [first("archive"), change("filed")]);
+    hears(&reader, &part(0), "an edit").await;
+    hears(&reader, &archive, "filed").await;
+    at_early.take(&early);
     assert!(
-        at_early.of(&part(0)).is_empty() && at_early.of(&archive).is_empty(),
+        at_early.of(&part(0)) == 0 && at_early.of(&archive) == 0,
         "a page that opened neither record gets none of their changes"
     );
 
@@ -209,10 +228,10 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
     late.join_placed(support::WORKSPACE, "Workspace").unwrap();
     let mut at_late = Received::default();
     until("the new head", &late, &mut at_late, |received| {
-        received.of(&note).len() == 2 && !received.of(&part(2)).is_empty()
+        received.of(&note) > 0 && received.of(&part(2)) > 0
     })
     .await;
     ready(&[&late]).await;
     at_late.take(&late);
-    assert!(at_late.of(&part(1)).is_empty() && at_late.of(&part(0)).is_empty());
+    assert!(at_late.of(&part(1)) == 0 && at_late.of(&part(0)) == 0);
 }

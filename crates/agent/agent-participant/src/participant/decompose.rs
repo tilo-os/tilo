@@ -405,7 +405,7 @@ impl AgentParticipant {
         if !keeps || !MESSAGE_APPS.contains(&route.app_id.as_str()) {
             return;
         }
-        let before = self.record_messages(route).unwrap_or_default();
+        let before = self.messages_before(route).unwrap_or_default();
         if let Some(coordinator) = self.coordinator.as_mut() {
             coordinator.before.insert(route.clone(), before);
         }

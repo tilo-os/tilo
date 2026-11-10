@@ -19,11 +19,11 @@ mod support;
 // Placing the workspace has the host build its governance in an automerge worker.
 tilo_automerge_isolate::test_worker!();
 
+use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::DocumentMutation;
-use tilo_session_host::PeerEvent;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{enrol, ready, route, start_host, start_peer, wait_for};
+use support::{enrol, ready, route, start_host, start_peer};
 
 fn noise(len: usize, seed: u64) -> Vec<u8> {
     let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
@@ -62,20 +62,27 @@ async fn a_late_joiner_receives_a_segmented_checkpoint_and_its_tail_in_bounded_p
     );
     author.join_placed(support::WORKSPACE, "Workspace").unwrap();
     ready(&[&author]).await;
-    let checkpoint = DocumentMutation::Snapshot(noise(5 * 1024 * 1024 / 2, 1));
-    author.publish(route(), &checkpoint).unwrap();
-    let tail: Vec<DocumentMutation> = (0..TAIL)
-        .map(|index| DocumentMutation::Incremental(noise(8 * 1024, index as u64 + 2)))
-        .collect();
-    for mutation in &tail {
-        author.publish(route(), mutation).unwrap();
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "checkpoint", noise(5 * 1024 * 1024 / 2, 1))
+        .unwrap();
+    author
+        .publish(route(), &DocumentMutation::Snapshot(doc.save()))
+        .unwrap();
+    for index in 0..TAIL {
+        doc.put(
+            ROOT,
+            format!("tail-{index}"),
+            noise(8 * 1024, index as u64 + 2),
+        )
+        .unwrap();
+        author
+            .publish(
+                route(),
+                &DocumentMutation::Incremental(doc.save_incremental()),
+            )
+            .unwrap();
     }
-    let receipt = author.barrier().unwrap();
-    wait_for("the history to be durable", || async {
-        receipt.try_recv().ok()
-    })
-    .await
-    .unwrap();
+    support::durable(&author).await;
 
     let joined_at = std::time::Instant::now();
     let joiner = start_peer(
@@ -85,30 +92,16 @@ async fn a_late_joiner_receives_a_segmented_checkpoint_and_its_tail_in_bounded_p
         joiner.key,
     );
     joiner.join_placed(support::WORKSPACE, "Workspace").unwrap();
-    let mut received: Vec<DocumentMutation> = Vec::new();
-    wait_for("the checkpoint and its tail", || {
-        received.extend(
-            joiner
-                .drain()
-                .into_iter()
-                .filter(support::members_document)
-                .filter_map(|event| match event {
-                    PeerEvent::Document(document) => document.mutation(),
-                    _ => None,
-                }),
-        );
-        let done = received.len() > TAIL;
-        async move { done.then_some(()) }
-    })
-    .await;
+    let held = support::holds(&joiner, &route(), &doc).await;
     eprintln!(
         "late join: 2.5 MiB checkpoint + {TAIL} x 8 KiB tail in {} ms",
         joined_at.elapsed().as_millis()
     );
-    assert_eq!(received.len(), TAIL + 1, "no segment surfaces on its own");
     assert_eq!(
-        received[0], checkpoint,
-        "the checkpoint is reassembled first"
+        held.get(ROOT, "checkpoint")
+            .unwrap()
+            .map(|(value, _)| value),
+        doc.get(ROOT, "checkpoint").unwrap().map(|(value, _)| value),
+        "the segmented checkpoint is whole"
     );
-    assert_eq!(&received[1..], tail.as_slice(), "the tail follows in order");
 }

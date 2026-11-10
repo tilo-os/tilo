@@ -32,7 +32,7 @@ use collab_types::{
 use neighbour_wire::NeighbourMsg;
 use tilo_relay::workspaces::WorkspaceContent;
 use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
-use tilo_session_host::{PeerEvent, PeerHandle};
+use tilo_session_host::PeerHandle;
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
 use support::{
@@ -99,19 +99,6 @@ fn take(peer: &mut ChannelPeer) -> Vec<MlsGovernanceFrame> {
 
 fn vault() -> VaultKey {
     VaultKey::new([7; 32])
-}
-
-/// The notes record's changes `events` opened, in the order they arrived.
-fn pages(events: Vec<PeerEvent>) -> Vec<DocumentMutation> {
-    events
-        .into_iter()
-        .filter_map(|event| match event {
-            PeerEvent::Document(document) if document.route.app_id == "so.tilo.notes" => {
-                document.mutation()
-            }
-            _ => None,
-        })
-        .collect()
 }
 
 /// Whether the page says it holds something for the note, and why.
@@ -195,7 +182,6 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
     // receiver decides against the app's surface, and each sealed with the
     // record's content key.
     let mut document = automerge::AutoCommit::new();
-    let mut written = Vec::new();
     for page_number in 1..=3 {
         document
             .put(automerge::ROOT, "pages", format!("page {page_number}"))
@@ -223,7 +209,6 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
         .with_claims(claims)
         .with_surface(Some(*blake3::hash(&surface).as_bytes()));
         collab_types::sign_op(&mut op, &laptop.key).unwrap();
-        written.push(DocumentMutation::decode(&frame).unwrap());
         publish(
             &session,
             &NeighbourMsg::AppDocument {
@@ -295,22 +280,8 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
         }
     })
     .await;
-    let waiting = page.status().routes.get(&note).map(|status| {
-        (
-            status.awaiting_keys,
-            status.awaiting_surface,
-            status.awaiting_governance,
-        )
-    });
-    let opened = pages(page.drain());
-
-    assert_eq!(
-        waiting,
-        Some((0, 3, 0)),
-        "every write waits for its app surface alone"
-    );
     assert!(
-        opened.is_empty(),
+        support::record_of(&page, &note).is_none(),
         "nothing of the record is opened before its surface arrives"
     );
 
@@ -318,24 +289,7 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
     // what the page waited for is decided: it is the bytes hashed to the
     // address asked for that decide it, which the page keeps by that hash.
     keeps.answer();
-    wait_for(
-        "the record's history decided once its surface arrived",
-        || {
-            let opened = pages(page.drain());
-            let written = written.clone();
-            async move { (opened == written).then_some(()) }
-        },
-    )
-    .await;
-    wait_for("the route holding nothing", || {
-        let waiting = page
-            .status()
-            .routes
-            .get(&note)
-            .map_or(0, tilo_session_host::session::RouteStatus::waiting);
-        async move { (waiting == 0).then_some(()) }
-    })
-    .await;
+    support::holds(&page, &note, &document).await;
     wait_for("nothing held for the note", || async {
         held(&page).is_none().then_some(())
     })

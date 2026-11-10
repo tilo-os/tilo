@@ -161,8 +161,8 @@ impl Replicas {
     }
 
     /// Admit `message`, governance `author` sent to `workspace_id`;
-    /// `retained` while the host replays the workspace. Returns whether it
-    /// changed what the workspace's governance says.
+    /// `retained` while the host replays the workspace. The report says whether it changed
+    /// what the workspace's governance says, and the documents it let the replica decide.
     ///
     /// # Errors
     /// No replica of the workspace is held, or its governance refuses the
@@ -174,37 +174,40 @@ impl Replicas {
         retained: bool,
         message: NeighbourMsg,
         now: SystemTime,
-    ) -> Result<bool, String> {
+    ) -> Result<tilo_peer_state::AdmissionReport, String> {
         let Some(workspace) = self.workspaces.get(&workspace_id) else {
             return Err("the workspace has no governance".into());
         };
-        let report =
-            self.owner
-                .receive(*workspace, origin(author, retained), message, None, now)?;
-        Ok(report.changed || report.metadata_changed)
+        self.owner
+            .receive(*workspace, origin(author, retained), message, None, now)
     }
 
-    /// Decide `message`, a document `author` wrote to `workspace_id`;
-    /// `retained` while the host replays the workspace. `Ok(true)` lets it reach
-    /// the page's apps, `Ok(false)` holds it until the workspace's governance
-    /// can decide it.
+    /// Keep `documents`, each a document its author wrote to `workspace_id` (`retained` while
+    /// the host replays the workspace), in its replica as the workspace's governance decides
+    /// them, in order and in one owner turn: one report per document. What it cannot decide yet
+    /// the replica holds, and decides once it can.
     ///
     /// # Errors
-    /// The workspace's governance refuses it.
-    pub(crate) fn decide_document(
+    /// No replica of the workspace is held, or committing the replica failed.
+    pub(crate) fn keep(
         &self,
         workspace_id: u64,
-        author: [u8; 32],
-        retained: bool,
-        message: &NeighbourMsg,
+        documents: Vec<([u8; 32], bool, NeighbourMsg)>,
         now: SystemTime,
-    ) -> Result<bool, String> {
-        // Held until the workspace's bootstrap arrives.
-        self.with_workspace(workspace_id, |view| {
-            view.peer()
-                .decide_relayed_document(origin(author, retained), message, now)
-        })
-        .unwrap_or(Ok(false))
+    ) -> Result<Vec<Result<tilo_peer_state::AdmissionReport, String>>, String> {
+        let workspace = self
+            .workspace(workspace_id)
+            .ok_or("the workspace has no governance")?;
+        let inputs = documents
+            .into_iter()
+            .map(|(author, retained, message)| (origin(author, retained), message))
+            .collect();
+        self.owner.receive_batch(workspace, inputs, None, now)
+    }
+
+    /// The workspace held as `workspace_id`, once its governance is.
+    pub(crate) fn workspace(&self, workspace_id: u64) -> Option<WorkspaceId> {
+        self.workspaces.get(&workspace_id).copied()
     }
 
     /// `workspace_id`'s workspace and the members it lists by person id.

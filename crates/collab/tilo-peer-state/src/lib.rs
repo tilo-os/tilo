@@ -59,9 +59,9 @@ mod verified_certificate;
 pub use state::{AdmittedFrame, PERSONAL_ALPN, PersonalSync};
 pub use state::{
     DelegateInactive, DocumentRow, GovernedAccess, GovernedAgent, GovernedDelegateRow,
-    GovernedMember, HELD_FOR_SURFACE, InstalledApp, InstalledBot, MAX_HELD_BYTES, MAX_HELD_INPUTS,
-    MemberAuthority, MembershipError, NativePublicationCut, OpenedHistory, OpenedRecord,
-    OpenedWrite, PeerDocumentCapture, PeerDocumentReadError, PeerGovernance, PeerGovernanceMut,
+    GovernedMember, InstalledApp, InstalledBot, MAX_HELD_BYTES, MAX_HELD_INPUTS, MemberAuthority,
+    MembershipError, NativePublicationCut, OpenedHistory, OpenedRecord, OpenedWrite,
+    PeerDocumentCapture, PeerDocumentReadError, PeerGovernance, PeerGovernanceMut,
     PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPersonal,
     PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, PersonalStore,
     PlaintextChanges, ReceiveOutcome, RecordReaders, RequestedBot, Reseal, SealCheckpoint,

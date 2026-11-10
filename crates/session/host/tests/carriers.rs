@@ -30,7 +30,6 @@ tilo_automerge_isolate::test_worker!();
 use std::sync::Arc;
 
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
-use collab_types::DocumentMutation;
 use collab_types::presence::Presence;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -38,8 +37,8 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::VoiceGrant;
 use tilo_session_host::{
-    Carrier, Host, MemoryPeerStore, PeerEvent, PeerHandle, PeerSnapshot, TransportPhase,
-    VoiceEvent, answer_pairing, certify, pending_pairings,
+    Carrier, Host, MemoryPeerStore, PeerEvent, PeerHandle, TransportPhase, VoiceEvent,
+    answer_pairing, certify, pending_pairings,
 };
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, UserIdentity,
@@ -47,8 +46,8 @@ use tilo_user_identity::{
 };
 
 use support::{
-    Device, HostSettings, TestHost, WORKSPACE, approve_one_over, enrol, in_workspace,
-    next_document, place, ready, route, start_host_serving, start_page, start_peer, wait_for,
+    Device, HostSettings, TestHost, WORKSPACE, approve_one_over, enrol, holds, in_workspace, place,
+    ready, route, say, start_host_serving, start_page, start_peer, wait_for,
 };
 
 /// Each scenario, once per carrier.
@@ -257,8 +256,9 @@ async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) 
 
     // An acknowledged commit from the page reaches the laptop, and the
     // laptop's reply reaches the page.
-    let snapshot = DocumentMutation::Snapshot(b"automerge snapshot".to_vec());
-    page.publish(route(), &snapshot).unwrap();
+    let mut note = automerge::AutoCommit::new();
+    page.publish(route(), &say(&mut note, "written on the page"))
+        .unwrap();
     // Behind a lock: the receipt itself is not shared between threads, and
     // the wait holds it across its sleeps.
     let receipt = std::sync::Mutex::new(page.barrier().unwrap());
@@ -268,16 +268,12 @@ async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) 
     })
     .await
     .unwrap();
-    let mut laptop_events = Vec::new();
-    assert_eq!(next_document(&laptop, &mut laptop_events).await, snapshot);
-    let reply = DocumentMutation::Incremental(b"typed on the laptop".to_vec());
-    laptop.publish(route(), &reply).unwrap();
-    let mut page_events = Vec::new();
-    assert_eq!(next_document(&page, &mut page_events).await, reply);
-    assert_eq!(
-        PeerSnapshot::from_status(&page.status()).synchronization,
-        "acknowledged"
-    );
+    let mut on_laptop = holds(&laptop, &route(), &note).await;
+    laptop
+        .publish(route(), &say(&mut on_laptop, "typed on the laptop"))
+        .unwrap();
+    holds(&page, &route(), &on_laptop).await;
+    assert_eq!(page.snapshot().synchronization, "acknowledged");
 
     // Revoked, the page is turned away on every reconnect and stops.
     let mut entry = RevocationEntry {
@@ -290,7 +286,7 @@ async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) 
     sign_revocation_entry(&mut entry, &ada.root).unwrap();
     tilo_relay::store::save_revocations(ada.state.path(), &[entry]).unwrap();
     let failed = wait_for("the page to be refused", || {
-        let snapshot = PeerSnapshot::from_status(&page.status());
+        let snapshot = page.snapshot();
         async move { (snapshot.phase == "failed").then_some(snapshot) }
     })
     .await;

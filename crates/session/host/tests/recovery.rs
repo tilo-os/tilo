@@ -20,12 +20,11 @@ mod support;
 // Placing the workspace has the host build its governance in an automerge worker.
 tilo_automerge_isolate::test_worker!();
 
-use collab_types::DocumentMutation;
-use tilo_session_host::{FailureSubject, LocalState, PeerEvent, PeerSnapshot};
+use tilo_session_host::{FailureSubject, LocalState, PeerEvent};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{
-    enrol, next_document, ready, route, start_host, start_host_at, start_peer, wait_for, workspace,
+    enrol, holds, ready, route, say, start_host, start_host_at, start_peer, wait_for, workspace,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -55,8 +54,9 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
     );
     peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
     ready(&[&peer]).await;
-    let tree = DocumentMutation::Snapshot(b"desktop tree".to_vec());
-    peer.publish(route(), &tree).unwrap();
+    let mut tree = automerge::AutoCommit::new();
+    peer.publish(route(), &say(&mut tree, "desktop tree"))
+        .unwrap();
     let receipt = peer.barrier().unwrap();
     wait_for("the snapshot to be durable", || async {
         receipt.try_recv().ok()
@@ -69,19 +69,17 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
     let host = start_host_at(&root, &host_device, state.path(), listen, iroh_listen).await;
     // A reconnect resumes: the page already holds what it published.
     peer.reconnect().unwrap();
-    let mut events = Vec::new();
     ready(&[&peer]).await;
-    events.clear();
-    let _ = peer.drain();
 
     let before = peer.status().generation;
     peer.refresh().unwrap();
-    assert_eq!(
-        next_document(&peer, &mut events).await,
-        tree,
-        "the host sends the workspace's checkpoint again"
-    );
+    wait_for("the refreshed session", || {
+        let refreshed = peer.status().generation > before;
+        async move { refreshed.then_some(()) }
+    })
+    .await;
     ready(&[&peer]).await;
+    holds(&peer, &route(), &tree).await;
     let status = peer.status();
     assert!(status.generation > before);
     assert!(status.workspaces.values().all(|ready| *ready));
@@ -191,8 +189,7 @@ async fn page_failures_are_scoped_offer_their_recovery_and_clear() {
     );
     // Page-owned failures only; the session may be connecting meanwhile.
     let page_failures = || {
-        let health =
-            serde_json::to_value(PeerSnapshot::from_status(&peer.status()).health).unwrap();
+        let health = serde_json::to_value(peer.snapshot().health).unwrap();
         health["failures"]
             .as_array()
             .unwrap()

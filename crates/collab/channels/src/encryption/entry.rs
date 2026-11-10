@@ -15,6 +15,17 @@ use super::{
     MlsAccessRequestV1, REQUEST_LONGEST, WorkspaceId,
 };
 
+/// The entry's access request ([`ChannelEncryption::entry_request`]): signed already, or
+/// waiting for the signature of the device's custody.
+pub enum EntryRequest {
+    Signed(MlsAccessRequestV1),
+    Unsigned(
+        ChannelId,
+        MlsAccessRequestV1,
+        collab_types::signer::SignFuture<'static>,
+    ),
+}
+
 impl ChannelEncryption {
     /// This device's signed request for the keys of `workspace`'s own group
     /// ([`collab_types::workspace_scope`]), made before the workspace's
@@ -30,6 +41,30 @@ impl ChannelEncryption {
         now: Instant,
         wall: u64,
     ) -> Option<MlsAccessRequestV1> {
+        match self.entry_request(workspace, now, wall)? {
+            EntryRequest::Signed(request) => Some(request),
+            EntryRequest::Unsigned(scope, mut request, signing) => {
+                let signature = signing
+                    .await
+                    .inspect_err(
+                        |error| tracing::warn!(%error, "channel access request was not signed"),
+                    )
+                    .ok()?;
+                request.signature = collab_types::Signature::from_bytes(signature);
+                Some(self.entry_signed(scope, request, now))
+            }
+        }
+    }
+
+    /// [`Self::ask_on_entry`] up to the signature the device's custody owes: what a caller
+    /// that shares this service awaits without holding it, then hands back with
+    /// [`Self::entry_signed`].
+    pub fn entry_request(
+        &mut self,
+        workspace: WorkspaceId,
+        now: Instant,
+        wall: u64,
+    ) -> Option<EntryRequest> {
         let scope = Self::workspace_scope(workspace);
         if !self.peers.contains_key(&scope) {
             let opened = match self.open_peer(workspace, scope, now) {
@@ -60,34 +95,36 @@ impl ChannelEncryption {
             return None;
         }
         entry.wanted = true;
-        let request = if let Some(request) = entry.request.clone() {
-            request
-        } else {
-            let mut request = entry
-                .peer
-                .unsigned_access_request(wall, false, &store.vault)
-                .inspect_err(|error| {
-                    tracing::warn!(%error, "channel access request could not be prepared");
-                })
-                .ok()??;
-            let message = request.signing_bytes().ok()?;
-            let signature = store
-                .signer
-                .sign(message)
-                .await
-                .inspect_err(
-                    |error| tracing::warn!(%error, "channel access request was not signed"),
-                )
-                .ok()?;
-            request.signature = collab_types::Signature::from_bytes(signature);
-            request
-        };
-        // Asked now, by the entry: the next request waits out the backoff.
+        if let Some(request) = entry.request.clone() {
+            return Some(EntryRequest::Signed(self.entry_signed(scope, request, now)));
+        }
+        let request = entry
+            .peer
+            .unsigned_access_request(wall, false, &store.vault)
+            .inspect_err(|error| {
+                tracing::warn!(%error, "channel access request could not be prepared");
+            })
+            .ok()??;
+        let message = request.signing_bytes().ok()?;
+        let signer = Arc::clone(&store.signer);
+        let signing: collab_types::signer::SignFuture<'static> =
+            Box::pin(async move { signer.sign(message).await });
+        Some(EntryRequest::Unsigned(scope, request, signing))
+    }
+
+    /// Keep `request`, the entry's signed request for `scope`: asked now, by the entry, so the
+    /// next request waits out the backoff.
+    pub fn entry_signed(
+        &mut self,
+        scope: ChannelId,
+        request: MlsAccessRequestV1,
+        now: Instant,
+    ) -> MlsAccessRequestV1 {
         if let Some(entry) = self.peers.get_mut(&scope) {
             entry.request = Some(request.clone());
             entry.retry.fired(now, REQUEST_LONGEST);
         }
-        Some(request)
+        request
     }
 
     /// Take `scope` as the group sealing `route`'s record in `workspace`,

@@ -36,7 +36,7 @@ use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveRecord, OpsFrame, Pre
 use tilo_session_host::device::{Device, HostRefusal};
 use tilo_session_host::{
     DeviceSigner, FailureSubject, Host, HttpClient, HttpFuture, LocalState, PeerConfig, PeerEvent,
-    PeerEvents, PeerHandle, PeerRecord, PeerSnapshot, PeerStore, SignError, SignFuture,
+    PeerEvents, PeerHandle, PeerRecord, PeerStore, SignError, SignFuture,
 };
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList, RevocationReason};
 use wasm_bindgen::prelude::*;
@@ -1832,7 +1832,7 @@ impl WasmPeer {
 
     /// `PeerSnapshot` JSON.
     pub fn snapshot(&self) -> String {
-        serde_json::to_string(&PeerSnapshot::from_status(&self.handle.status())).unwrap_or_default()
+        serde_json::to_string(&self.handle.snapshot()).unwrap_or_default()
     }
 
     /// This page's channel state as text: whom each workspace follows, which
@@ -2507,10 +2507,10 @@ impl WasmPeer {
             .drain()
             .into_iter()
             .filter_map(|event| match event {
-                PeerEvent::Document(document) => Some(JsDurable::Durable {
+                PeerEvent::Landed { route, .. } => Some(JsDurable::Durable {
                     record: JsRecord {
-                        app: document.route.app_id,
-                        record: document.route.record,
+                        app: route.app_id,
+                        record: route.record,
                     },
                 }),
                 _ => None,

@@ -13,7 +13,7 @@ use tilo_actions::door::ActionDescriptor;
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::AgentParticipant;
-use super::unopened::Reading;
+use crate::workspace_records::Reading;
 
 /// The kind of the rich text a record publishes as its body: an app whose
 /// new record publishes it at the root (`word-processor.document/body`)

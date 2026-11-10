@@ -32,6 +32,7 @@ tilo_automerge_isolate::test_worker!();
 
 use std::path::Path;
 use std::sync::Arc;
+use tilo_automerge::ApplyIncoming as _;
 use tilo_test_env::SpawnUnderEnvLockAsync as _;
 
 use automerge::transaction::Transactable as _;
@@ -61,7 +62,7 @@ use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
 
 use support::https::DevHttps;
-use support::{next_document, ready, start_peer, wait_for};
+use support::{ready, start_peer, wait_for};
 
 const INSTALL_TOKEN: &str = "provisioned-install-token-0123";
 /// Text only the document's readers ever see.
@@ -436,15 +437,9 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     );
     assert_eq!(asked.role, WorkspaceRole::Editor);
     bo.join(acme.workspace_id).unwrap();
-    let mut events = Vec::new();
-    assert_eq!(
-        next_document(&bo, &mut events).await,
-        DocumentMutation::Snapshot(snapshot.clone())
-    );
-    assert_eq!(
-        next_document(&bo, &mut events).await,
-        DocumentMutation::Incremental(change)
-    );
+    let mut written = automerge::AutoCommit::load(&snapshot).unwrap();
+    written.load_incoming(&change).unwrap();
+    support::holds(&bo, &route, &written).await;
 
     // Cy is pre-admitted: Ada's root signs a grant for the digest of a
     // one-time token someone else hands Cy, and Cy is admitted the moment
@@ -527,11 +522,12 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     let cy_device = cy_cert.device_public_key;
     let cy = start_peer(host.clone(), cy_cert, host_cert.clone(), cy_key);
     cy.join(acme.workspace_id).unwrap();
-    let mut events = Vec::new();
-    assert_eq!(
-        next_document(&cy, &mut events).await,
-        DocumentMutation::Snapshot(snapshot.clone())
-    );
+    support::holds(
+        &cy,
+        &route,
+        &automerge::AutoCommit::load(&snapshot).unwrap(),
+    )
+    .await;
     let removed = workspaces(
         &ada,
         WorkspacesRequest::Remove {

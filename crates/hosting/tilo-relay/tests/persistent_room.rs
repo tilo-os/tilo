@@ -569,6 +569,15 @@ async fn enter_through_door(
     answered
 }
 
+/// A real change of `doc` saying `text`, as a page writes one.
+fn edit(doc: &mut automerge::AutoCommit, text: &str) -> collab_types::DocumentMutation {
+    use automerge::transaction::Transactable as _;
+    let before = doc.get_heads();
+    doc.put(automerge::ROOT, "edited", text).unwrap();
+    doc.commit();
+    collab_types::DocumentMutation::Incremental(doc.save_after(&before))
+}
+
 fn chat_channels(doc: &automerge::AutoCommit) -> Option<Vec<String>> {
     use tilo_resource::Resource as _;
     Some(
@@ -610,8 +619,6 @@ async fn assert_page_reads_the_chat(
     route: &tilo_peer_state::document_frame::DocumentRoute,
     channels: &[&str],
 ) -> automerge::AutoCommit {
-    use collab_types::DocumentMutation;
-    use tilo_automerge::ApplyIncoming;
     use tilo_session_host::PeerEvent;
 
     let mut ready = false;
@@ -627,24 +634,19 @@ async fn assert_page_reads_the_chat(
                     } if *at == workspace_id => {
                         ready = true;
                     }
-                    // The room's other records arrive too; only the chat is read.
-                    PeerEvent::Document(document) if document.route == *route => {
-                        match document.mutation() {
-                            Some(DocumentMutation::Snapshot(bytes)) => {
-                                doc = automerge::AutoCommit::load(&bytes).unwrap();
-                            }
-                            Some(DocumentMutation::Incremental(bytes)) => {
-                                doc.load_incoming(&bytes).unwrap();
-                            }
-                            None => {}
+                    // The room's other records land too; only the chat is read.
+                    PeerEvent::Landed { route: landed, .. } if landed == route => {
+                        if let Ok(Some(bytes)) = visiting.engine().record(
+                            &route.cluster_id,
+                            &route.app_id,
+                            &route.record,
+                        ) {
+                            doc = automerge::AutoCommit::load(&bytes).unwrap();
                         }
                     }
                     _ => {}
                 }
-                events.lock().unwrap().push(match &event {
-                    PeerEvent::Document(document) => format!("{:?}", document.route),
-                    other => format!("{other:?}"),
-                });
+                events.lock().unwrap().push(format!("{event:?}"));
             }
             let read = chat_channels(&doc)?;
             (ready
@@ -950,7 +952,6 @@ async fn persons_read_the_room_and_are_refused(
     (writing_key, writing_cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
     (sibling_key, sibling_cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
 ) {
-    use collab_types::DocumentMutation;
     use tilo_session_host::PeerEvent;
 
     let (host, host_cert, route) = chat_route(plain, cluster).await;
@@ -965,21 +966,18 @@ async fn persons_read_the_room_and_are_refused(
     let writer = page(host.clone(), writing_key, writing_cert, &host_cert);
     writer.join(workspace_id).unwrap();
     writer.open_route(route.clone()).unwrap();
-    assert_page_reads_the_chat("Ben", &writer, workspace_id, &route, &["general"]).await;
+    let mut chat =
+        assert_page_reads_the_chat("Ben", &writer, workspace_id, &route, &["general"]).await;
     writer
-        .publish(
-            route.clone(),
-            &DocumentMutation::Incremental(b"a viewer's edit".to_vec()),
-        )
+        .publish(route.clone(), &edit(&mut chat, "a viewer's edit"))
         .unwrap();
+    // Held across the waits below, which need what they borrow to be shared.
+    let saved = std::sync::Mutex::new(writer.barrier().unwrap());
     let mut committed = false;
     let refused = wait_for(
         "the viewer's write to be refused",
         || {
-            committed |= writer
-                .drain()
-                .iter()
-                .any(|event| matches!(event, PeerEvent::Committed { .. }));
+            committed |= matches!(saved.lock().unwrap().try_recv(), Ok(Ok(())));
             writer
                 .status()
                 .failures
@@ -1026,27 +1024,21 @@ async fn an_editor_page_writes_and_is_committed(
     workspace_id: u64,
     (editor_key, editor_cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
 ) {
-    use collab_types::DocumentMutation;
-    use tilo_session_host::PeerEvent;
-
     let (host, host_cert, route) = chat_route(plain, cluster).await;
     let editor = page(host, editor_key, editor_cert, &host_cert);
     editor.join(workspace_id).unwrap();
     editor.open_route(route.clone()).unwrap();
-    assert_page_reads_the_chat("editor", &editor, workspace_id, &route, &["general"]).await;
+    let mut chat =
+        assert_page_reads_the_chat("editor", &editor, workspace_id, &route, &["general"]).await;
     editor
-        .publish(
-            route.clone(),
-            &DocumentMutation::Incremental(b"an editor's edit".to_vec()),
-        )
+        .publish(route.clone(), &edit(&mut chat, "an editor's edit"))
         .unwrap();
+    // Held across the waits below, which need what they borrow to be shared.
+    let saved = std::sync::Mutex::new(editor.barrier().unwrap());
     let refused = wait_for(
         "the editor's write to be committed",
         || {
-            let events = editor.drain();
-            let committed = events
-                .iter()
-                .any(|event| matches!(event, PeerEvent::Committed { .. }));
+            let committed = matches!(saved.lock().unwrap().try_recv(), Ok(Ok(())));
             committed.then(|| editor.status().failures)
         },
         || format!("{:?}", editor.status()),

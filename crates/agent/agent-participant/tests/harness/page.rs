@@ -39,7 +39,7 @@ use tilo_session_host::{Host, PeerEvent, PeerEvents, PeerHandle};
 use super::hosted::Hosted;
 use crate::support::{Device, WORKSPACE, admitted_to, ready, start_peer};
 
-/// A checkpoint a record's change left: its author and its bytes.
+/// A record as it stood when a write landed: its author, and the record saved.
 pub type Checkpoint = ([u8; 32], Vec<u8>);
 
 /// A page in a host's workspace.
@@ -47,8 +47,11 @@ pub struct Page {
     pub peer: PeerHandle,
     pub events: PeerEvents,
     pub host_key: [u8; 32],
-    /// Every durable change of the records this page received, in order.
+    /// Each record of the workspace as it stood whenever someone else's write
+    /// to it landed, in order, and as this page published it.
     pub documents: BTreeMap<DocumentRoute, Vec<Checkpoint>>,
+    /// Who wrote what landed in a record this page cannot open yet.
+    unopened: BTreeMap<DocumentRoute, [u8; 32]>,
     /// The host's answers, taken by [`Page::answer`].
     pub answers: Vec<RemoteActionMessage>,
     /// The correlation the page names its next catalogue request with.
@@ -138,6 +141,7 @@ impl Page {
             peer,
             host_key: host.cert.device_public_key,
             documents: BTreeMap::new(),
+            unopened: BTreeMap::new(),
             answers: Vec::new(),
             correlation: 0,
             workspace,
@@ -145,8 +149,8 @@ impl Page {
         }
     }
 
-    /// Take one event: a record's change is kept, everything else is the
-    /// caller's to read.
+    /// Take one event: a record that changed is kept as it stands then,
+    /// everything else is the caller's to read.
     pub fn take(&mut self, event: PeerEvent) -> Option<PeerEvent> {
         if let PeerEvent::LivePlane {
             workspace_id,
@@ -175,20 +179,35 @@ impl Page {
                 self.narrated.push((record, work));
             }
         }
-        if let PeerEvent::Document(document) = &event {
-            if let Some(mutation) = document.mutation() {
-                let bytes = match mutation {
-                    collab_types::DocumentMutation::Snapshot(bytes)
-                    | collab_types::DocumentMutation::Incremental(bytes) => bytes,
-                };
-                self.documents
-                    .entry(document.route.clone())
-                    .or_default()
-                    .push((document.author, bytes));
-            }
+        let PeerEvent::Landed { route, author } = event else {
+            return Some(event);
+        };
+        let own = self.peer.engine().identity().device_cert.device_public_key;
+        if author == Some(own) {
+            // Kept when it was published.
             return None;
         }
-        Some(event)
+        let read = self
+            .peer
+            .engine()
+            .record(&route.cluster_id, &route.app_id, &route.record);
+        match (read, author) {
+            (Ok(Some(bytes)), author) => {
+                // Keys that arrived open what the writers before them wrote.
+                let author = author
+                    .or_else(|| self.unopened.remove(&route))
+                    .unwrap_or_default();
+                self.documents
+                    .entry(route)
+                    .or_default()
+                    .push((author, bytes));
+            }
+            (_, Some(author)) => {
+                self.unopened.insert(route, author);
+            }
+            (_, None) => {}
+        }
+        None
     }
 
     /// Everyone here now, as a surface draws them.

@@ -63,6 +63,8 @@ tilo-delivery-protocol = { version = "0.1.0", path = "../../hosting/tilo-deliver
 serde_json.workspace = true
 # A participant's client: the trait its presence frames travel on, which this session carries.
 tilo-session-client = { version = "0.1.0", path = "../../session/client" }
+# The identity this device's replicas are held under, signing through its custody.
+tilo-identity-host = { version = "0.1.0", path = "../../runtime/tilo-identity-host" }
 # The action host another device of a workspace is, reached through the
 # session (`session_actions`).
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }

@@ -21,32 +21,15 @@ mod support;
 // This binary re-execs as the automerge worker (the host's workspaces use it).
 tilo_automerge_isolate::test_worker!();
 
-use std::time::Duration;
-
-use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_session_host::{PeerEvent, PeerHandle};
 use tilo_user_identity::DeviceCapabilities;
 
-use support::{TestHost, door, enrol, ready, redeem, start_peer, start_workspace_host, wait_for};
-
-/// Gather what `page` delivers: the welcome notes it opened and the
-/// documents it refused.
-fn gather(page: &PeerHandle, notes: &mut Vec<Vec<u8>>, refused: &mut Vec<String>) {
-    for event in page.drain() {
-        match event {
-            PeerEvent::Document(document) if document.route.record == "welcome" => {
-                if let Some(DocumentMutation::Snapshot(bytes)) = document.mutation() {
-                    notes.push(bytes);
-                }
-            }
-            PeerEvent::DocumentRejected(reason) => refused.push(reason),
-            _ => {}
-        }
-    }
-}
+use support::{
+    TestHost, door, enrol, hears, ready, redeem, refused, say, start_peer, start_workspace_host,
+    wait_for,
+};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_later_person_finds_nothing_in_the_clear_in_a_sealed_lounge() {
@@ -103,9 +86,11 @@ async fn a_later_person_finds_nothing_in_the_clear_in_a_sealed_lounge() {
 
     // Carol writes the workspace's welcome note; it goes out sealed once the
     // host admitted her to its channel.
-    let note = b"welcome to the lounge".to_vec();
     carol
-        .publish(welcome.clone(), &DocumentMutation::Snapshot(note.clone()))
+        .publish(
+            welcome.clone(),
+            &say(&mut automerge::AutoCommit::new(), "welcome to the lounge"),
+        )
         .unwrap();
     let receipt = carol.barrier().unwrap();
     wait_for("the welcome note to be durable", || async {
@@ -116,31 +101,14 @@ async fn a_later_person_finds_nothing_in_the_clear_in_a_sealed_lounge() {
 
     // Dave, admitted to the workspace's channels after they were opened, reads
     // it, and refuses nothing the workspace's history holds.
-    let (mut notes, mut refused) = (Vec::new(), Vec::new());
-    let read = tokio::time::timeout(Duration::from_secs(90), async {
-        loop {
-            gather(dave, &mut notes, &mut refused);
-            if notes.contains(&note) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await;
-    assert!(
-        read.is_ok(),
-        "dave never read the welcome note; channels:\n{}",
-        dave.status().channels
-    );
-    // What the replay still brings arrives in the same breath.
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    hears(dave, &welcome, "welcome to the lounge").await;
     for page in [carol, dave] {
-        gather(page, &mut notes, &mut refused);
+        assert_eq!(
+            refused(page),
+            None,
+            "a person was refused writes of the workspace"
+        );
     }
-    assert!(
-        refused.is_empty(),
-        "a person was refused documents of the workspace: {refused:?}"
-    );
 
     for page in pages {
         page.close();

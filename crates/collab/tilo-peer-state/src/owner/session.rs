@@ -10,7 +10,7 @@ pub use reach::{Linked, OwnHost, Reach};
 
 use super::publication::SealRecord;
 use crate::direct::DirectSync;
-use crate::owner::{NativeWorkspaceOwner, WorkspaceId};
+use crate::owner::{NativeWorkspaceOwner, WorkspaceId, took_in};
 use crate::{Reseal, join::TransportHint};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
@@ -397,26 +397,6 @@ pub struct AppWrite {
     /// Whether the host replayed it from what it retains.
     pub replayed: bool,
     pub envelope: collab_types::SignedOp,
-}
-
-/// Whether the workspace took a frame in, as a device's apps read it: a write
-/// it accepted or holds already, this device's own included.
-#[must_use]
-pub fn took_in(report: &crate::AdmissionReport, retained: bool) -> bool {
-    match report.primary() {
-        crate::InputDisposition::Accepted(_) | crate::InputDisposition::Duplicate(_) => true,
-        // A host's replay of a frame this device took in before: its exact
-        // evidence is gone (a legacy state, or one folded by a compaction),
-        // so admission reports it as history it already holds. This device's
-        // apps may be new — a restarted session keeps the workspace and
-        // starts its apps empty — and the frame is part of their record: it
-        // goes to them as any other replayed frame does, and their CRDT drops
-        // what they already hold.
-        crate::InputDisposition::RetryLater(
-            crate::MissingPrerequisite::ExactHistoricalEvidence,
-        ) => retained && report.duplicate,
-        _ => false,
-    }
 }
 
 /// The app write a frame carries, for this device's apps: `None` for anything

@@ -1,7 +1,6 @@
 use super::{GaveUp, Needs, sealed_for};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeSet, HashSet};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_session_host::session::RouteStatus;
 
 const WORKSPACE: &str = "6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11";
 const OTHER_WORKSPACE: &str = "0b7f1d2e-5a6c-4d3b-8e9f-a0b1c2d3e4f5";
@@ -11,13 +10,6 @@ fn route(workspace: &str, app: &str, record: &str) -> DocumentRoute {
         app_id: app.into(),
         cluster_id: workspace.into(),
         record: record.into(),
-    }
-}
-
-fn sealed(awaiting: usize) -> RouteStatus {
-    RouteStatus {
-        awaiting_keys: awaiting,
-        ..RouteStatus::default()
     }
 }
 
@@ -46,13 +38,10 @@ fn a_retryable_failure_leaves_the_id_free_to_run_again() {
 #[test]
 fn a_request_waits_only_for_the_keys_of_what_it_reads() {
     let workspace = tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap();
-    let a = route(WORKSPACE, "so.tilo.sheets", "a");
     let b = route(WORKSPACE, "so.tilo.sheets", "b");
     let elsewhere = route(OTHER_WORKSPACE, "so.tilo.sheets", "a");
-    let mut routes = BTreeMap::new();
-    routes.insert(a, sealed(0));
-    routes.insert(b.clone(), sealed(3));
-    routes.insert(elsewhere, sealed(1));
+    // `a` opened; `b` here and the record elsewhere wait for their keys.
+    let routes = BTreeSet::from([b.clone(), elsewhere]);
     let act = |record| Needs::Act {
         app_id: "so.tilo.sheets",
         record,

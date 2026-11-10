@@ -15,7 +15,7 @@
 
 mod support;
 
-use tilo_session_host::{PeerSnapshot, TransportPhase};
+use tilo_session_host::TransportPhase;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{HostSettings, enrol, start_host_serving, start_peer, wait_for};
@@ -75,7 +75,7 @@ async fn a_reset_host_refuses_its_forgotten_guest() {
     )
     .await;
     let failed = wait_for("the reset host to refuse the guest", || {
-        let snapshot = PeerSnapshot::from_status(&peer.status());
+        let snapshot = peer.snapshot();
         async move { (snapshot.phase == "failed").then_some(snapshot) }
     })
     .await;

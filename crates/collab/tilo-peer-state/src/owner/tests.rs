@@ -1,7 +1,8 @@
 use crate::TransportOrigin;
 use crate::owner::testing::{APP, WORKSPACE, raw_fixture, record_on_disk};
 use crate::owner::{
-    DocumentRead, NativeWorkspaceOwner, PendingEnrollmentId, WorkspaceId, open_file,
+    DocumentRead, HostAnswer, NativeWorkspaceOwner, PendingEnrollmentId, RecordWrites, WorkspaceId,
+    open_file,
 };
 use crate::owner_commit::{CommitOperation, OwnerCommitRequest};
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
@@ -9,6 +10,7 @@ use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use std::{
+    collections::BTreeMap,
     path::PathBuf,
     sync::{
         Arc,
@@ -230,6 +232,71 @@ fn a_local_write_is_durable_with_its_outgoing_custody_before_its_receipt() {
     );
     drop(joined.owner);
     assert_eq!(outgoing(&open_file(&joined.path).unwrap()), 1);
+}
+
+#[test]
+fn a_write_its_relay_host_refused_leaves_the_replica_and_every_answer_is_counted() {
+    let joined = enrolled();
+    let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
+    let topic = |owner: &NativeWorkspaceOwner| {
+        owner
+            .with_current(workspace, |view| {
+                let chat = AutoCommit::load(&view.peer().document(APP, "").ok_or("no chat")?)
+                    .map_err(|error| error.to_string())?;
+                Ok(chat
+                    .get(ROOT, "topic")
+                    .ok()
+                    .flatten()
+                    .and_then(|(value, _)| value.as_str().map(str::to_owned)))
+            })
+            .unwrap()
+    };
+    let newest = |owner: &NativeWorkspaceOwner| {
+        owner
+            .with_outgoing(workspace, now, |_, outgoing| Ok(outgoing.queued().last()))
+            .unwrap()
+            .unwrap()
+    };
+    owner
+        .commit_document(edit_with(owner, workspace, now, "kept"), now)
+        .unwrap();
+    owner
+        .retire_answered(
+            workspace,
+            &BTreeMap::from([(newest(owner), HostAnswer::Durable(7))]),
+        )
+        .unwrap();
+    owner
+        .commit_document(edit_with(owner, workspace, now, "refused"), now)
+        .unwrap();
+    assert_eq!(topic(owner).as_deref(), Some("refused"));
+    owner
+        .retire_answered(
+            workspace,
+            &BTreeMap::from([(newest(owner), HostAnswer::Refused)]),
+        )
+        .unwrap();
+    let answered = RecordWrites {
+        pending: 0,
+        durable: 1,
+        refused: 1,
+        last_order: Some(7),
+    };
+    assert_eq!(topic(owner).as_deref(), Some("kept"));
+    assert_eq!(
+        owner
+            .record_writes(workspace)
+            .get(&(APP.to_owned(), String::new())),
+        Some(&answered)
+    );
+    let reopened = open_file(&joined.path).unwrap();
+    assert_eq!(topic(&reopened).as_deref(), Some("kept"));
+    assert_eq!(
+        reopened
+            .record_writes(workspace)
+            .get(&(APP.to_owned(), String::new())),
+        Some(&answered)
+    );
 }
 
 #[test]

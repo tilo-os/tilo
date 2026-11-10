@@ -9,7 +9,6 @@ use tilo_actions::ActionOutput;
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
 use tilo_peer_state::document_frame::DocumentRoute;
 
-use super::unopened::Reading;
 use super::{
     AgentParticipant, MOST_OPENED_BY_TITLE, MOST_REFERENCED_APPS, MOST_SNAPSHOT_CHARS,
     MOST_SNAPSHOT_READS, MOST_SNAPSHOTS, MOST_SNAPSHOTS_CHARS, SNAPSHOT_READS, actions,
@@ -18,6 +17,7 @@ use crate::apps::Seed;
 use crate::planner::{PlanContext, observation_within, readable};
 use crate::profile::Catalog;
 use crate::worker::ConfinedReplica;
+use crate::workspace_records::Reading;
 
 impl AgentParticipant {
     /// The workspace's records the agent has not opened, those people have open

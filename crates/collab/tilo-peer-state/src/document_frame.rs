@@ -4,7 +4,7 @@
 //! reader of retained or live document frames (a native device, a page, a
 //! host serving a member's view) opens them here.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use channel_crypto::ChannelContentKeys;
 use collab_types::{
@@ -27,6 +27,24 @@ pub struct DocumentRoute {
 }
 
 impl DocumentRoute {
+    /// The record an app document message writes to; `None` for any other message.
+    #[must_use]
+    pub fn of_message(message: &neighbour_wire::NeighbourMsg) -> Option<Self> {
+        let neighbour_wire::NeighbourMsg::AppDocument {
+            app_id,
+            cluster_id,
+            record_id,
+            ..
+        } = message
+        else {
+            return None;
+        };
+        Some(Self {
+            app_id: app_id.clone(),
+            cluster_id: cluster_id.clone(),
+            record: record_id.clone(),
+        })
+    }
     /// The relay workspace that carries this route's workspace.
     pub fn workspace_id(&self) -> Result<u64, DocumentError> {
         tilo_relay_protocol::room_workspace_id(&self.cluster_id)
@@ -159,27 +177,13 @@ pub struct OpenedDocument {
     pub author: [u8; 32],
     /// Cleartext when the envelope was sealed.
     pub decrypted_payload: Option<Vec<u8>>,
-    /// The complete mutation when this is the last segment of a segmented
-    /// transfer; `envelope` is then that segment's.
-    whole: Option<DocumentMutation>,
-    /// Retained entry ids of the frames this document came in.
-    entries: Vec<[u8; 32]>,
 }
 
 impl OpenedDocument {
-    /// The host's ids ([`tilo_relay_protocol::compaction::entry_id`]) of the
-    /// retained frames this document came in: one, or every segment of a
-    /// reassembled transfer.
-    pub fn entries(&self) -> &[[u8; 32]] {
-        &self.entries
-    }
-
-    /// The typed mutation: carried by a whole frame, or reassembled from
-    /// every segment of a large one.
+    /// The typed mutation a whole frame carries; `None` for one segment of a
+    /// larger transfer, which a record's reader puts back together
+    /// ([`Transfers`]).
     pub fn mutation(&self) -> Option<DocumentMutation> {
-        if let Some(whole) = &self.whole {
-            return Some(whole.clone());
-        }
         match DocumentFrame::decode(
             self.decrypted_payload
                 .as_deref()
@@ -191,25 +195,6 @@ impl OpenedDocument {
             DocumentFrame::Segment(_) => None,
         }
     }
-
-    /// Whether this document stands for a reassembled segmented transfer
-    /// rather than for its own envelope's payload.
-    pub fn is_reassembled(&self) -> bool {
-        self.whole.is_some()
-    }
-
-    fn payload(&self) -> &[u8] {
-        self.decrypted_payload
-            .as_deref()
-            .unwrap_or(&self.envelope.payload)
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct TransferKey {
-    artifact: collab_types::ArtifactId,
-    author: [u8; 32],
-    digest: [u8; 32],
 }
 
 struct Transfer {
@@ -217,138 +202,74 @@ struct Transfer {
     total_len: u64,
     segment_len: u32,
     segments: BTreeMap<u32, Vec<u8>>,
-    entries: Vec<[u8; 32]>,
-    bytes: usize,
-    touched: u64,
 }
 
-/// Rebuilds segmented document transfers (a snapshot or change set larger
-/// than one frame, see `collab_types::document_transfer`) from their
-/// individually signed and verified segments. Memory stays within the
-/// collaboration transport's reassembly limits by dropping the least
-/// recently extended incomplete transfer; the page has no monotonic clock
-/// `DocumentReassembler` accepts, so recency is an arrival counter.
+/// Puts segmented document transfers (a snapshot or change set larger than
+/// one frame, see `collab_types::document_transfer`) back together from a
+/// record's opened writes: each segment is a write of its own, signed and
+/// admitted alone, and a reader takes the transfer once it holds all of them.
+/// A transfer is its author's and digest's, so segments of different authors
+/// or transfers never mix.
 #[derive(Default)]
-pub struct Reassembly {
-    transfers: HashMap<TransferKey, Transfer>,
-    buffered: usize,
-    arrivals: u64,
-}
+pub struct Transfers(BTreeMap<([u8; 32], [u8; 32]), Transfer>);
 
-impl Reassembly {
-    /// Pass a whole document through, hold a segment, or return the
-    /// document completed by this final segment.
+impl Transfers {
+    /// The mutation `plaintext`, a write of `author`, carries whole or
+    /// completes; `None` while its transfer waits for more segments.
     ///
     /// # Errors
     ///
-    /// Returns [`DocumentError::Payload`] for a segment that contradicts
-    /// its transfer or a complete transfer that fails its digest; the
-    /// transfer is dropped.
-    pub fn accept(
+    /// The payload does not decode, a segment contradicts its transfer, or
+    /// the complete transfer fails its digest.
+    pub fn take(
         &mut self,
-        mut document: OpenedDocument,
-    ) -> Result<Option<OpenedDocument>, DocumentError> {
-        let segment = match DocumentFrame::decode(document.payload()) {
-            Ok(DocumentFrame::Segment(segment)) => segment,
-            Ok(DocumentFrame::Whole(_)) | Err(_) => return Ok(Some(document)),
+        author: [u8; 32],
+        plaintext: &[u8],
+    ) -> Result<Option<DocumentMutation>, String> {
+        let segment = match DocumentFrame::decode(plaintext).map_err(|error| error.to_string())? {
+            DocumentFrame::Whole(mutation) => return Ok(Some(mutation)),
+            DocumentFrame::Segment(segment) => segment,
         };
-        self.arrivals = self.arrivals.saturating_add(1);
-        let key = TransferKey {
-            artifact: document.envelope.artifact,
-            author: document.author,
-            digest: segment.digest,
-        };
-        if let Some(transfer) = self.transfers.get(&key)
-            && (transfer.kind != segment.kind
-                || transfer.total_len != segment.total_len
-                || transfer.segment_len != segment.segment_len)
-        {
-            self.remove(&key);
-            return Err(DocumentError::Payload(
-                "document segment contradicts its transfer".into(),
-            ));
-        }
-        let len = segment.data.len();
-        if self
-            .transfers
-            .get(&key)
-            .is_some_and(|transfer| transfer.segments.contains_key(&segment.index))
-        {
-            return Ok(None);
-        }
-        self.make_workspace(len, &key);
-        let transfer = self.transfers.entry(key).or_insert_with(|| Transfer {
+        let key = (author, segment.digest);
+        let transfer = self.0.entry(key).or_insert_with(|| Transfer {
             kind: segment.kind,
             total_len: segment.total_len,
             segment_len: segment.segment_len,
             segments: BTreeMap::new(),
-            entries: Vec::new(),
-            bytes: 0,
-            touched: 0,
         });
-        transfer.touched = self.arrivals;
-        transfer.bytes = transfer.bytes.saturating_add(len);
+        if transfer.kind != segment.kind
+            || transfer.total_len != segment.total_len
+            || transfer.segment_len != segment.segment_len
+        {
+            self.0.remove(&key);
+            return Err("document segment contradicts its transfer".into());
+        }
         let count = segment.count() as usize;
-        transfer.segments.insert(segment.index, segment.data);
-        transfer.entries.extend_from_slice(&document.entries);
-        self.buffered = self.buffered.saturating_add(len);
+        transfer
+            .segments
+            .entry(segment.index)
+            .or_insert(segment.data);
         if transfer.segments.len() < count {
             return Ok(None);
         }
-        let Some(transfer) = self.remove(&key) else {
+        let Some(transfer) = self.0.remove(&key) else {
             return Ok(None);
         };
-        let mut data = Vec::with_capacity(usize::try_from(transfer.total_len).unwrap_or(0));
-        for chunk in transfer.segments.into_values() {
-            data.extend_from_slice(&chunk);
-        }
+        let data: Vec<u8> = transfer.segments.into_values().flatten().collect();
         if u64::try_from(data.len()).ok() != Some(transfer.total_len)
-            || collab_types::document_transfer::transfer_digest(transfer.kind, &data) != key.digest
+            || collab_types::document_transfer::transfer_digest(transfer.kind, &data) != key.1
         {
-            return Err(DocumentError::Payload(
-                "reassembled document does not match its transfer digest".into(),
-            ));
+            return Err("reassembled document does not match its transfer digest".into());
         }
-        document.whole = Some(match transfer.kind {
+        Ok(Some(match transfer.kind {
             DocumentMutationKind::Snapshot => DocumentMutation::Snapshot(data),
             DocumentMutationKind::Incremental => DocumentMutation::Incremental(data),
-        });
-        document.entries = transfer.entries;
-        Ok(Some(document))
+        }))
     }
 
-    /// Bytes held for incomplete transfers.
-    pub fn buffered_bytes(&self) -> usize {
-        self.buffered
-    }
-
-    fn make_workspace(&mut self, extra: usize, keep: &TransferKey) {
-        loop {
-            let slot = !self.transfers.contains_key(keep)
-                && self.transfers.len()
-                    >= collab_types::document_transfer::MAX_CONCURRENT_TRANSFERS;
-            let bytes = self.buffered.saturating_add(extra)
-                > collab_types::document_transfer::MAX_REASSEMBLY_BUFFER_BYTES;
-            if !slot && !bytes {
-                return;
-            }
-            let Some(victim) = self
-                .transfers
-                .iter()
-                .filter(|(key, _)| *key != keep)
-                .min_by_key(|(_, transfer)| transfer.touched)
-                .map(|(key, _)| *key)
-            else {
-                return;
-            };
-            self.remove(&victim);
-        }
-    }
-
-    fn remove(&mut self, key: &TransferKey) -> Option<Transfer> {
-        let transfer = self.transfers.remove(key)?;
-        self.buffered = self.buffered.saturating_sub(transfer.bytes);
-        Some(transfer)
+    /// Whether a transfer still waits for segments.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 
@@ -435,8 +356,6 @@ pub fn open_frame(
         envelope: *envelope,
         author,
         decrypted_payload,
-        whole: None,
-        entries: vec![tilo_relay_protocol::compaction::entry_id(body)],
     }))
 }
 
@@ -552,34 +471,6 @@ mod tests {
         assert_eq!(opened.mutation(), Some(snapshot));
     }
 
-    fn opened(
-        artifact: collab_types::ArtifactId,
-        author: [u8; 32],
-        payload: Vec<u8>,
-    ) -> OpenedDocument {
-        let entry = tilo_relay_protocol::compaction::entry_id(&payload);
-        OpenedDocument {
-            route: DocumentRoute {
-                app_id: "app".into(),
-                cluster_id: "room".into(),
-                record: "record".into(),
-            },
-            envelope: SignedOp::new_unsigned(
-                payload,
-                artifact,
-                collab_types::Ed25519PublicKey::from_bytes(author),
-                collab_types::AttestationId::new(),
-                collab_types::OpKind::Change,
-                std::time::SystemTime::UNIX_EPOCH,
-                1,
-            ),
-            author,
-            decrypted_payload: None,
-            whole: None,
-            entries: vec![entry],
-        }
-    }
-
     fn noise(len: usize) -> Vec<u8> {
         let mut state = 0x9E37_79B9_7F4A_7C15_u64;
         (0..len)
@@ -664,55 +555,36 @@ mod tests {
         assert_eq!(frames.len(), 3, "a 2.5 MiB snapshot travels as segments");
         frames.reverse();
         frames.insert(1, frames[0].clone());
-        let artifact = collab_types::ArtifactId::new();
-        let mut reassembly = Reassembly::default();
-        let mut completed = Vec::new();
-        for frame in frames {
-            let document = opened(artifact, [7; 32], frame);
-            assert!(
-                document.mutation().is_none(),
-                "a segment alone is no mutation"
-            );
-            if let Some(done) = reassembly.accept(document).unwrap() {
-                completed.push(done);
-            }
-        }
-        assert_eq!(completed.len(), 1, "the transfer completes exactly once");
-        assert!(completed[0].is_reassembled());
+        let mut transfers = Transfers::default();
+        let completed: Vec<_> = frames
+            .iter()
+            .filter_map(|frame| transfers.take([7; 32], frame).unwrap())
+            .collect();
         assert_eq!(
-            completed[0].entries().len(),
-            3,
-            "a reassembled document names every segment it came in, once"
+            completed,
+            vec![mutation],
+            "the transfer completes exactly once"
         );
-        assert_eq!(completed[0].mutation(), Some(mutation));
-        assert_eq!(reassembly.buffered_bytes(), 0);
+        assert!(transfers.is_empty());
     }
 
     #[test]
     fn whole_frames_pass_and_segments_of_other_authors_never_mix() {
-        let artifact = collab_types::ArtifactId::new();
-        let mut reassembly = Reassembly::default();
+        let mut transfers = Transfers::default();
         let small = DocumentMutation::Incremental(vec![1, 2, 3]);
-        let whole = reassembly
-            .accept(opened(artifact, [1; 32], small.encode().unwrap()))
-            .unwrap()
-            .unwrap();
-        assert!(!whole.is_reassembled());
-        assert_eq!(whole.mutation(), Some(small));
-
+        assert_eq!(
+            transfers.take([1; 32], &small.encode().unwrap()).unwrap(),
+            Some(small)
+        );
         let frames = DocumentMutation::Incremental(noise(2 * 1024 * 1024 + 1))
             .encode_frames()
             .unwrap();
         let last = frames.len() - 1;
-        for (index, frame) in frames.into_iter().enumerate() {
+        for (index, frame) in frames.iter().enumerate() {
             let author = if index == last { [2; 32] } else { [1; 32] };
-            assert!(
-                reassembly
-                    .accept(opened(artifact, author, frame))
-                    .unwrap()
-                    .is_none()
-            );
+            assert_eq!(transfers.take(author, frame).unwrap(), None);
         }
+        assert!(!transfers.is_empty());
     }
 
     #[test]
@@ -720,8 +592,7 @@ mod tests {
         let frames = DocumentMutation::Incremental(noise(2 * 1024 * 1024 + 5))
             .encode_frames()
             .unwrap();
-        let artifact = collab_types::ArtifactId::new();
-        let mut reassembly = Reassembly::default();
+        let mut transfers = Transfers::default();
         let count = frames.len();
         let mut outcome = Ok(None);
         for (index, mut frame) in frames.into_iter().enumerate() {
@@ -729,12 +600,12 @@ mod tests {
                 let at = frame.len() - 3;
                 frame[at] ^= 0xff;
             }
-            outcome = reassembly.accept(opened(artifact, [3; 32], frame));
+            outcome = transfers.take([3; 32], &frame);
             if index + 1 < count {
-                assert!(matches!(outcome, Ok(None)));
+                assert_eq!(outcome, Ok(None));
             }
         }
-        assert!(matches!(outcome, Err(DocumentError::Payload(_))));
-        assert_eq!(reassembly.buffered_bytes(), 0);
+        assert!(outcome.is_err());
+        assert!(transfers.is_empty());
     }
 }

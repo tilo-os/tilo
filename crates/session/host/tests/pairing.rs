@@ -30,7 +30,6 @@ tilo_automerge_isolate::test_worker!();
 
 use std::sync::Arc;
 
-use collab_types::DocumentMutation;
 use ed25519_dalek::{Signer as _, SigningKey};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_relay_client::CertificationOutcome;
@@ -49,7 +48,7 @@ use tilo_user_identity::{
 use tokio::task::JoinHandle;
 
 use support::{
-    door, enrol, enter, in_workspace, next_document, ready, redeem, route, start_host, start_peer,
+    door, enrol, enter, hears, in_workspace, ready, redeem, route, say, start_host, start_peer,
     start_peer_with_store, start_workspace_host, wait_for,
 };
 
@@ -210,17 +209,19 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
         .join_placed(support::WORKSPACE, "Workspace")
         .unwrap();
     ready(&[&phone_peer]).await;
-    let snapshot = DocumentMutation::Snapshot(b"written on the laptop".to_vec());
-    laptop_peer.publish(route(), &snapshot).unwrap();
-    let mut events = Vec::new();
-    assert_eq!(next_document(&phone_peer, &mut events).await, snapshot);
+    let mut note = automerge::AutoCommit::new();
+    laptop_peer
+        .publish(route(), &say(&mut note, "written on the laptop"))
+        .unwrap();
+    hears(&phone_peer, &route(), "written on the laptop").await;
 
     // It reconnects as the same device and still follows the workspace.
     phone_peer.reconnect().unwrap();
     ready(&[&phone_peer]).await;
-    let change = DocumentMutation::Incremental(b"after the reconnect".to_vec());
-    laptop_peer.publish(route(), &change).unwrap();
-    assert_eq!(next_document(&phone_peer, &mut events).await, change);
+    laptop_peer
+        .publish(route(), &say(&mut note, "after the reconnect"))
+        .unwrap();
+    hears(&phone_peer, &route(), "after the reconnect").await;
 
     // A reload starts from the kept record: the same certificate, no new
     // pairing.
@@ -231,13 +232,10 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
         .join_placed(support::WORKSPACE, "Workspace")
         .unwrap();
     ready(&[&reloaded]).await;
-    let later = DocumentMutation::Incremental(b"after the reload".to_vec());
-    laptop_peer.publish(route(), &later).unwrap();
-    let mut events = Vec::new();
-    let mut seen = next_document(&reloaded, &mut events).await;
-    while seen != later {
-        seen = next_document(&reloaded, &mut events).await;
-    }
+    laptop_peer
+        .publish(route(), &say(&mut note, "after the reload"))
+        .unwrap();
+    hears(&reloaded, &route(), "after the reload").await;
     reloaded.close();
     laptop_peer.close();
     host.relay.shutdown().await;

@@ -8,11 +8,13 @@
 
 pub mod https;
 
+use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::DocumentMutation;
 use ed25519_dalek::{Signer as _, SigningKey};
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -24,9 +26,7 @@ use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
 use tilo_relay::workspaces::PreAdmitRequest;
 use tilo_relay_client::{Approver, Carrier};
 use tilo_relay_protocol::workspaces::{JoinReply, PreAdmission, WorkspaceRole};
-use tilo_session_host::{
-    Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle, PeerSnapshot, TransportPhase,
-};
+use tilo_session_host::{Host, MemoryPeerStore, PeerConfig, PeerHandle, TransportPhase};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, issue_device_cert,
@@ -115,10 +115,6 @@ pub fn is_host(device: &[u8; 32]) -> bool {
 }
 
 /// Whether `event` is a document a member wrote, not one of a host's.
-pub fn members_document(event: &PeerEvent) -> bool {
-    matches!(event, PeerEvent::Document(document) if !is_host(&document.author))
-}
-
 pub fn workspace() -> u64 {
     tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap()
 }
@@ -624,7 +620,7 @@ pub async fn ready(peers: &[&PeerHandle]) {
     wait_for("sessions ready", || async {
         peers
             .iter()
-            .all(|peer| PeerSnapshot::from_status(&peer.status()).phase == "ready")
+            .all(|peer| peer.snapshot().phase == "ready")
             .then_some(())
     })
     .await;
@@ -669,16 +665,110 @@ pub fn route() -> DocumentRoute {
     }
 }
 
-pub async fn next_document(peer: &PeerHandle, pending: &mut Vec<PeerEvent>) -> DocumentMutation {
-    wait_for("a document", || {
-        pending.extend(peer.drain());
-        let found = pending.iter().position(members_document).and_then(|index| {
-            match pending.remove(index) {
-                PeerEvent::Document(document) => document.mutation(),
-                _ => None,
-            }
-        });
-        async move { found }
+/// A change to `doc` noting `text`, as the mutation a peer publishes of it: a real
+/// Automerge change, since a replica applies what it keeps. The first change of a
+/// document is the whole record, which founds it.
+pub fn say(doc: &mut AutoCommit, text: &str) -> DocumentMutation {
+    let founds = doc.get_heads().is_empty();
+    doc.put(ROOT, text, true).unwrap();
+    if founds {
+        DocumentMutation::Snapshot(doc.save())
+    } else {
+        DocumentMutation::Incremental(doc.save_incremental())
+    }
+}
+
+/// What `peer`'s replica of its workspace holds of `route` now, when it reads.
+pub fn record_of(peer: &PeerHandle, route: &DocumentRoute) -> Option<AutoCommit> {
+    let bytes = peer
+        .engine()
+        .record(&route.cluster_id, &route.app_id, &route.record)
+        .ok()??;
+    AutoCommit::load(&bytes).ok()
+}
+
+/// What `peer`'s replica says in `route`: every text [`say`] noted in it.
+pub fn said(peer: &PeerHandle, route: &DocumentRoute) -> BTreeSet<String> {
+    record_of(peer, route)
+        .map(|doc| doc.keys(ROOT).collect())
+        .unwrap_or_default()
+}
+
+/// Wait until `peer`'s replica says `text` in `route`.
+pub async fn hears(peer: &PeerHandle, route: &DocumentRoute, text: &str) {
+    in_replica(peer, route, &format!("the replica to say {text:?}"), || {
+        said(peer, route).contains(text).then_some(())
+    })
+    .await;
+}
+
+/// Wait until `probe` finds what it reads in `peer`'s replica; a timeout says what the
+/// session's channels and failures were.
+async fn in_replica<T>(
+    peer: &PeerHandle,
+    route: &DocumentRoute,
+    what: &str,
+    mut probe: impl FnMut() -> Option<T>,
+) -> T {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        if let Some(found) = probe() {
+            return found;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}; the replica reads {:?}; channels:\n{}\nfailures: {:?}",
+            peer.engine()
+                .record(&route.cluster_id, &route.app_id, &route.record)
+                .map(|bytes| bytes.map(|bytes| bytes.len())),
+            peer.status().channels,
+            peer.status().failures
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Wait until every write `peer` published is durable on its host; a timeout says what the
+/// session's channels, failures and custody were.
+pub async fn durable(peer: &PeerHandle) {
+    let receipt = peer.barrier().unwrap();
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        if let Ok(answer) = receipt.try_recv() {
+            answer.unwrap();
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for the writes to be durable; pending {}; channels:\n{}\nfailures: {:?}",
+            peer.status().outgoing_pending,
+            peer.status().channels,
+            peer.status().failures
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// What `peer`'s replica last refused to keep and how many writes it refused, as its status
+/// says it: `None` while it refused nothing.
+pub fn refused(peer: &PeerHandle) -> Option<String> {
+    peer.status()
+        .channels
+        .lines()
+        .find(|line| line.starts_with("refused "))
+        .map(str::to_owned)
+}
+
+/// Wait until `peer`'s replica of `route` holds every change `doc` holds, and answer it.
+pub async fn holds(peer: &PeerHandle, route: &DocumentRoute, doc: &AutoCommit) -> AutoCommit {
+    let heads = doc.clone().get_heads();
+    in_replica(peer, route, "the replica to hold the record", || {
+        record_of(peer, route).filter(|held| {
+            let mut held = held.clone();
+            heads
+                .iter()
+                .all(|head| held.get_change_meta_by_hash(head).is_some())
+        })
     })
     .await
 }

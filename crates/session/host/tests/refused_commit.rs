@@ -97,17 +97,24 @@ enum Answer {
 }
 
 async fn answer(peer: &PeerHandle) -> Answer {
-    wait_for("the host's answer to the commit", || {
-        let answer = peer.drain().into_iter().find_map(|event| match event {
-            PeerEvent::Committed { .. } => Some(Answer::Committed),
-            PeerEvent::CommitRefused {
+    let receipt = std::sync::Mutex::new(peer.barrier().unwrap());
+    let answered = wait_for("the host's answer to the commit", || {
+        let answered = receipt.lock().unwrap().try_recv().ok();
+        async move { answered }
+    })
+    .await;
+    if answered.is_ok() {
+        return Answer::Committed;
+    }
+    peer.drain()
+        .into_iter()
+        .find_map(|event| match event {
+            PeerEvent::Refused {
                 changes, reason, ..
             } => Some(Answer::Refused { changes, reason }),
             _ => None,
-        });
-        async move { answer }
-    })
-    .await
+        })
+        .expect("a refused commit is told with its changes")
 }
 
 /// `app` withdrew note `pinned`, the one whose `changes` the workspace refused
@@ -221,21 +228,35 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
         let heads = app.read_document(|doc| doc.clone().get_heads());
         app.invoke(Board::PIN.with(format!("note {pinned}")))
             .unwrap();
-        let delta = app.read_document(|doc| doc.clone().save_after(&heads));
-        peer.publish(route.clone(), &DocumentMutation::Incremental(delta))
-            .unwrap();
+        // The board's first change founds its record, whole.
+        let mutation = if pinned == 0 {
+            DocumentMutation::Snapshot(app.read_document(|doc| doc.clone().save()))
+        } else {
+            DocumentMutation::Incremental(app.read_document(|doc| doc.clone().save_after(&heads)))
+        };
+        peer.publish(route.clone(), &mutation).unwrap();
         if let Answer::Refused { changes, reason } = answer(&peer).await {
             refused = Some((pinned, changes, reason));
             break;
         }
     }
-    let (pinned, changes, reason) = refused.expect("the budget refuses a change in time");
+    let (pinned, changes, reason) = refused.unwrap_or_else(|| {
+        panic!(
+            "the budget refuses a change in time: {:?}",
+            peer.status().failures
+        )
+    });
     withdrawn_as_refused(&mut app, pinned, &changes, &reason);
-    let status = peer.status();
-    let route_status = status.routes.get(&route).unwrap();
-    assert_eq!(route_status.refused_operations, 1);
+    let note = peer
+        .snapshot()
+        .health
+        .records
+        .into_iter()
+        .find(|record| record.record.record_id == route.record)
+        .expect("the board's health");
+    assert_eq!(note.outgoing.refused_operations, 1);
     assert_eq!(
-        route_status.pending_operations, 0,
+        note.outgoing.pending_operations, 0,
         "nothing is left outstanding"
     );
     peer.close();

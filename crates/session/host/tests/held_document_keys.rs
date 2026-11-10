@@ -27,12 +27,11 @@ use std::time::SystemTime;
 use channel_crypto::{ChannelPeer, VaultKey};
 use collab_types::surface::ContentSurfaces;
 use collab_types::{
-    ContentRetention, DocumentMutation, Ed25519PublicKey, MlsGovernanceFrame, OpKind, SignedOp,
-    Surfaces, document_artifact_id, document_attestation_id, document_channel_id,
+    ContentRetention, Ed25519PublicKey, MlsGovernanceFrame, OpKind, SignedOp, Surfaces,
+    document_artifact_id, document_attestation_id, document_channel_id,
 };
 use neighbour_wire::NeighbourMsg;
 use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
-use tilo_session_host::PeerEvent;
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
 use support::{Device, WORKSPACE, enrol, ready, route, start_host, start_peer, workspace};
@@ -40,7 +39,7 @@ use support::{Device, WORKSPACE, enrol, ready, route, start_host, start_peer, wo
 /// The surface the laptop's write names: a version of the app this page does
 /// not run, whose `surface.toml` is not here.
 const ELSEWHERE: [u8; 32] = [0x42; 32];
-const WRITTEN: &[u8] = b"written before the page joined";
+const WRITTEN: &str = "written before the page joined";
 
 /// Publish `message` through the host the way a shell does.
 fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
@@ -125,7 +124,7 @@ async fn a_page_takes_the_record_keys_though_every_write_it_received_is_held() {
             },
         );
     }
-    let frame = DocumentMutation::Incremental(WRITTEN.to_vec())
+    let frame = support::say(&mut automerge::AutoCommit::new(), WRITTEN)
         .encode()
         .unwrap();
     let (metadata, sealed) = laptop_peer
@@ -213,11 +212,7 @@ async fn a_page_takes_the_record_keys_though_every_write_it_received_is_held() {
     // The keys are the page's; the write itself still waits for its surface,
     // which is a version of the app the page does not run.
     assert!(
-        !page.drain().into_iter().any(|event| matches!(
-            event,
-            PeerEvent::Document(document)
-                if document.mutation() == Some(DocumentMutation::Incremental(WRITTEN.to_vec()))
-        )),
+        !support::said(&page, &note).contains(WRITTEN),
         "the write is held for its app surface, not opened"
     );
 }

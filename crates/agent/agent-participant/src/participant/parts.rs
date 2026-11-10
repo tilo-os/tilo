@@ -114,7 +114,11 @@ impl AgentParticipant {
         let taken = app
             .take_record_mutations()
             .map_err(|error| error.to_string())?;
-        let known = self.peer.status().routes;
+        let known = self
+            .peer
+            .engine()
+            .records(&holder.cluster_id)
+            .unwrap_or_default();
         let published = !taken.is_empty();
         for (record, mutation) in taken {
             let part = DocumentRoute {
@@ -128,7 +132,9 @@ impl AgentParticipant {
             // this one goes out as changes on top of it, which meet the
             // others' as two starts of one part do.
             let mutation = match mutation {
-                DocumentMutation::Snapshot(bytes) if known.contains_key(&part) => {
+                DocumentMutation::Snapshot(bytes)
+                    if known.contains(&(part.app_id.clone(), part.record.clone())) =>
+                {
                     DocumentMutation::Incremental(bytes)
                 }
                 mutation => mutation,

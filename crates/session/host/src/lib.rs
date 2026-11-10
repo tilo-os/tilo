@@ -56,8 +56,7 @@ pub mod surfaces;
 pub mod voice;
 pub mod way_in;
 
-pub use custody::{MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore};
-pub use document::{document_admission, document_history_admission};
+pub use custody::{MemoryPeerStore, PeerRecord, PeerStore};
 pub use health::{EntryHealth, PeerSnapshot, SessionHealth};
 pub use session::{
     CallFrame, CallPicture, CallShown, Completion, Entry, EntryCompletion, Failure, FailureSubject,

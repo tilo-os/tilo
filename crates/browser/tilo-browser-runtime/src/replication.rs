@@ -10,10 +10,12 @@
 //! - **Records** go out as Automerge deltas on the route `(app, workspace,
 //!   record)`, the native shell's own `AppDocument` wire; a record's first
 //!   publication in a session is a snapshot, which the host retains as the
-//!   route's checkpoint for peers that join later. Inbound mutations merge
-//!   into the open record (`RecordStore::merge_replica`, Automerge
-//!   semantics, local undo untouched) or, when no mount has it open, into
-//!   the record's stored document so opening it later shows them.
+//!   route's checkpoint for peers that join later. What lands in this
+//!   device's replica of the workspace ([`PeerEvent::Landed`]) is read from
+//!   the session's engine and merges into the open record
+//!   (`RecordStore::merge_replica`, Automerge semantics, local undo untouched)
+//!   or, when no mount has it open, into the record's stored document so
+//!   opening it later shows them.
 //! - **The desktop** is the desk's own document
 //!   ([`tilo_desktop_model::desktop_doc`]) on the route native peers and the
 //!   workspace host use for it, the one the native desk keeps: every workspace,
@@ -120,28 +122,13 @@ pub(crate) struct Joined {
     /// This page's own desktop as it last wrote it into the record: a
     /// frame that changed nothing shared writes nothing.
     local_value: Option<serde_json::Value>,
-    /// Records the workspace delivered that no mount had open, as wire
-    /// `(app, record)`.
-    stored: BTreeSet<(String, String)>,
-    /// The heads of each such record as the workspace delivered it, until a mount
+    /// The heads of each record the workspace delivered that no mount had open, until a mount
     /// opens it. The workspace has everything up to them, so what the mount sends
     /// first is what it changed after them, not the whole document: a
     /// checkpoint reaches only devices that lack the record, and the changes
     /// a window makes as it opens (taking a seat) would never reach the
     /// others.
     delivered: HashMap<(String, String), Vec<ui::automerge::ChangeHash>>,
-    /// Changes the workspace delivered for a record before the changes they
-    /// build on, as the incremental runs they came in, by wire
-    /// `(app, record)`. The workspace replays a record by author, each author's
-    /// checkpoint and then their deltas, so a late joiner can be sent the
-    /// second player's seat before the table it sits at, and the dealer's
-    /// deal before that seat. A saved document keeps only the changes it can
-    /// apply, so these wait here, applied again with whatever arrives next,
-    /// until nothing they build on is missing.
-    waiting: HashMap<(String, String), Vec<Vec<u8>>>,
-    /// Routes a delivered document failed to apply to: this page never
-    /// answers a compaction request for them.
-    unapplied: HashSet<DocumentRoute>,
     /// Changes this page made to the workspace: to its records, sent, and to its
     /// desktop's windows (opened, closed, moved), not the desktop it joined.
     authored: u64,
@@ -172,10 +159,10 @@ pub(crate) struct Joined {
     /// The workspace's members as its governance lists them, once heard: what
     /// someone no longer among them made on the desktop is released.
     members: Option<std::collections::BTreeSet<String>>,
-    /// How many commits of each record route this page published the workspace
-    /// has not answered yet: once none is left, what the record's windows
-    /// said they did is said (`RecordStore::workspace_settled`).
-    in_flight: HashMap<DocumentRoute, usize>,
+    /// Record routes whose commits this page published the workspace answered all of, since
+    /// the last frame: what the record's windows said they did is said
+    /// (`RecordStore::workspace_settled`).
+    settled: Arc<Mutex<Vec<DocumentRoute>>>,
     /// Content the open records' windows lacked and the page asked the
     /// workspace for, by the wire `(app, record)` that references it.
     content: ContentWants<(String, String)>,
@@ -225,10 +212,7 @@ pub(crate) fn open(
         desktop_sending: DesktopSending::Snapshot,
         desktop_value: None,
         local_value: None,
-        stored: BTreeSet::new(),
         delivered: HashMap::new(),
-        waiting: HashMap::new(),
-        unapplied: HashSet::new(),
         authored: 0,
         moderates: Arc::default(),
         invitable: Arc::default(),
@@ -238,7 +222,7 @@ pub(crate) fn open(
         permitted: BTreeMap::new(),
         permit_answers: Arc::default(),
         members: None,
-        in_flight: HashMap::new(),
+        settled: Arc::default(),
         content: ContentWants::default(),
         changes: changes(),
     };
@@ -281,16 +265,6 @@ pub(crate) fn device_of(id: u32) -> Option<String> {
     replica_of(id).map(|joined| joined.borrow().device.clone())
 }
 
-/// `mutations` with every snapshot ahead of the incremental runs, each kind
-/// in the order it came. A snapshot holds its whole history, so a run that
-/// builds on it applies after it; a run applied before the changes it
-/// builds on only waits in memory, and merging a snapshot into a document
-/// copies the document's saved changes, never the ones still waiting.
-fn snapshots_first(mut mutations: Vec<DocumentMutation>) -> Vec<DocumentMutation> {
-    mutations.sort_by_key(|mutation| matches!(mutation, DocumentMutation::Incremental(_)));
-    mutations
-}
-
 /// The heads of the saved document `bytes`, when it holds any change: the
 /// host's empty document for a record a member is creating holds none.
 fn heads_of(bytes: &[u8]) -> Option<Vec<ui::automerge::ChangeHash>> {
@@ -303,23 +277,25 @@ fn heads_of(bytes: &[u8]) -> Option<Vec<ui::automerge::ChangeHash>> {
 pub(crate) fn has_record(id: u32, app: &str, record: &str) -> bool {
     replica_of(id).is_some_and(|replica| {
         let joined = replica.borrow();
-        joined.stored.contains(&(app.to_owned(), record.to_owned()))
-            || joined.open_records().any(|(a, r)| a == app && r == record)
-            || storage_key(app, &joined.uuid, record)
-                .ok()
-                .and_then(|key| joined.store.read(&key).ok().flatten())
-                .is_some_and(|stored| heads_of(&stored.bytes).is_some())
+        joined.open_records().any(|(a, r)| a == app && r == record)
+            || joined.peer.engine().holds_record(&joined.uuid, app, record)
     })
 }
 
-/// The workspace's records peer `id` holds, open in a mount or delivered, as
+/// The workspace's records peer `id` holds, open in a mount or in its replica, as
 /// wire `(app, record)`, sorted.
 pub(crate) fn records(id: u32) -> Vec<(String, String)> {
     let Some(joined) = replica_of(id) else {
         return Vec::new();
     };
     let joined = joined.borrow();
-    let mut records = joined.stored.clone();
+    let mut records: BTreeSet<(String, String)> = joined
+        .peer
+        .engine()
+        .records(&joined.uuid)
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
     records.extend(joined.open_records());
     records.into_iter().collect()
 }
@@ -337,7 +313,7 @@ pub(crate) fn changes() -> tilo_session::platform::records::Changes {
 }
 
 /// Wire record `record` of `app` as peer `id` holds it now: the open
-/// record a mount has, else the document the page keeps for it.
+/// record a mount has, else the workspace's replica of it.
 pub(crate) fn record_document(id: u32, app: &str, record: &str) -> Option<AutoCommit> {
     let joined = replica_of(id)?;
     let joined = joined.borrow();
@@ -356,9 +332,12 @@ pub(crate) fn record_document(id: u32, app: &str, record: &str) -> Option<AutoCo
             }
         }
     }
-    let key = storage_key(app, &joined.uuid, record).ok()?;
-    let stored = joined.store.read(&key).ok().flatten()?;
-    AutoCommit::load(&stored.bytes).ok()
+    let bytes = joined
+        .peer
+        .engine()
+        .record(&joined.uuid, app, record)
+        .ok()??;
+    AutoCommit::load(&bytes).ok()
 }
 
 /// The name of the workspace in front on peer `id`'s workspace desktop, once the
@@ -884,16 +863,12 @@ impl Joined {
 
     /// Apply inbound events; returns the mounts to wake.
     ///
-    /// A late join or a reconnect delivers a route's retained checkpoint and
-    /// its whole tail at once. Each merge into an open record copies the
-    /// document, so the mutations of one route are coalesced first (see
-    /// [`tilo_peer_state::document_frame::coalesce`]) and merged once per run instead of once per change.
+    /// A late join or a reconnect lands a record's whole history at once: each record that
+    /// landed is read from the replica and merged once per frame, however many writes it took.
     fn receive(&mut self) -> Vec<Arc<dyn Fn() + Send + Sync>> {
         let mut woken: HashSet<u64> = HashSet::new();
-        let mut batches: Vec<(DocumentRoute, Vec<DocumentMutation>)> = Vec::new();
-        let mut compactions: Vec<(DocumentRoute, [u8; 16])> = Vec::new();
+        let mut landed: BTreeSet<DocumentRoute> = BTreeSet::new();
         let mut refusals: Vec<(DocumentRoute, Vec<[u8; 32]>, String)> = Vec::new();
-        let mut answered: Vec<DocumentRoute> = Vec::new();
         let mut opened: Vec<DocumentRoute> = Vec::new();
         let mut content_arrived = false;
         for event in self.events.drain() {
@@ -911,30 +886,8 @@ impl Joined {
                     // app full tab, untouched) does not stay read-only.
                     woken.extend(self.mounts.keys().copied());
                 }
-                PeerEvent::CompactionRequested { route, request }
-                    if route.cluster_id == self.uuid =>
-                {
-                    compactions.push((route, request));
-                }
-                PeerEvent::Document(document) if document.route.cluster_id == self.uuid => {
-                    let Some(mutation) = document.mutation() else {
-                        self.unapplied.insert(document.route.clone());
-                        warn(&format!(
-                            "{}/{}: not a complete document mutation",
-                            document.route.app_id, document.route.record
-                        ));
-                        continue;
-                    };
-                    match batches
-                        .iter_mut()
-                        .find(|(route, _)| *route == document.route)
-                    {
-                        Some((_, mutations)) => mutations.push(mutation),
-                        None => batches.push((document.route.clone(), vec![mutation])),
-                    }
-                }
-                PeerEvent::DocumentRejected(reason) => {
-                    warn(&format!("dropped a document: {reason}"));
+                PeerEvent::Landed { route, .. } if route.cluster_id == self.uuid => {
+                    landed.insert(route);
                 }
                 PeerEvent::RecordContent {
                     workspace_id,
@@ -943,16 +896,12 @@ impl Joined {
                 } if workspace_id == self.workspace => {
                     content_arrived |= self.content_piece(&frame);
                 }
-                PeerEvent::CommitRefused {
+                PeerEvent::Refused {
                     route,
                     changes,
                     reason,
                 } if route.cluster_id == self.uuid => {
-                    answered.push(route.clone());
                     refusals.push((route, changes, reason));
-                }
-                PeerEvent::Committed { route, .. } if route.cluster_id == self.uuid => {
-                    answered.push(route);
                 }
                 PeerEvent::RecordOpened {
                     workspace_id,
@@ -968,22 +917,33 @@ impl Joined {
         for (route, changes, reason) in refusals {
             self.withdraw(&route, &changes, &reason, &mut woken);
         }
-        for route in answered {
-            self.answered(&route, &mut woken);
+        let settled =
+            std::mem::take(&mut *self.settled.lock().unwrap_or_else(PoisonError::into_inner));
+        for route in settled {
+            self.settle(&route, &mut woken);
         }
         // Records first: a desktop naming a new tab's record finds it.
-        batches.compact_sort_by_key(|(route, _)| route.app_id == DESKTOP_APP);
-        for (route, mutations) in batches {
-            if let Err(error) = self.apply(
-                &route,
-                tilo_peer_state::document_frame::coalesce(mutations),
-                &mut woken,
-            ) {
-                self.unapplied.insert(route.clone());
-                warn(&format!("{}/{}: {error}", route.app_id, route.record));
+        let mut landed: Vec<DocumentRoute> = landed.into_iter().collect();
+        landed.compact_sort_by_key(|route| route.app_id == DESKTOP_APP);
+        for route in landed {
+            match self
+                .peer
+                .engine()
+                .record(&route.cluster_id, &route.app_id, &route.record)
+            {
+                Ok(Some(bytes)) => {
+                    if let Err(error) = self.apply(&route, bytes, &mut woken) {
+                        warn(&format!("{}/{}: {error}", route.app_id, route.record));
+                    }
+                }
+                // Still arriving (its keys, or the checkpoint it builds on): it lands again.
+                Ok(None) => {}
+                Err(error) => warn(&format!("{}/{}: {error}", route.app_id, route.record)),
             }
         }
-        self.after_merging(compactions, opened, &mut woken);
+        for route in opened {
+            self.workspace_answered(&route, &mut woken);
+        }
         self.wakes(woken, content_arrived)
     }
 
@@ -1124,30 +1084,14 @@ impl Joined {
         }
     }
 
-    /// What waits for the documents delivered before it to be merged: the
-    /// host's compaction requests, and the on-demand records it retains
-    /// nothing of ([`PeerEvent::RecordOpened`] with no frames). A record it
-    /// sent frames of arrives as they are applied, which keys a sealed
-    /// record waits for can delay past this.
-    fn after_merging(
-        &mut self,
-        compactions: Vec<(DocumentRoute, [u8; 16])>,
-        opened: Vec<DocumentRoute>,
-        woken: &mut HashSet<u64>,
-    ) {
-        self.compact(compactions);
-        for route in opened {
-            if route.cluster_id == self.uuid {
-                self.workspace_answered(&route, woken);
-            }
-        }
-    }
-
     /// The host retains nothing of `route`, a record this page opened or
     /// asked for: each store holding or wanting it tells what reads it
     /// ([`ui::record::RecordStore::note_workspace_answered`]), and a window
     /// that waited for it is built again, now on a new record.
     fn workspace_answered(&self, route: &DocumentRoute, woken: &mut HashSet<u64>) {
+        if route.cluster_id != self.uuid {
+            return;
+        }
         for (&id, mounted) in &self.mounts {
             let mut answered = false;
             for store in mounted.attachment.stores.borrow().iter() {
@@ -1176,36 +1120,10 @@ impl Joined {
         }
     }
 
-    /// Answer the host's compaction `requests` with this page's snapshot of
-    /// each route, where it can vouch for one.
-    fn compact(&mut self, requests: Vec<(DocumentRoute, [u8; 16])>) {
-        for (route, request) in requests {
-            match self.snapshot_of(&route) {
-                Ok(Some(snapshot)) => {
-                    let _ = self.peer.compact(request, snapshot);
-                }
-                Ok(None) => {}
-                Err(error) => warn(&format!(
-                    "{}/{}: no snapshot to compact: {error}",
-                    route.app_id, route.record
-                )),
-            }
-        }
-    }
-
-    /// The workspace answered one commit of `route` this page published. Once it
-    /// answered all of them, what the record's windows said they did is
-    /// theirs to say: a refused change was withdrawn first, with what was
+    /// The workspace answered every commit of `route` this page published: what the record's
+    /// windows said they did is theirs to say, a refused change withdrawn first, with what was
     /// said of it.
-    fn answered(&mut self, route: &DocumentRoute, woken: &mut HashSet<u64>) {
-        let Some(left) = self.in_flight.get_mut(route) else {
-            return;
-        };
-        *left = left.saturating_sub(1);
-        if *left > 0 {
-            return;
-        }
-        self.in_flight.remove(route);
+    fn settle(&self, route: &DocumentRoute, woken: &mut HashSet<u64>) {
         for (&id, mounted) in &self.mounts {
             for store in mounted.attachment.stores.borrow().iter() {
                 if store.package_and_home().0 != route.app_id {
@@ -1221,76 +1139,22 @@ impl Joined {
         }
     }
 
-    /// The route's document as this page holds it, for a host compaction
-    /// request: an open record's replica, the desktop, or a record's stored
-    /// document. `None` when the page cannot vouch for every change it was
-    /// delivered for the route.
-    fn snapshot_of(&mut self, route: &DocumentRoute) -> Result<Option<Vec<u8>>, String> {
-        if self.unapplied.contains(route) {
-            return Ok(None);
-        }
-        if route.app_id == DESKTOP_APP {
-            return Ok(Some(self.desktop.document_mut().save()));
-        }
-        for mounted in self.mounts.values() {
-            for store in mounted.attachment.stores.borrow().iter() {
-                if store.package_and_home().0 != route.app_id {
-                    continue;
-                }
-                if let Some(checkout) = store.open_records().into_iter().find(|checkout| {
-                    tilo_desktop_surface::host::records::wire_record(&checkout.id) == route.record
-                }) {
-                    return store
-                        .replication_snapshot(&checkout.id)
-                        .map(|(bytes, _)| Some(bytes))
-                        .map_err(|error| error.to_string());
-                }
-            }
-        }
-        let Ok(key) = storage_key(&route.app_id, &self.uuid, &route.record) else {
-            return Ok(None);
-        };
-        Ok(self
-            .store
-            .read(&key)
-            .map_err(|error| error.to_string())?
-            .map(|stored| stored.bytes)
-            .filter(|bytes| !bytes.is_empty()))
-    }
-
+    /// Merge `bytes`, the replica's whole document of `route`, into the open record, the
+    /// desktop, or the record's stored document for whoever opens it.
     fn apply(
         &mut self,
         route: &DocumentRoute,
-        mutations: Vec<DocumentMutation>,
+        bytes: Vec<u8>,
         woken: &mut HashSet<u64>,
     ) -> Result<(), String> {
         if route.app_id == DESKTOP_APP {
-            for mutation in mutations {
-                self.apply_desktop(mutation, woken)?;
-            }
-            return Ok(());
+            return self.apply_desktop(&bytes, woken);
         }
         let app = route.app_id.clone();
         let record = route.record.clone();
-        let key = (app.clone(), record.clone());
         // What reaches the record is news only once the workspace has replayed what it already
         // held: before that it is what the device had.
         self.changes.note(&self.uuid, &app, &record, !self.ready);
-        // What waited for the changes it builds on goes with what arrived:
-        // after it, so a snapshot that may hold those changes comes first.
-        let mutations = snapshots_first(
-            mutations
-                .into_iter()
-                .chain(
-                    self.waiting
-                        .get(&key)
-                        .into_iter()
-                        .flatten()
-                        .cloned()
-                        .map(DocumentMutation::Incremental),
-                )
-                .collect(),
-        );
         let mut merged = false;
         for (&id, mounted) in &mut self.mounts {
             for store in mounted.attachment.stores.borrow().iter() {
@@ -1306,28 +1170,22 @@ impl Joined {
                     .records
                     .entry((app.clone(), record.clone()))
                     .or_default();
-                for mutation in &mutations {
-                    let changed = replica.merge(store, &checkout, mutation.clone())?;
-                    if changed {
-                        woken.insert(id);
-                    }
+                if replica.merge(store, &checkout, DocumentMutation::Snapshot(bytes.clone()))? {
+                    woken.insert(id);
                 }
                 merged = true;
             }
         }
         if merged {
-            // An open record keeps what still waits in its own document,
-            // which applies it once the changes it builds on arrive.
-            self.waiting.remove(&key);
             return Ok(());
         }
         // The host takes up a record a member created with an empty
         // document of its own before the member's content arrives: no
         // record yet, which a page opening it would refuse.
-        let Some(heads) = self.store_unopened(&app, &record, mutations)? else {
+        let Some(heads) = self.store_unopened(&app, &record, bytes)? else {
             return Ok(());
         };
-        self.delivered.insert((app.clone(), record.clone()), heads);
+        self.delivered.insert((app.clone(), record), heads);
         // A window of the app that follows what its store keeps (a chain's
         // newer head) takes it up at its next frame.
         for mounted in self.mounts.values() {
@@ -1337,7 +1195,6 @@ impl Joined {
                 }
             }
         }
-        self.stored.insert((app, record));
         // Every mount looks again: a desktop builds the windows that waited
         // for it, and a page showing one app builds the app whose record it
         // waited for.
@@ -1350,16 +1207,15 @@ impl Joined {
         Ok(())
     }
 
-    /// Merge into the record's stored document for whoever opens it next,
-    /// and answer its heads once it holds any change. A snapshot into an empty
-    /// store is kept as it came: opening the record loads and checks it once,
-    /// instead of loading, merging and saving it here first. A document with
-    /// no change in it is no record yet and is not kept.
+    /// Merge the replica's document `bytes` into the record's stored document for whoever
+    /// opens it next, and answer its heads once it holds any change. Into an empty store it
+    /// is kept as it came: opening the record loads and checks it once. A document with no
+    /// change in it is no record yet and is not kept.
     fn store_unopened(
         &mut self,
         app: &str,
         record: &str,
-        mutations: Vec<DocumentMutation>,
+        bytes: Vec<u8>,
     ) -> Result<Option<Vec<ui::automerge::ChangeHash>>, String> {
         let key = storage_key(app, &self.uuid, record)?;
         let stored = self.store.read(&key).map_err(|error| error.to_string())?;
@@ -1367,82 +1223,32 @@ impl Joined {
         let stored = stored
             .map(|stored| stored.bytes)
             .filter(|bytes| !bytes.is_empty());
-        let mut mutations = mutations.into_iter().peekable();
-        let fresh =
-            stored.is_none() && matches!(mutations.peek(), Some(DocumentMutation::Snapshot(_)));
-        let bytes = match (stored, mutations.peek()) {
-            (None, Some(DocumentMutation::Snapshot(_))) => {
-                let Some(DocumentMutation::Snapshot(snapshot)) = mutations.next() else {
-                    return Ok(None);
-                };
-                if mutations.peek().is_none() {
-                    let Some(heads) = heads_of(&snapshot) else {
-                        return Ok(None);
-                    };
-                    return self
-                        .store
-                        .write(&key, WriteOp::Replace(snapshot), writer.as_deref())
-                        .map(|_| Some(heads))
-                        .map_err(|error| error.to_string());
-                }
-                snapshot
-            }
-            (stored, _) => stored.unwrap_or_default(),
+        let Some(stored) = stored else {
+            let Some(heads) = heads_of(&bytes) else {
+                return Ok(None);
+            };
+            return self
+                .store
+                .write(&key, WriteOp::Replace(bytes), writer.as_deref())
+                .map(|_| Some(heads))
+                .map_err(|error| error.to_string());
         };
-        let mut doc = if bytes.is_empty() {
-            AutoCommit::new()
-        } else {
-            AutoCommit::load(&bytes).map_err(|error| error.to_string())?
-        };
+        let mut doc = AutoCommit::load(&stored).map_err(|error| error.to_string())?;
+        let incoming = AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
         let before = doc.get_heads();
-        let mut runs = Vec::new();
-        for mutation in mutations {
-            match mutation {
-                DocumentMutation::Snapshot(bytes) => {
-                    let mut incoming =
-                        AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-                    // Merge the side with fewer unshared changes into the
-                    // other, as `RecordStore::merge_replica` does.
-                    let shared: Vec<_> = incoming
-                        .get_heads()
-                        .into_iter()
-                        .filter(|head| doc.get_change_by_hash(head).is_some())
-                        .collect();
-                    if !doc.get_missing_deps(&[]).is_empty() {
-                        // What waits in the stored document for the changes
-                        // it builds on stays only if the snapshot comes to
-                        // it, not it to the snapshot.
-                        doc.load_incoming(&incoming.save_after(&[]))
-                            .map_err(|error| error.to_string())?;
-                    } else if shared.len() < incoming.get_heads().len() {
-                        incoming
-                            .load_incoming(&doc.save_after(&shared))
-                            .map_err(|error| error.to_string())?;
-                        doc = incoming;
-                    }
-                }
-                DocumentMutation::Incremental(bytes) => {
-                    doc.load_incoming(&bytes)
-                        .map_err(|error| error.to_string())?;
-                    runs.push(bytes);
-                }
-            }
-        }
-        // Changes whose dependencies have not arrived wait for the next
-        // delivery, or for the mount that opens the record: a document that
-        // holds nothing else is not stored, and a document merged into a
-        // snapshot brings only the changes it applied.
-        let waiting = (app.to_owned(), record.to_owned());
-        if doc.get_missing_deps(&[]).is_empty() {
-            self.waiting.remove(&waiting);
-        } else {
-            self.waiting.insert(waiting, runs);
-        }
+        let shared: Vec<_> = before
+            .iter()
+            .copied()
+            .filter(|head| incoming.get_change_by_hash(head).is_some())
+            .collect();
+        let mut incoming = incoming;
+        doc.load_incoming(&incoming.save_after(&shared))
+            .map_err(|error| error.to_string())?;
         let heads = doc.get_heads();
         if heads.is_empty() {
             return Ok(None);
         }
-        if heads == before && !fresh {
+        if heads == before {
             return Ok(Some(heads));
         }
         self.store
@@ -1451,16 +1257,10 @@ impl Joined {
             .map_err(|error| error.to_string())
     }
 
-    fn apply_desktop(
-        &mut self,
-        mutation: DocumentMutation,
-        woken: &mut HashSet<u64>,
-    ) -> Result<(), String> {
-        match mutation {
-            DocumentMutation::Snapshot(bytes) => self.desktop.merge_snapshot(&bytes),
-            DocumentMutation::Incremental(bytes) => self.desktop.load_incremental(&bytes).map(drop),
-        }
-        .map_err(|error| error.to_string())?;
+    fn apply_desktop(&mut self, bytes: &[u8], woken: &mut HashSet<u64>) -> Result<(), String> {
+        self.desktop
+            .merge_snapshot(bytes)
+            .map_err(|error| error.to_string())?;
         let Some(value) = desktop_value(self.desktop.document()) else {
             return Ok(());
         };
@@ -1562,13 +1362,29 @@ impl Joined {
             // A first snapshot carries what was there already; an
             // increment is what this page changed.
             let authored = matches!(mutation, DocumentMutation::Incremental(_));
-            // The workspace answers each frame the publication is split into.
-            let commits = mutation.encode_frames().map_or(1, |frames| frames.len());
             if self.peer.publish(route.clone(), &mutation).is_err() {
                 return;
             }
-            let left = self.in_flight.entry(route).or_default();
-            *left = left.saturating_add(commits);
+            // Once the workspace answered it (and all before it), the record's windows say
+            // what they did.
+            let settled = Arc::clone(&self.settled);
+            let notify: Vec<_> = self
+                .mounts
+                .values()
+                .map(|mounted| Arc::clone(&mounted.attachment.notify))
+                .collect();
+            let answered = self.peer.barrier_then(Box::new(move |_| {
+                settled
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(route);
+                for notify in notify {
+                    notify();
+                }
+            }));
+            if answered.is_err() {
+                return;
+            }
             if authored {
                 self.authored = self.authored.saturating_add(1);
             }
