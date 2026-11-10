@@ -1797,7 +1797,27 @@ impl AppCheck<'_> {
         let theme = layout.theme();
         self.text.set_text_scale(theme.text_scale);
         self.text.apply_typography(&theme.tokens.typography);
+        self.require_built(staged, label)?;
+        self.ran = self.ran.saturating_add(1);
         let viewport = (layout.size.width, layout.size.height);
+        let inspection = staged.harness().inspection();
+        // The bar the desktop draws over the frame: the app's own slots merged with the window's
+        // navigation, its one "…" and its controls.
+        let bar = staged
+            .harness_mut()
+            .window_bar_layout(f64::from(viewport.0));
+        if self.dump == Some(viewport) {
+            self.dump_frame(staged, layout, label, &bar, &inspection)?;
+        }
+        let problems = self.problems(staged, layout, &inspection, &bar);
+        self.gather_all(problems, layout, label);
+        self.work.add(staged.take_work());
+        Ok(())
+    }
+
+    /// Refuse a window the app left broken: one that refused what the app sent, or whose
+    /// components did not build.
+    fn require_built(&self, staged: &mut stage::Staged, label: &str) -> Result<(), String> {
         if let Some(why) = staged.failed() {
             return Err(format!(
                 "{}: {label}: the window refused what the app sent: {why}",
@@ -1812,16 +1832,19 @@ impl AppCheck<'_> {
                 broken.join("\n  ")
             ));
         }
-        self.ran = self.ran.saturating_add(1);
-        let inspection = staged.harness().inspection();
-        // The bar the desktop draws over the frame: the app's own slots merged with the window's
-        // navigation, its one "…" and its controls.
-        let bar = staged
-            .harness_mut()
-            .window_bar_layout(f64::from(viewport.0));
-        if self.dump == Some(viewport) {
-            self.dump_frame(staged, layout, label, &bar, &inspection)?;
-        }
+        Ok(())
+    }
+
+    /// What is wrong with the window: its frame's, its views' and its bar's, each read off where
+    /// the window shows it.
+    fn problems(
+        &mut self,
+        staged: &mut stage::Staged,
+        layout: Layout,
+        inspection: &ui::headless::InspectionSnapshot,
+        bar: &ui::window_toolbar::BarLayout,
+    ) -> Vec<audit::Problem> {
+        let viewport = (layout.size.width, layout.size.height);
         self.note_shown(&inspection.root);
         // A view that ran but drew nothing has no widget; what the app sent still names it. What
         // it declared its controls do is read off the same trees.
@@ -1856,7 +1879,7 @@ impl AppCheck<'_> {
             ui::chrome::disclosure_gutter(&layout.theme()),
         ));
         problems.extend(mixed_language());
-        problems.extend(audit::bar(&bar));
+        problems.extend(audit::bar(bar));
         let (bar_height, _) = staged.harness().frame_extent(viewport);
         // The words the bar paints itself stand over the frame's own, which is laid out under
         // the bar: both are read where the window shows them.
@@ -1873,9 +1896,9 @@ impl AppCheck<'_> {
         ));
         problems.extend(audit::bar_primary(
             ui::window_toolbar::shown().as_ref(),
-            &bar,
+            bar,
         ));
-        for mut problem in problems {
+        for problem in &mut problems {
             // A list draws a row as one widget keyed by the row: what it is about is the row
             // view's node, the deepest the row's tree holds.
             if let Some(row) = problem.id.as_ref().and_then(|id| rows.get(id)) {
@@ -1886,10 +1909,15 @@ impl AppCheck<'_> {
                 problem.keys = inner;
                 problem.id = None;
             }
+        }
+        problems
+    }
+
+    /// Gather each problem as `label` staged it.
+    fn gather_all(&mut self, problems: Vec<audit::Problem>, layout: Layout, label: &str) {
+        for problem in problems {
             self.gather(&problem, layout, label);
         }
-        self.work.add(staged.take_work());
-        Ok(())
     }
 
     /// Write the window as `label` leaves it at `layout` to `dir`, light and dark, and lay it
