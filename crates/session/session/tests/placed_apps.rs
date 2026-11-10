@@ -223,6 +223,144 @@ fn a_placed_tasks_root_draws_its_tasks_titles() {
     );
 }
 
+/// A session with the notes app placed on the canvas, its own root drawing from the record the
+/// session serves: the apps a development session seeds, the notes root standing as a place, and
+/// the frames the place's views read their readings through run to a note's title on screen.
+fn placed_notes() -> (tilo_test_env::TestHome, Session) {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().expect("a home");
+    let store = home.data().join("tilo-apps");
+    common::install_apps_in(&store, &home.state().join("tilolang"));
+    home.env().set("TILO_APPS_DATA_DIR", &store);
+    let handed = home.home().join("handed");
+    let launcher = launcher_recording(&home, &handed);
+    let apps = apps_at(&home, launcher.path().to_owned());
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            person: PERSON.to_owned(),
+            shell: true,
+            collab: false,
+            services: vec![Box::new(common::seeded_apps_in(&store))],
+            apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
+            launch: Some(Rc::clone(&apps)),
+            ..Options::default()
+        },
+        &[tilo_compositor::OutputConfig::new(
+            "HEADLESS-1",
+            common::WIDTH,
+            common::HEIGHT,
+        )],
+    )
+    .expect("a session");
+    common::show_preset(&mut session, "Frames");
+    common::until(&mut session, "the seeded notes", |session| {
+        session
+            .resources()
+            .iter()
+            .flat_map(|resource| resource.children.iter())
+            .any(|resource| resource.label == common::TITLES[0])
+    });
+    apps.open(&tilo_app_launch::Launch::Package {
+        app: NOTES.to_owned(),
+        open: None,
+    })
+    .expect("the app is opened");
+    common::until(&mut session, "the app's root on the canvas", |session| {
+        common::places(session)
+            .iter()
+            .any(|place| place.shows == NOTES)
+    });
+    common::until(&mut session, "a note's title in the place", |session| {
+        session.shell_drawn_text_bounds(common::TITLES[0]).is_some()
+    });
+    (home, session)
+}
+
+/// A placed Notes root draws its notebook's name and each note's title, not the id a note falls
+/// back to when its title field reads empty and not "Note", the type's name, when the note's
+/// type reads as a type nobody named.
+#[test]
+fn a_placed_notes_root_draws_its_notes_titles_and_its_notebooks_name() {
+    let (_home, session) = placed_notes();
+    let notebook = notebook_title(&session);
+    assert_eq!(
+        notebook, "Notes",
+        "the notebook stands under its app's name, not its type's id"
+    );
+    // The list's title over the rows reads "All notes": the type's noun, from the notes app's
+    // catalogue, not the type's id.
+    let drawn = session.accessible_labels();
+    assert!(
+        drawn.iter().any(|said| said == "All notes"),
+        "the place's list is named by the type's noun: {drawn:?}"
+    );
+    assert!(
+        !drawn.iter().any(|said| said.contains("Mavvhka7")),
+        "no part of the place shows the type's id: {drawn:?}"
+    );
+    assert!(
+        !drawn.iter().any(|said| said.trim() == "Note"),
+        "no row of the place shows the type's name for a note that has a title: {drawn:?}"
+    );
+}
+
+/// The title the placed notebook stands under: its sidebar's heading, as the place draws it.
+fn notebook_title(session: &Session) -> String {
+    session
+        .accessible_labels()
+        .into_iter()
+        .find(|said| said.contains("Mavvhka7") || said.contains("Notes"))
+        .unwrap_or_default()
+}
+
+/// A retitle through the session changes the title the place draws: the notes app's own
+/// `retitle` on the note's published resource moves the reading the place composes, and the
+/// row's title is read from it again. Nothing of the place writes the note's field itself.
+///
+/// It is the turn an agent's `invoke` runs and a window's field edit asks for, so the rename a
+/// person (or their agent) makes is the one the place draws.
+#[test]
+fn a_retitle_through_the_session_changes_the_drawn_title() {
+    let (_home, mut session) = placed_notes();
+    let note = common::wait_for(&mut session, "the seeded note", |session| {
+        session
+            .resources()
+            .iter()
+            .flat_map(|resource| resource.children.iter())
+            .find(|resource| resource.label == common::TITLES[0])
+            .map(|resource| resource.id.as_str().to_owned())
+    });
+    // The note's own `retitle`, as the notes app declares it, invoked on its published resource:
+    // the same action an agent's `invoke` runs and a window's field edit asks for.
+    session
+        .invoke(
+            &note,
+            "zvgl2tzt",
+            serde_json::json!({ "title": "A week of shopping" })
+                .as_object()
+                .expect("an object of arguments"),
+        )
+        .expect("the note retitles");
+    // The note stands published under the title it was given: the value an agent's `invoke`
+    // writes and a window's field edit asks for, and the reading the place draws its row from.
+    let named = common::wait_for(&mut session, "the retitled note", |session| {
+        session
+            .resources()
+            .iter()
+            .flat_map(|resource| resource.children.iter())
+            .find(|resource| resource.id.as_str() == note)
+            .map(|resource| resource.label.clone())
+    });
+    assert_eq!(named, "A week of shopping", "the retitle took");
+    // The place draws the note under the title it now has, and its window is named for it too.
+    common::until(&mut session, "the retitled note in the place", |session| {
+        session
+            .shell_drawn_text_bounds("A week of shopping")
+            .is_some()
+    });
+}
+
 /// An app no service runs launches as every app did: the launcher is handed it, and no place
 /// stands for it. What proves this test is real is the launcher line a window process leaves.
 #[test]
