@@ -25,7 +25,7 @@
 
 use crate::grant_key::GrantKey;
 use serde_json::{Map, Value, json};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tilo_browser_peer::{
@@ -141,7 +141,7 @@ impl Relay {
             relay: self.host.clone(),
             host: self.name.clone(),
             lobby: tokio::sync::Mutex::new(None),
-            joined: Mutex::default(),
+            entered: Mutex::default(),
         })
     }
 
@@ -219,9 +219,13 @@ impl Relay {
             .collect())
     }
 
-    /// Make the person's workspace called `name` as `connection`, and enter
-    /// it. A person has any number of workspaces of their own, sharing what
-    /// the host keeps for them.
+    /// Make the person's workspace called `name` as `connection`. A person
+    /// has any number of workspaces of their own, sharing what the host
+    /// keeps for them.
+    ///
+    /// The grant enters it only once a run acts there ([`Relay::enter`]): a
+    /// backend that makes a workspace per customer keeps hundreds, and its
+    /// session with the relay subscribes only to those it works in.
     ///
     /// # Errors
     /// The relay was not reached or refused.
@@ -237,9 +241,7 @@ impl Relay {
         let mut arguments = Map::new();
         arguments.insert("name".into(), json!(name));
         arguments.insert("room".into(), json!(fresh));
-        let (workspace, invitation) = self.own(connection, arguments).await?;
-        connection.redeem(&invitation).await?;
-        connection.join(&workspace.id).await?;
+        let (workspace, _invitation) = self.own(connection, arguments).await?;
         Ok(workspace)
     }
 
@@ -259,9 +261,38 @@ impl Relay {
         if !connection.key.scope().reaches(workspace) {
             return Err(RelayError::NotFound);
         }
-        if let Some(id) = connection.entered(workspace) {
-            return Ok(id);
+        // Every run of the grant shares its session, so runs entering the
+        // same workspace at once enter it once, and a failed entry is tried
+        // again by the next.
+        let entering = Arc::clone(
+            lock(&connection.entered)
+                .entry(workspace.to_owned())
+                .or_default(),
+        );
+        let entered = entering
+            .get_or_try_init(|| self.admit(connection, parent, workspace))
+            .await
+            .copied();
+        if entered.is_err() {
+            let mut all = lock(&connection.entered);
+            if all
+                .get(workspace)
+                .is_some_and(|known| Arc::ptr_eq(known, &entering) && !known.initialized())
+            {
+                all.remove(workspace);
+            }
         }
+        entered
+    }
+
+    /// Ask for `connection`'s invitation into `workspace`, redeem it and
+    /// join.
+    async fn admit(
+        &self,
+        connection: &Connection,
+        parent: Option<&Connection>,
+        workspace: &str,
+    ) -> Result<u64, RelayError> {
         let asking = match connection.key.scope() {
             AgentScope::AllWorkspaces => connection,
             AgentScope::Workspace(_) => parent.ok_or_else(|| {
@@ -285,7 +316,8 @@ impl Relay {
     }
 }
 
-/// A grant's session with the relay.
+/// A grant's session with the relay. The relay keeps one session per key,
+/// so every run of the grant shares this one.
 pub struct Connection {
     pub peer: PeerHandle,
     pub host_cert: DeviceCert,
@@ -293,8 +325,9 @@ pub struct Connection {
     relay: Origin,
     host: String,
     lobby: tokio::sync::Mutex<Option<u64>>,
-    /// The workspaces it entered, by id.
-    joined: Mutex<HashSet<String>>,
+    /// The workspaces it entered or is entering, by id: each joined once,
+    /// and left with the session.
+    entered: Mutex<HashMap<String, Arc<tokio::sync::OnceCell<u64>>>>,
 }
 
 impl Drop for Connection {
@@ -312,15 +345,14 @@ impl Connection {
         }
     }
 
-    fn entered(&self, workspace: &str) -> Option<u64> {
-        let joined = self
-            .joined
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        joined
-            .contains(workspace)
-            .then(|| tilo_relay_protocol::room_workspace_id(workspace).ok())
-            .flatten()
+    /// Whether the session still serves: not closed, and not refused by
+    /// the relay for good.
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        !matches!(
+            self.peer.status().phase,
+            tilo_browser_peer::TransportPhase::Closed | tilo_browser_peer::TransportPhase::Failed
+        )
     }
 
     async fn redeem(&self, invitation: &[u8]) -> Result<(), RelayError> {
@@ -349,10 +381,6 @@ impl Connection {
                 "the workspace did not admit this key".to_owned(),
             ));
         }
-        self.joined
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(workspace.to_owned());
         Ok(id)
     }
 
@@ -404,4 +432,10 @@ impl Connection {
             ),
         }
     }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }

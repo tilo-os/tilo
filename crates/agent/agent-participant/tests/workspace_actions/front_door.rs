@@ -245,12 +245,18 @@ async fn upload(mcp: &Mcp<'_>, workspace: &str, body: &[u8]) -> (u16, Value) {
     .await
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one key's story through the door, from its approval to its revocation"
-)]
-async fn a_key_works_through_the_door_on_the_relay_and_ends_when_revoked() {
+/// The relay as its operator runs it, the site whose home workspace lets
+/// anyone in through its door, and the front door before both.
+struct OnRelay {
+    door: Arc<Door>,
+    /// The site's home workspace.
+    lobby: String,
+    _site: test_http::Responder,
+    _hosted: Hosted,
+    _state: tempfile::TempDir,
+}
+
+async fn door_on_relay() -> OnRelay {
     // The relay, as its operator runs it.
     let (operator, _) = tilo_user_identity::UserIdentity::generate("Relay operator", 1);
     let host = enrol(
@@ -309,6 +315,24 @@ async fn a_key_works_through_the_door_on_the_relay_and_ends_when_revoked() {
     )
     .unwrap();
 
+    OnRelay {
+        door,
+        lobby,
+        _site: site,
+        _hosted: hosted,
+        _state: state,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one key's story through the door, from its approval to its revocation"
+)]
+async fn a_key_works_through_the_door_on_the_relay_and_ends_when_revoked() {
+    let on_relay = door_on_relay().await;
+    let door = Arc::clone(&on_relay.door);
+    let lobby = on_relay.lobby.clone();
     // A person who never met the operator approves a key for their backend.
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
@@ -518,5 +542,171 @@ async fn a_key_works_through_the_door_on_the_relay_and_ends_when_revoked() {
     let (status, _) = minted_again.initialize().await;
     assert_eq!(status, 401, "the key it minted ended with it");
     assert_eq!(door.session_count(), 0);
-    drop(site);
+}
+
+/// Workspaces a backend makes for its customers with one key, here.
+const CUSTOMERS: usize = 200;
+
+/// Of those, the ones it works in at once.
+const AT_ONCE: usize = 20;
+
+/// The `quantile` of `durations`.
+fn quantile(durations: &[Duration], quantile: f64) -> Duration {
+    let mut sorted = durations.to_vec();
+    sorted.sort();
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "an index into a short list"
+    )]
+    let index = ((sorted.len() as f64 - 1.0) * quantile).round() as usize;
+    sorted[index]
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_key_makes_and_works_in_hundreds_of_workspaces_at_once() {
+    let on_relay = door_on_relay().await;
+    let door = Arc::clone(&on_relay.door);
+    // A startup's backend, whose person is not the relay's operator, makes a
+    // workspace per customer with its one key.
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    let key = approved_key(&door, &ada, &page, "Customer backend").await;
+    let mut account = Mcp {
+        door: &door,
+        path: "/mcp".into(),
+        token: key.clone(),
+        session: None,
+    };
+    let (status, init) = account.initialize().await;
+    assert_eq!(status, 200, "{init}");
+
+    let mut made = Vec::with_capacity(CUSTOMERS);
+    let mut creating = Vec::with_capacity(CUSTOMERS);
+    for customer in 0..CUSTOMERS {
+        let began = Instant::now();
+        let created = account
+            .did(
+                "account/workspaces#create",
+                json!({"name": format!("Customer {customer}")}),
+            )
+            .await;
+        creating.push(began.elapsed());
+        made.push(
+            created["workspace"]["id"]
+                .as_str()
+                .unwrap_or_else(|| panic!("a workspace is made: {created}"))
+                .to_owned(),
+        );
+    }
+    let began = Instant::now();
+    let listed = account.did("account/workspaces#list", json!({})).await;
+    let listing = began.elapsed();
+    let ids: std::collections::HashSet<&str> = listed["workspaces"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| row["id"].as_str())
+        .collect();
+    assert_eq!(ids.len(), CUSTOMERS, "every workspace is listed");
+    assert!(made.iter().all(|id| ids.contains(id.as_str())));
+    let (create_p50, create_p95) = (quantile(&creating, 0.5), quantile(&creating, 0.95));
+    eprintln!(
+        "{CUSTOMERS} workspaces: create p50 {create_p50:?}, p95 {create_p95:?}, max {:?}; list {listing:?}",
+        quantile(&creating, 1.0)
+    );
+    assert!(
+        create_p95 < Duration::from_millis(500),
+        "making a workspace stays fast: p95 {create_p95:?}"
+    );
+    assert!(
+        listing < Duration::from_millis(500),
+        "listing them stays fast: {listing:?}"
+    );
+
+    // It works in some of them at once, each a session of the same key, and
+    // puts a file into one without naming a session while they are open:
+    // none cuts another off.
+    let began = Instant::now();
+    let mut working = tokio::task::JoinSet::new();
+    for workspace in made.iter().take(AT_ONCE).cloned() {
+        let door = Arc::clone(&door);
+        let token = key.clone();
+        working.spawn(async move {
+            let mut session = Mcp {
+                door: &door,
+                path: format!("/w/{workspace}/mcp"),
+                token,
+                session: None,
+            };
+            let (status, init) = session.initialize().await;
+            assert_eq!(status, 200, "{workspace}: {init}");
+            // A workspace entered for the first time starts its app workers
+            // on the relay; with many starting at once its first catalogue
+            // may outlast the runtime's wait, which a session asks again.
+            // Being cut off would not pass on a second ask.
+            let mut slow = 0;
+            loop {
+                let (status, listed) = session
+                    .post(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                                 "params": {"name": "tilo_ls", "arguments": {}}}))
+                    .await;
+                assert_eq!(status, 200, "{workspace}: {listed}");
+                if listed["result"]["isError"] == false {
+                    break;
+                }
+                assert!(
+                    slow < 3 && listed.to_string().contains("did not answer within"),
+                    "{workspace}: {listed}"
+                );
+                slow += 1;
+            }
+            (workspace, session.session, slow)
+        });
+    }
+    let uploader = Mcp {
+        door: &door,
+        path: String::new(),
+        token: key.clone(),
+        session: None,
+    };
+    let (status, put) = upload(&uploader, &made[0], &application_pdf()).await;
+    assert_eq!(
+        status, 201,
+        "a file goes in beside the open sessions: {put}"
+    );
+    let mut open = Vec::with_capacity(AT_ONCE);
+    let mut asked_again = 0;
+    while let Some(worked) = working.join_next().await {
+        let (workspace, id, slow) = worked.expect("a session worked");
+        asked_again += slow;
+        open.push((workspace, id));
+    }
+    eprintln!(
+        "{AT_ONCE} sessions opened and answered at once in {:?} ({asked_again} first catalogues asked again)",
+        began.elapsed()
+    );
+
+    // Every one of them, and the account's own, still answers.
+    for (workspace, id) in open {
+        let mut session = Mcp {
+            door: &door,
+            path: format!("/w/{workspace}/mcp"),
+            token: key.clone(),
+            session: id,
+        };
+        let (status, listed) = session
+            .post(json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                         "params": {"name": "tilo_ls", "arguments": {}}}))
+            .await;
+        assert_eq!(status, 200, "{workspace} still answers: {listed}");
+        assert_eq!(listed["result"]["isError"], false, "{workspace}: {listed}");
+    }
+    let listed = account.did("account/workspaces#list", json!({})).await;
+    assert_eq!(
+        listed["workspaces"].as_array().map(Vec::len),
+        Some(CUSTOMERS),
+        "the account's own session still answers"
+    );
 }

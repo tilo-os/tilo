@@ -639,6 +639,9 @@ struct Shared {
     status: PeerStatus,
     queues: Vec<std::sync::Weak<Mutex<VecDeque<PeerEvent>>>>,
     wakes: Vec<Wake>,
+    /// Wakes that last as long as their consumer's event queue
+    /// ([`PeerHandle::on_event`]), dropped with it.
+    listeners: Vec<(std::sync::Weak<Mutex<VecDeque<PeerEvent>>>, Wake)>,
     /// The current session's bearer token for its host's fetch proxy
     /// (`tilo_net::proxy`, at `/peer/v1/fetch`); kept apart from
     /// [`PeerStatus`], which diagnostics show.
@@ -667,6 +670,18 @@ impl PeerEvents {
     }
 }
 
+impl Shared {
+    /// Everyone to wake, forgetting the listeners whose queue is gone.
+    fn wakes_now(&mut self) -> Vec<Wake> {
+        self.listeners.retain(|(queue, _)| queue.strong_count() > 0);
+        self.wakes
+            .iter()
+            .cloned()
+            .chain(self.listeners.iter().map(|(_, wake)| Arc::clone(wake)))
+            .collect()
+    }
+}
+
 fn lock(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
     shared.lock_recover()
 }
@@ -678,7 +693,7 @@ fn change_status(shared: &Mutex<Shared>, change: impl FnOnce(&mut PeerStatus)) {
         let mut shared = lock(shared);
         change(&mut shared.status);
         shared.status.generation = shared.status.generation.wrapping_add(1);
-        shared.wakes.clone()
+        shared.wakes_now()
     };
     for wake in &wakes {
         wake();
@@ -747,6 +762,7 @@ impl PeerHandle {
             },
             queues: Vec::new(),
             wakes: Vec::new(),
+            listeners: Vec::new(),
             fetch_proxy: None,
             live_note: None,
         }));
@@ -1217,6 +1233,15 @@ impl PeerHandle {
     pub fn on_change(&self, wake: Arc<dyn Fn() + Send + Sync>) {
         lock(&self.shared).wakes.push(wake);
     }
+
+    /// Call `wake` whenever status or events change, for as long as
+    /// `events` is read: a consumer that comes and goes leaves no wake
+    /// behind.
+    pub fn on_event(&self, events: &PeerEvents, wake: Arc<dyn Fn() + Send + Sync>) {
+        lock(&self.shared)
+            .listeners
+            .push((Arc::downgrade(&events.0), wake));
+    }
 }
 
 enum Exit {
@@ -1517,7 +1542,7 @@ impl Task {
                 queue.lock_recover().push_back(event.clone());
                 true
             });
-            shared.wakes.clone()
+            shared.wakes_now()
         };
         for wake in &wakes {
             wake();
@@ -3760,25 +3785,36 @@ mod tests {
 }
 
 /// This session as what asking another device's actions needs ([`Heard`]): the frames it carries
-/// to a device's key, and what it heard back. A handle is the session, so what holds one hands it
-/// over as it hands over itself.
+/// to a device's key, and what it heard back, on a queue of its own, so any number of askers on
+/// one session each hear every answer.
 impl From<&PeerHandle> for Arc<dyn tilo_session_core::remote::RemoteSession> {
     fn from(peer: &PeerHandle) -> Self {
-        Arc::new(peer.clone())
+        Arc::new(Asking {
+            peer: peer.clone(),
+            events: peer.events(),
+        })
     }
 }
-impl tilo_session_core::remote::RemoteSession for PeerHandle {
+
+/// One asker of another device's actions over a session.
+struct Asking {
+    peer: PeerHandle,
+    events: PeerEvents,
+}
+
+impl tilo_session_core::remote::RemoteSession for Asking {
     fn send_remote_action(
         &self,
         workspace_id: u64,
         device: [u8; 32],
         frame: Vec<u8>,
     ) -> Result<(), String> {
-        Self::send_remote_action(self, workspace_id, device, frame)
+        self.peer.send_remote_action(workspace_id, device, frame)
     }
 
     fn take_heard(&self) -> Vec<Heard> {
-        self.drain()
+        self.events
+            .drain()
             .into_iter()
             .filter_map(|event| match event {
                 PeerEvent::RemoteAction {
@@ -3805,7 +3841,7 @@ impl tilo_session_core::remote::RemoteSession for PeerHandle {
     }
 
     fn on_change(&self, wake: Arc<dyn Fn() + Send + Sync>) {
-        Self::on_change(self, wake);
+        self.peer.on_event(&self.events, wake);
     }
 }
 

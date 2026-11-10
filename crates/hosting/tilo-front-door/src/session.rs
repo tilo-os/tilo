@@ -144,8 +144,8 @@ impl Session {
         scope: Scope,
         label: String,
         relay: Arc<Relay>,
-        connection: Connection,
-        parent: Option<Connection>,
+        connection: Arc<Connection>,
+        parent: Option<Arc<Connection>>,
         door: std::sync::Weak<crate::Door>,
     ) -> Self {
         Self {
@@ -157,8 +157,8 @@ impl Session {
                 .id()
                 .to_owned(),
             relay,
-            connection: Arc::new(connection),
-            parent: parent.map(Arc::new),
+            connection,
+            parent,
             door,
             served: tokio::sync::Mutex::default(),
             tools: Mutex::default(),
@@ -450,14 +450,11 @@ impl Session {
         Ok(message.get("result").cloned().unwrap_or_default())
     }
 
-    /// End the run: the agent leaves every workspace and the grant's session
-    /// with the relay closes.
+    /// End the run: the agent leaves every workspace. The grant's session
+    /// with the relay, which its other runs share, ends with the last of
+    /// them, or when the grant is revoked.
     pub(crate) async fn close(&self) {
         self.served.lock().await.clear();
-        self.connection.peer.close();
-        if let Some(parent) = &self.parent {
-            parent.peer.close();
-        }
     }
 }
 

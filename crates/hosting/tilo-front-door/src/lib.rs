@@ -46,14 +46,14 @@ use hyper::{
     body::{Bytes, Incoming},
     header::{self, HeaderValue},
 };
-use relay::Relay;
+use relay::{Connection, Relay};
 use serde_json::{Value, json};
 use session::{SESSION_HEADER, Session};
 use std::{
     collections::HashMap,
     fmt::Write as _,
     io,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
     time::{Duration, Instant},
 };
 use store::Store;
@@ -145,6 +145,11 @@ pub struct Door {
     browsers: sign_in::Browsers,
     pending: Mutex<HashMap<String, Pending>>,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
+    /// Each grant's session with the relay, by grant id, which all its runs,
+    /// uploads and account calls share: the relay keeps one session per key,
+    /// so a second would cut the first off. It ends with the last run that
+    /// holds it, or when the grant is revoked.
+    connections: Mutex<HashMap<String, Arc<tokio::sync::Mutex<Weak<Connection>>>>>,
     /// Per signed-in browser, the token its grants page forms carry.
     page_tokens: Mutex<HashMap<String, String>>,
     /// The keys approved for a poller, by the poll secret's digest.
@@ -178,6 +183,7 @@ impl Door {
             browsers: sign_in::Browsers::default(),
             pending: Mutex::default(),
             sessions: Mutex::default(),
+            connections: Mutex::default(),
             page_tokens: Mutex::default(),
             approved_keys: Mutex::default(),
         }))
@@ -723,6 +729,12 @@ impl Door {
         for session in ended {
             session.close().await;
         }
+        let shared = lock(&self.connections).remove(grant);
+        if let Some(shared) = shared
+            && let Some(connection) = shared.lock().await.upgrade()
+        {
+            connection.peer.close();
+        }
     }
 
     /// The MCP endpoint, at the door's root or pinned to `/w/<workspace>`.
@@ -742,7 +754,7 @@ impl Door {
             return self.insufficient(pinned);
         }
         match *method {
-            Method::POST => self.post(grant, headers, body).await,
+            Method::POST => self.post(grant, pinned, headers, body).await,
             Method::DELETE => match session_id(headers) {
                 Some(id) => {
                     let removed = {
@@ -822,6 +834,7 @@ impl Door {
     async fn post(
         self: &Arc<Self>,
         grant: store::Grant,
+        pinned: Option<&str>,
         headers: &hyper::HeaderMap,
         body: &[u8],
     ) -> Reply {
@@ -839,7 +852,7 @@ impl Door {
         }
         let initialize = request.get("method").and_then(Value::as_str) == Some("initialize");
         match (session_id(headers), initialize) {
-            (None, true) => self.open(grant, &request).await,
+            (None, true) => self.open(grant, pinned, &request).await,
             (Some(id), _) => {
                 let session = lock(&self.sessions)
                     .get(&id)
@@ -855,8 +868,14 @@ impl Door {
         }
     }
 
-    /// `initialize`: a new agent run under `grant`.
-    async fn open(self: &Arc<Self>, grant: store::Grant, request: &Value) -> Reply {
+    /// `initialize`: a new agent run under `grant`, in the workspace the URL
+    /// is pinned to, if it is.
+    async fn open(
+        self: &Arc<Self>,
+        grant: store::Grant,
+        pinned: Option<&str>,
+        request: &Value,
+    ) -> Reply {
         {
             let now = Instant::now();
             let mut sessions = lock(&self.sessions);
@@ -875,7 +894,11 @@ impl Door {
             return text(StatusCode::SERVICE_UNAVAILABLE, "sessions are unavailable");
         };
         let label = session::run_label(&grant.client_name, &params, number);
-        let session = match self.new_session(&grant, grant.scope.clone(), label).await {
+        let scope = pinned.map_or_else(
+            || grant.scope.clone(),
+            |workspace| store::Scope::Workspace(workspace.to_owned()),
+        );
+        let session = match self.new_session(&grant, scope, label).await {
             Ok(session) => Arc::new(session),
             Err(message) => {
                 let id = request.get("id").cloned().unwrap_or(Value::Null);
@@ -914,20 +937,18 @@ impl Door {
     ) -> Result<Session, String> {
         let key = grant.key().ok_or("this key cannot act now")?;
         let connection = self
-            .relay
-            .connect(&key)
+            .connection(&grant.id, &key)
             .await
             .map_err(|error| error.to_string())?;
         let parent = match grant.parent() {
             Some(parent) => {
-                let parent = self
+                let parent_key = self
                     .store
                     .grant(parent)
                     .and_then(|parent| parent.key())
                     .ok_or("the key that minted this key was revoked")?;
                 Some(
-                    self.relay
-                        .connect(&parent)
+                    self.connection(parent, &parent_key)
                         .await
                         .map_err(|error| error.to_string())?,
                 )
@@ -943,6 +964,34 @@ impl Door {
             parent,
             Arc::downgrade(self),
         ))
+    }
+}
+
+impl Door {
+    /// `grant`'s session with the relay: the live one its other runs hold,
+    /// else a new one. Runs starting at once wait for the one connecting.
+    async fn connection(
+        &self,
+        grant: &str,
+        key: &GrantKey,
+    ) -> Result<Arc<Connection>, relay::RelayError> {
+        let slot = {
+            let mut connections = lock(&self.connections);
+            // Forget the grants whose session ended with their last run.
+            connections.retain(|_, slot| {
+                Arc::strong_count(slot) > 1
+                    || slot.try_lock().map_or(true, |held| held.strong_count() > 0)
+            });
+            Arc::clone(connections.entry(grant.to_owned()).or_default())
+        };
+        let mut shared = slot.lock().await;
+        if let Some(live) = shared.upgrade().filter(|live| live.is_live()) {
+            return Ok(live);
+        }
+        let connection = Arc::new(self.relay.connect(key).await?);
+        *shared = Arc::downgrade(&connection);
+        drop(shared);
+        Ok(connection)
     }
 }
 
