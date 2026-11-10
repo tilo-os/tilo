@@ -88,6 +88,16 @@ fn has_words(node: &InspectionNode) -> bool {
         || node.children.iter().any(has_words)
 }
 
+/// What a width class is called in a report.
+fn class_name(class: ui::widget::arrange::WidthClass) -> &'static str {
+    match class {
+        ui::widget::arrange::WidthClass::Compact => "a phone's screen",
+        ui::widget::arrange::WidthClass::Medium => "a column",
+        ui::widget::arrange::WidthClass::Expanded => "an expanded column",
+        ui::widget::arrange::WidthClass::Wide => "a wide column",
+    }
+}
+
 fn size(r: Rect) -> String {
     format!("{:.0}×{:.0}", r.width(), r.height())
 }
@@ -1230,15 +1240,15 @@ impl Walk<'_> {
         }
     }
 
-    /// A sidebar standing beside content narrower than a column
-    /// ([`ui::widget::arrange::column_min_width`]): the pane beside it is a phone's screen, where
-    /// the sidebar folds behind the bar's toggle and the content takes the window instead.
+    /// A sidebar standing beside a pane narrower than the class its content asks for
+    /// ([`ui::widget::ShellLayout::needs`]): the pane beside it is a phone's screen, where the
+    /// sidebar folds behind the bar's toggle and the content takes the window instead.
     fn content_beside_sidebar(&mut self, node: &InspectionNode, keys: &[String]) {
         let Some(ui::widget::LayoutInfo::Shell(shell)) = &node.layout else {
             return;
         };
         if shell.sidebar != ui::widget::SidebarStanding::Docked
-            || shell.beside != ui::widget::arrange::WidthClass::Compact
+            || shell.beside >= shell.needs
             || shell.beside_width <= 0.0
         {
             return;
@@ -1248,9 +1258,11 @@ impl Walk<'_> {
             node,
             keys,
             format!(
-                "the content stands {:.0} wide beside the sidebar, a phone's screen: the sidebar \
-                 folds behind the bar's toggle there, and the content takes the window",
-                shell.beside_width
+                "the content stands {:.0} wide beside the sidebar, {} where it asks for {}: the \
+                 sidebar folds behind the bar's toggle there, and the content takes the window",
+                shell.beside_width,
+                class_name(shell.beside),
+                class_name(shell.needs)
             ),
         );
     }

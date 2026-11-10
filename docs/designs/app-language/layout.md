@@ -65,12 +65,13 @@ view player_bar(p: Player) {
 
 - Size classes in `rem`: `compact` (< 30rem), `medium` (< 52rem), `expanded` (< 75rem), `wide`.
   Large text moves a window into a narrower class, which is right.
-- The toolkit's own rule for a sidebar follows from the classes: a window stands its sidebar (and
-  its inspector) beside content only while that content keeps a column's width, the `medium`
-  class's start (`ui::widget::arrange::column_min_width`). Narrower, the pane beside it would be a
-  phone's screen, so the sidebar folds behind the bar's toggle and the content takes the window.
-  The window's own width decides it, never the display's: a window in a strip, a tiled window and
-  a phone follow one rule.
+- The toolkit's own rule for a sidebar follows from the classes: a window stands its sidebar beside
+  the content only while the pane beside it keeps the class the content's kind asks for there
+  (`ui::widget::ContentKind::beside_sidebar_class`) — a column of text is no phone's screen, so it
+  asks for `medium` (`ui::widget::arrange::column_min_width`), where a grid of tiles or a surface
+  drawn on works narrower. Below that class the sidebar folds behind the bar's toggle and the
+  content takes the window. The window's own width decides it, never the display's: a window in a
+  strip, a tiled window and a phone follow one rule.
 - Also `space.orientation` (portrait, landscape, ultrawide) and, rarely, `space.width` in `rem`.
 - A view re-runs only when a class it read changes, not on every pixel of a resize. Boundaries
   have a little hysteresis so a window resized right at one doesn't flicker.

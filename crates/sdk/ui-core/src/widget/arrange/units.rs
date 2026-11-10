@@ -382,14 +382,21 @@ impl WidthClass {
     }
 }
 
-/// The narrowest a column of content stands at, in logical pixels: the width at which a space
-/// stops being [`WidthClass::Compact`]. A pane narrower than a column is a phone's screen of its
-/// own, so a sidebar does not stand beside it — it folds behind the bar's toggle instead
-/// ([`crate::widget::NavShell`], [`crate::widget::SidebarDrawer`]). `rem` is the theme's body
-/// size ([`rem_of`]), so enlarged text asks for a wider column.
+/// The narrowest a pane in `class` stands at, in logical pixels: where the class starts. A pane
+/// below a column's width is a phone's screen of its own, so a sidebar does not stand beside it —
+/// it folds behind the bar's toggle instead ([`crate::widget::NavShell`],
+/// [`crate::widget::SidebarDrawer`]). `rem` is the theme's body size ([`rem_of`]), so enlarged
+/// text asks for a wider pane.
+#[must_use]
+pub fn class_min_width(class: WidthClass, rem: f32) -> f32 {
+    class.band().0.max(0.0) * rem
+}
+
+/// The narrowest a column of content stands at, in logical pixels
+/// ([`class_min_width`] of [`WidthClass::Medium`]): the width a sidebar stands beside and no less.
 #[must_use]
 pub fn column_min_width(rem: f32) -> f32 {
-    WidthClass::Medium.band().0 * rem
+    class_min_width(WidthClass::Medium, rem)
 }
 
 /// The shape of the space a view is offered.

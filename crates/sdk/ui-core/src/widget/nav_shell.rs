@@ -4,10 +4,10 @@
 //! the responsive layout (docked sidebar, push stack or floating drawer — never a modal one),
 //! motion and semantics. An app reads [`NavGeometry::size_class`], never a width.
 //!
-//! A column stands beside the content only while the content keeps a column's width
-//! ([`crate::widget::arrange::column_min_width`], the `medium` class's start): a pane narrower
-//! than that is a phone's screen of its own, so the sidebar folds behind the bar's toggle (or
-//! floats over a content-primary app) and takes its room back. The window's own width decides it,
+//! The sidebar stands beside the content only while the pane beside it keeps the width class its
+//! kind asks for there ([`ContentKind::beside_sidebar_class`]): a column of text is no phone's
+//! screen, so below a column the sidebar folds behind the bar's toggle (or floats over a
+//! content-primary app) and the content takes its room back. The window's own width decides it,
 //! never the display's, so a window in a strip, a tiled window and a phone follow one rule.
 
 use crate::num::f64_of_usize;
@@ -119,6 +119,20 @@ impl ContentKind {
             Self::Reading | Self::Document => metrics.reading_min_width,
             Self::Page => metrics.page_min_width,
             Self::Grid | Self::Canvas => metrics.grid_min_width,
+        }
+    }
+
+    /// The width class content of this kind is in at the least beside a sidebar: a list, a page, a
+    /// reading column or a document is a column of text, so it is no phone's screen there; a grid
+    /// of tiles or a surface drawn on works narrower than a column, which is what its own minimum
+    /// states.
+    #[must_use]
+    pub fn beside_sidebar_class(self) -> crate::widget::arrange::WidthClass {
+        match self {
+            Self::List | Self::Reading | Self::Page | Self::Document => {
+                crate::widget::arrange::WidthClass::Medium
+            }
+            Self::Grid | Self::Canvas => crate::widget::arrange::WidthClass::Compact,
         }
     }
 
@@ -375,14 +389,20 @@ impl Metrics {
     }
 
     /// The narrowest content of `kind` stands at beside a sidebar: its own minimum, and never
-    /// less than a column ([`crate::widget::arrange::column_min_width`]). A pane narrower than a
-    /// column is a phone's screen, so the sidebar folds behind the bar's toggle instead of
-    /// squeezing it (`layout.md`, "Responding to space").
+    /// below the width class it is in there ([`ContentKind::beside_sidebar_class`]). Narrower, the
+    /// pane is a phone's screen, so the sidebar folds behind the bar's toggle instead of squeezing
+    /// it (`layout.md`, "Responding to space").
     fn beside_sidebar_min(&self, kind: ContentKind) -> f64 {
         self.content_min(kind)
-            .max(f64::from(crate::widget::arrange::column_min_width(
+            .max(f64::from(crate::widget::arrange::class_min_width(
+                kind.beside_sidebar_class(),
                 self.rem,
             )))
+    }
+
+    /// The width class content of `kind` is in at the least beside a sidebar.
+    fn beside_sidebar_class(&self, kind: ContentKind) -> crate::widget::arrange::WidthClass {
+        kind.beside_sidebar_class()
     }
 
     fn resolve(theme: &Theme) -> Self {
@@ -633,13 +653,21 @@ impl Inputs {
         self.metrics.content_min(self.kind)
     }
 
-    /// The narrowest the content stands at beside a sidebar: a column of the window's own, never
-    /// a phone's screen ([`Metrics::beside_sidebar_min`]).
+    /// The narrowest the content stands at beside a sidebar: a column of the window's own where
+    /// the content is a column of text, never a phone's screen ([`Metrics::beside_sidebar_min`]).
     fn content_beside_sidebar_min(&self) -> f64 {
         if !self.has_content {
             return 0.0;
         }
         self.metrics.beside_sidebar_min(self.kind)
+    }
+
+    /// The width class the content beside a sidebar is in at the least ([`Metrics::content_min`]).
+    fn content_beside_sidebar_class(&self) -> crate::widget::arrange::WidthClass {
+        if !self.has_content {
+            return crate::widget::arrange::WidthClass::Compact;
+        }
+        self.metrics.beside_sidebar_class(self.kind)
     }
 
     /// The narrowest window the compact layout works at: one column at a time (or the content under
@@ -3484,6 +3512,7 @@ impl Widget for NavShell {
                     SidebarPlacement::Screen => crate::widget::SidebarStanding::Alone,
                 },
                 beside: crate::widget::arrange::WidthClass::of(beside_rem),
+                needs: inputs.content_beside_sidebar_class(),
                 beside_width,
                 rows: crate::widget::HeaderRows { rows },
             },

@@ -146,15 +146,18 @@ pub enum SidebarStanding {
 /// One window's shell as its last layout left it: where its sidebar stood, the class of the
 /// content beside it, and how the shell held each column's header row.
 ///
-/// An audit reads this to hold the shell to the rule that decides it: a sidebar stands beside
-/// content of a column's width ([`crate::widget::arrange::column_min_width`]) and folds behind the
-/// bar's toggle where the content beside it would be a phone's screen instead.
+/// An audit reads this to hold the shell to the rule that decides it: a sidebar stands beside a
+/// pane of the class the content asks for there ([`ShellLayout::needs`]) and folds behind the bar's
+/// toggle where the pane beside it would be a phone's screen instead.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 pub struct ShellLayout {
     /// How the sidebar stood.
     pub sidebar: SidebarStanding,
     /// The class of the pane standing beside the sidebar, by its own width.
     pub beside: crate::widget::arrange::WidthClass,
+    /// The class that pane is in at the least: a column of text asks for a column, a grid of
+    /// tiles or a surface drawn on for less.
+    pub needs: crate::widget::arrange::WidthClass,
     /// That pane's width in logical pixels; zero where the window shows none.
     pub beside_width: f32,
     /// Each column's header row, `[sidebar, overview, content, inspector]`.

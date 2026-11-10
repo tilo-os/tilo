@@ -2,9 +2,9 @@
 //!
 //! A widget app uses [`crate::widget::NavShell`]; an app that paints its whole window itself holds
 //! a `SidebarDrawer` instead. The drawer owns the same decisions the shell makes, from the same
-//! metrics: docked beside the content while it fits above the content's minimum and that minimum
-//! keeps a column's width ([`crate::widget::arrange::column_min_width`]), shrinking toward its own
-//! minimum first, the eased reveal, and the person's show/hide choice per size class. Too
+//! metrics: docked beside the content while it fits above the content's minimum and the pane it
+//! leaves keeps a column's width ([`crate::widget::arrange::column_min_width`]), shrinking toward
+//! its own minimum first, the eased reveal, and the person's show/hide choice per size class. Too
 //! narrow to dock, a panel that asked for the push layout ([`SidebarDrawer::with_push`]: a list of
 //! rows the drawer would cover, as `NavShell` decides from the content's kind) takes turns with the
 //! content: open, the list fills the window ([`SidebarDrawer::is_push`]) and the toggle in the

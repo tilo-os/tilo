@@ -87,6 +87,7 @@ fn shell_layout(
     ui::widget::ShellLayout {
         sidebar,
         beside,
+        needs: ui::widget::arrange::WidthClass::Medium,
         beside_width: width,
         rows: ui::widget::HeaderRows { rows: [None; 4] },
     }
@@ -141,6 +142,18 @@ fn a_sidebar_beside_a_phone_screen_is_caught() {
     assert!(
         with(SidebarStanding::Docked, WidthClass::Medium, 420.0).is_empty(),
         "content of a column's width stands beside the sidebar"
+    );
+    // A grid of tiles or a surface drawn on works narrower than a column: the same width is what
+    // its own kind asks for there.
+    let mut phone_pane = node("NavShell", "shell", [0.0, 0.0, 616.0, 700.0], None);
+    let mut layout = shell_layout(SidebarStanding::Docked, WidthClass::Compact, 336.0);
+    layout.needs = WidthClass::Compact;
+    phone_pane.layout = Some(ui::widget::LayoutInfo::Shell(layout));
+    assert!(
+        inspect(&phone_pane, (616, 700), None, 1.0)
+            .iter()
+            .all(|problem| problem.kind != Kind::ContentBesideSidebar),
+        "a surface works below a column where its kind says so"
     );
     assert!(
         with(SidebarStanding::Alone, WidthClass::Compact, 336.0).is_empty(),
