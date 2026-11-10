@@ -119,6 +119,7 @@ lounge \
   TILO_ROOMS_INACTIVE_AFTER_DAYS=7 \
   TILO_ROOMS_ROLES_FILE=/run/tilo-rooms/roles.json \
   TILO_ROOMS_OWN_WORKSPACES=10 \
+  TILO_ROOMS_OWN_WORKSPACE_COUNT=3 \
   TILO_ROOMS_IROH_LISTEN=0.0.0.0:7704 \
   TILO_ROOMS_FETCH_PROXY=0 \
   TILO_ROOMS_WEB=127.0.0.1:0 \
@@ -169,6 +170,7 @@ pair --discord-authorize-url https://discord.com/oauth2/authorize || fail "the D
 pair --inactive-after-days 7 || fail "the inactivity setting did not reach the host"
 pair --roles-file /run/tilo-rooms/roles.json || fail "the roles file did not reach the host"
 pair --own-workspaces 10 || fail "the own workspaces' size did not reach the host"
+pair --own-workspace-count 3 || fail "how many workspaces of their own a person keeps did not reach the host"
 pair --iroh-listen 0.0.0.0:7704 || fail "the host's endpoint address did not reach the host"
 grep -Fqx -- --fetch-proxy "$work/args" && fail "fetch proxy 0 still asked for the proxy"
 # Every workspace's arrangement is its shared desktop record: the host has no
@@ -211,6 +213,10 @@ fails_with lounge TILO_ROOMS_ADMISSION=anyone
 grep -Fq TILO_ROOMS_ADMISSION "$work/err" || fail "the refusal does not name the setting"
 fails_with lounge TILO_ROOMS_OWN_WORKSPACES=lots
 grep -Fq TILO_ROOMS_OWN_WORKSPACES "$work/err" || fail "the refusal does not name the setting"
+fails_with lounge TILO_ROOMS_OWN_WORKSPACE_COUNT=many
+grep -Fq TILO_ROOMS_OWN_WORKSPACE_COUNT "$work/err" || fail "the refusal does not name the setting"
+fails_with lounge TILO_ROOMS_OWN_WORKSPACE_COUNT=3
+grep -Fq TILO_ROOMS_OWN_WORKSPACE_COUNT "$work/err" || fail "a count without the gigabytes it shares does not name the setting"
 fails_with lounge TILO_ROOMS_MAX_SPECTATORS=2000
 grep -Fq TILO_ROOMS_MAX_SPECTATORS "$work/err" || fail "the refusal does not name the setting"
 

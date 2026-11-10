@@ -126,6 +126,18 @@ pub struct PersistentArgs {
         requires = "persistent"
     )]
     pub own_workspaces: Option<u64>,
+    /// How many workspaces of their own each person may keep here, sharing
+    /// the gigabytes `--own-workspaces` gives them: 10 when the flag names no
+    /// number.
+    #[arg(
+        long = "own-workspace-count",
+        value_name = "COUNT",
+        num_args = 0..=1,
+        default_missing_value = "10",
+        requires = "own_workspaces",
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    pub own_workspace_count: Option<u32>,
     /// List the workspace in the public directory with this description, so
     /// anyone may join it through its door at `--default-role`. Settled at
     /// every start; without it the workspace is not listed.
@@ -1409,6 +1421,9 @@ pub(crate) async fn run(
             .offer_own_workspaces(tilo_relay::workspaces::OwnWorkspaceOffer {
                 host,
                 storage_bytes: gigabytes.saturating_mul(1_000_000_000),
+                max_workspaces: persistent
+                    .own_workspace_count
+                    .unwrap_or(tilo_relay::workspaces::OwnWorkspaceOffer::DEFAULT_MAX_WORKSPACES),
             })
             .map_err(|error| anyhow::anyhow!("read whose own workspaces are whose: {error}"))?;
     }
@@ -2412,6 +2427,57 @@ mod tests {
             .inactive_after_days;
         assert_eq!(shorter, 7, "the host configures it");
         assert!(Args::try_parse_from(["relay", "--inactive-after-days", "0"]).is_err());
+    }
+
+    #[test]
+    fn a_host_counts_the_workspaces_of_their_own_a_person_keeps() {
+        use clap::Parser as _;
+        #[derive(clap::Parser)]
+        struct Args {
+            #[command(flatten)]
+            persistent: PersistentArgs,
+        }
+        let serving = |extra: &[&str]| {
+            Args::try_parse_from(
+                [
+                    "relay",
+                    "--persistent",
+                    "tilo",
+                    "--root-file",
+                    "/run/secrets/root",
+                    "--room-id-file",
+                    "/state/id",
+                    "--own-workspaces",
+                    "10",
+                ]
+                .into_iter()
+                .chain(extra.iter().copied()),
+            )
+        };
+        let counted = |args: Args| {
+            args.persistent
+                .own_workspace_count
+                .unwrap_or(tilo_relay::workspaces::OwnWorkspaceOffer::DEFAULT_MAX_WORKSPACES)
+        };
+        assert_eq!(counted(serving(&[]).unwrap()), 10, "the host's default");
+        assert_eq!(
+            counted(serving(&["--own-workspace-count", "3"]).unwrap()),
+            3,
+            "the operator sets it"
+        );
+        assert_eq!(
+            counted(serving(&["--own-workspace-count"]).unwrap()),
+            10,
+            "a flag without a count is the default"
+        );
+        assert!(
+            serving(&["--own-workspace-count", "0"]).is_err(),
+            "a host that keeps none keeps no workspaces of people's own"
+        );
+        assert!(
+            Args::try_parse_from(["relay", "--own-workspace-count", "3"]).is_err(),
+            "a count goes with the gigabytes they share"
+        );
     }
 
     #[test]

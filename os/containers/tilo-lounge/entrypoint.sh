@@ -28,9 +28,13 @@
 # ingress binds TILO_ROOMS_WEB; an address ending in `:0` takes a port the
 # kernel picks, which the host announces in its started event.
 #
-# A host that gives each person who asks a workspace of their own, governed
-# here beside the Lounge, sets how many gigabytes each may keep:
-#   TILO_ROOMS_OWN_WORKSPACES  gigabytes per person (unset: no own workspaces)
+# A host that gives each person who asks workspaces of their own, governed
+# here beside the Lounge, sets how many gigabytes each may keep and how many
+# workspaces of their own they may keep in them:
+#   TILO_ROOMS_OWN_WORKSPACES       gigabytes per person (unset: no own
+#                                   workspaces)
+#   TILO_ROOMS_OWN_WORKSPACE_COUNT  workspaces of their own per person,
+#                                   sharing those gigabytes (default 10)
 #
 # Everything else has the default below. Any other TILO_ROOMS_* variable stops
 # the start: this host does not read it, and a deployment that still sets what
@@ -50,7 +54,7 @@ TILO_ROOMS_WAIT_LIST_MAX TILO_ROOMS_PUBLIC_API TILO_ROOMS_LIVE_ORIGIN
 TILO_ROOMS_DEFAULT_ROLE TILO_ROOMS_CHAT_CHANNELS TILO_ROOMS_FEEDBACK_CHANNEL
 TILO_ROOMS_SEED_APPS TILO_ROOMS_AUTHOR_APPS TILO_ROOMS_REFOUND TILO_ROOMS_BOTS TILO_ROOMS_LAYOUT
 TILO_ROOMS_INACTIVE_AFTER_DAYS TILO_ROOMS_ROOT_FILE TILO_ROOMS_ROLES_FILE
-TILO_ROOMS_OWN_WORKSPACES TILO_ROOMS_IROH_LISTEN
+TILO_ROOMS_OWN_WORKSPACES TILO_ROOMS_OWN_WORKSPACE_COUNT TILO_ROOMS_IROH_LISTEN
 TILO_ROOMS_STATE
 TILO_ROOMS_WEB_ENTRY TILO_ROOMS_SITE_ORIGINS TILO_ROOMS_RELAY_ORIGIN
 TILO_ROOMS_RELAY_PLAIN TILO_ROOMS_LIVE TILO_ROOMS_LIVE_ORIGIN TILO_ROOMS_WEB
@@ -160,6 +164,16 @@ if [ -n "$own" ]; then
     ''|*[!0-9]*) fail "TILO_ROOMS_OWN_WORKSPACES is gigabytes per person, not $own" ;;
   esac
   set -- "$@" --own-workspaces "$own"
+fi
+own_count=${TILO_ROOMS_OWN_WORKSPACE_COUNT:-}
+if [ -n "$own_count" ]; then
+  case $own_count in
+    ''|*[!0-9]*) fail "TILO_ROOMS_OWN_WORKSPACE_COUNT is workspaces of their own per person, not $own_count" ;;
+  esac
+  if [ -z "$own" ]; then
+    fail "TILO_ROOMS_OWN_WORKSPACE_COUNT shares the gigabytes TILO_ROOMS_OWN_WORKSPACES gives; set that too"
+  fi
+  set -- "$@" --own-workspace-count "$own_count"
 fi
 # The host's own endpoint at a fixed address, for the operator's devices that
 # dial it (the members that take its workspaces' work); otherwise the machine

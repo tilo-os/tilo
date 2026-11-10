@@ -79,7 +79,8 @@ pub fn site_door(entry: &serde_json::Value, host_origin: &str) -> Option<(String
 /// The workspace of the person's own on the host and the invitation into it
 /// for the person, which the host makes the first time any device of theirs
 /// asks and answers again after (`room.create-own`, with `arguments`: its
-/// `name`, or the `room` it must be), asked over this device's session in
+/// `name`, which makes another while their plan keeps another for them, or
+/// the `room` it must be), asked over this device's session in
 /// `workspace_id`.
 ///
 /// # Errors

@@ -1,7 +1,8 @@
-//! A workspace of a person's own on a host that keeps them: anyone's device
-//! asks, the same workspace answers every time, a second is refused typed,
-//! the person administers it from their first device on, and a full one
-//! keeps no more of their writes.
+//! Workspaces of people's own on a host that keeps them: anyone's device
+//! asks, the ones they have answer every time, as many as their plan keeps
+//! are made and one more is refused typed, the person administers each from
+//! their first device on, and their workspaces share what the host gives them
+//! and keep no more of their writes when it is full.
 
 #![expect(
     clippy::significant_drop_tightening,
@@ -194,14 +195,21 @@ async fn anyone_gets_one_workspace_of_their_own_and_administers_it() {
         Some((MemberRole::Editor, true))
     );
 
-    // Asking again answers the same workspace whatever it names, with a
-    // new invitation.
-    let again = create_own(&host, &guest, json!({"name": "Another"}))
-        .await
-        .unwrap();
+    // Asking again without a name answers the same workspace, with a new
+    // invitation.
+    let again = create_own(&host, &guest, json!({})).await.unwrap();
     assert_eq!(again.workspace.workspace, created.workspace.workspace);
     assert_eq!(again.workspace.name, "Ada's workspace");
     assert_ne!(again.invitation, created.invitation);
+    // Entering it by its id answers the same one.
+    let entered = create_own(
+        &host,
+        &guest,
+        json!({"room": created.workspace.workspace.clone()}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(entered.workspace.workspace, created.workspace.workspace);
     assert_eq!(
         workspaces
             .list()
@@ -212,24 +220,15 @@ async fn anyone_gets_one_workspace_of_their_own_and_administers_it() {
         1
     );
 
-    // A second, distinct workspace of their own is refused, typed.
-    let refused = create_own(
-        &host,
-        &guest,
-        json!({"room": "0f0e0d0c-0b0a-4908-8706-050403020100"}),
-    )
-    .await
-    .unwrap_err();
-    let ActionHostError::Refused { reason } = refused else {
-        panic!("{refused:?}");
-    };
-    let refusal = Refusal::from_reason(&reason).unwrap();
-    assert_eq!(
-        refusal.reason,
-        Reason::TooManyWorkspaces {
-            limit: 1,
-            existing: vec![created.workspace.workspace.clone()],
-        }
+    // A workspace that is no one of theirs is refused, not made one of
+    // theirs.
+    let other = workspaces.create("Not yours").await.unwrap();
+    let refused = create_own(&host, &guest, json!({"room": other.workspace.clone()}))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(refused, ActionHostError::Refused { .. }),
+        "{refused:?}"
     );
 
     // Someone else gets their own; the relay's own workspaces are no one's.
@@ -237,6 +236,275 @@ async fn anyone_gets_one_workspace_of_their_own_and_administers_it() {
     let theirs = create_own(&host, &stranger, json!({})).await.unwrap();
     assert_eq!(theirs.workspace.name, "My workspace");
     assert_ne!(theirs.workspace.workspace, created.workspace.workspace);
+    relay.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_person_keeps_as_many_workspaces_of_their_own_as_they_may() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces().clone();
+    let offer = OwnWorkspaceOffer {
+        max_workspaces: 2,
+        ..OwnWorkspaceOffer::free("tilo.test")
+    };
+    workspaces.offer_own_workspaces(offer.clone()).unwrap();
+    let host = HostWorkspaceActions::new();
+    host.attach(workspaces.clone());
+    let (_, guest) = guest_device();
+    let first = create_own(&host, &guest, json!({"name": "Work"}))
+        .await
+        .unwrap();
+    let second = create_own(&host, &guest, json!({"name": "Side project"}))
+        .await
+        .unwrap();
+    assert_ne!(first.workspace.workspace, second.workspace.workspace);
+    assert_eq!(
+        workspaces.own_workspaces_of(&guest.user_public_key),
+        [
+            first.workspace.workspace.clone(),
+            second.workspace.workspace.clone()
+        ]
+    );
+    // One more than the host keeps for them is refused, typed, naming both
+    // of theirs and the count.
+    let refused = create_own(&host, &guest, json!({"name": "Another"}))
+        .await
+        .unwrap_err();
+    let ActionHostError::Refused { reason } = refused else {
+        panic!("{refused:?}");
+    };
+    assert_eq!(
+        Refusal::from_reason(&reason).unwrap().reason,
+        Reason::TooManyWorkspaces {
+            limit: 2,
+            existing: vec![
+                first.workspace.workspace.clone(),
+                second.workspace.workspace.clone()
+            ],
+        }
+    );
+    // A plain ask still answers the first they made.
+    let again = create_own(&host, &guest, json!({})).await.unwrap();
+    assert_eq!(again.workspace.workspace, first.workspace.workspace);
+
+    // After a restart the host answers the same ones, and the same count.
+    drop(host);
+    drop(workspaces);
+    relay.shutdown().await;
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces().clone();
+    workspaces.offer_own_workspaces(offer).unwrap();
+    let host = HostWorkspaceActions::new();
+    host.attach(workspaces.clone());
+    assert_eq!(
+        workspaces.own_workspaces_of(&guest.user_public_key),
+        [
+            first.workspace.workspace.clone(),
+            second.workspace.workspace.clone()
+        ]
+    );
+    let again = create_own(&host, &guest, json!({})).await.unwrap();
+    assert_eq!(again.workspace.workspace, first.workspace.workspace);
+    let refused = create_own(&host, &guest, json!({"name": "Another"}))
+        .await
+        .unwrap_err();
+    let ActionHostError::Refused { reason } = refused else {
+        panic!("{refused:?}");
+    };
+    assert_eq!(
+        Refusal::from_reason(&reason).unwrap().reason,
+        Reason::TooManyWorkspaces {
+            limit: 2,
+            existing: vec![
+                first.workspace.workspace.clone(),
+                second.workspace.workspace.clone()
+            ],
+        }
+    );
+    relay.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_account_read_lists_every_workspace_of_their_own_and_how_many_they_may_keep() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces().clone();
+    workspaces
+        .offer_own_workspaces(OwnWorkspaceOffer {
+            max_workspaces: 2,
+            ..OwnWorkspaceOffer::free("tilo.test")
+        })
+        .unwrap();
+    let host = HostWorkspaceActions::new();
+    host.attach(workspaces.clone());
+    let (_, guest) = guest_device();
+    let first = create_own(&host, &guest, json!({"name": "Work"}))
+        .await
+        .unwrap();
+    let second = create_own(&host, &guest, json!({"name": "Side project"}))
+        .await
+        .unwrap();
+    let mut read = super::super::tests::request("", host_account::ACCOUNT, json!({}));
+    read.target = host_account::target(host_account::ACCOUNT);
+    let account: HostAccount =
+        serde_json::from_value(invoke(&host, &guest, read).await.unwrap()).unwrap();
+    let standing = account.standing.unwrap();
+    assert_eq!(account.host, "tilo.test");
+    assert_eq!(standing.account, hex::encode(guest.user_public_key));
+    assert_eq!(standing.limits.unwrap().max_workspaces, Some(2));
+    assert_eq!(account.plans[0].limits.max_workspaces, Some(2));
+    let listed: Vec<&str> = standing
+        .usage
+        .workspaces
+        .iter()
+        .map(|usage| usage.workspace.as_str())
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            first.workspace.workspace.as_str(),
+            second.workspace.workspace.as_str()
+        ]
+    );
+    assert_eq!(
+        standing.usage.stored_bytes(),
+        standing
+            .usage
+            .workspaces
+            .iter()
+            .map(|usage| usage.stored_bytes)
+            .sum::<u64>()
+    );
+    assert!(standing.usage.stored_bytes() > 0);
+    relay.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_plan_sets_how_many_workspaces_of_their_own_a_person_keeps() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces().clone();
+    workspaces
+        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
+        .unwrap();
+    let host = HostWorkspaceActions::new();
+    host.attach(workspaces.clone());
+    let (_, guest) = guest_device();
+    let plan = tilo_actions::remote::host_account::PlanOffer {
+        id: "pro".into(),
+        name: "Pro".into(),
+        price: None,
+        limits: tilo_actions::remote::host_account::Limits {
+            max_workspaces: Some(1),
+            ..tilo_actions::remote::host_account::Limits::default()
+        },
+    };
+    assert!(workspaces.set_own_plan(&guest.user_public_key, plan.clone()));
+    assert!(
+        create_own(&host, &guest, json!({"name": "Solo"}))
+            .await
+            .is_ok()
+    );
+    // Their plan keeps one, not the ten the host gives everyone.
+    let refused = create_own(&host, &guest, json!({"name": "One more"}))
+        .await
+        .unwrap_err();
+    let ActionHostError::Refused { reason } = refused else {
+        panic!("{refused:?}");
+    };
+    assert_eq!(
+        Refusal::from_reason(&reason).unwrap().reason,
+        Reason::TooManyWorkspaces {
+            limit: 1,
+            existing: vec![workspaces.own_workspaces_of(&guest.user_public_key)[0].clone()],
+        }
+    );
+    // The account read is the plan they are on, and a stranger is on the
+    // free one.
+    let mut read = super::super::tests::request("", host_account::ACCOUNT, json!({}));
+    read.target = host_account::target(host_account::ACCOUNT);
+    let account: HostAccount =
+        serde_json::from_value(invoke(&host, &guest, read).await.unwrap()).unwrap();
+    assert_eq!(account.plans, [plan]);
+    assert_eq!(
+        account.standing.unwrap().limits.unwrap().max_workspaces,
+        Some(1)
+    );
+    let (_, stranger) = guest_device();
+    let account = workspaces.own_account(&stranger.user_public_key).unwrap();
+    assert_eq!(
+        account.standing.unwrap().limits.unwrap().max_workspaces,
+        Some(OwnWorkspaceOffer::DEFAULT_MAX_WORKSPACES)
+    );
+    relay.shutdown().await;
+}
+
+#[tokio::test]
+async fn their_workspaces_of_their_own_share_the_storage_the_host_gives_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces().clone();
+    workspaces
+        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
+        .unwrap();
+    let host = HostWorkspaceActions::new();
+    host.attach(workspaces.clone());
+    let (_, guest) = guest_device();
+    let first = create_own(&host, &guest, json!({"name": "Work"}))
+        .await
+        .unwrap();
+    let second = create_own(&host, &guest, json!({"name": "Side project"}))
+        .await
+        .unwrap();
+    let account = workspaces.own_account(&guest.user_public_key).unwrap();
+    let usage = account.standing.unwrap().usage;
+    let kept = |workspace: &str| {
+        usage
+            .workspaces
+            .iter()
+            .find(|usage| usage.workspace == workspace)
+            .unwrap()
+            .stored_bytes
+    };
+    let [one, two] = [
+        kept(&first.workspace.workspace),
+        kept(&second.workspace.workspace),
+    ];
+    assert!(one > 0 && two > 0, "{one} {two}");
+    // Room for all but the last byte of what the two take between them: what
+    // they share is full while neither alone would be.
+    let plan = tilo_actions::remote::host_account::PlanOffer {
+        limits: tilo_actions::remote::host_account::Limits {
+            storage_bytes: Some(one + two - 1),
+            ..tilo_actions::remote::host_account::Limits::default()
+        },
+        ..tilo_actions::remote::host_account::PlanOffer::default()
+    };
+    assert!(workspaces.set_own_plan(&guest.user_public_key, plan));
+    let full = workspaces
+        .storage_refusal(&first.workspace.workspace)
+        .expect("the two together have no room left");
+    let Reason::StorageFull {
+        limit_bytes,
+        used_bytes,
+    } = full.reason
+    else {
+        panic!("{full:?}");
+    };
+    assert_eq!((limit_bytes, used_bytes), (one + two - 1, one + two));
+    let theirs = workspaces
+        .storage_refusal(&second.workspace.workspace)
+        .expect("either of them is refused while they share a full budget");
+    assert!(matches!(theirs.reason, Reason::StorageFull { .. }));
+    // Another person's own workspace keeps its own budget whole.
+    let (_, stranger) = guest_device();
+    let other = create_own(&host, &stranger, json!({})).await.unwrap();
+    assert_eq!(workspaces.storage_refusal(&other.workspace.workspace), None);
     relay.shutdown().await;
 }
 
@@ -356,6 +624,7 @@ async fn a_full_workspace_of_ones_own_is_refused_and_the_account_says_so() {
         .offer_own_workspaces(OwnWorkspaceOffer {
             host: "tilo.test".into(),
             storage_bytes: 1,
+            max_workspaces: 1,
         })
         .unwrap();
     let host = HostWorkspaceActions::new();
@@ -366,7 +635,7 @@ async fn a_full_workspace_of_ones_own_is_refused_and_the_account_says_so() {
     let own = &created.workspace;
 
     let refusal = workspaces
-        .storage_refusal(&own.workspace, own.workspace_id)
+        .storage_refusal(&own.workspace)
         .expect("a byte is full");
     let Reason::StorageFull {
         limit_bytes,
@@ -378,10 +647,7 @@ async fn a_full_workspace_of_ones_own_is_refused_and_the_account_says_so() {
     assert_eq!(limit_bytes, 1);
     assert!(used_bytes > 1, "its record alone takes more");
     // A workspace that is no one's own is never refused for its size.
-    assert_eq!(
-        workspaces.storage_refusal(&other.workspace, other.workspace_id),
-        None
-    );
+    assert_eq!(workspaces.storage_refusal(&other.workspace), None);
 
     // The person's account read says what they keep and may keep.
     let mut read = super::super::tests::request("", host_account::ACCOUNT, json!({}));

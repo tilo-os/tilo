@@ -53,7 +53,8 @@ pub enum RelayError {
     /// Not one of the person's workspaces, or no such workspace: the same
     /// answer, so a guess learns nothing.
     NotFound,
-    /// The relay refused, with its reason (a second workspace, quota, policy).
+    /// The relay refused, with its reason (one workspace more than the
+    /// person's plan keeps, quota, policy).
     Refused(String),
     /// The relay or the site could not be reached.
     Unavailable(String),
@@ -290,8 +291,9 @@ impl Relay {
     }
 
     /// Make the person's workspace called `name` as `connection`, and enter
-    /// it. The relay keeps one of each person's own: asking for another is
-    /// refused, typed.
+    /// it. The relay keeps as many workspaces of each person's own as their
+    /// plan does, sharing their storage: asking for one more is refused,
+    /// typed.
     ///
     /// # Errors
     /// The relay was not reached or refused.
@@ -300,8 +302,9 @@ impl Relay {
         connection: &Connection,
         name: &str,
     ) -> Result<Workspace, RelayError> {
-        // A fresh id: the relay makes it under that id, or refuses a second
-        // workspace of the person's own rather than answering the first.
+        // A fresh id: the relay makes the workspace under that id, or
+        // refuses one more than the person's plan keeps rather than
+        // answering one they have.
         let fresh = uuid::Uuid::new_v4().to_string();
         let mut arguments = Map::new();
         arguments.insert("name".into(), json!(name));

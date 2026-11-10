@@ -260,7 +260,7 @@ fn create_own_params() -> Vec<ActionParam> {
         ActionParam::optional(
             "name",
             ParamType::Text,
-            "The workspace's name, 1 to 80 printable characters: \"My workspace\" when omitted. Unused once you have one.",
+            "The new workspace's name, 1 to 80 printable characters: \"My workspace\" when omitted. Naming one makes another, while your plan keeps another for you; omitting it answers the first you made.",
         ),
         ActionParam::optional(
             "room",
@@ -476,8 +476,9 @@ impl Workspaces {
         })
     }
 
-    /// Make or find the workspace of `device`'s person's own, already
-    /// permitted to, and invite the person into it.
+    /// Make another workspace of `device`'s person's own, already permitted
+    /// to, and invite the person into it: the one they have when the ask
+    /// names none, the one `room` names when it is one of theirs.
     async fn create_own_invoke(
         &self,
         device: &DeviceCert,
@@ -487,24 +488,47 @@ impl Workspaces {
     ) -> Result<Value, ActionHostError> {
         let own = self.own().ok_or(ActionHostError::UnknownAction)?;
         let person = device.user_public_key;
+        let name = args.text("name")?;
         let moving = args.text("room")?;
         let seconds = args
             .integer("expires_in_seconds")?
             .unwrap_or(OWN_INVITATION_SECONDS);
         let making = own.making.lock().await;
-        let summary = if let Some(existing) = own.of(&person) {
-            if moving.is_some_and(|moving| moving != existing) {
+        let mine = own.of(&person);
+        let listed = |workspace: &str| {
+            let workspace = workspace.to_owned();
+            async move {
+                self.list()
+                    .await
+                    .into_iter()
+                    .find(|summary| summary.workspace == workspace)
+                    .ok_or_else(|| refused(&"your workspace here is gone"))
+            }
+        };
+        let theirs = moving.filter(|moving| mine.iter().any(|own| own == moving));
+        let summary = if let Some(moving) = theirs {
+            // One of theirs: a device of theirs entering it, or a grant's
+            // parent asking for the invitation into it.
+            listed(moving).await?
+        } else if name.is_none() && moving.is_some() && !mine.is_empty() {
+            // A workspace this host does not keep for them, asked for as one
+            // of theirs.
+            return Err(refused(&"that workspace is not one of your own"));
+        } else if name.is_none()
+            && moving.is_none()
+            && let Some(first) = mine.first()
+        {
+            // A plain ask for "my workspace" answers the first they made.
+            listed(first).await?
+        } else {
+            // Another one, while they may keep it.
+            let limit = own.max_workspaces(&person);
+            if mine.len() >= usize::try_from(limit).unwrap_or(usize::MAX) {
                 return Err(ActionHostError::Refused {
-                    reason: Self::second_own_refusal(&existing).to_reason(),
+                    reason: Self::too_many_own_refusal(limit, &mine).to_reason(),
                 });
             }
-            self.list()
-                .await
-                .into_iter()
-                .find(|summary| summary.workspace == existing)
-                .ok_or_else(|| refused(&"your workspace here is gone"))?
-        } else {
-            let name = args.text("name")?.unwrap_or(OWN_WORKSPACE_NAME);
+            let name = name.unwrap_or(OWN_WORKSPACE_NAME);
             let summary = self
                 .create_workspace(name, moving)
                 .await

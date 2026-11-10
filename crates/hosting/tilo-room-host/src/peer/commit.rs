@@ -36,17 +36,13 @@ pub(super) async fn over_storage(
     if peer.user_public_key == *session.own_user_public_key {
         return None;
     }
-    let (workspaces, workspace, workspace_id) = {
-        let runtime = ws.lock().await;
-        let authority = runtime.workspace_authority.as_ref()?;
-        (
-            authority.workspaces()?,
-            authority.workspace().to_owned(),
-            runtime.store.workspace_id(),
-        )
-    };
+    let runtime = ws.lock().await;
+    let authority = runtime.workspace_authority.as_ref()?;
+    let workspaces = authority.workspaces()?;
+    let workspace = authority.workspace().to_owned();
+    drop(runtime);
     // Measuring walks the workspace's files.
-    tokio::task::spawn_blocking(move || workspaces.storage_refusal(&workspace, workspace_id))
+    tokio::task::spawn_blocking(move || workspaces.storage_refusal(&workspace))
         .await
         .ok()
         .flatten()

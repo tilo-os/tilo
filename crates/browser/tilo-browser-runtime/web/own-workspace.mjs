@@ -1,8 +1,9 @@
 /**
- * The person's own workspace on the host this page came from: one per
- * person, made the first time they ask and answered again every time after,
- * kept by a host that keeps workspaces of people's own (`tilo-relay room
- * --own-workspaces`).
+ * The person's own workspace on the host this page came from: made the first
+ * time they ask and answered again every time after when the ask names none,
+ * and another for each name they give while their plan keeps another for
+ * them, kept by a host that keeps workspaces of people's own (`tilo-relay
+ * room --own-workspaces`).
  *
  * `ensureOwnWorkspace(page)` asks the host through the peer the page holds
  * there (`page.peer`, in the site's home workspace): the host's own operation
@@ -62,8 +63,9 @@ export function invitationText(hex) {
  * Make or find the person's own workspace on the host of `page.peer` (or of
  * `page`, a peer itself), have the peer's device admitted to it unless this
  * browser entered it already, and remember it. `name` names a new
- * workspace ("My workspace" when omitted; one the person has keeps its
- * own). See the module.
+ * workspace, made while the person's plan keeps another for them ("My
+ * workspace" when omitted, which answers the one they made first). See the
+ * module.
  */
 export async function ensureOwnWorkspace(page, {name = null, store = globalThis.localStorage} = {}) {
   const peer = page?.peer ?? page;

@@ -217,9 +217,10 @@ async fn a_key_works_through_the_door_on_the_relay_and_ends_when_revoked() {
     let relay = hosted.web.plain_origin.clone().unwrap();
     let workspaces = hosted.relay.workspaces().unwrap();
     workspaces
-        .offer_own_workspaces(tilo_relay::workspaces::OwnWorkspaceOffer::free(
-            "relay.tilo.test",
-        ))
+        .offer_own_workspaces(tilo_relay::workspaces::OwnWorkspaceOffer {
+            max_workspaces: 1,
+            ..tilo_relay::workspaces::OwnWorkspaceOffer::free("relay.tilo.test")
+        })
         .unwrap();
     // The site's home workspace, whose door lets anyone in.
     let lobby = workspaces.create("Lounge").await.unwrap().workspace;
