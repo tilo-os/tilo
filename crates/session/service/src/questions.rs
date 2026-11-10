@@ -337,6 +337,44 @@ impl Asked {
     pub fn handle(&self) -> &str {
         &self.handle
     }
+
+    /// Wait on this thread for the person's answer, at most until
+    /// `deadline` (`None`: until the person answers or the question goes):
+    /// `Some` of the answer, which is `None` when the question was declined
+    /// or replaced, or `None` when the question is still up at the deadline,
+    /// in which case the caller keeps it pending and asks again later.
+    ///
+    /// The session's sheets are drawn on its own loop, so a thread waiting
+    /// here must not hold the loop: this parks on a waker the answer wakes,
+    /// and never on a timer that polls the loop.
+    pub fn until(&mut self, deadline: Option<std::time::Instant>) -> Option<Option<Answer>> {
+        struct Park(std::thread::Thread);
+        impl std::task::Wake for Park {
+            fn wake(self: std::sync::Arc<Self>) {
+                self.0.unpark();
+            }
+            fn wake_by_ref(self: &std::sync::Arc<Self>) {
+                self.0.unpark();
+            }
+        }
+        let waker = std::task::Waker::from(std::sync::Arc::new(Park(std::thread::current())));
+        let mut cx = Context::from_waker(&waker);
+        loop {
+            if let Poll::Ready(answer) = Pin::new(&mut *self).poll(&mut cx) {
+                return Some(answer);
+            }
+            match deadline {
+                Some(deadline) => {
+                    let now = std::time::Instant::now();
+                    if now >= deadline {
+                        return None;
+                    }
+                    std::thread::park_timeout(deadline - now);
+                }
+                None => std::thread::park(),
+            }
+        }
+    }
 }
 
 impl Future for Asked {

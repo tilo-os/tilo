@@ -957,6 +957,13 @@ impl Session {
                 .as_ref()
                 .map(|desktop| desktop.questions().clone())
         });
+        // A step an agent takes inside a conversation asks the person on the
+        // sheet before it runs: the ask is held by the broker and answered on
+        // this session's sheet (`shell.md` §1, "Trust stays system-drawn").
+        crate::turn_questions::install(
+            action_plane.as_ref().map(|plane| &plane.broker),
+            questions.clone(),
+        );
         // Every service this session serves, from the one table that says
         // who serves each: the identity an app signs in through, the
         // machine's readings an app the launcher connects reads, and the

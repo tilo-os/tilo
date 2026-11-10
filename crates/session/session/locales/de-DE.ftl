@@ -403,3 +403,8 @@ session-ask-conversation = Assistent
 desk-style-failed-app-name = Schreibtisch
 desk-style-failed-title = Dein Schreibtischstil konnte nicht angezeigt werden
 desk-style-failed-body = { $style } konnte nicht angezeigt werden, daher zeigt der Schreibtisch Streifen. Deine Wahl bleibt erhalten und der Stil wird wieder angezeigt, sobald er repariert ist. ({ $reason })
+
+## A step an agent takes inside a conversation, asking the person before it
+## runs. The sheet shows the step's draft; confirming allows this one step.
+turn-question-title = Den Agenten { $action } lassen
+turn-question-detail = { $action } auf { $resource }, wie gezeigt. Es läuft einmal, nur für diesen Schritt.

@@ -199,8 +199,9 @@ fn the_run_reads_every_page_of_a_list_once() {
         }
     );
     assert_eq!(f.world.borrow().steps.len(), PAGES, "every page read once");
-    // No step is held waiting for its person: a conversation has nowhere
-    // to put that question, so a step that asks first is refused instead.
+    // No step here asks the person: reading a page is not an operation that
+    // asks first, so none of them waits. A step that did would be held
+    // (`native_pipeline::a_step_that_asks_the_person_is_held_until_they_answer`).
     assert!(
         !f.sent.borrow().iter().any(|request| matches!(
             request,

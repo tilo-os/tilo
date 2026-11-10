@@ -399,3 +399,8 @@ session-ask-conversation = Assistant
 desk-style-failed-app-name = Desk
 desk-style-failed-title = Your desk style could not be shown
 desk-style-failed-body = { $style } could not be shown, so the desk shows Strips. Your choice is kept and the style is shown again once it is fixed. ({ $reason })
+
+## A step an agent takes inside a conversation, asking the person before it
+## runs. The sheet shows the step's draft; confirming allows this one step.
+turn-question-title = Let the agent { $action }
+turn-question-detail = { $action } on { $resource }, as shown. It runs once, for this step only.

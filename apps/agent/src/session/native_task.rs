@@ -370,7 +370,18 @@ fn take_reask_answer(
             }
             following.update = update;
         }
-        Err(error) => following.outcome = Some(Err(TaskActionStop::Failed(error))),
+        // The step still asks the person: the wait goes on, and the host's
+        // hold answers when they decide.
+        Err(error) if super::confirmation::is_awaiting(&error) => {
+            reask.not_before = sent.checked_add(REASK_PACE);
+        }
+        Err(error) => {
+            // A held ask the person declined reaches the model in their
+            // words, with what to do next.
+            following.outcome = Some(Err(TaskActionStop::Failed(
+                super::confirmation::step_failure(error),
+            )));
+        }
     }
 }
 
