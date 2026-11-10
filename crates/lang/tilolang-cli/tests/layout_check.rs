@@ -120,6 +120,9 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // row.
             | Kind::NestedScroller
             | Kind::RepeatedRowTitle
+            // No window in this fixture opens an item into its row, so no document stands
+            // beside the rows of the list it opened from.
+            | Kind::ItemShownTwice
             // The fixture's cards each hold what they are given, so none stands empty.
             | Kind::EmptySurface
             // No window in this fixture docks a bar at the foot of a page column, and none

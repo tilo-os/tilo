@@ -135,10 +135,14 @@ pub enum Kind {
     /// screen, so the sidebar folds behind the bar's toggle there and the content takes the
     /// window.
     ContentBesideSidebar,
+    /// One item shown twice: the document of a row standing open lists an item that stands in
+    /// the list again. An item stands in one place — a row of its list, or in the document of
+    /// the row it is under, never both.
+    ItemShownTwice,
 }
 
 impl Kind {
-    pub const ALL: [Self; 42] = [
+    pub const ALL: [Self; 43] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -181,6 +185,7 @@ impl Kind {
         Self::RoundedOnEdge,
         Self::CrampedCard,
         Self::ContentBesideSidebar,
+        Self::ItemShownTwice,
     ];
 
     pub fn name(self) -> &'static str {
@@ -227,6 +232,7 @@ impl Kind {
             Self::RoundedOnEdge => "rounded-on-edge",
             Self::CrampedCard => "cramped-card",
             Self::ContentBesideSidebar => "content-beside-sidebar",
+            Self::ItemShownTwice => "item-shown-twice",
         }
     }
 }

@@ -178,6 +178,28 @@ fn is_row(node: &InspectionNode) -> bool {
         .is_some_and(|access| access.role == ui::a11y::Role::ListItem)
 }
 
+/// The names of the rows every list and tree a box holds shows, at any depth: what a document
+/// lists. A reference standing on its own — one row naming what a page was made from — is no
+/// row of a list, and names nothing here.
+fn held_rows(node: &InspectionNode, out: &mut Vec<String>) {
+    let holds_rows = node.semantics.as_ref().is_some_and(|semantics| {
+        matches!(semantics.role, ui::a11y::Role::List | ui::a11y::Role::Tree)
+    });
+    for child in &node.children {
+        if holds_rows
+            && is_row(child)
+            && let Some(name) = child
+                .semantics
+                .as_ref()
+                .and_then(|semantics| semantics.name.clone())
+                .filter(|name| !name.trim().is_empty())
+        {
+            out.push(name);
+        }
+        held_rows(child, out);
+    }
+}
+
 /// Whether a node is one row of a list of items: what a list draws per item. The rows of a tree
 /// are the branches it opens, not items a window lists beside its content.
 fn is_item_row(node: &InspectionNode) -> bool {
@@ -626,6 +648,7 @@ impl Walk<'_> {
             self.navigation(node, keys, own.intersect(inner_clip));
         }
         self.cramped_card(node, keys);
+        self.shown_twice(node, keys);
         for child in &node.children {
             if floats(&child.widget) {
                 continue;
@@ -905,6 +928,54 @@ impl Walk<'_> {
                         "it stands {gap:.0} px from the {} {side} it: a card keeps a sibling gap \
                          ({CARD_GAP:.0} px)",
                         sibling.widget
+                    ),
+                );
+            }
+        }
+    }
+
+    /// One item shown twice: a row standing open into its item draws a list of what it holds,
+    /// and its own list shows those again as rows. A list folds the branch of the row standing
+    /// open, so an item stands in one place — as a row of the list, or in the document of the
+    /// row it is under, never both. A reference a page draws on its own names no list, and is
+    /// no second row.
+    fn shown_twice(&mut self, node: &InspectionNode, keys: &[String]) {
+        let rows: Vec<&InspectionNode> =
+            node.children.iter().filter(|child| is_row(child)).collect();
+        if rows.len() < 2 {
+            return;
+        }
+        let titled = |row: &InspectionNode| {
+            row.semantics
+                .as_ref()
+                .and_then(|semantics| semantics.name.clone())
+                .filter(|name| !name.trim().is_empty())
+        };
+        let listed: Vec<String> = rows.iter().filter_map(|row| titled(row)).collect();
+        for row in &rows {
+            // A row standing open is expanded and holds rows: what a folded branch's row says
+            // of itself says nothing of an item's document.
+            let open = row
+                .semantics
+                .as_ref()
+                .is_some_and(|semantics| semantics.state.expanded == Some(true));
+            if !open {
+                continue;
+            }
+            let mut held = Vec::new();
+            held_rows(row, &mut held);
+            for item in held {
+                if !listed.contains(&item) {
+                    continue;
+                }
+                let title = titled(row).unwrap_or_default();
+                self.push(
+                    Kind::ItemShownTwice,
+                    row,
+                    keys,
+                    format!(
+                        "the document of the row standing open into \"{title}\" lists \"{item}\", \
+                         which stands in the list again: an item is shown once"
                     ),
                 );
             }

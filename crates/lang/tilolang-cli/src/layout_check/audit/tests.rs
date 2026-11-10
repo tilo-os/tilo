@@ -2002,3 +2002,126 @@ fn a_card_keeps_a_gap_from_its_neighbours() {
     root.children.push(along);
     assert!(found(&root).is_empty(), "nothing stands over or under it");
 }
+
+/// A row of a list, named `title`, standing at `rect`: `open` a row grown into its document.
+fn list_row(title: &str, rect: [f64; 4], open: bool) -> InspectionNode {
+    let mut row = node("SwipeRow", title, rect, Some(Role::ListItem));
+    let access = row.semantics.as_mut().expect("the row's semantics");
+    access.name = Some(title.to_owned());
+    access.state.expanded = open.then_some(true);
+    row
+}
+
+/// A row of an outline inside a document, named `title`.
+fn document_row(title: &str, rect: [f64; 4]) -> InspectionNode {
+    let mut row = node("ListRow", title, rect, Some(Role::ListItem));
+    row.semantics.as_mut().expect("the row's semantics").name = Some(title.to_owned());
+    row
+}
+
+/// What a document holds: the outline of the items under the row standing open.
+fn document(rows: Vec<InspectionNode>, rect: [f64; 4]) -> InspectionNode {
+    let mut tree = node("TreeView", "subtasks", rect, Some(Role::Tree));
+    tree.children = rows;
+    tree
+}
+
+/// An item stands once: the document of a row standing open that lists an item the list
+/// shows again is the same item twice, while a document listing items of its own is not.
+#[test]
+fn an_item_shown_in_an_open_rows_document_and_again_in_the_list_is_caught() {
+    let held = |rows: Vec<InspectionNode>| {
+        let mut list = node(
+            "DescribedList",
+            "list",
+            [280.0, 0.0, 1200.0, 600.0],
+            Some(Role::List),
+        );
+        list.children = rows;
+        let mut root = node("TilolangWindow", "window", [0.0, 0.0, 1280.0, 756.0], None);
+        root.children.push(list);
+        inspect(&root, (1280, 756), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::ItemShownTwice)
+            .collect::<Vec<Problem>>()
+    };
+
+    // The row standing open lists two steps, and the list shows one of them again.
+    let mut open = list_row("Call the landlord", [304.0, 100.0, 952.0, 400.0], true);
+    open.children = vec![document(
+        vec![
+            document_row("Find the service date", [344.0, 260.0, 912.0, 28.0]),
+            document_row("Ask about Tuesday", [344.0, 288.0, 912.0, 28.0]),
+        ],
+        [344.0, 260.0, 912.0, 56.0],
+    )];
+    let twice = held(vec![
+        list_row("Book a haircut", [304.0, 64.0, 952.0, 36.0], false),
+        open,
+        list_row("Find the service date", [304.0, 500.0, 952.0, 36.0], false),
+    ]);
+    assert_eq!(twice.len(), 1, "{twice:?}");
+    assert!(
+        twice[0].detail.contains("Find the service date")
+            && twice[0].detail.contains("Call the landlord"),
+        "the finding names the item and the row it stands in twice: {}",
+        twice[0].detail
+    );
+
+    // A document listing steps of its own, none of them a row of the list: one place each.
+    let mut open = list_row("Call the landlord", [304.0, 100.0, 952.0, 400.0], true);
+    open.children = vec![document(
+        vec![
+            document_row("Find the service date", [344.0, 260.0, 912.0, 28.0]),
+            document_row("Ask about Tuesday", [344.0, 288.0, 912.0, 28.0]),
+        ],
+        [344.0, 260.0, 912.0, 56.0],
+    )];
+    assert!(
+        held(vec![
+            list_row("Book a haircut", [304.0, 64.0, 952.0, 36.0], false),
+            open,
+            list_row("Buy oat milk", [304.0, 500.0, 952.0, 36.0], false),
+        ])
+        .is_empty(),
+        "nothing of the document stands in the list again"
+    );
+
+    // A page's document naming the item it was made from, as one reference row: it is no row
+    // of a list, and no finding.
+    let mut open = list_row("Call the landlord", [304.0, 100.0, 952.0, 400.0], true);
+    let mut section = node("Section", "linked", [344.0, 260.0, 912.0, 60.0], None);
+    section.children = vec![node_of("ListRow", "reference", [344.0, 260.0, 912.0, 36.0])];
+    section.children[0]
+        .semantics
+        .get_or_insert_with(|| AccessNode::new(Role::ListItem))
+        .name = Some("Book a haircut".to_owned());
+    open.children = vec![section];
+    assert!(
+        held(vec![
+            open,
+            list_row("Book a haircut", [304.0, 500.0, 952.0, 36.0], false),
+        ])
+        .is_empty(),
+        "a reference on its own is no row of a list"
+    );
+
+    // A branch of a tree whose rows show is expanded and holds no document: no finding.
+    let mut branch = node(
+        "ListRow",
+        "branch",
+        [304.0, 64.0, 952.0, 36.0],
+        Some(Role::ListItem),
+    );
+    let access = branch.semantics.as_mut().expect("the row's semantics");
+    access.name = Some("Outline".to_owned());
+    access.state.expanded = Some(true);
+    assert!(
+        held(vec![
+            branch,
+            list_row("First draft", [304.0, 100.0, 952.0, 36.0], false),
+        ])
+        .is_empty(),
+        "an expanded branch is a row of its list, and its document holds no row"
+    );
+}

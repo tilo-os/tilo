@@ -2237,7 +2237,26 @@ mod tests {
                         row.rect,
                         outline.rect
                     );
+                    // The row standing open folds its branch: a step its document lists does
+                    // not stand in the list again.
+                    assert_eq!(
+                        count_named(root, ROWS, subtask),
+                        1,
+                        "{subtask:?} stands once at {width}×{height}: in the document of the \
+                         row standing open, or in the list, never both"
+                    );
                 }
+                // The outline's row says how far its branch got, as the list's row of the same
+                // task does: "Find the last service date" holds a step of its own, undone.
+                let held = named(outline, ROWS, "Find the last service date")
+                    .expect("the outline shows the step");
+                assert_eq!(
+                    held.semantics
+                        .as_ref()
+                        .and_then(|access| access.value.as_deref()),
+                    Some("0/1"),
+                    "the outline counts what stands under the step at {width}×{height}"
+                );
             }
             // The window states the place the task belongs to, not the place it stood on: what
             // waits in the inbox does not stand in the list, and what is due today does.
@@ -2255,6 +2274,61 @@ mod tests {
                 assert!(
                     chosen_named(root, "Today"),
                     "the sidebar follows the task to its place at {width}×{height}"
+                );
+            }
+        }
+    }
+
+    /// A task's steps stand on the column of the words over them when none of them holds a
+    /// step of its own: a tree keeps a column for a chevron only where a row of that level has
+    /// something to fold.
+    #[test]
+    fn a_tasks_steps_that_fold_nothing_stand_on_their_sections_column() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tasks");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let task = "Call the landlord about the boiler";
+        let steps = ["Find the last service date", "Book the engineer's visit"];
+        for (width, height) in [(1280_u32, 800_u32), (390, 844)] {
+            let mut staged = Staged::over(
+                &app,
+                &packages,
+                "a task that is late",
+                (width, height),
+                ui::Theme::light(),
+                None,
+                &[],
+            )
+            .expect("the scenario stages");
+            staged.harness.relayout();
+            if width <= 390 {
+                // A window too narrow for the list and the item at once: the task's row opens
+                // its page in front of the list, and the steps stand in the page.
+                let id = super::super::button_named(&staged.harness().inspection().root, task)
+                    .expect("the task's row is a row of the list");
+                staged.press(&id, false).expect("the row presses");
+            }
+            let root = &staged.harness().inspection().root;
+            let heading = named(root, &[ui::a11y::Role::Heading { level: 2 }], "Subtasks")
+                .unwrap_or_else(|| panic!("the section names itself at {width}×{height}"));
+            let outline = named(root, &[ui::a11y::Role::Tree], "Subtasks")
+                .unwrap_or_else(|| panic!("the section lists its steps at {width}×{height}"));
+            for step in steps {
+                let row = named(outline, ROWS, step)
+                    .unwrap_or_else(|| panic!("the outline shows {step:?} at {width}×{height}"));
+                let Some(ui::widget::LayoutInfo::Row(row)) = &row.layout else {
+                    panic!("a row of an outline says the column it stands on");
+                };
+                let left = f64::from(row.content_left);
+                // A row keeps the bleed every row of a list keeps, and no step for a
+                // chevron: what it holds folds nothing.
+                let bleed = ui::chrome::row_bleed(&ui::Theme::light());
+                assert!(
+                    (left - heading.rect[0]).abs() <= bleed + 1.0,
+                    "the step {step:?} starts at x {left:.0} where the words naming its section \
+                     stand at x {:.0}: a level with nothing to fold keeps no chevron's column \
+                     at {width}×{height}",
+                    heading.rect[0]
                 );
             }
         }
@@ -2400,6 +2474,21 @@ mod tests {
 
     /// The rows of a list or a tree, as the window reads them.
     const ROWS: &[ui::a11y::Role] = &[ui::a11y::Role::ListItem, ui::a11y::Role::TreeItem];
+
+    /// How many nodes the window shows named `label` in one of `roles`.
+    fn count_named(
+        node: &ui::headless::InspectionNode,
+        roles: &[ui::a11y::Role],
+        label: &str,
+    ) -> usize {
+        let here = usize::from(node.semantics.as_ref().is_some_and(|access| {
+            roles.contains(&access.role) && access.name.as_deref() == Some(label)
+        }));
+        node.children
+            .iter()
+            .map(|child| count_named(child, roles, label))
+            .fold(here, usize::saturating_add)
+    }
 
     /// What the window shows named `label` in one of `roles`.
     fn named<'a>(
