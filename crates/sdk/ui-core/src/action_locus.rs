@@ -290,14 +290,17 @@ pub(crate) fn interaction_node<'tree>(
             parents.insert(child.clone(), node.id.clone());
         }
     }
-    let mut cursor = behind?.id.clone();
-    while let Some(parent) = parents.get(&cursor) {
+    // An id two nodes share can lead the parents round in a circle; no node
+    // has more ancestors than the tree has nodes.
+    let mut cursor = &behind?.id;
+    for _ in 0..tree.len() {
+        let parent = parents.get(cursor)?;
         if let Some(node) = tree.node(parent)
             && node.widget_taffy_id.is_some()
         {
             return Some(node);
         }
-        cursor = parent.clone();
+        cursor = parent;
     }
     None
 }

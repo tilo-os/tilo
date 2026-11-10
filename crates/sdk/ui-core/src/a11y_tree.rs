@@ -981,17 +981,31 @@ impl SemanticTree {
             .filter(|node| {
                 !node.id.0.starts_with("r:") && node.id.control_key() == Some(control_id)
             })
-            .filter_map(|node| {
-                let mut path = vec![node.id.clone()];
-                let mut cursor = node.id.clone();
-                while cursor != self.root {
-                    cursor = parents.get(&cursor)?.clone();
-                    path.push(cursor.clone());
-                }
-                path.reverse();
-                Some(path)
-            })
+            .filter_map(|node| self.path_from_root(&parents, &node.id))
             .collect::<Vec<_>>()
+    }
+
+    /// `id`'s ancestors from the root down, `id` last, as `parents` (each
+    /// node's parent by id) leads up to the root. An id two nodes share can
+    /// make that lead round in a circle (a node listed among the children of
+    /// one of its own descendants): no path is longer than the tree has
+    /// nodes, so a walk that would be is no path, never an endless one.
+    fn path_from_root(
+        &self,
+        parents: &HashMap<SemanticId, SemanticId>,
+        id: &SemanticId,
+    ) -> Option<Vec<SemanticId>> {
+        let mut path = vec![id.clone()];
+        let mut cursor = id;
+        while *cursor != self.root {
+            if path.len() > self.len() {
+                return None;
+            }
+            cursor = parents.get(cursor)?;
+            path.push(cursor.clone());
+        }
+        path.reverse();
+        Some(path)
     }
 
     pub fn action(&self, id: &SemanticId, name: &str) -> Option<&SemanticAction> {
@@ -2112,6 +2126,25 @@ mod tests {
         assert!(tree.control_paths("missing").is_empty());
         assert!(tree.control_paths_unranked("").is_empty());
         assert!(tree.control_paths("").is_empty());
+    }
+
+    /// Two nodes under one id can list each other as children: the walk up
+    /// from either finds no path to the root rather than climbing for ever.
+    #[test]
+    fn parents_that_go_round_in_a_circle_lead_to_no_path() {
+        let mut root = Column::new().push(Box::new(
+            crate::widget::Scrollable::new_vertical()
+                .with_semantic_key("advanced")
+                .with_child(Box::new(Button::new("save", "Save"))),
+        ));
+        let nodes = layout(&mut root);
+        let mut tree = SemanticTree::new();
+        tree.refresh(&root, &nodes, None, &[]);
+        let save = tree.find_by_name("Save").unwrap().id.clone();
+        let [path] = tree.control_paths_unranked("save").try_into().unwrap();
+        let group = path[path.len() - 2].clone();
+        let parents = HashMap::from([(save.clone(), group.clone()), (group, save.clone())]);
+        assert_eq!(tree.path_from_root(&parents, &save), None);
     }
 
     #[test]
