@@ -819,7 +819,6 @@
           }
         },
         "tags": [
-          "read:document",
           "audience:agents"
         ]
       },

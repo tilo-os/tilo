@@ -55,6 +55,24 @@ pub fn addresses(tool: &str, arguments: &Value) -> bool {
     }
 }
 
+/// The answer to a call of a key for one workspace that addresses the
+/// account: it reaches none, and is told so rather than that the workspace
+/// runs no app called `account`. `None` for a call in its workspace.
+pub(crate) fn beyond_workspace(tool: &str, arguments: &Value, structured: bool) -> Option<Value> {
+    let path = arguments.get("path").and_then(Value::as_str).unwrap_or("");
+    (!path.is_empty() && addresses(tool, arguments)).then(|| {
+        answer(
+            structured,
+            path,
+            failed(
+                "forbidden",
+                "this key reaches one workspace and no account",
+                "account paths need a key reaching all your workspaces",
+            ),
+        )
+    })
+}
+
 /// What an account action answered.
 enum Outcome {
     Ok(Value),
@@ -307,6 +325,7 @@ impl Door {
                 for (resource, label) in [
                     ("workspaces", "Your workspaces"),
                     ("keys", "Keys to your workspaces"),
+                    ("usage", "What your workspaces keep and ran"),
                 ] {
                     let (actions, lines) = actions_of(resource);
                     let _ = write!(text, "\n{ROOT}/{resource}  {label}{lines}");
@@ -398,6 +417,10 @@ impl Door {
                 Outcome::Ok(listed) => ("account.keys", listed),
                 other => return answer(structured, path, other),
             },
+            "account/usage" => match self.relay.account(key).await {
+                Ok(account) => ("account.usage", account),
+                Err(error) => return answer(structured, path, refused(&error)),
+            },
             other => {
                 return answer(
                     structured,
@@ -405,12 +428,31 @@ impl Door {
                     failed(
                         "not_found",
                         format!("{other} is nothing to read"),
-                        "tilo_read account/workspaces or account/keys",
+                        "tilo_read account/workspaces, account/keys or account/usage",
                     ),
                 );
             }
         };
         let mut text = format!("{path}:");
+        for row in fields
+            .pointer("/standing/usage/workspaces")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let _ = write!(
+                text,
+                "\n{}: {} s of VM time{}, {} bytes kept",
+                row["workspace"].as_str().unwrap_or_default(),
+                row["vm_seconds"].as_u64().unwrap_or_default(),
+                if row["running"] == true {
+                    ", running"
+                } else {
+                    ""
+                },
+                row["stored_bytes"].as_u64().unwrap_or_default(),
+            );
+        }
         for row in fields
             .get("workspaces")
             .or_else(|| fields.get("keys"))

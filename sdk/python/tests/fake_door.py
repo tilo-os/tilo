@@ -259,6 +259,24 @@ class FakeDoor:
                 ],
                 "actions": [],
             }
+        if name == "tilo_read" and arguments.get("path") == "account/usage":
+            return {
+                "path": "account/usage",
+                "kind": "account.usage",
+                "fields": {
+                    "host": "door.test",
+                    "standing": {
+                        "plan": "free",
+                        "usage": {
+                            "workspaces": [
+                                {"workspace": WORKSPACE_ID, "vm_seconds": 0, "running": False, "stored_bytes": 2048},
+                                {"workspace": "other", "vm_seconds": 90, "running": True},
+                            ]
+                        },
+                    },
+                },
+                "children": [],
+            }
         if name == "tilo_do":
             return self.account_do(arguments.get("path", ""), arguments.get("args") or {})
         if name == "tilo_status":

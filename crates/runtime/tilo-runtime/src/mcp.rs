@@ -2092,7 +2092,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             "tilo_status" => {
                 let a: StatusArgs = parse(args)?;
                 let invocation = invocation_id(&a.invocation_id)?;
-                let mut value = self.status(invocation)?;
+                let mut value = self.status(invocation).await?;
                 self.attach_images(invocation, &mut value, true, None).await;
                 Ok(value)
             }
@@ -2104,7 +2104,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     .await
                     .ok_or("the host dropped the request")?
                     .map_err(BridgeError::Host)?;
-                self.status(invocation)
+                self.status(invocation).await
             }
             _ => Err("Unknown tool".into()),
         }
@@ -2889,7 +2889,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         loop {
             // Asked before observing, so a change in between still wakes it.
             let change = self.host().next_change(&self.caller(), &id);
-            let state = self.host().observe(&self.caller(), &id);
+            let state = self.observed(id).await;
             if let Some(state) = state.as_ref().filter(|state| state.update.is_terminal()) {
                 self.narrate(id, None, ended(&state.update), state.left_at.clone());
                 return Ok(state_json(id, state));
@@ -3011,13 +3011,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// The fixed profile actor, confined to the profile's workspace.
     fn caller(&self) -> Caller {
         self.caller.clone()
-    }
-    fn status(&self, id: tilo_actions::InvocationId) -> Result<Value, String> {
-        self.host()
-            .observe(&self.caller(), &id)
-            .as_ref()
-            .map(|state| state_json(id, state))
-            .ok_or_else(|| UNOWNED.into())
     }
     async fn resources(&self, params: Value) -> Result<Value, String> {
         #[derive(Deserialize)]

@@ -810,6 +810,17 @@ fn asks_as_person(caller: &Caller, certificate: &DeviceCert) -> bool {
             && matches!(caller.principal(), CallerPrincipal::Agent(_)))
 }
 
+/// Whether `caller` is the person's server key `certificate` certifies,
+/// reaching every workspace of its person: what may read that person's
+/// account. An agent the person connected through consent does not.
+fn reaches_every_workspace(caller: &Caller, certificate: &DeviceCert) -> bool {
+    certificate.capabilities.agent == Some(tilo_user_identity::AgentScope::AllWorkspaces)
+        && certificate.capabilities.server_key
+        && asks_as_person(caller, certificate)
+        && caller.device_public_key() == Some(&certificate.device_public_key)
+        && caller.user_public_key() == Some(&certificate.user_public_key)
+}
+
 /// What a catalogue offers its caller, before it is paged.
 #[derive(Default)]
 struct Offer {
@@ -981,10 +992,17 @@ impl Workspaces {
             (host_account::PROVIDER, _)
                 if request.target == host_account::target(host_account::ACCOUNT) =>
             {
-                // The person's own account, read by their own device.
+                // The person's own account, read by their own device or by
+                // a key of theirs that reaches all their workspaces (a
+                // backend's server key, metering what it runs).
                 let person = caller
                     .user_public_key()
-                    .filter(|_| speaks_for_themselves(caller))
+                    .filter(|_| {
+                        speaks_for_themselves(caller)
+                            || certificate.is_some_and(|certificate| {
+                                reaches_every_workspace(caller, certificate)
+                            })
+                    })
                     .ok_or(ActionHostError::UnknownAction)?;
                 let account = self
                     .own_account(person)

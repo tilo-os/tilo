@@ -639,3 +639,85 @@ async fn a_full_workspace_of_ones_own_is_refused_and_the_account_says_so() {
     assert_eq!(standing.usage.workspaces[0].workspace, own.workspace);
     relay.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_server_key_reads_its_persons_account_and_an_agent_or_a_narrower_key_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    workspaces
+        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
+        .unwrap();
+    let host = HostWorkspaceActions::new();
+    host.attach(workspaces.clone());
+    let root = SigningKey::from_bytes(&rand::random());
+    let now = tilo_clock::unix_now_ns();
+    let grant_key = SigningKey::from_bytes(&rand::random());
+    let mut all = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: grant_key.verifying_key().to_bytes(),
+        device_label: "backend".into(),
+        capabilities: DeviceCapabilities::server_key_grant(),
+        issued_at_ns: now,
+        expires_at_ns: Some(now + 3_600_000_000_000),
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut all, &root).unwrap();
+    let read = || {
+        let mut read = super::super::tests::request("", host_account::ACCOUNT, json!({}));
+        read.target = host_account::target(host_account::ACCOUNT);
+        read
+    };
+    // A backend's key reads what its person's workspaces keep and ran.
+    let agent =
+        Caller::authenticated(all.user_public_key, all.device_public_key).delegated_to("grant");
+    let receipt = settled(host.as_host(&all).invoke(&agent, read()))
+        .await
+        .unwrap();
+    let ReceiptStatus::Completed { output } = receipt.status else {
+        panic!("the grant reads its person's account: {receipt:?}");
+    };
+    let account: HostAccount = serde_json::from_value(output.value.unwrap()).unwrap();
+    assert_eq!(
+        account.standing.unwrap().account,
+        hex::encode(root.verifying_key().to_bytes())
+    );
+    // An agent the person connected through consent, reaching every
+    // workspace too, reads no account.
+    let consented_key = SigningKey::from_bytes(&rand::random());
+    let mut consented = DeviceCert {
+        device_public_key: consented_key.verifying_key().to_bytes(),
+        device_label: "assistant".into(),
+        capabilities: DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+        ..all.clone()
+    };
+    sign_device_cert(&mut consented, &root).unwrap();
+    let assistant = Caller::authenticated(consented.user_public_key, consented.device_public_key)
+        .delegated_to("assistant");
+    let refused = settled(host.as_host(&consented).invoke(&assistant, read())).await;
+    assert!(
+        matches!(refused, Err(ActionHostError::UnknownAction)),
+        "{refused:?}"
+    );
+    // The key it mints for one workspace reads no account.
+    let minted_key = SigningKey::from_bytes(&rand::random());
+    let mut minted = prepare_minted_grant(
+        &all,
+        minted_key.verifying_key().to_bytes(),
+        [7; 16],
+        "minted",
+        now,
+        now + 60_000_000_000,
+    );
+    sign_device_cert(&mut minted, &grant_key).unwrap();
+    let narrow = Caller::authenticated(minted.user_public_key, minted.device_public_key)
+        .delegated_to("minted");
+    let refused = settled(host.as_host(&minted).invoke(&narrow, read())).await;
+    assert!(
+        matches!(refused, Err(ActionHostError::UnknownAction)),
+        "{refused:?}"
+    );
+    relay.shutdown().await;
+}

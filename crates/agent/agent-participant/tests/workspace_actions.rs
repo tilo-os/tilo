@@ -32,6 +32,8 @@ pub(crate) mod support;
 #[path = "workspace_actions/agent_mcp.rs"]
 mod agent_mcp;
 mod common;
+#[path = "workspace_actions/door_on_relay.rs"]
+pub mod door_on_relay;
 #[cfg(test)]
 #[path = "workspace_actions/encrypted_resource.rs"]
 mod encrypted_resource;

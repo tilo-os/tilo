@@ -101,7 +101,6 @@ pub fn specs() -> Vec<ActionSpec> {
     )
     .of_kind(ActionKind::Read)
     .with_description("Review exact-item restoration without writing. Returns pinned target and live heads; copy review into restore-reviewed. Any later edit requires a new review.")
-    .reads_document()
     // It answers a review object for `restore-reviewed` to take back: a
     // step an agent or script takes. A person restores in the app itself.
     .for_audience(tilo_actions::Audience::Agents);

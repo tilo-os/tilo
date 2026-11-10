@@ -2863,7 +2863,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 .ok_or("the host dropped the request")?
                 .map_err(|error| error.to_string())?;
         }
-        let value = self.status(invocation)?;
+        let value = self.status(invocation).await?;
         let mut reply = outcome(&value);
         if structured {
             reply.structured = Some(answer_of(&value));

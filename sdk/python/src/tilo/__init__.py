@@ -25,8 +25,10 @@ from ._models import (
     Person,
     ProgramAnswer,
     Row,
+    Usage,
     WorkspaceInfo,
     WorkspaceList,
+    WorkspaceUsage,
 )
 from ._resource import FieldMap, Resource
 from ._run import Run
@@ -57,10 +59,12 @@ __all__ = [
     "RunOpening",
     "SignIn",
     "Tilo",
+    "Usage",
     "Workspace",
     "WorkspaceInfo",
     "WorkspaceKeys",
     "WorkspaceList",
+    "WorkspaceUsage",
     "Workspaces",
     "__version__",
 ]

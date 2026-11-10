@@ -105,3 +105,15 @@ async def test_a_minted_key_makes_a_client_of_its_own(tilo):
     client = minted.client()
     assert client.transport.key == "tilo_sk_minted"
     await client.aclose()
+
+
+async def test_the_account_says_what_its_workspaces_kept_and_ran(tilo, door):
+    usage = await tilo.usage()
+
+    assert door.asked("tilo_read")[-1]["arguments"] == {"path": "account/usage"}
+    assert usage.host == "door.test"
+    assert usage.plan == "free"
+    assert [row.workspace for row in usage.workspaces] == [WORKSPACE_ID, "other"]
+    assert usage.workspaces[0].stored_bytes == 2048
+    assert usage.vm_seconds == 90
+    assert usage.running == ["other"]

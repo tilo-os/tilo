@@ -9,7 +9,7 @@ from typing import Any, Mapping
 
 from ._errors import AskPending, ProtocolError, Refused
 from ._link import Link
-from ._models import Key, MintedKey, WorkspaceInfo, WorkspaceList
+from ._models import Key, MintedKey, Usage, WorkspaceInfo, WorkspaceList
 from ._sync import LoopThread
 from ._wire import Transport
 
@@ -243,6 +243,16 @@ class AsyncTilo:
         )
         self.catalog = None
         return result
+
+    def usage(self) -> Any:
+        """The person's account on the host: per workspace, what it keeps and
+        the VM time it ran. A key reaching all their workspaces reads it."""
+        return self.handoff(self._usage())
+
+    async def _usage(self) -> Usage:
+        answer = await self._link().call("tilo_read", {"path": f"{ACCOUNT}/usage"})
+        fields = answer.get("fields")
+        return Usage.of(fields if isinstance(fields, Mapping) else {})
 
     # -- keys ------------------------------------------------------------
 

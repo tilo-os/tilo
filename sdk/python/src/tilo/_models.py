@@ -123,6 +123,64 @@ class Key:
 
 
 @dataclass(frozen=True)
+class WorkspaceUsage:
+    """What one workspace kept and ran on its host this billing period."""
+
+    workspace: str
+    vm_seconds: int = 0
+    snapshot_seconds: int = 0
+    running: bool = False
+    stored_bytes: int = 0
+
+    @classmethod
+    def of(cls, raw: Mapping[str, Any]) -> WorkspaceUsage:
+        return cls(
+            workspace=str(raw.get("workspace") or ""),
+            vm_seconds=_int(raw.get("vm_seconds")) or 0,
+            snapshot_seconds=_int(raw.get("snapshot_seconds")) or 0,
+            running=bool(raw.get("running")),
+            stored_bytes=_int(raw.get("stored_bytes")) or 0,
+        )
+
+
+@dataclass(frozen=True)
+class Usage:
+    """The person's account on the host: its plan, and per workspace what it
+    kept and the VM time it ran. `raw` is the whole account answer."""
+
+    host: str
+    plan: str | None = None
+    workspaces: Sequence[WorkspaceUsage] = ()
+    raw: Mapping[str, Any] = field(default_factory=dict)
+
+    @property
+    def vm_seconds(self) -> int:
+        return sum(workspace.vm_seconds for workspace in self.workspaces)
+
+    @property
+    def running(self) -> list[str]:
+        """The workspaces with a VM running now."""
+        return [workspace.workspace for workspace in self.workspaces if workspace.running]
+
+    @classmethod
+    def of(cls, raw: Mapping[str, Any]) -> Usage:
+        standing = raw.get("standing")
+        standing = standing if isinstance(standing, Mapping) else {}
+        usage = standing.get("usage")
+        usage = usage if isinstance(usage, Mapping) else {}
+        return cls(
+            host=str(raw.get("host") or ""),
+            plan=_text(standing.get("plan")),
+            workspaces=tuple(
+                WorkspaceUsage.of(row)
+                for row in usage.get("workspaces") or []
+                if isinstance(row, Mapping)
+            ),
+            raw=dict(raw),
+        )
+
+
+@dataclass(frozen=True)
 class MintedKey:
     """A key just minted: the token to use, and where it points."""
 

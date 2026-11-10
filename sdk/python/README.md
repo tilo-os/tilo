@@ -54,6 +54,9 @@ The sync client has the same surface without `await`: `from tilo import Tilo`.
   answers once they decide.
 - **Runs group calls.** `async with ws.run("Fill Jane's application"):` puts
   every call inside into one run: one undo step per app, named in history.
+- **Usage.** `await tilo.usage()` reads the person's account on the host
+  with a key reaching all their workspaces: per workspace, the VM time it
+  ran and what it keeps (`usage.vm_seconds`, `usage.running`).
 - **Reads are snapshots, watches are live.** `await ws.read(path)` is a
   snapshot; `async for event in ws.watch(path)` follows changes, runs and
   presence, its cursor kept.
@@ -81,6 +84,20 @@ declaring one class or interface per resource kind over these carriers
 workspace's own apps' types, and `--out` names the directory they go in.
 Without generated types everything still works through `ws.resource(path)`
 and `ws.do(path, args)`.
+
+## End to end
+
+`examples/visa_proof.py` is a visa startup's backend: one workspace per
+applicant, a key minted for each applicant's agent, the agent filling a PDF
+form and writing a cover letter, and a reviewer reading History, undoing the
+agent's run and checking no VM ran. It runs against any door with a server
+key, or against a relay with its app workers on loopback:
+
+```sh
+cargo build -p tilo-agent-participant --example door-on-relay
+target/debug/examples/door-on-relay -- env VISA_REVOKE_SERVER_KEY=1 \
+    uv run --project sdk/python python sdk/python/examples/visa_proof.py
+```
 
 ## Tests
 

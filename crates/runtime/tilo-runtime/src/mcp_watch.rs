@@ -71,6 +71,34 @@ impl Cursor {
 }
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+    /// How invocation `id` stands, as `tilo_status` answers it.
+    pub(in crate::mcp) async fn status(
+        &self,
+        id: tilo_actions::InvocationId,
+    ) -> Result<Value, String> {
+        self.observed(id)
+            .await
+            .as_ref()
+            .map(|state| crate::mcp::state_json(id, state))
+            .ok_or_else(|| crate::mcp::UNOWNED.into())
+    }
+
+    /// The host's last state of invocation `id`, asked off this task's
+    /// thread: a host may ask the device running it and wait for the answer
+    /// (a session's actions do), and a wait on this thread would stall the
+    /// connection that carries that answer until it gave up.
+    pub(in crate::mcp) async fn observed(
+        &self,
+        id: tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        let host = std::sync::Arc::clone(&self.host);
+        let caller = self.caller();
+        tokio::task::spawn_blocking(move || host.observe(&caller, &id))
+            .await
+            .ok()
+            .flatten()
+    }
+
     /// Note that `invocation` started, as a watch of this session follows it.
     pub(super) fn watch_run_started(&self, invocation: &str, path: &str) {
         let (name, run_id) = self.run_named();
@@ -127,7 +155,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         };
         loop {
             let mut events = Vec::new();
-            self.watch_runs(&mut cursor, &mut events);
+            self.watch_runs(&mut cursor, &mut events).await;
             self.watch_here(&mut cursor, &mut events);
             self.watch_changes(path, &mut cursor, &mut events).await?;
             if !events.is_empty() || std::time::Instant::now() >= deadline {
@@ -157,23 +185,34 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// The runs this session started since the cursor, as the host says they
     /// stand now.
-    fn watch_runs(&self, cursor: &mut Cursor, events: &mut Vec<Value>) {
+    async fn watch_runs(&self, cursor: &mut Cursor, events: &mut Vec<Value>) {
         let seen = cursor.run.unwrap_or_default();
 
         // How the runs still going stand: an invocation that finished after
         // its call answered is reported finished here.
-        let moved: Vec<(String, String)> = self
+        let going: Vec<String> = self
             .runs
             .lock_recover()
             .iter()
             .filter(|run| !is_terminal(&run.phase))
-            .filter_map(|run| {
-                let id = invocation_id(&run.invocation).ok()?;
-                let value = self.status(id).ok()?;
-                let state = value.pointer("/update/state").and_then(Value::as_str)?;
-                is_terminal(state).then(|| (run.invocation.clone(), state.to_owned()))
-            })
+            .map(|run| run.invocation.clone())
             .collect();
+        let mut moved: Vec<(String, String)> = Vec::new();
+        for invocation in going {
+            let Ok(id) = invocation_id(&invocation) else {
+                continue;
+            };
+            let Ok(value) = self.status(id).await else {
+                continue;
+            };
+            if let Some(state) = value
+                .pointer("/update/state")
+                .and_then(Value::as_str)
+                .filter(|state| is_terminal(state))
+            {
+                moved.push((invocation, state.to_owned()));
+            }
+        }
         let announced: Vec<Run> = {
             let mut runs = self.runs.lock_recover();
             for (invocation, phase) in moved {

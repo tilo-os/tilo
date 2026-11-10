@@ -221,6 +221,27 @@ impl Relay {
             .collect())
     }
 
+    /// The person's account here, as `connection` (reaching all their
+    /// workspaces) reads it: their plan, and per workspace what it keeps and
+    /// the VM time it ran.
+    ///
+    /// # Errors
+    /// The relay was not reached or refused.
+    pub async fn account(&self, connection: &Connection) -> Result<Value, RelayError> {
+        use tilo_actions::remote::host_account;
+        let lobby = self.lobby(connection).await?;
+        connection
+            .device
+            .ask_host(
+                lobby,
+                host_account::target(host_account::ACCOUNT),
+                Map::new(),
+                "tilo front door",
+            )
+            .await
+            .map_err(RelayError::from)
+    }
+
     /// Make the person's workspace called `name` as `connection`. A person
     /// has any number of workspaces of their own, sharing what the host
     /// keeps for them.

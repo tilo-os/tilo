@@ -289,6 +289,22 @@ impl Session {
     pub(crate) async fn handle(&self, request: Value) -> Reply {
         self.touch();
         if let Some(workspace) = self.pinned().map(str::to_owned) {
+            if let (Some(id), Some("tools/call")) = (
+                request.get("id"),
+                request.get("method").and_then(Value::as_str),
+            ) && let Some(refused) = crate::account::beyond_workspace(
+                request
+                    .pointer("/params/name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                request.pointer("/params/arguments").unwrap_or(&Value::Null),
+                request
+                    .pointer("/params/_meta/so.tilo.mcp/structured")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            ) {
+                return Reply::one(result(id, &refused));
+            }
             return self.serve(&workspace, request).await;
         }
         let id = request.get("id").cloned();
@@ -486,7 +502,7 @@ pub fn account_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "tilo_read",
-            "description": "Read `account/workspaces` or `account/keys`.",
+            "description": "Read `account/workspaces`, `account/keys` or `account/usage` (VM time and storage per workspace).",
             "inputSchema": {"type":"object","properties":{"path":path},"required":["path"],"additionalProperties":false},
             "annotations": {"readOnlyHint": true},
         }),

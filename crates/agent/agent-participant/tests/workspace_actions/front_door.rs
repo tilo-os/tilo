@@ -5,136 +5,16 @@
 //! person's workspace, is answered there by the relay's app workers with no
 //! tab of anyone's open, mints a key that reaches that one workspace and
 //! nothing else, and revoking it ends both.
+use super::door_on_relay::{approved_key, door_on_relay, headers, json_of};
 use super::hosted_documents::{application_pdf, content_in, json_in};
 use super::*;
 use base64::Engine as _;
 use serde_json::{Value, json};
-use std::collections::HashMap;
 use std::sync::Arc;
-use tilo_front_door::{Config, Door, store::Store};
-use tilo_relay_protocol::directory::Listing;
-use tilo_relay_protocol::workspaces::WorkspaceRole;
-use tilo_user_identity::{DeviceCert, MAX_AGENT_GRANT_LIFETIME_NS, SignInProof};
+use tilo_front_door::Door;
+use tilo_user_identity::MAX_AGENT_GRANT_LIFETIME_NS;
 
 const ISSUER: &str = "https://mcp.tilo.test";
-
-/// A reply's status and JSON body.
-async fn json_of(reply: hyper::Response<http_body_util::Full<bytes::Bytes>>) -> (u16, Value) {
-    use http_body_util::BodyExt as _;
-    let status = reply.status().as_u16();
-    let body = reply.into_body().collect().await.unwrap().to_bytes();
-    (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
-}
-
-fn headers(pairs: &[(&'static str, &str)]) -> hyper::HeaderMap {
-    let mut map = hyper::HeaderMap::new();
-    for (name, value) in pairs {
-        map.insert(*name, value.parse().unwrap());
-    }
-    map
-}
-
-/// The query of `url`, its plain values.
-fn query_of(url: &str) -> HashMap<String, String> {
-    url.split_once('?')
-        .map(|(_, query)| query)
-        .unwrap_or_default()
-        .split('&')
-        .filter_map(|pair| pair.split_once('='))
-        .map(|(name, value)| (name.to_owned(), value.to_owned()))
-        .collect()
-}
-
-/// A key called `name`, asked for as a terminal does and approved by the
-/// person's Tilo on the web, which this plays: it signs the door's
-/// challenge with a device of `root`'s and certifies the grant's key as the
-/// server key the door asked for, lasting until revoked.
-async fn approved_key(door: &Arc<Door>, root: &SigningKey, device: &Device, name: &str) -> String {
-    let (status, asked) = json_of(
-        door.dispatch(
-            &hyper::Method::POST,
-            tilo_front_door::keys::NEW_PATH,
-            "",
-            &hyper::HeaderMap::new(),
-            json!({"name": name}).to_string().as_bytes(),
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(status, 201, "{asked}");
-    let approve = asked["approve_url"].as_str().unwrap();
-    let to_sign_in = door
-        .dispatch(
-            &hyper::Method::GET,
-            approve.strip_prefix(ISSUER).unwrap(),
-            "",
-            &hyper::HeaderMap::new(),
-            b"",
-        )
-        .await;
-    let location = to_sign_in.headers()[hyper::header::LOCATION]
-        .to_str()
-        .unwrap()
-        .to_owned();
-    let query = query_of(&location);
-    let challenge: [u8; 32] = hex::decode(&query["challenge"])
-        .unwrap()
-        .try_into()
-        .unwrap();
-    let grant_key: [u8; 32] = hex::decode(&query["grant_key"])
-        .unwrap()
-        .try_into()
-        .unwrap();
-    assert_eq!(query["grant_scope"], "all");
-    assert_eq!(query["grant_kind"], "server_key");
-    assert_eq!(query["grant_expires"], "never");
-    let now_ns = tilo_clock::unix_now_ns();
-    let mut grant = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: grant_key,
-        device_label: format!("{name} via mcp.tilo.test"),
-        capabilities: DeviceCapabilities::server_key_grant(),
-        issued_at_ns: now_ns.saturating_sub(1_000_000_000),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut grant, root).unwrap();
-    let proof = SignInProof::sign(device.cert.clone(), &device.key, ISSUER, challenge).unwrap();
-    let form = format!(
-        "pending={}&proof={}&grant={}",
-        query["pending"],
-        tilo_front_door::sign_in::encode_proof(&proof).unwrap(),
-        tilo_front_door::sign_in::encode_cert(&grant).unwrap()
-    );
-    let signed_in = door
-        .dispatch(
-            &hyper::Method::POST,
-            "/sign-in",
-            "",
-            &headers(&[("content-type", "application/x-www-form-urlencoded")]),
-            form.as_bytes(),
-        )
-        .await;
-    assert!(
-        signed_in.status().is_success() || signed_in.status().is_redirection(),
-        "{}",
-        signed_in.status()
-    );
-    let (status, polled) = json_of(
-        door.dispatch(
-            &hyper::Method::POST,
-            tilo_front_door::keys::POLL_PATH,
-            "",
-            &hyper::HeaderMap::new(),
-            json!({"poll": asked["poll"]}).to_string().as_bytes(),
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(status, 200, "{polled}");
-    polled["key"].as_str().unwrap().to_owned()
-}
 
 /// An MCP session at the door's `path` with `token`.
 struct Mcp<'a> {
@@ -245,98 +125,19 @@ async fn upload(mcp: &Mcp<'_>, workspace: &str, body: &[u8]) -> (u16, Value) {
     .await
 }
 
-/// The relay as its operator runs it, the site whose home workspace lets
-/// anyone in through its door, and the front door before both.
-struct OnRelay {
-    door: Arc<Door>,
-    /// The site's home workspace.
-    lobby: String,
-    _site: test_http::Responder,
-    _hosted: Hosted,
-    _state: tempfile::TempDir,
-}
-
-async fn door_on_relay() -> OnRelay {
-    // The relay, as its operator runs it.
-    let (operator, _) = tilo_user_identity::UserIdentity::generate("Relay operator", 1);
-    let host = enrol(
-        &operator,
-        "relay",
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
-    );
-    let state = support::scratch_dir();
-    let hosted = harness::hosted::start(
-        &operator,
-        &host,
-        state.path(),
-        Options {
-            plain: true,
-            ..Options::offering(common::catalogue, ModelChoice::Scripted)
-        },
-    )
-    .await;
-    let relay = hosted.web.plain_origin.clone().unwrap();
-    let workspaces = hosted.relay.workspaces().unwrap();
-    workspaces
-        .offer_own_workspaces(tilo_relay::workspaces::OwnWorkspaceOffer::free(
-            "relay.tilo.test",
-        ))
-        .unwrap();
-    // The site's home workspace, whose door lets anyone in.
-    let lobby = workspaces.create("Lounge").await.unwrap().workspace;
-    workspaces
-        .publish(
-            &lobby,
-            workspaces.serving_certificate(),
-            Listing {
-                description: "Everyone's".into(),
-                default_role: WorkspaceRole::Editor,
-            },
-        )
-        .await
-        .unwrap();
-    // The site names that door in its `entry.json`.
-    let entry = json!({"home": {"host": {"origin": relay},
-                                "admission": format!("{relay}/peer/v1/directory/{lobby}/")}});
-    let site = test_http::Responder::handle(move |request| {
-        (request.target == "/entry.json").then(|| {
-            test_http::Reply::status(200)
-                .header("content-type", "application/json")
-                .body(entry.to_string())
-        })
-    });
-    let door = Door::new(
-        &Config {
-            issuer: ISSUER.into(),
-            web_entry: format!("http://127.0.0.1:{}", site.port()),
-            relay: relay.clone(),
-        },
-        Store::in_memory(),
-    )
-    .unwrap();
-
-    OnRelay {
-        door,
-        lobby,
-        _site: site,
-        _hosted: hosted,
-        _state: state,
-    }
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[expect(
     clippy::too_many_lines,
     reason = "one key's story through the door, from its approval to its revocation"
 )]
 async fn a_key_works_through_the_door_on_the_relay_and_ends_when_revoked() {
-    let on_relay = door_on_relay().await;
+    let on_relay = door_on_relay(ISSUER).await;
     let door = Arc::clone(&on_relay.door);
     let lobby = on_relay.lobby.clone();
     // A person who never met the operator approves a key for their backend.
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    let key = approved_key(&door, &ada, &page, "Visa backend").await;
+    let key = approved_key(&on_relay, &ada, &page, "Visa backend").await;
 
     let mut account = Mcp {
         door: &door,
@@ -512,6 +313,47 @@ async fn a_key_works_through_the_door_on_the_relay_and_ends_when_revoked() {
     let (status, _) = lobby_session.initialize().await;
     assert_eq!(status, 403, "a minted key reaches only its workspace");
 
+    // The person's key reads what their workspaces keep and ran: no VM ran
+    // for any of it. The minted key reads no account.
+    let usage = |id| {
+        json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+               "params": {"name": "tilo_read", "arguments": {"path": "account/usage"},
+                          "_meta": {"so.tilo.mcp": {"structured": true}}}})
+    };
+    let (status, read) = account.post(usage(6)).await;
+    assert_eq!(status, 200, "{read}");
+    let rows = read["result"]["structuredContent"]["fields"]["standing"]["usage"]["workspaces"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        rows.iter()
+            .any(|row| row["workspace"] == workspace.as_str()),
+        "{read}"
+    );
+    assert!(
+        rows.iter()
+            .all(|row| row["vm_seconds"] == 0 && row["running"] == false),
+        "{read}"
+    );
+    let mut minted_account = Mcp {
+        door: &door,
+        path: "/mcp".into(),
+        token: minted_key.clone(),
+        session: None,
+    };
+    let (status, init) = minted_account.initialize().await;
+    assert_eq!(
+        status, 200,
+        "a minted key at the door's root is its workspace's: {init}"
+    );
+    let (status, read) = minted_account.post(usage(7)).await;
+    assert_eq!(status, 200, "{read}");
+    assert_eq!(
+        read["result"]["structuredContent"]["error"]["code"], "forbidden",
+        "a minted key reads no account: {read}"
+    );
+
     // Revoking the key that minted it ends both, at once.
     let keys = account.tilo_do(json!({"path": "account/keys#list"})).await;
     let own = keys["result"]["structuredContent"]["result"]["keys"][0]["grant"]
@@ -566,13 +408,13 @@ fn quantile(durations: &[Duration], quantile: f64) -> Duration {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_key_makes_and_works_in_hundreds_of_workspaces_at_once() {
-    let on_relay = door_on_relay().await;
+    let on_relay = door_on_relay(ISSUER).await;
     let door = Arc::clone(&on_relay.door);
     // A startup's backend, whose person is not the relay's operator, makes a
     // workspace per customer with its one key.
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    let key = approved_key(&door, &ada, &page, "Customer backend").await;
+    let key = approved_key(&on_relay, &ada, &page, "Customer backend").await;
     let mut account = Mcp {
         door: &door,
         path: "/mcp".into(),

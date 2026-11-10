@@ -277,6 +277,26 @@ impl Device {
         arguments: Map<String, Value>,
         caller: &str,
     ) -> Result<Value, CertifyError> {
+        let target = RemoteActionTarget {
+            provider: HOST_ACTIONS_PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(HOST_ROOMS_RESOURCE, action),
+        };
+        self.ask_host(workspace_id, target, arguments, caller).await
+    }
+
+    /// What the host itself answers to `target` with `arguments`, asked in
+    /// `workspace_id`: one of its own operations, or the person's account
+    /// on it.
+    ///
+    /// # Errors
+    /// The host did not answer, refused, or did not finish.
+    pub async fn ask_host(
+        &self,
+        workspace_id: u64,
+        target: RemoteActionTarget,
+        arguments: Map<String, Value>,
+        caller: &str,
+    ) -> Result<Value, CertifyError> {
         let unreachable = |why: String| CertifyError::Request(why);
         let receipt = self
             .actions(workspace_id)
@@ -285,10 +305,7 @@ impl Device {
                 InvokeRequest {
                     on_behalf_of: None,
                     invocation: tilo_actions::InvocationId::new(),
-                    target: RemoteActionTarget {
-                        provider: HOST_ACTIONS_PROVIDER.to_owned(),
-                        address: tilo_actions::ActionAddress::new(HOST_ROOMS_RESOURCE, action),
-                    },
+                    target,
                     argument: InvokeArgument::Json(arguments),
                     context: None,
                     confirmation: None,
