@@ -171,7 +171,7 @@ impl tilo_session::Service for Cable {
 /// and in use from here on. Returns the root's directory.
 fn their_other_computer(env: &mut tilo_test_env::ScopedEnv) -> tempfile::TempDir {
     let person = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
-    let device = ed25519_dalek::SigningKey::from_bytes(&[0x24; 32]);
+    let device = ed25519_dalek::SigningKey::from_bytes(&tilo_test_env::node_key());
     a_device(env, &person, &device, "The desktop")
 }
 

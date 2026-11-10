@@ -62,7 +62,7 @@ fn this_computer(
     std::fs::create_dir_all(paths.device_privkey.parent().expect("the key's directory"))
         .expect("this computer's key directory");
     let person = SigningKey::from_bytes(&[0x61; 32]);
-    let device = SigningKey::from_bytes(&[0x62; 32]);
+    let device = SigningKey::from_bytes(&tilo_test_env::node_key());
     tilo_user_identity::persist::write_device_key(&paths.device_privkey, &device)
         .expect("this computer's device key");
     let cert = certified(&person, &device, "The laptop");

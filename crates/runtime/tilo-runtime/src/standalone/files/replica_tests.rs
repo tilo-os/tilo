@@ -63,7 +63,7 @@ fn certificate(
 /// The relay tilo.sh runs: a certified host of its operator, governing the
 /// workspaces it creates.
 async fn relay(state: &Path, operator: &SigningKey) -> tilo_relay::Relay {
-    let key = SigningKey::from_bytes(&[42; 32]);
+    let key = SigningKey::from_bytes(&tilo_test_env::node_key());
     // It owns the workspaces it governs, so it takes part in their channels
     // and their records are sealed.
     let cert = certificate(

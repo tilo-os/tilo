@@ -67,7 +67,7 @@ fn this_computer(
     std::fs::create_dir_all(paths.device_privkey.parent().expect("the key's directory"))
         .expect("this computer's key directory");
     let person = SigningKey::from_bytes(&[0x61; 32]);
-    let device = SigningKey::from_bytes(&[0x62; 32]);
+    let device = SigningKey::from_bytes(&tilo_test_env::node_key());
     tilo_user_identity::persist::write_device_key(&paths.device_privkey, &device)
         .expect("this computer's device key");
     let cert = certified(&person, &device, "The laptop");
@@ -501,7 +501,7 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
 
     // Her own device, of her own person, joins with what was handed to her.
     let her_root = SigningKey::from_bytes(&[0x81; 32]);
-    let her_key = SigningKey::from_bytes(&[0x82; 32]);
+    let her_key = SigningKey::from_bytes(&tilo_test_env::node_key());
     let her = certified(&her_root, &her_key, "Her laptop");
     let hers = joins_with(&link, workspace, &her, &her_key)
         .expect("the link admits her device into the workspace");

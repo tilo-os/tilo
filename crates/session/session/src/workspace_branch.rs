@@ -1195,7 +1195,7 @@ mod tests {
 
     fn identity() -> tilo_identity_host::custody::HostIdentity {
         let person = ed25519_dalek::SigningKey::from_bytes(&[0x31; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[0x32; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&tilo_test_env::node_key());
         let mut cert = tilo_user_identity::DeviceCert {
             user_public_key: person.verifying_key().to_bytes(),
             device_public_key: device.verifying_key().to_bytes(),

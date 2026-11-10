@@ -2083,7 +2083,7 @@ mod tests {
     /// device certificate.
     async fn plaza(dir: &Path) -> (tilo_relay::daemon::Relay, Workspaces, DeviceCert, String) {
         let root = SigningKey::from_bytes(&[1; 32]);
-        let host = SigningKey::from_bytes(&[2; 32]);
+        let host = SigningKey::from_bytes(&tilo_test_env::node_key());
         let host_cert = enrol(&root, &host, "host", DeviceCapabilities::host()).unwrap();
         let relay = tilo_relay::daemon::Relay::start(
             tilo_relay::RelayConfig {

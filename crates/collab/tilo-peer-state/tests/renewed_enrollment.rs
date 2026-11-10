@@ -77,7 +77,7 @@ impl Admitted {
     async fn start(held: impl FnOnce(&SigningKey, &SigningKey) -> DeviceCert) -> Self {
         let alice = SigningKey::from_bytes(&[1; 32]);
         let bob = SigningKey::from_bytes(&[2; 32]);
-        let host_key = SigningKey::from_bytes(&[3; 32]);
+        let host_key = SigningKey::from_bytes(&tilo_test_env::node_key());
         let laptop_key = SigningKey::from_bytes(&[4; 32]);
         let desk_key = SigningKey::from_bytes(&[5; 32]);
         let host = certificate(&alice, &host_key, DeviceCapabilities::host(), 1, None);

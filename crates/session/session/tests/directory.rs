@@ -318,7 +318,7 @@ fn joining_site(
 /// for them is bound to.
 fn this_computer(env: &mut tilo_test_env::ScopedEnv) -> (tempfile::TempDir, [u8; 32]) {
     let person = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
-    let device = ed25519_dalek::SigningKey::from_bytes(&[0x22; 32]);
+    let device = ed25519_dalek::SigningKey::from_bytes(&tilo_test_env::node_key());
     let root = a_device(env, &person, &device, "The laptop");
     (root, person.verifying_key().to_bytes())
 }

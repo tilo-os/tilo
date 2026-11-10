@@ -48,7 +48,7 @@ fn rig() -> Rig {
         .build()
         .unwrap();
     let root = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-    let device = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    let device = ed25519_dalek::SigningKey::from_bytes(&tilo_test_env::node_key());
     let mut certificate = tilo_user_identity::DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: device.verifying_key().to_bytes(),

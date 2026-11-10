@@ -62,7 +62,7 @@ fn this_computer(env: &mut tilo_test_env::ScopedEnv, display_name: &str) -> temp
     std::fs::create_dir_all(paths.device_privkey.parent().expect("the key's directory"))
         .expect("this computer's key directory");
     let person = ed25519_dalek::SigningKey::from_bytes(&[0x31; 32]);
-    let device = ed25519_dalek::SigningKey::from_bytes(&[0x32; 32]);
+    let device = ed25519_dalek::SigningKey::from_bytes(&tilo_test_env::node_key());
     persist::write_device_key(&paths.device_privkey, &device).expect("this computer's device key");
     let mut cert = tilo_user_identity::DeviceCert {
         user_public_key: person.verifying_key().to_bytes(),

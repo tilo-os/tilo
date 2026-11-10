@@ -386,7 +386,7 @@ mod tests {
     /// A workspace host as tilo.sh runs one, under `state`.
     async fn host(state: &std::path::Path) -> crate::daemon::Relay {
         let root = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
-        let host = ed25519_dalek::SigningKey::from_bytes(&[83; 32]);
+        let host = ed25519_dalek::SigningKey::from_bytes(&tilo_test_env::node_key());
         let mut cert = tilo_user_identity::DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: host.verifying_key().to_bytes(),

@@ -63,7 +63,7 @@ impl BlobAccess for Blobs {
 
 fn governor() -> (SigningKey, DeviceCert) {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let key = SigningKey::from_bytes(&[2; 32]);
+    let key = SigningKey::from_bytes(&tilo_test_env::node_key());
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: key.verifying_key().to_bytes(),

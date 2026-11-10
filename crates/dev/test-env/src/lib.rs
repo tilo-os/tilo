@@ -720,6 +720,27 @@ pub fn memory_tempdir() -> io::Result<tempfile::TempDir> {
     }
 }
 
+/// A device key for a fixture's node — a device, host or relay that answers on
+/// the network — fresh on every call.
+///
+/// A relay or host answers on the Iroh node its device key names, and it
+/// publishes the address it listens on under that node's id (a relay derives
+/// its transport key from the device secret). Fixtures that mint a constant key
+/// are one node to every dialer: two of
+/// them alive at once answer each other's joins and each other's members'
+/// links, and their address records overwrite one another. Give each node of a
+/// test a key of its own, and keep a constant only where a test asserts on it.
+#[must_use]
+#[expect(
+    clippy::expect_used,
+    reason = "a fixture's key has no fallback: a machine whose entropy source fails cannot run the test it is minted for"
+)]
+pub fn node_key() -> [u8; 32] {
+    let mut seed = [0; 32];
+    getrandom::fill(&mut seed).expect("the system's entropy source");
+    seed
+}
+
 /// An executable fixture script written by [`script`].
 #[derive(Debug, Clone)]
 pub struct Script {

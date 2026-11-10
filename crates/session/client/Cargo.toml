@@ -69,6 +69,8 @@ web-time = { version = "1", features = ["serde"] }
 tempfile.workspace = true
 # A workspace's documents are automerge, which a test binary serves from its own workers.
 tilo-automerge-isolate.workspace = true
+# A fresh node key for each fixture device that answers on the network.
+tilo-test-env = { path = "../../dev/test-env" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Where a workspace's own host is reached, as an invitation names it for the joiner.

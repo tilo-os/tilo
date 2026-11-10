@@ -1269,7 +1269,7 @@ mod tests {
     /// and the person's root key.
     fn identity(capabilities: DeviceCapabilities) -> (HostIdentity, [u8; 32]) {
         let person = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[0x22; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&tilo_test_env::node_key());
         let root = person.verifying_key().to_bytes();
         let mut cert = DeviceCert {
             user_public_key: root,
