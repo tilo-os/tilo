@@ -2108,8 +2108,26 @@ mod tests {
     /// A relay governing one workspace `Plaza`, its workspaces and the host's
     /// device certificate.
     async fn plaza(dir: &Path) -> (tilo_relay::daemon::Relay, Workspaces, DeviceCert, String) {
+        let (relay, workspaces, host_cert) = host(dir).await;
+        let workspace = workspaces.create("Plaza").await.unwrap().workspace;
+        (relay, workspaces, host_cert, workspace)
+    }
+
+    /// The relay of [`plaza`] started on `dir`, as every start signs its
+    /// certificate afresh.
+    async fn host(dir: &Path) -> (tilo_relay::daemon::Relay, Workspaces, DeviceCert) {
         let root = SigningKey::from_bytes(&[1; 32]);
-        let host = SigningKey::from_bytes(&tilo_test_env::node_key());
+        // The host's device key outlives its starts, as `host-device.key` does.
+        let kept = dir.join("host-device.key");
+        let key: [u8; 32] = std::fs::read(&kept).map_or_else(
+            |_| {
+                let key = tilo_test_env::node_key();
+                std::fs::write(&kept, key).unwrap();
+                key
+            },
+            |bytes| bytes.try_into().unwrap(),
+        );
+        let host = SigningKey::from_bytes(&key);
         let host_cert = enrol(&root, &host, "host", DeviceCapabilities::host()).unwrap();
         let relay = tilo_relay::daemon::Relay::start(
             tilo_relay::RelayConfig {
@@ -2127,8 +2145,7 @@ mod tests {
         .await
         .unwrap();
         let workspaces = relay.workspaces().unwrap().clone();
-        let workspace = workspaces.create("Plaza").await.unwrap().workspace;
-        (relay, workspaces, host_cert, workspace)
+        (relay, workspaces, host_cert)
     }
 
     /// Ask for an invitation to `workspace` as `device`, as a member's page does.
@@ -2292,6 +2309,93 @@ mod tests {
             .unwrap();
         let asked = invite(&workspaces, &workspace, &member.1).await;
         assert!(matches!(asked, WorkspacesReply::Refused(_)), "{asked:?}");
+        relay.shutdown().await;
+    }
+
+    /// A listed workspace people walked in through, with an owner declared,
+    /// a moderator and someone removed, takes its host's start-time settings
+    /// again after the host restarts, as the public room does at every start.
+    #[tokio::test]
+    async fn a_lived_in_workspace_takes_its_hosts_settings_after_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let (relay, workspaces, host_cert, workspace) = plaza(dir.path()).await;
+        ensure_guest_policy(&workspaces, &workspace, &host_cert)
+            .await
+            .unwrap();
+        settle_member_invites(&workspaces, &workspace, &host_cert, false)
+            .await
+            .unwrap();
+        workspaces
+            .publish(
+                &workspace,
+                &host_cert,
+                Listing {
+                    description: "A plaza".into(),
+                    default_role: WorkspaceRole::Editor,
+                },
+            )
+            .await
+            .unwrap();
+        let people = [guest(21), guest(22), guest(23)];
+        for person in &people {
+            let (issued, token) = workspaces
+                .admit_listed(
+                    &workspace,
+                    &tilo_relay_protocol::directory::DoorJoin {
+                        user_public_key: hex::encode(person.1.user_public_key),
+                        display_name: "Guest".into(),
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(walk_in(&workspaces, person, issued.signed_invitation, &token).await);
+        }
+        workspaces
+            .set_member_administrator(&workspace, &host_cert, [1; 32], people[0].1.user_public_key)
+            .await
+            .unwrap();
+        workspaces
+            .set_member_role(
+                &workspace,
+                &host_cert,
+                SetMemberRoleRequest {
+                    request_id: [2; 32],
+                    user_public_key: people[1].1.user_public_key,
+                    role: tilo_peer_state::join::MemberRole::Moderator,
+                },
+            )
+            .await
+            .unwrap();
+        workspaces
+            .ban_member(
+                &workspace,
+                &host_cert,
+                tilo_relay_session::workspaces::RemoveMemberRequest {
+                    request_id: [3; 32],
+                    user_public_key: people[2].1.user_public_key,
+                },
+            )
+            .await
+            .unwrap();
+        relay.shutdown().await;
+
+        let (relay, workspaces, host_cert) = host(dir.path()).await;
+        for step in 0..2 {
+            ensure_guest_policy(&workspaces, &workspace, &host_cert)
+                .await
+                .unwrap_or_else(|error| panic!("start {step}: {error:#}"));
+            settle_member_invites(&workspaces, &workspace, &host_cert, false)
+                .await
+                .unwrap_or_else(|error| panic!("start {step}: {error:#}"));
+            settle_member_invites(&workspaces, &workspace, &host_cert, true)
+                .await
+                .unwrap_or_else(|error| panic!("start {step}: {error:#}"));
+        }
+        let log = workspaces.membership_log(&workspace).await.unwrap();
+        assert!(
+            !log.iter().any(|line| line.contains("log against rows")),
+            "{log:#?}"
+        );
         relay.shutdown().await;
     }
 
