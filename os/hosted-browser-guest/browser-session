@@ -61,5 +61,7 @@ size=${TILO_HEADLESS_SIZE:-1280x800}
 # Word splitting is the point: TILO_SESSION_ARGS carries the session's own
 # arguments as written in the configuration file.
 # shellcheck disable=SC2086
-exec dbus-run-session -- /usr/bin/tilo-session --backend headless --size "$size" \
-    ${TILO_SESSION_ARGS:-}
+# No X11: the guest carries no Xwayland, and Browser is not an X11 client, so
+# nothing here serves an X display.
+exec dbus-run-session -- /usr/bin/tilo-session --backend headless --no-x11 \
+    --size "$size" ${TILO_SESSION_ARGS:-}
