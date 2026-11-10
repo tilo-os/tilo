@@ -73,6 +73,33 @@ pub trait AppServingPlane: Send + Sync {
     fn content(&self) -> Option<std::sync::Arc<tilo_content::WorkspaceStores>> {
         None
     }
+
+    /// Where `message`, sent to this host by device `sender`, goes instead of
+    /// this plane: to the device of `workspace_id` that holds what it
+    /// addresses. Some actions exist only on a window, and the window need not
+    /// be on this host (a Browser whose page runs on a VM host). The host hands
+    /// the frame to that device stamped with `sender`, as it hands over every
+    /// frame it routes, so the action runs there as the caller's. `None` serves
+    /// it here, as before.
+    fn route(
+        &self,
+        workspace_id: u64,
+        sender: [u8; 32],
+        message: &RemoteActionMessage,
+    ) -> Option<Routing> {
+        let _ = (workspace_id, sender, message);
+        None
+    }
+}
+
+/// Where a frame is served instead of on the host it was addressed to
+/// ([`AppServingPlane::route`]).
+#[derive(Clone, Debug)]
+pub enum Routing {
+    /// The device of the workspace holding the window the frame addresses.
+    Device([u8; 32]),
+    /// The frame is refused, and this is why: the caller's typed answer.
+    Refused(tilo_actions::remote::ActionHostError),
 }
 
 /// An [`AppServingPlane`] backed by one [`ActionHost`] for every workspace.

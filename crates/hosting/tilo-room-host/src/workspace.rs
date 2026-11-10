@@ -624,6 +624,18 @@ impl WorkspaceRuntime {
         Ok(())
     }
 
+    /// Stop listing `device` in this workspace ([`Self::admit_device`]'s
+    /// other half): a device the host started for the workspace and stopped.
+    pub fn forget_device(&mut self, device: &[u8; 32]) -> Result<(), crate::store::StoreError> {
+        if self.membership.contains(device) {
+            let mut devices = self.membership.devices.clone();
+            devices.retain(|listed| listed != device);
+            self.store.save_membership(&devices)?;
+            self.membership.set(devices);
+        }
+        Ok(())
+    }
+
     /// Add subscriber `device` to the live plane and tell the other live
     /// members. Returns the members already present. A device that is not
     /// subscribed cannot join.

@@ -1335,8 +1335,40 @@ impl Workspaces {
         summaries
     }
 
-    /// The delegated agents on `workspace`'s roster, acting or not now.
+    /// List `device` in the workspace carried as `workspace_id`, or forget it
+    /// again: a device this host certified and started itself for that
+    /// workspace (a browser environment of it), which the workspace holds as a
+    /// member device while it runs and not after.
     ///
+    /// # Errors
+    ///
+    /// No workspace of this host is carried as `workspace_id`, or its
+    /// membership could not be written.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the workspace stays held until its membership is written"
+    )]
+    pub async fn list_device(
+        &self,
+        workspace_id: u64,
+        device: [u8; 32],
+        listed: bool,
+    ) -> Result<(), String> {
+        let shared = {
+            let registry = self.inner.host.workspaces.lock().await;
+            registry.get(&workspace_id).cloned()
+        }
+        .ok_or_else(|| format!("no workspace of this host is carried as {workspace_id}"))?;
+        let mut workspace = shared.lock().await;
+        if listed {
+            workspace.admit_device(device)
+        } else {
+            workspace.forget_device(&device)
+        }
+        .map_err(|error| error.to_string())
+    }
+
+    /// The delegated agents on `workspace`'s roster, acting or not now.    ///
     /// # Errors
     ///
     /// Returns why the workspace's roster could not be read.

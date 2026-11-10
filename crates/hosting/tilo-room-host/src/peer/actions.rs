@@ -76,6 +76,22 @@ pub(super) async fn handle_remote_action(
         return refuse(U::NotAuthorised, "sender may not act in the workspace");
     }
     if to == *session.own_device_public_key {
+        // An action of a window this host serves but does not hold (a Browser
+        // whose page runs on a VM host) is handed to the device that holds it,
+        // stamped with this sender, or refused as the plane says.
+        if let Some(plane) = session.app_serving
+            && let Ok(decoded) = tilo_actions::remote::RemoteActionFrame::decode(&frame)
+            && let Some(route) = plane.route(workspace_id, peer.device_public_key, &decoded.message)
+        {
+            match route {
+                crate::app_serving::Routing::Device(holder) => {
+                    return hand_over(peer, session, &mut wr, workspace_id, version, holder, frame);
+                }
+                crate::app_serving::Routing::Refused(error) => {
+                    return refused_answer(peer, session, workspace_id, version, &decoded, error);
+                }
+            }
+        }
         let standing = super::change_standing(peer, &wr);
         // Never hold the workspace across the plane: it may take its time.
         drop(wr);
@@ -90,15 +106,38 @@ pub(super) async fn handle_remote_action(
         return serve_locally(peer, session, &local, &frame)
             .unwrap_or_else(|(reason, detail)| refuse(reason, &detail));
     }
+    hand_over(peer, session, &mut wr, workspace_id, version, to, frame)
+}
+
+/// Hand `frame` to the connected device `to` of the workspace, stamped with
+/// the authenticated `peer` as its sender: the relay routes what it forwards,
+/// and never runs it.
+fn hand_over(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    wr: &mut tokio::sync::MutexGuard<'_, crate::workspace::WorkspaceRuntime>,
+    workspace_id: u64,
+    version: u16,
+    to: [u8; 32],
+    frame: Vec<u8>,
+) -> Option<Envelope> {
+    use UnavailableReason as U;
+    let refuse = |reason: UnavailableReason, detail: &str| {
+        Some(Envelope::RemoteActionUndeliverable {
+            workspace_id,
+            to_device_public_key: to,
+            reason: format!("{}: {detail}", reason.wire_token()),
+        })
+    };
     // Every production subscription registers its authenticated peer beside
     // its subscriber, so the addressee is re-authorised from it.
     let Some(target) = wr.state_sessions.get(&to) else {
         return refuse(
-            unavailable_target(&wr, &to),
+            unavailable_target(wr, &to),
             "addressed device is not connected to the workspace",
         );
     };
-    if action_peer_admitted(&wr, &target.peer, session).is_err() {
+    if action_peer_admitted(wr, &target.peer, session).is_err() {
         return refuse(
             U::NotAuthorised,
             "addressed device may not act in the workspace",
@@ -113,7 +152,6 @@ pub(super) async fn handle_remote_action(
         frame,
     };
     let delivered = wr.route_directed(&to, stamped);
-    drop(wr);
     if delivered {
         None
     } else {
@@ -122,6 +160,30 @@ pub(super) async fn handle_remote_action(
             "addressed device is not connected to the workspace",
         )
     }
+}
+
+/// Answer `request` to `peer` as refused with `error`: what it asked for is
+/// not served for it now, and it is told so in the answer its request takes.
+fn refused_answer(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    workspace_id: u64,
+    version: u16,
+    request: &tilo_actions::remote::RemoteActionFrame,
+    error: tilo_actions::remote::ActionHostError,
+) -> Option<Envelope> {
+    let answer = tilo_actions::remote::refuse(&request.message, error)?;
+    let frame = tilo_actions::remote::RemoteActionFrame::new(answer)
+        .encode()
+        .ok()?;
+    Some(Envelope::RemoteAction {
+        workspace_id,
+        version,
+        to_device_public_key: peer.device_public_key,
+        from_device_public_key: *session.own_device_public_key,
+        from_user_public_key: *session.own_user_public_key,
+        frame,
+    })
 }
 
 /// Handle an inbound `HostAction`: one of this host's own operations
