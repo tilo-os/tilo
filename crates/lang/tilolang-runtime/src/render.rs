@@ -13,7 +13,7 @@ use crate::ids::{ModuleHash, Principal, ViewId};
 use crate::meta::ParamMeta;
 use crate::registry::Package;
 use crate::space::Space;
-use crate::value::{RefValue, Value};
+use crate::value::{CollRef, RefValue, Value};
 use crate::view::{LIST_LEN, NodeBuild, PREVIEW, UiNode};
 use crate::view_state::StateKey;
 
@@ -85,12 +85,23 @@ pub struct Rendered {
 
 pub(crate) struct Acc {
     pub reads: Vec<(String, String)>,
+    /// The collections the view lists, as the document each is of and the field it is:
+    /// `rows` and `list` templates alike, filled in as the view's trees are built, so a window's
+    /// shell — built after the content it holds — reads what the window shows.
+    pub listed: Vec<(String, String)>,
     pub colls: Vec<CollSeen>,
     pub space_reads: Vec<(String, f64)>,
     pub retained: Vec<Retained>,
     pub state_reads: Vec<(StateKey, u64)>,
     pub state_seen: Vec<(StateKey, Value)>,
     pub changes_at: Option<i64>,
+}
+
+/// Note the collection a view lists, for the shell above it to read: what a window shows by
+/// scrolling is what its mark counts ([`crate::marks`]).
+fn note_listed(coll: &CollRef, acc: &mut Acc) {
+    acc.listed
+        .push((coll.target.doc.clone(), coll.field.clone()));
 }
 
 /// The earlier of two instants at which something read changes; `None` stands for never.
@@ -397,6 +408,7 @@ impl Core {
         surfaced?;
         let mut acc = Acc {
             reads: state.reads,
+            listed: Vec::new(),
             colls: state.colls,
             space_reads: state.space_reads,
             retained: Vec::new(),
@@ -519,6 +531,7 @@ impl Core {
     fn waiting_rendered(&self) -> Rendered {
         let mut acc = Acc {
             reads: Vec::new(),
+            listed: Vec::new(),
             colls: Vec::new(),
             space_reads: Vec::new(),
             retained: Vec::new(),
@@ -571,6 +584,7 @@ impl Core {
     fn failed_rendered(&self, key: &str, failure: &crate::foreign::ViewFailure) -> Rendered {
         let mut acc = Acc {
             reads: Vec::new(),
+            listed: Vec::new(),
             colls: Vec::new(),
             space_reads: Vec::new(),
             retained: Vec::new(),
@@ -917,6 +931,20 @@ impl Core {
     /// A loop over a collection that is the only child of `parent` hands its rows to the
     /// boundaries ([`Boundaries::rows`]): they follow the collection's inserts and removals
     /// from then on, and the view holding the loop does not depend on which items it has.
+    /// The items of the collection a loop lists, noted for the shell above it ([`note_listed`]):
+    /// what a window shows by scrolling is what its mark counts ([`crate::marks`]).
+    fn listed_items<'a>(
+        &self,
+        coll: &'a std::rc::Rc<CollRef>,
+        acc: &mut Acc,
+    ) -> Result<Items<'a>, RuntimeError> {
+        note_listed(coll, acc);
+        Ok(Items::Coll(
+            coll,
+            self.coll_listing(coll).map_err(RuntimeError::Package)?,
+        ))
+    }
+
     fn build_rows<'h>(
         &self,
         cx: &Build<'_>,
@@ -932,10 +960,7 @@ impl Core {
         };
         let items = match n.props.get(ITEMS) {
             Some(Value::List(items)) => Items::List(items),
-            Some(Value::Coll(coll)) => Items::Coll(
-                coll,
-                self.coll_listing(coll).map_err(RuntimeError::Package)?,
-            ),
+            Some(Value::Coll(coll)) => self.listed_items(coll, acc)?,
             _ => {
                 return Err(RuntimeError::Package(format!(
                     "the loop `{}` has no list of items",

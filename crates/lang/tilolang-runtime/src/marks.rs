@@ -14,8 +14,9 @@
 //!   has not seen go, with who removed it;
 //! - a bound text field takes the changer's colour (`changed_by`), and says what it held before
 //!   the change (`previous`);
-//! - a window's header holds a mark with how many changes of what it shows are unseen, and by
-//!   whom.
+//! - a window's header holds a mark with how many of the items its lists show are new, and by
+//!   whom: what the person finds by scrolling it, never items put somewhere the window keeps
+//!   closed.
 //!
 //! A view that places `ui.ChangeMark(r)` itself has it filled in here, and the host places no
 //! mark of its own for `r` in that view. Every mark activates to the run that made the change
@@ -582,14 +583,15 @@ impl Core {
             mark.props.insert("more".to_owned(), Value::Bool(true));
         }
         self.fill_mark(&mut mark, &at, &unseen, viewer, acc);
+        let counted = Self::counted_in(&at, &unseen, acc);
         // A window counts the items the changes were made over rather than the versions that
         // made them: what the person catches up on.
-        let count = unseen.iter().fold(0i64, |sum, version| {
+        let count = counted.iter().fold(0i64, |sum, version| {
             sum.saturating_add(i64::from(version.count.max(1)))
         });
         mark.props.insert("count".to_owned(), Value::Int(count));
         // Every change only put items in: what is new is said as new, not as changed.
-        if unseen
+        if counted
             .iter()
             .all(|version| self.puts_items_in(version, &at))
         {
@@ -616,6 +618,30 @@ impl Core {
             None => node.children.push(slot(name, &node.key, mark)),
         }
         Ok(())
+    }
+
+    /// The versions a window's mark counts: the changes of what the window *lists*, which is
+    /// what the person finds by scrolling it. A change of the window's own document that put
+    /// items into a collection the window does not list — a channel's threads, which its
+    /// transcript never shows — is named by the window's catch-up and not counted on the page.
+    /// Every change of everything else in the document counts as it did.
+    fn counted_in<'a>(at: &ResourceRef, unseen: &'a [Version], acc: &Acc) -> Vec<&'a Version> {
+        let listed: std::collections::HashSet<&crate::ids::FieldId> = acc
+            .listed
+            .iter()
+            .filter(|(doc, _)| doc == &at.doc)
+            .map(|(_, field)| field)
+            .collect();
+        let own = at.id_string();
+        unseen
+            .iter()
+            .filter(|version| {
+                version.resource != own
+                    || version.kind != VersionKind::Changed
+                    || listed.is_empty()
+                    || version.fields.iter().any(|field| listed.contains(field))
+            })
+            .collect()
     }
 
     /// The type of the resource `at` shows: its ref names one, and a window's mark stands for
