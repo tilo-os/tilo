@@ -27,8 +27,8 @@ use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_browser_peer::invite::guest_certificate;
 use tilo_browser_peer::login::{Door, action, enter, say_here, sign_in};
-use tilo_browser_peer::pairing_link::PairingLink;
 use tilo_browser_peer::{CertifyError, answer_pairing, pending_pairings};
+use tilo_relay_client::login::PairingLink;
 use tilo_relay_protocol::web::API_PREFIX;
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 

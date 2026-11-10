@@ -54,6 +54,12 @@ impl Origin {
     pub fn name(&self) -> &str {
         &self.origin
     }
+
+    /// The origin `origin`, reached with this one's client.
+    #[must_use]
+    pub fn sibling(&self, origin: &str) -> Self {
+        Self::new(&self.client, origin)
+    }
     /// `GET` the route `path` below the origin: its status and body, when the origin answered.
     pub async fn get(&self, path: &str) -> Result<(u16, Vec<u8>), String> {
         let response = self

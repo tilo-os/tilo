@@ -1,80 +1,29 @@
-//! Signing a computer in as one of a person's devices, and entering the
-//! workspace with it.
+//! Entering the workspace a signed-in device names, and saying it is here.
 //!
-//! The person's page opened a one-time pairing invite and copied a link
-//! ([`PairingLink`]). This computer makes its own device key, asks the
-//! workspace's host to have the person's root certify it ([`certify`], as a
-//! new browser of theirs is certified), and is then a device of theirs: a
-//! member for thirty days, the host pinned, no root anywhere here. It then
-//! enters the workspace the link names ([`enter`]) and says it is here.
+//! [`tilo_relay_client::login`] signs a computer in as one of the person's
+//! devices. This module takes that device into the workspace its link names
+//! ([`enter`]) and reports what the agent does there ([`say_here`]), over the
+//! session it starts here.
 
 use std::sync::Arc;
 
+use tilo_relay_client::CertifyError;
+pub use tilo_relay_client::login::{
+    Door, PairingLink, SignIn, redeem, sign_in, site_door, through_door,
+};
 use tilo_relay_protocol::web::{
-    HereAction, HereReply, HereRequest, MAX_HERE_FIELD_CHARS, MAX_HERE_LABEL_CHARS,
+    HereAction, HereReply, HereRequest, MAX_HERE_FIELD_CHARS, MAX_HERE_LABEL_CHARS, kept,
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
 use web_time::{Duration, Instant};
 
-use crate::custody::{CertifyError, certify};
-use crate::invite::ask_to_join_pre_admitted;
-use crate::pairing_link::PairingLink;
-use crate::session::{HereCompletion, Host, PeerConfig, PeerHandle};
-use crate::{DeviceSigner, HttpClient, MemoryPeerStore, host_info};
+use crate::session::{HereCompletion, PeerConfig, PeerHandle};
+use crate::{DeviceSigner, HttpClient, MemoryPeerStore};
 
 /// How long [`enter`] waits for the workspace to admit the device.
 const ADMISSION_WAIT: Duration = Duration::from_secs(20);
 /// How often [`enter`] looks at the session while it waits.
 const POLL: Duration = Duration::from_millis(100);
-
-/// A workspace's public door, as the site names it (`entry.json`'s home
-/// `admission`): `client` posts below the door's origin, `path` is its
-/// `join` (`/peer/v1/directory/<workspace>/join`).
-pub struct Door<'a> {
-    /// Posts to the door's origin.
-    pub client: &'a dyn HttpClient,
-    /// The door's `join`, below that origin.
-    pub path: String,
-}
-
-impl Door<'_> {
-    /// The workspace the door lets people into, as its path names it.
-    #[must_use]
-    pub fn workspace(&self) -> Option<String> {
-        let mut segments = self.path.split('/').filter(|segment| !segment.is_empty());
-        segments.find(|segment| *segment == "directory")?;
-        segments.next().map(str::to_owned)
-    }
-}
-
-/// The door of the site whose `entry.json` is `entry` to the workspace it
-/// keeps on the host at `host_origin` (`home.admission`): the door's origin
-/// and its `join` path, when the site names one for that host. Only HTTPS,
-/// but for a door on loopback.
-#[must_use]
-pub fn site_door(entry: &serde_json::Value, host_origin: &str) -> Option<(String, String)> {
-    let home = entry.get("home")?;
-    let home_host = home.pointer("/host/origin")?.as_str()?;
-    if home_host.trim_end_matches('/') != host_origin.trim_end_matches('/') {
-        return None;
-    }
-    let admission = home.get("admission")?.as_str()?;
-    let (scheme, rest) = admission.split_once("://")?;
-    let (authority, path) = rest.split_at(rest.find('/')?);
-    let host = authority
-        .rsplit_once(':')
-        .map_or(authority, |(host, _)| host);
-    let loopback = matches!(host, "localhost" | "127.0.0.1" | "[::1]");
-    if authority.is_empty() || !(scheme == "https" || (scheme == "http" && loopback)) {
-        return None;
-    }
-    let path = if path.ends_with('/') {
-        format!("{path}join")
-    } else {
-        format!("{path}/join")
-    };
-    Some((format!("{scheme}://{authority}"), path))
-}
 
 /// The workspace of the person's own on the host and the invitation into it
 /// for the person, which the host makes the first time any device of theirs
@@ -144,70 +93,6 @@ pub async fn own_workspace(
     let invitation =
         hex::decode(invitation.invitation).map_err(|error| refused(error.to_string()))?;
     Ok((made.workspace, invitation))
-}
-
-/// A computer that is now one of the person's devices.
-pub struct SignIn {
-    /// The link it was signed in with.
-    pub link: PairingLink,
-    /// The agent that runs here, as the person's page names it.
-    pub agent: String,
-    /// This device's label, as the person's devices list it.
-    pub label: String,
-    /// Where the workspace's host is reached.
-    pub host: Host,
-    /// This device's certificate: a member of the person's, for thirty days.
-    pub cert: DeviceCert,
-    /// The host's certificate, pinned.
-    pub host_cert: DeviceCert,
-}
-
-/// Ask `link`'s host to have the person's root certify `signer`'s device as
-/// the agent `agent` on the computer labeled `label`. `on_pending` receives
-/// the pairing code to show while the person's other device answers.
-///
-/// # Errors
-///
-/// The person declined or nobody answered in time ([`CertifyError::Expired`]),
-/// the host was not reached or refused ([`CertifyError::Transport`],
-/// [`CertifyError::Denied`]), or what it issued is not a certificate for this
-/// device ([`CertifyError::Denied`]).
-pub async fn sign_in(
-    client: &dyn HttpClient,
-    link: &PairingLink,
-    agent: &str,
-    label: &str,
-    signer: &dyn DeviceSigner,
-    on_pending: impl FnOnce(&str),
-) -> Result<SignIn, CertifyError> {
-    let info = host_info(client).await?;
-    let host = match tilo_relay_client::https::host_endpoint(&info) {
-        Some(endpoint) => Host::at(endpoint),
-        None => {
-            return Err(CertifyError::Denied(
-                "This workspace's host takes no device connections, so no computer can sign in to it."
-                    .to_owned(),
-            ));
-        }
-    };
-    let invite = link.invite.unwrap_or([0; 16]);
-    let (cert, host_cert) = certify(
-        &host,
-        link.user_public_key,
-        label,
-        invite,
-        signer,
-        on_pending,
-    )
-    .await?;
-    Ok(SignIn {
-        link: link.clone(),
-        agent: agent.to_owned(),
-        label: label.to_owned(),
-        host,
-        cert,
-        host_cert,
-    })
 }
 
 /// Enter the workspace the link names, as the certified device, then say the
@@ -302,107 +187,6 @@ pub async fn enter(
     Ok(peer)
 }
 
-/// Go through `door` on the device `cert` certifies, as the page does: the
-/// door lets its person in (`name` is how it greets them) and the device,
-/// labeled `label`, redeems what it answers on the host `client` posts to.
-///
-/// # Errors
-///
-/// The door or the host was not reached, or either refused.
-pub async fn through_door(
-    client: &dyn HttpClient,
-    door: &Door<'_>,
-    cert: &DeviceCert,
-    signer: &dyn DeviceSigner,
-    name: &str,
-    label: &str,
-) -> Result<(), CertifyError> {
-    let (invitation, token) = ask_door(door, cert, name).await?;
-    let reply = ask_to_join_pre_admitted(
-        client,
-        &invitation,
-        cert,
-        signer,
-        rand::random(),
-        label,
-        token.as_bytes(),
-    )
-    .await?;
-    match reply {
-        tilo_relay_protocol::workspaces::JoinReply::Admitted { .. } => Ok(()),
-        tilo_relay_protocol::workspaces::JoinReply::Refused(reason) => Err(CertifyError::Denied(
-            format!("This workspace did not let this computer in: {reason}"),
-        )),
-        _ => Err(CertifyError::Denied(
-            "This workspace did not let this computer in.".to_owned(),
-        )),
-    }
-}
-
-/// Redeem `invitation` on the host `client` posts to, as the device `cert`
-/// certifies, labeled `label`.
-///
-/// # Errors
-///
-/// The host was not reached, or did not admit the device.
-pub async fn redeem(
-    client: &dyn HttpClient,
-    invitation: &[u8],
-    cert: &DeviceCert,
-    signer: &dyn DeviceSigner,
-    label: &str,
-) -> Result<(), CertifyError> {
-    let reply =
-        crate::invite::ask_to_join(client, invitation, cert, signer, rand::random(), label).await?;
-    match reply {
-        tilo_relay_protocol::workspaces::JoinReply::Admitted { .. } => Ok(()),
-        tilo_relay_protocol::workspaces::JoinReply::Refused(reason) => Err(CertifyError::Denied(
-            format!("The person's workspace did not let this computer in: {reason}"),
-        )),
-        _ => Err(CertifyError::Denied(
-            "The person's workspace did not let this computer in.".to_owned(),
-        )),
-    }
-}
-
-/// Ask `door` to let the person in on this device, as the page asks it: the
-/// invitation bound to them and the one-time token that admits them.
-async fn ask_door(
-    door: &Door<'_>,
-    cert: &DeviceCert,
-    name: &str,
-) -> Result<(Vec<u8>, String), CertifyError> {
-    use base64::Engine as _;
-    let join = tilo_relay_protocol::directory::DoorJoin {
-        user_public_key: hex::encode(cert.user_public_key),
-        display_name: text(name, MAX_HERE_LABEL_CHARS),
-    };
-    let body =
-        serde_json::to_vec(&join).map_err(|error| CertifyError::Request(error.to_string()))?;
-    let (status, answer) = door.client.post(&door.path, body).await.map_err(|error| {
-        CertifyError::Transport(crate::LinkError::Unavailable(format!(
-            "The workspace's door was not reached: {error}"
-        )))
-    })?;
-    if status != 200 {
-        let said = String::from_utf8_lossy(&answer);
-        return Err(CertifyError::Denied(format!(
-            "This workspace's door did not let this computer in (HTTP {status}): {}",
-            text(&said, 200)
-        )));
-    }
-    let answer: tilo_relay_protocol::directory::DoorAnswer = serde_json::from_slice(&answer)
-        .map_err(|error| {
-            CertifyError::Denied(format!("The door answered something else: {error}"))
-        })?;
-    let invitation = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(answer.invitation.trim_end_matches('='))
-        .map_err(|error| {
-            CertifyError::Denied(format!("The door's invitation is damaged: {error}"))
-        })?;
-    Ok((invitation, answer.admission_token))
-}
-
 /// Whether the session is in `workspace_id`, waiting for its host to say so.
 pub async fn admitted(peer: &PeerHandle, workspace_id: u64) -> bool {
     let started = Instant::now();
@@ -442,7 +226,7 @@ pub async fn say_here(
 ) -> Result<HereReply, String> {
     let request = HereRequest {
         workspace_id,
-        label: text(label, MAX_HERE_LABEL_CHARS),
+        label: kept(label, MAX_HERE_LABEL_CHARS),
         window: None,
         actions,
         agent,
@@ -464,17 +248,9 @@ pub async fn say_here(
 pub fn action(title: &str, resource: &str, app: &str) -> HereAction {
     HereAction {
         id: rand::random(),
-        action: text(title, MAX_HERE_FIELD_CHARS),
-        resource: text(resource, MAX_HERE_FIELD_CHARS),
-        app: text(app, MAX_HERE_FIELD_CHARS),
+        action: kept(title, MAX_HERE_FIELD_CHARS),
+        resource: kept(resource, MAX_HERE_FIELD_CHARS),
+        app: kept(app, MAX_HERE_FIELD_CHARS),
         at_ms: tilo_clock::unix_now_ms(),
     }
-}
-
-/// `text` without control characters, cut to what a host keeps.
-fn text(text: &str, max: usize) -> String {
-    text.chars()
-        .filter(|character| !character.is_control())
-        .take(max)
-        .collect()
 }

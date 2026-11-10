@@ -1,5 +1,5 @@
 //! The person's workspaces on the relay, reached as a grant: the door's one
-//! way in, the same a `tilo login` computer takes (`tilo_browser_peer::login`).
+//! way in, the same a `tilo login` computer takes (`tilo_relay_client::login`).
 //!
 //! The grant's own key is the device. It dials the relay's iroh endpoint
 //! (which the relay's public origin names, `/peer/v1/host`) with the grant's
@@ -28,9 +28,13 @@ use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tilo_browser_peer::PeerHandle;
-use tilo_browser_peer::login::{self, Door};
-use tilo_relay_client::https::Origin;
+use tilo_browser_peer::{
+    PeerHandle,
+    login::{admitted, own_workspace},
+};
+use tilo_relay_client::CertifyError;
+use tilo_relay_client::https::{self, Origin};
+use tilo_relay_client::login::{Door, door_at, redeem, through_door};
 use tilo_user_identity::{AgentScope, DeviceCert};
 
 /// How long entering a workspace may take.
@@ -69,10 +73,10 @@ impl std::fmt::Display for RelayError {
     }
 }
 
-impl From<tilo_browser_peer::CertifyError> for RelayError {
-    fn from(error: tilo_browser_peer::CertifyError) -> Self {
+impl From<CertifyError> for RelayError {
+    fn from(error: CertifyError) -> Self {
         match error {
-            tilo_browser_peer::CertifyError::Denied(reason) => Self::Refused(reason),
+            CertifyError::Denied(reason) => Self::Refused(reason),
             other => Self::Unavailable(other.to_string()),
         }
     }
@@ -81,7 +85,6 @@ impl From<tilo_browser_peer::CertifyError> for RelayError {
 /// The relay the person's workspaces live on, and the site whose door lets
 /// people into its home workspace there.
 pub struct Relay {
-    client: tilo_net::Client,
     host: Origin,
     site: Origin,
     /// The relay's name, as hosts are named (`eu1.tilo.sh`).
@@ -98,7 +101,6 @@ impl Relay {
             .trim_end_matches('/')
             .to_owned();
         Self {
-            client: client.clone(),
             host: Origin::new(client, origin),
             site: Origin::new(client, site),
             name,
@@ -111,24 +113,12 @@ impl Relay {
         &self.name
     }
 
-    /// The site's door to its home workspace on this relay, when it names
-    /// one.
-    async fn door(&self) -> Option<(Origin, String)> {
-        let (status, body) = self.site.get("/entry.json").await.ok()?;
-        if status != 200 {
-            return None;
-        }
-        let entry: Value = serde_json::from_slice(&body).ok()?;
-        let (origin, path) = login::site_door(&entry, self.host.name())?;
-        Some((Origin::new(&self.client, &origin), path))
-    }
-
     /// `key` on the relay: its session, not in any workspace yet.
     ///
     /// # Errors
     /// The relay was not reached or takes no device sessions.
     pub async fn connect(&self, key: &GrantKey) -> Result<Connection, RelayError> {
-        let info = tilo_browser_peer::host_info(&self.host)
+        let info = https::host_info(&self.host)
             .await
             .map_err(|error| RelayError::Unavailable(error.to_string()))?;
         let endpoint = tilo_relay_client::https::host_endpoint(&info).ok_or_else(|| {
@@ -136,7 +126,7 @@ impl Relay {
         })?;
         let peer = PeerHandle::start(
             tilo_browser_peer::PeerConfig {
-                host: tilo_browser_peer::Host::at(endpoint),
+                host: tilo_relay_client::Host::at(endpoint),
                 cert: key.cert().clone(),
                 host_cert: info.host_cert.clone(),
                 revocations: tilo_user_identity::RevocationList::new(),
@@ -168,7 +158,7 @@ impl Relay {
                 "a key for one workspace reaches no other".to_owned(),
             ));
         }
-        let (client, path) = self.door().await.ok_or_else(|| {
+        let (client, path) = door_at(&self.site, self.host.name()).await.ok_or_else(|| {
             RelayError::Unavailable("the site names no door to its workspace".to_owned())
         })?;
         let door = Door {
@@ -179,7 +169,7 @@ impl Relay {
             RelayError::Unavailable("the site's door names no workspace".to_owned())
         })?;
         let label = connection.key.cert().device_label.clone();
-        login::through_door(
+        through_door(
             &self.host,
             &door,
             connection.key.cert(),
@@ -203,7 +193,7 @@ impl Relay {
     ) -> Result<(Workspace, Vec<u8>), RelayError> {
         let lobby = self.lobby(connection).await?;
         let (listing, invitation) =
-            login::own_workspace(&connection.peer, lobby, &connection.host_cert, arguments).await?;
+            own_workspace(&connection.peer, lobby, &connection.host_cert, arguments).await?;
         Ok((connection.workspace(&listing), invitation))
     }
 
@@ -335,7 +325,7 @@ impl Connection {
 
     async fn redeem(&self, invitation: &[u8]) -> Result<(), RelayError> {
         let label = self.key.cert().device_label.clone();
-        login::redeem(
+        redeem(
             &self.relay,
             invitation,
             self.key.cert(),
@@ -351,7 +341,7 @@ impl Connection {
         let id =
             tilo_relay_protocol::room_workspace_id(workspace).map_err(|_| RelayError::NotFound)?;
         self.peer.join(id).map_err(RelayError::Unavailable)?;
-        let admitted = tokio::time::timeout(ENTERING, login::admitted(&self.peer, id))
+        let admitted = tokio::time::timeout(ENTERING, admitted(&self.peer, id))
             .await
             .unwrap_or(false);
         if !admitted {

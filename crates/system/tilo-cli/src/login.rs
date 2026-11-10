@@ -29,10 +29,11 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::{Signer as _, SigningKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tilo_browser_peer::login::{self as peer_login, Door, SignIn};
-use tilo_browser_peer::pairing_link::PairingLink;
-use tilo_browser_peer::{HttpClient, PeerHandle};
-use tilo_relay_client::https::Origin;
+use tilo_browser_peer::{PeerHandle, login as peer_login};
+use tilo_relay_client::CertifyError;
+use tilo_relay_client::HttpClient;
+use tilo_relay_client::https::{self, Origin};
+use tilo_relay_client::login::{Door, PairingLink, SignIn, door_at, sign_in};
 use tilo_relay_protocol::login_code::{self, Claim, Claimed, Report, Resolve, Resolved, Step};
 use tilo_relay_protocol::web::API_PREFIX;
 
@@ -205,18 +206,6 @@ pub fn logged_in() -> bool {
     device_dir().is_ok_and(|dir| dir.join("key").exists())
 }
 
-/// The site's door to the workspace the code names, as its `entry.json`
-/// says (`home.admission`), when it names one for that host.
-async fn door_of(site: &str, host_origin: &str) -> Option<(Origin, String)> {
-    let (status, body) = Origin::new(&http(), site).get("/entry.json").await.ok()?;
-    if status != 200 {
-        return None;
-    }
-    let entry: Value = serde_json::from_slice(&body).ok()?;
-    let (origin, path) = peer_login::site_door(&entry, host_origin)?;
-    Some((Origin::new(&http(), &origin), path))
-}
-
 /// This computer's name, as a device label says it.
 fn hostname() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname")
@@ -250,7 +239,7 @@ pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<(PeerHa
     ))
     .map_err(|error| anyhow!(error))?;
     let host_web = Origin::new(&http(), &device.host_origin);
-    let info = tilo_browser_peer::host_info(&host_web).await?;
+    let info = https::host_info(&host_web).await?;
     let endpoint = tilo_relay_client::https::host_endpoint(&info)
         .context("the workspace's host takes no device connections")?;
     let (cert, host_cert) = device.certs()?;
@@ -258,11 +247,11 @@ pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<(PeerHa
         link,
         agent: device.agent.clone(),
         label: device.label.clone(),
-        host: tilo_browser_peer::Host::at(endpoint),
+        host: tilo_relay_client::Host::at(endpoint),
         cert,
         host_cert,
     };
-    let door = door_of(&device.site, &device.host_origin).await;
+    let door = door_at(&Origin::new(&http(), &device.site), &device.host_origin).await;
     let door = door.as_ref().map(|(client, path)| Door {
         client,
         path: path.clone(),
@@ -558,13 +547,13 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
     let key = SigningKey::from_bytes(&rand::random());
     let host_web = Origin::new(&http(), &link.host_origin);
     eprintln!("Waiting for the person's tab to approve this computer…");
-    let signed = peer_login::sign_in(&host_web, &link, &agent.name, &label, &key, |_| {})
+    let signed = sign_in(&host_web, &link, &agent.name, &label, &key, |_| {})
         .await
         .map_err(|error| match error {
-            tilo_browser_peer::CertifyError::Expired => anyhow!(
+            CertifyError::Expired => anyhow!(
                 "the tab did not approve this computer in time: it approves only while it is open"
             ),
-            tilo_browser_peer::CertifyError::Denied(reason) if reason.contains("declined") => {
+            CertifyError::Denied(reason) if reason.contains("declined") => {
                 anyhow!("the tab declined this computer")
             }
             other => anyhow!("logging in failed: {other}"),

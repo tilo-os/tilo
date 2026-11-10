@@ -4,15 +4,23 @@
 //! - the session with a relay over iroh is `tilo_relay_session::RelayClient`;
 //! - [`frame`] — the length-prefixed frame codec every relay stream uses.
 //!   The daemon and the relay session client in `tilo-relay-session` read and write
-//!   through the same functions.
+//!   through the same functions;
 //! - [`coedit`] — the co-edit payloads carried through the host; the iroh
 //!   session speaking them is `tilo_relay_session::coedit::RelayCoeditSession`;
 //! - [`certify`] — ask a host for a `DeviceCert`, or approve such requests
 //!   as a root-holding device;
+//! - [`pairing`] — the pairing ceremony over HTTPS, and the certificates a
+//!   person's root issues;
+//! - [`login`] — a computer signing in as one of the person's devices, the
+//!   login code it reads, and the two ways into the workspace it names;
+//! - [`sign_in`] — a device proving its person to a service that asks;
+//! - [`invite`] — joining a workspace another host governs, with no session
+//!   there;
 //! - [`signer`] — the device key as a signer, so a browser's
 //!   non-extractable key can authenticate;
 //! - [`error`] — why a call to a host failed, and why a host turned a device
 //!   away;
+//! - [`host`] — where a workspace's host is reached;
 //! - [`https`] — what a page asks a host before it holds a session, over
 //!   HTTPS through its `fetch`: the host's certificate and address, a
 //!   member's approval of their own device, and joining a workspace.
@@ -36,13 +44,29 @@ pub mod certify;
 pub mod coedit;
 pub mod error;
 pub mod frame;
+pub mod host;
 pub mod https;
+pub mod invite;
+/// A login code read, and a computer signing in as one of the person's
+/// devices (native only: a page writes the code, never reads it).
+#[cfg(all(feature = "iroh", not(target_arch = "wasm32")))]
+pub mod login;
+pub mod pairing;
+pub mod sign_in;
 pub mod signer;
 
 #[cfg(feature = "iroh")]
-pub use certify::{Approver, CertificationOutcome, CertifyError, request_certification};
+pub use certify::{
+    Approver, CERTIFICATION_WAIT_NS, CertificationOutcome, certify, request_certification,
+};
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound};
-pub use error::LinkError;
+pub use error::{CertifyError, LinkError};
+pub use host::Host;
 pub use https::{HttpClient, HttpFuture};
+pub use pairing::{
+    IssuedRole, NODE_CERT_LIFETIME_NS, answer_pairing, certify_with_root, decide_pairing,
+    issue_agent_grant, issue_device_cert, issue_stand_in, pending_pairings, revoke_device,
+};
+pub use sign_in::{encode, grant_label, sign_in_proof};
 pub use signer::{DeviceSigner, MaybeSendSync, SignError, SignFuture};
 pub use tilo_relay_protocol::transport::{ContentPeerRegistration, Envelope};

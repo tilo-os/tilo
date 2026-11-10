@@ -1,18 +1,17 @@
-//! Joining a workspace someone else's host governs, from a page with no session
+//! Joining a workspace another host governs, from a page with no session
 //! there (`/join`; see [`tilo_relay_protocol::workspaces`]).
 //!
 //! The joining person is not a user of that host: their page holds its own
-//! user root beside its device key and certifies the device itself
-//! ([`guest_certificate`]). The host admits the device through the workspace's
-//! governed roster as the invitation's own grant admits it, never as one of
-//! the host user's devices.
+//! user root and certifies the device itself ([`guest_certificate`]). The host
+//! admits it through the workspace's governed roster as the invitation's own
+//! grant admits it, never as one of the host user's devices.
 
-use tilo_relay_client::DeviceSigner;
+use crate::signer::DeviceSigner;
 use tilo_relay_protocol::workspaces::{JoinChallengeView, JoinReply, JoinStep, join_proof_digest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, device_cert_signing_digest};
 
-use tilo_relay_client::LinkError;
-use tilo_relay_client::https::{self, HttpClient};
+use crate::error::LinkError;
+use crate::https::{self, HttpClient};
 
 /// The page's own certificate for its device, signed by the person's own
 /// root `root`: a member device named `label`, with no expiry.
@@ -48,11 +47,6 @@ pub async fn guest_certificate(
     tilo_user_identity::verify_device_cert(&cert)
         .map_err(|error| LinkError::Sign(error.to_string()))?;
     Ok(cert)
-}
-
-/// One `/join` step.
-pub async fn join(client: &dyn HttpClient, step: &JoinStep) -> Result<JoinReply, LinkError> {
-    https::join(client, step).await
 }
 
 /// Ask to join with `invitation` as the device `cert` signed by `signer`,
@@ -113,7 +107,7 @@ async fn ask(
             "the signer is not the certified device".into(),
         ));
     }
-    let asked = join(
+    let asked = https::join(
         client,
         &JoinStep::Ask {
             invitation: invitation.to_vec(),
@@ -156,5 +150,5 @@ async fn ask(
             token,
         },
     };
-    join(client, &step).await
+    https::join(client, &step).await
 }

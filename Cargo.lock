@@ -17749,7 +17749,6 @@ dependencies = [
 name = "tilo-browser-peer"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
  "blake3",
  "bytes",
  "channel-crypto",
@@ -17775,7 +17774,6 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "test-http",
- "thiserror 2.0.21",
  "tilo-action-broker",
  "tilo-actions",
  "tilo-app",
@@ -17849,6 +17847,7 @@ dependencies = [
  "tilo-paths",
  "tilo-peer-state",
  "tilo-reference",
+ "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-secrets",
  "tilo-session",
@@ -20801,6 +20800,7 @@ dependencies = [
 name = "tilo-relay-client"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "hex",
@@ -20810,12 +20810,15 @@ dependencies = [
  "postcard",
  "rand 0.10.3",
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "tilo-clock",
  "tilo-net",
+ "tilo-reference",
  "tilo-relay-protocol",
  "tilo-user-identity",
  "tokio",
+ "uuid",
  "wire-frame",
  "workspace-hack",
 ]

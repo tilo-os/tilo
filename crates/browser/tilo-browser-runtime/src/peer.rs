@@ -432,7 +432,7 @@ pub async fn certify_device(
         .map_err(js_error)?
         .host();
     let (cert, host_cert) =
-        tilo_browser_peer::certify(&host, user, &label, invite, &signer, |code| {
+        tilo_relay_client::certify(&host, user, &label, invite, &signer, |code| {
             let _ = on_pairing_code.call1(&JsValue::NULL, &code.into());
         })
         .await
@@ -500,13 +500,13 @@ pub async fn issue_device_cert(
     role: String,
 ) -> Result<String, JsError> {
     let role = match role.as_str() {
-        "browser" => tilo_browser_peer::IssuedRole::Browser,
-        "node" => tilo_browser_peer::IssuedRole::Node,
-        "session" => tilo_browser_peer::IssuedRole::Session,
+        "browser" => tilo_relay_client::IssuedRole::Browser,
+        "node" => tilo_relay_client::IssuedRole::Node,
+        "session" => tilo_relay_client::IssuedRole::Session,
         _ => return Err(js_error("role must be browser, node or session")),
     };
     let root = PageSigner::from_js(&root)?;
-    let cert = tilo_browser_peer::issue_device_cert(
+    let cert = tilo_relay_client::issue_device_cert(
         &root,
         device_key(&device_public_key_hex)?,
         &label,
@@ -626,7 +626,7 @@ pub async fn redeem_invitation(site: String, secret: String) -> Result<String, J
 /// expiresAtNs}`, or `{kind: 'refused', reason}`. Resolves to JSON.
 #[wasm_bindgen(js_name = inspectInvitation)]
 pub async fn inspect_invitation(post: Function, invitation: Vec<u8>) -> Result<String, JsError> {
-    let reply = tilo_browser_peer::invite::join(
+    let reply = tilo_relay_client::https::join(
         &PageHttp(post),
         &tilo_relay_protocol::workspaces::JoinStep::Inspect { invitation },
     )
@@ -655,7 +655,7 @@ pub async fn ask_to_join(
 ) -> Result<String, JsError> {
     let root = PageSigner::from_js(&root)?;
     let signer = PageSigner::from_js(&custody)?;
-    let cert = tilo_browser_peer::invite::guest_certificate(
+    let cert = tilo_relay_client::invite::guest_certificate(
         &root,
         signer.device_public_key(),
         &label,
@@ -721,7 +721,7 @@ async fn ask_as(
     let request_id = request_id(request_id_hex)?;
     let reply = match admission_token {
         None => {
-            tilo_browser_peer::invite::ask_to_join(
+            tilo_relay_client::invite::ask_to_join(
                 &PageHttp(post),
                 invitation,
                 &cert,
@@ -732,7 +732,7 @@ async fn ask_as(
             .await
         }
         Some(token) => {
-            tilo_browser_peer::invite::ask_to_join_pre_admitted(
+            tilo_relay_client::invite::ask_to_join_pre_admitted(
                 &PageHttp(post),
                 invitation,
                 &cert,
@@ -756,7 +756,7 @@ pub async fn join_status(
     request_id_hex: String,
     device_public_key_hex: String,
 ) -> Result<String, JsError> {
-    let reply = tilo_browser_peer::invite::join(
+    let reply = tilo_relay_client::https::join(
         &PageHttp(post),
         &tilo_relay_protocol::workspaces::JoinStep::Status {
             request_id: request_id(&request_id_hex)?,
@@ -789,7 +789,7 @@ pub async fn certify_with_root(
     let root = PageSigner::from_js(&root)?;
     let signer = PageSigner::from_js(&custody)?;
     let (cert, host_cert) =
-        tilo_browser_peer::certify_with_root(&PageHttp(post), &root, &signer, &label)
+        tilo_relay_client::certify_with_root(&PageHttp(post), &root, &signer, &label)
             .await
             .map_err(js_error)?;
     serde_json::to_string(&Certified {
@@ -813,7 +813,7 @@ pub async fn certify_with_root(
 #[wasm_bindgen(js_name = certifyStandIn)]
 pub async fn certify_stand_in(root: JsValue, key_hex: String) -> Result<String, JsError> {
     let root = PageSigner::from_js(&root)?;
-    let cert = tilo_browser_peer::issue_stand_in(
+    let cert = tilo_relay_client::issue_stand_in(
         &root,
         device_key(&key_hex)?,
         "Stand-in approver",
@@ -834,7 +834,7 @@ pub async fn certify_stand_in(root: JsValue, key_hex: String) -> Result<String, 
 #[wasm_bindgen(js_name = revokeDevice)]
 pub async fn revoke_device(root: JsValue, key_hex: String) -> Result<String, JsError> {
     let root = PageSigner::from_js(&root)?;
-    let entry = tilo_browser_peer::revoke_device(
+    let entry = tilo_relay_client::revoke_device(
         &root,
         device_key(&key_hex)?,
         tilo_clock::unix_now_ns(),
@@ -855,7 +855,7 @@ pub async fn revoke_device(root: JsValue, key_hex: String) -> Result<String, JsE
 #[wasm_bindgen(js_name = pendingPairings)]
 pub async fn pending_pairings(post: Function, root: JsValue) -> Result<String, JsError> {
     let root = PageSigner::from_js(&root)?;
-    let pending = tilo_browser_peer::pending_pairings(&PageHttp(post), &root)
+    let pending = tilo_relay_client::pending_pairings(&PageHttp(post), &root)
         .await
         .map_err(js_error)?;
     Ok(serde_json::Value::Array(
@@ -892,7 +892,7 @@ pub async fn answer_pairing(
         .ok()
         .and_then(|bytes| bytes.try_into().ok())
         .ok_or_else(|| JsError::new("a request digest is 64 hex characters"))?;
-    let issued = tilo_browser_peer::answer_pairing(&PageHttp(post), &root, digest, approved)
+    let issued = tilo_relay_client::answer_pairing(&PageHttp(post), &root, digest, approved)
         .await
         .map_err(js_error)?;
     issued

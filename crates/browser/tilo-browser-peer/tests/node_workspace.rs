@@ -41,7 +41,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use neighbour_wire::NeighbourMsg;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
-use tilo_browser_peer::invite::{ask_to_join, ask_to_join_pre_admitted, guest_certificate, join};
+use tilo_browser_peer::invite::{ask_to_join, ask_to_join_pre_admitted, guest_certificate};
 use tilo_browser_peer::{
     DeviceSigner, Host, IssuedRole, PeerHandle, SignError, SignFuture, certify_with_root,
     issue_device_cert,
@@ -51,6 +51,7 @@ use tilo_relay::RelayConfig;
 use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::install::{InstallListener, SessionDevice};
 use tilo_relay::web::{TlsSource, WebConfig};
+use tilo_relay_client::https::join;
 use tilo_relay_protocol::workspaces::{
     JoinReply, JoinStep, PreAdmission, WorkspaceNotice, WorkspaceRole, WorkspacesReply,
     WorkspacesRequest,

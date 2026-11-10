@@ -1,10 +1,11 @@
 //! Client side of relay-mediated device certification
 //! ([`tilo_relay_protocol::certify`]).
 //!
-//! [`request_certification`] is what a device without a certificate runs:
-//! it presents its self-signed request and waits for the host to hand over
-//! a root-signed certificate. [`Approver`] is what a root-holding device runs
-//! to list and answer pending requests.
+//! [`certify`] is what a device without a certificate runs: it signs one
+//! request, presents it to its host and waits for a root holder to hand over
+//! a certificate. [`request_certification`] is the same conversation over an
+//! endpoint the caller already has, [`Approver`] what a root-holding device
+//! runs to list and answer pending requests.
 
 use iroh::endpoint::{Connection, Endpoint, RecvStream, SendStream};
 use iroh_base::EndpointAddr;
@@ -15,33 +16,24 @@ use tilo_relay_protocol::certify::{
     PendingDelegate,
 };
 use tilo_user_identity::{
-    CertificationPolicy, CertificationRequest, DeviceCert, RevocationList, verify_device_cert_at,
-    verify_issued_cert,
+    CERTIFICATION_SCHEMA_VERSION, CertificationPolicy, CertificationRequest, DeviceCapabilities,
+    DeviceCert, RevocationList, verify_device_cert_at, verify_issued_cert,
 };
 
+use crate::error::{CertifyError, LinkError};
 use crate::frame::{read_frame, write_frame};
+use crate::host::Host;
 use crate::signer::DeviceSigner;
 use crate::signer::signed_ack2;
 
-/// Why a certification or approver session failed.
-#[derive(Debug, thiserror::Error)]
-pub enum CertifyError {
-    /// Iroh dial / bi-stream.
-    #[error("iroh: {0}")]
-    Iroh(String),
-    /// Postcard encode/decode.
-    #[error("codec: {0}")]
-    Codec(String),
-    /// Auth check failed.
-    #[error("auth: {0}")]
-    Auth(#[from] tilo_relay_protocol::auth::AuthError),
-    /// I/O.
-    #[error("io: {0}")]
-    Io(#[from] std::io::Error),
-    /// The device signer refused or failed.
-    #[error("signer: {0}")]
-    Sign(String),
-}
+/// Longest a certification request waits for an approver.
+pub const CERTIFICATION_WAIT_NS: u64 = 5 * 60 * 1_000_000_000;
+
+/// How far a certificate's issue time may run ahead of this device's clock:
+/// the host stamps its own nanosecond clock, and a page's clock is coarser
+/// (a browser's is whole milliseconds), so a certificate checked the moment
+/// it arrives can look issued in the future.
+const ISSUE_SKEW_NS: u64 = 5 * 1_000_000_000;
 
 /// How a certification request ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,6 +79,86 @@ async fn write<T: serde::Serialize + Sync>(
     Ok(())
 }
 
+/// Ask the host at `host` to certify the device behind `signer` as one of
+/// `user_public_key`'s devices, labeled `label`, answering the pairing invite
+/// `invite` ([0; 16] when none). `on_pending` receives the pairing code to
+/// show while the person's other device answers. Resolves to this device's
+/// certificate and the host's, to pin.
+///
+/// # Errors
+///
+/// The host was not reached or refused, nobody answered in time
+/// ([`CertifyError::Expired`]), or what it issued is not a certificate for
+/// this device ([`request_certification`] checks it).
+pub async fn certify(
+    host: &Host,
+    user_public_key: [u8; 32],
+    label: &str,
+    invite: [u8; 16],
+    signer: &dyn DeviceSigner,
+    on_pending: impl FnOnce(&str),
+) -> Result<(DeviceCert, DeviceCert), CertifyError> {
+    let request = signed_request(user_public_key, label, invite, signer).await?;
+    let mut addr = host.addr.clone();
+    let mut builder = Endpoint::builder(iroh::endpoint::presets::Minimal);
+    if let Some(url) = &host.relay_url {
+        builder = builder.relay_mode(iroh::RelayMode::Custom(url.clone().into()));
+        addr = addr.with_relay_url(url.clone());
+    }
+    let endpoint = builder
+        .bind()
+        .await
+        .map_err(|error| LinkError::Unavailable(error.to_string()))?;
+    let outcome = request_certification(&endpoint, addr, request, on_pending).await;
+    endpoint.close().await;
+    match outcome? {
+        CertificationOutcome::Issued { cert, host_cert } => Ok((cert, host_cert)),
+        CertificationOutcome::Denied(reason) => Err(CertifyError::Denied(reason)),
+        CertificationOutcome::Expired => Err(CertifyError::Expired),
+    }
+}
+
+/// The request a device without a certificate signs.
+async fn signed_request(
+    user_public_key: [u8; 32],
+    label: &str,
+    invite: [u8; 16],
+    signer: &dyn DeviceSigner,
+) -> Result<CertificationRequest, CertifyError> {
+    let now = tilo_clock::unix_now_ns();
+    let unsigned = CertificationRequest {
+        version: CERTIFICATION_SCHEMA_VERSION,
+        user_public_key,
+        device_public_key: signer.device_public_key(),
+        device_label: label.to_owned(),
+        requested: DeviceCapabilities::member(),
+        nonce: rand::random(),
+        invite,
+        issued_at_ns: now,
+        expires_at_ns: now.saturating_add(CERTIFICATION_WAIT_NS),
+        signature: [0; 64],
+    };
+    let digest = unsigned
+        .signing_digest()
+        .map_err(|error| CertifyError::Request(error.to_string()))?;
+    let signature = signer
+        .sign(digest.to_vec())
+        .await
+        .map_err(|error| CertifyError::Request(error.0))?;
+    unsigned
+        .with_signature(signature)
+        .map_err(|error| CertifyError::Request(error.to_string()))
+}
+
+/// When to check a certificate issued at `issued_at_ns`, reading `now_ns`.
+fn checked_at(now_ns: u64, issued_at_ns: u64) -> u64 {
+    if issued_at_ns > now_ns && issued_at_ns.saturating_sub(now_ns) <= ISSUE_SKEW_NS {
+        issued_at_ns
+    } else {
+        now_ns
+    }
+}
+
 /// Ask the host at `host` to certify the device that signed `request`, and
 /// wait for the answer. `on_pending` receives the pairing code once the host
 /// has queued the request; show it so the person approving can compare.
@@ -121,7 +193,7 @@ pub async fn request_certification(
                 &cert,
                 &CertificationPolicy::browser(),
                 &RevocationList::new(),
-                now,
+                checked_at(now, cert.issued_at_ns),
             )
             .map_err(|error| codec(&format!("issued certificate refused: {error}")))?;
             // A member pairs through any host they share, so the host may be

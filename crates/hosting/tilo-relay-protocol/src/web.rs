@@ -130,6 +130,17 @@ pub const MAX_HERE_STATUS_CHARS: usize = 96;
 pub const MAX_HERE_LABEL_CHARS: usize = 32;
 /// Bound, in characters, of [`HerePerson::recent`].
 pub const MAX_HERE_RECENT_CHARS: usize = 320;
+
+/// `text` without control characters, cut to the `max` characters a host keeps
+/// ([`MAX_HERE_LABEL_CHARS`], [`MAX_HERE_FIELD_CHARS`]): what this device says
+/// of itself, from text that is not trusted to be printable.
+#[must_use]
+pub fn kept(text: &str, max: usize) -> String {
+    text.chars()
+        .filter(|character| !character.is_control())
+        .take(max)
+        .collect()
+}
 /// How long a person stays listed after their last post, in seconds: the
 /// lifetime of an inferred status in the UI (`tilo-ui`'s
 /// `live_collaboration::INFERRED_STATUS_TTL`).

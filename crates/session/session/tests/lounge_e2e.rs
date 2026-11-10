@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 
 use collab_types::DocumentMutation;
 use test_http::{Reply, Responder};
-use tilo_browser_peer::{Host, MemoryPeerStore, PeerConfig, PeerHandle};
+use tilo_browser_peer::{MemoryPeerStore, PeerConfig, PeerHandle};
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, SharedDesktop};
 use tilo_desktop_model::{
@@ -46,6 +46,7 @@ use tilo_desktop_model::{
     WorkspaceSlot,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_relay_client::Host;
 use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent};
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
@@ -279,8 +280,8 @@ fn random_key() -> [u8; 32] {
 /// Plain HTTP/1.1 to the room's plain listener: a page's `fetch` .
 struct Plain(String);
 
-impl tilo_browser_peer::HttpClient for Plain {
-    fn post(&self, path: &str, body: Vec<u8>) -> tilo_browser_peer::HttpFuture<'_> {
+impl tilo_relay_client::HttpClient for Plain {
+    fn post(&self, path: &str, body: Vec<u8>) -> tilo_relay_client::HttpFuture<'_> {
         let url = format!("{}{path}", self.0);
         Box::pin(async move {
             let client = client()?;
@@ -317,7 +318,9 @@ fn host_info(
     plain: &str,
 ) -> Result<tilo_relay_protocol::web::HostInfo, String> {
     runtime
-        .block_on(tilo_browser_peer::host_info(&Plain(plain.to_owned())))
+        .block_on(tilo_relay_client::https::host_info(&Plain(
+            plain.to_owned(),
+        )))
         .map_err(|error| error.to_string())
 }
 
@@ -332,7 +335,7 @@ fn page(room: &Room, member: &Member) -> PeerHandle {
             host_cert: room.host_cert.clone(),
             revocations: tilo_user_identity::RevocationList::new(),
         },
-        Arc::new(member.key.clone()) as Arc<dyn tilo_browser_peer::DeviceSigner>,
+        Arc::new(member.key.clone()) as Arc<dyn tilo_relay_client::DeviceSigner>,
         Arc::new(MemoryPeerStore::default()),
     );
     page.join_placed(&room.workspace, "Lounge")

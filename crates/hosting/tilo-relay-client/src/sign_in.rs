@@ -1,19 +1,10 @@
-//! What a browser gives a service that signs its person in.
-//!
-//! A service that is not one of the person's devices asks the page for two
-//! things, and the page builds both here: a
-//! [`SignInProof`](tilo_user_identity::SignInProof), in which a device the
-//! person's root certified signs the service's fresh challenge, and — when
-//! the person lets an agent act for them through that service — a
-//! certificate of the key the service generated for the grant
-//! ([`tilo_user_identity::DeviceCapabilities::agent_grant`]).
-//!
-//! The service decodes both as its canonical bytes (`tilo_user_identity::
-//! canonical`) in base64url without padding, so that is what the page sends
-//! and what builds them here.
+//! What a browser gives a service that signs its person in: a
+//! [`SignInProof`](tilo_user_identity::SignInProof) over the service's own
+//! challenge, and the agent grant's certificate, both as canonical bytes in
+//! base64url without padding.
 
+use crate::signer::DeviceSigner;
 use base64::Engine as _;
-use tilo_relay_client::DeviceSigner;
 use tilo_user_identity::canonical::canonical_bytes;
 use tilo_user_identity::certification::MAX_CERTIFICATION_LABEL_BYTES;
 use tilo_user_identity::{CanonicalError, DeviceCert, SignInError, SignInProof, sign_in_digest};

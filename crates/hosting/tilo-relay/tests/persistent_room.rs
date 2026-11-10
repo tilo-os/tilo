@@ -307,7 +307,7 @@ fn a_volume_a_room_service_left_keeps_its_workspace_and_people() {
     let invitation = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(&answer.invitation)
         .unwrap();
-    match runtime.block_on(tilo_browser_peer::invite::ask_to_join_pre_admitted(
+    match runtime.block_on(tilo_relay_client::invite::ask_to_join_pre_admitted(
         &Plain(plain),
         &invitation,
         &cert,
@@ -430,7 +430,7 @@ fn a_page_is_told_the_packet_relay_its_host_runs_from_the_first_answer() {
     let _ = announced(&room);
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let info = runtime
-        .block_on(tilo_browser_peer::host_info(&Plain(plain)))
+        .block_on(tilo_relay_client::https::host_info(&Plain(plain)))
         .expect("the host answers where its pages dial it");
     let address = info.address.expect("the host names an endpoint");
     let relay = address
@@ -455,8 +455,8 @@ fn a_page_is_told_the_packet_relay_its_host_runs_from_the_first_answer() {
 
 /// Plain HTTP/1.1 to the room's loopback listener: the page's `fetch`.
 struct Plain(std::net::SocketAddr);
-impl tilo_browser_peer::HttpClient for Plain {
-    fn post(&self, path: &str, body: Vec<u8>) -> tilo_browser_peer::HttpFuture<'_> {
+impl tilo_relay_client::HttpClient for Plain {
+    fn post(&self, path: &str, body: Vec<u8>) -> tilo_relay_client::HttpFuture<'_> {
         use http_body_util::BodyExt as _;
         let request = hyper::Request::post(path)
             .header(hyper::header::HOST, "localhost")
@@ -512,8 +512,8 @@ async fn wait_for<T: Send>(
 }
 
 /// The room's iroh endpoint, where its pages run their sessions.
-fn host_of(info: tilo_relay_protocol::web::HostInfo) -> tilo_browser_peer::Host {
-    tilo_browser_peer::Host::at(
+fn host_of(info: tilo_relay_protocol::web::HostInfo) -> tilo_relay_client::Host {
+    tilo_relay_client::Host::at(
         info.address
             .expect("the room publishes its iroh endpoint")
             .endpoint_addr,
@@ -522,7 +522,7 @@ fn host_of(info: tilo_relay_protocol::web::HostInfo) -> tilo_browser_peer::Host 
 
 /// A page of `cert`'s device, on the room's session.
 fn page(
-    host: tilo_browser_peer::Host,
+    host: tilo_relay_client::Host,
     key: ed25519_dalek::SigningKey,
     cert: tilo_user_identity::DeviceCert,
     host_cert: &tilo_user_identity::DeviceCert,
@@ -556,7 +556,7 @@ fn join_through_door(
         .decode(&answer.invitation)
         .unwrap();
     let request_id = cert.device_public_key;
-    let admitted = runtime.block_on(tilo_browser_peer::invite::ask_to_join_pre_admitted(
+    let admitted = runtime.block_on(tilo_relay_client::invite::ask_to_join_pre_admitted(
         &Plain(plain),
         &invitation,
         &cert,
@@ -686,12 +686,14 @@ async fn chat_route(
     plain: std::net::SocketAddr,
     cluster: &str,
 ) -> (
-    tilo_browser_peer::Host,
+    tilo_relay_client::Host,
     tilo_user_identity::DeviceCert,
     tilo_peer_state::document_frame::DocumentRoute,
 ) {
     const CHAT: &str = "so.tilo.chat";
-    let info = tilo_browser_peer::host_info(&Plain(plain)).await.unwrap();
+    let info = tilo_relay_client::https::host_info(&Plain(plain))
+        .await
+        .unwrap();
     let host_cert = info.host_cert.clone();
     let host = host_of(info);
     let catalogue = tilo_agent_participant::AppCatalogue::native();
@@ -732,7 +734,7 @@ async fn ask_door_raw(
     cert: &tilo_user_identity::DeviceCert,
     name: &str,
 ) -> (u16, Vec<u8>) {
-    use tilo_browser_peer::HttpClient as _;
+    use tilo_relay_client::HttpClient as _;
     let join = tilo_relay_protocol::directory::DoorJoin {
         user_public_key: hex::encode(cert.user_public_key),
         display_name: name.into(),
@@ -767,7 +769,7 @@ async fn ask_door(
 async fn directory_page(
     plain: std::net::SocketAddr,
 ) -> tilo_relay_protocol::directory::DirectoryPage {
-    use tilo_browser_peer::HttpClient as _;
+    use tilo_relay_client::HttpClient as _;
     let (status, body) = Plain(plain)
         .post("/peer/v1/directory", Vec::new())
         .await
@@ -826,7 +828,7 @@ fn the_relay_door_admits_two_people_as_distinct_members_at_its_default_role() {
         let invitation = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(&answer.invitation)
             .unwrap();
-        let admitted = runtime.block_on(tilo_browser_peer::invite::ask_to_join_pre_admitted(
+        let admitted = runtime.block_on(tilo_relay_client::invite::ask_to_join_pre_admitted(
             &Plain(plain),
             &invitation,
             &cert,
@@ -1153,7 +1155,9 @@ fn a_persistent_room_reopens_after_hard_stops() {
     let workspace_id = tilo_relay::room_workspace_id(&id).unwrap();
     let (key, cert) = join_through_door(&runtime, plain, &id, own_device(0x75, "Ben"), "Ben");
     runtime.block_on(async {
-        let info = tilo_browser_peer::host_info(&Plain(plain)).await.unwrap();
+        let info = tilo_relay_client::https::host_info(&Plain(plain))
+            .await
+            .unwrap();
         let host_cert = info.host_cert.clone();
         let host = host_of(info);
         let catalogue = tilo_agent_participant::AppCatalogue::native();
@@ -1320,7 +1324,7 @@ fn answers_the_door(
     workspace: &str,
 ) {
     let reported = runtime.block_on(async {
-        use tilo_browser_peer::HttpClient as _;
+        use tilo_relay_client::HttpClient as _;
         Plain(plain)
             .post(
                 &format!("/peer/v1/directory/{workspace}/errors"),

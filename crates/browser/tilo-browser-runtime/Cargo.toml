@@ -82,6 +82,8 @@ web-sys = { version = "=0.3.85", features = [
 ] }
 # The certified peer over iroh, its live codec and the toolkit transport.
 tilo-browser-peer = { version = "0.1.0", path = "../tilo-browser-peer", features = ["toolkit"] }
+# The identity layer's device side: certification, pairing, the sign-in proof.
+tilo-relay-client = { version = "0.1.0", path = "../../hosting/tilo-relay-client", features = ["iroh"] }
 tilo-peer-state = { version = "0.1.0", path = "../../collab/tilo-peer-state" }
 # The channel engine's vault namespace: the page keeps its channel vault key
 # in the same secret store the session's own vault uses.

@@ -40,7 +40,7 @@ use collab_types::DocumentMutation;
 use ed25519_dalek::Signer as _;
 use sha2::Digest as _;
 use test_http::{Reply, Responder};
-use tilo_browser_peer::{Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle};
+use tilo_browser_peer::{MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle};
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, SharedDesktop};
 use tilo_desktop_model::{
@@ -49,6 +49,7 @@ use tilo_desktop_model::{
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::workspaces::{PreAdmitRequest, RemoveMemberRequest};
+use tilo_relay_client::Host;
 use tilo_relay_protocol::directory::{DirectoryEntry, DirectoryPage, Face, door_path};
 use tilo_relay_protocol::workspaces::{PreAdmission, WorkspaceRole};
 use tilo_session::{Options, Session};
@@ -1356,7 +1357,7 @@ impl LoungeHost {
                     host_cert: self.host_cert.clone(),
                     revocations: tilo_user_identity::RevocationList::new(),
                 },
-                Arc::new(self.page_key.clone()) as Arc<dyn tilo_browser_peer::DeviceSigner>,
+                Arc::new(self.page_key.clone()) as Arc<dyn tilo_relay_client::DeviceSigner>,
                 Arc::new(MemoryPeerStore::default()),
             );
             page.join_placed(&self.workspace, "Lounge")

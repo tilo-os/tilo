@@ -4,16 +4,16 @@
 //! posts a form back; everything signed happens here, on the peer's own
 //! paths. The root the page holds certifies this browser's device key, that
 //! device proves the person to the service
-//! ([`tilo_browser_peer::sign_in_proof`]), and — when the person lets an
+//! ([`tilo_relay_client::sign_in_proof`]), and — when the person lets an
 //! agent act for them — the root certifies the key the service generated for
-//! the grant ([`tilo_browser_peer::issue_agent_grant`]).
+//! the grant ([`tilo_relay_client::issue_agent_grant`]).
 //!
 //! The certificate the proof carries is issued for this answer alone: a host
 //! issues the page's device certificate when it joins a workspace, and a
 //! sign-in to a service has no workspace behind it.
 
 use serde::{Deserialize, Serialize};
-use tilo_browser_peer::{
+use tilo_relay_client::{
     DeviceSigner as _, IssuedRole, encode, grant_label, issue_agent_grant, issue_device_cert,
     sign_in_proof,
 };

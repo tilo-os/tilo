@@ -1,10 +1,10 @@
 //! `tilo-browser-peer` — the browser as a real Tilo peer.
 //!
-//! A paired page holds a device key. [`custody::certify`] asks the user's
-//! host for a root-signed `DeviceCert`, which a root-holding device issues
-//! through the host. An invited person instead uses [`invite`] to certify
-//! their device with their own root and obtain governed workspace access.
-//! [`session::PeerHandle`] keeps one certified relay session to that host:
+//! A paired page holds a device key, which
+//! [`tilo_relay_client::certify`] has the user's host ask a root-holding
+//! device to certify, and [`tilo_relay_client::invite`] certifies with a
+//! joining person's own root. [`session::PeerHandle`] keeps one certified
+//! relay session to that host:
 //!
 //! - the **durable plane**: signed document envelopes ([`document`]) sent as
 //!   acknowledged commits from a persisted outbox and replayed after every
@@ -21,6 +21,10 @@
 //! [`health`] derives `PeerSnapshot` and `SessionHealth` v1 from it.
 //! [`presence_anchors`] carries an editor's ranges on the live plane as every
 //! native device does.
+//!
+//! The identity layer's device side is [`tilo_relay_client`]: this crate
+//! enters the workspace a signed-in computer's link names ([`login::enter`])
+//! and keeps the session.
 
 #![deny(rust_2018_idioms)]
 #![cfg_attr(
@@ -38,42 +42,36 @@ pub mod custody;
 pub mod document;
 pub mod health;
 mod held_live;
-pub mod invite;
-/// Logging a computer in as one of the person's devices (native only).
+/// Entering the workspace a signed-in device names (native only).
 #[cfg(not(target_arch = "wasm32"))]
 pub mod login;
 pub mod narration;
-/// The login code a page hands a computer, read (native only: a page writes
-/// it, never reads it).
-#[cfg(not(target_arch = "wasm32"))]
-pub mod pairing_link;
 pub mod presence_anchors;
 mod previews;
 mod replica;
 pub mod session;
 /// Another device's actions, asked through this device's session.
 pub use tilo_session_core::remote as session_actions;
-pub mod sign_in;
 pub mod surfaces;
 pub mod voice;
 
 pub use channels::{document_admission, document_history_admission};
-pub use custody::{
-    CertifyError, IssuedRole, MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore, answer_pairing,
-    certify, certify_with_root, decide_pairing, issue_agent_grant, issue_device_cert,
-    issue_stand_in, pending_pairings, revoke_device,
-};
+pub use custody::{MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore};
 pub use health::{PeerSnapshot, SessionHealth};
 pub use previews::{LiveChange, LiveState, RemoteMember};
 pub use session::{
-    CallFrame, CallPicture, CallShown, Completion, Failure, FailureSubject, Host, LocalState,
+    CallFrame, CallPicture, CallShown, Completion, Failure, FailureSubject, LocalState,
     PAGE_FAILURE_CODES, PeerConfig, PeerEvent, PeerEvents, PeerHandle, PeerStatus, RoomsCompletion,
     TransportPhase,
 };
-pub use sign_in::{encode, grant_label, sign_in_proof};
 /// The record a session's [`PeerHandle::open_route`] takes part in.
 pub use tilo_peer_state::document_frame::DocumentRoute;
-pub use tilo_relay_client::LinkError;
+/// The identity layer's device side, re-exported for this crate's own tests
+/// and its peers.
 pub use tilo_relay_client::https::{HttpClient, HttpFuture, host_info};
-pub use tilo_relay_client::{DeviceSigner, SignError, SignFuture};
+pub use tilo_relay_client::{
+    CertifyError, DeviceSigner, Host, IssuedRole, LinkError, SignError, SignFuture, answer_pairing,
+    certify, certify_with_root, decide_pairing, invite, issue_agent_grant, issue_device_cert,
+    issue_stand_in, pending_pairings, revoke_device,
+};
 pub use voice::VoiceEvent;

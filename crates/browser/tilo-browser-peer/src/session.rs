@@ -117,24 +117,8 @@ const ADMISSION_TIMEOUT_MS: u64 = 30_000;
 const MAX_FAILURES: usize = 16;
 
 /// Where to reach the user's host: the iroh endpoint it serves its peers'
-/// sessions on.
-#[derive(Clone, Debug)]
-pub struct Host {
-    /// Its iroh endpoint.
-    pub addr: iroh_base::EndpointAddr,
-    /// An iroh relay server to dial it through, if any.
-    pub relay_url: Option<iroh_base::RelayUrl>,
-}
-
-impl Host {
-    /// The host at `addr`, dialled through the relay `addr` names, if any.
-    pub fn at(addr: iroh_base::EndpointAddr) -> Self {
-        Self {
-            addr,
-            relay_url: None,
-        }
-    }
-}
+/// sessions on ([`tilo_relay_client::Host`]).
+pub use tilo_relay_client::Host;
 
 /// Where to connect and as whom.
 #[derive(Clone)]
