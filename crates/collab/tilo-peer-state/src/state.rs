@@ -905,7 +905,7 @@ impl StatePeer {
     ) -> Result<(), String> {
         use crate::members::{self, MembershipOpCommand, SignedMembershipOp};
         let workspace = self.core.workspace.clone();
-        let target = tilo_desktop_model::projection::workspace_policy_of(doc, &workspace);
+        let target = members::rows(doc, &workspace);
         let old = self.core.workspace_doc.as_deref();
         let live = old.is_some_and(|old| members::genesis(&members::ops(old)).is_some());
         let cert = self

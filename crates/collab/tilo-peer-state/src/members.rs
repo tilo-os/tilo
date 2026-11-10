@@ -21,6 +21,6 @@ mod tests;
 
 pub use op::{MEMBERS_KEY, Membership, MembershipOpCommand, OpId, SignedMembershipOp};
 pub use replay::{
-    differences, genesis, growth, heads, materialise, ops, refusal, refused, replay, settle,
+    differences, genesis, growth, heads, materialise, ops, refusal, refused, replay, rows, settle,
     starts, steps, unwritten,
 };

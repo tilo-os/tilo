@@ -1107,7 +1107,7 @@ fn a_log_holding_an_earlier_builds_roles_takes_its_owners_next_change() {
     let held = replay(&started, WORKSPACE);
     assert_eq!(differences(&held, &rows), Vec::<String>::new());
     let (_, newcomer) = device(9);
-    let mut next = rows.clone();
+    let mut next = rows;
     next.members.insert(person(&newcomer), Role::Editor);
     let op = project(
         &relay,
@@ -1120,4 +1120,36 @@ fn a_log_holding_an_earlier_builds_roles_takes_its_owners_next_change() {
         replay(&holding(&started, &[op]), WORKSPACE).members,
         next.members
     );
+}
+
+/// Rows an earlier build wrote, before every workspace granted its Files app,
+/// read with that grant added last, out of the order the log holds grants in:
+/// the log and the rows are the same membership, and its owner's next change
+/// is written.
+#[test]
+fn rows_read_in_another_order_are_the_membership_the_log_holds() {
+    let (owner_key, relay, mut doc) = lounge();
+    let grants = map(&doc, "grants");
+    doc.delete(&grants, tilo_action_policy::roles::FILES_APP_GRANT)
+        .unwrap();
+    doc.commit();
+    let read = tilo_desktop_model::projection::workspace_policy_of(&doc, WORKSPACE);
+    assert_eq!(
+        read.grants.last().map(|grant| grant.id.as_str()),
+        Some(tilo_action_policy::roles::FILES_APP_GRANT),
+        "the rows read the Files app's grant last"
+    );
+    assert_ne!(read, super::rows(&doc, WORKSPACE), "out of the log's order");
+    let genesis = legacy::genesis_op(
+        &relay,
+        &owner_key,
+        &doc.get_heads(),
+        &super::rows(&doc, WORKSPACE),
+        1_700_000_000_000_000_000,
+    )
+    .unwrap();
+    let started = holding(&doc, std::slice::from_ref(&genesis));
+    let held = replay(&started, WORKSPACE);
+    assert_eq!(held, super::rows(&started, WORKSPACE));
+    assert!(differences(&held, &read).is_empty());
 }

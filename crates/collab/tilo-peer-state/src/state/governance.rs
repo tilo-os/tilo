@@ -308,7 +308,7 @@ impl PeerGovernance<'_> {
             .ok_or("workspace governance missing")?;
         let workspace = &self.peer.core.workspace;
         let held = crate::members::ops(doc);
-        let rows = tilo_desktop_model::projection::workspace_policy_of(doc, workspace);
+        let rows = crate::members::rows(doc, workspace);
         let mut said = vec![format!(
             "{} membership operations; log {}; owner {:?}",
             held.len(),
@@ -337,12 +337,8 @@ impl PeerGovernance<'_> {
             ));
         }
         let log = crate::members::replay(doc, workspace);
-        let mut sorted = rows;
-        sorted
-            .grants
-            .sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
         said.extend(
-            crate::members::differences(&log, &sorted)
+            crate::members::differences(&log, &rows)
                 .into_iter()
                 .map(|line| format!("  log against rows: {line}")),
         );

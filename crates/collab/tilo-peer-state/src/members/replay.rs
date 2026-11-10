@@ -140,6 +140,17 @@ pub fn replay(doc: &AutoCommit, workspace: &str) -> WorkspacePolicy {
     policy
 }
 
+/// The membership `doc`'s rows hold, its grants in the one order the log's
+/// replay holds them in: which order the rows are read in (the grants this
+/// build gives every workspace come last) is no part of what the workspace
+/// allows, so the two compare as the same membership when they hold the same.
+#[must_use]
+pub fn rows(doc: &AutoCommit, workspace: &str) -> WorkspacePolicy {
+    let mut policy = tilo_desktop_model::projection::workspace_policy_of(doc, workspace);
+    order(&mut policy);
+    policy
+}
+
 /// The grants of a membership in the one order every device reads them in: by
 /// id, the order the document holds their rows in. Which grant comes first is
 /// no part of what a workspace allows.
@@ -419,9 +430,6 @@ pub fn differences(one: &WorkspacePolicy, other: &WorkspacePolicy) -> Vec<String
         if !ours.contains_key(id) {
             said.push(format!("grant {} only in the second", id.as_str()));
         }
-    }
-    if said.is_empty() && one != other {
-        said.push("the same grants, in another order".to_owned());
     }
     said
 }
