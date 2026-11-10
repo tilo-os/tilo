@@ -54,10 +54,6 @@ pub struct TreeViewRowProps {
     pub secondary: Option<String>,
     /// Trailing text: a count, a kind, a size.
     pub trailing: Option<String>,
-    /// How far the branch got while it is folded, just before the trailing text: a done
-    /// count among its children ("2/5"). Its node's [`TreeViewNodeProps::progress`] says it
-    /// where the row gives none. Shown only when the branch is closed.
-    pub progress: Option<String>,
     /// A checkbox at the start of the row: a task's done state, a selection. A press on it
     /// asks the node's [`TreeViewNodeProps::check`] instead of selecting the row.
     pub checkbox: Option<bool>,
@@ -118,9 +114,8 @@ pub struct TreeViewNodeProps {
     /// What the row shows besides its label.
     #[component(slot)]
     pub row: Option<TreeViewRowProps>,
-    /// How far the branch got while it is folded ("1/3"), which the owner counts of its own
-    /// children: the same count names a list row and an outline node, so both say one thing.
-    /// The row's own [`TreeViewRowProps::progress`] says it instead where the row gives one.
+    /// How far the branch got ("1/3"), which the owner counts of its own children: the same
+    /// count names a list row and an outline node, so both say one thing, folded or open.
     pub progress: Option<String>,
     /// Whether it is the selected node.
     pub selected: bool,
@@ -1310,16 +1305,6 @@ impl ListModel for TreeRows {
     }
 }
 
-/// How far the branch under `node` got, said only while it is folded: open, its own rows say
-/// it. The row's own wording stands over the count its node states.
-fn progress_of(node: &Node, folded: bool) -> Option<String> {
-    let row = node.row.as_ref()?;
-    if !folded {
-        return None;
-    }
-    row.progress.clone().or_else(|| node.progress.clone())
-}
-
 /// The row of the node at `key`: its list row, indented to where it stands, with what its row
 /// part says of it.
 fn row_of(
@@ -1336,7 +1321,6 @@ fn row_of(
     // quieter than the match it leads to.
     let context = matching.is_some_and(|found| !found.contains(node.item.0.as_str()));
     let key_owned = key.to_owned();
-    let folded = marks.is_folded(&key_owned);
     let mut row = ListRow::new(key_owned.clone(), node.label.clone())
         .depth(marks.depth(&key_owned))
         .row_height(TREE_ROW_HEIGHT)
@@ -1364,12 +1348,14 @@ fn row_of(
         if let Some(text) = &props.trailing {
             row = row.value(text.clone());
         }
-        if let Some(progress) = progress_of(&node, folded) {
-            row = row.meta(progress);
-        }
         if let Some(text) = &props.description {
             row = row.description(text.clone());
         }
+    }
+    // How far the branch got, just before the trailing text, folded or open: the same count a
+    // list row of the same item says.
+    if let Some(progress) = &node.progress {
+        row = row.meta(progress.clone());
     }
     // It stands in for an item someone removed: its title struck through, as a list row of one
     // says it.
@@ -1726,8 +1712,9 @@ pub(crate) fn items_tree(id: &str, name: Option<&str>, open: bool) -> DescribedT
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Theme;
     use crate::component::{BoundValue, Fired, Intent};
-    use crate::headless::FrameHarness;
+    use crate::headless::{FrameHarness, InspectionNode};
     use crate::widget::TreeMove;
 
     fn node(
@@ -2008,8 +1995,9 @@ mod tests {
         );
     }
 
-    /// How far a branch got is the owner's count, said of the node: the row shows it, and a
-    /// row the app worded itself keeps its own. Open, its own rows say it.
+    /// How far a branch got is the owner's count, said of the node: its row says it whether
+    /// the branch is folded or open, as a list row of the same item does. A node with no count
+    /// says none.
     #[test]
     fn a_node_says_how_far_its_branch_got() {
         let queue = crate::Intents::default();
@@ -2022,32 +2010,28 @@ mod tests {
             checkbox: Some(true),
             ..TreeViewRowProps::default()
         });
-        let mut worded = node("c", Some("a"), false, &queue);
-        worded.progress = Some("1/3".into());
-        worded.row = Some(TreeViewRowProps {
-            progress: Some("2/5".into()),
-            ..TreeViewRowProps::default()
-        });
-        let tree = tree_of(vec![said, child, worded], true, Moves::default());
-        let nodes = tree.nodes();
-        let of = |key: &str| progress_of(nodes.node(key).expect("a node"), true);
-        assert_eq!(of("a").as_deref(), Some("1/3"));
-        assert_eq!(of("b"), None, "nothing says it");
-        assert_eq!(
-            of("c").as_deref(),
-            Some("2/5"),
-            "the row's own wording stands"
-        );
-        assert_eq!(
-            progress_of(nodes.node("a").expect("a node"), false),
-            None,
-            "open, its own rows say how far it got"
-        );
-        assert_eq!(
-            progress_of(nodes.node("b").expect("a node"), false),
-            None,
-            "a leaf says nothing of a count"
-        );
+        let tree = tree_of(vec![said, child], true, Moves::default());
+        let harness = FrameHarness::for_root(crate::State::new(), tree, (400, 240), Theme::dark());
+        fn read(node: &InspectionNode, out: &mut Vec<(String, Option<String>)>) {
+            if let Some(access) = &node.semantics
+                && let Some(name) = &access.name
+            {
+                out.push((name.clone(), access.value.clone()));
+            }
+            for child in &node.children {
+                read(child, out);
+            }
+        }
+        let mut values = Vec::new();
+        read(&harness.inspection().root, &mut values);
+        let value = |words: &str| {
+            values
+                .iter()
+                .find(|(name, _)| name == words)
+                .and_then(|(_, value)| value.clone())
+        };
+        assert_eq!(value("a").as_deref(), Some("1/3"), "the row says the count");
+        assert_eq!(value("b"), None, "a node with no count says none");
     }
 
     /// A folder says it is a branch before its files are known: its row shows the disclosure

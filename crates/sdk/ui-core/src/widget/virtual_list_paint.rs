@@ -254,7 +254,10 @@ impl<M: ListModel> VirtualList<M> {
                         crate::ColorCompat::with_alpha_factor(guide_color, alpha),
                     );
                 }
-                chevrons.paint(marks, scene, transform, theme, &row.key, line);
+                // A row standing open folds its branch away: the document it grew into lists
+                // the rows, so its chevron reads folded.
+                let folded = marks.is_folded(&row.key) || open.as_ref() == Some(&row.key);
+                chevrons.paint(marks, scene, transform, theme, &row.key, line, folded);
             }
             if clipped.is_some() {
                 scene.pop_layer();

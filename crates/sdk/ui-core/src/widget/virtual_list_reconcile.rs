@@ -294,6 +294,8 @@ impl<M: ListModel> VirtualList<M> {
         // What the tree rows are, before any of them is built: a row reads its depth and
         // whether its subtasks show from what this leaves in its marks.
         self.shape_tree(&range);
+        // And where they stand: a first level with nothing to fold keeps no chevron's column.
+        self.settle_lead();
         // The row standing open into its item is the one whose document the host builds, so the
         // list asks again when it opens or closes, as well as when the rows it shows move. It is
         // asked for by its key, which the row keeps while the rows around it are read anew.

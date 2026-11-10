@@ -615,6 +615,10 @@ pub struct VirtualList<M: ListModel> {
     tree_rows: HashMap<M::Key, TreeRow<M::Key>>,
     /// The rows standing under a folded row: they take no room and are never built.
     tree_hidden: HashSet<M::Key>,
+    /// Whether the tree's first level holds a row with subtasks, as the rows in view said it:
+    /// a first level that folds nothing keeps no column for a chevron, and its rows line up
+    /// with the words over them. `None` while no first-level row has been read.
+    first_level_branch: Option<bool>,
     /// A row renamed in place: the field over its label, its title reported as it commits
     /// ([`Self::on_rename`]).
     rename: Option<Box<RenameField<M::Key>>>,
@@ -776,6 +780,7 @@ impl<M: ListModel> VirtualList<M> {
             tree: None,
             tree_rows: HashMap::new(),
             tree_hidden: HashSet::new(),
+            first_level_branch: None,
             rename: None,
             on_rename: None,
             rename_on_double_click: false,
@@ -1860,13 +1865,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         }
         self.disclosure = disclosure;
         self.row_line = f64::from(theme.tokens.metrics.row_single);
-        // A chevron hangs left of the column so the column never moves: one left edge.
-        let gutter = if self.tree.is_some() || self.model.discloses() {
-            self.disclosure
-        } else {
-            0.0
-        };
-        self.lead = self.bleed.max(gutter);
+        // A chevron hangs left of the column so the column never moves: one left edge, and the
+        // one place it is worked out ([`Self::settle_lead`]).
+        self.settle_lead();
         self.pill_height =
             crate::widget::ButtonFace::height(crate::widget::ControlSize::Regular, theme);
         self.pill_width = f64::from(

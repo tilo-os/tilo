@@ -311,9 +311,16 @@ impl<M: ListModel> VirtualList<M> {
                     self.scroll_to_index(index);
                     true
                 }
-                // A tree row folds what stands under it, as its disclosure does.
+                // A tree row folds what stands under it, as its disclosure does. A row
+                // standing open shows its branch in its item's document, so collapsing it
+                // closes the row: the rows it holds come back to the list.
                 Action::Expand | Action::Collapse if self.tree.is_some() => {
-                    self.fold_row(&key, matches!(action, Action::Collapse))
+                    if matches!(action, Action::Collapse) && self.open.as_ref() == Some(&key) {
+                        self.open_where_it_stands(key);
+                        true
+                    } else {
+                        self.fold_row(&key, matches!(action, Action::Collapse))
+                    }
                 }
                 Action::ShowContextMenu if self.menus.offers_row_menu() => {
                     let point = self

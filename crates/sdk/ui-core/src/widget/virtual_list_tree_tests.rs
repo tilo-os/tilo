@@ -152,6 +152,131 @@ fn a_list_indents_a_row_under_the_row_it_names_and_folds_it_away() {
     assert!((list.viewport.content_extent() - 4.0 * row).abs() < 0.5);
 }
 
+/// A row standing open into its item folds its branch: the rows under it are what the item's
+/// document lists, so the list keeps them out of its own, and closing the row brings them
+/// back where they stood. What the person folded stays folded underneath.
+#[test]
+fn a_row_standing_open_folds_its_branch_and_closing_it_brings_the_rows_back() {
+    let marks = Rc::new(TreeMarks::default());
+    let list = OpenableTree {
+        keys: vec![0, 1, 2, 3],
+        // 1 and 2 nest under 0, one under the other; 3 stands beside them.
+        parents: HashMap::from([(1, 0), (2, 1)]),
+    };
+    let mut list = VirtualList::new(list, 20.0, |_, _, key| {
+        Box::new(super::tests::ProbeRow::new(
+            key.to_string(),
+            20.0,
+            false,
+            Rc::new(Cell::new(0)),
+        ))
+    })
+    .with_viewport_height(400.0)
+    .with_tree(Rc::clone(&marks));
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    let row = 20.0;
+    assert!(
+        (list.viewport.content_extent() - 4.0 * row).abs() < 0.5,
+        "every row shows before anything opens"
+    );
+
+    list.set_open(Some(0));
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    assert_eq!(
+        list.viewport.item_height(1),
+        Some(0.0),
+        "the branch folds under the row standing open"
+    );
+    assert_eq!(
+        list.viewport.item_height(2),
+        Some(0.0),
+        "all the way down its chain"
+    );
+    assert_eq!(
+        list.viewport.item_height(3),
+        Some(row),
+        "a row beside the open one shows"
+    );
+
+    list.set_open(None);
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    assert_eq!(
+        list.viewport.item_height(1),
+        Some(row),
+        "closing the row brings its branch back"
+    );
+    assert_eq!(
+        list.viewport.item_height(2),
+        Some(row),
+        "as deep as it stood"
+    );
+    assert!(
+        (list.viewport.content_extent() - 4.0 * row).abs() < 0.5,
+        "the whole list stands as it did"
+    );
+}
+
+/// A tree whose first level folds nothing keeps no column for a chevron: its rows stand on
+/// the column the words over them do, and one with a branch to fold keeps the step.
+#[test]
+fn a_tree_with_nothing_to_fold_keeps_no_chevrons_column() {
+    let marks = Rc::new(TreeMarks::default());
+    let list = VirtualList::new(
+        OpenableTree {
+            keys: vec![0, 1],
+            parents: HashMap::new(),
+        },
+        20.0,
+        |_, _, key| {
+            Box::new(super::tests::ProbeRow::new(
+                key.to_string(),
+                20.0,
+                false,
+                Rc::new(Cell::new(0)),
+            ))
+        },
+    )
+    .with_viewport_height(200.0)
+    .with_tree(Rc::clone(&marks));
+    let mut list = list;
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    assert_eq!(list.row_depth(&0), 0);
+    assert!(!list.row_is_branch(&0));
+    assert!(
+        (list.lead - list.bleed).abs() < 0.5,
+        "no chevron stands in front of the first level, so its rows keep no column: \
+         {} in from {}",
+        list.lead,
+        list.bleed
+    );
+
+    let marks = Rc::new(TreeMarks::default());
+    let mut list = VirtualList::new(
+        Nested {
+            keys: vec![0, 1],
+            parents: HashMap::from([(1, 0)]),
+        },
+        20.0,
+        |_, _, key| {
+            Box::new(super::tests::ProbeRow::new(
+                key.to_string(),
+                20.0,
+                false,
+                Rc::new(Cell::new(0)),
+            ))
+        },
+    )
+    .with_viewport_height(200.0)
+    .with_tree(Rc::clone(&marks));
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    assert!(
+        list.lead > list.bleed + 0.5,
+        "a row with subtasks hands its chevron a column: {} in from {}",
+        list.lead,
+        list.bleed
+    );
+}
+
 /// A tree reads as a tree: the list says what it is, each row says how deep it stands, and a
 /// row with subtasks says whether they show.
 #[test]
@@ -907,7 +1032,7 @@ fn a_first_row_under_a_heading_draws_its_chevron_on_its_own_row() {
 
     let (chevron, folded) = list
         .chevrons()
-        .rect(&marks, &Theme::dark(), &0, row)
+        .rect(&marks, &Theme::dark(), &0, row, false)
         .expect("the row folds the subtask under it");
     assert!(!folded, "the group starts open");
     assert!(
@@ -934,7 +1059,7 @@ fn a_first_row_under_a_heading_draws_its_chevron_on_its_own_row() {
     let narrow = list.row_box(0).expect("the first row on a phone");
     let (chevron, _) = list
         .chevrons()
-        .rect(&marks, &Theme::dark(), &0, narrow)
+        .rect(&marks, &Theme::dark(), &0, narrow, false)
         .expect("the row folds the subtask under it");
     assert!(
         (chevron.center().y - narrow.center().y).abs() < 0.5,
@@ -948,7 +1073,7 @@ fn a_first_row_under_a_heading_draws_its_chevron_on_its_own_row() {
     let row = list.row_box(0).expect("the first row stands somewhere");
     let (chevron, _) = list
         .chevrons()
-        .rect(&marks, &Theme::dark(), &0, row)
+        .rect(&marks, &Theme::dark(), &0, row, false)
         .expect("the row folds the subtask under it");
     press(
         &mut list,
@@ -965,7 +1090,7 @@ fn a_first_row_under_a_heading_draws_its_chevron_on_its_own_row() {
     let row = list.row_box(0).expect("the folded row stands somewhere");
     let (chevron, folded) = list
         .chevrons()
-        .rect(&marks, &Theme::dark(), &0, row)
+        .rect(&marks, &Theme::dark(), &0, row, list.row_folded(&0))
         .expect("a folded row still shows its disclosure");
     assert!(folded, "the chevron points at what it folded away");
     assert!(
