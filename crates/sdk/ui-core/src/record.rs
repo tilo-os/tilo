@@ -3618,6 +3618,11 @@ impl RecordStore {
             .0
             .try_borrow_mut()
             .map_err(|_| RecordOpenError::Busy.to_string())?;
+        let set = &mut *set;
+        let portable = set
+            .portable
+            .as_ref()
+            .map(|cache| (cache, portable::key(&set.package_id, &set.home, id)));
         let parked = set
             .open
             .get_mut(id)
@@ -3654,7 +3659,30 @@ impl RecordStore {
                     action_state.notices.held.clear();
                     return Ok(None);
                 }
-                let actor = doc.get_actor().clone();
+                // The withdrawn changes left this copy but not the workspace:
+                // its relay holds them under this copy's writer and the
+                // writers derived from it (`bound_dispatch::document_writer`,
+                // `author_writer`), numbered. Written on under those writers,
+                // the rebuilt document would number its next changes the
+                // same again, and a record holding two changes under one
+                // writer and sequence reads whole nowhere. So the copy
+                // writes under a writer of its own from here; what it wrote
+                // before and still holds stays its own to publish.
+                let before = doc.get_actor().clone();
+                let device = crate::history_source::authors::DeviceActors::of(&before);
+                {
+                    let mut writers = action_state.writers.borrow_mut();
+                    writers.note(before.clone());
+                    for change in doc.get_changes_meta(&[]) {
+                        if device.wrote(&change.actor.to_hex_string()) {
+                            writers.note(change.actor.into_owned());
+                        }
+                    }
+                }
+                let actor = automerge::ActorId::random();
+                if let Some((cache, key)) = &portable {
+                    cache.claim(key, actor.to_bytes().to_vec())?;
+                }
                 let mut rebuilt = doc
                     .fork_at(&kept_heads)
                     .map_err(|error| error.to_string())?;
