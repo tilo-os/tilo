@@ -20,8 +20,7 @@ mod widget;
 pub use desktop::{
     DeskGesture, DesktopHost, PointerSamples, StripPolicy, WindowObserver, desktop, desktop_with,
 };
-pub use shell_part::{DeskReading, SessionLink, ShellPart, ShellWork};
-pub use tilolang_tilo::runtime::foreign::ViewFailure;
+pub use shell_part::{SessionLink, ShellPart, ShellWork};
 pub use well_policy::{DeskHost, WellDesk, WellPolicy, well_policy};
 pub use widget::WidgetHost;
 
