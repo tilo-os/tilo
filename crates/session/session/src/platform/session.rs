@@ -1959,20 +1959,6 @@ impl Session {
         self.shared.activity.requests()
     }
 
-    /// The resource the text `text` typed on the canvas places: the top
-    /// result of the one search the palette, the canvas and an agent's
-    /// `find` run, as [`arrangement::found`] reads it. The same call
-    /// `session.place_found` makes, for a caller that asks what a text names
-    /// without placing it.
-    #[must_use]
-    pub fn placed_by(&self, text: &str) -> Option<String> {
-        let search = Rc::clone(&self.shared.search);
-        let catalog = self.shared.arrangement.borrow().targets();
-        crate::arrangement::found(text, &|needle| search.find(needle), |resource| {
-            catalog.borrow().get(resource).is_some()
-        })
-    }
-
     /// Undo the person's last arranging step, through the published action
     /// as any caller does.
     ///

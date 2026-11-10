@@ -908,7 +908,9 @@ fn dispatch_encoded_with_context(
     .map_err(|e| DoorError::Failed(e.to_string()))
 }
 
-fn find_resource<'a>(resources: &'a [ResourceSpec], id: &str) -> Option<&'a ResourceSpec> {
+/// The resource `id` in `resources` or among their children.
+#[must_use]
+pub fn find_resource<'a>(resources: &'a [ResourceSpec], id: &str) -> Option<&'a ResourceSpec> {
     fn walk<'a>(resource: &'a ResourceSpec, id: &str) -> Option<&'a ResourceSpec> {
         if resource.id.as_str() == id {
             return Some(resource);

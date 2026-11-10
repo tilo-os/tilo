@@ -887,21 +887,11 @@ pub fn placed_records<'a>(
         .into_iter()
         .filter(|record| !record.is_empty())
         .filter_map(|record| {
-            let ty = find_resource(resources, record).and_then(reading_type_of)?;
+            let ty =
+                tilo_actions::door::find_resource(resources, record).and_then(reading_type_of)?;
             Some((record.to_owned(), ty))
         })
         .collect()
-}
-
-/// The resource `id` in `resources` or among their children.
-fn find_resource<'a>(resources: &'a [ResourceSpec], id: &str) -> Option<&'a ResourceSpec> {
-    resources.iter().find_map(|spec| {
-        if spec.id.as_str() == id {
-            Some(spec)
-        } else {
-            find_resource(&spec.children, id)
-        }
-    })
 }
 
 /// The type the shell's runtime names a resource of `spec` by (`<app>#<Type>`): a tilolang

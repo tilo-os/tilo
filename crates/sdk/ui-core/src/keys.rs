@@ -111,10 +111,8 @@ pub fn canonical(key: &str) -> String {
 }
 
 /// The key a host's keysym is, as a shortcut matches against it: a named key when the toolkit names
-/// it, else the text the layout types with it, else the character of the keysym itself.
-///
-/// The keysym vocabulary is the X11 and Wayland hosts' (winit's `scancode` platform), so a host
-/// that reads the keyboard itself is the only caller.
+/// it, else the text the layout types with it, else the character of the keysym itself. The X11 and
+/// Wayland hosts' vocabulary, so a host that reads the keyboard itself is the only caller.
 #[cfg(target_os = "linux")]
 #[must_use]
 pub fn from_keysym(keysym: u32, text: Option<&str>) -> (Key, KeyLocation) {
@@ -133,8 +131,8 @@ pub fn from_keysym(keysym: u32, text: Option<&str>) -> (Key, KeyLocation) {
 
 /// The key a chord names a key by: under Ctrl, Alt or Super a letter outside the Latin script is
 /// named by the Latin character the same key types on a layout that has one, so Ctrl+C copies and
-/// Super+L locks whichever layout is typing. A Latin letter with a diacritic stays as typed: it is
-/// a shortcut of its own on the layouts that have it.
+/// Super+L locks whichever layout is typing. A diacritic stays as typed.
+#[cfg(target_os = "linux")]
 #[must_use]
 pub fn chord(
     keysym: u32,
