@@ -116,13 +116,12 @@ RUN set -eu; \
     libstd="$(find /out -maxdepth 1 -name 'libstd-*.so' -print -quit)"; \
     test -n "$libstd"; \
     /out/tilo-runtime-bundle key generate --out /tmp/runtime-identity.json; \
-    args=(/out/tilo-runtime-bundle build --release "$RUNTIME_RELEASE" --arch "$(uname -m)" --from /); \
-    args+=(--include /out/libruntime_dylib.so --include-bin /out/tilo-runtime-account-capability); \
-    args+=(--include /out/fonts --include "$libstd"); \
-    while IFS= read -r engine; do args+=(--include "/out/$engine"); done < /out/runtime-engines; \
-    while IFS= read -r dependency; do args+=(--include "$dependency"); done < /tmp/dependencies; \
-    args+=(--identity /tmp/runtime-identity.json --out-root /usr/lib/tilo-runtime --version-out /out/runtime-version); \
-    "${args[@]}"; \
+    set -- --include /out/libruntime_dylib.so --include-bin /out/tilo-runtime-account-capability \
+        --include /out/fonts --include "$libstd"; \
+    while IFS= read -r engine; do set -- "$@" --include "/out/$engine"; done < /out/runtime-engines; \
+    while IFS= read -r dependency; do set -- "$@" --include "$dependency"; done < /tmp/dependencies; \
+    /out/tilo-runtime-bundle build --release "$RUNTIME_RELEASE" --arch "$(uname -m)" --from / "$@" \
+        --identity /tmp/runtime-identity.json --out-root /usr/lib/tilo-runtime --version-out /out/runtime-version; \
     /out/tilo-runtime-bundle key pubkey --identity /tmp/runtime-identity.json > /out/runtime-bundle-publisher.hex; \
     /out/tilo-runtime-bundle verify "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" \
         --require-publisher "$(cat /out/runtime-bundle-publisher.hex)"; \
