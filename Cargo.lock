@@ -17984,6 +17984,7 @@ dependencies = [
  "tilo-files",
  "tilo-identity-client",
  "tilo-identity-host",
+ "tilo-secrets",
  "tilo-test-env",
  "tokio",
  "tracing",

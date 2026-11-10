@@ -45,6 +45,9 @@ dev-overrides = []
 dev-rust-views = ["dep:tube", "chat/samples"]
 
 [dependencies]
+# The MLS vault's master key: the Secret Service, the Keychain, the page's
+# IndexedDB, or the store a headless machine names with `TILO_SECRETS_DIR`.
+tilo-secrets.workspace = true
 # The surface apps' sockets are handed to their children as descriptors.
 # The certificate a device was approved with, kept where the identity helper
 # reads it once and taken away after.
@@ -386,9 +389,6 @@ tempfile.workspace = true
 # A joined workspace's records are untrusted bytes: a worker process of this
 # executable decodes them, and `main` serves that worker.
 tilo-automerge-isolate.workspace = true
-# The MLS vault's master key: the Secret Service, the Keychain, or the store a
-# headless machine names with `TILO_SECRETS_DIR`.
-tilo-secrets.workspace = true
 # Search reads the device's installed apps and the person's choices, and
 # follows the directories its lists name.
 tilo-desktop-search = { path = "../desktop-search", features = ["indexes", "settings", "catalogue"] }

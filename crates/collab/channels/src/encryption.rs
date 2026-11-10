@@ -44,6 +44,7 @@ const REQUEST_LONGEST: Duration = Duration::from_secs(120);
 /// again.
 const REQUEST_FRESH: Duration = Duration::from_secs(60);
 /// Under the state root, the directory of a workspace's channels.
+#[cfg(not(target_arch = "wasm32"))]
 const CHANNELS_DIR: &str = "channels";
 /// Channels remembered as having a group this device takes no part in.
 const MAX_GROUPS_SEEN: usize = 1 << 16;
@@ -385,20 +386,12 @@ impl ChannelState for ChannelsDir {
         // reads.
         let registry = root.join(REGISTRY);
         let existed = registry.exists();
-        if existed {
-            let retired: RetiredRegistry =
-                postcard::from_bytes(&std::fs::read(&registry).map_err(|error| error.to_string())?)
-                    .map_err(|error| error.to_string())?;
-            if !retired.is_empty() {
-                let cleared = postcard::to_allocvec(&RetiredRegistry::default())
-                    .map_err(|error| error.to_string())
-                    .and_then(|bytes| {
-                        tilo_files::native::atomic::write_with_mode(&registry, &bytes, 0o600)
-                            .map_err(|error| error.to_string())
-                    });
-                if let Err(error) = cleared {
-                    tracing::warn!(%error, "retired MLS registry records could not be cleared");
-                }
+        if existed && std::fs::read(&registry).is_ok_and(|bytes| bytes != EMPTY_REGISTRY) {
+            let cleared =
+                tilo_files::native::atomic::write_with_mode(&registry, &EMPTY_REGISTRY, 0o600)
+                    .map_err(|error| error.to_string());
+            if let Err(error) = cleared {
+                tracing::warn!(%error, "retired MLS registry records could not be cleared");
             }
         }
         remove_retired_files(root);
@@ -407,44 +400,13 @@ impl ChannelState for ChannelsDir {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// `registry.postcard` at a vault's root.
+/// `registry.postcard` at a vault's root: the marker that the vault's master key must already be
+/// in the secret store.
 const REGISTRY: &str = "registry.postcard";
 
+/// An empty registry: four empty maps, the bytes of the marker with its retired records gone.
 #[cfg(not(target_arch = "wasm32"))]
-/// What the retired lifecycle authority's registry held, kept only so its file decodes: postcard
-/// is not self-describing, so the field order and wire types here must not change either.
-#[derive(Default, serde::Serialize, serde::Deserialize)]
-struct RetiredRegistry {
-    groups: std::collections::BTreeMap<[u8; 32], RetiredGroupRecord>,
-    key_packages: std::collections::BTreeMap<[u8; 32], String>,
-    snapshots: std::collections::BTreeMap<[u8; 32], RetiredSnapshotRecord>,
-    latest_snapshot: std::collections::BTreeMap<[u8; 16], [u8; 32]>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl RetiredRegistry {
-    fn is_empty(&self) -> bool {
-        self.groups.is_empty()
-            && self.key_packages.is_empty()
-            && self.snapshots.is_empty()
-            && self.latest_snapshot.is_empty()
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(serde::Serialize, serde::Deserialize)]
-struct RetiredGroupRecord {
-    state_file: String,
-    signer_locator: String,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(serde::Serialize, serde::Deserialize)]
-struct RetiredSnapshotRecord {
-    channel: ChannelId,
-    digest: [u8; 32],
-    envelope_file: String,
-}
+const EMPTY_REGISTRY: [u8; 4] = [0; 4];
 
 /// Remove what the retired MLS lifecycle authority and its snapshot receipts left in `root` : the
 /// authority's ledger directory, every compaction envelope copied to `snapshot-*.op` , and the
@@ -520,6 +482,102 @@ impl ChannelsDir {
                 }
             })
             .collect()
+    }
+}
+
+/// A host's channel state in its platform secret store: the bytes of every
+/// peer and route under an app's secrets, which is what a page has of storage
+/// (the browser's `IndexedDB` under a key it cannot export).
+#[derive(Clone, Debug)]
+pub struct SecretStates {
+    store: tilo_secrets::SecretStore,
+}
+
+impl SecretStates {
+    /// The state kept in `app`'s secrets.
+    #[must_use]
+    pub fn new(app: &str) -> Self {
+        Self {
+            store: tilo_secrets::SecretStore::for_app(app),
+        }
+    }
+
+    /// The secret naming `channel`'s state of `workspace`.
+    fn key(workspace: WorkspaceId, channel: ChannelId, extension: &str) -> String {
+        format!("{workspace}/{}.{extension}", channel.0)
+    }
+
+    fn read(&self, key: &str) -> channel_crypto::Result<Option<Vec<u8>>> {
+        let stored = self
+            .store
+            .get_blocking(key)
+            .map_err(|error| channel_crypto::Error::Io(std::io::Error::other(error.to_string())))?;
+        Ok(stored.map(|secret| secret.expose().to_vec()))
+    }
+
+    fn write(&self, key: &str, bytes: &[u8]) -> channel_crypto::Result<()> {
+        self.store
+            .put_blocking(key, bytes, tilo_secrets::PutOptions::default())
+            .map_err(|error| channel_crypto::Error::Io(std::io::Error::other(error.to_string())))
+    }
+
+    fn forget(&self, key: &str) -> channel_crypto::Result<()> {
+        self.store
+            .delete_blocking(key)
+            .map_err(|error| channel_crypto::Error::Io(std::io::Error::other(error.to_string())))
+    }
+}
+
+/// One workspace's peers in a host's secret store.
+#[derive(Debug)]
+struct SecretPeers {
+    states: SecretStates,
+    workspace: WorkspaceId,
+}
+
+impl channel_crypto::PeerStates for SecretPeers {
+    fn read(&self, channel: ChannelId) -> channel_crypto::Result<Option<Vec<u8>>> {
+        self.states
+            .read(&SecretStates::key(self.workspace, channel, "peer"))
+    }
+
+    fn write(&self, channel: ChannelId, sealed: &[u8]) -> channel_crypto::Result<()> {
+        self.states
+            .write(&SecretStates::key(self.workspace, channel, "peer"), sealed)
+    }
+
+    fn forget(&self, channel: ChannelId) -> channel_crypto::Result<()> {
+        self.states
+            .forget(&SecretStates::key(self.workspace, channel, "peer"))
+    }
+}
+
+impl ChannelState for SecretStates {
+    fn peers(&self, workspace: WorkspaceId) -> Arc<dyn channel_crypto::PeerStates> {
+        Arc::new(SecretPeers {
+            states: self.clone(),
+            workspace,
+        })
+    }
+
+    fn route(&self, workspace: WorkspaceId, channel: ChannelId) -> Option<ChannelRoute> {
+        let bytes = self
+            .read(&Self::key(workspace, channel, "route"))
+            .ok()
+            .flatten()?;
+        let route = postcard::from_bytes::<ChannelRoute>(&bytes).ok()?;
+        route
+            .proves(&workspace.to_string(), channel)
+            .then_some(route)
+    }
+
+    fn keep_route(&self, workspace: WorkspaceId, channel: ChannelId, route: &ChannelRoute) {
+        let Ok(bytes) = postcard::to_allocvec(route) else {
+            return;
+        };
+        if let Err(error) = self.write(&Self::key(workspace, channel, "route"), &bytes) {
+            tracing::warn!(%error, "channel route could not be saved");
+        }
     }
 }
 

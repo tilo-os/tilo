@@ -16,6 +16,7 @@
     target_arch = "wasm32",
     allow(
         dead_code,
+        unused_imports,
         reason = "the page's session reads these with its own wiring"
     )
 )]
@@ -31,11 +32,8 @@ use neighbour_wire::NeighbourMsg;
 #[cfg(target_os = "linux")]
 use tilo_action_broker::collab_core::{BrokerChannels, BrokerGates};
 use tilo_channels::{
-    ChannelDirectory, GovernancePark, GovernanceTransport, InboundChannelGovernance,
-};
-#[cfg(target_os = "linux")]
-use tilo_channels::{
-    ChannelEncryption, ChannelEncryptionConfig, ChannelGates, ChannelKeyAccess, GovernancePump,
+    ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelGates, ChannelKeyAccess,
+    GovernancePark, GovernancePump, GovernanceTransport, InboundChannelGovernance,
 };
 use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
 use tilo_identity_host::policy_change;
@@ -43,16 +41,37 @@ use tilo_lock::MutexRecover as _;
 
 use crate::engine::Engine;
 
-#[cfg(target_os = "linux")]
 mod vault;
-#[cfg(target_os = "linux")]
 pub(crate) use vault::MlsVault;
 
 /// The running channel service: this device's keys, and the thread that keeps their groups in step
 /// with the workspaces' governance. Stops when dropped.
-#[cfg(target_os = "linux")]
 pub(crate) struct Channels {
+    /// This device's keys and the groups they are in; `None` while no secret store
+    /// keeps its channel state.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        allow(dead_code, reason = "a host with threads runs its own pump")
+    )]
+    access: Option<ChannelKeyAccess>,
+    /// The thread that settles the groups, on a host with threads.
+    #[cfg(target_os = "linux")]
     _pump: GovernancePump,
+}
+
+impl Channels {
+    /// One pass of the channel protocol over `transport`: what the thread does on a
+    /// host that has one, for a host with a single thread (a page) to drive from its
+    /// own loop. Answers how long until the next pass is due.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        allow(dead_code, reason = "a host with threads runs its own pump")
+    )]
+    pub(crate) fn pump(&self, transport: &dyn GovernanceTransport) -> Option<Duration> {
+        self.access
+            .as_ref()
+            .and_then(|access| access.pump_until_due(transport))
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -107,6 +126,7 @@ impl Channels {
             keys.set(Some(access.clone()));
             access
         });
+        let settled_access = access.clone();
         let mut rosters = Rosters::default();
         let settled = Arc::clone(engine);
         let transport = Arc::clone(&link);
@@ -124,7 +144,10 @@ impl Channels {
             link.workspace_changed(workspace);
         }
         engine.attach_link(link);
-        Ok(Self { _pump: pump })
+        Ok(Self {
+            access: settled_access,
+            _pump: pump,
+        })
     }
 }
 

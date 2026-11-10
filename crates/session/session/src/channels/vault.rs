@@ -133,7 +133,7 @@ fn secret_service_load(locator: &str) -> Result<Zeroizing<[u8; 32]>, String> {
 
 /// A key stored by earlier builds through `secret-tool` under their own attributes; `None` when
 /// there is none (or no `secret-tool` ). The caller moves it into the platform store.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(target_os = "linux")]
 fn legacy_secret_tool_load(locator: &str) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
     let Ok(output) = bounded_command::run(
         "secret-tool",
@@ -155,7 +155,7 @@ fn legacy_secret_tool_load(locator: &str) -> Result<Option<Zeroizing<Vec<u8>>>, 
     Ok(Some(decoded))
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(target_os = "linux"))]
 fn legacy_secret_tool_load(_locator: &str) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
     Ok(None)
 }
