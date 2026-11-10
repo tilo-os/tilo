@@ -64,12 +64,20 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
   why = "the session is the person's local host and runs the engine beside the desk: it keeps each workspace's engine, takes in what a join brings here and publishes actions into it"
 
   [[rule.allow]]
+  package = "tilo-session-client"
+  why = "the participant's client holds this device's own owner beside the desk: every workspace the person joined is a replica it opens, commits and enrolls into, and the governance its channels read is that owner's"
+
+  [[rule.allow]]
   package = "tilo-runtime"
   why = "the shared runtime runs the engine for the apps attached to a participant"
 
   [[rule.allow]]
   package = "tilo-action-broker"
   why = "the broker admits the actions apps publish against the engine's workspace"
+
+  [[rule.allow]]
+  package = "tilo-broker-core"
+  why = "the broker core declares the seam a host's owner answers for its commits, so a broker and the host holding the owner name that owner in a signature; it holds no engine state and reads none"
 
   [[rule.allow]]
   package = "tilo-room-host"

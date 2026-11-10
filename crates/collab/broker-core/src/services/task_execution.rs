@@ -75,24 +75,10 @@ impl NativeTaskActionRequirement {
     /// run as the agent's own do, the most specific first. The tracker
     /// freezes no scope: the starter's live grants and the agent's and
     /// issue's bound it.
-    pub fn check_tracker(
-        &self,
-        peer: &tilo_peer_state::StatePeer,
-        workspace: &str,
-        run: &TrackerRun,
-        now: tilo_clock::SystemTime,
-    ) -> Result<(), String> {
-        let doc = peer
-            .admitted_workspace()
-            .ok_or("tracker action policy unavailable")?;
-        let policy = tilo_desktop_model::projection::workspace_policy_of(doc, workspace);
-        self.check_tracker_policy(&policy, workspace, run, None, now)
-    }
-
-    /// [`Self::check_tracker`] for a workspace whose grants are already at hand,
-    /// as the session hosting the run holds them, with what the receiving
-    /// device looked up about the turn's cause (`looked`; `None` when its cause
-    /// has not arrived here yet, which holds the op).
+    ///
+    /// The grants are the ones the session hosting the run holds, with what the
+    /// receiving device looked up about the turn's cause (`looked`; `None` when
+    /// its cause has not arrived here yet, which holds the op).
     ///
     /// # Errors
     /// The run's binding, its epoch, its turn or the workspace's grants refuse
@@ -224,14 +210,14 @@ impl NativeTaskActionRequirement {
         })
     }
 
-    /// Whether `error`, from [`Self::check_tracker`], says the action waits for the
+    /// Whether `error`, from [`Self::check_tracker_policy`], says the action waits for the
     /// person's confirmation rather than being refused.
     #[must_use]
     pub fn awaits_confirmation(error: &str) -> bool {
         error.contains(tilo_actions::draft::AWAITING_CONFIRMATION)
     }
 
-    /// Whether `error`, from [`Self::check_tracker`], says the action waits for
+    /// Whether `error`, from [`Self::check_tracker_policy`], says the action waits for
     /// the message that caused its turn to reach this device rather than being
     /// refused.
     #[must_use]
@@ -539,7 +525,7 @@ pub trait TrackerRuns: Send + Sync {
     /// device was revoked, reads its run no more.
     fn check_agent(&self, workspace: &str, run: &TrackerRun) -> Result<(), String>;
     /// Apply the workspace's grants for the run's agent, acting for the run's
-    /// starter, to `requirement`, as [`NativeTaskActionRequirement::check_tracker`]
+    /// starter, to `requirement`, as [`NativeTaskActionRequirement::check_tracker_policy`]
     /// does for a workspace task. Where any of them asks first, the error starts
     /// with [`tilo_actions::draft::AWAITING_CONFIRMATION`].
     fn authorize_action(
