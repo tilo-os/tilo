@@ -2431,3 +2431,54 @@ fn a_reader_with_custody_that_signs_later_reads_a_participants_channel() {
         ready_epoch(&page.service.access(workspace_id, channel, now)),
     );
 }
+
+/// What `device` heard the workspace publish, drained: how many access
+/// requests reached it.
+fn requests(device: &Device) -> usize {
+    device
+        .endpoint
+        .take_inbound()
+        .iter()
+        .filter(|heard| matches!(heard, InboundChannelGovernance::AccessRequest { .. }))
+        .count()
+}
+
+/// A device waiting for access whose request went unanswered asks again as
+/// soon as the policy moves, rather than waiting out a backoff that has
+/// doubled since: the workspace's governance arriving is what lets the
+/// participants answer a request they could not decide before, and the
+/// caller that waits on the keys gives up long before the backoff does.
+#[test]
+fn a_waiting_request_is_asked_again_when_the_policy_moves() {
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    let channel = ChannelId::new();
+    let policy = Policy::readers([2]);
+    let epoch = Arc::new(std::sync::atomic::AtomicU64::new(1));
+    *policy.announces.lock().unwrap() = Some(Announcements::Own(Arc::clone(&epoch)));
+    let (dir, listener_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut waiting = device(&workspace, workspace_id, 0, 2, &policy, dir.path());
+    // Another endpoint hears what the device says; it takes no part in the
+    // channel, so the request goes unanswered.
+    let listener = device(&workspace, workspace_id, 1, 3, &policy, listener_dir.path());
+    let mut now = Instant::now();
+    assert!(matches!(
+        waiting.service.access(workspace_id, channel, now),
+        ChannelAccess::Waiting
+    ));
+    waiting.service.pump(&waiting.endpoint, now, 1_000);
+    let mut asked = requests(&listener);
+    assert_eq!(asked, 1, "opening the channel asks");
+
+    // Its own backoff holds the next ask back...
+    now = now.checked_add(Duration::from_secs(1)).unwrap();
+    waiting.service.pump(&waiting.endpoint, now, 1_001);
+    asked += requests(&listener);
+    assert_eq!(asked, 1, "the backoff holds the next ask back");
+
+    // ...and a policy that moves asks again now, not when the backoff is due.
+    epoch.fetch_add(1, Ordering::SeqCst);
+    waiting.service.pump(&waiting.endpoint, now, 1_001);
+    asked += requests(&listener);
+    assert_eq!(asked, 2, "a moved policy asks again at once");
+}

@@ -664,6 +664,12 @@ pub struct ChannelEncryption {
     /// while naming its own channel, so a payload's channel is turned back
     /// into its group here.
     units: HashMap<ChannelId, ChannelId>,
+    /// The policy epoch the last pass read, while the directory announces
+    /// its changes: a request that went unanswered under the policy before
+    /// it is asked again at once when it moves, rather than waiting out a
+    /// backoff that has doubled past what the caller waits
+    /// ([`Self::ask_waiting_now`]).
+    policy_epoch: Option<u64>,
 }
 
 impl ChannelEncryption {
@@ -730,6 +736,7 @@ impl ChannelEncryption {
             registered: HashMap::new(),
             groups_seen: std::collections::HashSet::new(),
             units: HashMap::new(),
+            policy_epoch: None,
         }
     }
 
@@ -1237,6 +1244,10 @@ impl ChannelEncryption {
         // Read before the policy is: a change announced while the groups
         // reconcile has a later epoch and makes the next re-check due.
         let epoch = self.directory.policy_epoch();
+        // The policy moved since the last pass: a request that went unanswered
+        // under the one before it may be answered under this one.
+        let policy_moved = epoch.is_some() && epoch != self.policy_epoch;
+        self.policy_epoch = epoch;
         let reconcile_due = self
             .reconcile
             .due(now, epoch.unwrap_or(0))
@@ -1246,6 +1257,9 @@ impl ChannelEncryption {
         // Before the groups reconcile, so the hand-over commit is written in
         // this pass.
         self.hand_over_legacy_keys(wall, reconcile_due);
+        if policy_moved {
+            self.ask_waiting_now(now);
+        }
         for channel in channels {
             let due = reconcile_due
                 || self
@@ -1651,6 +1665,18 @@ impl ChannelEncryption {
         }
         if accepted && let Err(error) = entry.peer.published(&store.vault) {
             tracing::warn!(%error, workspace = %entry.workspace, "channel outbox could not be written");
+        }
+    }
+
+    /// Ask again at once for the channels this device still waits on: the
+    /// policy moved, so a request that went unanswered under the one before
+    /// it may be answered now, and the request is kept, signed, ready to go
+    /// again.
+    fn ask_waiting_now(&mut self, now: Instant) {
+        for entry in self.peers.values_mut() {
+            if entry.wanted && entry.peer.access() == Access::Waiting {
+                entry.retry = Backoff::now(now, REQUEST_FIRST);
+            }
         }
     }
 

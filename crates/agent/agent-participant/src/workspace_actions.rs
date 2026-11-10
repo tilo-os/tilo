@@ -1077,10 +1077,17 @@ impl Workspace {
         let sealed = self.sealed(workspace_id, needs);
         match needs {
             Needs::Act { app_id, record } if !sealed.is_empty() => {
+                // A record that travels with no id is the app's own record of
+                // the workspace ([`ui::record::RecordId::package_primary`]);
+                // naming it so says which record the caller waits on, rather
+                // than leaving the name blank.
+                let record = if record.is_empty() {
+                    format!("{app_id}'s own record")
+                } else {
+                    format!("{app_id} record {record}")
+                };
                 Err(ActionHostError::Unavailable {
-                    reason: format!(
-                        "the host does not hold the keys to {app_id} record {record} yet"
-                    ),
+                    reason: format!("the host does not hold the keys to {record} yet"),
                 })
             }
             Needs::Workspace | Needs::Read { .. } => {
