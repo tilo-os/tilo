@@ -355,8 +355,6 @@ pub struct ContextMenuArea {
     /// ran, so what the command asked of it (a rename beginning) happens
     /// at once rather than at the pointer's next move.
     moved: Option<WindowEvent>,
-    /// The entry pressed with the pointer, run when the button comes up.
-    pending: Option<usize>,
     viewport: Option<Rect>,
     /// The open menu's emoji bars' ways to the emoji picker.
     more: Vec<(Rc<std::cell::Cell<bool>>, crate::component::Event)>,
@@ -393,7 +391,6 @@ impl ContextMenuArea {
             presses: Vec::new(),
             cursor: Point::ZERO,
             moved: None,
-            pending: None,
             viewport: None,
             more: Vec::new(),
             picker: None,
@@ -706,25 +703,6 @@ impl super::Decorator for ContextMenuArea {
             *ctx.handled = true;
             return;
         }
-        // The press the menu took is the row the person chose, run as the row's own control
-        // runs: the release that follows belongs to that press, and is the menu's, so what the
-        // command started (a rename's field) never sees half a click.
-        if self.pending.is_some() {
-            if matches!(
-                event,
-                WindowEvent::MouseInput {
-                    state: ElementState::Released,
-                    ..
-                }
-            ) {
-                self.pending = None;
-                *ctx.handled = true;
-                return;
-            }
-            if matches!(event, WindowEvent::MouseInput { .. }) {
-                self.pending = None;
-            }
-        }
         if !self.menu.is_open() && self.menu.send_to_alone_open() {
             self.menu.handle_event(event, ctx);
             if *ctx.handled {
@@ -735,19 +713,10 @@ impl super::Decorator for ContextMenuArea {
             // The menu itself tells the host's replay of the still opening
             // pointer from a real move, so the keyboard keeps its row.
             self.menu.handle_event(event, ctx);
+            // The menu reports a row as chosen when the press that took it comes up (or the
+            // key that chose it lands): it stays open, and its own press, until then.
             if let Some(index) = self.menu.take_selection() {
                 self.menu.close();
-                // A press runs its row here and keeps the release that follows; a key's row
-                // runs at once, as the key itself does.
-                if matches!(
-                    event,
-                    WindowEvent::MouseInput {
-                        state: ElementState::Pressed,
-                        ..
-                    }
-                ) {
-                    self.pending = Some(index);
-                }
                 self.run(index, ctx);
                 *ctx.handled = true;
             }
@@ -806,10 +775,7 @@ impl super::Decorator for ContextMenuArea {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.menu.is_showing()
-            || self.pending.is_some()
-            || self.picker.is_some()
-            || self.content.wants_pointer_capture()
+        self.menu.is_showing() || self.picker.is_some() || self.content.wants_pointer_capture()
     }
 
     // The menu is a child only while it is open, so it hears the host's

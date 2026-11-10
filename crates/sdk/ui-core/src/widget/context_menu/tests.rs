@@ -1,5 +1,6 @@
 use super::*;
 use crate::synthetic_input::mouse_press;
+use crate::synthetic_input::mouse_release;
 use crate::synthetic_input::named_key;
 use crate::testing::dispatch;
 use automerge::AutoCommit;
@@ -281,6 +282,11 @@ fn pointer_activation_fires_actions_and_dismisses() {
         dispatch(&mut m, &cursor_at(p));
         let handled = dispatch(&mut m, &mouse_press());
         assert!(handled, "a row click is consumed");
+        // The press lights the row and the menu stays up until the button
+        // comes up on it: a click is a press and the release that ends it.
+        assert_eq!(fired.load(Ordering::SeqCst), 0, "the press runs nothing");
+        assert!(m.is_open(), "the menu waits for the release");
+        assert!(dispatch(&mut m, &mouse_release()));
         assert_eq!(
             fired.load(Ordering::SeqCst),
             1,
@@ -521,6 +527,7 @@ fn bounded_menu_scrolls_and_keeps_targets_reachable() {
         assert_eq!(menu.item_at([last.x, last.y]), Some(19));
         dispatch(&mut menu, &cursor_at(last));
         dispatch(&mut menu, &mouse_press());
+        dispatch(&mut menu, &mouse_release());
         assert_eq!(menu.take_selection(), Some(19));
         assert_eq!(menu.take_selection(), None);
         menu.open_anchored(Rect::ZERO, Rect::new(0.0, 0.0, 180.0, 100.0));
