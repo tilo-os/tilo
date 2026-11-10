@@ -44,6 +44,11 @@ const REQUEST_LONGEST: Duration = Duration::from_secs(120);
 /// a fresh one: an admission whose Welcome never reached it is then answered
 /// again.
 const REQUEST_FRESH: Duration = Duration::from_secs(60);
+/// How long each member before this one in turn ([`ChannelPeer::turn`]) has
+/// to commit a change of a channel's group before this one does: long enough
+/// for one member's commit to reach the others, so they follow it rather than
+/// commit the same change beside it and fork the group.
+const TURN: Duration = Duration::from_secs(2);
 /// Under the state root, the directory of a workspace's channels.
 #[cfg(not(target_arch = "wasm32"))]
 const CHANNELS_DIR: &str = "channels";
@@ -642,6 +647,10 @@ struct PeerEntry {
     fresh_at: Instant,
     /// The group may differ from the policy: reconcile on the next pass.
     dirty: bool,
+    /// The group differs from the policy and other members come before this
+    /// one in turn to commit the change: it commits at this instant if none
+    /// of them has by then.
+    turn_at: Option<Instant>,
     /// An endpoint opened the route after this device was removed: ask
     /// again, and the policy decides whether access resumes.
     rejoin: bool,
@@ -1280,10 +1289,14 @@ impl ChannelEncryption {
         // this pass.
         self.hand_over_legacy_keys(wall, reconcile_due);
         for channel in channels {
-            let due = reconcile_due || self.peers.get(&channel).is_some_and(|entry| entry.dirty);
+            let due = reconcile_due
+                || self
+                    .peers
+                    .get(&channel)
+                    .is_some_and(|entry| entry.dirty || entry.turn_at.is_some_and(|at| at <= now));
             self.found(channel, now, wall);
             if due {
-                self.reconcile(channel, wall);
+                self.reconcile(channel, now, wall);
                 reconciled = true;
             }
             self.publish(channel, transport);
@@ -1319,6 +1332,7 @@ impl ChannelEncryption {
     #[must_use]
     pub fn next_pump_deadline(&self, now: Instant) -> Option<Instant> {
         let settling = !self.peers.is_empty() || self.unopened_waits_for_policy();
+        let turn = self.peers.values().filter_map(|entry| entry.turn_at).min();
         let policy = if self.peers.values().any(|entry| entry.dirty) {
             Some(now)
         } else if settling {
@@ -1365,6 +1379,7 @@ impl ChannelEncryption {
             .min();
         policy
             .into_iter()
+            .chain(turn)
             .chain(asking)
             .chain(founding)
             .chain(unopened)
@@ -1601,7 +1616,7 @@ impl ChannelEncryption {
         }
     }
 
-    fn reconcile(&mut self, channel: ChannelId, wall: u64) {
+    fn reconcile(&mut self, channel: ChannelId, now: Instant, wall: u64) {
         let Some((workspace, route)) = self
             .peers
             .get(&channel)
@@ -1619,8 +1634,23 @@ impl ChannelEncryption {
         // Without the channel's record this device cannot tell who may read
         // it: it commits nothing, and removes no one.
         let Some(allowed) = allowed else {
+            entry.turn_at = None;
             return;
         };
+        // Members before this one in turn commit the change first; it
+        // follows theirs, and commits only once their turns went by.
+        let Some(turn) = entry.peer.turn(&allowed) else {
+            entry.turn_at = None;
+            return;
+        };
+        let waits = TURN.saturating_mul(u32::try_from(turn).unwrap_or(u32::MAX));
+        let at = *entry
+            .turn_at
+            .get_or_insert_with(|| now.checked_add(waits).unwrap_or(now));
+        if now < at {
+            return;
+        }
+        entry.turn_at = None;
         let outcome = match entry.peer.reconcile_now(&allowed, &store.vault) {
             Ok(outcome) => outcome,
             Err(error) => {
@@ -1869,6 +1899,7 @@ impl ChannelEncryption {
                 retry: Backoff::now(now, REQUEST_FIRST),
                 fresh_at: now.checked_add(REQUEST_FRESH).unwrap_or(now),
                 dirty: true,
+                turn_at: None,
                 rejoin: false,
                 founding: Founding {
                     at: found_at,

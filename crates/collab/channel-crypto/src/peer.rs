@@ -11,7 +11,11 @@
 //!   ([`ChannelPeer::learn_request`]) with the Welcome and the bundle of
 //!   every past content key. A member asking with a key package whose
 //!   signature key is not the one it joined with lost its state, and is
-//!   removed and added again in the same commit.
+//!   removed and added again in the same commit. Members take turns at it
+//!   ([`ChannelPeer::turn`]) so that one commits the change and the others
+//!   follow it: members that all commit the same change at once fork the
+//!   group, and each one whose commit lost commits again to hand over its
+//!   branch's keys, forking it again.
 //! - **Every commit is checked.** [`ChannelPeer::receive`] refuses a commit
 //!   that adds a device `allowed` does not name, removes one it does (unless
 //!   it adds it again), is not signed by an allowed member, or whose MLS
@@ -977,6 +981,36 @@ impl ChannelPeer {
             .any(|member| *member != self.device && !allowed.contains(member))
             || !self.asking(allowed).is_empty()
             || !self.unshared().is_empty()
+    }
+
+    /// This device's turn to commit the change that moves the group to
+    /// `allowed`: `0` when it commits at once, `n` when `n` other members
+    /// come before it. The members `allowed` keeps take turns, the one that
+    /// signed the group's head first (it was there a moment ago), then the
+    /// rest by device key; every member at the same head agrees on the
+    /// order. A device that holds content keys its group lacks hands them
+    /// over itself, so it commits at once. `None` while this device commits
+    /// nothing: it is not in the group, `allowed` does not name it, or the
+    /// group is as `allowed` says.
+    pub fn turn(&self, allowed: &BTreeSet<Ed25519PublicKey>) -> Option<usize> {
+        if !self.differs(allowed) {
+            return None;
+        }
+        if self.holds_unshared_keys() {
+            return Some(0);
+        }
+        let mut committers: Vec<Ed25519PublicKey> = self
+            .members()
+            .into_iter()
+            .filter(|member| allowed.contains(member))
+            .collect();
+        if let Some(signer) = self.head.as_ref().map(|head| head.signed_by)
+            && let Some(at) = committers.iter().position(|member| *member == signer)
+        {
+            let signer = committers.remove(at);
+            committers.insert(0, signer);
+        }
+        committers.iter().position(|member| *member == self.device)
     }
 
     /// Whether this device holds content keys of a state it left behind that
