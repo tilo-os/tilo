@@ -1078,13 +1078,11 @@ impl DesktopSurface {
         }
         let opened = self.search.borrow().is_open();
         let request = self.shared.borrow_mut().search_request.take();
-        match request {
-            Some(SearchRequest::Toggle) if opened => self.close_search(),
-            Some(SearchRequest::Toggle) => self.open_search(doc, Scope::Workspace, None),
-            Some(SearchRequest::Close) if opened => self.close_search(),
-            Some(SearchRequest::Close) => {}
-            Some(SearchRequest::Open { scope, query }) => self.open_search(doc, scope, query),
-            None => {}
+        match (request, opened) {
+            (Some(SearchRequest::Open { scope, query }), _) => self.open_search(doc, scope, query),
+            (Some(SearchRequest::Toggle), false) => self.open_search(doc, Scope::Workspace, None),
+            (Some(SearchRequest::Toggle | SearchRequest::Close), true) => self.close_search(),
+            (Some(SearchRequest::Close) | None, _) => {}
         }
         let choices = std::mem::take(&mut self.shared.borrow_mut().search_asks);
         for (index, argument) in choices {
