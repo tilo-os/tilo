@@ -188,6 +188,9 @@ struct PageChrome {
     /// The page takes invitations ([`HostOffers::invite`]): the bar keeps
     /// its invite button.
     invite: bool,
+    /// The browser's machine, and the session's status as the bar reads it from it.
+    machine: Rc<crate::page_machine::PageMachine>,
+    readings: RefCell<tilo_session::status::Readings>,
 }
 
 impl ChromeSource for PageChrome {
@@ -267,6 +270,15 @@ impl ChromeSource for PageChrome {
         facts.number(self.here.borrow().revision());
         facts.number(self.notifications.revision());
         facts.number(u64::from(self.shared.standing.code()));
+        facts.number(tilo_session::platform::readings::Machine::revision(
+            &*self.machine,
+        ));
+    }
+
+    fn fill(&self, snapshot: &mut tilo_desktop_surface::host::chrome::DesktopChromeSnapshot) {
+        let mut readings = self.readings.borrow_mut();
+        readings.follow(&*self.machine);
+        snapshot.status = readings.status();
     }
 
     fn take_intent(&self, intent: ChromeIntent) -> bool {
@@ -313,6 +325,8 @@ fn page_chrome(
         host: offers.host.clone(),
         wake: Arc::clone(wake),
         invite: offers.invite.is_some(),
+        machine: crate::page_machine::PageMachine::follow(wake),
+        readings: RefCell::default(),
     });
     (chrome, intents)
 }
