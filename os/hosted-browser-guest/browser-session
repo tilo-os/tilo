@@ -58,10 +58,10 @@ mkdir -p -m 700 "$home/.config/tilo/identity" "$home/.local/share/tilo/secrets"
 export TILO_SECRETS_DIR=${TILO_SECRETS_DIR:-$home/.local/share/tilo/secrets}
 
 size=${TILO_HEADLESS_SIZE:-1280x800}
-# Word splitting is the point: TILO_SESSION_ARGS carries the session's own
-# arguments as written in the configuration file.
-# shellcheck disable=SC2086
 # No X11: the guest carries no Xwayland, and Browser is not an X11 client, so
-# nothing here serves an X display.
+# nothing here serves an X display. Word splitting is the point below:
+# TILO_SESSION_ARGS carries the session's own arguments as written in the
+# configuration file.
+# shellcheck disable=SC2086
 exec dbus-run-session -- /usr/bin/tilo-session --backend headless --no-x11 \
     --size "$size" ${TILO_SESSION_ARGS:-}
