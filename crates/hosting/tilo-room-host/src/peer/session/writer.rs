@@ -28,6 +28,7 @@ const fn answers_an_action(frame: &Envelope) -> bool {
             | Envelope::HostAction { .. }
             | Envelope::WorkspacesReply { .. }
             | Envelope::AgentRunAnswer { .. }
+            | Envelope::AgentRunStopped
     )
 }
 

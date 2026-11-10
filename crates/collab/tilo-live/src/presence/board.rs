@@ -788,8 +788,13 @@ impl Board {
 
     /// Take one member's frame as the presence track carried it: the body is
     /// opened here, so a host never keeps a second copy of the wire's shape.
-    /// Whether what is known here changed.
+    /// An empty body is the plane saying their presence ended with their
+    /// session ([`crate::plane::Heard::left`]): they left. Whether what is
+    /// known here changed.
     pub fn heard(&mut self, from: Device, body: &[u8], now_ms: f64) -> bool {
+        if body.is_empty() {
+            return from != self.publisher && self.depart(from);
+        }
         super::decode(body).is_some_and(|frame| self.hear(from, &frame, now_ms))
     }
 

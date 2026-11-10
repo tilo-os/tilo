@@ -37,6 +37,12 @@ use tilo_runtime::mcp_presence;
 const PROTOCOL: &str = "2025-06-18";
 /// How long a request waits for this device to enter the workspace.
 const ENTERING: Duration = Duration::from_secs(25);
+/// What the host's session says once the person stopped this agent from its card.
+const STOPPED: &str = "agent-run-stopped";
+/// The longest the agent waits, as it goes, for its session to close: the host
+/// then sees the connection end at once, and takes the agent down, rather than
+/// after the connection's silence runs out.
+const CLOSING: Duration = Duration::from_secs(3);
 
 /// This device in the workspace, serving the agent.
 struct Session {
@@ -93,8 +99,19 @@ impl Serving {
     /// Leave the workspace as the connection ends: the agent says it has
     /// left while its session can still say so, and the device closes.
     async fn leaving(&self) {
-        let session = self.session.lock().await.take();
+        let Some(session) = self.session.lock().await.take() else {
+            return;
+        };
+        let peer = session.device.session().clone();
         drop(session);
+        // The session closes on its own task: the process waits for it rather than ending it
+        // with the runtime, which would leave the host waiting out the connection's silence.
+        let closed = async {
+            while peer.status().phase != tilo_session_host::TransportPhase::Closed {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        let _ = tokio::time::timeout(CLOSING, closed).await;
     }
 }
 
@@ -194,7 +211,20 @@ async fn answer(serving: &Serving, line: &str) -> Option<String> {
             );
         }
     };
-    let session = serving.session().await;
+    let session = serving.session().await.and_then(|session| {
+        // The person stopped this agent: its session ended for good, and every call says so.
+        let stopped = session
+            .device
+            .session()
+            .status()
+            .failures
+            .into_iter()
+            .find(|failure| failure.code == STOPPED);
+        match stopped {
+            Some(failure) => Err(format!("{} Start a new session to go on.", failure.message)),
+            None => Ok(session),
+        }
+    });
     let answer = match &session {
         Ok(session) => session.server.handle(request.clone()).await,
         Err(problem) => unreachable_answer(&request, problem),

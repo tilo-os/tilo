@@ -686,3 +686,201 @@ fn desk_windows(browser: &mut Browser, desk: &DocumentRoute, record: &str) -> us
             .count()
     })
 }
+
+/// The person's page's board of who is here: what a page draws its roster from, fed the presence
+/// frames the page's session hears and its own clock, as the page's runtime feeds it.
+struct Roster {
+    board: tilo_session_client::Presence,
+}
+
+impl Roster {
+    fn of(device: &support::Device) -> Self {
+        let board = tilo_session_client::Presence::over(
+            None,
+            &tilo_session_host::saying::device(&device.cert).expect("a device"),
+            tilo_session_client::presence::OwnPresence {
+                label: "Ada".into(),
+                user: Some(hex::encode(device.cert.user_public_key)),
+                ..tilo_session_client::presence::OwnPresence::default()
+            },
+        );
+        let workspace = tilo_desktop_model::WorkspaceId::parse(WORKSPACE).expect("a workspace");
+        let topic = tilo_session_client::topic_of(workspace);
+        board.taking_part(&[(topic, WORKSPACE.to_owned())], Some(topic));
+        Self { board }
+    }
+
+    /// Take what `page` heard, and whether the agent `agent` (its device key) is listed after.
+    fn listed(&self, page: &mut Browser, agent: [u8; 32]) -> bool {
+        for event in page.events.drain() {
+            if let tilo_session_host::PeerEvent::LivePlane {
+                workspace_id,
+                from,
+                track: tilo_live::live::Track::Presence,
+                body,
+                ..
+            } = &event
+                && *workspace_id == page.workspace
+                && let Ok(from) = iroh::EndpointId::from_bytes(from)
+            {
+                self.board.heard_body(WORKSPACE, from, body);
+            }
+            let _ = page.take(event);
+        }
+        self.board.due_in(WORKSPACE);
+        self.board
+            .members(WORKSPACE)
+            .iter()
+            .any(|member| member.agent && member.publisher == hex::encode(agent))
+    }
+}
+
+/// How an agent's session ends.
+#[derive(Clone, Copy, Debug)]
+enum Ending {
+    /// `tilo mcp`'s input closed: the agent says it left, and its session closes.
+    Leaves,
+    /// Its session closes without a word, as a process that is killed leaves it.
+    Closes,
+    /// The person stops it from its card, through their agent door.
+    Stopped,
+}
+
+/// The longest the person's page may still list an agent after its session ended: well inside
+/// the silence after which a page forgets a member that says nothing
+/// (eight seconds).
+const LEAVES_WITHIN: Duration = Duration::from_secs(4);
+
+/// An agent that says it left, as `tilo mcp` does once its input closes, leaves who is here on
+/// the person's page within [`LEAVES_WITHIN`].
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_that_leaves_leaves_who_is_here() {
+    leaves_who_is_here(Ending::Leaves).await;
+}
+
+/// An agent whose session closes without a word, as a killed process leaves it, leaves who is
+/// here as soon as its session is gone, rather than once the page gave up waiting for its word.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_whose_session_closes_leaves_who_is_here() {
+    leaves_who_is_here(Ending::Closes).await;
+}
+
+/// The person stops their agent from its card: its session ends for good, and it leaves who is
+/// here with it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stopped_agent_leaves_who_is_here() {
+    leaves_who_is_here(Ending::Stopped).await;
+}
+
+/// An agent whose session ends as `ending` says leaves who is here on the person's page: the page
+/// lists it no longer within [`LEAVES_WITHIN`], so it can say the agent finished; a stopped agent's
+/// session connects no more.
+async fn leaves_who_is_here(ending: Ending) {
+    use tilo_actions::remote::{ActionHost as _, Caller, InvokeRequest, agent_door};
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let computer = enrol(
+        &root,
+        "Claude Code on build-box",
+        DeviceCapabilities::member(),
+    );
+    let device = computer.cert.device_public_key;
+    let state = support::scratch_dir();
+    let hosted = start(&root, &host, state.path()).await;
+    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    let _sheets = browser.create(SHEETS);
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let roster = Roster::of(&browser_device);
+    let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
+        collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
+    ) else {
+        panic!("a key names a person")
+    };
+    let agent = Browser::open(&hosted, &computer, &host).await;
+    tilo_session_host::device::run_as_agent(&agent.peer, "Claude Code")
+        .await
+        .expect("the computer's session is the agent's run");
+    let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
+    let presence = mcp_presence::Presence::new(
+        (&agent.peer, &computer.cert),
+        actions,
+        person.clone(),
+        (WORKSPACE.into(), agent.workspace),
+        "Claude Code".into(),
+    )
+    .expect("the agent's certificate names a device");
+    presence.arrive();
+    let deadline = tilo_test_env::hang_deadline();
+    while !roster.listed(&mut browser, device) {
+        assert!(
+            Instant::now() < deadline,
+            "{ending:?}: the agent never arrived"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let ended = Instant::now();
+    match ending {
+        Ending::Leaves => {
+            presence.leave();
+            agent.peer.close();
+        }
+        Ending::Closes => agent.peer.close(),
+        Ending::Stopped => {
+            let door = SessionActions::new(
+                &browser.peer,
+                browser.workspace,
+                host.cert.device_public_key,
+            );
+            let request = InvokeRequest {
+                on_behalf_of: None,
+                invocation: tilo_actions::InvocationId::new(),
+                target: agent_door::target(agent_door::STOP),
+                argument: agent_door::argument(&agent_door::RunRef {
+                    grant: hex::encode(device),
+                    run: "Claude Code".into(),
+                }),
+                context: None,
+                confirmation: None,
+                revision: None,
+                wait_ms: None,
+                appearance: None,
+            };
+            let receipt = door
+                .invoke(&Caller::local_person("ada"), request)
+                .await
+                .expect("the door answers")
+                .expect("the person stops their agent");
+            assert!(
+                !matches!(
+                    receipt.status,
+                    tilo_actions::remote::ReceiptStatus::Rejected { .. }
+                ),
+                "{receipt:?}"
+            );
+        }
+    }
+    while roster.listed(&mut browser, device) {
+        assert!(
+            ended.elapsed() < LEAVES_WITHIN,
+            "{ending:?}: the agent is still listed {:?} after its session ended",
+            ended.elapsed()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    if matches!(ending, Ending::Stopped) {
+        // The stopped session stays closed: the agent is not said again.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(
+            !roster.listed(&mut browser, device),
+            "a stopped agent came back on its own"
+        );
+        assert_eq!(
+            agent.peer.status().phase,
+            tilo_session_host::TransportPhase::Closed,
+            "a stopped agent's session connects no more"
+        );
+    }
+    drop(presence);
+}

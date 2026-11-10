@@ -156,7 +156,7 @@ pub enum TransportPhase {
 pub struct Failure {
     /// `FailureCode`: `transport-unavailable`, `transport-ended`,
     /// `certificate-expired`, `certificate-rejected`, `not-admitted`,
-    /// `device-revoked`, `host-changed`,
+    /// `device-revoked`, `host-changed`, `agent-run-stopped`,
     /// `protocol-rejected`, `permission-required`, `signature-rejected`,
     /// `storage-transaction-failed`, `admission-timeout`, and the codes the
     /// page reports (see [`PeerHandle::report_failure`]).
@@ -1895,6 +1895,13 @@ impl Task {
                     }
                 },
                 envelope = client.recv() => match envelope {
+                    // The person stopped the agent this session is a run of: it ends here, and
+                    // connects no more, so nothing of the agent is said again.
+                    Some(Envelope::AgentRunStopped) => {
+                        self.fail("agent-run-stopped", "The person stopped this agent in Tilo.");
+                        client.disconnect().await;
+                        return Exit::Closed;
+                    }
                     Some(envelope) => {
                         if let Some((event, reply)) = self.voice.inbound(&envelope) {
                             if let Some(reply) = reply

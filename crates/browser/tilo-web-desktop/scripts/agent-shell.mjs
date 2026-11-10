@@ -1488,15 +1488,18 @@ try {
         }
         // 7. Once the agent leaves, the person is told what came of it ("Claude Code finished:
         //    3 changes in Workspace"): it is finished once it stayed away longer than a reconnect.
+        // The agent's face in the bar, or the banner of following it, is it still here: once its
+        // tilo mcp ends it leaves who is here as its session closes, not after the page gave up
+        // waiting for its word.
         await agent.close();
-        const present = async () => (await semantics(tab)).some(node => /^stop$/i.test(node.name) || /claude code, agent/i.test(node.name));
-        await sleep(30000);
-        if (await present()) {
-          note(`${combo}: the agent leaves who is here once its tilo mcp ends`, false,
-            `30 s after tilo mcp ended, the agent is still listed: ${names(await semantics(tab))}`);
-          await openCard();
-          await press(tab, /^stop$/i, {what: 'stopping the agent from its card'});
-        }
+        const closedAt = Date.now();
+        const present = async () => (await semantics(tab))
+          .some(node => /^claude code, agent$/i.test(node.name) || /^following claude code/i.test(node.name));
+        const gone = await until(async () => (await present()) ? undefined : true, 30000, 250);
+        const leftAfter = (Date.now() - closedAt) / 1000;
+        log(`${combo}: the agent left who is here ${leftAfter.toFixed(1)} s after its tilo mcp ended`);
+        check(`${combo}: the agent leaves who is here once its tilo mcp ends`, Boolean(gone) && leftAfter < 10,
+          gone ? `${leftAfter.toFixed(1)} s after tilo mcp ended` : `still listed 30 s after: ${names(await semantics(tab))}`);
         const finishedNotice = node => /claude code finished/i.test(`${node.name} ${node.description ?? ''}`);
         const finished = await until(async () => (await semantics(tab))
           .find(node => /claude code finished: \d+ changes?/i.test(`${node.name} ${node.description ?? ''}`)), 150000, 1000);

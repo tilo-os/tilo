@@ -192,6 +192,12 @@ impl super::Workspaces {
         }
     }
 
+    /// Whether `device` still runs the person's agent: a stop that leaves it so is the person
+    /// stopping a run, and one that does not is the device being revoked.
+    pub(crate) fn runs_agent(&self, device: &[u8; 32]) -> bool {
+        self.inner.agent_door.is_agent(device)
+    }
+
     /// The session of `device` that `stop` ends has ended.
     pub(crate) fn agent_session_ended(&self, device: &[u8; 32], stop: &Arc<tokio::sync::Notify>) {
         self.inner.agent_door.ended(device, stop);

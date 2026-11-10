@@ -131,6 +131,7 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::RetiredHereReply { .. }
         | Envelope::AgentRun { .. }
         | Envelope::AgentRunAnswer { .. }
+        | Envelope::AgentRunStopped
         | Envelope::FetchGrant { .. } => false,
     }
 }

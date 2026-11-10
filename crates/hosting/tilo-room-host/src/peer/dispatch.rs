@@ -171,6 +171,7 @@ pub(super) async fn handle_envelope(
         | Envelope::WorkspaceBootstrap { .. }
         | Envelope::WorkspacesReply { .. }
         | Envelope::AgentRunAnswer { .. }
+        | Envelope::AgentRunStopped
         // Who is here is the live plane's alone: a device that still asks the host
         // is answered by nobody.
         | Envelope::RetiredHereRequest { .. }

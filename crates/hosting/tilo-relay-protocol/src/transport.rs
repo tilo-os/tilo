@@ -640,6 +640,11 @@ pub enum Envelope {
         request_id: u64,
         refusal: Option<String>,
     },
+
+    /// The host's word that the person stopped the agent run this session is
+    /// ([`Self::AgentRun`]), said just before the host ends it: the device
+    /// does not connect again, so the agent and its presence end here.
+    AgentRunStopped,
 }
 
 impl Envelope {
@@ -697,6 +702,7 @@ impl Envelope {
             Self::FetchGrant { .. } => "FetchGrant",
             Self::AgentRun { .. } => "AgentRun",
             Self::AgentRunAnswer { .. } => "AgentRunAnswer",
+            Self::AgentRunStopped => "AgentRunStopped",
         }
     }
 
@@ -754,6 +760,7 @@ impl Envelope {
             | Self::RetiredHereReply { .. }
             | Self::AgentRun { .. }
             | Self::AgentRunAnswer { .. }
+            | Self::AgentRunStopped
             | Self::FetchGrant { .. } => None,
         }
     }

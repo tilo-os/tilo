@@ -142,6 +142,38 @@ async fn nobody_else_reaches(
     );
 }
 
+/// The session the person stopped (`stopped`) closes for good, told why; the computer then comes
+/// back as the same agent in a session of its own, which is answered.
+async fn comes_back_after_its_stop(
+    host: &support::TestHost,
+    stopped: &PeerHandle,
+    computer: &support::Device,
+    host_device: &support::Device,
+) -> PeerHandle {
+    let workspace = support::workspace();
+    wait_for("the stopped session to close", || {
+        let status = stopped.status();
+        async move {
+            (status.phase == tilo_session_host::TransportPhase::Closed
+                && status
+                    .failures
+                    .iter()
+                    .any(|failure| failure.code == "agent-run-stopped"))
+            .then_some(())
+        }
+    })
+    .await;
+    let agent = start_peer(
+        host.iroh(),
+        computer.cert.clone(),
+        host_device.cert.clone(),
+        computer.key.clone(),
+    );
+    agent.join(workspace).unwrap();
+    in_workspace(&agent, workspace).await;
+    agent
+}
+
 /// Someone else's root (`other_root`) signs a revocation naming `computer`,
 /// and their browser `other` announces it with one of their own: a
 /// root speaks only for the devices it certified, so the host (keeping its
@@ -223,12 +255,12 @@ async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses()
     let invited = door(&host, &root, &host_device, support::WORKSPACE, person).await;
     let (cert, key) = (&stranger.cert, &stranger.key);
     peers.push(enter(&host, invited, cert, key, &host_device.cert, workspace).await);
-    let [page, agent, other] = <[PeerHandle; 3]>::try_from(peers).ok().unwrap();
+    let [page, stopped, other] = <[PeerHandle; 3]>::try_from(peers).ok().unwrap();
     let host_key = host_device.cert.device_public_key;
     let grant = hex::encode(computer.cert.device_public_key);
 
     // The computer says its session is the agent it runs; the tab says nothing of the kind.
-    assert!(agent_says_its_run(&agent).await);
+    assert!(agent_says_its_run(&stopped).await);
     let door = SessionActions::new(&page, workspace, host_key);
     let (read, taken) = ask(&door, agent_door::DOOR, InvokeArgument::None);
     assert!(taken, "the person reads their own door");
@@ -241,11 +273,11 @@ async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses()
     assert_eq!(listed.grants[0].runs.len(), 1);
     assert_eq!(listed.grants[0].reach, agent_door::Reach::Account);
 
-    nobody_else_reaches(&other, &agent, computer.cert.device_public_key, host_key).await;
+    nobody_else_reaches(&other, &stopped, computer.cert.device_public_key, host_key).await;
     assert!(door_now(&door, &read).unwrap().run("Claude Code").is_some());
 
-    // Stopping the run ends that session; the computer comes back as the
-    // same agent, a new run.
+    // Stopping the run ends that session for good: the computer is told, says so, and connects
+    // no more, so nothing of the agent is said from it again.
     assert!(ask(&door, agent_door::STOP, stop(&grant)).1);
     door_until("the stopped run to end", &door, &read, |door| {
         door.grants
@@ -253,7 +285,7 @@ async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses()
             .any(|g| g.id == grant && g.runs.is_empty())
     })
     .await;
-    in_workspace(&agent, workspace).await;
+    let agent = comes_back_after_its_stop(&host, &stopped, &computer, &host_device).await;
     wait_for("the agent to come back", || async {
         agent_says_its_run(&agent).await.then_some(())
     })

@@ -322,6 +322,27 @@ fn a_member_who_comes_back_is_a_stay_of_its_own() {
     );
 }
 
+/// The plane says a member's presence ended with their session (an empty body,
+/// `plane::Heard::left`): the board takes them down at once, without waiting
+/// out their silence, and a later word of theirs is a new stay.
+#[test]
+fn a_member_whose_presence_ended_is_taken_down_at_once() {
+    let mut board = board();
+    let arrived = said(Payload::Arrived).encode().expect("a frame");
+    assert!(board.heard([1; 32], &arrived, 0.0));
+    assert!(
+        board.heard([1; 32], &[], 1.0),
+        "the end of their presence is a change"
+    );
+    assert!(board.member([1; 32]).is_none(), "they are gone at once");
+    assert!(!board.heard([1; 32], &[], 2.0), "and gone only once");
+    assert!(board.heard([1; 32], &arrived, 3.0));
+    assert!(
+        board.here().any(|member| member.publisher == [1; 32]),
+        "back again"
+    );
+}
+
 #[test]
 fn a_member_is_drawn_from_the_word_the_board_merged() {
     let mut board = board();

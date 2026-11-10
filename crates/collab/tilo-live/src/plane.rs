@@ -127,8 +127,24 @@ pub struct Heard {
     pub track: Track,
     /// The object's sequence on that track.
     pub sequence: u32,
-    /// The opened body.
+    /// The opened body; empty for [`Heard::left`].
     pub body: Vec<u8>,
+}
+
+impl Heard {
+    /// `sender`'s presence ended: its broadcast went away with the session that published it,
+    /// however that session ended — it said it left, it closed, or the host lost it. No frame it
+    /// sealed is empty, so a board takes this one as the sender leaving
+    /// ([`crate::presence::Board::heard`]).
+    #[must_use]
+    pub const fn left(sender: [u8; 32]) -> Self {
+        Self {
+            sender,
+            track: Track::Presence,
+            sequence: 0,
+            body: Vec::new(),
+        }
+    }
 }
 
 /// One picture track this plane publishes because a peer asked for it.
@@ -1092,7 +1108,7 @@ async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
         // peer's broadcast went away, is read again: the loop's next pass
         // ends this reader only when the plane is over or the device is no
         // longer a member.
-        read(
+        let ended = read(
             &shared,
             device,
             track,
@@ -1101,6 +1117,12 @@ async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
             &mut heard_any,
         )
         .await;
+        // The device's broadcast went away with its session: whoever drew it from its presence
+        // takes it down now, rather than once it has been silent long enough. A device that comes
+        // back says itself again on the broadcast that takes its place.
+        if ended && track == Track::Presence && heard_any && !shared.ended() {
+            shared.deliver(Heard::left(device));
+        }
         if !heard_any {
             n0_future::time::sleep(REJOIN).await;
         }
@@ -1108,8 +1130,9 @@ async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
 }
 
 /// Read one subscription of `track` until it ends: the peer's broadcast went
-/// away, or its objects can no longer be opened here. Either way the caller
-/// attaches again, unless the plane is over or the device left the roster.
+/// away (`true`), or its objects can no longer be opened here. Either way the
+/// caller attaches again, unless the plane is over or the device left the
+/// roster.
 async fn read(
     shared: &Shared,
     device: [u8; 32],
@@ -1117,7 +1140,7 @@ async fn read(
     subscriber: &mut moq_net::track::Subscriber,
     played: &mut Option<u64>,
     heard_any: &mut bool,
-) {
+) -> bool {
     loop {
         match next(subscriber).await {
             Next::Datagram(datagram) => {
@@ -1137,10 +1160,10 @@ async fn read(
                         continue;
                     }
                     if shared.ended() || !shared.admits(device) {
-                        return;
+                        return false;
                     }
                     if !hear_voice(shared, device, &object) {
-                        return;
+                        return false;
                     }
                     *heard_any = true;
                     *played = Some(object.sequence);
@@ -1150,19 +1173,19 @@ async fn read(
                 let sequence = u32::try_from(group.sequence).unwrap_or(u32::MAX);
                 while let Ok(Some(frame)) = group.read_frame().await {
                     if shared.ended() || !shared.admits(device) {
-                        return;
+                        return false;
                     }
                     if track == Track::Audio {
                         // Group lanes carry one voice object per frame: the
                         // same object the datagram lane carries.
                         let Ok(object) = VoiceObject::decode(&frame.payload) else {
-                            return;
+                            return false;
                         };
                         if played.is_some_and(|seen| object.sequence <= seen) {
                             continue;
                         }
                         if !hear_voice(shared, device, &object) {
-                            return;
+                            return false;
                         }
                         *heard_any = true;
                         *played = Some(object.sequence);
@@ -1182,12 +1205,12 @@ async fn read(
                         // reading the track for: the epoch or the roster moved.
                         Err(refusal) => {
                             shared.refused(&refusal);
-                            return;
+                            return false;
                         }
                     }
                 }
             }
-            Next::End => return,
+            Next::End => return true,
         }
     }
 }
