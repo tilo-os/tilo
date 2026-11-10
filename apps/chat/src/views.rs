@@ -1913,6 +1913,80 @@ mod tests {
     }
 
     #[test]
+    fn a_resource_attachments_chip_shows_its_title_not_its_id() {
+        // A resource the session placed is attached by its published address
+        // (`tl:so.tilo.lang.tasks:root-fjqi4yze`): the chip the draft over the composer draws
+        // and the chip the message draws both say what the resource is called, never the address
+        // the drag carried or a step of it (`root-fjqi4yze`).
+        const ADDRESS: &str = "tl:so.tilo.lang.tasks:root-fjqi4yze";
+        let attached = tilo_reference::Attached::resource(
+            tilo_reference::ResourceAt {
+                app: "so.tilo.lang.tasks".into(),
+                record: None,
+                reference: tilo_reference::ResourceRef::whole(
+                    "tl.so.tilo.lang.tasks.Tasks",
+                    ADDRESS,
+                    "Tasks",
+                ),
+            },
+            None,
+            "Tasks",
+        );
+        let attachment = Attachment::of(&attached);
+        assert_eq!(attachment.kind, "resource");
+        assert_eq!(attachment.label, "Tasks", "the chip says the title");
+        assert_ne!(attachment.label, ADDRESS, "never the address");
+        let shown = attachment
+            .resource
+            .clone()
+            .expect("the chip holds the resource");
+        assert_eq!(shown.id, ADDRESS, "the address is what a press places");
+        assert_eq!(shown.ty, "tl.so.tilo.lang.tasks.Tasks");
+        // The draft's chip is the message's chip: the same attachment drawn over the composer.
+        let mut channel = demo_channel();
+        channel.draft = Some(attachment.clone());
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let chip = keyed(&tree, "ui.Chip", "@draft-attachment")
+            .into_iter()
+            .next()
+            .expect("the draft's attachment stands as a chip");
+        assert_eq!(
+            chip.props.get("label"),
+            Some(&Value::Text("Tasks".to_owned())),
+            "the draft's chip says the title"
+        );
+        // And the message the composer sends draws the same label.
+        channel.draft = None;
+        channel.messages.push(Message {
+            id: "m_dropped".to_owned(),
+            author: channel.people[0].id.clone(),
+            ts: 1_782_470_400,
+            text: "what is left?".to_owned(),
+            attachments: vec![attachment],
+            ..Message::default()
+        });
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let row = keyed(&tree, "ui.ListRow", "@attachment-m_dropped-0")
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| {
+                panic!(
+                    "the message's attachment is a row: {:?}",
+                    keyed(&tree, "ui.ListRow", "")
+                )
+            });
+        assert_eq!(
+            row.props.get("title"),
+            Some(&Value::Text("Tasks".to_owned())),
+            "the message's chip says the title"
+        );
+    }
+
+    #[test]
     fn the_composer_is_full_width_with_attach_and_send() {
         let channel = demo_channel();
         let cx = view_cx(&channel);

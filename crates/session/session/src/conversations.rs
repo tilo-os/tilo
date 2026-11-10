@@ -286,6 +286,10 @@ pub(crate) struct Conversations {
     /// drop on the composer attached, by channel. It lives here, never in Chat's record, as a
     /// draft is not part of the conversation, and `post` takes it into the message it sends.
     drafts: RefCell<BTreeMap<String, String>>,
+    /// What the session publishes now, by id: what an attachment names itself by (its app, its
+    /// kind and what it is called). The same catalogue a place made from a resource reads, so a
+    /// reference on a message and a place on the canvas name one resource one way.
+    catalog: Option<Rc<RefCell<crate::arrangement::Catalog>>>,
 }
 
 /// A workspace's records as they are open here, and what was read of them.
@@ -301,8 +305,13 @@ struct Opened {
 
 impl Conversations {
     /// The conversations over the store at `root` , waking the session's loop through `wake` when a
-    /// change lands.
-    pub(crate) fn new(root: PathBuf, wake: tilo_service::Wake) -> Self {
+    /// change lands. `catalog` is what the session publishes now, by id: what an attachment names
+    /// itself by when the composer's `post` takes it into a message.
+    pub(crate) fn new(
+        root: PathBuf,
+        wake: tilo_service::Wake,
+        catalog: Option<Rc<RefCell<crate::arrangement::Catalog>>>,
+    ) -> Self {
         let mut scope = ui::WakeScope::new();
         let waking = Arc::clone(&wake);
         if let Err(error) = scope.bind(move |_| waking()) {
@@ -314,7 +323,16 @@ impl Conversations {
             wake: scope,
             open: RefCell::default(),
             drafts: RefCell::default(),
+            catalog,
         }
+    }
+
+    /// What the session publishes of `resource` now, when it publishes it: the app that keeps it,
+    /// its kind and what it is called, as the arrangement's catalogue holds them.
+    fn published(&self, resource: &str) -> Option<crate::arrangement::Target> {
+        self.catalog
+            .as_ref()
+            .and_then(|catalog| catalog.borrow().get(resource).cloned())
     }
 
     /// The turns, as the broker reads them.
@@ -418,8 +436,13 @@ impl Conversations {
             return reading;
         };
         // The attachment a message would carry: the chip `Attachment::of` gives it, so the
-        // draft's chip and the message's are the same one drawn in two places.
-        reading.draft = Some(chat::views::Attachment::of(&attached_resource(&resource)));
+        // draft's chip and the message's are the same one drawn in two places — named by the
+        // resource's published title, never the address the drag carried.
+        let published = self.published(&resource);
+        reading.draft = Some(chat::views::Attachment::of(&attached_resource(
+            &resource,
+            published.as_ref(),
+        )));
         reading
     }
 
@@ -626,7 +649,10 @@ impl Conversations {
                             body: None,
                             attachments: attached
                                 .as_deref()
-                                .map(|resource| vec![attached_resource(resource)])
+                                .map(|resource| {
+                                    let published = self.published(resource);
+                                    vec![attached_resource(resource, published.as_ref())]
+                                })
                                 .unwrap_or_default(),
                             mentions: None,
                             written: None,
@@ -1149,27 +1175,78 @@ pub(crate) fn detach_action() -> tilo_actions::ActionSpec {
     )
 }
 
-/// The message attachment `resource` becomes: a record's reference, as Chat's own composer
-/// sends a shared record. The address a drag carries is a resource's (`app.record/item/<id>`,
-/// `kind:id`, and the plain `chat.workspace/channels/<id>` item spelling), so the app and the
-/// record it is in are read from it and its kind and id are what it keeps after the last step.
-pub(crate) fn attached_resource(resource: &str) -> tilo_reference::Attached {
-    let (kind, id) = split_resource_address(resource);
-    let mut segments = kind.split('.');
-    let app = segments
-        .next()
-        .filter(|app| !app.is_empty())
-        .unwrap_or("chat");
-    let record = segments.next().filter(|record| !record.is_empty());
+/// The message attachment the resource `resource` becomes: the one reference form a message
+/// carries ([`tilo_reference::ResourceAt`], the same a mention's mark and an action's picked
+/// resource use), naming the resource by the address the session publishes it under
+/// (`tl:so.tilo.lang.tasks:root-fjqi4yze`, `chat.workspace/channels/c_general`,
+/// `tube.video:vid_1`), the app that publishes it, its kind, and what it is called.
+///
+/// `published` is what the session's catalogue says of the address now, and it is what names
+/// the attachment by title. A resource the catalogue does not hold — one a development fixture
+/// made up, or one published since the pass last read the tree — is named by its address alone,
+/// in the catalogue's older form ([`tilo_reference::embed`]): its app and its published id, its
+/// kind empty until a reader resolves it, and its address for a chip to show.
+pub(crate) fn attached_resource(
+    resource: &str,
+    published: Option<&crate::arrangement::Target>,
+) -> tilo_reference::Attached {
+    let (app, kind, label) = match published {
+        Some(target) => (
+            target.app.clone(),
+            target.kind.clone(),
+            target.title.trim().to_owned(),
+        ),
+        None => {
+            let (kind, app) = unpublished_address(resource);
+            (app, kind, String::new())
+        }
+    };
+    let label = if label.is_empty() {
+        address_label(resource)
+    } else {
+        label
+    };
     tilo_reference::Attached::resource(
         tilo_reference::ResourceAt {
-            app: app.to_owned(),
-            record: record.map(str::to_owned),
-            reference: tilo_reference::ResourceRef::whole(kind, resource, &id),
+            app,
+            record: None,
+            reference: tilo_reference::ResourceRef::whole(kind, resource, label.clone()),
         },
         None,
-        id,
+        label,
     )
+}
+
+/// The app and kind of `resource`'s address, as the address itself says them: a published
+/// `scheme:<app>:<id>` (a tilolang resource's `tl:<app>:<id>`, the host's `tl:host`) names its
+/// app after its scheme and leaves its kind to the catalogue, and anything else (`tube.video:vid_1`,
+/// `chat.workspace/channels/c_general`) names its kind before its id.
+fn unpublished_address(resource: &str) -> (String, String) {
+    if let Some(rest) = resource.strip_prefix("tl:")
+        && let Some((app, id)) = rest.split_once(':')
+        && !app.is_empty()
+        && !id.is_empty()
+    {
+        return (String::new(), app.to_owned());
+    }
+    let (kind, _) = split_resource_address(resource);
+    let app = kind
+        .split('.')
+        .next()
+        .filter(|app| !app.is_empty())
+        .unwrap_or("chat")
+        .to_owned();
+    (kind, app)
+}
+
+/// What the address `resource` itself calls the resource, for a chip over a drop no catalogue
+/// names: the last step of its address (`tube.video:vid_1` is `vid_1`).
+fn address_label(resource: &str) -> String {
+    resource
+        .rsplit([':', '/'])
+        .next()
+        .unwrap_or(resource)
+        .to_owned()
 }
 
 /// A resource's address, split into its kind and its id: `tube.video:vid_1` is the kind and
@@ -2180,5 +2257,57 @@ mod tests {
                 .map(|entry| entry.run.instruction.clone()),
             Some("add the revenue curve".to_owned())
         );
+    }
+
+    /// A resource dropped on the composer becomes the message's attachment in the one reference
+    /// form a message carries, named by what the session's catalogue calls it: its app, its kind
+    /// and its title. The address the drag carried is what the reference points at, never the
+    /// chip a person reads.
+    #[test]
+    fn a_published_resource_attaches_by_its_address_and_is_named_by_its_title() {
+        const ADDRESS: &str = "tl:so.tilo.lang.tasks:root-fjqi4yze";
+        let published = crate::arrangement::Target {
+            app: "so.tilo.lang.tasks".to_owned(),
+            views: vec!["tasks".to_owned()],
+            title: "Tasks".to_owned(),
+            kind: "tl.so.tilo.lang.tasks.Tasks".to_owned(),
+        };
+        let attached = attached_resource(ADDRESS, Some(&published));
+        let tilo_reference::Attached::Resource { at, anchor, label } = &attached else {
+            panic!("a resource becomes a resource attachment: {attached:?}");
+        };
+        assert_eq!(
+            at.app, "so.tilo.lang.tasks",
+            "the app the address publishes it"
+        );
+        assert_eq!(at.record, None);
+        assert_eq!(at.reference.kind, "tl.so.tilo.lang.tasks.Tasks");
+        assert_eq!(
+            at.reference.id, ADDRESS,
+            "the reference points at the address the drag carried"
+        );
+        assert_eq!(at.reference.label, "Tasks");
+        assert_eq!(anchor, &None);
+        assert_eq!(label, "Tasks", "the chip says the title, never the address");
+
+        // A resource no catalogue holds reads in the address's own older form: its app and its
+        // published id, its kind empty until a reader resolves it, and its address for a chip.
+        let unknown = attached_resource(ADDRESS, None);
+        let tilo_reference::Attached::Resource { at, label, .. } = &unknown else {
+            panic!("a resource becomes a resource attachment: {unknown:?}");
+        };
+        assert_eq!(at.app, "so.tilo.lang.tasks");
+        assert_eq!(at.reference.kind, "");
+        assert_eq!(at.reference.id, ADDRESS);
+        assert_eq!(label, "root-fjqi4yze");
+        // And a resource of the session's own apps, as a place drags it.
+        let video = attached_resource("tube.video:vid_1", None);
+        let tilo_reference::Attached::Resource { at, label, .. } = &video else {
+            panic!("a resource becomes a resource attachment: {video:?}");
+        };
+        assert_eq!(at.app, "tube");
+        assert_eq!(at.reference.kind, "tube.video");
+        assert_eq!(at.reference.id, "tube.video:vid_1");
+        assert_eq!(label, "vid_1");
     }
 }

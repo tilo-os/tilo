@@ -99,6 +99,14 @@ impl RustApps {
             });
         let _ = self.chat.apply_part_as(chat::model::ME, invoke);
     }
+    /// What this fixture publishes of `resource`, as the arrangement's catalogue keeps it: the
+    /// app that keeps it, its kind and what it is called. `None` for an address it does not
+    /// publish, which an attachment then names by its address alone.
+    fn published(&self, resource: &str) -> Option<crate::arrangement::Target> {
+        let mut catalog = crate::arrangement::Catalog::default();
+        catalog.take(&Service::resources(self));
+        catalog.get(resource).cloned()
+    }
 }
 
 impl Default for RustApps {
@@ -196,24 +204,12 @@ impl Service for RustApps {
             let mut conversation = [self.chat_channel(), self.chat_short_channel()]
                 .into_iter()
                 .find(|channel| channel.id == id)?;
-            // The drop a person made on the composer shows as its chip: the same field a
-            // person's session fills from its own draft.
+            // The drop a person made on the composer shows as its chip: the same attachment a
+            // person's session names from its own draft, by the resource's published title.
             if let Some(held) = self.drafts.borrow().get(&id) {
-                let at = tilo_reference::ResourceAt {
-                    app: held
-                        .split(['.', '/', ':'])
-                        .next()
-                        .unwrap_or("chat")
-                        .to_owned(),
-                    record: None,
-                    reference: tilo_reference::ResourceRef::whole(
-                        held.split_once(':').map_or(held.as_str(), |(kind, _)| kind),
-                        held.clone(),
-                        held.clone(),
-                    ),
-                };
+                let published = self.published(held);
                 conversation.draft = Some(chat::views::Attachment::of(
-                    &tilo_reference::Attached::resource(at, None, held.clone()),
+                    &crate::conversations::attached_resource(held, published.as_ref()),
                 ));
             }
             return serde_json::to_value(&conversation).ok();
@@ -248,7 +244,12 @@ impl Service for RustApps {
                 let held = self.drafts.borrow_mut().remove(channel);
                 let attachments: Vec<tilo_reference::Attached> = held
                     .as_deref()
-                    .map(|resource| vec![crate::conversations::attached_resource(resource)])
+                    .map(|resource| {
+                        vec![crate::conversations::attached_resource(
+                            resource,
+                            self.published(resource).as_ref(),
+                        )]
+                    })
                     .unwrap_or_default();
                 let channel_id = tilo_resource::Id::from_raw(channel);
                 // The message the reply answers, and the run of it it quotes: what a place's

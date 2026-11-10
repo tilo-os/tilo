@@ -328,6 +328,7 @@ impl Session {
         let conversations = Rc::new(crate::conversations::Conversations::new(
             cli::data_home(),
             options.wake.handle(),
+            Some(arrangement.borrow().targets()),
         ));
         let agents = Rc::new(crate::agents::Agents::new(
             cli::data_home(),

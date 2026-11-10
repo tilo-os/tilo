@@ -398,6 +398,94 @@ fn an_attachment_is_posted_by_its_content_address() {
 }
 
 #[test]
+fn a_resource_a_session_places_is_attachable_by_its_published_address() {
+    // A tlolang app publishes each of its resources by its address (`tl:<app>:<id>`, the root
+    // of Tasks among them): a reference to one names the address and the app the address
+    // spells, and the catalogue names its kind. It attaches as any shared record does, and it
+    // reads back from the record unchanged — the address the drag carried, never a second form
+    // invented for it.
+    let mut ada = Talk::new();
+    const ROOT: &str = "tl:so.tilo.lang.tasks:root-fjqi4yze";
+    let attached = tilo_reference::Attached::resource(
+        tilo_reference::ResourceAt {
+            app: "so.tilo.lang.tasks".into(),
+            record: None,
+            reference: tilo_reference::ResourceRef::whole(
+                "tl.so.tilo.lang.tasks.Tasks",
+                ROOT,
+                "Tasks",
+            ),
+        },
+        None,
+        "Tasks",
+    );
+    assert!(
+        crate::record::valid_attached(&attached),
+        "a published resource address is a bounded address"
+    );
+    ada.apply(ChatPart::POST.with(chat_part::Post {
+        message: NewMessage {
+            channel: id("c_chat"),
+            text: "what is left?".into(),
+            parent: None,
+            quoted: None,
+            body: None,
+            attachments: vec![attached.clone()],
+            mentions: None,
+            written: None,
+        },
+    }))
+    .unwrap();
+    assert_eq!(
+        ada.rows("c_chat")[0].attachments,
+        [attached],
+        "the resource the person dropped rides with the message, as it was attached"
+    );
+}
+
+#[test]
+fn a_resource_reference_with_no_kind_yet_attaches_until_a_catalogue_names_it() {
+    // An address no loaded package has resolved yet names its resource by its app and its id
+    // alone, the way the one reference form reads an older published id: a published id's app is
+    // dotted and never holds a `:`, so the address says both and leaves the kind to whoever
+    // resolves it.
+    let attached = tilo_reference::Attached::resource(
+        tilo_reference::ResourceAt {
+            app: "so.tilo.lang.board".into(),
+            record: None,
+            reference: tilo_reference::ResourceRef::whole(
+                "",
+                "tl:so.tilo.lang.board:d/f:t1",
+                "Write",
+            ),
+        },
+        None,
+        "Write",
+    );
+    assert!(
+        crate::record::valid_attached(&attached),
+        "a published id with its kind unresolved still attaches"
+    );
+    // What is still refused: an address naming nothing, a path, a URL, and — because an empty
+    // kind only ever names a resource's published address — any id that is not one.
+    for id in [
+        "",
+        "/etc/passwd",
+        "https://example.com/x",
+        "notes.pages/page_1",
+    ] {
+        let mut nameless = attached.clone();
+        if let tilo_reference::Attached::Resource { at, .. } = &mut nameless {
+            at.reference.id = id.to_owned();
+        }
+        assert!(
+            !crate::record::valid_attached(&nameless),
+            "{id:?} is no published resource address"
+        );
+    }
+}
+
+#[test]
 fn threads_answer_top_level_messages_of_their_channel() {
     let mut ada = Talk::new();
     ada.apply(post("the plan")).unwrap();

@@ -448,6 +448,9 @@ pub struct Target {
     pub views: Vec<String>,
     /// The resource's label, as the place is shown under.
     pub title: String,
+    /// The resource's kind, as its app publishes it (`tube.video`,
+    /// `tl.so.tilo.lang.tasks.Tasks`): what a reference to it names.
+    pub kind: String,
 }
 
 impl Target {
@@ -513,6 +516,7 @@ fn collect_targets(resource: &ResourceSpec, out: &mut BTreeMap<String, Target>) 
                 app: app.to_owned(),
                 views: views.into_iter().map(|view| view.id.clone()).collect(),
                 title: resource.label.clone(),
+                kind: resource.kind.clone(),
             },
         );
     }
