@@ -576,15 +576,21 @@ fn by(version: &Version) -> String {
         .context
         .as_ref()
         .and_then(|context| context.invoker.as_ref())
-        .map(|invoker| invoker.actor.clone())
+        .map(|invoker| {
+            invoker
+                .name
+                .clone()
+                .unwrap_or_else(|| invoker.actor.clone())
+        })
         .or_else(|| super::authors::actor_handle(&version.actor))
         .unwrap_or_else(|| version.actor.chars().take(8).collect())
 }
 
 /// What a change's entry records, as data: what was done (`what`, with
 /// field paths, values and verb arguments), to which `item`, by which
-/// `actor` (`id`, `kind`, and the person it acted `for`), in which `run`,
-/// and what kind of action and change it was.
+/// `actor` (`id`, `kind`, the person it acted `for`, and for an agent with a
+/// name the `name` and `colour` it shows by), in which `run`, and what kind
+/// of action and change it was.
 fn recorded(context: &tilo_actions::ActionContext, out: &mut serde_json::Map<String, Value>) {
     if let Some(what) = &context.what {
         out.insert("what".into(), json!(what));
@@ -598,6 +604,14 @@ fn recorded(context: &tilo_actions::ActionContext, out: &mut serde_json::Map<Str
         actor.insert("kind".into(), json!(invoker.kind));
         if let Some(person) = &invoker.on_behalf_of {
             actor.insert("for".into(), person.clone().into());
+        }
+        if let Some(name) = &invoker.name {
+            let (red, green, blue) = collab_types::presence::agent_rgb(name);
+            actor.insert("name".into(), name.clone().into());
+            actor.insert(
+                "colour".into(),
+                format!("#{red:02x}{green:02x}{blue:02x}").into(),
+            );
         }
         out.insert("actor".into(), Value::Object(actor));
     }

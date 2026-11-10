@@ -1186,6 +1186,11 @@ pub struct ActionInvoker {
     /// door that admitted the invocation, and only for a bot allowed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appearance: Option<crate::Appearance>,
+    /// The name an agent goes by, as the host that admitted it knows it from
+    /// the key its person certified for it ("Jane Doe's agent"): what History
+    /// names it by. Never taken from the request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[allow(
@@ -1205,6 +1210,7 @@ impl ActionInvoker {
             on_behalf_of: None,
             participant: None,
             appearance: None,
+            name: None,
         }
     }
 
@@ -1220,12 +1226,20 @@ impl ActionInvoker {
                 .filter(|person| *person != actor.id),
             participant: None,
             appearance: None,
+            name: None,
         }
     }
 
     #[must_use]
     pub fn with_participant(mut self, participant: ParticipantId) -> Self {
         self.participant = Some(participant);
+        self
+    }
+
+    /// The name the admitting host knows this agent by ([`Self::name`]).
+    #[must_use]
+    pub fn named(mut self, name: Option<String>) -> Self {
+        self.name = name;
         self
     }
 
@@ -1282,6 +1296,7 @@ impl ActionInvoker {
             on_behalf_of: named.and_then(|invoker| invoker.on_behalf_of.clone()),
             participant: named.and_then(|invoker| invoker.participant.clone()),
             appearance: named.and_then(|invoker| invoker.appearance.clone()),
+            name: named.and_then(|invoker| invoker.name.clone()),
         }
     }
 }

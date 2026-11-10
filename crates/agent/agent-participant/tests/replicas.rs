@@ -673,6 +673,7 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
             sandbox: Vec::new(),
             unix_time: 1_900_000_000,
             agent: Some("Claude Code".into()),
+            agent_name: None,
         },
         Seed::Existing {
             record: made.record_id().clone(),

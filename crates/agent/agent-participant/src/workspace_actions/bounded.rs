@@ -50,6 +50,8 @@ pub(super) struct Bounded {
     pub(super) person: String,
     /// The agent acting for the person, by its agent id.
     pub(super) agent: Option<String>,
+    /// The name that agent goes by ([`Caller::agent_name`]).
+    pub(super) agent_name: Option<String>,
 }
 
 /// The replica a bounded caller acts through, by the record it holds and who.
@@ -306,6 +308,7 @@ impl Worker {
                 person_caller: caller.clone(),
                 person: person.clone(),
                 agent: None,
+                agent_name: None,
             }),
             CallerPrincipal::Agent(agent) => {
                 let person_caller = caller.delegating_person()?;
@@ -314,8 +317,9 @@ impl Worker {
                 };
                 Some(Bounded {
                     person: person.clone(),
-                    person_caller,
                     agent: Some(agent.clone()),
+                    agent_name: caller.agent_name().map(str::to_owned),
+                    person_caller,
                 })
             }
             CallerPrincipal::App(_) | CallerPrincipal::Bot(_) => None,
@@ -469,6 +473,7 @@ impl Worker {
                     sandbox: policy.sandbox.clone(),
                     unix_time: policy.unix_time,
                     agent: who.agent.clone(),
+                    agent_name: who.agent_name.clone(),
                 },
                 Seed::Existing {
                     record: reads::record_id(&holder.record).map_err(unavailable)?,

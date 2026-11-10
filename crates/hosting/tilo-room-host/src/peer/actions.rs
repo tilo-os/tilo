@@ -355,10 +355,11 @@ fn session_caller(
         // An agent's grant (a key its person certified for a service acting
         // for an agent they approved) is their agent: what it does is the
         // agent's, for them, never above what an agent of theirs may do, and
-        // it governs nothing.
+        // it governs nothing. It goes by the name the key was certified with.
         None if peer.cert.capabilities.agent.is_some() => {
             Caller::authenticated(peer.user_public_key, peer.device_public_key)
                 .delegated_to(grant_agent_id(&peer.device_public_key))
+                .named(&peer.cert.device_label)
         }
         None => {
             let person = Caller::authenticated(peer.user_public_key, peer.device_public_key);

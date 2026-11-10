@@ -227,6 +227,19 @@ impl PresenceHue {
             None
         }
     }
+
+    /// The hue the agent `name` names wears wherever it shows (presence, History): its client's
+    /// ([`Self::of_agent_client`]), else the one its name gives it, the same for each of its runs.
+    #[must_use]
+    pub fn of_agent(name: &str) -> Self {
+        Self::of_agent_client(name).unwrap_or_else(|| Self::of_identity(agent_client(name)))
+    }
+}
+
+/// [`PresenceHue::of_agent`] as the colour it travels as.
+#[must_use]
+pub fn agent_rgb(name: &str) -> (u8, u8, u8) {
+    identity_rgb(PresenceHue::of_agent(name))
 }
 
 /// A presence hue as the identity colour it travels as.
@@ -333,5 +346,10 @@ mod agent_client_tests {
             Some(PresenceHue::Sky)
         );
         assert_eq!(PresenceHue::of_agent_client("Cursor"), None);
+        assert_eq!(
+            PresenceHue::of_agent("Jane Doe's agent #2"),
+            PresenceHue::of_agent("Jane Doe's agent"),
+            "every run of an agent wears one colour"
+        );
     }
 }

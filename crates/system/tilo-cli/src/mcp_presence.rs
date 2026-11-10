@@ -30,7 +30,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use collab_types::PeerPresencePayload;
 use collab_types::presence::{
-    MAX_ACTIVITY_BYTES, Presence as Frame, PresenceKey, ShellSelection, user_color,
+    MAX_ACTIVITY_BYTES, Presence as Frame, PresenceKey, ShellSelection, agent_rgb,
 };
 use serde_json::Value;
 use tilo_actions::InvocationId;
@@ -78,8 +78,8 @@ pub struct Presence {
     workspace_id: u64,
     /// The agent's name, as the person's devices list it.
     label: String,
-    /// The colour its face wears: the same wherever it is drawn, derived
-    /// from its name as every participant's colour is from its identity.
+    /// The colour its face wears: the same wherever it is drawn and in every
+    /// run of it, derived from its name as History colours its changes.
     colour: (u8, u8, u8),
     /// What the last frame said, and the sequence around it.
     said: Mutex<Said>,
@@ -125,7 +125,7 @@ impl Presence {
             peer: peer.clone(),
             actions,
             caller: Caller::local_person(person),
-            colour: user_color(&label),
+            colour: agent_rgb(&label),
             cluster,
             workspace_id,
             label,

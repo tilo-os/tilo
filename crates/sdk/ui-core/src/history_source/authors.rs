@@ -312,11 +312,22 @@ impl AuthorDirectory {
             self.resolve(actor_hex)
         } else {
             let principal = hex::encode(invoker.actor.as_bytes());
-            let mut author = self.resolve(&principal);
-            if !self.is_registered(&principal) {
-                author.name = principal_name(&invoker.actor);
+            let author = self.resolve(&principal);
+            match &invoker.name {
+                // An agent goes by the name its admission certified for it,
+                // in the colour presence draws that agent in.
+                Some(name) => {
+                    let mut named = author.with_rgb(collab_types::presence::agent_rgb(name));
+                    named.name.clone_from(name);
+                    named
+                }
+                None if !self.is_registered(&principal) => {
+                    let mut author = author;
+                    author.name = principal_name(&invoker.actor);
+                    author
+                }
+                None => author,
             }
-            author
         };
         let reads = reader.as_deref() == Some(invoker.actor.as_str());
         let relation = if reads {

@@ -201,6 +201,8 @@ pub enum ReplicaActor {
         unix_time: u64,
         /// The agent acting for the person, by its agent id, when one is.
         agent: Option<String>,
+        /// The name that agent goes by, as its admission certified it.
+        agent_name: Option<String>,
     },
 }
 
@@ -1020,6 +1022,7 @@ fn replica_standing(
             sandbox,
             unix_time,
             agent,
+            agent_name,
         } => {
             let person = standing.person.clone();
             let permissions = PermissionContext::new(
@@ -1035,7 +1038,8 @@ fn replica_standing(
                     // History reads the agent, for the person.
                     invoker = tilo_actions::ActionInvoker::actor(format!("agent:{agent}"))
                         .with_kind(tilo_actions::ActorKind::Agent)
-                        .acting_for(person);
+                        .acting_for(person)
+                        .named(agent_name);
                     permissions.acting_as(bound.subject, bound.grants)
                 }
                 None => permissions,

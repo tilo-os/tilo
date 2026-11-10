@@ -281,6 +281,10 @@ async def main() -> int:
         say("   history", str({key: version.get(key) for key in ("sentence", "by", "run", "run_id", "actor", "undone") if key in version}))
     by_agent = [version for version in versions if (version.get("actor") or {}).get("kind") == "agent"]
     check(by_agent, f"{len(by_agent)} of {len(versions)} changes are the agent's")
+    names = {(version.get("actor") or {}).get("name") for version in by_agent}
+    check(names == {"Jane Doe's agent"}, f"History names the agent by its key's name ({names})")
+    colours = {(version.get("actor") or {}).get("colour") for version in by_agent}
+    check(len(colours) == 1 and None not in colours, f"in one colour ({colours})")
     people = {(version.get("actor") or {}).get("for") for version in by_agent}
     check(len(people) == 1 and None not in people, f"each on behalf of the one person ({people})")
     runs = {version["run_id"]: version.get("run") for version in by_agent if version.get("run_id")}

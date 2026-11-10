@@ -553,3 +553,72 @@ async fn one_key_makes_and_works_in_hundreds_of_workspaces_at_once() {
         "the account's own session still answers"
     );
 }
+
+/// A minted key's agent goes by the name the key was minted with: History
+/// names its changes "Jane Doe's agent", in the colour presence draws it in,
+/// and a run it does not title is that name and its number, never the key's
+/// grant id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn history_names_a_minted_keys_agent_by_the_name_it_was_minted_with() {
+    let on_relay = door_on_relay(ISSUER).await;
+    let door = Arc::clone(&on_relay.door);
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    let key = approved_key(&on_relay, &ada, &page, "Visa backend").await;
+    let mut account = Mcp {
+        door: &door,
+        path: "/mcp".into(),
+        token: key,
+        session: None,
+    };
+    assert_eq!(account.initialize().await.0, 200);
+    let created = account
+        .did(
+            "account/workspaces#create",
+            json!({"name": "Applicant: Jane Doe"}),
+        )
+        .await;
+    let workspace = created["workspace"]["id"].as_str().unwrap().to_owned();
+    let minted = account
+        .did(
+            "account/keys#mint",
+            json!({"workspace": workspace, "name": "Jane Doe's agent"}),
+        )
+        .await;
+    let mut agent = Mcp {
+        door: &door,
+        path: format!("/w/{workspace}/mcp"),
+        token: minted["token"].as_str().unwrap().to_owned(),
+        session: None,
+    };
+    assert_eq!(agent.initialize().await.0, 200);
+    agent.did("word-processor#open", json!({})).await;
+    agent
+        .did(
+            "word-processor#append-paragraph",
+            json!({"text": "Dear Visa Officer,"}),
+        )
+        .await;
+    let history = agent
+        .did("word-processor#history", json!({"last": 50}))
+        .await;
+    let by_agent: Vec<&Value> = history["versions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|version| version["actor"]["kind"] == "agent")
+        .collect();
+    let (red, green, blue) = collab_types::presence::agent_rgb("Jane Doe's agent");
+    let colour = format!("#{red:02x}{green:02x}{blue:02x}");
+    assert!(
+        !by_agent.is_empty()
+            && by_agent.iter().all(|version| {
+                version["actor"]["name"] == "Jane Doe's agent"
+                    && version["actor"]["colour"] == colour.as_str()
+                    && version["run"]
+                        .as_str()
+                        .is_some_and(|run| run.starts_with("Jane Doe's agent #"))
+            }),
+        "{history}"
+    );
+}

@@ -2380,6 +2380,7 @@ impl Worker {
                     sandbox: policy.sandbox,
                     unix_time: policy.unix_time,
                     agent: who.agent.clone(),
+                    agent_name: who.agent_name.clone(),
                 };
                 (who.person.clone(), actor, Some(permissions))
             }
