@@ -766,15 +766,17 @@ package = "tilolang-cli"
 # The build tests build and sign copies of the built-in packages, the native types test
 # describes Chat and Tasks from their sources, and the layout check's own tests lay out the
 # shell's traditional desktop, and its windows, from its sources; the dev test builds
-# generations of Counter. The copy they all stage from is `tests/support`, which names the
+# generations of Counter against the repository it is handed; the check test compiles a copy of
+# the PDF viewer's surface. The copy they all stage from is `tests/support`, which names the
 # packages' directory.
-inputs = ["apps/chat/", "apps/tl/"]
+inputs = ["apps/chat/", "apps/tl/", "apps/pdf-viewer/surface.toml"]
 readers = [
   "crates/lang/tilolang-cli/src/layout_check/stage.rs",
   "crates/lang/tilolang-cli/src/layout_check/windows.rs",
   "crates/lang/tilolang-cli/tests/support/mod.rs",
   "crates/lang/tilolang-cli/tests/native_types.rs",
   "crates/lang/tilolang-cli/tests/check.rs",
+  "crates/lang/tilolang-cli/tests/dev.rs",
 ]
 
 [[cargo]]
@@ -832,10 +834,14 @@ readers = [
   "crates/platform/tilolang-tilo/tests/history_views.rs",
   "crates/platform/tilolang-tilo/tests/legacy.rs",
   "crates/platform/tilolang-tilo/tests/legibility.rs",
+  "crates/platform/tilolang-tilo/tests/link_editor.rs",
   "crates/platform/tilolang-tilo/tests/links.rs",
   "crates/platform/tilolang-tilo/tests/make_from.rs",
   "crates/platform/tilolang-tilo/tests/marks.rs",
   "crates/platform/tilolang-tilo/tests/naming.rs",
+  "crates/platform/tilolang-tilo/tests/note_import.rs",
+  "crates/platform/tilolang-tilo/tests/notebook_order.rs",
+  "crates/platform/tilolang-tilo/tests/notes.rs",
   "crates/platform/tilolang-tilo/tests/notices.rs",
   "crates/platform/tilolang-tilo/tests/outbox.rs",
   "crates/platform/tilolang-tilo/tests/outcomes.rs",
@@ -845,11 +851,11 @@ readers = [
   "crates/platform/tilolang-tilo/tests/scenarios.rs",
   "crates/platform/tilolang-tilo/tests/shell_record.rs",
   "crates/platform/tilolang-tilo/tests/suggest.rs",
+  "crates/platform/tilolang-tilo/tests/surface.rs",
   "crates/platform/tilolang-tilo/tests/task.rs",
   "crates/platform/tilolang-tilo/tests/tasks.rs",
   "crates/platform/tilolang-tilo/tests/undo_own.rs",
   "crates/platform/tilolang-tilo/tests/upgrade_fields.rs",
-  "crates/platform/tilolang-tilo/tests/sorting.rs",
   "crates/platform/tilolang-tilo/tests/views_migration.rs",
   "crates/platform/tilolang-tilo/tests/words.rs",
 ]
@@ -1410,8 +1416,6 @@ inputs = [
   "crates/sdk/ui-core/assets/fonts/",
   "crates/session/host/tests/support/",
   "tools/with-test-environment.sh",
-  # The workspace's MCP test [path]-includes the presence the CLI reports.
-  "crates/system/tilo-cli/src/mcp_presence.rs",
 ]
 readers = [
   "crates/agent/agent-participant/tests/asking_first.rs",
@@ -1421,7 +1425,6 @@ readers = [
   "crates/agent/agent-participant/tests/host_agents.rs",
   "crates/agent/agent-participant/tests/session_coverage.rs",
   "crates/agent/agent-participant/tests/shared_session.rs",
-  "crates/agent/agent-participant/tests/workspace_actions/agent_mcp.rs",
 ]
 
 [[cargo]]
@@ -1472,8 +1475,6 @@ inputs = [
   "apps/tl/session/",
   "os/usr/lib/systemd/system/tilo-firstboot.service",
   "os/components.toml",
-  # The registry both vaults decode, as builds that kept lifecycle records wrote it.
-  "crates/session/fixtures/",
   # The tilolang apps a development session seeds.
   "apps/tl/tasks/",
   "apps/tl/chat/",
@@ -1504,11 +1505,10 @@ inputs = [
   "crates/system/settings-store/locales/de-DE.ftl",
 ]
 readers = [
-  "crates/session/session/src/channels/vault.rs",
   "crates/session/session/tests/no_locale_leaks.rs",
-  "crates/session/session/src/mount/doors.rs",
+  "crates/session/session/src/doors/mod.rs",
   "crates/session/session/src/plane.rs",
-  "crates/session/session/src/shell.rs",
+  "crates/session/session/src/shell/mod.rs",
   "crates/session/session/tests/common/dev_apps.rs",
   "crates/session/session/tests/common/mod.rs",
   "crates/session/session/tests/common/people.rs",
@@ -1519,11 +1519,20 @@ readers = [
 ]
 
 [[cargo]]
+package = "tilo-session-client"
+# The vault's test decodes the registry as builds that kept lifecycle records
+# wrote it.
+inputs = ["crates/session/fixtures/"]
+readers = ["crates/session/client/src/channels/vault.rs"]
+
+[[cargo]]
 package = "tilo-session-host"
 # The actual microphone fixture serves the production web modules to
-# Chromium and carries the page's pictures to a native participant of its call.
-inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh", "apps/notes/surface.toml"]
-readers = ["crates/session/host/tests/voice_browsers.rs", "crates/session/host/tests/headless_audio_lifetime.rs", "crates/session/host/tests/surface_by_hash.rs"]
+# Chromium and carries the page's pictures to a native participant of its call;
+# the device's refusal test reads how each refusal travels as the CLI, the front
+# door and the page read it.
+inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh", "apps/notes/surface.toml", "crates/collab/actions/tests/host_refusals.json"]
+readers = ["crates/session/host/tests/voice_browsers.rs", "crates/session/host/tests/headless_audio_lifetime.rs", "crates/session/host/tests/surface_by_hash.rs", "crates/session/host/src/device.rs"]
 scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs"], test = "voice_browsers", filter = "binary(voice_browsers)" }
 
 [[cargo]]
@@ -1593,6 +1602,14 @@ reason = "requires an unmodified pinned GPL-3.0 OpenDrop checkout, external Pyth
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/container/test-image.sh"
 reason = "needs the built web entry image"
+
+[[covered]]
+suite = "os/containers/tilo-lounge/test-page-boot.sh"
+check = "page-boot"
+
+[[unrequired]]
+suite = "os/containers/tilo-lounge/test-agent-setup.sh"
+reason = "needs the built web desktop bundle, headless Chromium and the built relay, CLI and crypto programs; the agent-setup check runs it in its image"
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-image.sh"
@@ -2106,13 +2123,6 @@ package = "tilo-cli"
 # image's component manifest.
 inputs = ["os/components.toml", "apps/pdf-viewer/surface.toml", "apps/pdf-viewer/tilo-app.toml"]
 readers = ["crates/system/tilo-cli/src/aliases.rs", "crates/system/tilo-cli/src/sdk.rs"]
-
-[[cargo]]
-package = "tilo-front-door"
-# The door shows each agent session present in its workspace as `tilo mcp`
-# does, with the CLI's own presence module.
-inputs = ["crates/system/tilo-cli/src/mcp_presence.rs"]
-readers = ["crates/hosting/tilo-front-door/src/session.rs"]
 
 # The Python SDK's suite runs as `uv run --frozen --offline pytest` in the ci-sdk image by the
 # sdk-python check, which carries uv and the SDK's locked dependencies. The integration test is
