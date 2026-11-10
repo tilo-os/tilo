@@ -35,8 +35,8 @@ use tilo_connector::ConnectorProcess;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_user_identity::DeviceCert;
 
-use crate::blobs::FsBlobs;
 use crate::workspaces::{MemberMark, Workspaces};
+use tilo_content::{ContentStore, WorkspaceStores};
 
 // The field a connector's records keep their outbox under, which the bot's
 // grant lets it settle.
@@ -1144,51 +1144,85 @@ pub fn has_connector_secret(app_id: &str, purpose: &'static str) -> bool {
         .is_ok_and(|secret| secret.is_some())
 }
 
-/// What a host gives the connectors its bots listen to: where each worker
-/// program is, the blobs they fetch and publish (served to the workspace's
-/// members once the first connector runs), and what the host serves
-/// publicly that a bridge's posts point at (avatars of authors it bridged
-/// out, links to the workspace's resources).
+/// What connectors run with on this host: their worker programs, what the
+/// host serves publicly for a bridge's posts (avatars of authors it bridged
+/// out, links to the workspace's resources), and the host's content, where
+/// what they fetch is kept in the workspace they serve.
 #[derive(Clone)]
 pub struct ConnectorHost {
     /// Worker programs by connector, where the default place is not used.
     pub workers: BTreeMap<String, PathBuf>,
     /// What the host serves publicly for a bridge's posts.
     pub public: super::discord::Served,
-    blobs: Arc<FsBlobs>,
-    served: Arc<std::sync::atomic::AtomicBool>,
+    content: Arc<WorkspaceStores>,
+    avatars: Option<Arc<crate::public_avatars::PublicAvatars>>,
 }
 
 impl ConnectorHost {
+    /// Connectors keeping what they fetch in `content`, publishing the
+    /// avatars a bridge posts through `avatars` when the host serves them.
     #[must_use]
     pub fn new(
         workers: BTreeMap<String, PathBuf>,
-        blobs: FsBlobs,
+        content: Arc<WorkspaceStores>,
+        avatars: Option<crate::public_avatars::PublicAvatars>,
         public: super::discord::Served,
     ) -> Self {
         Self {
             workers,
             public,
-            blobs: Arc::new(blobs),
-            served: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            content,
+            avatars: avatars.map(Arc::new),
         }
     }
 
-    /// The blob store connectors use, served to `workspaces` the first time.
-    #[must_use]
-    pub fn blobs(&self, workspaces: &Workspaces) -> Arc<dyn tilo_connector::BlobAccess> {
-        self.store(workspaces)
+    /// The content the connectors of `workspace` keep and read.
+    ///
+    /// # Errors
+    /// `workspace` is not a workspace's id.
+    pub fn blobs(&self, workspace: &str) -> Result<Arc<dyn tilo_connector::BlobAccess>, String> {
+        Ok(Arc::new(WorkspaceBlobs {
+            store: self.content.get(workspace)?,
+            avatars: self.avatars.clone(),
+        }))
     }
 
-    /// The host's one blob store, served to `workspaces` the first time: what
-    /// connectors fetch and the files members post are kept side by side
-    /// ([`super::attachments`]).
-    #[must_use]
-    pub fn store(&self, workspaces: &Workspaces) -> Arc<FsBlobs> {
-        if !self.served.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            workspaces.serve_content(self.blobs.clone());
-        }
-        self.blobs.clone()
+    /// `workspace`'s content store on this host.
+    ///
+    /// # Errors
+    /// `workspace` is not a workspace's id.
+    pub fn store(&self, workspace: &str) -> Result<ContentStore, String> {
+        self.content.get(workspace)
+    }
+}
+
+/// One workspace's content, as its connectors' workers download and upload
+/// it: a blob a bridge publishes is an avatar served at the host's public
+/// avatar URL.
+struct WorkspaceBlobs {
+    store: ContentStore,
+    avatars: Option<Arc<crate::public_avatars::PublicAvatars>>,
+}
+
+impl tilo_connector::BlobAccess for WorkspaceBlobs {
+    fn read(&self, blake3: &str) -> Option<Vec<u8>> {
+        self.store.read(blake3)
+    }
+
+    fn store(&self, bytes: &[u8]) -> Result<String, String> {
+        self.store.put(bytes).map_err(|error| error.to_string())
+    }
+
+    fn publish(&self, blake3: &str) -> Result<(), String> {
+        let avatars = self
+            .avatars
+            .as_ref()
+            .ok_or("this host publishes no blobs")?;
+        let bytes = self.store.read(blake3).ok_or("no such blob")?;
+        avatars
+            .publish(&bytes)
+            .map(drop)
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -1206,21 +1240,4 @@ pub fn put_connector_secret(
         .item(purpose, "default")
         .put_blocking(secret)
         .map_err(|error| error.to_string())
-}
-
-/// The blobs connector workers download and upload are the host's own
-/// ([`crate::blobs::FsBlobs`]): a blob a bridge publishes is an avatar served
-/// at the host's public avatar URL.
-impl tilo_connector::BlobAccess for FsBlobs {
-    fn read(&self, blake3: &str) -> Option<Vec<u8>> {
-        FsBlobs::read(self, blake3)
-    }
-
-    fn store(&self, bytes: &[u8]) -> Result<String, String> {
-        self.keep(bytes)
-    }
-
-    fn publish(&self, blake3: &str) -> Result<(), String> {
-        FsBlobs::publish(self, blake3)
-    }
 }

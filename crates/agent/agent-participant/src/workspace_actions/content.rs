@@ -317,42 +317,5 @@ impl Worker {
     }
 }
 
-/// Each workspace's content store under one directory, by the workspace's
-/// uuid: one workspace's store never answers for another's.
-pub struct WorkspaceStores {
-    dir: std::path::PathBuf,
-    stores: std::sync::Mutex<std::collections::BTreeMap<String, ContentStore>>,
-}
-
-impl WorkspaceStores {
-    /// The stores under `dir`.
-    #[must_use]
-    pub fn in_dir(dir: std::path::PathBuf) -> Self {
-        Self {
-            dir,
-            stores: std::sync::Mutex::default(),
-        }
-    }
-
-    /// The content store of `workspace`.
-    ///
-    /// # Errors
-    ///
-    /// `workspace` is not a workspace's uuid.
-    pub fn get(&self, workspace: &str) -> Result<ContentStore, String> {
-        let workspace = uuid::Uuid::parse_str(workspace)
-            .map_err(|_| "the workspace is not a uuid".to_string())?
-            .hyphenated()
-            .to_string();
-        let store = self
-            .stores
-            .lock_recover()
-            .entry(workspace)
-            .or_insert_with_key(|workspace| ContentStore::in_dir(self.dir.join(workspace)))
-            .clone();
-        Ok(store)
-    }
-}
-
 /// Shared between the service's handle and its thread.
 pub(super) type Stores = std::sync::Mutex<std::collections::HashMap<u64, ContentStore>>;

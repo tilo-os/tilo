@@ -107,7 +107,9 @@ pub(super) async fn start_bots(
     if installed_bots.is_empty() {
         return Ok((Vec::new(), None));
     }
-    let blobs = connector_host.blobs(workspaces);
+    let blobs = connector_host
+        .blobs(workspace)
+        .map_err(|error| anyhow::anyhow!("the workspace's content: {error}"))?;
     // The workspace serves without its bots rather than not at all: a connector
     // whose worker does not start (a missing binary, an unreachable service)
     // leaves the bots that need it out, said in the log, as a bridge that

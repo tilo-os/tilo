@@ -1503,7 +1503,8 @@ pub(crate) async fn run(
         )
     });
     // The connectors bots listen to, the operator's and those a member
-    // sets up for a bot they ask for, share one host and one blob store.
+    // sets up for a bot they ask for, share one host and keep what they
+    // fetch in the workspace's content.
     let public = match (&persistent.public_avatars, &persistent.public_avatars_url) {
         (Some(dir), Some(url)) => Some(
             tilo_relay::public_avatars::PublicAvatars::new(dir.clone(), url)
@@ -1513,14 +1514,11 @@ pub(crate) async fn run(
     };
     let connector_host = tilo_relay::room_bots::installed::ConnectorHost::new(
         workers,
-        // The relay's own blob store, where it keeps its workspaces' files
-        // beside these: one store for everything this host keeps.
-        tilo_relay::blobs::FsBlobs::new(
-            tilo_relay_protocol::metrics::room_relay_root(&state)
-                .join(tilo_relay::blobs::DIRECTORY),
-            public,
-        )
-        .context("prepare the blob store")?,
+        // The relay's content, where it keeps each workspace's files, uploads
+        // and what its apps made: one store per workspace for everything this
+        // host keeps.
+        hosted.relay.content(),
+        public,
         tilo_relay::room_bots::discord::Served {
             avatars_url: persistent.public_avatars_url.clone(),
             web_entry: args.web.web_entry.clone(),
@@ -1543,13 +1541,16 @@ pub(crate) async fn run(
     }
     // The files members post in the workspace's Chat, kept in the same store
     // as what the bots fetch, so they stay once their poster left.
+    let posted = connector_host
+        .store(&workspace)
+        .map_err(|error| anyhow::anyhow!("the workspace's content: {error}"))?;
     let attachments = attachment_limits(&persistent).map(|limits| {
         tokio::spawn(
             tilo_relay::room_bots::attachments::WorkspaceAttachments::new(
                 workspaces.clone(),
                 workspace.clone(),
                 host_cert.device_public_key,
-                connector_host.store(&workspaces),
+                posted,
                 state.join("attachments.json"),
                 limits,
             )

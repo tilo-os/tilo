@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 use tilo_browser_peer::Host;
 use tilo_content::ContentStore;
 
-use crate::workspace_actions::WorkspaceStores;
+use tilo_content::WorkspaceStores;
 use tilo_relay_protocol::agents::AgentStatus;
 use tilo_user_identity::DeviceCert;
 
@@ -53,6 +53,8 @@ const STATE_FILE: &str = "agents.json";
 /// agent's steps) is written as one.
 const WRITE_SPACING: Duration = Duration::from_millis(500);
 /// The directory under the state directory each workspace's content is kept in.
+/// Where a test keeps the host's content, under its state directory.
+#[cfg(test)]
 const CONTENT_DIR: &str = "content";
 
 /// Builds the apps an agent may open, on the agent's own thread.
@@ -91,7 +93,8 @@ struct Shared {
     stopping: AtomicBool,
     /// Each agent's thread, with its control to wake it for shutdown.
     threads: Mutex<Vec<(JoinHandle<()>, Arc<AgentControl>)>>,
-    /// Each workspace's content store, by the workspace's uuid.
+    /// Each workspace's content store: the host's one store, which its
+    /// workspace actions and members' reads use too.
     content: Arc<WorkspaceStores>,
     /// Each agent's session state, by its agent id: kept while the host
     /// runs, so an agent stopped and started again keeps its channel keys.
@@ -123,18 +126,19 @@ pub struct AgentHost {
 
 impl AgentHost {
     /// Agents of `user_public_key`, kept under `state_dir`, planning with
-    /// `model`. Serve [`Self::supervisor`] to browsers (it answers the
-    /// agent vocabulary), then [`Self::start`] once the host is up.
+    /// `model`, keeping what their apps make in the host's `content`. Serve
+    /// [`Self::supervisor`] to browsers (it answers the agent vocabulary),
+    /// then [`Self::start`] once the host is up.
     #[must_use]
     pub fn new(
         user_public_key: [u8; 32],
-        state_dir: PathBuf,
+        (state_dir, content): (PathBuf, Arc<WorkspaceStores>),
         model: ModelChoice,
         catalogue: CatalogueFactory,
     ) -> Self {
         Self::with_clock(
             user_public_key,
-            state_dir,
+            (state_dir, content),
             model,
             catalogue,
             Arc::new(tilo_clock::unix_now_ns),
@@ -145,13 +149,13 @@ impl AgentHost {
     #[must_use]
     pub fn with_clock(
         user_public_key: [u8; 32],
-        state_dir: PathBuf,
+        (state_dir, content): (PathBuf, Arc<WorkspaceStores>),
         model: ModelChoice,
         catalogue: CatalogueFactory,
         clock: HostClock,
     ) -> Self {
         let shared = Arc::new(Shared {
-            content: Arc::new(WorkspaceStores::in_dir(state_dir.join(CONTENT_DIR))),
+            content,
             state_dir,
             model,
             catalogue,
@@ -175,14 +179,6 @@ impl AgentHost {
             written: Arc::new(Mutex::new(String::new())),
             owned_runtime: None,
         }
-    }
-
-    /// Each workspace's content store on this host, shared with the host's
-    /// workspace actions: what an agent's apps keep, a caller's uploads and
-    /// what the workspace's members are answered from are one store.
-    #[must_use]
-    pub fn workspace_stores(&self) -> Arc<WorkspaceStores> {
-        Arc::clone(&self.shared.content)
     }
 
     /// The supervisor browsers steer agents through.
@@ -542,7 +538,7 @@ mod tests {
         let clock = Arc::clone(&pinned);
         let mut host = AgentHost::with_clock(
             root.verifying_key().to_bytes(),
-            state.path().to_owned(),
+            (state.path().to_owned(), test_content(state.path())),
             ModelChoice::Scripted,
             Arc::new(AppCatalogue::native),
             Arc::new(move || clock.load(Ordering::Relaxed)),
@@ -596,10 +592,18 @@ mod tests {
     const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
     const OTHER_WORKSPACE: &str = "0b8e2f64-93d1-4c55-a6f7-2e9d1c4b8a30";
 
+    /// The host's content, under its state directory as a relay keeps it.
+    fn test_content(state: &Path) -> Arc<WorkspaceStores> {
+        Arc::new(WorkspaceStores::in_dir(
+            state.join(CONTENT_DIR),
+            tilo_content::ContentLimits::default(),
+        ))
+    }
+
     fn agent_host(state: &Path) -> AgentHost {
         AgentHost::new(
             [7; 32],
-            state.to_path_buf(),
+            (state.to_path_buf(), test_content(state)),
             ModelChoice::Scripted,
             Arc::new(|| AppCatalogue::new(Vec::new())),
         )

@@ -64,6 +64,15 @@ pub trait AppServingPlane: Send + Sync {
         let _ = (caller, message);
         true
     }
+
+    /// The content stores this plane keeps its workspaces' content in, when
+    /// it brings them: the host then keeps everything else it keeps for a
+    /// workspace there too, so a host has one store per workspace. `None`
+    /// leaves the host to open its own.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn content(&self) -> Option<std::sync::Arc<tilo_content::WorkspaceStores>> {
+        None
+    }
 }
 
 /// An [`AppServingPlane`] backed by one [`ActionHost`] for every workspace.

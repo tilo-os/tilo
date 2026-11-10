@@ -66,12 +66,12 @@
 #[cfg(feature = "agents")]
 pub mod agents;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod blobs;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod certification;
 mod channels;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compute;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod content;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod daemon;
 #[cfg(not(target_arch = "wasm32"))]

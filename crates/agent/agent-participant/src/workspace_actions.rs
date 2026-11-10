@@ -53,7 +53,7 @@ mod content;
 mod feedback;
 mod reads;
 mod terminal;
-pub use content::{MAX_PUT_BYTES, WorkspaceStores};
+pub use content::MAX_PUT_BYTES;
 pub use terminal::{ShellRan, TERMINAL_APP, Watching, WorkspaceShell};
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};

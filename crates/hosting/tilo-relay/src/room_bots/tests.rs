@@ -1142,10 +1142,11 @@ async fn a_file_a_member_posted_stays_in_the_room_after_they_leave() {
     let relay = bot_host(scratch.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let (workspace, general) = chat_room(&workspaces, &cert).await;
-    let blobs = std::sync::Arc::new(
-        crate::blobs::FsBlobs::new(scratch.path().join("blobs"), None).unwrap(),
-    );
-    workspaces.serve_content(blobs.clone());
+    let content = crate::content::stores(scratch.path());
+    workspaces.serve_content(std::sync::Arc::new(crate::content::StoresContent(
+        content.clone(),
+    )));
+    let blobs = content.get(&workspace).unwrap();
     let attachments_of = |limits| {
         attachments::WorkspaceAttachments::new(
             workspaces.clone(),
