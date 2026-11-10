@@ -177,6 +177,12 @@ impl DispatchCore {
     fn of(state: DispatchState) -> Self {
         Self(std::mem::ManuallyDrop::new(state))
     }
+
+    /// The kind the edits here apply as, when a record holds this resource
+    /// ([`Dispatcher::child`]): the record's own kind.
+    fn applied_as_kind(&self) -> Option<&'static str> {
+        self.applied_as.map(|(kind, _)| kind)
+    }
 }
 
 impl std::ops::Deref for DispatchCore {
@@ -972,6 +978,14 @@ impl<R: Resource> Dispatcher<R> {
     /// What does not name the resource type.
     pub(crate) fn core(&self) -> &DispatchCore {
         &self.core
+    }
+
+    /// The kind of the record a caret here is anchored to: the record this
+    /// resource's edits apply as ([`Self::child`] names it), which is what
+    /// actions and History name the text as — a page's rich text is the
+    /// page's, never the text package's.
+    pub fn anchored_kind(&self) -> &'static str {
+        self.core.applied_as_kind().unwrap_or(R::KIND)
     }
 
     pub(crate) fn for_custody(
