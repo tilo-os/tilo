@@ -2104,5 +2104,40 @@ package = "tilo-cli"
 # Every program moved off PATH must be installed in /usr/libexec/tilo with its
 # old command name linked to tilo; the alias table is checked against the
 # image's component manifest.
-inputs = ["os/components.toml"]
-readers = ["crates/system/tilo-cli/src/aliases.rs"]
+inputs = ["os/components.toml", "apps/pdf-viewer/surface.toml", "apps/pdf-viewer/tilo-app.toml"]
+readers = ["crates/system/tilo-cli/src/aliases.rs", "crates/system/tilo-cli/src/sdk.rs"]
+
+[[cargo]]
+package = "tilo-front-door"
+# The door shows each agent session present in its workspace as `tilo mcp`
+# does, with the CLI's own presence module.
+inputs = ["crates/system/tilo-cli/src/mcp_presence.rs"]
+readers = ["crates/hosting/tilo-front-door/src/session.rs"]
+
+[[unrequired]]
+suite = "sdk/python/tests/test_integration.py"
+reason = "talks to a real front door named by TILO_TEST_DOOR and TILO_TEST_KEY, and skips without them; it needs the SDK's own dependencies (httpx, pytest-asyncio) the ci-fast image lacks"
+
+[[unrequired]]
+suite = "sdk/python/tests/test_keys.py"
+reason = "the Python SDK's suite: it imports httpx and pytest-asyncio, which the ci-fast image lacks, and runs as `uv run --extra dev pytest` in sdk/python"
+
+[[unrequired]]
+suite = "sdk/python/tests/test_session.py"
+reason = "the Python SDK's suite: it imports httpx and pytest-asyncio, which the ci-fast image lacks, and runs as `uv run --extra dev pytest` in sdk/python"
+
+[[unrequired]]
+suite = "sdk/python/tests/test_sync.py"
+reason = "the Python SDK's suite: it imports httpx and pytest-asyncio, which the ci-fast image lacks, and runs as `uv run --extra dev pytest` in sdk/python"
+
+[[unrequired]]
+suite = "sdk/python/tests/test_types.py"
+reason = "the Python SDK's suite: it imports httpx and pytest-asyncio, which the ci-fast image lacks, and runs as `uv run --extra dev pytest` in sdk/python"
+
+[[unrequired]]
+suite = "sdk/python/tests/test_workspace.py"
+reason = "the Python SDK's suite: it imports httpx and pytest-asyncio, which the ci-fast image lacks, and runs as `uv run --extra dev pytest` in sdk/python"
+
+[[unrequired]]
+suite = "sdk/python/src/tilo/types/speed_test.py"
+reason = "no test: the generated SDK types of the Speed Test app, named after it; sdk-types checks it is current"
