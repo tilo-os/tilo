@@ -1,0 +1,63 @@
+#!/bin/sh
+# The hosted Browser guest's session: one headless Tilo desktop, drawn on the
+# CPU, that joins a workspace as a device of it (docs/hosted-browser.md).
+#
+# The guest agent runs this when the relay hands its environment to a workspace.
+# What that workspace is, and the certificate the relay certified for this
+# session, arrive in the configuration file named here: a shell-compatible
+# KEY=VALUE file the agent writes, sourced below, whose keys become the
+# session's environment. `TILO_SESSION_ARGS` holds the session's own arguments
+# (for example the window to open); everything else is what any device's
+# session has, arranged for a root filesystem with no GPU, no systemd and no
+# login.
+#
+# Usage: browser-session [CONFIG]
+#   CONFIG  default: $TILO_BROWSER_SESSION_CONFIG, else
+#           /run/tilo/browser-session.env
+#
+# The process it starts is the sandbox's own: nothing here runs as root, and
+# SIGTERM to this script ends the session and the bus beside it.
+set -eu
+
+config=${1:-${TILO_BROWSER_SESSION_CONFIG:-/run/tilo/browser-session.env}}
+if [ -r "$config" ]; then
+    # shellcheck disable=SC1090 # the file the agent wrote is the point
+    . "$config"
+fi
+
+home=${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}
+export HOME=$home
+umask 077
+
+# A device keeps its own runtime directory, caches and state: there is no
+# systemd here to make one, so this makes the one a login would have.
+runtime=${TILO_SESSION_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-$home/.local/share/tilo/runtime}}
+mkdir -p -m 700 "$runtime" "$home/.cache" "$home/.config" \
+    "$home/.local/state" "$home/.local/share"
+export XDG_RUNTIME_DIR=$runtime
+
+# The VM has no GPU: the session and every app it starts draw with Mesa's
+# software Vulkan driver, and an empty TILO_DMABUF_DEVICE advertises no render
+# node, so nothing probes /dev/dri for a GPU that is not there.
+for icd in /usr/share/vulkan/icd.d/lvp_icd.json /usr/share/vulkan/icd.d/lvp_icd.*.json; do
+    if [ -f "$icd" ]; then
+        VK_DRIVER_FILES=$icd
+        export VK_DRIVER_FILES VK_ICD_FILENAMES=$icd
+        break
+    fi
+done
+export WGPU_ADAPTER_NAME=llvmpipe TILO_DMABUF_DEVICE=
+
+# The device's identity is the session's own, under $XDG_CONFIG_HOME, and its
+# secrets go to the sealed file store a machine without a Secret Service uses.
+# The VM keeps nothing after it stops, so the identity a start mints is fresh
+# every time, which is what the relay certifies for each environment.
+mkdir -p -m 700 "$home/.config/tilo/identity" "$home/.local/share/tilo/secrets"
+export TILO_SECRETS_DIR=${TILO_SECRETS_DIR:-$home/.local/share/tilo/secrets}
+
+size=${TILO_HEADLESS_SIZE:-1280x800}
+# Word splitting is the point: TILO_SESSION_ARGS carries the session's own
+# arguments as written in the configuration file.
+# shellcheck disable=SC2086
+exec dbus-run-session -- /usr/bin/tilo-session --backend headless --size "$size" \
+    ${TILO_SESSION_ARGS:-}

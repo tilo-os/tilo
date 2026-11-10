@@ -64,6 +64,7 @@ SIGNED_REPOSITORIES = {
     'code.tilo.so/tilo/tilo': 'os-images',
     'registry.tilo.so/tilo/legacy-guest': 'os-images',
     'registry.tilo.so/tilo/hosted-guest': 'os-images',
+    'registry.tilo.so/tilo/hosted-browser-guest': 'os-images',
 }
 # Development and CI images Tilo publishes unsigned. Only a development
 # image's own policy admits one; the default would refuse them too, these

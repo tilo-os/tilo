@@ -164,7 +164,15 @@ mod tests {
                 "evil.example/hosted-guest@sha256:{digest}"
             )));
             assert!(!valid_pinned_ref("registry.tilo.so/tilo/x@sha256:abc"));
-            for sibling in ["hosted-guest-dev", "tilo-vm", "legacy-guest", "hosted"] {
+            // The browser guest is published beside this one under its own
+            // repository: a browser guest's digest is never a workspace VM's.
+            for sibling in [
+                "hosted-guest-dev",
+                "hosted-browser-guest",
+                "tilo-vm",
+                "legacy-guest",
+                "hosted",
+            ] {
                 assert!(!valid_pinned_ref(&format!(
                     "registry.tilo.so/tilo/{sibling}@sha256:{digest}"
                 )));

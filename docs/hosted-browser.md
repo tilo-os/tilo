@@ -27,7 +27,16 @@ Linux VM. A browser environment is that service's VM with these differences:
   hosts have no GPU), Browser, and the Chromium engine runtime Browser
   requires. It has no compiler, shell tools or language runtimes. CI builds,
   signs and pins it next to the hosted guest
-  (`registry.tilo.so/tilo/hosted-browser-guest`). Hosts never build it.
+  (`registry.tilo.so/tilo/hosted-browser-guest`, pinned as
+  `HOSTED_BROWSER_GUEST_X86_64_REF` in `os/hosted-guest-snapshot.env`). Hosts
+  never build it.
+- **Its session** starts from `/usr/libexec/tilo/browser-session`, which the
+  guest agent runs once the environment belongs to a workspace. It sources the
+  configuration file it is given (`/run/tilo/browser-session.env` by default,
+  or `TILO_BROWSER_SESSION_CONFIG`): a shell-compatible `KEY=VALUE` file whose
+  keys become the session's environment, and whose `TILO_SESSION_ARGS` are the
+  session's own arguments. The relay's certificate for the session and the
+  window to open reach the session that way.
 - **Its size** is `browser`: 2 vCPU, 2 GiB, an 8 GiB disk.
 - **It keeps nothing.** Its disk is a fresh copy of the image every time it
   starts, it is never snapshotted, and once it has been idle for 10 minutes,
