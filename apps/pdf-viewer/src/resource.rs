@@ -902,7 +902,7 @@ const MOST_OFFERED: usize = 4;
 /// A document the workspace holds, as the reader's empty state offers it:
 /// what the index calls it, how long it is, and the identity that opens it.
 fn workspace_document(
-    document: ui::framework::WindowDocument<PdfMarkup>,
+    document: &ui::framework::WindowDocument<PdfMarkup>,
 ) -> crate::app::WorkspaceDocument {
     let name = if !document.state.source_name.is_empty() {
         document.state.source_name.clone()
@@ -936,7 +936,7 @@ fn reader_view(cx: &ViewCx<PdfMarkup>, mut app: PdfApp) -> Element {
     if cx.launch_arguments().is_empty() {
         app.attach_workspace_documents(
             cx.window_documents()
-                .into_iter()
+                .iter()
                 .take(MOST_OFFERED)
                 .map(workspace_document)
                 .collect(),
