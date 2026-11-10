@@ -24,7 +24,12 @@ async def tilo(door: FakeDoor):
 async def test_a_call_opens_a_session_and_asks_for_typed_answers(tilo, door):
     listing = await tilo.workspaces.list()
 
-    assert [workspace.name for workspace in listing] == ["jane-doe", "john-doe"]
+    assert [workspace.name for workspace in listing] == [
+        "jane-doe",
+        "john-doe",
+        "applicant-jane-doe",
+    ]
+    assert [workspace.role for workspace in listing] == ["owner", "owner", "editor"]
     assert listing.hosts[0].name == "eu1"
     assert door.opened >= 1
     call = door.asked("tilo_do")[-1]

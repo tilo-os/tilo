@@ -384,16 +384,17 @@ impl Workspaces {
 
     /// Whether `device` is shown `workspace` when it lists this host's
     /// workspaces: the host's person every one, anyone else only the ones of
-    /// their own, and an agent's grant only what its scope reaches.
+    /// their own and the ones their person is a member of, and an agent's
+    /// grant only what its scope reaches.
     pub(super) fn lists_to(
         &self,
         device: &tilo_user_identity::DeviceCert,
         workspace: &str,
     ) -> bool {
-        let theirs = device.user_public_key == self.inner.host.cert.user_public_key
-            || self
-                .own()
-                .is_some_and(|own| own.is_of(&device.user_public_key, workspace));
+        let person = &device.user_public_key;
+        let theirs = *person == self.inner.host.cert.user_public_key
+            || self.own().is_some_and(|own| own.is_of(person, workspace))
+            || self.inner.memberships.holds(person, workspace);
         theirs
             && device
                 .capabilities

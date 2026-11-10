@@ -53,6 +53,7 @@ pub(crate) use desktop_writes::writes_desktop;
 mod hosts;
 mod link_follow;
 mod listing;
+mod memberships;
 mod own;
 mod pages;
 mod peer_parts;
@@ -669,32 +670,15 @@ impl GovernedWorkspace {
     }
 
     fn summary(&self) -> WorkspaceSummary {
-        let now = SystemTime::now();
-        let mut members = self
+        // The workspace's people are the ones its governance admits. The
+        // device that governs it — this host's, which holds it without an
+        // admission receipt — is not one of them: it runs the workspace for
+        // them and takes part in no list of its people.
+        let members = self
             .peer()
             .governance()
-            .governed_members(now)
+            .governed_members(SystemTime::now())
             .unwrap_or_default();
-        // The structural owner is the workspace's own person: it holds the
-        // workspace without an admission receipt, and every list and count of
-        // its people includes it, from the authority pinned in the record.
-        let authority = &self.record.authority;
-        if !members
-            .iter()
-            .any(|member| member.user_public_key == authority.user_public_key)
-        {
-            members.insert(
-                0,
-                tilo_peer_state::GovernedMember {
-                    user_public_key: authority.user_public_key,
-                    role: tilo_peer_state::join::MemberRole::Editor,
-                    display_name: Some(authority.device_label.clone()),
-                    active_device_keys: Vec::new(),
-                    removed: false,
-                    administrator: true,
-                },
-            );
-        }
         WorkspaceSummary {
             workspace: self.record.workspace.clone(),
             workspace_id: self.record.workspace_id,
@@ -713,6 +697,7 @@ impl GovernedWorkspace {
             workspace_id: self.record.workspace_id,
             name: self.record.name.clone(),
             generation: self.record.generation,
+            role: None,
         }
     }
 }
@@ -900,6 +885,9 @@ struct WorkspacesInner {
     /// The workspaces of people's own, once the host's operator offers them
     /// ([`Workspaces::offer_own_workspaces`]).
     own: std::sync::OnceLock<own::OwnWorkspaces>,
+    /// Which people each workspace here lists, by person, as its governance
+    /// settled last ([`memberships`]).
+    memberships: memberships::Memberships,
     /// The devices the host's own person runs an agent on, and their open
     /// sessions ([`agent_door`]).
     agent_door: agent_door::AgentDoor,
@@ -1108,6 +1096,7 @@ impl Workspaces {
                 host,
                 wait_list_mail: std::sync::OnceLock::new(),
                 own: std::sync::OnceLock::new(),
+                memberships: memberships::Memberships::default(),
                 agent_door: agent_door::AgentDoor::default(),
             }),
         };
@@ -1319,6 +1308,8 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?;
         tracing::info!(%workspace, workspace_id = governed.workspace_id(), "governed room released");
+        // Nobody lists a workspace this host governs no longer.
+        self.inner.memberships.forget(workspace);
         drop(governed);
         let _ = self.inner.changes.send(workspace.to_owned());
         Ok(())
@@ -2702,6 +2693,13 @@ impl Workspaces {
         }
         let now = SystemTime::now();
         let access: GovernedAccess = workspace.peer().governance().governed_access(now)?;
+        // Who is in the workspace is what its governance just said: the person
+        // listing of every one of them is answered from that, not by reading
+        // every workspace this host governs.
+        self.inner.memberships.record(
+            workspace.workspace(),
+            access.member_user_roots.iter().copied(),
+        );
         host.access
             .replace(workspace.workspace_id(), true, access)
             .await

@@ -51,6 +51,10 @@ const OWN_INVITATION_SECONDS: u64 = 600;
 /// What a person's own workspace is called when they do not say.
 const OWN_WORKSPACE_NAME: &str = "My workspace";
 
+/// The part a person takes in a workspace of their own, as a listing names
+/// it: they made it and administer it.
+const OWNER_ROLE: &str = "owner";
+
 /// The host's operations in catalogue order, each with the
 /// [`HostOperation`] it is.
 const HOST_VERBS: [(Verb, HostOperation); 9] = [
@@ -297,6 +301,7 @@ fn listing(summary: &WorkspaceSummary) -> WorkspaceListing {
         workspace_id: summary.workspace_id,
         name: summary.name.clone(),
         generation: summary.generation,
+        role: None,
     }
 }
 
@@ -469,31 +474,53 @@ impl Workspaces {
         })
     }
 
-    /// The workspaces `device` lists on this host: the host's person every
-    /// one, anyone else only the ones of their own, found by their ids so a
-    /// host with many workspaces answers a person with a few of them in the
-    /// time those few take.
+    /// The workspaces `device` lists on this host, each with the part their
+    /// person takes in it: the host's person every one, anyone else the ones
+    /// of their own and the ones they were invited into, found by their person
+    /// so a host with many workspaces answers a person with a few of them in
+    /// the time those few take.
     async fn listed(&self, device: &DeviceCert) -> Vec<WorkspaceListing> {
-        if device.user_public_key != self.inner.host.cert.user_public_key {
-            let Some(own) = self.own() else {
-                return Vec::new();
-            };
-            let mut listed = Vec::new();
-            for workspace in own.of(&device.user_public_key) {
-                if !self.lists_to(device, &workspace) {
+        let person = device.user_public_key;
+        if person != self.inner.host.cert.user_public_key {
+            let own = self.own().map(|own| own.of(&person)).unwrap_or_default();
+            let mut listed: Vec<WorkspaceListing> = Vec::new();
+            for workspace in &own {
+                if !self.lists_to(device, workspace) {
                     continue;
                 }
-                if let Ok(one) = self.listing_of(&workspace).await {
+                if let Ok(mut one) = self.listing_of(workspace).await {
+                    one.role = Some(OWNER_ROLE.to_owned());
                     listed.push(one);
                 }
             }
+            let now = tilo_clock::unix_now_ns();
+            for workspace in self.inner.memberships.of(&person) {
+                if own.contains(&workspace) || !self.lists_to(device, &workspace) {
+                    continue;
+                }
+                let Some(role) = self.role_of(&workspace, person, now).await else {
+                    continue;
+                };
+                if let Ok(mut one) = self.listing_of(&workspace).await {
+                    one.role = Some(super::role_name(role).to_owned());
+                    listed.push(one);
+                }
+            }
+            listed.sort_by(|a, b| {
+                a.name
+                    .cmp(&b.name)
+                    .then_with(|| a.workspace.cmp(&b.workspace))
+            });
             return listed;
         }
         self.list()
             .await
             .iter()
             .filter(|summary| self.lists_to(device, &summary.workspace))
-            .map(listing)
+            .map(|summary| WorkspaceListing {
+                role: Some(OWNER_ROLE.to_owned()),
+                ..listing(summary)
+            })
             .collect()
     }
 

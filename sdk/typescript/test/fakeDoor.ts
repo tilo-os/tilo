@@ -22,12 +22,15 @@ export interface RecordedCall {
 
 type Answer = Record<string, any>;
 
+export const INVITED_ID = "abcdef01-2345-6789-abcd-ef0123456789";
+
 export class FakeDoor {
   key = "tilo_sk_test";
   scope: "account" | "workspace" = "account";
   workspaces: Answer[] = [
-    { id: WORKSPACE_ID, name: "jane-doe", host: "eu1" },
-    { id: OTHER_ID, name: "john-doe", host: "eu1" },
+    { id: WORKSPACE_ID, name: "jane-doe", host: "eu1", role: "owner" },
+    { id: OTHER_ID, name: "john-doe", host: "eu1", role: "owner" },
+    { id: INVITED_ID, name: "applicant-jane-doe", host: "eu1", role: "editor" },
   ];
   hosts: Answer[] = [{ name: "eu1", default: true }];
   fields: Record<string, Record<string, any>> = {

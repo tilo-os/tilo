@@ -361,6 +361,9 @@ impl PeerGovernance<'_> {
         let workspace_policy = policy.workspace_policy(&self.peer.core.workspace);
         let names = workspace::governance_of(Some(doc)).peers;
         let mut rows: BTreeMap<[u8; 32], GovernedMember> = BTreeMap::new();
+        // The name each person goes by here, which one of their own devices
+        // says and no key of theirs does ([`Naming`]).
+        let mut naming: BTreeMap<[u8; 32], Naming> = BTreeMap::new();
         for (id, bytes) in &policy.identities {
             let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
             let Some(receipt) = identity
@@ -383,10 +386,15 @@ impl PeerGovernance<'_> {
             } else {
                 role.and_then(member_role_from_role)
             };
+            naming.entry(root).or_default().learn(
+                &identity.device_cert,
+                identity.delegate.is_none(),
+                names.get(id).map(String::as_str),
+            );
             let row = rows.entry(root).or_insert_with(|| GovernedMember {
                 user_public_key: root,
                 role: active_role.unwrap_or(receipt.role),
-                display_name: names.get(id).cloned(),
+                display_name: None,
                 active_device_keys: Vec::new(),
                 removed: active_role.is_none(),
                 administrator,
@@ -401,14 +409,15 @@ impl PeerGovernance<'_> {
                     row.active_device_keys.push(cert.device_public_key);
                 }
             }
-            if row.display_name.is_none() {
-                row.display_name = names.get(id).cloned();
-            }
         }
         let mut rows = rows.into_values().collect::<Vec<_>>();
         for row in &mut rows {
             row.active_device_keys.sort_unstable();
             row.active_device_keys.dedup();
+            row.display_name = naming
+                .get(&row.user_public_key)
+                .and_then(Naming::name)
+                .map(str::to_owned);
         }
         Ok(rows)
     }
@@ -474,6 +483,58 @@ impl PeerGovernance<'_> {
     ) -> Result<crate::join::MemberRole, String> {
         let role = self.peer.current_membership_role(membership, now)?;
         Ok(member_role_from_role(role).unwrap_or(crate::join::MemberRole::Moderator))
+    }
+}
+
+/// How one person is named in a workspace, from the identities of theirs it
+/// recorded: the name their own oldest device goes by, or none.
+///
+/// A person holds a workspace through devices of their own — a laptop, a
+/// phone, a page — and through keys made to act for them: an agent's grant, a
+/// server key a backend holds, a key minted for one workspace. Every one of
+/// them is an identity of the same person, each named in the workspace by its
+/// own label or by the invitation that admitted it, so the person's row takes
+/// its name from a device of theirs and never from a key's label: "Jane Doe's
+/// agent" names the agent, not Jane. A person who names themself
+/// ([`Self::name_person`]'s caller) has that name on every identity of
+/// theirs, their own devices included, so it is what their row says. A person
+/// the workspace knows only through keys made for them has no name here, and
+/// the row says so rather than borrowing a key's.
+#[derive(Default)]
+struct Naming {
+    /// The name of their own device whose certificate was issued earliest,
+    /// with when it was issued and that device's key, the tie-break.
+    own: Option<(u64, [u8; 32], String)>,
+}
+
+impl Naming {
+    /// Take the name `identity` goes by when it is a device of the person's
+    /// own: one they hold and act with, not one made to act for them. `theirs`
+    /// is false for a delegate of theirs — an agent or an installed bot — which
+    /// goes by a name of its own whatever its certificate says.
+    fn learn(&mut self, identity: &DeviceCert, theirs: bool, name: Option<&str>) {
+        let capabilities = &identity.capabilities;
+        if !theirs || capabilities.agent.is_some() || capabilities.stand_in {
+            return;
+        }
+        let Some(name) = name.filter(|name| !name.trim().is_empty()) else {
+            return;
+        };
+        let issued = identity.issued_at_ns;
+        let device = identity.device_public_key;
+        if self
+            .own
+            .as_ref()
+            .is_some_and(|(at, key, _)| (issued, device) >= (*at, *key))
+        {
+            return;
+        }
+        self.own = Some((issued, device, name.to_owned()));
+    }
+
+    /// The person's name here, when the workspace recorded one.
+    fn name(&self) -> Option<&str> {
+        self.own.as_ref().map(|(_, _, name)| name.as_str())
     }
 }
 impl PeerGovernanceMut<'_> {

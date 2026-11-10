@@ -30,11 +30,17 @@ class Host:
 
 @dataclass(frozen=True)
 class WorkspaceInfo:
-    """One of the person's workspaces, as the account lists them."""
+    """One of the person's workspaces, as the account lists them.
+
+    `role` is the part they take in it: `owner` for one of their own, else the
+    role they were invited with (`viewer`, `commenter`, `editor`,
+    `moderator`). It is `""` when the door did not say.
+    """
 
     id: str
     name: str
     host: str
+    role: str = ""
 
     @classmethod
     def of(cls, raw: Mapping[str, Any]) -> WorkspaceInfo:
@@ -42,6 +48,7 @@ class WorkspaceInfo:
             id=str(raw.get("id") or ""),
             name=str(raw.get("name") or ""),
             host=str(raw.get("host") or ""),
+            role=str(raw.get("role") or ""),
         )
 
 

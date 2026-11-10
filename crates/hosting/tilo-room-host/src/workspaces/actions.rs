@@ -1327,7 +1327,13 @@ impl Workspaces {
                     .await
                     .map_err(|error| refused(&error))?;
                 let governed = governed.lock().await;
-                let owner = governed.peer().owner();
+                // Whoever made a workspace of their own holds it, though its
+                // governance names this host's device as the structural owner
+                // that runs it: every other workspace here is its governor's.
+                let owner = self
+                    .own()
+                    .and_then(|own| own.owner_of(workspace))
+                    .unwrap_or_else(|| governed.peer().owner());
                 Ok(governed
                     .summary()
                     .members

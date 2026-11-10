@@ -46,6 +46,11 @@ pub struct Workspace {
     pub name: String,
     /// The host serving it, named as hosts are (`eu1.tilo.sh`).
     pub host: String,
+    /// The part the person takes in it: `owner` for a workspace of their own,
+    /// else the role they hold there (`viewer`, `commenter`, `editor`,
+    /// `moderator`). `None` when the answer did not say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 /// Why the relay did not answer what was asked.
@@ -364,6 +369,7 @@ impl Connection {
             id: listing.workspace.clone(),
             name: listing.name.clone(),
             host: self.host.clone(),
+            role: listing.role.clone(),
         }
     }
 

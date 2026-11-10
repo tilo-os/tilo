@@ -137,6 +137,11 @@ pub struct WorkspaceListing {
     pub name: String,
     /// The workspace's committed governance generation.
     pub generation: u64,
+    /// The part the asking device's person takes in it, when the answer is a
+    /// person's listing: `owner` for a workspace of their own, else the role
+    /// they hold (`viewer`, `commenter`, `editor`, `moderator`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 /// An invitation a relay's workspace action issued, as it answers it.

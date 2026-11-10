@@ -6,7 +6,7 @@ import pytest
 
 from tilo import AskPending, AsyncTilo, Key, MintedKey, Refused, SignIn
 
-from fake_door import WORKSPACE_ID, FakeDoor
+from fake_door import INVITED_ID, WORKSPACE_ID, FakeDoor
 
 
 @pytest.fixture
@@ -144,10 +144,15 @@ async def test_an_invitation_above_editor_is_refused(tilo):
     assert raised.value.code == "invalid_arguments"
 
 
-async def test_a_workspace_one_was_invited_into_is_reached_by_its_id(tilo):
-    invited = "abcdef01-2345-6789-abcd-ef0123456789"
+async def test_a_workspace_one_was_invited_into_is_listed_with_its_role_and_reached_by_name(tilo):
+    listing = await tilo.workspaces.list()
+    invited = listing.named("applicant-jane-doe")
 
-    assert (await tilo.workspace(invited).info()).id == invited
+    assert invited is not None
+    assert invited.id == INVITED_ID
+    assert invited.role == "editor"
+    assert listing.named(INVITED_ID).role == "editor"
+    assert (await tilo.workspace("applicant-jane-doe").info()).id == INVITED_ID
 
 
 async def test_the_members_of_a_workspace_with_their_roles(tilo):

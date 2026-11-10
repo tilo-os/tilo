@@ -94,7 +94,10 @@ print(await ws.members.list())  # who is in the workspace, with their roles
 Following the link signs them in to Tilo (with a passkey, or by approving an
 agent) and lands them in the workspace as that role. Your key invites into
 the workspaces you administer, as an editor at most; a key minted for one
-workspace invites nobody. The reviewer then works with a key of their own.
+workspace invites nobody. The reviewer then works with a key of their own:
+their account lists the workspace with the role they hold there
+(`await reviewer.workspaces.list()`, each row carrying `role`), so they reach
+it by name too (`reviewer.workspace("Applicant: Jane Doe")`).
 
 Each agent session is one run in History, named after its key ("Jane Doe's
 agent #1"). Undo a run to take back everything it changed. Watch it live from

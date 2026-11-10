@@ -214,6 +214,156 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
     );
 }
 
+/// `cert`, going by its own label, joins `workspace` through `ledger` under a
+/// bearer invitation, saying `name` as it comes in: the workspace after it.
+fn joined(
+    ledger: &mut JoinLedger,
+    workspace: &Governed<'_>,
+    authority_key: &SigningKey,
+    (key, cert): (&SigningKey, &DeviceCert),
+    name: &str,
+    seed: u8,
+    now_ns: u64,
+) -> StatePeer {
+    let issued = ledger
+        .issue(
+            workspace,
+            &workspace.peer.owner_certificates()[0],
+            IssueInvitationRequest {
+                request_id: [seed; 32],
+                role: MemberRole::Editor,
+                recipient_user_public_key: None,
+                invitee_name: None,
+                expires_at_ns: now_ns.saturating_add(10_000_000_000),
+                inviter_name: None,
+            },
+            Vec::new(),
+            Signer {
+                key: authority_key,
+                nonce: [seed.wrapping_add(1); 16],
+            },
+            now_ns,
+        )
+        .unwrap();
+    let challenge = ledger
+        .challenge(
+            workspace,
+            cert.device_public_key,
+            JoinChallengeRequest {
+                request_id: [seed.wrapping_add(2); 32],
+                signed_invitation: issued.signed_invitation,
+                device_cert: cert.clone(),
+            },
+            [seed.wrapping_add(3); 32],
+            now_ns,
+        )
+        .unwrap();
+    let proof = sign_join_proof(challenge, key).unwrap();
+    let redemption = ledger
+        .redeem(workspace, cert.device_public_key, &proof, now_ns)
+        .unwrap();
+    let joins = [Redeeming {
+        remote_endpoint: cert.device_public_key,
+        request_id: [seed.wrapping_add(2); 32],
+        proof_digest: request_digest(&proof).unwrap(),
+        redemption: &redemption,
+        name: Some(name),
+    }];
+    let mut candidate = (*workspace.peer).clone();
+    let refusals = ledger.admit(&mut candidate, &joins, authority_key, now_ns);
+    assert!(refusals.iter().all(Option::is_none), "{refusals:?}");
+    candidate
+}
+
+#[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the governed workspace reads the peer through each step of the decision"
+)]
+fn a_key_made_to_act_for_a_person_never_names_them() {
+    let (peer, authority_key, _, _, now) = seeded();
+    let now_ns = ns(now);
+    let messages = || Ok(Vec::<Vec<u8>>::new());
+    let host_cert = peer.owner_certificates()[0].clone();
+    let workspace = Governed {
+        peer: (&peer).into(),
+        host: &host_cert,
+        workspace_id: 7,
+        generation: 1,
+        governance_messages: Some(&messages),
+    };
+    let root = SigningKey::from_bytes(&[51; 32]);
+    let mut ledger = JoinLedger::default();
+    // Ada joins on a device of her own, going by her own name.
+    let ada_key = SigningKey::from_bytes(&[52; 32]);
+    let mut ada = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: ada_key.verifying_key().to_bytes(),
+        device_label: "Ada".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut ada, &root).unwrap();
+    let joined_ada = joined(
+        &mut ledger,
+        &workspace,
+        &authority_key,
+        (&ada_key, &ada),
+        "Ada",
+        60,
+        now_ns,
+    );
+    let named = |member_of: &StatePeer| {
+        member_of
+            .governance()
+            .governed_members(now)
+            .unwrap()
+            .into_iter()
+            .find(|member| member.user_public_key == root.verifying_key().to_bytes())
+            .unwrap()
+            .display_name
+    };
+    assert_eq!(named(&joined_ada).as_deref(), Some("Ada"));
+    // A key made to act for her joins too, saying what the key goes by, as
+    // the door hands it over: it names the key, never Ada.
+    let backend_key = SigningKey::from_bytes(&[53; 32]);
+    let mut backend = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: backend_key.verifying_key().to_bytes(),
+        device_label: "Ada's backend".into(),
+        capabilities: DeviceCapabilities::server_key_grant(),
+        issued_at_ns: 2,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut backend, &root).unwrap();
+    let again = Governed {
+        peer: (&joined_ada).into(),
+        host: &host_cert,
+        workspace_id: 7,
+        generation: 2,
+        governance_messages: Some(&messages),
+    };
+    let joined_both = joined(
+        &mut ledger,
+        &again,
+        &authority_key,
+        (&backend_key, &backend),
+        "Jane Doe's agent",
+        70,
+        now_ns,
+    );
+    assert_eq!(
+        named(&joined_both).as_deref(),
+        Some("Ada"),
+        "a key of hers names its key, never the person it acts for"
+    );
+}
+
 #[test]
 #[expect(
     clippy::significant_drop_tightening,

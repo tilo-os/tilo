@@ -20,15 +20,25 @@ PDF = "pdf-viewer/application.pdf"
 
 WORKSPACE_ID = "11111111-2222-3333-4444-555555555555"
 OTHER_ID = "66666666-7777-8888-9999-aaaaaaaaaaaa"
+# A workspace another person made, which this person was invited into.
+INVITED_ID = "abcdef01-2345-6789-abcd-ef0123456789"
 
 
 class FakeDoor:
     def __init__(self) -> None:
         self.key = "tilo_sk_test"
         self.scope = "account"
+        # The person's own workspaces, then one they were invited into: each
+        # with the part they take in it.
         self.workspaces = [
-            {"id": WORKSPACE_ID, "name": "jane-doe", "host": "eu1"},
-            {"id": OTHER_ID, "name": "john-doe", "host": "eu1"},
+            {"id": WORKSPACE_ID, "name": "jane-doe", "host": "eu1", "role": "owner"},
+            {"id": OTHER_ID, "name": "john-doe", "host": "eu1", "role": "owner"},
+            {
+                "id": INVITED_ID,
+                "name": "applicant-jane-doe",
+                "host": "eu1",
+                "role": "editor",
+            },
         ]
         self.hosts = [{"name": "eu1", "default": True}]
         self.fields: dict[str, dict[str, Any]] = {

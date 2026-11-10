@@ -9,6 +9,9 @@ export interface WorkspaceInfo {
   id: string;
   name: string;
   host: string;
+  /** The part the person takes in it: `owner` for one of their own, else the
+   * role they hold there (`viewer`, `commenter`, `editor`, `moderator`). */
+  role: string;
 }
 
 export class WorkspaceList {
@@ -22,6 +25,7 @@ export class WorkspaceList {
         id: String(row.id ?? ""),
         name: String(row.name ?? ""),
         host: String(row.host ?? ""),
+        role: String(row.role ?? ""),
       };
     });
     this.hosts = (raw.hosts ?? []).map((host) => {

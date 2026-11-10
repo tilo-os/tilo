@@ -179,11 +179,26 @@ async fn a_key_works_through_the_door_on_the_relay_and_ends_when_revoked() {
         .as_array()
         .cloned()
         .unwrap_or_default();
-    assert_eq!(rows.len(), 2, "{listed}");
-    let ids: Vec<&str> = rows.iter().filter_map(|row| row["id"].as_str()).collect();
+    // The two of their own, each named as theirs, and the site's home
+    // workspace their key was let into, as an editor.
+    let own: Vec<(&str, &str)> = rows
+        .iter()
+        .filter(|row| row["role"] == "owner")
+        .filter_map(|row| Some((row["id"].as_str()?, row["name"].as_str()?)))
+        .collect();
+    assert_eq!(own.len(), 2, "{listed}");
     assert!(
-        ids.contains(&workspace.as_str()) && ids.contains(&another.as_str()),
+        own.iter()
+            .any(|(id, name)| *id == workspace && *name == "Applicant: Jane Doe")
+            && own
+                .iter()
+                .any(|(id, name)| *id == another && *name == "Another"),
         "{listed}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row["id"] == on_relay.lobby.as_str() && row["role"] == "editor"),
+        "the home workspace the key was let into: {listed}"
     );
 
     // The relay's app workers answer it there, with no tab of anyone's
@@ -451,8 +466,20 @@ async fn one_key_makes_and_works_in_hundreds_of_workspaces_at_once() {
         .flatten()
         .filter_map(|row| row["id"].as_str())
         .collect();
-    assert_eq!(ids.len(), CUSTOMERS, "every workspace is listed");
-    assert!(made.iter().all(|id| ids.contains(id.as_str())));
+    assert!(
+        made.iter().all(|id| ids.contains(id.as_str())),
+        "every workspace is listed"
+    );
+    assert!(
+        listed["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["role"] == "owner")
+            .count()
+            == CUSTOMERS,
+        "each of theirs as its owner"
+    );
     let (create_p50, create_p95) = (quantile(&creating, 0.5), quantile(&creating, 0.95));
     eprintln!(
         "{CUSTOMERS} workspaces: create p50 {create_p50:?}, p95 {create_p95:?}, max {:?}; list {listing:?}",
@@ -547,10 +574,11 @@ async fn one_key_makes_and_works_in_hundreds_of_workspaces_at_once() {
         assert_eq!(listed["result"]["isError"], false, "{workspace}: {listed}");
     }
     let listed = account.did("account/workspaces#list", json!({})).await;
-    assert_eq!(
-        listed["workspaces"].as_array().map(Vec::len),
-        Some(CUSTOMERS),
-        "the account's own session still answers"
+    assert!(
+        made.iter().all(|made| listed["workspaces"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["id"] == made.as_str()))),
+        "the account's own session still answers with every one of them"
     );
 }
 

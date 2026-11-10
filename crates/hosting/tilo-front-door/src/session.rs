@@ -497,6 +497,8 @@ impl Session {
 pub const ACCOUNT_INSTRUCTIONS: &str = "You act in the person's Tilo workspaces. \
 Paths under `account` manage them and need no `workspace`: `tilo_ls account` lists its actions; \
 `tilo_do {path: \"account/workspaces#list\"}` names the workspaces, \
+each with the part the person takes in it (`owner` for one of their own, else the role they were \
+invited with), \
 `account/workspaces#create {name}` makes one. Every other call acts in one workspace, \
 named by id in its `workspace` argument. To give another agent one workspace and nothing else \
 (one workspace per customer), `tilo_do {path: \"account/keys#mint\", args: {workspace}}` answers \

@@ -308,10 +308,18 @@ async def main() -> int:
         reviewer_person is None or any(member.person == reviewer_person and member.role == "editor" for member in members),
         "the backend sees the reviewer among Jane's workspace's members",
     )
+    check(
+        all(member.name != "Jane Doe's agent" for member in members),
+        "no key of the account's names a person in the members list",
+    )
     reviewer = AsyncTilo(key=accepted["key"], door=door)
 
-    say("4c. The reviewer, with their own key, reads the filled form and who filled it")
-    rws = reviewer.workspace(jane.id)
+    say("4c. The reviewer, with their own key, finds Jane's workspace by name and reads the filled form and who filled it")
+    listed = await reviewer.workspaces.list()
+    found = listed.named(jane.name)
+    check(found is not None and found.id == jane.id, f"the reviewer's account lists {jane.name!r}: {found}")
+    check(found is not None and found.role == "editor", f"with the role they hold there ({found and found.role})")
+    rws = reviewer.workspace(jane.name)
     seen = Document(rws, FORM)
     await seen.load()
     say("   read", f"{seen.kind}: {sorted(seen.fields)}")

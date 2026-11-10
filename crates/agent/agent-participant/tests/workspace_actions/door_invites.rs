@@ -69,26 +69,79 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
         "the site's short link: {link}"
     );
 
-    // Rosa follows it on a page of hers and is in as an Editor.
+    // Ada's own page follows an invitation too, as a person's desk joins the
+    // workspace their backend made for them.
+    let theirs = members(
+        &mut backend,
+        here,
+        "workspace/members#invite",
+        json!({"role": "editor"}),
+    )
+    .await;
+    assert_eq!(theirs["status"], "ok", "{theirs}");
+    let theirs = theirs["result"]["link"].as_str().unwrap().to_owned();
+    let (_ada_page, joined) = accept_invitation(&on_relay, &theirs, &ada, "Ada").await;
+    assert_eq!(joined["role"], "editor", "{joined}");
+
+    // Rosa follows her link on a page of hers and is in as an Editor.
     let (rosa, _) = tilo_user_identity::UserIdentity::generate("Rosa Ortiz", 1);
     let (rosa_page, joined) = accept_invitation(&on_relay, &link, &rosa, "Rosa Ortiz").await;
     assert_eq!(joined["workspace"], workspace.as_str(), "{joined}");
     assert_eq!(joined["role"], "editor", "{joined}");
     let listed = members(&mut backend, here, "workspace/members#list", json!({})).await;
+    let rows = listed["result"]["members"].as_array().unwrap().clone();
+    assert_eq!(rows.len(), 2, "the two people, and no one else: {listed}");
+    let ada_hex = hex::encode(ada.verifying_key().to_bytes());
     let rosa_hex = hex::encode(rosa.verifying_key().to_bytes());
-    let rosa_row = listed["result"]["members"]
-        .as_array()
-        .and_then(|rows| rows.iter().find(|row| row["person"] == rosa_hex.as_str()))
-        .cloned();
-    assert_eq!(
-        rosa_row.map(|row| row["role"].clone()),
-        Some(json!("editor")),
-        "{listed}"
+    let row = |person: &str| {
+        rows.iter()
+            .find(|row| row["person"] == person)
+            .cloned()
+            .unwrap_or_else(|| panic!("{person} has a row in {listed}"))
+    };
+    let ada_row = row(&ada_hex);
+    assert_eq!(ada_row["name"], "Ada", "{listed}");
+    assert_eq!(ada_row["owner"], true, "{listed}");
+    assert_eq!(ada_row["administrator"], true, "{listed}");
+    let rosa_row = row(&rosa_hex);
+    assert_eq!(rosa_row["name"], "Rosa Ortiz", "{listed}");
+    assert_eq!(rosa_row["role"], "editor", "{listed}");
+    assert_eq!(rosa_row["owner"], false, "{listed}");
+    assert!(
+        !rows.iter().any(|row| row["name"]
+            .as_str()
+            .is_some_and(|name| name.contains("Visa backend") || name == "relay")),
+        "no key of Ada's and not the relay that runs the workspace names a person: {listed}"
     );
 
     // A key she approves herself reaches the workspace as her, and invites
     // nobody into a workspace she does not administer.
     let rosa_key = approved_key(&on_relay, &rosa, &rosa_page, "Rosa's review").await;
+    // Her account lists the workspace she was invited into, with her role
+    // there, so she reaches it by its name.
+    let mut reviewer_account = Mcp {
+        door: &door,
+        path: "/mcp".into(),
+        token: rosa_key.clone(),
+        session: None,
+    };
+    let (status, init) = reviewer_account.initialize().await;
+    assert_eq!(status, 200, "{init}");
+    let listed_for_her = reviewer_account
+        .did("account/workspaces#list", json!({}))
+        .await;
+    let invited_into = listed_for_her["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|one| one["id"] == workspace.as_str())
+        .cloned();
+    assert_eq!(
+        invited_into.map(|one| (one["name"].clone(), one["role"].clone())),
+        Some((json!("Applicant: Jane Doe"), json!("editor"))),
+        "the workspace she was invited into, with the role she holds there: {listed_for_her}"
+    );
+
     let mut reviewer = Mcp {
         door: &door,
         path: format!("/w/{workspace}/mcp"),
@@ -112,7 +165,9 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
     .await;
     assert_eq!(by_rosa["status"], "failed", "{by_rosa}");
 
-    // A key minted for the workspace invites nobody either.
+    // A key minted for the workspace enters it as Ada, at her role, and
+    // invites nobody either: it is a key of hers, not a person of the
+    // workspace.
     let minted = backend
         .did("account/keys#mint", json!({"workspace": workspace}))
         .await;
@@ -132,4 +187,19 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
     )
     .await;
     assert_eq!(by_agent["status"], "failed", "{by_agent}");
+    let after = members(&mut backend, here, "workspace/members#list", json!({})).await;
+    let after = after["result"]["members"].as_array().unwrap().clone();
+    assert_eq!(
+        after.len(),
+        2,
+        "her agent's key is not a person of the workspace: {after:?}"
+    );
+    assert_eq!(
+        after
+            .iter()
+            .find(|row| row["person"] == ada_hex)
+            .map(|row| row["name"].clone()),
+        Some(json!("Ada")),
+        "it does not rename her after its key: {after:?}"
+    );
 }

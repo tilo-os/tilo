@@ -16,7 +16,17 @@ describe("the wire", () => {
 
     const listing = await tilo.workspaces.list();
 
-    expect(listing.workspaces.map((workspace) => workspace.name)).toEqual(["jane-doe", "john-doe"]);
+    expect(listing.workspaces.map((workspace) => workspace.name)).toEqual([
+      "jane-doe",
+      "john-doe",
+      "applicant-jane-doe",
+    ]);
+    expect(listing.workspaces.map((workspace) => workspace.role)).toEqual([
+      "owner",
+      "owner",
+      "editor",
+    ]);
+    expect(listing.named("applicant-jane-doe")?.role).toBe("editor");
     expect(listing.hosts[0]?.name).toBe("eu1");
     expect(door.opened).toBeGreaterThanOrEqual(1);
     const call = door.asked("tilo_do").at(-1);

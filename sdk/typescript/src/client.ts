@@ -244,16 +244,16 @@ export class Tilo {
     } catch (error) {
       if (error instanceof Refused || error instanceof ProtocolError) {
         if (looksLikeId(ref)) {
-          return { id: ref, name: "", host: "" };
+          return { id: ref, name: "", host: "", role: "" };
         }
       }
       throw error;
     }
     const found = listing.named(ref);
-    // A workspace you were invited into is someone else's, so your account
-    // does not list it: its id still reaches it, as the door decides.
+    // A workspace the door does not name still answers to its id, as the door
+    // decides.
     if (found === undefined && looksLikeId(ref)) {
-      return { id: ref, name: "", host: "" };
+      return { id: ref, name: "", host: "", role: "" };
     }
     if (found === undefined) {
       throw new Refused("not_found", `no workspace ${ref}`, [
@@ -283,7 +283,12 @@ export class Tilo {
       throw new ProtocolError("the door created a workspace without naming it");
     }
     const row = created as Record<string, unknown>;
-    return { id: String(row.id ?? ""), name: String(row.name ?? ""), host: String(row.host ?? "") };
+    return {
+      id: String(row.id ?? ""),
+      name: String(row.name ?? ""),
+      host: String(row.host ?? ""),
+      role: String(row.role ?? ""),
+    };
   }
 
   async deleteWorkspace(workspace: string | Workspace): Promise<unknown> {

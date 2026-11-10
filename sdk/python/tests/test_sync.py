@@ -17,7 +17,11 @@ def door() -> FakeDoor:
 def test_the_sync_client_reads_acts_and_edits(door):
     with Tilo(key=door.key, door="https://door.test", http=door.client()) as tilo:
         listing = tilo.workspaces.list()
-        assert [workspace.name for workspace in listing] == ["jane-doe", "john-doe"]
+        assert [workspace.name for workspace in listing] == [
+            "jane-doe",
+            "john-doe",
+            "applicant-jane-doe",
+        ]
 
         page = tilo.workspace("jane-doe").read(TODO)
         assert isinstance(page, Resource)

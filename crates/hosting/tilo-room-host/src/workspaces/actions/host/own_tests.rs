@@ -109,7 +109,8 @@ async fn join_with(
         .page_join(JoinStep::Prove {
             challenge,
             signature,
-            name: "Ada".into(),
+            // As the page or desk joining says what its person is called.
+            name: device.device_label.clone(),
         })
         .await;
     assert!(
@@ -775,11 +776,22 @@ async fn a_server_key_reads_its_persons_account_and_an_agent_or_a_narrower_key_n
 
 /// A certificate `root` signs for `key` with `capabilities`, lasting an hour.
 fn certified(root: &SigningKey, key: &SigningKey, capabilities: DeviceCapabilities) -> DeviceCert {
+    certified_as(root, key, capabilities, "key")
+}
+
+/// The same, going by `label`: the name a person's row shows once one of their
+/// own devices is in the workspace.
+fn certified_as(
+    root: &SigningKey,
+    key: &SigningKey,
+    capabilities: DeviceCapabilities,
+    label: &str,
+) -> DeviceCert {
     let now = tilo_clock::unix_now_ns();
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: key.verifying_key().to_bytes(),
-        device_label: "key".into(),
+        device_label: label.into(),
         capabilities,
         issued_at_ns: now,
         expires_at_ns: Some(now.saturating_add(3_600_000_000_000)),
@@ -947,5 +959,174 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
         .find(|member| member["person"] == hex::encode(rosa_person))
         .cloned();
     assert_eq!(rosa_row.unwrap()["role"], "editor", "{members}");
+    relay.shutdown().await;
+}
+
+/// `device`'s person asks this host to list its workspaces, as the door's
+/// account path does.
+async fn listed_for(
+    host: &HostWorkspaceActions,
+    device: &DeviceCert,
+) -> Vec<tilo_relay_session::workspaces::WorkspaceListing> {
+    let mut ask = own_request(json!({}));
+    ask.target.address.action = tilo_relay_session::workspaces::LIST_ROOMS.into();
+    serde_json::from_value(invoke(host, device, ask).await.unwrap()).unwrap()
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one workspace's people and its listing read top to bottom"
+)]
+async fn people_are_named_as_people_and_their_listing_names_what_they_were_invited_into() {
+    use tilo_action_policy::roles::governance;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    workspaces
+        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
+        .unwrap();
+    let host = HostWorkspaceActions::new();
+    host.attach(workspaces.clone());
+
+    // Ada's backend makes her workspace, enters it as her, and invites a
+    // reviewer into it.
+    let ada = SigningKey::from_bytes(&rand::random());
+    let ada_person = ada.verifying_key().to_bytes();
+    let backend_key = SigningKey::from_bytes(&rand::random());
+    let backend = certified_as(
+        &ada,
+        &backend_key,
+        DeviceCapabilities::server_key_grant(),
+        "Ada's backend",
+    );
+    let created = own_as_key(&host, &backend, json!({"name": "Applicant: Jane Doe"})).await;
+    join(workspaces, &created, &backend_key, &backend).await;
+    let workspace = &created.workspace;
+    let invited = govern(
+        &host,
+        workspace,
+        &backend,
+        governance::INVITE,
+        json!({"role": "editor"}),
+    )
+    .await
+    .unwrap();
+    let rosa = SigningKey::from_bytes(&rand::random());
+    let rosa_person = rosa.verifying_key().to_bytes();
+    let page_key = SigningKey::from_bytes(&rand::random());
+    let page = certified_as(&rosa, &page_key, DeviceCapabilities::member(), "Rosa Ortiz");
+    join_with(
+        workspaces,
+        hex::decode(invited["invitation"].as_str().unwrap()).unwrap(),
+        &page_key,
+        &page,
+    )
+    .await;
+
+    // Ada follows another invitation on a device of her own, and her agent's
+    // key enters the workspace as her too: a key of hers never names her.
+    let theirs = govern(
+        &host,
+        workspace,
+        &backend,
+        governance::INVITE,
+        json!({"role": "editor"}),
+    )
+    .await
+    .unwrap();
+    let ada_key = SigningKey::from_bytes(&rand::random());
+    let ada_page = certified_as(&ada, &ada_key, DeviceCapabilities::member(), "Ada");
+    join_with(
+        workspaces,
+        hex::decode(theirs["invitation"].as_str().unwrap()).unwrap(),
+        &ada_key,
+        &ada_page,
+    )
+    .await;
+    let agent_key = SigningKey::from_bytes(&rand::random());
+    let now = tilo_clock::unix_now_ns();
+    let mut agent = prepare_minted_grant(
+        &backend,
+        agent_key.verifying_key().to_bytes(),
+        hex::decode(workspace.workspace.replace('-', ""))
+            .unwrap()
+            .try_into()
+            .unwrap(),
+        "Jane Doe's agent",
+        now,
+        now + 60_000_000_000,
+    );
+    sign_device_cert(&mut agent, &backend_key).unwrap();
+    // A key minted for one workspace enters it with the invitation the key
+    // that minted it asks for, as the door hands it over.
+    let entering = own_as_key(&host, &backend, json!({"room": workspace.workspace})).await;
+    join(workspaces, &entering, &agent_key, &agent).await;
+
+    // The people in it: Ada under her own name, its owner and administrator,
+    // Rosa under hers, and no row for the host's device that runs it or for
+    // any key of theirs.
+    let members = govern(&host, workspace, &backend, super::super::MEMBERS, json!({}))
+        .await
+        .unwrap();
+    let rows = members.as_array().unwrap();
+    let row = |person: &[u8; 32]| {
+        rows.iter()
+            .find(|row| row["person"] == hex::encode(*person))
+            .cloned()
+            .unwrap_or_else(|| panic!("{person:02x?} has a row in {members}"))
+    };
+    let ada_row = row(&ada_person);
+    assert_eq!(ada_row["name"], "Ada", "{members}");
+    assert_eq!(ada_row["owner"], true, "{members}");
+    assert_eq!(ada_row["administrator"], true, "{members}");
+    let rosa_row = row(&rosa_person);
+    assert_eq!(rosa_row["name"], "Rosa Ortiz", "{members}");
+    assert_eq!(rosa_row["role"], "editor", "{members}");
+    assert_eq!(rosa_row["owner"], false, "{members}");
+    assert_eq!(rows.len(), 2, "the two people, and no one else: {members}");
+    assert!(
+        !rows
+            .iter()
+            .any(|row| row["person"] == hex::encode(owner.user_public_key)),
+        "the host's device runs the workspace without being one of its people: {members}"
+    );
+    assert!(
+        !rows
+            .iter()
+            .any(|row| row["name"] == "Jane Doe's agent" || row["name"] == "Ada's backend"),
+        "a key of theirs names its key, never its person: {members}"
+    );
+
+    // Each person's listing names the workspaces they are in with the part
+    // they take: Ada's own is hers as its owner, and the workspace she was
+    // invited into is Rosa's as an editor.
+    let ada_listing = listed_for(&host, &backend).await;
+    assert_eq!(
+        ada_listing
+            .iter()
+            .map(|one| (one.workspace.as_str(), one.role.as_deref()))
+            .collect::<Vec<_>>(),
+        [(workspace.workspace.as_str(), Some("owner"),)],
+        "the workspace of her own"
+    );
+    let rosa_listing = listed_for(&host, &page).await;
+    assert_eq!(
+        rosa_listing
+            .iter()
+            .map(|one| (
+                one.workspace.as_str(),
+                one.name.as_str(),
+                one.role.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        [(
+            workspace.workspace.as_str(),
+            "Applicant: Jane Doe",
+            Some("editor"),
+        )],
+        "the workspace she was invited into"
+    );
     relay.shutdown().await;
 }

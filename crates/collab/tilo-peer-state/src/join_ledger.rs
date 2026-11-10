@@ -35,6 +35,18 @@ use crate::join::{
     issue_invitation, issue_invitation_from, verify_join_proof, verify_membership_proof,
 };
 
+/// Whether a device joining under this certificate names its person as it
+/// comes in, or goes by a name of its own.
+///
+/// A device of the person's own says what they are called here
+/// ([`crate::PeerGovernanceMut::name_person`]). A key made to act for them —
+/// an agent's grant, a server key a backend holds, a key minted for one
+/// workspace — names itself: its label is the key's ("Jane Doe's agent"),
+/// and a key never names the person it acts for.
+fn names_its_person(cert: &DeviceCert) -> bool {
+    cert.capabilities.agent.is_none() && !cert.capabilities.stand_in
+}
+
 /// Pending challenges of one kind a workspace keeps at once.
 const MAX_PENDING_CHALLENGES: usize = 4096;
 /// How long a join or membership challenge may be answered.
@@ -851,7 +863,9 @@ impl JoinLedger {
                             key,
                             system_time(now),
                         )?;
-                        if let Some(name) = join.name {
+                        if let Some(name) = join.name
+                            && names_its_person(redemption.certificate())
+                        {
                             next.governance_mut().name_person(
                                 redemption.certificate().user_public_key,
                                 name,
