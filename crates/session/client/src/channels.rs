@@ -362,8 +362,7 @@ impl ChannelLink {
         self.replayed.lock_recover().insert(ws);
         self.opens
             .send_modify(|count| *count = count.wrapping_add(1));
-        // A group this device waited on the history to found is founded now, if the history held
-        // no genesis of it.
+        // A group that waited on the history is founded now, if it held no genesis.
         self.park.poke();
     }
 
@@ -508,8 +507,7 @@ pub struct OwnerDirectory {
     /// A reader also follows what the host it joined a workspace through and it itself sign: the
     /// host vouched for the workspace it was let into.
     reader: bool,
-    /// The plane whose hosts say when they replayed a workspace's history to this device: a
-    /// participant founds no group of a workspace it entered before then.
+    /// Where hosts say they replayed a workspace's history here.
     link: Option<Arc<ChannelLink>>,
 }
 
@@ -592,9 +590,8 @@ impl ChannelDirectory for OwnerDirectory {
             .ok()
     }
 
-    /// A workspace this device entered while it was hosted elsewhere holds the channel governance
-    /// its members wrote once its host replayed the history to this device; one founded or hosted
-    /// here has none to wait for.
+    /// A workspace entered while hosted elsewhere holds its channel governance once its host
+    /// replayed the history here.
     fn history_held(&self, workspace: ModelWorkspaceId) -> bool {
         let Some(link) = &self.link else {
             return true;

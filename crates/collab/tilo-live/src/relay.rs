@@ -679,7 +679,7 @@ async fn forward(
             Err(_) => None,
         };
         if let Some(input) = input {
-            copy_checked(input, track, &counters, &VOICE).await;
+            copy_checked(input, track, &counters, voice_bounds()).await;
         } else {
             let _ = source.closed().await;
             let _ = track.abort(moq_net::Error::Cancel);
@@ -692,36 +692,56 @@ async fn forward(
     }
 }
 
+/// Whether a group's frame, at its place in the group, is one to copy.
+type FrameCheck = Box<dyn Fn(u64, &[u8]) -> bool + Send + Sync>;
+
 /// What one copied track lets through: each datagram and each group's frames
 /// are checked before any subscriber can observe them, and a group carries
-/// at most `frames` of them.
+/// at most `frames` of them. `frame` is told each frame's place in its group.
 struct Bounds {
     datagram: fn(&[u8]) -> bool,
-    frame: fn(&[u8]) -> bool,
+    frame: FrameCheck,
     frames: u64,
 }
 
 /// Voice: every bundle and object validated.
-const VOICE: Bounds = Bounds {
-    datagram: |payload| voice::validate_bundle(payload).is_ok(),
-    frame: |payload| voice::validate(payload).is_ok(),
-    frames: voice::FRAMES_PER_GROUP,
-};
+fn voice_bounds() -> Arc<Bounds> {
+    Arc::new(Bounds {
+        datagram: |payload| voice::validate_bundle(payload).is_ok(),
+        frame: Box::new(|_, payload| voice::validate(payload).is_ok()),
+        frames: voice::FRAMES_PER_GROUP,
+    })
+}
 
 /// The plane's opaque tracks (presence, activity): the scope's own sealed
 /// bytes, copied unread, bounded in size.
-const OPAQUE: Bounds = Bounds {
-    datagram: |payload| payload.len() <= MAX_OPAQUE_OBJECT_BYTES,
-    frame: |payload| payload.len() <= MAX_OPAQUE_OBJECT_BYTES,
-    frames: MAX_OPAQUE_GROUP_OBJECTS,
-};
+fn opaque_bounds() -> Arc<Bounds> {
+    Arc::new(Bounds {
+        datagram: |payload| payload.len() <= MAX_OPAQUE_OBJECT_BYTES,
+        frame: Box::new(|_, payload| payload.len() <= MAX_OPAQUE_OBJECT_BYTES),
+        frames: MAX_OPAQUE_GROUP_OBJECTS,
+    })
+}
+
+/// Pictures of `layer`, in groups only: a keyframe first, every picture of
+/// the track's own layer.
+fn picture_bounds(layer: crate::video::Layer) -> Arc<Bounds> {
+    Arc::new(Bounds {
+        datagram: |_| false,
+        frame: Box::new(move |index, payload| {
+            crate::video::validate(payload)
+                .is_ok_and(|header| header.layer == layer && (index > 0 || header.keyframe))
+        }),
+        frames: crate::video::MAX_GROUP_OBJECTS,
+    })
+}
 
 /// Copy `input` into `output` within `bounds` until the input ends.
 async fn copy_checked(
     mut input: moq_net::track::Subscriber,
     mut output: moq_net::track::Producer,
     counters: &Arc<Counters>,
-    bounds: &'static Bounds,
+    bounds: Arc<Bounds>,
 ) {
     let mut groups: VecDeque<crate::Task> = VecDeque::new();
     loop {
@@ -755,7 +775,7 @@ async fn copy_checked(
                     *group,
                     out,
                     counters.clone(),
-                    bounds,
+                    Arc::clone(&bounds),
                 )));
             }
             Next::End => break,
@@ -769,15 +789,16 @@ async fn copy_checked_group(
     mut input: moq_net::group::Consumer,
     mut output: moq_net::group::Producer,
     counters: Arc<Counters>,
-    bounds: &'static Bounds,
+    bounds: Arc<Bounds>,
 ) {
     let mut count: u64 = 0;
     loop {
         match input.read_frame().await {
             Ok(Some(frame)) => {
+                let valid = (bounds.frame)(count, &frame.payload);
                 count = count.saturating_add(1);
-                if count > bounds.frames
-                    || !(bounds.frame)(&frame.payload)
+                if !valid
+                    || count > bounds.frames
                     || output.write_frame(frame.timestamp, frame.payload).is_err()
                 {
                     counters.dropped.fetch_add(1, Ordering::Relaxed);
@@ -798,7 +819,7 @@ async fn copy_checked_group(
     }
 }
 
-/// Copy one opaque plane track (presence, activity) unread ([`OPAQUE`]).
+/// Copy one opaque plane track (presence, activity) unread ([`opaque_bounds`]).
 async fn copy_opaque(
     source: moq_net::broadcast::Consumer,
     name: String,
@@ -818,7 +839,7 @@ async fn copy_opaque(
         let _ = output.abort(moq_net::Error::NotFound);
         return;
     };
-    copy_checked(input, output, &counters, &OPAQUE).await;
+    copy_checked(input, output, &counters, opaque_bounds()).await;
 }
 
 /// Serve the picture and window tracks subscribers ask of one publication:
@@ -879,84 +900,9 @@ async fn forward_picture(
     let output = request.accept(moq_net::track::Info::default().with_max_age(PICTURE_RETAIN));
     let watched = output.clone();
     tokio::select! {
-        () = copy_pictures(input, output, layer, &counters) => {}
+        () = copy_checked(input, output, &counters, picture_bounds(layer)) => {}
         // Nobody shows this layer any more: stop asking the publisher for it.
         _ = watched.unused() => {}
-    }
-}
-
-async fn copy_pictures(
-    mut input: moq_net::track::Subscriber,
-    output: moq_net::track::Producer,
-    layer: crate::video::Layer,
-    counters: &Arc<Counters>,
-) {
-    let mut groups: VecDeque<crate::Task> = VecDeque::new();
-    loop {
-        match next(&mut input).await {
-            // Pictures travel in groups only.
-            Next::Datagram(_) => {
-                counters.dropped.fetch_add(1, Ordering::Relaxed);
-            }
-            Next::Group(group) => {
-                groups.retain(|task| !task.is_finished());
-                if groups.len() >= MAX_GROUPS_IN_FLIGHT {
-                    groups.pop_front();
-                    counters.dropped.fetch_add(1, Ordering::Relaxed);
-                }
-                let Ok(out) = output.create_group(moq_net::group::Info::from(group.sequence))
-                else {
-                    counters.dropped.fetch_add(1, Ordering::Relaxed);
-                    continue;
-                };
-                groups.push_back(crate::Task::spawn(copy_picture_group(
-                    *group,
-                    out,
-                    layer,
-                    counters.clone(),
-                )));
-            }
-            Next::End => break,
-        }
-    }
-    drop(groups);
-    let _ = output.abort(moq_net::Error::Cancel);
-}
-
-/// Copy one group of pictures: a keyframe first, every picture of the
-/// track's own layer, at most [`crate::video::MAX_GROUP_OBJECTS`].
-async fn copy_picture_group(
-    mut input: moq_net::group::Consumer,
-    mut output: moq_net::group::Producer,
-    layer: crate::video::Layer,
-    counters: Arc<Counters>,
-) {
-    let mut count: u64 = 0;
-    loop {
-        match input.read_frame().await {
-            Ok(Some(frame)) => {
-                let valid = crate::video::validate(&frame.payload)
-                    .is_ok_and(|header| header.layer == layer && (count > 0 || header.keyframe));
-                count = count.saturating_add(1);
-                if !valid
-                    || count > crate::video::MAX_GROUP_OBJECTS
-                    || output.write_frame(frame.timestamp, frame.payload).is_err()
-                {
-                    counters.dropped.fetch_add(1, Ordering::Relaxed);
-                    let _ = output.abort(moq_net::Error::ProtocolViolation);
-                    return;
-                }
-                counters.forwarded.fetch_add(1, Ordering::Relaxed);
-            }
-            Ok(None) => {
-                let _ = output.finish();
-                return;
-            }
-            Err(_) => {
-                let _ = output.abort(moq_net::Error::Cancel);
-                return;
-            }
-        }
     }
 }
 

@@ -2164,11 +2164,17 @@ fn wait_until_their_pointer(
         assert!(
             std::time::Instant::now() < deadline,
             "gave up waiting for {what} after {:?}; it looks hung (set TILO_TEST_HANG_BOUND_SECS to wait longer).\n\
-             the shell's refusals: {:?}\nthe session says: {:?}\nthe pointers drawn: {:?}",
+             the shell's refusals: {:?}\nthe session says: {:?}\nthe pointers drawn: {:?}\n\
+             the other member's channels and planes: {}",
             tilo_test_env::hang_bound(),
             session.shell_refusals(),
             session.accessible_labels(),
-            session.drawn_peer_pointers()
+            session.drawn_peer_pointers(),
+            lounge
+                .page
+                .as_ref()
+                .map(|page| page.status().channels)
+                .unwrap_or_default()
         );
     }
 }

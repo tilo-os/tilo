@@ -84,7 +84,8 @@ fn a_genesis_is_kept_for_the_policy_that_names_its_signer_later() {
 /// channels before the workspace's history reached it, however long that
 /// takes: the history may hold the channel's genesis, and a second one would
 /// split the channel under the members already in it. Once the history is
-/// here and holds no genesis, the device founds the group itself.
+/// here and holds no genesis, its members get the founding wait to answer,
+/// and then the device founds the group itself.
 #[test]
 fn a_device_founds_no_channel_before_the_workspaces_history_reached_it() {
     let workspace = Arc::new(Workspace::default());
@@ -112,6 +113,11 @@ fn a_device_founds_no_channel_before_the_workspaces_history_reached_it() {
         .history_unheld
         .store(false, std::sync::atomic::Ordering::SeqCst);
     run(&mut [&mut entered], &mut now, 1);
+    assert!(
+        !entered.service.peers[&channel].peer.knows_group(),
+        "the members the history names are given the founding wait to answer first"
+    );
+    run(&mut [&mut entered], &mut now, 4);
     assert!(
         ready_epoch(&entered.service.access(workspace_id, channel, now)).is_some(),
         "a history that holds no genesis leaves the channel to this device to found"

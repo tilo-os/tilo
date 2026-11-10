@@ -52,9 +52,6 @@ const QUEUE: usize = 256;
 const PICTURES_QUEUED: usize = 8;
 /// Join budget: the transport, the admission preface and the setup.
 const JOINT: Duration = Duration::from_secs(10);
-/// How long a reader waits before asking again for a peer's broadcast whose
-/// read ended with nothing in it.
-const REJOIN: Duration = Duration::from_millis(100);
 /// Bytes one plane's own publication may cache at its ingress.
 const INGRESS: u64 = 2 * 1024 * 1024;
 /// Bytes a plane caches of what it hears.
@@ -687,7 +684,7 @@ impl Plane {
             if shown.contains_key(&(sender, track)) {
                 continue;
             }
-            let reader = Task::spawn(receive_pictures(self.shared.clone(), sender, track));
+            let reader = Task::spawn(receive(self.shared.clone(), sender, track));
             shown.insert((sender, track), reader);
         }
     }
@@ -948,62 +945,6 @@ fn watch_unused(shared: &Arc<Shared>, name: String, track: moq_net::track::Produ
     })
 }
 
-/// Read one shown picture track of `device`'s broadcast for as long as it is
-/// shown. Asking the broadcast for the track is the demand: the peer encodes
-/// that layer while this reader exists, and stops when it ends.
-async fn receive_pictures(shared: Arc<Shared>, device: [u8; 32], track: Track) {
-    let address = Namespace::new(&shared.join.scope, device).path();
-    let name = live::track(track);
-    loop {
-        if shared.ended() || !shared.admits(device) {
-            return;
-        }
-        let Ok(broadcast) = shared
-            .incoming
-            .consume()
-            .routed_broadcast(address.as_str())
-            .await
-        else {
-            return;
-        };
-        let Ok(peer_track) = broadcast.track(name.as_str()) else {
-            return;
-        };
-        let Ok(mut subscriber) = peer_track
-            .subscribe(moq_net::track::Subscription::default().with_max_age(retain(track)))
-            .await
-        else {
-            return;
-        };
-        // Whether the track delivered anything before it ended: an ended
-        // layer is asked for again only after the grace, not in a spin.
-        let mut heard_any = false;
-        while let Ok(Some(mut group)) = subscriber.recv_group().await {
-            while let Ok(Some(frame)) = group.read_frame().await {
-                if shared.ended() || !shared.admits(device) {
-                    return;
-                }
-                let Some((sequence, body)) = open_picture(&shared, device, track, &frame.payload)
-                else {
-                    // A frame this device may not open: the epoch or the
-                    // roster moved.
-                    return;
-                };
-                heard_any = true;
-                shared.deliver_picture(Heard {
-                    sender: device,
-                    track,
-                    sequence,
-                    body,
-                });
-            }
-        }
-        if !heard_any {
-            n0_future::time::sleep(REJOIN).await;
-        }
-    }
-}
-
 /// Open one picture object's sealed payload, keeping the header the relay
 /// validated: `None` when the epoch or the roster no longer opens it.
 fn open_picture(
@@ -1160,6 +1101,20 @@ async fn read(
                         }
                         if hear_voice(shared, device, &object) {
                             played = Some(object.sequence);
+                        }
+                        continue;
+                    }
+                    if matches!(track, Track::Camera(_) | Track::Screen(_)) {
+                        // A picture keeps the header the relay validated.
+                        if let Some((sequence, body)) =
+                            open_picture(shared, device, track, &frame.payload)
+                        {
+                            shared.deliver_picture(Heard {
+                                sender: device,
+                                track,
+                                sequence,
+                                body,
+                            });
                         }
                         continue;
                     }

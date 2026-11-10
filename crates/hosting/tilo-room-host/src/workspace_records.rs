@@ -306,6 +306,31 @@ impl WorkspaceRecords {
         Ok(bodies)
     }
 
+    /// The channel governance `workspace_id` retains, each frame with its
+    /// author, in order: what a linking device is handed, as a relay session
+    /// replays it.
+    pub(crate) async fn channel_governance(
+        &self,
+        workspace_id: u64,
+    ) -> Vec<([u8; 32], neighbour_wire::NeighbourMsg)> {
+        let Ok(retained) = self.retained(workspace_id).await else {
+            return Vec::new();
+        };
+        retained
+            .into_iter()
+            .filter_map(|retained| {
+                let message = postcard::from_bytes(&retained.body).ok()?;
+                matches!(
+                    message,
+                    neighbour_wire::NeighbourMsg::MlsGovernance { .. }
+                        | neighbour_wire::NeighbourMsg::MlsAccessRequest { .. }
+                        | neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest { .. }
+                )
+                .then_some((retained.author, message))
+            })
+            .collect()
+    }
+
     /// Wait until every host commit queued for `workspace_id` so far is
     /// durable.
     pub(crate) async fn settled(&self, workspace_id: u64) {

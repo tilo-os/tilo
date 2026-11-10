@@ -32,14 +32,6 @@ impl DisplayRect {
         ))
     }
 
-    pub fn contains_x(&self, x: i32) -> bool {
-        x >= self.x && x < self.x.saturating_add_unsigned(self.width)
-    }
-
-    pub fn contains_y(&self, y: i32) -> bool {
-        y >= self.y && y < self.y.saturating_add_unsigned(self.height)
-    }
-
     pub fn intersects(&self, other: Self) -> bool {
         self.x < other.x.saturating_add_unsigned(other.width)
             && self.x.saturating_add_unsigned(self.width) > other.x

@@ -1423,11 +1423,17 @@ impl Workspaces {
     /// Serve `workspace`'s replica over the direct link, keeping its history
     /// at the host's store, and take in what its members send there.
     fn serve_direct(&self, workspace: &GovernedWorkspace) -> Result<(), String> {
+        let records = self.inner.host.records.clone();
+        let workspace_id = workspace.workspace_id();
         let link = tilo_peer_state::direct::DirectSync::over(
             workspace.peer.clone(),
             self.inner.host.key.clone(),
         )
-        .with_store(Arc::clone(&self.inner.store));
+        .with_store(Arc::clone(&self.inner.store))
+        .with_channel_history(Arc::new(move || {
+            let records = records.clone();
+            Box::pin(async move { records.channel_governance(workspace_id).await })
+        }));
         self.inner.direct.serve(link.clone())?;
         self.follow_link(workspace, &link);
         Ok(())

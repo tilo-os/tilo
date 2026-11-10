@@ -152,6 +152,15 @@ struct Admission {
     workspace: tilo_desktop_model::WorkspaceId,
 }
 
+/// The workspace's channel governance as a host retains it, each frame with
+/// its author.
+pub type ChannelHistory = Arc<
+    dyn Fn() -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Vec<([u8; 32], NeighbourMsg)>> + Send>,
+        > + Send
+        + Sync,
+>;
+
 struct Inner {
     replica: Replica,
     /// Where this device's engine owns the workspace: frames are admitted into
@@ -182,6 +191,8 @@ struct Inner {
     /// device's members' links: the device's session, which hands it to its
     /// apps and channels and on to the workspace's own host.
     hearing: Option<Hearing>,
+    /// Handed with the catch-up ([`DirectSync::with_channel_history`]).
+    channels: Option<ChannelHistory>,
 }
 
 /// Where a device takes what its members' links bring it, in the workspace
@@ -231,6 +242,7 @@ impl DirectSync {
             replay: Arc::default(),
             fan_out: std::sync::atomic::AtomicBool::new(false),
             hearing: None,
+            channels: None,
         }))
     }
 
@@ -255,6 +267,7 @@ impl DirectSync {
             replay: Arc::clone(&self.0.replay),
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
             hearing: self.0.hearing.clone(),
+            channels: self.0.channels.clone(),
         }))
     }
 
@@ -273,7 +286,24 @@ impl DirectSync {
             replay: Arc::clone(&self.0.replay),
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
             hearing: Some(hearing),
+            channels: self.0.channels.clone(),
         }))
+    }
+
+    /// Hand every device that links the channel governance `channels` reads,
+    /// with this device's own: the history a link replays keeps sealed records
+    /// only. Call it before cloning the link to its handlers.
+    #[must_use]
+    pub fn with_channel_history(&self, channels: ChannelHistory) -> Self {
+        let mut link = self.sharing(
+            self.0.replica.clone(),
+            self.0.admission.clone(),
+            self.0.store.clone(),
+        );
+        if let Some(inner) = Arc::get_mut(&mut link.0) {
+            inner.channels = Some(channels);
+        }
+        link
     }
 
     /// Keep this workspace's sealed history at `store` and hand it to the
@@ -308,6 +338,7 @@ impl DirectSync {
             replay: Arc::clone(&self.0.replay),
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
             hearing: self.0.hearing.clone(),
+            channels: self.0.channels.clone(),
         }))
     }
 
@@ -592,7 +623,19 @@ impl DirectSync {
         // Taken after the catch-up, which the caller subscribed before: a
         // change published in between reaches the link after the history
         // rather than not at all.
-        let catch_up = self.catch_up()?;
+        let mut catch_up = self.catch_up()?;
+        if let Some(channels) = &self.0.channels {
+            catch_up.extend(
+                channels()
+                    .await
+                    .into_iter()
+                    .map(|(from, message)| Authored {
+                        from,
+                        message,
+                        published: false,
+                    }),
+            );
+        }
         let send = connection
             .open_uni()
             .await

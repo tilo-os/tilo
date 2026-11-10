@@ -225,13 +225,10 @@ pub trait ChannelDirectory: collab_types::signer::MaybeSendSync {
     fn announce_at(&self, at: u64) {
         tilo_identity_host::policy_change::wake_at(at.saturating_mul(1_000_000_000));
     }
-    /// Whether this device holds `workspace`'s channel governance as the
-    /// workspace keeps it: `false` while a device that joined a workspace
-    /// hosted elsewhere has not had its host's history replayed yet. Such a
-    /// device creates no group ([`ChannelEncryption::found`]) until it does:
-    /// the history may hold the channel's genesis already, and a second one
-    /// would split the channel under the members already in it. `true` (the
-    /// default) where there is no history to wait for.
+    /// `false` while a device that entered a workspace hosted elsewhere has
+    /// not had its host's history replayed: it founds no group before then
+    /// ([`ChannelEncryption::found`]), as a second genesis would split the
+    /// channel under its members.
     fn history_held(&self, workspace: WorkspaceId) -> bool {
         let _ = workspace;
         true
@@ -558,6 +555,9 @@ struct Founding {
     /// Whether the policy, when last read, let this device read the channel
     /// and so create its group.
     allowed: bool,
+    /// Whether the workspace's history was here when last looked at: the
+    /// wait starts over once it arrives.
+    history: bool,
 }
 
 /// One channel this device takes part in.
@@ -1819,7 +1819,21 @@ impl ChannelEncryption {
             return;
         }
         let (workspace, route) = (entry.workspace, entry.route.clone());
-        if !self.directory.history_held(workspace) {
+        let held = self.directory.history_held(workspace);
+        let Some(entry) = self.peers.get_mut(&channel) else {
+            return;
+        };
+        if !held {
+            entry.founding.history = false;
+            return;
+        }
+        if !std::mem::replace(&mut entry.founding.history, true) {
+            // The history holds no genesis: its members get the wait to answer.
+            let device = entry.peer.device();
+            entry.founding.at = now
+                .checked_add(found_after(&device, channel))
+                .unwrap_or(now);
+            entry.retry = Backoff::now(now, REQUEST_FIRST);
             return;
         }
         let reads = self
@@ -1938,6 +1952,7 @@ impl ChannelEncryption {
                 founding: Founding {
                     at: found_at,
                     allowed: !self.reads_only(),
+                    history: true,
                 },
                 wanted: true,
                 held: Vec::new(),
