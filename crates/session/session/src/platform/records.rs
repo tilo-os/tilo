@@ -427,14 +427,11 @@ pub fn noting(store: Store, changes: Changes) -> Store {
     }
 }
 
-/// Note every write to the records kept under `root` in `changes`, for as long as the returned
-/// watch is held: the store is a directory tree the apps of the workspaces write from their own
-/// processes, so its files are what tells the one change stream that a record moved when this
-/// session did not write it.
-///
-/// What is below a package's workspaces is the indexes and records of them; the rest of the data
-/// home — the installed programs, the caches beside them — is watched for the workspaces that
-/// appear, and nothing it holds is a record.
+/// Note every write to the records kept under `root` in `changes`, for as long as the watch is
+/// held: the store is a directory tree the apps of the workspaces write from their own processes,
+/// so its files are what tells the one change stream that a record moved when this session did not
+/// write it. Only the workspaces below a package are watched; the rest of the data home is watched
+/// for them appearing, and nothing it holds is a record.
 #[cfg(target_os = "linux")]
 #[must_use]
 pub fn follow(root: &Path, changes: &Changes) -> Option<tilo_files::native::ChangeWatch> {

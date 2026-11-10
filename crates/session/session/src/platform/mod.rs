@@ -10,8 +10,8 @@
 //! host, the browser's store, and the page's own transport.
 //!
 //! Each concern the roles ask for lives here as one seam, so a role names
-//! the effect and never a platform crate: [`watched`] is the store a value
-//! is kept current in, and a concern with a Linux half in [`session`] gains
+//! the effect and never a platform crate: [`records::Reading`] is the value a
+//! change keeps current, and a concern with a Linux half in [`session`] gains
 //! its page half here beside it.
 
 #[cfg(target_os = "linux")]
@@ -67,10 +67,6 @@ pub trait Models: Send + Sync {
 
 /// The layers the session's roles draw on: a panel, a roster or a card, shown over the windows.
 pub mod surfaces;
-
-/// A value the host keeps current: a directory of files it watches on a
-/// Linux desktop, the page's own store on the web.
-pub mod watched;
 
 /// Where the activity model's code is, when a host does not link it in.
 pub mod pane;

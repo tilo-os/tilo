@@ -79,16 +79,8 @@ pub struct Records {
 }
 
 impl Records {
-    /// The records this device keeps, read now and followed from then on: the same documents the
-    /// apps of its workspaces write, in the platform data directory.
-    #[cfg(target_os = "linux")]
-    #[must_use]
-    pub fn of_device() -> Self {
-        Self::of(cli::data_home())
-    }
-
-    /// [`Self::of_device`] over the store rooted at `root` , for a session whose device keeps its
-    /// state somewhere else.
+    /// The records this device keeps, in the store rooted at `root`: the same documents the apps
+    /// of its workspaces write, read now and followed from then on, in this process or theirs.
     #[cfg(target_os = "linux")]
     #[must_use]
     pub fn of(root: PathBuf) -> Self {
@@ -243,22 +235,21 @@ fn name_in(root: &Path, workspace: &str, package: &str, record: RecordCheckout) 
 }
 
 /// The indexes in `store` , read now and again whenever the records of this device move.
+#[cfg(target_os = "linux")]
 fn reading(store: Store, changes: &crate::platform::records::Changes) -> Reading<Vec<Held>> {
-    #[cfg(target_os = "linux")]
-    {
-        let reading = store;
-        Reading::start(
-            "tilo-search-records",
-            changes.clone(),
-            Watch::Any,
-            move || read_indexes(reading.as_ref()),
-            || {},
-        )
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        Reading::read(changes, &Watch::Any, move || read_indexes(store.as_ref()))
-    }
+    Reading::start(
+        "tilo-search-records",
+        changes.clone(),
+        Watch::Any,
+        move || read_indexes(store.as_ref()),
+        || {},
+    )
+}
+
+/// [`reading`] where this host has one thread: read now, and again as the stream says they moved.
+#[cfg(not(target_os = "linux"))]
+fn reading(store: Store, changes: &crate::platform::records::Changes) -> Reading<Vec<Held>> {
+    Reading::read(changes, &Watch::Any, move || read_indexes(store.as_ref()))
 }
 
 /// Every record the indexes in `store` name, by id, with the workspaces that name it. A record
@@ -273,7 +264,9 @@ fn read_indexes(store: &dyn DurableStore) -> Vec<Held> {
     };
     let mut held: BTreeMap<String, Held> = BTreeMap::new();
     for (package, workspace) in indexes {
-        for (record, name) in named_in(store, &package, &workspace) {
+        for (record, name) in crate::platform::records::named_checkouts(store, &package, &workspace)
+            .unwrap_or_default()
+        {
             let entry = held
                 .entry(record.id.as_str().to_owned())
                 .or_insert_with(|| Held {
@@ -292,16 +285,6 @@ fn read_indexes(store: &dyn DurableStore) -> Vec<Held> {
         }
     }
     held.into_values().collect()
-}
-
-/// The records `package` 's index for `workspace` names, each with what it is called there, as the
-/// store holds it: read without taking a writer, since an app of the workspace owns the index.
-fn named_in(
-    store: &dyn DurableStore,
-    package: &str,
-    workspace: &str,
-) -> Vec<(RecordCheckout, Option<String>)> {
-    crate::platform::records::named_checkouts(store, package, workspace).unwrap_or_default()
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 //! The workspace's activity: the desk's own document ([`crate::desk_doc`]) and the records its apps
 //! keep in the store, served to the Activity app and to presence.
-//! A record is read away from the loop ([`crate::platform::watched`]) and a change asks the desk for
+//! A record is read away from the loop ([`crate::platform::records::Reading`]) and a change asks the desk for
 //! the frame that lists it; what this device has seen of a workspace is its own ([`HistoryMaps`]) and
 //! never reaches a shared record.
 
@@ -35,7 +35,6 @@ use crate::platform::Store;
 use crate::platform::apps::Apps;
 use crate::platform::authors::{People, Writers};
 use crate::platform::pane::Pane;
-#[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
 use tilo_actions::remote::workspace_activity as wire;
 use ui::record::{RecordCheckout, RecordId, RecordKind};

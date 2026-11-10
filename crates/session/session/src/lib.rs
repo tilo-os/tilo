@@ -244,7 +244,6 @@ mod lock_service;
 mod look;
 pub mod mentions;
 #[cfg(target_os = "linux")]
-#[cfg(target_os = "linux")]
 pub mod nearby_transfer;
 #[cfg(target_os = "linux")]
 mod network;
