@@ -15,7 +15,12 @@ pub(crate) struct CachedDocument {
     serialized: Arc<OnceLock<Vec<u8>>>,
     policy: Arc<OnceLock<PolicyData>>,
     identities: Arc<OnceLock<IdentityViews>>,
+    certificates: Arc<OnceLock<IdentityCertificates>>,
 }
+/// The device certificate of each governed identity row whose signature
+/// verifies, keyed like [`PolicyData::identities`].
+pub(crate) type IdentityCertificates =
+    std::collections::BTreeMap<String, crate::verified_certificate::VerifiedCertificate>;
 /// Each governed identity row decoded, keyed like
 /// [`PolicyData::identities`]; an undecodable row keeps its decode error.
 pub(crate) type IdentityViews = std::collections::BTreeMap<
@@ -37,6 +42,8 @@ impl PolicyData {
     /// The workspace's authority as recorded: owner, members and the grants on
     /// `workspace`'s nodes.
     pub(crate) fn workspace_policy(&self, workspace: &str) -> tilo_action_policy::WorkspacePolicy {
+        #[cfg(test)]
+        WORKSPACE_POLICIES.with(|count| count.set(count.get().saturating_add(1)));
         tilo_action_policy::WorkspacePolicy {
             workspace: workspace.to_owned(),
             owner: self.owner.clone(),
@@ -59,6 +66,7 @@ impl From<AutoCommit> for CachedDocument {
             serialized: Arc::default(),
             policy: Arc::default(),
             identities: Arc::default(),
+            certificates: Arc::default(),
         }
     }
 }
@@ -75,6 +83,7 @@ impl DerefMut for CachedDocument {
         self.serialized = Arc::default();
         self.policy = Arc::default();
         self.identities = Arc::default();
+        self.certificates = Arc::default();
         #[cfg(test)]
         if Arc::strong_count(&self.doc) > 1 {
             DETACHES.with(|count| count.set(count.get().saturating_add(1)));
@@ -106,6 +115,26 @@ impl CachedDocument {
                 .collect()
         })
     }
+    /// The signature-verified device certificates of [`Self::identities`],
+    /// each verified once per document state rather than whenever the
+    /// workspace's member devices are listed. Validity at an instant,
+    /// revocation and membership are still the caller's to check.
+    pub(crate) fn identity_certificates(&self) -> &IdentityCertificates {
+        self.certificates.get_or_init(|| {
+            self.identities()
+                .iter()
+                .filter_map(|(key, identity)| {
+                    let certificate = identity.as_ref().ok()?.device_cert.clone();
+                    let verified =
+                        crate::verified_certificate::VerifiedCertificate::historical_typed(
+                            certificate,
+                        )
+                        .ok()?;
+                    Some((key.clone(), verified))
+                })
+                .collect()
+        })
+    }
     pub(crate) fn saved(&self) -> Vec<u8> {
         self.saved_bytes().to_vec()
     }
@@ -131,6 +160,11 @@ pub(crate) fn take_copies_and_saves() -> (usize, usize) {
         DETACHES.with(|count| count.replace(0)),
         SERIALIZATIONS.with(|count| count.replace(0)),
     )
+}
+#[cfg(test)]
+thread_local! {
+    /// The workspace policies built from governance data on this thread.
+    pub(crate) static WORKSPACE_POLICIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 #[cfg(test)]
 thread_local! { pub(crate) static IDENTITY_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }

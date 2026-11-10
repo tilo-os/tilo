@@ -852,9 +852,10 @@ impl PeerHandle {
     /// `name`: the host is first asked to govern it
     /// ([`tilo_relay_protocol::workspaces::WorkspacesRequest::Place`]), creating it
     /// unless it does, so the workspace has governance like every other; then it
-    /// is subscribed. Where the host places nothing for this device (a workspace
-    /// of another person's, a host reached without its administration route),
-    /// workspace is subscribed as it is, and its own admission decides.
+    /// is subscribed. A device of another person than the host's asks nothing
+    /// of the kind, which only the host's person may do: the workspace is
+    /// subscribed at once and its own admission decides, as it does where the
+    /// host places nothing (a host reached without its administration route).
     ///
     /// # Errors
     ///
@@ -1852,6 +1853,16 @@ impl Task {
         });
     }
 
+    /// Ask the host for every joined workspace whole again, as a refresh
+    /// does: no position, no admission failure kept. `false` when the
+    /// session took no more.
+    fn refresh(&mut self, client: &RelayClient) -> bool {
+        self.clear_admission_failure();
+        self.positions.clear();
+        self.received.clear();
+        self.resubscribe(client)
+    }
+
     async fn serve(
         &mut self,
         client: RelayClient,
@@ -1901,11 +1912,7 @@ impl Task {
                         return Exit::Reconnect;
                     }
                     Some(Command::Refresh) => {
-                        self.clear_admission_failure();
-                        // A refresh asks for the workspaces whole: no position.
-                        self.positions.clear();
-                        self.received.clear();
-                        if !self.resubscribe(&client) {
+                        if !self.refresh(&client) {
                             return Exit::Lost("host session saturated".into());
                         }
                     }
@@ -2231,6 +2238,9 @@ impl Task {
         };
         if self.workspaces.contains(&workspace_id) {
             return true;
+        }
+        if !places_workspaces(&self.config.cert, &self.config.host_cert) {
+            return self.join(workspace_id, client);
         }
         self.update(|status| {
             status.workspaces.entry(workspace_id).or_insert(false);
@@ -3774,9 +3784,36 @@ fn answered<T: serde::de::DeserializeOwned>(frame: &[u8]) -> Result<T, String> {
     postcard::from_bytes(frame).map_err(|error| format!("the answer does not decode: {error}"))
 }
 
+/// Whether `cert`'s device may ask the host certified as `host` to place a
+/// workspace: only a device of the host's own person may; the host refuses
+/// anyone else's, so a visitor's page never asks.
+fn places_workspaces(cert: &DeviceCert, host: &DeviceCert) -> bool {
+    cert.user_public_key == host.user_public_key
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A visitor's page joins a workspace of another person's host without
+    /// asking that host to place it, which the host refuses to anyone but its
+    /// own person; a page of the host's person still asks.
+    #[test]
+    fn only_the_hosts_person_asks_it_to_place_a_workspace() {
+        let cert = |user: u8, device: u8| DeviceCert {
+            user_public_key: [user; 32],
+            device_public_key: [device; 32],
+            device_label: String::new(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        let host = cert(1, 2);
+        assert!(places_workspaces(&cert(1, 3), &host));
+        assert!(!places_workspaces(&cert(4, 5), &host));
+    }
 
     fn status(workspaces: &[(u64, bool)]) -> PeerStatus {
         PeerStatus {

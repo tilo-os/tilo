@@ -98,7 +98,7 @@ pub use sealed_compaction::{
 fn err(error: impl ToString) -> String {
     error.to_string()
 }
-fn now_ns(now: SystemTime) -> u64 {
+pub(crate) fn now_ns(now: SystemTime) -> u64 {
     now.duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos()
@@ -137,13 +137,13 @@ impl MemberAuthority {
     /// The member's authority, held to `foreign_bound` on a foreign device.
     #[must_use]
     pub fn authority<'a>(&'a self, foreign_bound: &'a [Grant]) -> Authority<'a> {
-        let authority = self
-            .policy
-            .person_on_device(&self.person, self.foreign, foreign_bound);
-        match &self.delegate {
-            Some(bound) => authority.bounded_by(bound.party(&self.policy.grants)),
-            None => authority,
-        }
+        backend::access::member_authority(
+            &self.policy,
+            &self.person,
+            self.foreign,
+            self.delegate.as_ref(),
+            foreign_bound,
+        )
     }
     /// Whether the member may perform an action of `kind` at `node` at `now`.
     #[must_use]
@@ -1078,9 +1078,8 @@ impl StatePeer {
         source: [u8; 32],
         now: SystemTime,
     ) -> Result<MemberAuthority, MembershipError> {
-        let (role, agent) = backend::member::legacy(&self.core, &source, now)?;
-        let cert = self.certificate(&source, now)?;
-        // `legacy` above already read the workspace document this policy is
+        let member = self.member(&source, now)?;
+        // `member` above already read the workspace document this policy is
         // decided against, and the peer holds it for its whole life.
         let policy = self
             .core
@@ -1089,11 +1088,26 @@ impl StatePeer {
             .ok_or(MembershipError::GovernanceMissing)?
             .policy()
             .workspace_policy(&self.core.workspace);
-        let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
         Ok(MemberAuthority {
+            role: member.role,
+            person: member.person,
+            policy,
+            foreign: member.foreign,
+            delegate: member.delegate,
+        })
+    }
+    /// [`Self::permissions`] without the workspace's policy.
+    fn member(
+        &self,
+        source: &[u8; 32],
+        now: SystemTime,
+    ) -> Result<backend::access::Member, MembershipError> {
+        let (role, agent) = backend::member::legacy(&self.core, source, now)?;
+        let cert = self.certificate(source, now)?;
+        let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
+        Ok(backend::access::Member {
             role,
             person: person.id().to_owned(),
-            policy,
             foreign: backend::member::foreign(cert, &self.core.origin),
             delegate: agent,
         })
@@ -1191,17 +1205,37 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<(), String> {
         let member = self.membership(device, now)?;
-        let allowed = backend::access::document_read(
-            &member.authority(&tilo_action_policy::roles::foreign_device_bound()),
-            &self.core.workspace,
-            app,
-            record,
+        backend::access::check_document_read(
+            &member.policy,
+            &member.person,
+            member.foreign,
+            member.delegate.as_ref(),
+            (&self.core.workspace, app, record),
             now,
-        );
-        if !allowed {
-            return Err(format!("record read forbidden: {app}/{record}"));
-        }
-        Ok(())
+        )
+    }
+    /// [`Self::check_document_read`] under `policy`, the workspace's current
+    /// policy, which a caller deciding many devices builds once rather than
+    /// once for each of them.
+    pub(crate) fn check_document_read_under(
+        &self,
+        policy: &WorkspacePolicy,
+        device: [u8; 32],
+        app: &str,
+        record: &str,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        let member = self
+            .member(&device, now)
+            .map_err(|error| error.to_string())?;
+        backend::access::check_document_read(
+            policy,
+            &member.person,
+            member.foreign,
+            member.delegate.as_ref(),
+            (&self.core.workspace, app, record),
+            now,
+        )
     }
     pub fn has_governance(&self) -> bool {
         self.core.workspace_doc.is_some()

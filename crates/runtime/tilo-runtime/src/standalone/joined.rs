@@ -374,9 +374,7 @@ impl Joined {
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
         let readers = self
             .owner
-            .with_current(workspace, |view| {
-                view.peer().governance().channel_readers(at, channel, route)
-            })
+            .with_current(workspace, |view| view.channel_readers(at, channel, route))
             // Governance that cannot be read says nothing of who reads.
             .ok()
             .flatten()?;
@@ -402,9 +400,7 @@ impl Joined {
             .checked_add(std::time::Duration::from_secs(now))
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
         self.owner
-            .with_current(workspace, |view| {
-                view.peer().governance().unit_scope(at, route)
-            })
+            .with_current(workspace, |view| view.unit_scope(at, route))
             .ok()
     }
 

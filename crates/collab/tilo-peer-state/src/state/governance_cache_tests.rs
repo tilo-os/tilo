@@ -205,3 +205,152 @@ fn sync_resp_decodes_each_receipt_once() {
     );
     assert_eq!(replica.core.receipts, before);
 }
+
+/// A device certified by its own person's root, both keys derived from `n`.
+fn person_device(n: usize) -> (SigningKey, DeviceCert) {
+    let seed = |kind: u8| {
+        let mut bytes = [kind; 32];
+        bytes[..8].copy_from_slice(&u64::try_from(n).unwrap().to_le_bytes());
+        bytes
+    };
+    let root = SigningKey::from_bytes(&seed(0x40));
+    let key = SigningKey::from_bytes(&seed(0x80));
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: format!("device-{n}"),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut cert, &root).unwrap();
+    (key, cert)
+}
+
+/// A workspace of `people` editors and its owner, whose grants keep the first
+/// person from `named` records: the governed peer, and the people's devices.
+fn crowded_workspace(people: usize, named: usize, now: SystemTime) -> (StatePeer, Vec<DeviceCert>) {
+    let (owner_key, owner) = person_device(people);
+    let people: Vec<DeviceCert> = (0..people).map(|n| person_device(n).1).collect();
+    let roster: Vec<DeviceCert> = std::iter::once(owner.clone())
+        .chain(people.iter().cloned())
+        .collect();
+    let mut doc =
+        crate::workspace::candidate(None, &seed_workspace(WORKSPACE, &owner, &roster).unwrap())
+            .unwrap();
+    let members = doc.get(ROOT, "members").unwrap().unwrap().1;
+    for cert in &people {
+        doc.put(
+            &members,
+            hex::encode(cert.user_public_key).as_str(),
+            automerge::ScalarValue::Bytes(serde_json::to_vec(&Role::Editor).unwrap()),
+        )
+        .unwrap();
+    }
+    let hidden = hex::encode(people[0].user_public_key);
+    let grants = doc.get(ROOT, "grants").unwrap().unwrap().1;
+    for n in 0..named {
+        let grant = Grant::new(
+            format!("hidden-{n}"),
+            Subject::person(hidden.as_str()),
+            collab_types::document_node(WORKSPACE, "so.tilo.chat", &format!("tab:{n}")),
+            tilo_action_policy::KindSet::READ,
+            tilo_action_policy::Answer::Deny,
+            Subject::person(hex::encode(owner.user_public_key)),
+        );
+        doc.put(
+            &grants,
+            grant.id.as_str(),
+            automerge::ScalarValue::Bytes(serde_json::to_vec(&grant).unwrap()),
+        )
+        .unwrap();
+    }
+    let workspace_changes = doc
+        .get_changes(&[])
+        .into_iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect();
+    let mut peer = StatePeer::new(WORKSPACE, owner, roster, RevocationList::new(), now).unwrap();
+    peer.install_seed(
+        SeedState {
+            workspace_changes,
+            documents: vec![],
+        },
+        &owner_key,
+        now,
+    )
+    .unwrap();
+    (peer, people)
+}
+
+/// A page in a workspace of hundreds of people, whose grants name many
+/// records, asks who reads a channel for every frame the channel takes in
+/// (thousands while it arrives). Each answer builds the workspace's policy a
+/// fixed number of times and verifies no certificate again: before, it built
+/// the policy once per member device per named record and verified every
+/// member's certificate, which held a page's only thread for minutes before it
+/// was admitted to such a workspace.
+#[test]
+fn a_channels_readers_cost_no_more_with_the_workspaces_people_and_named_records() {
+    const PEOPLE: usize = 300;
+    const FRAMES: usize = 10;
+    let now = SystemTime::UNIX_EPOCH
+        .checked_add(Duration::from_secs(2000))
+        .unwrap();
+    // The first person may not read any of the 20 records the grants name.
+    let (peer, people) = crowded_workspace(PEOPLE, 20, now);
+
+    let named = collab_types::document_channel_id("so.tilo.chat", WORKSPACE, "tab:0");
+    let scope = collab_types::workspace_scope(WORKSPACE);
+    let readers = |channel| {
+        peer.governance()
+            .channel_readers(now, channel, None)
+            .unwrap()
+            .unwrap()
+    };
+    let everyone = readers(scope);
+    assert_eq!(
+        everyone.len(),
+        PEOPLE + 1,
+        "every member device reads the workspace"
+    );
+    let record = readers(named);
+    assert_eq!(
+        record.len(),
+        PEOPLE,
+        "a Read Deny keeps one person's device out"
+    );
+    assert!(!record.contains(&people[0].device_public_key));
+    // A person's own record is read by that person's device alone.
+    let drafts = collab_types::ChannelRoute::new(
+        "so.tilo.chat",
+        collab_types::member_record_id(&hex::encode(people[1].user_public_key), "chat.drafts")
+            .as_str(),
+    );
+    let own = || {
+        peer.governance()
+            .channel_readers(now, drafts.channel(WORKSPACE), Some(&drafts))
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(own(), BTreeSet::from([people[1].device_public_key]));
+
+    crate::cached_document::WORKSPACE_POLICIES.with(|count| count.set(0));
+    crate::state::CERTIFICATE_VERIFICATIONS.with(|count| count.set(0));
+    for _ in 0..FRAMES {
+        assert_eq!(readers(named), record);
+        assert_eq!(readers(scope), everyone);
+        assert_eq!(own().len(), 1);
+    }
+    assert!(
+        crate::cached_document::WORKSPACE_POLICIES.with(std::cell::Cell::get) <= 5 * FRAMES,
+        "the policy is built a fixed number of times per question, not per device or record"
+    );
+    assert_eq!(
+        crate::state::CERTIFICATE_VERIFICATIONS.with(std::cell::Cell::get),
+        0,
+        "each member's certificate is verified once for the governance state"
+    );
+}

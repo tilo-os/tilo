@@ -551,8 +551,6 @@ impl ChannelDirectory for OwnerDirectory {
             .owner
             .with_current(workspace, |view| {
                 Ok(view
-                    .peer()
-                    .governance()
                     .channel_readers(at, channel, route)?
                     .map(|mut readers| {
                         if reader {
@@ -584,9 +582,7 @@ impl ChannelDirectory for OwnerDirectory {
     ) -> Option<ChannelId> {
         let at = UNIX_EPOCH.checked_add(Duration::from_secs(now))?;
         self.owner
-            .with_current(workspace, |view| {
-                view.peer().governance().unit_scope(at, route)
-            })
+            .with_current(workspace, |view| view.unit_scope(at, route))
             .ok()
     }
 
