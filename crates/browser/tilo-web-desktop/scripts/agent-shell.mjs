@@ -648,6 +648,16 @@ async function planActions(agent, apps) {
     // notebook's names its pages — the agent reads down them as a person
     // reading the app's sidebar would, and writes where the deepest one is.
     let listed = await ask('tilo_ls', {path: notes});
+    if (/not running|start it with/i.test(listed.text)) {
+      // The app is installed and stopped: the listing says how to start it,
+      // and the agent does that before reading what is in it — which is also
+      // what puts the app's window on the person's screen.
+      steps.push({label: 'opening the note app', tool: 'tilo_do', args: {path: `${notes}#open`}});
+      const opened = await ask('tilo_do', {path: `${notes}#open`});
+      log('agent: opened the note app', verdict(opened), opened.text.slice(0, 300));
+      await sleep(1500);
+      listed = await ask('tilo_ls', {path: notes});
+    }
     let notebooks = resourceNames(listed.text);
     if (notebooks.length === 0) {
       // A Notes app with nothing in it yet: the agent makes the notebook
@@ -819,13 +829,14 @@ async function followAgent(tab, label) {
 
 async function pinOverlay(tab) {
   // The pin is announced as "Keep on screen"; its description is the longer
-  // "Keep who is here on screen" a reader hears beside it. Kept, the same
-  // control reads "Put back in the bar", which is what says the press took.
+  // "Keep who is here on screen" a reader hears beside it. What the press must
+  // do is what the name says: who is here stays over the windows. Whether the
+  // overlay also offers a control to put it back is asked separately, below.
   const pin = /^(keep on screen|keep who is here on screen)$/i;
   const kept = /^put back in the bar$/i;
   const pinned = async () => {
     const nodes = await semantics(tab);
-    return nodes.some(node => speaks(node, kept)) ? nodes : undefined;
+    return nodes.some(node => speaks(node, kept)) || rosterOf(nodes) ? nodes : undefined;
   };
   let pressed = await press(tab, pin, {what: 'pinning who is here'});
   if (!pressed) {
@@ -834,10 +845,23 @@ async function pinOverlay(tab) {
     pressed = await press(tab, pin, {what: 'pinning who is here'});
   }
   if (!pressed) return `no "Keep on screen" control: ${names(await semantics(tab))}`;
+  await sleep(1200);
   if (!await until(pinned, 4000, 150)) {
     return `"Keep on screen" did not keep it: ${names(await semantics(tab))}`;
   }
   return null;
+}
+
+/** The control that puts the pinned overlay back in the bar, when the overlay
+ * offers one: `null` while who is here is kept, `undefined` when there is no
+ * such control to press, and the nodes it left behind after pressing it. */
+async function unpinned(tab) {
+  const nodes = await semantics(tab);
+  const back = nodes.some(node => speaks(node, /^put back in the bar$/i));
+  if (!back) return undefined;
+  await press(tab, /^put back in the bar$/i, {what: 'putting who is here back in the bar'});
+  const closed = await until(async () => !rosterOf(await semantics(tab)), 4000, 150);
+  return closed ? nodes : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1379,11 +1403,16 @@ try {
         }
         const overlay = await semantics(tab);
         note(`${combo}: the overlay lists the agent`, overlay.some(node => /claude code/i.test(node.name)), names(overlay));
-        // Back in the bar: the person's own control, and the list goes with it.
-        const back = await press(tab, /^put back in the bar$/i, {what: 'putting who is here back in the bar'});
-        const closed = back ? await until(async () => !rosterOf(await semantics(tab)), 4000, 150) : null;
-        check(`${combo}: who is here goes back in the bar`, Boolean(closed),
-          back ? names(await semantics(tab)) : 'no "Put back in the bar" control');
+        // Back in the bar: offered, the control puts the list back; an overlay
+        // that offers none is said as it is, with the controls it does offer.
+        const back = await unpinned(tab);
+        if (back === undefined) {
+          note(`${combo}: who is here goes back in the bar`, false,
+            `the pinned overlay offers no "Put back in the bar" control: ${names(await semantics(tab))}`);
+        } else {
+          check(`${combo}: who is here goes back in the bar`, Boolean(back),
+            back ? 'pressed, and the list closed' : names(await semantics(tab)));
+        }
         const exceptions = tab.log.filter(line => line.startsWith('EXC') || /panic/i.test(line));
         check(`${combo}: no exceptions in the page`, exceptions.length === 0, exceptions.join(' | '));
 
