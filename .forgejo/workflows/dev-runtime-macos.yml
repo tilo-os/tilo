@@ -119,6 +119,7 @@ on:
       - "crates/sdk/search/**"
       - "crates/sdk/theme-sdk/**"
       - "crates/sdk/tilo-cpu-raster/**"
+      - "crates/sdk/tilo-formats/**"
       - "crates/sdk/tilo-history/**"
       - "crates/sdk/tilo-host/**"
       - "crates/sdk/tilo-resource/**"
