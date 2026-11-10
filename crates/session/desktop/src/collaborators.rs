@@ -2125,6 +2125,18 @@ mod tests {
     use super::*;
     use tilo_desktop_model::{Collaborator, DesktopTree};
 
+    /// Everything a reader is told of `node` and its children: names and descriptions both.
+    fn spoken(node: &ui::a11y::AccessNode, said: &mut Vec<String>) {
+        said.extend(
+            [node.name.clone(), node.description.clone()]
+                .into_iter()
+                .flatten(),
+        );
+        for child in &node.children {
+            spoken(child, said);
+        }
+    }
+
     fn row(id: &str, label: &str) -> RosterRow {
         RosterRow {
             id: id.into(),
@@ -2289,6 +2301,55 @@ mod tests {
             .filter_map(|node| node.name.clone())
             .any(|name| name == t_args("a11y-shell-follow", &[("name", "Claude Code".into())]));
         assert!(named, "the roster offers Follow Claude Code");
+    }
+
+    /// An agent's row says what it is doing now, in its own words, and the window it does it in:
+    /// its name alone leaves a person watching it no knowing whether it works or idles.
+    #[test]
+    fn an_agents_row_says_what_it_is_doing_and_where() {
+        let mut agent = row("claude", "Claude Code");
+        agent.is_agent = true;
+        agent.activity = None;
+        agent.working_in = Some((7, "Launch notes".into()));
+        agent.status = Some(RosterStatus {
+            text: "Writing in Launch notes".into(),
+            source: LineSource::Observed,
+        });
+        assert_eq!(
+            doing_line(&agent).as_deref(),
+            Some("Writing in Launch notes")
+        );
+        assert_eq!(
+            working_in_line(&agent),
+            (
+                "Writing in Launch notes".to_owned(),
+                Some("Launch notes".to_owned())
+            ),
+            "what it is doing now, and the window it does it in, under it"
+        );
+        assert!(
+            says_automatically(&agent),
+            "software's words about its work are marked as read off the work"
+        );
+        // Idle, with no line of its own, the row still names the record it worked in last.
+        agent.status = None;
+        assert_eq!(working_in_line(&agent), ("Launch notes".to_owned(), None));
+        assert!(!says_automatically(&agent));
+        let rows = vec![row("ada", "Ada"), agent];
+        let mut overlay = CollaboratorsOverlay::default();
+        paint(&mut overlay, &rows, None);
+        assert!(
+            overlay.rows[1].working_in.area() > 0.0,
+            "the line stands under the agent's row: {:?}",
+            overlay.rows[1]
+        );
+        let mut said = Vec::new();
+        spoken(&overlay.accessibility_snapshot(), &mut said);
+        let said = said.join(" ");
+        assert!(
+            said.contains("Launch notes"),
+            "a reader is told the record too: {said}"
+        );
     }
 
     /// A kept roster draws people's screens and never a screen for software: an agent's row names

@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use tilo_sort::CompactSort as _;
 
 use collab_types::presence::Shown;
-use tilo_desktop_model::{Collaborator, DesktopTree, TabId, TileContent, Workspace};
+use tilo_desktop_model::{Collaborator, DesktopTree, Status, TabId, TileContent, Workspace};
 use ui::permissions::UserId;
 use ui::presence::{PresenceCtx, PresenceKey};
 
@@ -1065,6 +1065,17 @@ fn focused_app(
         .then(|| crate::collaborators::in_app(app))
 }
 
+/// What `person` says they are doing, as the workspace's own model keeps it: their words, trimmed,
+/// and whether software said them for them rather than they typing them.
+fn doing(person: &Person) -> Option<Status> {
+    let line = person.status.as_ref()?;
+    let text = line.text.trim();
+    (!text.is_empty()).then(|| Status {
+        text: text.to_owned(),
+        automatic: line.automatic(),
+    })
+}
+
 /// Whether `text` says `name`: its words, in order, among `text`'s,
 /// whatever their case.
 fn names(text: &str, name: &str) -> bool {
@@ -1105,8 +1116,12 @@ pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person], followin
                 followed == person.id || person.devices.iter().any(|device| device.id == followed)
             });
             known.active_tab = person.tab;
+            known.in_app.clone_from(&person.focus_app);
             known.availability = Some(person.availability.id().to_owned());
             known.call = person.call.as_ref().map(ui::CallPresence::encode);
+            // What they are doing now, as their device publishes it: an agent's line is what it
+            // works on, which is the only "where" a roster row has for software.
+            known.status = doing(person);
             // Software is said on every frame too. A row this page already held (a roster it synced,
             // or one an older build wrote) carries no marker, and every surface reads the marker to
             // know an agent is an agent: it would draw as a person — a circle where software wears a
@@ -1129,12 +1144,14 @@ pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person], followin
             id: person.id.clone(),
             name: person.label.clone(),
             active_tab: person.tab,
+            in_app: person.focus_app.clone(),
             // The colour their pointer is drawn in on this desk, so a face, a pill and a caret for
             // one person all wear the one colour.
             cursor_color: Some(format!("#{r:02x}{g:02x}{b:02x}")),
             role_id: person.agent.then(|| "agent".to_owned()),
             availability: Some(person.availability.id().to_owned()),
             call: person.call.as_ref().map(ui::CallPresence::encode),
+            status: doing(person),
             ..Collaborator::default()
         });
     }
@@ -2187,6 +2204,64 @@ mod tests {
                 .all(|c| !c.following),
             "nobody is followed"
         );
+    }
+
+    /// What someone says they are doing reaches their row each frame, both on a row this page
+    /// already holds and on one it writes now: an agent whose work the bar shows is never a name
+    /// with nothing under it.
+    #[test]
+    fn collaborators_overlay_carries_what_they_are_doing() {
+        let mut tree = DesktopTree::default();
+        let workspace = tilo_desktop_model::WorkspaceSlot::default();
+        tree.workspaces
+            .push(tilo_desktop_model::Workspace::new(workspace, "Design"));
+        tree.active = workspace;
+        let person = |status: Option<Line>| Person {
+            id: "cc".into(),
+            user: None,
+            label: "Claude Code".into(),
+            devices: Vec::new(),
+            rgb: (1, 2, 3),
+            agent: true,
+            tab: None,
+            focus_app: None,
+            place: None,
+            status,
+            availability: ui::Availability::Available,
+            call: None,
+        };
+        let said = Line {
+            text: "  Writing in Launch notes ".into(),
+            source: crate::collaborators::LineSource::Observed,
+        };
+        overlay_collaborators(&mut tree, &[person(Some(said.clone()))], None);
+        let row = tree
+            .active_workspace()
+            .and_then(|workspace| workspace.collaborators.first())
+            .expect("overlaid");
+        assert_eq!(
+            row.status.as_ref().map(|status| status.text.as_str()),
+            Some("Writing in Launch notes"),
+            "their words, trimmed"
+        );
+        assert!(
+            row.status.as_ref().is_some_and(|status| status.automatic),
+            "read off what it did, never typed by it"
+        );
+        // The same row again, with the line it says a moment later.
+        overlay_collaborators(&mut tree, &[person(Some(said))], None);
+        // A line of nothing but spaces says nothing, and neither does a row nothing said of.
+        let blank = Line {
+            text: "   ".into(),
+            source: crate::collaborators::LineSource::Written,
+        };
+        overlay_collaborators(&mut tree, &[person(Some(blank))], None);
+        overlay_collaborators(&mut tree, &[person(None)], None);
+        let row = tree
+            .active_workspace()
+            .and_then(|workspace| workspace.collaborators.first())
+            .expect("still overlaid");
+        assert_eq!(row.status, None, "nothing said of it now");
     }
 
     #[test]

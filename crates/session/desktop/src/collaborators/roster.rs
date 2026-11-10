@@ -13,7 +13,7 @@ use tilo_desktop_model::{Collaborator, DesktopTree};
 
 use crate::i18n::{t, t_args};
 
-use super::{RosterRow, doing_line};
+use super::{LineSource, RosterRow, RosterStatus, doing_line};
 
 /// Every person and agent in the active workspace as the roster lists them.
 pub fn collaborator_roster_rows(desktop: &DesktopTree, local_user: &str) -> Vec<RosterRow> {
@@ -149,7 +149,27 @@ fn rows_of(
                         Some((tab, tab_title_in(workspace, tab)?))
                     })
                     .flatten(),
-                status: None,
+                // What it is doing, read off its own device's word: an agent's row is where its
+                // live work shows, not only its name.
+                status: participant
+                    .status
+                    .as_ref()
+                    .map(|status| status.text.trim())
+                    .filter(|line| !line.is_empty())
+                    .map(|line| RosterStatus {
+                        text: line.to_owned(),
+                        // Software's line about its work is read off that work ("Writing in Launch
+                        // notes"), never typed by it; a person's is theirs.
+                        source: if participant
+                            .status
+                            .as_ref()
+                            .is_some_and(|status| status.automatic)
+                        {
+                            LineSource::Observed
+                        } else {
+                            LineSource::Written
+                        },
+                    }),
                 // Everyone here can be followed, software included: following
                 // an agent that has published no view yet keeps its run in
                 // front as that arrives, and the row still says where it is.
@@ -296,6 +316,10 @@ pub(super) fn spoken_details(row: &RosterRow) -> String {
     }
     if let Some(doing) = doing_line(row) {
         details.push(doing);
+    }
+    // Where software works: the line under its row says it on screen, and a reader is told it too.
+    if let Some((_, record)) = &row.working_in {
+        details.push(in_app(record));
     }
     details.join("; ")
 }
