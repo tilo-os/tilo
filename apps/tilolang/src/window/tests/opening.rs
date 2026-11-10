@@ -170,7 +170,7 @@ fn notebook(n: usize) -> AutoCommit {
 fn first_frame_over(n: usize) -> (tilolang_tilo::index::IndexReads, u64, u64, bool) {
     let scratch = Scratch::new("first-frame");
     let records = kept("notes", notebook(n), &scratch);
-    let workspace = opened("notes", &records, &scratch);
+    let mut workspace = opened("notes", &records, &scratch);
     let host = workspace.window.host().expect("the host started");
     let reads = host.store().read_stats();
     assert_eq!(

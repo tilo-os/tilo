@@ -417,13 +417,15 @@ impl Workspace {
 
     /// The rows of the root's list, as its list reads them.
     fn root_rows(&self) -> Rc<RefCell<RemoteRows>> {
+        let lists = self.window.view().lists();
+        let key = lists
+            .iter()
+            .find(|key| !key.starts_with(DETAIL))
+            .unwrap_or_else(|| panic!("the root lists its items: {lists:?}"));
         self.window
             .view()
-            .lists()
-            .into_iter()
-            .find(|key| !key.starts_with(DETAIL))
-            .and_then(|key| self.window.view().rows_of(&key))
-            .expect("the root lists its items")
+            .rows_of(key)
+            .unwrap_or_else(|| panic!("the window holds the rows of {key}: {lists:?}"))
     }
 
     fn show_rows(&mut self, range: std::ops::Range<usize>) {
@@ -727,7 +729,7 @@ fn header_labels(shell: &UiNode, slot: &str) -> Vec<String> {
 
 #[test]
 fn a_notebook_is_the_native_tree_shell_with_the_header_the_platform_fills() {
-    let workspace = Workspace::seeded("notes");
+    let mut workspace = Workspace::seeded("notes");
     assert!(
         !workspace.shell().has_overview(),
         "no list of notes stands between the tree and the note it opens"
