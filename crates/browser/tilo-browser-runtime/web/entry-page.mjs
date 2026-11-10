@@ -75,7 +75,7 @@ async function settleWorkspace(known, runtime) {
     return JSON.parse(await runtime.hostInfo(httpsPost(origin, fetcher))).hostCert;
   };
   try {
-    return await settleFailedWorkspace(known, {hostInfo});
+    return await settleFailedWorkspace(runtime, known, {hostInfo});
   } catch (error) {
     console.warn('workspaces: this browser cannot remember them', error);
     return null;
@@ -830,7 +830,7 @@ export async function startEntryPage({mode}) {
       if (unnamed && typeof state.workspaceName === 'string' && state.workspaceName) {
         const named = {...unnamed, name: state.workspaceName};
         unnamed = null;
-        remembering(() => nameEntered(named));
+        remembering(() => nameEntered(runtime, named));
       }
       if (!state.phase) return;
       root.phase = state.phase;
@@ -1173,7 +1173,7 @@ export async function startEntryPage({mode}) {
     // The host that answers at the peer's origin now: workspaces remembered there
     // under another host went with that host's state.
     const hostDevice = page.peer ? hostDeviceOf(page.peer.host?.hostCert) : null;
-    if (hostDevice) remembering(() => forgetGoneWorkspaces({origin: page.peer.origin, hostDevice}));
+    if (hostDevice) remembering(() => forgetGoneWorkspaces(runtime, {origin: page.peer.origin, hostDevice}));
     // A session's own status (transport, admission, persistence) changes
     // without the desktop unmounting: the page follows it, and clears the
     // line it took once every one of them is well again.
@@ -1184,7 +1184,7 @@ export async function startEntryPage({mode}) {
       // A workspace entered as a member: offered again from the person's other workspaces.
       const entry = {origin: here.host, room: here.room ?? page.peer.workspace};
       remembering(() => {
-        rememberEntered({...entry, hostDevice, name: invitedTo});
+        rememberEntered(runtime, {...entry, hostDevice, name: invitedTo});
         if (!rememberedWorkspace({kind: 'room', host: entry.origin, room: entry.room})?.name) unnamed = entry;
       });
     }
@@ -1311,7 +1311,7 @@ export async function startEntryPage({mode}) {
       },
       open: async ({origin, room, name, hostDevice: holder}) => {
         keepJoinedHost({origin, room, userPublicKey: (await rootOfThisPage(page.peer)).userPublicKey});
-        remembering(() => rememberEntered({origin, room, name, hostDevice: holder}));
+        remembering(() => rememberEntered(runtime, {origin, room, name, hostDevice: holder}));
         // Creating a workspace leaves through the same save-and-close path as switching.
         await openWorkspace({choice: {origin, room, name}, page, status});
       },
@@ -1956,7 +1956,7 @@ async function ensureOwnWorkspace(page, store = globalThis.localStorage) {
   });
   const name = own.name || null;
   const hostDevice = hostDeviceOf(peer.host?.hostCert);
-  if (hostDevice) rememberEntered({origin, room: own.workspace, hostDevice, name}, store);
+  if (hostDevice) rememberEntered(await loadRuntime(), {origin, room: own.workspace, hostDevice, name}, store);
   return {id: own.workspace, name, origin};
 }
 

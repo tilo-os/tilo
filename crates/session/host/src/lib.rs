@@ -41,6 +41,7 @@ pub mod custody;
 /// page all take.
 pub mod device;
 pub mod document;
+pub mod entered;
 pub mod health;
 mod held_live;
 pub mod narration;

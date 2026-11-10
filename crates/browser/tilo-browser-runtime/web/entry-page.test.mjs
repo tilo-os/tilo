@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {chooseWorkspace, chosenWorkspace, enteredWorkspaces, joinViaHost, rememberEntered} from './workspaces.mjs';
+import {chooseWorkspace, chosenWorkspace, enteredWorkspaces, joinViaHost} from './workspaces.mjs';
 import {AdmissionError} from './admission.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 
@@ -66,6 +66,24 @@ async function fixture({boot, remembered = [], own = false, search = '', session
       calls.push(['sealed', base, host, invitation]);
       return SEALED;
     },
+    // The rules of the list are the runtime's (tilo-session-host's `entered`,
+    // tested there); these keep only what the page's steps here rely on.
+    forgetGoneWorkspaces: (list, origin, hostDevice) => {
+      const all = JSON.parse(list);
+      const gone = entry => entry.origin === origin && entry.hostDevice !== hostDevice;
+      return JSON.stringify({entered: all.filter(entry => !gone(entry)), unchoose: all.filter(gone)});
+    },
+    rememberEntered: (list, entry) => {
+      const {origin, room, hostDevice} = JSON.parse(entry);
+      const {entered, unchoose} = JSON.parse(runtime.forgetGoneWorkspaces(list, origin, hostDevice));
+      const same = kept => kept.origin === origin && kept.room === room;
+      const name = JSON.parse(entry).name ?? entered.find(same)?.name;
+      return JSON.stringify({entered: [{origin, room, hostDevice, ...(name ? {name} : {})}, ...entered.filter(kept => !same(kept))], unchoose});
+    },
+    nameEntered: (list, place, name) => {
+      const {origin, room} = JSON.parse(place);
+      return JSON.stringify({entered: JSON.parse(list).map(entry => entry.origin === origin && entry.room === room && !entry.name ? {...entry, name} : entry), unchoose: []});
+    },
   });
   globalThis.__entryPageFixture = {page, runtime, mounted: [], identity: {userPublicKey: USER}, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
     joinViaHost,
@@ -75,11 +93,10 @@ async function fixture({boot, remembered = [], own = false, search = '', session
       await options.deps.loadRuntime();
       return boot ? boot(options, page) : page;
     }};
-  rememberEntered({origin: ORIGIN, room: 'other', hostDevice: 'cd'.repeat(32), name: 'Other'});
-  // Workspaces an earlier visit kept as they were stored, whichever host held them.
-  if (remembered.length) {
-    localStorage.setItem('tilo-entered-workspaces', JSON.stringify([...JSON.parse(localStorage.getItem('tilo-entered-workspaces')), ...remembered]));
-  }
+  // A workspace an earlier visit entered, and those it kept as they were
+  // stored, whichever host held them.
+  localStorage.setItem('tilo-entered-workspaces', JSON.stringify([
+    {origin: ORIGIN, room: 'other', hostDevice: 'cd'.repeat(32), name: 'Other'}, ...remembered]));
   let source = await readFile(new URL('./entry-page.mjs', import.meta.url), 'utf8');
   source = source
     .replace("import {boot, grammar} from './entry.mjs';", 'const boot = globalThis.__entryPageFixture.boot;')

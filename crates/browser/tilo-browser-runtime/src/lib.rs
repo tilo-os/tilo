@@ -226,6 +226,9 @@ mod replication;
 // The workspaces a host governs, as the page administers them.
 #[cfg(target_arch = "wasm32")]
 mod rooms;
+// The workspaces this browser entered, by the rules every device keeps them by.
+#[cfg(target_arch = "wasm32")]
+mod entered;
 #[cfg(target_arch = "wasm32")]
 #[cfg(target_arch = "wasm32")]
 mod semantics_status;
