@@ -2443,7 +2443,7 @@ fn a_swipe_on_a_strip_that_barely_overflows_stops_at_its_end_and_never_turns_bac
         .unwrap()
         .content_width();
     drop(frame);
-    let width = u32::try_from((content - 120.0).round() as i64).unwrap();
+    let width = u32::try_from(ui::num::i64_of_f64((content - 120.0).round())).unwrap();
     let build = |width: u32| {
         let (surface, handle) = desktop(6);
         let mut frame = ui::headless::FrameHarness::for_root_with(
