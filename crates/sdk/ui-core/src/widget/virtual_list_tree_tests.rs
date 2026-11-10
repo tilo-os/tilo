@@ -43,6 +43,7 @@ impl ListModel for Nested {
         Some(TreeRow {
             parent,
             depth: None,
+            above: None,
         })
     }
 }
@@ -275,6 +276,7 @@ impl ListModel for Movable {
         Some(TreeRow {
             parent,
             depth: None,
+            above: None,
         })
     }
 
@@ -853,6 +855,7 @@ impl ListModel for Headed {
         Some(TreeRow {
             parent,
             depth: None,
+            above: None,
         })
     }
 
@@ -1049,6 +1052,7 @@ impl ListModel for OpenableTree {
         Some(TreeRow {
             parent: self.parents.get(&key).copied(),
             depth: None,
+            above: None,
         })
     }
 

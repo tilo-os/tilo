@@ -246,8 +246,8 @@ template view browse_rows<T>(
 /// Items as an outline, each item over its own to any depth, opened and closed where a person
 /// puts them, its row the one `row` draws. The outline is named `name` for a reader; the name
 /// is the page's, not a row over the items, so the page states it once. A move — a drag, `Tab`
-/// and `Shift-Tab`, the accessibility move actions — is reported with the item it lands under
-/// and the item it lands before, and `place` puts it in the one place they name:
+/// and `Shift-Tab`, the accessibility move actions — names the item that moved and the item it
+/// lands at, and `place` puts it in the one place they name:
 /// `(moved, .none, .none)` is the end of the top level, `(moved, x, .none)` the end of `x`'s
 /// own, and `(moved, .none, x)` where `x` stands. One step, so two people moving
 /// items at once never leave one in two places. A row's checkbox asks `toggled`. Give `progress`
@@ -272,7 +272,8 @@ view outline<T>(
         ui.EmptyState(empty, icon: icon)
     } else {
         ui.TreeView(name: name, fill: fill, reorder: true, tab_indents: true, hide_root: true) {
-            on drop(moved: T): place(moved, .none, .none)
+            on drop(moved: T, at: Option<T>): place(moved, .none, at)
+            on into(moved: T, at: Option<T>): place(moved, at, .none)
             for x in items {
                 // The node just above this one under the same parent, as the outline shows
                 // them: the place the actions offered on it get. None for a first child.
@@ -296,8 +297,6 @@ view outline<T>(
                     above: above,
                     progress: count,
                 ) {
-                    on drop(moved: T): place(moved, .none, x)
-                    on into(moved: T): place(moved, x, .none)
                     on check: toggled(x)
                     row: {
                         row(x, parent(x))
@@ -322,12 +321,12 @@ view outline<T>(
 ///
 /// The row chosen is the one the window has open (`opened`), and the tree keeps which branches a
 /// person opened. A move — a drag before, after or inside a row, `Tab` and `Shift-Tab`, `Alt-Up`
-/// and `Alt-Down` — is reported with the item it lands under and the item it lands before, and
-/// `place` puts it in the one place they name: `(moved, .none, .none)` is the end of the top
-/// level, `(moved, x, .none)` the end of `x`'s own, and `(moved, .none, x)` where `x` stands.
-/// A move after a row and everything under it is `place_after(moved, x)`: what stands after
-/// them is a row the tree may not have built. A tree a search narrowed moves nothing: the rows
-/// it shows are not its order.
+/// and `Alt-Down` — names the item that moved and the item it lands at, and `place` puts it in
+/// the one place they name: `(moved, .none, .none)` is the end of the top level,
+/// `(moved, x, .none)` the end of `x`'s own, and `(moved, .none, x)` where `x` stands. A move
+/// after a row and everything under it is `place_after(moved, x)`: what stands after them is a
+/// row the tree may not have built, and only the view can name the ones under it. A tree a
+/// search narrowed moves nothing: the rows it shows are not its order.
 ///
 /// `add` draws the button a row shows over its trailing corner while it is hovered or holds
 /// focus, so the tree makes what a person needs beside where it will stand. The tree is named
@@ -383,7 +382,9 @@ template view tree_rows<T>(
         ) {
             on select(x: T): set(opened, x)
             on activate(x: T): set(opened, x)
-            on drop(moved: T): place(moved, .none, .none)
+            on drop(moved: T, at: Option<T>): place(moved, .none, at)
+            on into(moved: T, at: Option<T>): place(moved, at, .none)
+            on after(moved: T, at: T): place_after(moved, at)
             if searching {
                 // The matches and the rows they stand under: the rows the search shows, each
                 // one a row of the tree in the place it keeps.
@@ -399,9 +400,6 @@ template view tree_rows<T>(
                         branch: branch(x),
                         above: above,
                     ) {
-                        on drop(moved: T): place(moved, .none, x)
-                        on into(moved: T): place(moved, x, .none)
-                        on after(moved: T): place_after(moved, x)
                         toolbar: {
                             add(x)
                         }
@@ -428,9 +426,6 @@ template view tree_rows<T>(
                         branch: branch(x),
                         above: above,
                     ) {
-                        on drop(moved: T): place(moved, .none, x)
-                        on into(moved: T): place(moved, x, .none)
-                        on after(moved: T): place_after(moved, x)
                         toolbar: {
                             add(x)
                         }

@@ -135,6 +135,11 @@ pub struct TreeRow<K> {
     /// the rows over it, so a row whose parent stands off screen — a row the host renders as it
     /// is shown, and one of a window deep in a long tree — keeps its place.
     pub depth: Option<u32>,
+    /// The row standing just over this one under the same parent, when the view says it: the
+    /// row `Tab` indents under and `Alt-Up` goes before. What the view shows between the two —
+    /// a branch's own, scrolled away — costs a move nothing, and the row it names need not be
+    /// one the list holds.
+    pub above: Option<K>,
 }
 
 /// What a tree list works out of its rows, for the rows it builds: how deep each stands, which
@@ -528,6 +533,16 @@ impl<M: ListModel> VirtualList<M> {
         depth
     }
 
+    /// The row standing over `key` under the same parent: the one the view says it is, or — a
+    /// view that says nothing of it — the row the list shows at `depth` over `index`.
+    fn above_of(&mut self, key: &M::Key, index: usize, depth: u32) -> Option<M::Key> {
+        if let Some(above) = self.tree_facts(key).and_then(|facts| facts.above) {
+            return Some(above);
+        }
+        let above = self.sibling_above(index, depth)?;
+        self.model.key_at(above)
+    }
+
     /// The row above `index` that stands as deep as `depth`, stepping over the rows under it.
     fn sibling_above(&mut self, index: usize, depth: u32) -> Option<usize> {
         let mut at = index;
@@ -569,11 +584,8 @@ impl<M: ListModel> VirtualList<M> {
         let depth = self.depth_of(key);
         match movement {
             TreeMove::Up => {
-                let above = self.sibling_above(index, depth)?;
-                Some(DropTarget::new(
-                    self.model.key_at(above)?,
-                    DropPlacement::Before,
-                ))
+                let above = self.above_of(key, index, depth)?;
+                Some(DropTarget::new(above, DropPlacement::Before))
             }
             TreeMove::Down => {
                 let below = self.sibling_below(index, depth)?;
@@ -582,16 +594,12 @@ impl<M: ListModel> VirtualList<M> {
                     DropPlacement::After,
                 ))
             }
+            // Under the row over it, which the view names: whether it takes subtasks is the
+            // owner's to refuse, whose validator knows the row even when the list has not built
+            // it.
             TreeMove::Indent => {
-                let above = self.sibling_above(index, depth)?;
-                self.model
-                    .accepts_children(above)
-                    .then(|| {
-                        self.model
-                            .key_at(above)
-                            .map(|above| DropTarget::new(above, DropPlacement::Inside))
-                    })
-                    .flatten()
+                let above = self.above_of(key, index, depth)?;
+                Some(DropTarget::new(above, DropPlacement::Inside))
             }
             // Out of the row it stands under, directly after it: a top row stays where it is.
             TreeMove::Outdent => {

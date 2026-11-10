@@ -125,7 +125,11 @@ impl Adapter {
                     };
                 }
                 if component.events.contains(&fired.event) {
-                    let value = fired.value.as_ref().and_then(|value| self.value_of(value));
+                    let described = description.event(&fired.event);
+                    let value = fired.value.as_ref().and_then(|value| match described {
+                        Some(event) => self.event_value(value, event),
+                        None => self.value_of(value),
+                    });
                     return Some(UiEvent::Fire(fired.key, fired.event, value));
                 }
                 // A reference in rich text the view gave nothing of its own to do: open it.
@@ -138,6 +142,42 @@ impl Adapter {
                 component.presents.clone().map(UiEvent::Open)
             })
             .collect()
+    }
+
+    /// What an event carries, as the runtime's value, in the parts the component describes: a
+    /// move names the row that moved and the row it lands at, and the one a parameter of an
+    /// option takes is handed over as an option — none where the part holds no row.
+    fn event_value(&self, value: &Prop, event: &ui::component::EventDescription) -> Option<Value> {
+        match (value, &event.value, &event.at) {
+            (Prop::List(parts), Some(first), Some(at)) => {
+                let typed: Option<Vec<Value>> = parts
+                    .iter()
+                    .enumerate()
+                    .map(|(index, part)| self.as_typed(part, if index == 0 { first } else { at }))
+                    .collect();
+                Some(Value::List(typed?))
+            }
+            (value, Some(ty), _) => self.as_typed(value, ty),
+            (value, None, _) => self.value_of(value),
+        }
+    }
+
+    /// `part` as the type `ty` describes it: an option takes the part as one, and a list takes
+    /// its items as the type the list describes.
+    fn as_typed(&self, part: &Prop, ty: &Type) -> Option<Value> {
+        match (part, ty) {
+            (Prop::None, Type::Option(_)) => Some(Value::Opt(None)),
+            (part, Type::Option(inner)) => {
+                Some(Value::Opt(Some(Box::new(self.as_typed(part, inner)?))))
+            }
+            (Prop::List(items), Type::List(inner)) => Some(Value::List(
+                items
+                    .iter()
+                    .map(|item| self.as_typed(item, inner))
+                    .collect::<Option<_>>()?,
+            )),
+            (part, _) => self.value_of(part),
+        }
     }
 
     /// What an event carries, as the runtime's value: a resource by the id it was given as.

@@ -5348,8 +5348,25 @@
         },
         {
           "name": "drop",
-          "doc": "A node was dropped at the end of the top level, past every row: carries the node that moved.",
-          "value": "resource"
+          "doc": "A row was dropped just before another, or moved there by the keyboard: carries the row that moved and the row it lands before — none for the end of the top level.",
+          "value": "resource",
+          "at": {
+            "option": "resource"
+          }
+        },
+        {
+          "name": "into",
+          "doc": "A row was dropped inside another, at the end of its own, or indented there by the keyboard: carries the row that moved and the row it lands inside — none for the end of the top level, which stands inside no row.",
+          "value": "resource",
+          "at": {
+            "option": "resource"
+          }
+        },
+        {
+          "name": "after",
+          "doc": "A row was dropped just after another and all that stands under it, or moved there by the keyboard: carries the row that moved and the row it lands after. The view places it past that row's own, which only the view can name: what stands under them are rows the tree may not have built.",
+          "value": "resource",
+          "at": "resource"
         }
       ],
       "state": [
@@ -7374,21 +7391,6 @@
         }
       ],
       "events": [
-        {
-          "name": "drop",
-          "doc": "A node was dropped just before this one, or moved here by the keyboard: carries the node that moved, so the owner places it before this one under the same parent.",
-          "value": "resource"
-        },
-        {
-          "name": "into",
-          "doc": "A node was dropped inside this one, at the end of its children, or indented here by the keyboard: carries the node that moved.",
-          "value": "resource"
-        },
-        {
-          "name": "after",
-          "doc": "A node was dropped just after this one and all its subtasks, or moved there by the keyboard: carries the node that moved. The view places it after this node's own, which only the view can name: what stands after them is a row the tree shows, and the rows it does not show are none of its business.",
-          "value": "resource"
-        },
         {
           "name": "check",
           "doc": "This node's checkbox was pressed: the owner toggles what the box stands for."

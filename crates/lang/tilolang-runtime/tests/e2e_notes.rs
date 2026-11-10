@@ -160,11 +160,20 @@ mod cases {
         }
     }
 
-    /// Fire the value-carrying `event` of the tree node of the note titled `title`.
-    fn move_on(view: &ViewInstance, title: &str, event: &str, moved: &ResourceRef) {
-        let key = node_titled(view, title).key.clone();
-        view.fire_with(&key, event, Some(&Value::resource(moved)))
-            .unwrap();
+    /// Tell the tree of a move: `event` is how the note `moved` lands — `drop` just before the
+    /// row `at`, `into` at the end of its own, `after` past it and all it holds — and `at` is
+    /// none where it lands at the end of the top level.
+    fn move_on(view: &ViewInstance, event: &str, moved: &ResourceRef, at: Option<&ResourceRef>) {
+        let key = the_tree(view).key.clone();
+        // The row it lands at is the place the move's parameter holds, an option: some row, or
+        // none at the end of the top level.
+        let at = at.map_or_else(Value::none, |at| Value::some(Value::resource(at)));
+        view.fire_with(
+            &key,
+            event,
+            Some(&Value::List(vec![Value::resource(moved), at])),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -385,10 +394,10 @@ mod cases {
             "and the first row at the top names none"
         );
 
-        // What the tree reports of `Tab` on the note after the branch: the branch's first child
-        // is told it was dropped on, and the note stands at the head of the branch's own.
+        // What the tree reports of `Tab` on the note after the branch: the note lands inside
+        // the branch, and the store holds it there.
         view.poll_patches().unwrap();
-        move_on(&view, "Agenda", "drop", &after);
+        move_on(&view, "into", &after, Some(&plan));
         assert_eq!(
             n.parent_of(&after),
             Some(plan),
@@ -404,7 +413,7 @@ mod cases {
         let plan = n.titled("Q3 plan");
         let meetings = n.titled("Meetings");
         let mut view = n.window();
-        move_on(&view, "Meetings", "into", &plan);
+        move_on(&view, "into", &plan, Some(&meetings));
         assert_eq!(
             n.parent_of(&plan),
             Some(meetings.clone()),
@@ -419,9 +428,9 @@ mod cases {
 
         // Dropped before a row, it takes that row's place among its own: a note of it keeps
         // the place it has in the order.
-        n.titled("Notes");
+        let notes = n.titled("Notes");
         view.poll_patches().unwrap();
-        move_on(&view, "Notes", "drop", &meetings);
+        move_on(&view, "drop", &meetings, Some(&notes));
         assert_eq!(n.parent_of(&meetings), None);
         view.poll_patches().unwrap();
         assert_eq!(
@@ -444,9 +453,12 @@ mod cases {
         let view = n.window();
         // The note it holds cannot go inside it, nor it inside that one.
         let refused = view.fire_with(
-            &node_titled(&view, "Meetings").key.clone(),
+            &the_tree(&view).key.clone(),
             "into",
-            Some(&Value::resource(&plan)),
+            Some(&Value::List(vec![
+                Value::resource(&plan),
+                Value::some(Value::resource(&meetings)),
+            ])),
         );
         assert!(
             refused.is_err(),

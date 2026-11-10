@@ -751,6 +751,29 @@ fn row_of(view: &ViewInstance, item: &Value) -> String {
     })
 }
 
+/// The tree a page's row stands in: the outline the page draws, whose moves are the tree's.
+fn outline_of(view: &ViewInstance, row: &str) -> String {
+    fn holds(node: &UiNode, row: &str) -> bool {
+        node.key == row || node.children.iter().any(|child| holds(child, row))
+    }
+    fn walk(node: &UiNode, row: &str) -> Option<String> {
+        if node.kind == "ui.TreeView" && node.children.iter().any(|child| holds(child, row)) {
+            return Some(node.key.clone());
+        }
+        node.children.iter().find_map(|child| walk(child, row))
+    }
+    walk(view.tree(), row).unwrap_or_else(|| panic!("no tree holding {row}"))
+}
+
+/// Move a task in a page's outline, as the tree reports it: `event` is how it lands — `drop`
+/// just before the row `at`, `into` at the end of its own — carrying the task that moved and the
+/// row it lands at.
+fn move_in_outline(view: &ViewInstance, moved: &Value, event: &str, at: &Value) {
+    let tree = outline_of(view, &row_of(view, at));
+    let carried = Value::List(vec![moved.clone(), Value::some(at.clone())]);
+    view.fire_with(&tree, event, Some(&carried)).unwrap();
+}
+
 /// The drawn node with this key, at any depth.
 pub(crate) fn node_of<'a>(node: &'a UiNode, key: &str) -> Option<&'a UiNode> {
     if node.key == key {
@@ -818,8 +841,7 @@ fn a_subtask_moves_and_is_checked_from_the_outline() {
             Value::text("Screenshots"),
         ]
     );
-    let key = row_of(&view, &outline);
-    view.fire_with(&key, "drop", Some(&shots)).unwrap();
+    move_in_outline(&view, &shots, "drop", &outline);
     ada.commit();
     view.poll_patches().unwrap();
     assert_eq!(
@@ -845,8 +867,7 @@ fn a_subtask_dropped_inside_another_is_nested() {
     let outline = task(&ada, "Outline");
     let draft = task(&ada, "First draft");
     let mut view = task_page(&ada, &parent);
-    let key = row_of(&view, &draft);
-    view.fire_with(&key, "into", Some(&outline)).unwrap();
+    move_in_outline(&view, &outline, "into", &draft);
     ada.commit();
     view.poll_patches().unwrap();
     assert_eq!(

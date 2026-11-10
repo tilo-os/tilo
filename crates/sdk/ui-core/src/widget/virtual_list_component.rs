@@ -657,6 +657,8 @@ impl ListModel for DescribedRows {
             super::TreeRow {
                 parent,
                 depth: None,
+                // A list says nothing of the row over a row: its rows stand in its own order.
+                above: None,
             }
         })
     }
