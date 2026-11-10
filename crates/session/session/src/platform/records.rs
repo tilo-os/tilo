@@ -4,10 +4,13 @@
 //! session's own services. Whoever writes one notes it in the one [`Changes`] stream of this host,
 //! and the roles that follow records — the activity and the person's mentions — read that stream
 //! and keep no watcher of their own. On a Linux desktop the store every in-process write lands in
-//! notes what it writes, and the record index notes what the broker receives from the apps and
-//! what a peer's change brought; on the web the page's replication notes what it takes in.
+//! notes what it writes, the store's files are watched for the writes their apps make from their
+//! own processes ([`follow`]), and the record index notes what the broker receives from the apps;
+//! on the web the page's replication notes what it takes in.
 
 use std::collections::BTreeMap;
+#[cfg(target_os = "linux")]
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 
@@ -422,6 +425,74 @@ pub fn noting(store: Store, changes: Changes) -> Store {
     {
         std::rc::Rc::new(Noted { store, changes }) as Store
     }
+}
+
+/// Note every write to the records kept under `root` in `changes`, for as long as the returned
+/// watch is held: the store is a directory tree the apps of the workspaces write from their own
+/// processes, so its files are what tells the one change stream that a record moved when this
+/// session did not write it.
+///
+/// What is below a package's workspaces is the indexes and records of them; the rest of the data
+/// home — the installed programs, the caches beside them — is watched for the workspaces that
+/// appear, and nothing it holds is a record.
+#[cfg(target_os = "linux")]
+#[must_use]
+pub fn follow(root: &Path, changes: &Changes) -> Option<tilo_files::native::ChangeWatch> {
+    let watched = root.to_path_buf();
+    let noting = changes.clone();
+    let top = root.to_path_buf();
+    tilo_files::native::Watcher::tree(root)
+        .skip(move |directory| !holds_records(directory, &watched))
+        .start(move |events| {
+            for event in events {
+                if let Some((workspace, app, record)) = changed_at(&event.path, &top) {
+                    noting.note(&workspace, &app, &record, false);
+                }
+            }
+        })
+        .map_err(|error| tracing::warn!(%error, "writes to the records are not followed"))
+        .ok()
+}
+
+/// Whether a watch of the records' tree watches `directory`: a package of the store, or anything
+/// below the workspaces of one, which is where the workspaces' indexes and records are.
+#[cfg(target_os = "linux")]
+fn holds_records(directory: &Path, root: &Path) -> bool {
+    let Ok(below) = directory.strip_prefix(root) else {
+        return false;
+    };
+    let mut parts = below.components();
+    // A package of the store: its workspaces may appear below it at any time.
+    if parts.next().is_none() {
+        return false;
+    }
+    match parts.next() {
+        None => true,
+        Some(part) => part.as_os_str() == app_state::WORKSPACES_DIR,
+    }
+}
+
+/// The record change a write to `path` under `root` is: the workspace index of `app` in
+/// `workspace` (an empty record, as the stream names a list's change), or one of the records that
+/// index names.
+#[cfg(target_os = "linux")]
+fn changed_at(path: &Path, root: &Path) -> Option<(String, String, String)> {
+    let below = path.strip_prefix(root).ok()?;
+    let names: Vec<&str> = below
+        .components()
+        .map(|part| part.as_os_str().to_str())
+        .collect::<Option<_>>()?;
+    let [app, workspaces, workspace, rest @ ..] = names.as_slice() else {
+        return None;
+    };
+    if *workspaces != app_state::WORKSPACES_DIR {
+        return None;
+    }
+    let record = match rest {
+        [records, record, ..] if *records == app_state::RECORDS_DIR => (*record).to_owned(),
+        _ => String::new(),
+    };
+    Some(((*workspace).to_owned(), (*app).to_owned(), record))
 }
 
 /// A store whose writes of the workspaces' records are noted in the change stream.

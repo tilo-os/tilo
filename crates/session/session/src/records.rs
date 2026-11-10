@@ -21,8 +21,9 @@
 //! in the stores of apps this process does not own, and one of them being
 //! slow to read must not hold up a frame. A worker reads them once and again
 //! whenever the change stream says a record of this device moved — this
-//! session naming one in an index writes the store that feeds the stream — and
-//! the loop takes what it last read.
+//! session naming one in an index writes the store that feeds the stream, and
+//! so does the app that names it in its own process, whose write the store's
+//! files report to it — and the loop takes what it last read.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -61,8 +62,13 @@ pub struct Records {
     /// The store the records are in, noting every write of one in the change stream: the session's
     /// one store for the workspaces' records, read by the activity and the person's mentions.
     store: Store,
-    /// The one stream of record changes this device's store feeds.
+    /// The one stream of record changes this device's store feeds: what this session writes, and
+    /// what the apps of the workspaces write in their own processes.
     changes: crate::platform::records::Changes,
+    /// The watch telling the change stream what the apps of the workspaces write from their own
+    /// processes; dropping it stops the news.
+    #[cfg(target_os = "linux")]
+    _followed: Option<tilo_files::native::ChangeWatch>,
     /// The indexes as last read, read again whenever the change stream says a record of this
     /// device moved: the one watcher there is.
     reading: Reading<Vec<Held>>,
@@ -90,6 +96,7 @@ impl Records {
         let plain: Store = Arc::new(app_state::FsStore::new(&root));
         let store = crate::platform::records::noting(plain, changes.clone());
         Self {
+            _followed: crate::platform::records::follow(&root, &changes),
             root: Some(root),
             ..Self::read(store, changes)
         }
@@ -106,13 +113,16 @@ impl Records {
 
     fn read(store: Store, changes: crate::platform::records::Changes) -> Self {
         // What the indexes name is read again whenever a record of this device moves: an app of a
-        // workspace naming one writes the store this stream hears, and so does this session.
+        // workspace naming one writes the store this stream hears, in this process or its own, and
+        // so does this session.
         let reading = reading(store.clone(), &changes);
         Self {
             #[cfg(target_os = "linux")]
             root: None,
             store,
             changes,
+            #[cfg(target_os = "linux")]
+            _followed: None,
             reading,
             names: RefCell::default(),
         }
