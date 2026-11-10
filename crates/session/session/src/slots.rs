@@ -14,9 +14,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use crate::platform::surfaces::slot_view::SlotSurface;
 use serde_json::Value;
 use settings_store::device_class::DeviceClass;
-use tilo_surface_host::slot_view::SlotSurface;
 
 use crate::surfaces;
 

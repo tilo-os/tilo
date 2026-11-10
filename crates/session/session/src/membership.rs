@@ -1965,7 +1965,7 @@ mod tests {
         arguments.insert("workspace".into(), workspace.into());
         let listed = session
             .invoke(
-                tilo_surface_host::shell_part::DESK_RESOURCE,
+                tilo_session_core::shell::DESK_RESOURCE,
                 "invitations",
                 &arguments,
             )
@@ -1984,7 +1984,7 @@ mod tests {
         arguments.insert("invite".into(), invite.into());
         let answer = session
             .invoke(
-                tilo_surface_host::shell_part::DESK_RESOURCE,
+                tilo_session_core::shell::DESK_RESOURCE,
                 "cancel-invitation",
                 &arguments,
             )

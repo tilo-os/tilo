@@ -32,12 +32,12 @@ use tilo_desktop::desk_verbs::{
 use tilo_onboarding::OnboardingEffect;
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::{CLIPBOARD_RESOURCE, Options, Session, quick_settings};
+use tilo_session_core::door::Published;
 use tilo_sheets::Seat as _;
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerEffect, FileRequest};
 use tilo_sheets::portal::{Body, Dialog, PortalEffect};
 use tilo_sheets::power::PowerEffect;
 use tilo_sheets::workspace_settings::{WorkspaceSettingsApp, WorkspaceSettingsEffect};
-use tilo_surface_host::Published;
 use tilo_test_env::{PrivateBus, ScopedEnv};
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
@@ -916,7 +916,7 @@ impl Published for Player {
         &mut self,
         address: &tilo_actions::ActionAddress,
         _: &serde_json::Map<String, serde_json::Value>,
-        _look: &mut tilo_surface_host::Look<'_>,
+        _look: &mut tilo_session_core::door::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         self.asked.borrow_mut().push(address.action.clone());
         Ok(ui::host_operation::ResourceOperationStart::Completed(

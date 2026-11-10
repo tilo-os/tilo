@@ -7,11 +7,11 @@
 
 pub(crate) mod mount;
 
+use crate::platform::surfaces::{AppHost, Placement};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::{HostKey, HostLayer, KeyClaim, SurfaceHost};
+use tilo_session_core::door::Published;
 use tilo_sheets::Seat;
-use tilo_surface_host::Published;
-use tilo_surface_host::{AppHost, Placement};
 use ui::application::{ApplicationDefinition, ComponentRunnerInputs, prepare_private_surface};
 use ui::host_operation::ResourceOperationStart;
 use ui::vello::kurbo::Rect;
@@ -209,7 +209,7 @@ impl<S: Seat> Published for Sheet<S> {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        look: &mut tilo_surface_host::Look<'_>,
+        look: &mut tilo_session_core::door::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
         self.host.invoke(address, arguments, look)
     }

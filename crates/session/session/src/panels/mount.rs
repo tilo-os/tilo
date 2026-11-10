@@ -15,7 +15,7 @@ use crate::panels::{ActivityLayer, Readout, ReadoutPlace, ReadoutPlaces, Reserve
 use crate::platform::surfaces::Held;
 use crate::setup::Setup;
 use crate::{BeforeDesk, SessionCommand};
-use tilo_surface_host::Doors;
+use tilo_session_core::door::Doors;
 
 /// What stands before the desk, when it stands there at all: above everything, first to the
 /// keyboard, and while it is up the only surface offering actions.
@@ -31,7 +31,7 @@ pub(crate) fn mount_setup(
     surface.map(|surface| {
         let setup = Rc::new(RefCell::new(Setup::new(surface, scale, waiter)));
         compositor.add_host(Box::new(Held::new(Rc::clone(&setup))));
-        doors.add(Rc::clone(&setup) as tilo_surface_host::Shared);
+        doors.add(Rc::clone(&setup) as tilo_session_core::door::Shared);
         setup
     })
 }
@@ -97,7 +97,7 @@ pub(crate) fn mount_controls(
     let places: ReadoutPlaces = Rc::new(RefCell::new(ReadoutPlace::default()));
     let readout = Rc::new(RefCell::new(Readout::new(scale, Rc::clone(&places), band)));
     compositor.add_host(Box::new(Held::new(Rc::clone(&readout))));
-    let shared: tilo_surface_host::Shared = readout.clone();
+    let shared: tilo_session_core::door::Shared = readout.clone();
     doors.add(shared);
     let commands = Rc::new(RefCell::new(Vec::new()));
     // The controls are a service of the session's, mounted beside the other services so an app

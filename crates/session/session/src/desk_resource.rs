@@ -1,8 +1,8 @@
 //! This device's desk as a resource of the session's: the time in the person's style, who they
 //! are, their notifications, the workspaces on this device and the strip in front, and the
 //! tasks running for them. A shell's views read it (as `session.desk` resources,
-//! `tilo_surface_host::shell_part`), and so does a script or an agent, through the door, by
-//! the same address: one reading for every reader.
+//! [`tilo_session_core::shell`]), and so does a script or an agent, through the door, by the same
+//! address: one reading for every reader.
 
 use std::rc::Rc;
 
@@ -17,8 +17,8 @@ use tilo_peer_state::join::MemberRole;
 use tilo_peer_state::join::invitations::PendingInvitation;
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
-use tilo_surface_host::shell_part::DESK_RESOURCE;
-use tilo_surface_host::{DeskReading, shell_part};
+use tilo_session_core::shell::DESK_RESOURCE;
+use tilo_session_core::shell::{self, DeskReading};
 
 use crate::i18n::t;
 use crate::notifications::NoticeSignals;
@@ -327,7 +327,7 @@ impl Surfaces {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Styles {
     pub(crate) revision: u64,
-    pub(crate) list: Vec<shell_part::DeskStyleReading>,
+    pub(crate) list: Vec<shell::DeskStyleReading>,
     /// The store's fingerprint the list was read at: a store that reads the same is not read
     /// again.
     pub(crate) fingerprint: Option<String>,
@@ -431,11 +431,7 @@ struct Standing<'a> {
 /// `handle` says what may be pictured: a window whose app holds secrets shows its app's glyph
 /// instead of its picture (`withheld`), and one that is not this device's window shows neither
 /// (`none`).
-fn window_reading(
-    tab: &Tab,
-    at: Standing<'_>,
-    handle: &DesktopHandle,
-) -> shell_part::WindowReading {
+fn window_reading(tab: &Tab, at: Standing<'_>, handle: &DesktopHandle) -> shell::WindowReading {
     use tilo_desktop_model::TileContent;
     let app = match &tab.tile {
         TileContent::Foreign { app_id, .. }
@@ -464,7 +460,7 @@ fn window_reading(
         TileContent::PeerWindow { .. } => (false, String::new(), String::new()),
         _ => (true, String::new(), String::new()),
     };
-    shell_part::WindowReading {
+    shell::WindowReading {
         key: tab.id.to_string(),
         title: if title.is_empty() {
             untitled()
@@ -504,7 +500,7 @@ fn window_reading(
 /// their order. Each window says where it stands (`place`), the workspace, strip and group it is
 /// in, its tab's place in the group and the share of the strip it keeps, so a picture can be drawn
 /// where the window stands.
-fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<shell_part::WindowReading> {
+fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<shell::WindowReading> {
     let Some(front) = tree.active_workspace() else {
         return Vec::new();
     };
@@ -609,7 +605,7 @@ fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<shell_part::Window
 /// window shows has. The walk, the mark the reading carries and the commit all count from this one
 /// list.
 fn walked(
-    windows: &[shell_part::WindowReading],
+    windows: &[shell::WindowReading],
     scope: crate::overlays::SwitcherScope,
 ) -> (Vec<usize>, Option<usize>) {
     use crate::overlays::SwitcherScope;
@@ -619,7 +615,7 @@ fn walked(
     let application = here.map(|window| window.app_key.clone());
     // The walk crosses the workspace in front alone: a window of another workspace is read and
     // searched, but Alt+Tab never takes the person out of the workspace they are in.
-    let here = |window: &shell_part::WindowReading| {
+    let here = |window: &shell::WindowReading| {
         workspace
             .as_ref()
             .is_none_or(|workspace| &window.workspace_key == workspace)
@@ -646,7 +642,7 @@ fn walked(
 /// lifted and where Alt let go lands. `None` while no walk is up.
 fn reaching(
     overlays: &crate::overlays::Overlays,
-    windows: &[shell_part::WindowReading],
+    windows: &[shell::WindowReading],
 ) -> Option<usize> {
     let (walked, front) = walked(windows, overlays.scope());
     overlays
@@ -767,7 +763,7 @@ impl Desk {
         &self,
         tree: &DesktopTree,
         now: std::time::Instant,
-    ) -> Vec<shell_part::WindowReading> {
+    ) -> Vec<shell::WindowReading> {
         let mut windows = windows(tree, &self.handle);
         if self.surfaces.overlays.revealed(now)
             && let Some(at) = reaching(&self.surfaces.overlays, &windows)
@@ -787,7 +783,7 @@ impl Desk {
             self.sync.as_ref().map_or_else(Vec::new, |sync| {
                 sync.people(tree, &self.notes.records(), &|_: &str| None)
                     .into_iter()
-                    .map(|person| shell_part::PersonReading {
+                    .map(|person| shell::PersonReading {
                         key: person.id,
                         name: person.label,
                     })
@@ -798,15 +794,12 @@ impl Desk {
             person: self.person.clone(),
             clock: ui::clock::time_of_day(&now),
             timer: self.timer(),
-            ask: self
-                .handle
-                .personal_ask()
-                .map(|ask| shell_part::AskReading {
-                    question: ask.title,
-                    detail: ask.body,
-                    answer: ask.action.title,
-                    open: ask.open,
-                }),
+            ask: self.handle.personal_ask().map(|ask| shell::AskReading {
+                question: ask.title,
+                detail: ask.body,
+                answer: ask.action.title,
+                open: ask.open,
+            }),
             weekday: ui::format::weekday_short(chrono::Datelike::weekday(&now)),
             date: ui::format::month_day(now.date_naive()),
             quiet: self.signals.quiet(),
@@ -818,7 +811,7 @@ impl Desk {
             workspaces: tree
                 .workspaces
                 .iter()
-                .map(|workspace| shell_part::WorkspaceReading {
+                .map(|workspace| shell::WorkspaceReading {
                     key: workspace.slot.0.to_string(),
                     name: workspace.name.clone(),
                     current: workspace.slot == tree.active,
@@ -840,7 +833,7 @@ impl Desk {
             rooms: tree
                 .workspaces
                 .iter()
-                .map(|workspace| shell_part::RoomReading {
+                .map(|workspace| shell::RoomReading {
                     key: workspace.slot.0.to_string(),
                     name: workspace.name.clone(),
                     current: workspace.slot == tree.active,
@@ -863,14 +856,14 @@ impl Desk {
 
     /// The floating timer as the web shell reads it: Clocks' summary while it floats over the
     /// windows.
-    fn timer(&self) -> Option<shell_part::TimerReading> {
+    fn timer(&self) -> Option<shell::TimerReading> {
         let published = self.activities.published(crate::chrome::CLOCKS_APP)?;
         if !published.overlay {
             return None;
         }
         let summary = published.summary?;
         let countdown = summary.countdown.unwrap_or_default();
-        Some(shell_part::TimerReading {
+        Some(shell::TimerReading {
             activity_id: (!summary.id.is_empty()).then(|| summary.id.clone()),
             label: summary.title.clone(),
             remaining_secs: u64::try_from(countdown).unwrap_or_default(),
@@ -902,11 +895,11 @@ impl Desk {
 
     /// The running applications' tray items, in the order they registered: each's key, the app's
     /// own words for it, and whether choosing it opens a menu rather than its window.
-    fn tray_items(&self) -> Vec<shell_part::TrayReading> {
+    fn tray_items(&self) -> Vec<shell::TrayReading> {
         self.tray.as_ref().map_or_else(Vec::new, |tray| {
             tray.snapshot()
                 .into_iter()
-                .map(|item| shell_part::TrayReading {
+                .map(|item| shell::TrayReading {
                     key: item.key,
                     title: if item.title.trim().is_empty() {
                         item.id
@@ -922,13 +915,13 @@ impl Desk {
 
 /// The notices the centre keeps, newest first, as the desk's reading names them: the banners still
 /// up and the ones retired into the centre.
-fn notices(notices: &tilo_desktop_surface::DesktopNotifications) -> Vec<shell_part::NoticeReading> {
+fn notices(notices: &tilo_desktop_surface::DesktopNotifications) -> Vec<shell::NoticeReading> {
     let log = notices.log();
     log.active()
         .iter()
         .chain(log.history().iter())
         .rev()
-        .map(|notification| shell_part::NoticeReading {
+        .map(|notification| shell::NoticeReading {
             key: notification.id.to_string(),
             title: notification.title.clone(),
             body: notification.body.clone(),
@@ -947,7 +940,7 @@ fn notices(notices: &tilo_desktop_surface::DesktopNotifications) -> Vec<shell_pa
 /// Each action a notice offers, as its sender named it.
 fn notice_actions(
     notices: &tilo_desktop_surface::DesktopNotifications,
-) -> Vec<shell_part::NoticeActionReading> {
+) -> Vec<shell::NoticeActionReading> {
     let log = notices.log();
     log.active()
         .iter()
@@ -957,7 +950,7 @@ fn notice_actions(
             notification
                 .actions
                 .iter()
-                .map(|(key, label)| shell_part::NoticeActionReading {
+                .map(|(key, label)| shell::NoticeActionReading {
                     notice: notification.id.to_string(),
                     key: key.clone(),
                     label: label.clone(),

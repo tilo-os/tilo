@@ -11,10 +11,10 @@ use std::time::{Duration, SystemTime};
 use tilo_actions::remote::session_actions::ISSUE_INVITATION;
 use tilo_desktop::workspace_settings as domain;
 use tilo_desktop_model::role_from_id;
+use tilo_session_core::shell::DESK_RESOURCE;
 use tilo_sheets::Seat as _;
 use tilo_sheets::invite as sheet;
 use tilo_sheets::{word, words};
-use tilo_surface_host::shell_part::DESK_RESOURCE;
 
 use crate::Shared;
 use crate::clipboard::Ask;

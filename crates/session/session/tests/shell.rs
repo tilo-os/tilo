@@ -30,7 +30,7 @@ use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::quick_settings;
 use tilo_session::{Options, Service as _, Session};
-use tilo_surface_host::DeskReading;
+use tilo_session_core::shell::DeskReading;
 use tilo_surface_host::shell_part::DESK_RESOURCE;
 
 const WIDTH: i32 = 1280;

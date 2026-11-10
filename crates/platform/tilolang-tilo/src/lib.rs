@@ -35,6 +35,7 @@ pub mod origin;
 pub mod personal;
 pub mod platform_apps;
 pub mod publish;
+pub mod published;
 pub mod reading;
 pub mod reads;
 pub mod record;

@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use crate::platform::surfaces::DeskGesture;
 use tilo_actions::{ActionAddress, DoorError};
 use tilo_compositor::{HostKey, HostLayer, KeyClaim, SurfaceHost};
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
@@ -17,7 +18,6 @@ use tilo_desktop::desk_widgets::DeskFold;
 use tilo_desktop::osd::{Device, DeviceGlyph, Hint, Level, OSD_RESOURCE, Osd, OsdKind};
 use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_sheets::shortcut_guide::{Caught, State as GuideState};
-use tilo_surface_host::DeskGesture;
 use ui::host_operation::ResourceOperationStart;
 use ui::shortcut_table::{FixedAction, KeyChord, ShortcutAction, ShortcutConfig};
 use xkeysym::key as keysyms;
@@ -28,6 +28,29 @@ use crate::displays;
 use crate::doors::plane::answered;
 use crate::i18n::t;
 use crate::shell::state::{OVERLAYS, WINDOW_MENU};
+
+/// The key a press is, as the toolkit names it, with the modifiers held: what the shortcut
+/// tables and the desktop's chords match against.
+fn toolkit_key(key: &HostKey) -> (ui::winit::keyboard::Key, ui::winit::event::Modifiers) {
+    let under_chord = key.modifiers.ctrl || key.modifiers.alt || key.modifiers.logo;
+    (
+        ui::keys::chord(
+            key.keysym,
+            key.text.as_deref(),
+            key.latin_keysym,
+            under_chord,
+        )
+        .0,
+        ui::keys::modifiers(
+            key.modifiers.ctrl,
+            key.modifiers.alt,
+            key.modifiers.shift,
+            key.modifiers.logo,
+        )
+        .into(),
+    )
+}
+
 /// One published action to invoke, with its arguments.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Invocation {
@@ -390,31 +413,22 @@ impl SwitcherKey {
             Self::Walk { back, opened } => {
                 let scope = walking.unwrap_or(opened);
                 Some(
-                    Invocation::new(
-                        tilo_surface_host::shell_part::DESK_RESOURCE,
-                        "walk-switcher",
-                    )
-                    .with("steps", if back { -1 } else { 1 })
-                    .with("scope", scope.name()),
+                    Invocation::new(tilo_session_core::shell::DESK_RESOURCE, "walk-switcher")
+                        .with("steps", if back { -1 } else { 1 })
+                        .with("scope", scope.name()),
                 )
             }
             Self::Place(at) => Some(
-                Invocation::new(
-                    tilo_surface_host::shell_part::DESK_RESOURCE,
-                    "select-switcher",
-                )
-                .with("at", at),
+                Invocation::new(tilo_session_core::shell::DESK_RESOURCE, "select-switcher")
+                    .with("at", at),
             ),
             Self::Commit => Some(Invocation::new(
-                tilo_surface_host::shell_part::DESK_RESOURCE,
+                tilo_session_core::shell::DESK_RESOURCE,
                 "commit-switcher",
             )),
             Self::Cancel => Some(
-                Invocation::new(
-                    tilo_surface_host::shell_part::DESK_RESOURCE,
-                    "close-surface",
-                )
-                .with("surface", "switcher"),
+                Invocation::new(tilo_session_core::shell::DESK_RESOURCE, "close-surface")
+                    .with("surface", "switcher"),
             ),
             Self::Hold => None,
         }
@@ -641,7 +655,7 @@ impl SessionKeys {
         if displays.is_drawn() {
             return false;
         }
-        let (logical, modifiers) = tilo_surface_host::toolkit_key(key);
+        let (logical, modifiers) = toolkit_key(key);
         let ui::winit::keyboard::Key::Character(letter) = &logical else {
             return false;
         };
@@ -669,7 +683,7 @@ impl SessionKeys {
 
     /// The desktop's shortcut `key` is bound to, as the table names it.
     fn configured_action(&self, key: &HostKey) -> Option<ShortcutAction> {
-        let (logical, modifiers) = tilo_surface_host::toolkit_key(key);
+        let (logical, modifiers) = toolkit_key(key);
         let shortcuts = self.shortcuts.borrow();
         tilo_desktop::shortcuts::configured_shortcut_action(&shortcuts, &logical, modifiers)
     }
@@ -680,7 +694,7 @@ impl SessionKeys {
     /// Print) and for the accessibility chords, which have no native
     /// dispatcher yet.
     fn fixed_action(key: &HostKey) -> Option<FixedAction> {
-        let (logical, modifiers) = tilo_surface_host::toolkit_key(key);
+        let (logical, modifiers) = toolkit_key(key);
         tilo_desktop::shortcuts::fixed_shortcut_action(&logical, modifiers)
     }
 
@@ -689,7 +703,7 @@ impl SessionKeys {
     /// the table's because the automation put it there when it armed the
     /// shortcut, and it stays the session's until the next arming drops it.
     fn trigger_chord(&self, key: &HostKey) -> Option<KeyChord> {
-        let (logical, modifiers) = tilo_surface_host::toolkit_key(key);
+        let (logical, modifiers) = toolkit_key(key);
         let chord = tilo_desktop::shortcuts::shortcut_chord_from_event(&logical, modifiers)?;
         let shortcuts = self.shortcuts.borrow();
         shortcuts
@@ -759,7 +773,7 @@ impl SessionKeys {
         if let Some(resource) = self.portal_shortcut(key) {
             return Some((Invocation::new(&resource, "activate"), KeyClaim::Take));
         }
-        let (logical, modifiers) = tilo_surface_host::toolkit_key(key);
+        let (logical, modifiers) = toolkit_key(key);
         let shortcuts = self.shortcuts.borrow();
         let action =
             tilo_desktop::shortcuts::configured_shortcut_action(&shortcuts, &logical, modifiers)?;
@@ -801,7 +815,7 @@ impl SessionKeys {
             self.guide.catch(Caught::Cancelled);
             return;
         }
-        let (logical, modifiers) = tilo_surface_host::toolkit_key(key);
+        let (logical, modifiers) = toolkit_key(key);
         // A modifier held on its own is no chord, and no modifier is either.
         if let Some(chord) = tilo_desktop::shortcuts::shortcut_chord_from_event(&logical, modifiers)
         {
@@ -1071,7 +1085,7 @@ impl Shared {
     pub(crate) fn run_invocations(
         &self,
         locked: bool,
-        look: &mut tilo_surface_host::Look<'_>,
+        look: &mut tilo_session_core::door::Look<'_>,
     ) -> bool {
         let invocations = std::mem::take(&mut *self.invocations.borrow_mut());
         let ran = !invocations.is_empty();
@@ -1304,10 +1318,11 @@ impl Shared {
             });
         let arguments = osd.arguments(display.as_deref());
         let address = ActionAddress::new(OSD_RESOURCE, "show");
-        if let Err(error) =
-            self.doors
-                .invoke(&address, &arguments, &mut tilo_surface_host::Look::none())
-        {
+        if let Err(error) = self.doors.invoke(
+            &address,
+            &arguments,
+            &mut tilo_session_core::door::Look::none(),
+        ) {
             tracing::warn!(?error, "no readout shown");
         }
     }
@@ -1391,7 +1406,7 @@ mod tests {
     }
 
     fn desk(action: &str) -> Invocation {
-        Invocation::new(tilo_surface_host::shell_part::DESK_RESOURCE, action)
+        Invocation::new(tilo_session_core::shell::DESK_RESOURCE, action)
     }
 
     /// A release of `keysym` with `modifiers` held.

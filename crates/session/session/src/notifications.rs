@@ -57,7 +57,7 @@ use crate::system_sounds::SystemSounds;
 /// take the presses meant for what the shell shows there.
 pub(crate) fn mount_banners(
     compositor: &mut tilo_compositor::Compositor,
-    doors: &mut tilo_surface_host::Doors,
+    doors: &mut tilo_session_core::door::Doors,
     notices: &DesktopNotifications,
     desk: &tilo_desktop_surface::DesktopHandle,
     options: &crate::Options,
@@ -1352,7 +1352,7 @@ impl crate::Shared {
                         .invoke(
                             &own.address,
                             &own.arguments,
-                            &mut tilo_surface_host::Look::none(),
+                            &mut tilo_session_core::door::Look::none(),
                         )
                         .map(drop)
                 },
@@ -1377,7 +1377,7 @@ impl crate::Shared {
                                 .invoke(
                                     &own.address,
                                     &own.arguments,
-                                    &mut tilo_surface_host::Look::none(),
+                                    &mut tilo_session_core::door::Look::none(),
                                 )
                                 .map(drop)
                         },

@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
+use crate::platform::surfaces::{DesktopHost, WidgetHost};
 use tilo_action_broker::collab_app_broker::AppBrokerState;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, Caller, InvokeArgument, InvokeRequest,
@@ -28,7 +29,6 @@ use tilo_desktop_search::LaunchPlace as OpenPlace;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
 use tilo_desktop_surface::outcome::{Closed, Outcome};
-use tilo_surface_host::{DesktopHost, WidgetHost};
 
 use crate::agents::Kept;
 use crate::search::AppActions;
@@ -1688,9 +1688,9 @@ mod tests {
     /// The desktop the apps are started from, laid out as wide as an output: what its notice tabs
     /// draw on.
     fn desk() -> DesktopHost {
-        let (desktop, _strips) = tilo_surface_host::desktop(7, 1.0);
+        let (desktop, _strips) = crate::platform::surfaces::desktop(7, 1.0);
         desktop.with_widgets(|widgets| {
-            widgets.set_placement(tilo_surface_host::Placement {
+            widgets.set_placement(tilo_session_core::surface::Placement {
                 origin: (0, 0),
                 size: (1200, 800),
                 scale: 1.0,

@@ -6,13 +6,14 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::platform::surfaces::{SessionLink, ShellPart, ShellWork};
 use serde_json::{Map, Value};
 use tilo_actions::ActionAddress;
 use tilo_compositor::Compositor;
 use tilo_compositor::{CursorIcon, HostKey, HostLayer, KeyClaim, SurfaceHost};
 use tilo_service::Services;
-use tilo_surface_host::shell_part::{ArrangementReading, Ask};
-use tilo_surface_host::{Doors, SessionLink, ShellPart, ShellWork};
+use tilo_session_core::door::Doors;
+use tilo_session_core::shell::{ArrangementReading, Ask};
 
 use crate::desk_resource::Desk;
 use crate::displays;
@@ -37,14 +38,14 @@ pub fn compile() -> Result<Vec<tilolang_tilo::tilolang::Compiled>, String> {
 /// # Errors
 /// As [`compile`].
 pub fn shell_packages() -> Result<(Vec<tilolang_tilo::tilolang::Compiled>, bool), String> {
-    match tilo_surface_host::shell_part::installed_shell() {
+    match crate::platform::surfaces::installed_shell() {
         Ok(Some(packages)) => Ok((packages, true)),
-        Ok(None) => Ok((tilo_surface_host::shell_part::compile_shell()?, false)),
+        Ok(None) => Ok((crate::platform::surfaces::compile_shell()?, false)),
         Err(error) => {
             // A store row that does not read is the person's to see, and the desk still stands:
             // the fallback is what a device with no shell of its own shows.
             tracing::warn!(%error, "the installed shell does not load; the built-in one stands in");
-            Ok((tilo_surface_host::shell_part::compile_shell()?, false))
+            Ok((crate::platform::surfaces::compile_shell()?, false))
         }
     }
 }
@@ -134,7 +135,7 @@ pub(crate) struct Shell {
 impl Shell {
     /// The shell over every output of `compositor` , published on `doors` . The screen's views
     /// report their wells to `wells` , the handle the window policy places every window by
-    /// ([`tilo_surface_host::WellPolicy`]).
+    /// ([`crate::platform::surfaces::WellPolicy`]).
     pub(crate) fn mount(
         compositor: &mut Compositor,
         doors: &mut Doors,
@@ -238,7 +239,7 @@ impl Shell {
     ) {
         let wake = compositor.waker();
         let mut part = ShellPart::new(
-            tilo_surface_host::shell_part::ShellIdentity {
+            crate::platform::surfaces::ShellIdentity {
                 app: &self.app,
                 packages: self.packages.clone(),
                 person: &self.person,
@@ -267,7 +268,7 @@ impl Shell {
         compositor.add_host(Box::new(Held::new(Rc::clone(&part))));
         // Each display's part is its own surface on the door: what the person, a script or an agent
         // drives the shell through, and what reads its labels.
-        doors.add(Rc::clone(&part) as tilo_surface_host::Shared);
+        doors.add(Rc::clone(&part) as tilo_session_core::door::Shared);
         self.parts.push((output.to_owned(), part));
     }
 
@@ -302,19 +303,17 @@ impl Shell {
             reason = "a band's height, a few dozen pixels"
         )]
         let band = f64::from(self.band);
-        let windows: Vec<tilo_surface_host::shell_part::WindowRect> = compositor
+        let windows: Vec<tilo_session_core::shell::WindowRect> = compositor
             .windows()
             .into_iter()
-            .map(
-                |(_, (x, y, w, h))| tilo_surface_host::shell_part::WindowRect {
-                    x: f64::from(x),
-                    y: f64::from(y),
-                    width: f64::from(w),
-                    height: f64::from(h),
-                },
-            )
+            .map(|(_, (x, y, w, h))| tilo_session_core::shell::WindowRect {
+                x: f64::from(x),
+                y: f64::from(y),
+                width: f64::from(w),
+                height: f64::from(h),
+            })
             .collect();
-        let edges = tilo_surface_host::shell_part::screen_edges(
+        let edges = tilo_session_core::shell::screen_edges(
             outputs,
             band,
             compositor.pointer_location(),
@@ -397,10 +396,12 @@ impl Shell {
             // Every app a place shows is published with this pass, however this pass was asked for:
             // a package a view asked for arrives beside them, and none of them goes with it.
             let resources = services.resources();
-            let placed =
-                tilo_surface_host::shell_part::readings::placed_records(arrangement, &resources);
+            let placed = tilolang_tilo::records_service::placed_records(
+                arrangement.places.iter().map(|place| place.record.as_str()),
+                &resources,
+            );
             let mut packages = std::collections::BTreeMap::new();
-            let app_of = tilo_surface_host::shell_part::readings::app_of;
+            let app_of = tilolang_tilo::records_service::app_of;
             let mut apps: std::collections::BTreeSet<&str> =
                 self.needed.iter().map(String::as_str).collect();
             apps.extend(placed.values().filter_map(|ty| app_of(ty)));
@@ -415,22 +416,20 @@ impl Shell {
             // A resource of an app no package is published of any more is followed no more, and
             // neither is one of an app whose views draw it as a Rust app when none of its views is
             // linked here any more.
-            let rust_views = tilo_surface_host::shell_part::readings::rust_view_apps();
+            let rust_views = tilolang_tilo::views::declared_apps();
             self.reading.retain(|_, ty| {
-                app_of(ty).is_some_and(|app| {
-                    packages.contains_key(app) || rust_views.iter().any(|held| held == app)
-                })
+                app_of(ty)
+                    .is_some_and(|app| packages.contains_key(app) || rust_views.contains(&app))
             });
             self.link.publish_packages(packages);
             // The verbs of the apps the shell's runtime does not load — Chat's channel and its
             // `post`, which the session's own service answers — so a place's view sends its
             // action to the app publishing it, as it sends any package's to that package's door.
-            self.link.publish_published_actions(
-                tilo_surface_host::shell_part::readings::published_actions(
+            self.link
+                .publish_published_actions(tilolang_tilo::published::from_resources(
                     &resources,
                     &self.link.packages_loaded(),
-                ),
-            );
+                ));
             for (id, ty) in placed {
                 if !self.reading.contains_key(&id) {
                     fresh.push((id.clone(), ty.clone()));
@@ -439,12 +438,10 @@ impl Shell {
             }
         }
         for (id, ty) in wanted {
-            let app = tilo_surface_host::shell_part::readings::app_of(&ty);
+            let app = tilolang_tilo::records_service::app_of(&ty);
             let shown = app.is_some_and(|app| {
                 self.link.package_apps().iter().any(|held| held == app)
-                    || tilo_surface_host::shell_part::readings::rust_view_apps()
-                        .iter()
-                        .any(|held| held == app)
+                    || tilolang_tilo::views::declared_apps().contains(&app)
             });
             if shown && !self.reading.contains_key(&id) {
                 self.reading.insert(id.clone(), ty.clone());
@@ -533,7 +530,7 @@ impl Shell {
             for style in crate::desk_styles::installed(&catalog) {
                 // The shell's own package is the one the part already runs, never one loaded
                 // beside itself.
-                if style.package != tilo_surface_host::shell_part::SHELL_APP {
+                if style.package != tilo_session_core::shell::SHELL_APP {
                     self.needed.insert(style.package.clone());
                 }
             }
@@ -566,7 +563,7 @@ impl Shell {
 
     /// The views that could not be shown since the last call, each an app, a view and why: what
     /// the parts reported (`shell.md` §6, "Nothing can lock a person out").
-    pub(crate) fn take_view_failures(&self) -> Vec<tilo_surface_host::ViewFailure> {
+    pub(crate) fn take_view_failures(&self) -> Vec<tilolang_tilo::runtime::foreign::ViewFailure> {
         self.parts
             .iter()
             .flat_map(|(_, part)| part.borrow().take_view_failures())
@@ -621,7 +618,7 @@ impl Shell {
     /// the next [`Self::take_view_failures`] has nothing to say of it.
     pub(crate) fn note_style_failure(
         &self,
-        failure: &tilo_surface_host::ViewFailure,
+        failure: &tilolang_tilo::runtime::foreign::ViewFailure,
     ) -> Option<crate::notices::Notice> {
         let style = if failure.view.contains(':') {
             failure.view.clone()
@@ -1012,12 +1009,12 @@ pub(crate) fn under(shell: bool, host: impl SurfaceHost + 'static) -> Box<dyn Su
 /// each action of the chrome's that opens one opens the shell's view of it on `surfaces` — the
 /// overview, the notifications, the quick settings and the workspaces — while the chrome's own
 /// draws nothing. Every other action is the chrome's.
-pub(crate) fn chrome_door<T: tilo_surface_host::Published + 'static>(
+pub(crate) fn chrome_door<T: tilo_session_core::door::Published + 'static>(
     shell: bool,
     chrome: &Rc<RefCell<T>>,
     surfaces: crate::desk_resource::Surfaces,
-) -> tilo_surface_host::Shared {
-    let chrome = Rc::clone(chrome) as tilo_surface_host::Shared;
+) -> tilo_session_core::door::Shared {
+    let chrome = Rc::clone(chrome) as tilo_session_core::door::Shared;
     if shell {
         Rc::new(RefCell::new(ShellChrome { chrome, surfaces }))
     } else {
@@ -1029,12 +1026,12 @@ pub(crate) fn chrome_door<T: tilo_surface_host::Published + 'static>(
 /// launcher (on what the person asked for, when a query comes with it), as the desktop's own search
 /// draws nothing under the shell; a search with a query still runs, its rows published for the
 /// palette and the agents.
-pub(crate) fn desk_door<T: tilo_surface_host::Published + 'static>(
+pub(crate) fn desk_door<T: tilo_session_core::door::Published + 'static>(
     shell: bool,
     desk: T,
     surfaces: crate::desk_resource::Surfaces,
-) -> tilo_surface_host::Shared {
-    let desk: tilo_surface_host::Shared = Rc::new(RefCell::new(desk));
+) -> tilo_session_core::door::Shared {
+    let desk: tilo_session_core::door::Shared = Rc::new(RefCell::new(desk));
     if shell {
         Rc::new(RefCell::new(ShellDesk { desk, surfaces }))
     } else {
@@ -1044,7 +1041,7 @@ pub(crate) fn desk_door<T: tilo_surface_host::Published + 'static>(
 
 /// The chrome's door on the shell ([`chrome_door`]).
 struct ShellChrome {
-    chrome: tilo_surface_host::Shared,
+    chrome: tilo_session_core::door::Shared,
     surfaces: crate::desk_resource::Surfaces,
 }
 
@@ -1130,7 +1127,7 @@ fn opens(
     }
 }
 
-impl tilo_surface_host::Published for ShellChrome {
+impl tilo_session_core::door::Published for ShellChrome {
     fn resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
         self.chrome.borrow_mut().resources()
     }
@@ -1139,7 +1136,7 @@ impl tilo_surface_host::Published for ShellChrome {
         &mut self,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
-        look: &mut tilo_surface_host::Look<'_>,
+        look: &mut tilo_session_core::door::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         if let Some(started) = self.show_surface(address, arguments)? {
             return Ok(started);
@@ -1152,7 +1149,7 @@ impl tilo_surface_host::Published for ShellChrome {
         actor: &str,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
-        look: &mut tilo_surface_host::Look<'_>,
+        look: &mut tilo_session_core::door::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         if let Some(started) = self.show_surface(address, arguments)? {
             return Ok(started);
@@ -1189,11 +1186,11 @@ impl tilo_surface_host::Published for ShellChrome {
 
 /// The desk's door on the shell ([`desk_door`]).
 struct ShellDesk {
-    desk: tilo_surface_host::Shared,
+    desk: tilo_session_core::door::Shared,
     surfaces: crate::desk_resource::Surfaces,
 }
 
-impl tilo_surface_host::Published for ShellDesk {
+impl tilo_session_core::door::Published for ShellDesk {
     fn resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
         self.desk.borrow_mut().resources()
     }
@@ -1202,7 +1199,7 @@ impl tilo_surface_host::Published for ShellDesk {
         &mut self,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
-        look: &mut tilo_surface_host::Look<'_>,
+        look: &mut tilo_session_core::door::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         if address.resource == tilo_desktop::desk_verbs::DESK_RESOURCE && address.action == "search"
         {
@@ -1260,7 +1257,7 @@ impl tilo_surface_host::Published for ShellDesk {
         actor: &str,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
-        look: &mut tilo_surface_host::Look<'_>,
+        look: &mut tilo_session_core::door::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         if ui::search::is_search_address(address)
             || (address.resource == tilo_desktop::desk_verbs::DESK_RESOURCE
@@ -1349,7 +1346,7 @@ impl crate::Session {
     fn follow_view_failures(
         notices: &Rc<RefCell<crate::notifications::SessionNotifications>>,
         shell: &Shell,
-        failures: Vec<tilo_surface_host::ViewFailure>,
+        failures: Vec<tilolang_tilo::runtime::foreign::ViewFailure>,
         recoveries: (Vec<String>, Vec<(String, String)>),
     ) {
         for failure in failures {
@@ -1467,7 +1464,7 @@ impl crate::Session {
                                     .invoke(
                                         &own.address,
                                         &own.arguments,
-                                        &mut tilo_surface_host::Look::none(),
+                                        &mut tilo_session_core::door::Look::none(),
                                     )
                                     .map(drop)
                             },
@@ -1478,7 +1475,7 @@ impl crate::Session {
                     .invoke(
                         &ActionAddress::new(resource, action),
                         arguments,
-                        &mut tilo_surface_host::Look::none(),
+                        &mut tilo_session_core::door::Look::none(),
                     )
                     .map(drop)
                     .map_err(|error| error.to_string())
@@ -1501,7 +1498,7 @@ impl crate::Session {
     /// What the shell reads the desk through: a test stages a reading on it, as a collaborating
     /// session's presence would arrive.
     #[must_use]
-    pub fn shell_link(&self) -> Option<Rc<tilo_surface_host::SessionLink>> {
+    pub fn shell_link(&self) -> Option<Rc<crate::platform::surfaces::SessionLink>> {
         self.shell.as_ref().map(Shell::link)
     }
 
@@ -1522,7 +1519,7 @@ impl crate::Session {
     /// How much work the shell's views did since the session started: `None` when its package did
     /// not start.
     #[must_use]
-    pub fn shell_work(&self) -> Option<tilo_surface_host::ShellWork> {
+    pub fn shell_work(&self) -> Option<crate::platform::surfaces::ShellWork> {
         self.shell.as_ref().map(Shell::work)
     }
 

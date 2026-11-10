@@ -29,7 +29,7 @@ use tilo_actions::{ActionAddress, OperationKind, ResourceSpec, ResourceViewSpec}
 use tilo_compositor::OutputConfig;
 use tilo_session::platform::indexes::SessionIndexes;
 use tilo_session::{Options, Session};
-use tilo_surface_host::Published;
+use tilo_session_core::door::Published;
 
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
@@ -94,7 +94,7 @@ impl Published for Mailbox {
         &mut self,
         address: &ActionAddress,
         _: &serde_json::Map<String, serde_json::Value>,
-        _look: &mut tilo_surface_host::Look<'_>,
+        _look: &mut tilo_session_core::door::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         self.asked.borrow_mut().push(address.action.clone());
         Ok(ui::host_operation::ResourceOperationStart::Completed(

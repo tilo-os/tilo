@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
+use crate::platform::surfaces::DesktopHost;
 use launcher::services::{SHELL_UI_LAUNCH_PROTOCOL, SHELL_UI_SERVICE};
 use serde::Deserialize;
 use tilo_app_launch::routing;
@@ -25,7 +26,6 @@ use tilo_app_launch::{Connects, Launch, Open, WindowConnections};
 use tilo_compositor::{Compositor, ReadableWatch};
 use tilo_desktop::launchpad::LaunchpadAction;
 use tilo_desktop_policy::{DesktopPolicy, app_ids_match};
-use tilo_surface_host::DesktopHost;
 use ui::Theme;
 use ui::WindowAppearance;
 use ui::floating_surface::{

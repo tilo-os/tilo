@@ -10,11 +10,11 @@ use std::rc::Rc;
 use std::sync::{Mutex, PoisonError};
 use std::task::Waker;
 
+use crate::platform::surfaces::{Placement, WidgetHost};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::{HostKey, HostLayer, SurfaceHost};
 use tilo_onboarding_host::view::OnboardingView;
-use tilo_surface_host::{Placement, WidgetHost};
-use tilo_surface_host::{Published, through_door};
+use tilo_session_core::door::{Published, through_door};
 use ui::device_local_door::SharedDoor;
 use ui::host_operation::ResourceOperationStart;
 
@@ -232,7 +232,7 @@ impl Published for Setup {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        _look: &mut tilo_surface_host::Look<'_>,
+        _look: &mut tilo_session_core::door::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
         let Surface::Ceremony { door, .. } = &self.surface else {
             return Err(DoorError::Unknown(address.clone()));

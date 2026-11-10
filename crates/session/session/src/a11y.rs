@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use tilo_service::Wake;
-use tilo_surface_host::{Doors, Shared};
+use tilo_session_core::door::{Doors, Shared};
 use ui::accesskit::{
     ActionHandler, ActionRequest, ActivationHandler, DeactivationHandler, TreeUpdate,
 };
@@ -338,7 +338,7 @@ mod tests {
         keyboard: bool,
     }
 
-    impl tilo_surface_host::Published for Face {
+    impl tilo_session_core::door::Published for Face {
         fn resources(&mut self) -> Vec<ui::tilo_actions::ResourceSpec> {
             Vec::new()
         }
@@ -347,7 +347,7 @@ mod tests {
             &mut self,
             address: &ui::tilo_actions::ActionAddress,
             _arguments: &serde_json::Map<String, serde_json::Value>,
-            _look: &mut tilo_surface_host::Look<'_>,
+            _look: &mut tilo_session_core::door::Look<'_>,
         ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::DoorError>
         {
             Err(ui::tilo_actions::DoorError::Unknown(address.clone()))

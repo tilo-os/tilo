@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use tilo_compositor::{KeyRepeat, OutputConfig};
 use tilo_session::{Options, Session};
-use tilo_surface_host::DeskReading;
+use tilo_session_core::shell::DeskReading;
 use tilo_surface_host::shell_part::DESK_RESOURCE;
 
 const WIDTH: i32 = 1280;

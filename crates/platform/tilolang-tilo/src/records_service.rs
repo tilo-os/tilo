@@ -869,6 +869,41 @@ pub fn reading_type(kind: &str) -> Option<String> {
     Some(format!("{app}#{ty}"))
 }
 
+/// The app of a resource whose type the shell's runtime names `<app>#<Type>`.
+#[must_use]
+pub fn app_of(ty: &str) -> Option<&str> {
+    ty.split_once('#').map(|(app, _)| app)
+}
+
+/// Each resource `records` (the ids a shell's places name) that `resources`, the session's
+/// catalogue, holds as a tilolang record: its id, and its type as the shell's runtime names
+/// another app's (`<app>#<Type>`). A place naming nothing the catalogue holds keeps its well.
+#[must_use]
+pub fn placed_records<'a>(
+    records: impl IntoIterator<Item = &'a str>,
+    resources: &[ResourceSpec],
+) -> std::collections::BTreeMap<String, String> {
+    records
+        .into_iter()
+        .filter(|record| !record.is_empty())
+        .filter_map(|record| {
+            let ty = find_resource(resources, record).and_then(reading_type_of)?;
+            Some((record.to_owned(), ty))
+        })
+        .collect()
+}
+
+/// The resource `id` in `resources` or among their children.
+fn find_resource<'a>(resources: &'a [ResourceSpec], id: &str) -> Option<&'a ResourceSpec> {
+    resources.iter().find_map(|spec| {
+        if spec.id.as_str() == id {
+            Some(spec)
+        } else {
+            find_resource(&spec.children, id)
+        }
+    })
+}
+
 /// The type the shell's runtime names a resource of `spec` by (`<app>#<Type>`): a tilolang
 /// record's (`tl.<app>.<Type>`), or a Rust app's resource, whose kind is the app's own
 /// (`tube.Channel`) and whose app the catalogue names. `None` for a resource no app draws.

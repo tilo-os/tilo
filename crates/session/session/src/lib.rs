@@ -5,7 +5,7 @@
 //! ([`tilo_desktop::desktop_host`]): the desk (backdrop, launchpad, the
 //! strips and window bars of the desktop surface) under the windows, and
 //! the chrome (top bar, strip ribbon and rail, overview, menus) above them;
-//! the window policy of the desk's strips ([`tilo_surface_host::desktop`]),
+//! the window policy of the desk's strips ([`platform::surfaces::desktop`]),
 //! so each window is a tab of a strip; and the desktop's surface apps, each
 //! an ordinary app hosted on a layer of its own: the notification banners,
 //! quick settings, and setup over everything while a person first uses the

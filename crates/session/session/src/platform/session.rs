@@ -14,7 +14,8 @@ use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
 use tilo_service::Started;
-use tilo_surface_host::{DesktopHost, Doors, WidgetHost};
+use tilo_session_core::door::Doors;
+use tilo_surface_host::{DesktopHost, WidgetHost};
 use ui::host_operation::ResourceOperationStart;
 
 use crate::assembly::{Session, Shared};
@@ -466,7 +467,7 @@ impl Session {
         let panel_asks: Rc<RefCell<Vec<&'static str>>> = Rc::default();
         let panel_keys =
             (surfaces.panel_shows(crate::quick_settings::SURFACE)).then(|| Rc::clone(&panel_asks));
-        let desk_door: tilo_surface_host::Shared =
+        let desk_door: tilo_session_core::door::Shared =
             crate::shell::desk_door(options.shell, desktop.clone(), surfaces.clone());
         doors.add(Rc::clone(&desk_door));
         // The chrome above the windows: its own tree, beside the desk's.
@@ -750,7 +751,7 @@ impl Session {
         // The surfaces the shell stands in for read as nothing, as they draw
         // nothing: the shell's parts are what a client finds there, while the
         // desktop's own desk and chrome keep their actions.
-        let aside: Vec<tilo_surface_host::Shared> = if shell.is_some() {
+        let aside: Vec<tilo_session_core::door::Shared> = if shell.is_some() {
             vec![Rc::clone(&desk_door), Rc::clone(&chrome_door)]
         } else {
             Vec::new()
@@ -1869,7 +1870,7 @@ impl Session {
     /// Reach `surface` (a service the session runs in its process) through
     /// the session's door from now on: its resources are published beside
     /// the desktop's, and keys that ask for its actions reach it.
-    pub fn publish(&mut self, surface: tilo_surface_host::Shared) {
+    pub fn publish(&mut self, surface: tilo_session_core::door::Shared) {
         self.shared.doors.add(surface);
     }
 

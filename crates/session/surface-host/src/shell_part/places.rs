@@ -635,8 +635,13 @@ fn session_turn(link: &SessionLink, arrangement: &ArrangementReading, room: &mut
     needed.extend(link.take_wanted_packages().into_keys());
     let mut apps = needed.clone();
     room.needed = needed;
-    for ty in super::readings::placed_records(arrangement, &room.service.resources()).values() {
-        if let Some(app) = super::readings::app_of(ty) {
+    for ty in tilolang_tilo::records_service::placed_records(
+        arrangement.places.iter().map(|place| place.record.as_str()),
+        &room.service.resources(),
+    )
+    .values()
+    {
+        if let Some(app) = tilolang_tilo::records_service::app_of(ty) {
             apps.insert(app.to_owned());
         }
     }

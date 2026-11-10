@@ -5,6 +5,10 @@
 //! the page's canvas on the web. The role keeps the returned [`Layer`] and never names the host
 //! that draws it; what it shows to assistive technology and to the session's door is read through
 //! it too, so a panel is pressed and read the same on both.
+//!
+//! The hosts themselves are named here beside the trait: the layers a role places are driven by the
+//! toolkit's widget trees and the tilolang shell's parts, and the desk under the windows by its own
+//! policy, so a role asks for one of those and never for the crate that draws it.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -18,6 +22,20 @@ pub use tilo_session_core::surface::Placement;
 mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::{Held, Hosted};
+
+/// The tilolang shell a desktop shows: the package it runs (the person's installed one or this
+/// build's copy), and the identity a part of it is made with.
+#[cfg(target_os = "linux")]
+pub use tilo_surface_host::shell_part::{ShellIdentity, compile_shell, installed_shell};
+/// The desktop's own hosts, as a Linux session drives them: the toolkit's widget trees on their
+/// layers ([`WidgetHost`]), the desk under the windows and its window policy ([`DesktopHost`],
+/// [`StripPolicy`]), a surface app on a layer of its own ([`AppHost`]), the tilolang shell's parts
+/// and slot views, and what a window's mapping and the pointer reach tells them.
+#[cfg(target_os = "linux")]
+pub use tilo_surface_host::{
+    AppHost, DeskGesture, DesktopHost, PointerSamples, SessionLink, ShellPart, ShellWork,
+    StripPolicy, WellPolicy, WidgetHost, WindowObserver, desktop, desktop_with, slot_view,
+};
 
 /// What a role places over the windows: the host's layers.
 pub trait Surfaces {

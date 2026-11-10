@@ -474,18 +474,17 @@ impl Seats {
     }
 
     /// The agents seated here now, as the desk's shell lists them.
-    pub(crate) fn readings(&self) -> Vec<tilo_surface_host::shell_part::AgentReading> {
+    pub(crate) fn readings(&self) -> Vec<tilo_session_core::shell::AgentReading> {
         let inner = self.inner.lock_recover();
         // One presence per agent, in the order their keys come: a client with two connections shows
         // once.
-        let mut agents: BTreeMap<String, tilo_surface_host::shell_part::AgentReading> =
-            BTreeMap::new();
+        let mut agents: BTreeMap<String, tilo_session_core::shell::AgentReading> = BTreeMap::new();
         for connection in inner.connections.values() {
             if connection.agent.is_empty() {
                 continue;
             }
             agents.entry(connection.agent.clone()).or_insert_with(|| {
-                tilo_surface_host::shell_part::AgentReading {
+                tilo_session_core::shell::AgentReading {
                     key: connection.agent.clone(),
                     name: connection.client.clone(),
                     state: "running".to_owned(),
@@ -1673,11 +1672,11 @@ impl SessionDoors {
     /// loop, and no borrow outlives a single answer.
     pub(crate) fn answer(
         &self,
-        doors: &tilo_surface_host::Doors,
+        doors: &tilo_session_core::door::Doors,
         services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
         search: &crate::search::SessionSearch,
         shows: &dyn Fn(&str) -> bool,
-        look: &mut tilo_surface_host::Look<'_>,
+        look: &mut tilo_session_core::door::Look<'_>,
     ) {
         let asked = std::mem::take(&mut *self.asks.lock_recover());
         for ask in asked {

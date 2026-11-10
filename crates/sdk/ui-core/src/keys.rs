@@ -6,8 +6,13 @@
 //! reports as a named key or a character. Both sides read their key through
 //! [`canonical`], so `Esc`, `escape` and the Escape key are one press, and so
 //! are `Space` and the space bar.
+//!
+//! A host delivers a press as keysyms and modifiers, which `from_keysym` and
+//! `chord` turn into the key a shortcut table matches.
 
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
+#[cfg(target_os = "linux")]
+use winit::keyboard::{KeyLocation, SmolStr};
 
 /// The key `spec` names, as a driver or a typed shortcut writes it: `Enter`,
 /// `Tab`, `Escape`, the arrows, `F1`–`F12`, `Home`, `End`, `PageUp`,
@@ -105,6 +110,62 @@ pub fn canonical(key: &str) -> String {
     tilo_ui_graph::keys::key(key).unwrap_or_else(|| key.trim().to_lowercase())
 }
 
+/// The key a host's keysym is, as a shortcut matches against it: a named key when the toolkit names
+/// it, else the text the layout types with it, else the character of the keysym itself.
+///
+/// The keysym vocabulary is the X11 and Wayland hosts' (winit's `scancode` platform), so a host
+/// that reads the keyboard itself is the only caller.
+#[cfg(target_os = "linux")]
+#[must_use]
+pub fn from_keysym(keysym: u32, text: Option<&str>) -> (Key, KeyLocation) {
+    let (key, location) = winit::platform::scancode::keysym_to_key(keysym);
+    if !matches!(key, Key::Unidentified(_)) {
+        return (key, location);
+    }
+    match text {
+        Some(text) => (Key::Character(SmolStr::new(text)), location),
+        None => match char::from_u32(keysym).filter(|c| !c.is_control()) {
+            Some(c) => (Key::Character(SmolStr::new(c.to_string())), location),
+            None => (key, location),
+        },
+    }
+}
+
+/// The key a chord names a key by: under Ctrl, Alt or Super a letter outside the Latin script is
+/// named by the Latin character the same key types on a layout that has one, so Ctrl+C copies and
+/// Super+L locks whichever layout is typing. A Latin letter with a diacritic stays as typed: it is
+/// a shortcut of its own on the layouts that have it.
+#[must_use]
+pub fn chord(
+    keysym: u32,
+    text: Option<&str>,
+    latin_keysym: u32,
+    under_chord: bool,
+) -> (Key, KeyLocation) {
+    let (logical, location) = from_keysym(keysym, text);
+    if !under_chord {
+        return (logical, location);
+    }
+    let Key::Character(typed) = &logical else {
+        return (logical, location);
+    };
+    if !typed.chars().any(crate::latin_chord::is_non_latin_letter) {
+        return (logical, location);
+    }
+    (from_keysym(latin_keysym, None).0, location)
+}
+
+/// The modifiers a key press was made with, held as the toolkit reports them.
+#[must_use]
+pub fn modifiers(ctrl: bool, alt: bool, shift: bool, logo: bool) -> ModifiersState {
+    let mut state = ModifiersState::empty();
+    state.set(ModifiersState::SHIFT, shift);
+    state.set(ModifiersState::CONTROL, ctrl);
+    state.set(ModifiersState::ALT, alt);
+    state.set(ModifiersState::SUPER, logo);
+    state
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,5 +193,24 @@ mod tests {
         assert_eq!(token(&parse(" ")), Some("space".to_owned()));
         assert_eq!(canonical("Return"), "enter");
         assert_eq!(token(&parse("Shift")), None, "a modifier is no shortcut");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_chord_types_named_by_the_latin_key_on_a_cyrillic_layout() {
+        let cyrillic = u32::from('с');
+        let latin = u32::from('c');
+        let (logical, _) = chord(cyrillic, None, latin, true);
+        assert_eq!(logical, Key::Character("c".into()));
+        // The letter itself, with no chord modifier, stays Cyrillic.
+        let (typed, _) = chord(cyrillic, None, latin, false);
+        assert_eq!(typed, Key::Character("с".into()));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_diacritic_on_a_latin_layout_stays_as_typed_in_a_chord() {
+        let (logical, _) = chord(u32::from('ü'), None, u32::from('u'), true);
+        assert_eq!(logical, Key::Character("ü".into()));
     }
 }

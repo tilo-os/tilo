@@ -28,7 +28,7 @@ const CARET_GAP: f64 = 6.0;
 
 impl Shared {
     /// Carry out what the desktop asked since the last frame.
-    pub(crate) fn follow_asks(&self, look: &mut tilo_surface_host::Look<'_>) {
+    pub(crate) fn follow_asks(&self, look: &mut tilo_session_core::door::Look<'_>) {
         // A press on one of the person's devices is one of the session's own verbs: the queue it
         // lands in is carried out here, with the asks.
         self.carry_out_presses();
@@ -137,7 +137,7 @@ impl Shared {
 
     /// Carry out the rows the person chose in search. A row that asks the session for something of
     /// its own leaves it on the desk's asks, which the pass answers in its next round.
-    fn follow_search_choices(&self, look: &mut tilo_surface_host::Look<'_>) {
+    fn follow_search_choices(&self, look: &mut tilo_session_core::door::Look<'_>) {
         let refused = self.search.perform_choices(&self.handle, &mut |own| {
             self.doors
                 .invoke(&own.address, &own.arguments, look)
@@ -288,7 +288,7 @@ impl Shared {
                 .invoke(
                     &own.address,
                     &own.arguments,
-                    &mut tilo_surface_host::Look::none(),
+                    &mut tilo_session_core::door::Look::none(),
                 )
                 .map(drop)
         });
@@ -305,7 +305,7 @@ impl Shared {
         let revoked = self.doors.invoke(
             &ActionAddress::new(agent_door::RESOURCE, agent_door::REVOKE),
             &arguments,
-            &mut tilo_surface_host::Look::none(),
+            &mut tilo_session_core::door::Look::none(),
         );
         if let Err(error) = revoked {
             self.answer_failed(&t("action-failed-that-agent"), &error);
@@ -336,7 +336,7 @@ impl Shared {
         use tilo_desktop::window_switcher::SwitcherAsk;
         // The walk is the session desk's, as the keys reach it: the panel's presses ask for the
         // same verbs.
-        use tilo_surface_host::shell_part::DESK_RESOURCE as SESSION_DESK;
+        use tilo_session_core::shell::DESK_RESOURCE as SESSION_DESK;
         let select = |at: usize| {
             let at = i64::try_from(at).unwrap_or(i64::MAX);
             Invocation::new(SESSION_DESK, "select-switcher").with("at", at)
@@ -631,7 +631,7 @@ impl Shared {
     ) -> Result<(), String> {
         let address = ActionAddress::new(CHROME_RESOURCE, action);
         self.doors
-            .invoke(&address, args, &mut tilo_surface_host::Look::none())
+            .invoke(&address, args, &mut tilo_session_core::door::Look::none())
             .map(|_| ())
             .map_err(|error| error.to_string())
     }

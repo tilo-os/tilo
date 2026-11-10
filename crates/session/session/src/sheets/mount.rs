@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_compositor::Compositor;
+use tilo_session_core::door::Doors;
 use tilo_sheets::Seat as _;
 use tilo_sheets::add_app::AddSeat;
 use tilo_sheets::delete_workspace::DeleteWorkspaceSeat;
@@ -21,7 +22,6 @@ use tilo_sheets::power::PowerSeat;
 use tilo_sheets::shortcut_guide::GuideSeat;
 use tilo_sheets::uninstall::UninstallSeat;
 use tilo_sheets::workspace_settings::WorkspaceSettingsSeat;
-use tilo_surface_host::Doors;
 
 use crate::Options;
 use crate::platform::surfaces::Held;

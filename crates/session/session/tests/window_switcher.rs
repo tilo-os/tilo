@@ -31,7 +31,7 @@ use tilo_desktop_model::{
     WorkspaceSlot,
 };
 use tilo_session::{Options, Session};
-use tilo_surface_host::DeskReading;
+use tilo_session_core::shell::DeskReading;
 use tilo_surface_host::shell_part::DESK_RESOURCE;
 use ui::kurbo::Rect;
 

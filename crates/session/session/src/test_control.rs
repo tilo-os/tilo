@@ -36,7 +36,7 @@ use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
 use tilo_service::Wake;
-use tilo_surface_host::Doors;
+use tilo_session_core::door::Doors;
 
 use crate::agent_door::{self, PeerRefusal};
 use crate::engine::Engine;

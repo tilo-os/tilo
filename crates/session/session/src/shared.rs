@@ -2,9 +2,9 @@
 //! each workspace's shared desktop, the workspace's history, the windows left open, and what the
 //! sheets and settings asked for.
 
+use crate::platform::surfaces::WidgetHost;
 use tilo_session_core::presence::{Place, Step, Target};
 use tilo_sheets::Seat as _;
-use tilo_surface_host::WidgetHost;
 
 use crate::{Shared, arrangement, workspace_settings, workspaces};
 
@@ -249,7 +249,7 @@ impl Shared {
     }
 
     /// Carry out what the person chose in the sheets.
-    pub(crate) fn follow_sheets(&self, look: &mut tilo_surface_host::Look<'_>) {
+    pub(crate) fn follow_sheets(&self, look: &mut tilo_session_core::door::Look<'_>) {
         // What a place can show, as the arrangement published it: an agent's `find` leads with the
         // resource typing the text would place, so it reads the same catalogue the canvas places
         // through.

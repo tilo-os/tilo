@@ -43,7 +43,7 @@ impl Shared {
             // The panel stands over the desk's windows: the chrome lays itself out again for what
             // it now shows, as it does for any surface of the desk's going up or down.
             self.desktop
-                .with_widgets(tilo_surface_host::WidgetHost::relayout);
+                .with_widgets(crate::platform::surfaces::WidgetHost::relayout);
         }
     }
 }

@@ -7,7 +7,7 @@ use std::rc::Rc;
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::Error;
 use tilo_service::Started;
-use tilo_surface_host::{Doors, Published};
+use tilo_session_core::door::{Doors, Published};
 use ui::host_operation::ResourceOperationStart;
 
 use tilo_action_broker::collab_broker::FanoutState;
@@ -35,9 +35,9 @@ struct ServiceDoor {
 
 /// A surface app reaches the desktop's actions exactly as a person's palette does: through the door
 /// over every surface it hosts.
-impl surfaces::ActionDoor for tilo_surface_host::Doors {
+impl surfaces::ActionDoor for tilo_session_core::door::Doors {
     fn resources(&mut self) -> Vec<ResourceSpec> {
-        tilo_surface_host::Doors::resources(self)
+        tilo_session_core::door::Doors::resources(self)
     }
 
     fn invoke(
@@ -45,11 +45,11 @@ impl surfaces::ActionDoor for tilo_surface_host::Doors {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ResourceOperationStart, DoorError> {
-        tilo_surface_host::Doors::invoke(
+        tilo_session_core::door::Doors::invoke(
             self,
             address,
             arguments,
-            &mut tilo_surface_host::Look::none(),
+            &mut tilo_session_core::door::Look::none(),
         )
     }
 }
@@ -82,7 +82,7 @@ impl Published for ServiceDoor {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        _look: &mut tilo_surface_host::Look<'_>,
+        _look: &mut tilo_session_core::door::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
         match self
             .services
@@ -103,7 +103,7 @@ impl Published for ServiceDoor {
         actor: &str,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        _look: &mut tilo_surface_host::Look<'_>,
+        _look: &mut tilo_session_core::door::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
         // An agent is named `agent:<id>` , as the agent door names it.
         let invoker = tilo_actions::ActionInvoker::actor(actor);

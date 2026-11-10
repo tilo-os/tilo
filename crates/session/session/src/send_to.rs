@@ -70,7 +70,7 @@ impl Shared {
                     .invoke(
                         &own.address,
                         &own.arguments,
-                        &mut tilo_surface_host::Look::none(),
+                        &mut tilo_session_core::door::Look::none(),
                     )
                     .map(drop)
             })

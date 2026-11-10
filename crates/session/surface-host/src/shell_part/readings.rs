@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use tilolang_tilo::origin::OriginCx;
+use tilolang_tilo::records_service::{app_of, placed_records};
 use tilolang_tilo::runtime::{ResourceRef, Value};
 
 use super::{ArrangementReading, Ask, SessionLink, SessionOrigin};
@@ -71,7 +72,7 @@ impl SessionLink {
 
     /// The apps whose package the shell's runtime loads here, each with the module it loads:
     /// the ones whose declared actions are their package's, so no published verb of theirs is
-    /// counted ([`published_actions`]).
+    /// counted (`tilolang_tilo::published::from_resources`).
     #[must_use]
     pub fn packages_loaded(&self) -> BTreeMap<String, String> {
         self.packages
@@ -168,113 +169,16 @@ impl SessionLink {
         read: impl Fn(&str) -> Option<serde_json::Value>,
     ) -> bool {
         let mut changed = false;
-        for (id, ty) in placed_records(arrangement, resources) {
+        for (id, ty) in placed_records(
+            arrangement.places.iter().map(|place| place.record.as_str()),
+            resources,
+        ) {
             if let Some(reading) = read(&id) {
                 changed |= self.publish_reading(&id, &ty, reading);
             }
         }
         changed
     }
-}
-
-/// Each resource a place of `arrangement` names that `resources`, the session's catalogue,
-/// holds as a tilolang record: its id, and its type as the shell's runtime names another
-/// app's (`<app>#<Type>`).
-#[must_use]
-pub fn placed_records(
-    arrangement: &ArrangementReading,
-    resources: &[ui::tilo_actions::ResourceSpec],
-) -> BTreeMap<String, String> {
-    arrangement
-        .places
-        .iter()
-        .filter(|place| !place.record.is_empty())
-        .filter_map(|place| {
-            let ty = find_resource(resources, &place.record)
-                .and_then(tilolang_tilo::records_service::reading_type_of)?;
-            Some((place.record.clone(), ty))
-        })
-        .collect()
-}
-
-/// The app of a resource whose type the shell's runtime names `<app>#<Type>`.
-#[must_use]
-pub fn app_of(ty: &str) -> Option<&str> {
-    ty.split_once('#').map(|(app, _)| app)
-}
-
-/// The verbs each resource of `resources`, the session's catalogue, publishes that no loaded
-/// package of `loaded` declares ([`tilolang_tilo::runtime::published`]): the resource's id, the verb's
-/// id, the app that runs it, and the arguments it takes after the resource (`channel`, `text`).
-///
-/// A verb of an app whose package the shell loads here is that package's declared action
-/// (`chat.workspace#rename-channel`), and is not counted: the runtime resolves a declared action
-/// before it looks a published one up. A verb with no parameter tilolang code can give is left
-/// out, as the catalogue leaves it out of a package's actions.
-#[must_use]
-pub fn published_actions(
-    resources: &[ui::tilo_actions::ResourceSpec],
-    loaded: &BTreeMap<String, String>,
-) -> tilolang_tilo::runtime::published::Published {
-    let mut published = tilolang_tilo::runtime::published::Published::default();
-    collect_published(resources, loaded, &mut published);
-    published
-}
-
-fn collect_published(
-    resources: &[ui::tilo_actions::ResourceSpec],
-    loaded: &BTreeMap<String, String>,
-    out: &mut tilolang_tilo::runtime::published::Published,
-) {
-    for resource in resources {
-        let Some(app) = resource.app() else {
-            collect_published(&resource.children, loaded, out);
-            continue;
-        };
-        // The app's package loading here declares its own actions already.
-        if !loaded.contains_key(app) {
-            for action in &resource.actions {
-                out.insert(
-                    resource.id.as_str(),
-                    action.id.as_str(),
-                    tilolang_tilo::runtime::published::PublishedAction {
-                        app: app.to_owned(),
-                        params: action
-                            .params()
-                            .iter()
-                            .map(|param| param.name.to_string())
-                            .collect(),
-                    },
-                );
-            }
-        }
-        collect_published(&resource.children, loaded, out);
-    }
-}
-
-/// The apps whose views this process links as Rust apps (one-app-model.md §2): a resource of one
-/// of their types is drawn by the app's own view, not by a package's, and its reading is followed
-/// though the app publishes no module.
-#[must_use]
-pub fn rust_view_apps() -> Vec<String> {
-    tilolang_tilo::views::declared_apps()
-        .into_iter()
-        .map(str::to_owned)
-        .collect()
-}
-
-/// The resource `id` in `resources` or among their children.
-fn find_resource<'a>(
-    resources: &'a [ui::tilo_actions::ResourceSpec],
-    id: &str,
-) -> Option<&'a ui::tilo_actions::ResourceSpec> {
-    resources.iter().find_map(|spec| {
-        if spec.id.as_str() == id {
-            Some(spec)
-        } else {
-            find_resource(&spec.children, id)
-        }
-    })
 }
 
 impl SessionOrigin {

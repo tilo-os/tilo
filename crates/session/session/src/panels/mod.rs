@@ -9,7 +9,9 @@ use std::rc::Rc;
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::{HostKey, HostLayer, OutputInfo, SurfaceHost};
 use tilo_desktop::topbar::TOPBAR_HEIGHT_PX;
-use tilo_surface_host::{AppHost, Placement, Published};
+use tilo_session_core::door::Published;
+
+use crate::platform::surfaces::{AppHost, Placement};
 use ui::host_operation::ResourceOperationStart;
 use ui::kurbo::{Point, Rect};
 
@@ -196,7 +198,7 @@ impl Published for Banners {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        look: &mut tilo_surface_host::Look<'_>,
+        look: &mut tilo_session_core::door::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
         self.host.invoke(address, arguments, look)
     }
@@ -448,7 +450,7 @@ impl Published for ActivityLayer {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        look: &mut tilo_surface_host::Look<'_>,
+        look: &mut tilo_session_core::door::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
         self.host.invoke(address, arguments, look)
     }
@@ -612,7 +614,7 @@ impl ReadoutPlace {
 /// The hardware keys' readout, on the display whose key changed it: it never takes the pointer or
 /// the keyboard, and shows over the lock too.
 pub(crate) struct Readout {
-    host: tilo_surface_host::WidgetHost,
+    host: crate::platform::surfaces::WidgetHost,
     /// Where each display stands and where the person types.
     places: ReadoutPlaces,
     /// The display the readout up now answers for, by connector.
@@ -624,7 +626,7 @@ pub(crate) struct Readout {
 impl Readout {
     pub(crate) fn new(scale: f64, places: ReadoutPlaces, band: Reserved) -> Self {
         Self {
-            host: tilo_surface_host::WidgetHost::new(
+            host: crate::platform::surfaces::WidgetHost::new(
                 Box::new(tilo_desktop::osd::OsdSlab::new()),
                 Placement {
                     origin: (0, 0),
@@ -688,7 +690,7 @@ impl Published for Readout {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        look: &mut tilo_surface_host::Look<'_>,
+        look: &mut tilo_session_core::door::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
         // A readout stands on the display whose key changed it, and keeps clear of the line the
         // person is typing on.

@@ -21,7 +21,6 @@ pub use desktop::{
     DeskGesture, DesktopHost, PointerSamples, StripPolicy, WindowObserver, desktop, desktop_with,
 };
 pub use shell_part::{DeskReading, SessionLink, ShellPart, ShellWork};
-pub use tilo_session_core::door::{Doors, Look, Published, Shared, Shot, through_door};
 pub use tilolang_tilo::runtime::foreign::ViewFailure;
 pub use well_policy::{DeskHost, WellDesk, WellPolicy, well_policy};
 pub use widget::WidgetHost;
@@ -40,10 +39,14 @@ use winit::event::{
     DeviceId, ElementState, Ime, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, RawKeyEvent,
     TouchPhase, WindowEvent,
 };
-use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey, SmolStr};
+use winit::keyboard::{ModifiersState, PhysicalKey, SmolStr};
 use winit::platform::scancode::PhysicalKeyExtScancode as _;
 
 use frames::Frames;
+
+/// The door a hosted surface publishes through: every host's, so a surface app is reached the
+/// same on each.
+pub(crate) use tilo_session_core::door::{Look, Published, through_door};
 
 /// The format files are dragged in.
 const URI_LIST: &str = "text/uri-list";
@@ -432,7 +435,7 @@ impl SurfaceHost for AppHost {
     }
 
     fn key(&mut self, key: &HostKey) {
-        let modifiers = modifiers_state(key.modifiers);
+        let modifiers = modifiers_of(key.modifiers);
         if modifiers != self.modifiers {
             self.modifiers = modifiers;
             self.input(WindowEvent::ModifiersChanged(Modifiers::from(modifiers)));
@@ -624,13 +627,14 @@ pub(crate) fn mouse_input(button: u32, pressed: bool) -> WindowEvent {
     }
 }
 
-pub(crate) fn modifiers_state(modifiers: KeyModifiers) -> ModifiersState {
-    let mut state = ModifiersState::empty();
-    state.set(ModifiersState::SHIFT, modifiers.shift);
-    state.set(ModifiersState::CONTROL, modifiers.ctrl);
-    state.set(ModifiersState::ALT, modifiers.alt);
-    state.set(ModifiersState::SUPER, modifiers.logo);
-    state
+/// The modifiers a key the compositor resolved was pressed with.
+fn modifiers_of(modifiers: KeyModifiers) -> ModifiersState {
+    ui::keys::modifiers(
+        modifiers.ctrl,
+        modifiers.alt,
+        modifiers.shift,
+        modifiers.logo,
+    )
 }
 
 /// The toolkit's key event for a key the compositor's keymap resolved.
@@ -640,8 +644,14 @@ pub(crate) fn key_event(key: &HostKey) -> WindowEvent {
         .then_some(key.text.as_deref())
         .flatten()
         .map(SmolStr::new);
-    let (logical_key, location) = chord_for(key);
-    let (key_without_modifiers, _) = key_for(key.unmodified_keysym, None);
+    let under_chord = key.modifiers.ctrl || key.modifiers.alt || key.modifiers.logo;
+    let (logical_key, location) = ui::keys::chord(
+        key.keysym,
+        key.text.as_deref(),
+        key.latin_keysym,
+        under_chord,
+    );
+    let (key_without_modifiers, _) = ui::keys::from_keysym(key.unmodified_keysym, None);
     let state = if key.pressed {
         ElementState::Pressed
     } else {
@@ -677,86 +687,9 @@ pub(crate) fn ime_event(event: HostIme) -> Ime {
     }
 }
 
-/// The key a hosted surface got, as the toolkit names it, with the
-/// modifiers held: what a shortcut table matches against.
-#[must_use]
-pub fn toolkit_key(key: &HostKey) -> (Key, Modifiers) {
-    (
-        chord_for(key).0,
-        Modifiers::from(modifiers_state(key.modifiers)),
-    )
-}
-
-/// The key `key` is to what matches shortcuts against it: under Ctrl, Alt or
-/// Super a letter outside the Latin script is named by the Latin character
-/// the same key types on a layout that has one, so Ctrl+C copies and Super+L
-/// locks whichever layout is typing. A Latin letter with a diacritic stays as
-/// typed: it is a shortcut of its own on the layouts that have it.
-fn chord_for(key: &HostKey) -> (Key, KeyLocation) {
-    let (logical, location) = key_for(key.keysym, key.text.as_deref());
-    if !(key.modifiers.ctrl || key.modifiers.alt || key.modifiers.logo) {
-        return (logical, location);
-    }
-    let Key::Character(typed) = &logical else {
-        return (logical, location);
-    };
-    if !typed.chars().any(ui::latin_chord::is_non_latin_letter) {
-        return (logical, location);
-    }
-    (key_for(key.latin_keysym, None).0, location)
-}
-
-/// The key `keysym` is: a named key when winit names it, else the text it
-/// types, else the character of the keysym itself.
-fn key_for(keysym: u32, text: Option<&str>) -> (Key, KeyLocation) {
-    let (key, location) = winit::platform::scancode::keysym_to_key(keysym);
-    if !matches!(key, Key::Unidentified(_)) {
-        return (key, location);
-    }
-    match text {
-        Some(text) => (Key::Character(SmolStr::new(text)), location),
-        None => match char::from_u32(keysym).filter(|c| !c.is_control()) {
-            Some(c) => (Key::Character(SmolStr::new(c.to_string())), location),
-            None => (key, location),
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Key, KeyModifiers, chord_for, dropped_paths};
-    use tilo_compositor::HostKey;
-
-    fn held(keysym: char, latin: char, ctrl: bool) -> HostKey {
-        HostKey {
-            keycode: 46,
-            pressed: true,
-            repeat: false,
-            keysym: u32::from(keysym),
-            unmodified_keysym: u32::from(keysym),
-            latin_keysym: u32::from(latin),
-            text: None,
-            modifiers: KeyModifiers {
-                ctrl,
-                ..KeyModifiers::default()
-            },
-        }
-    }
-
-    #[test]
-    fn a_chord_types_named_by_the_latin_key_on_a_cyrillic_layout() {
-        let (logical, _) = chord_for(&held('с', 'c', true));
-        assert_eq!(logical, Key::Character("c".into()));
-        // The letter itself, with no chord modifier, stays Cyrillic.
-        let (typed, _) = chord_for(&held('с', 'c', false));
-        assert_eq!(typed, Key::Character("с".into()));
-    }
-
-    #[test]
-    fn a_diacritic_on_a_latin_layout_stays_as_typed_in_a_chord() {
-        let (logical, _) = chord_for(&held('ü', 'u', true));
-        assert_eq!(logical, Key::Character("ü".into()));
-    }
+    use super::dropped_paths;
 
     #[test]
     fn a_uri_list_drops_its_files_decoded_and_skips_the_rest() {

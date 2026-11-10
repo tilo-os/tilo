@@ -47,7 +47,7 @@ pub fn fingerprint(catalog: &package_store::Catalog) -> String {
 /// switch always offers them, so a device with no store still shows a desk.
 pub fn of_shell(
     packages: &[tilolang_tilo::tilolang::Compiled],
-) -> Vec<tilo_surface_host::shell_part::DeskStyleReading> {
+) -> Vec<tilo_session_core::shell::DeskStyleReading> {
     let metas: Vec<(String, Meta)> = packages
         .iter()
         .map(|package| (package.meta.app.clone(), package.meta.clone()))
@@ -66,7 +66,7 @@ pub fn of_shell(
 /// style drawing anything.
 pub fn installed(
     catalog: &package_store::Catalog,
-) -> Vec<tilo_surface_host::shell_part::DeskStyleReading> {
+) -> Vec<tilo_session_core::shell::DeskStyleReading> {
     let Ok(apps) = app_catalogue::apps::read(catalog) else {
         return Vec::new();
     };
@@ -109,7 +109,7 @@ pub fn installed(
 pub fn module_from_store(app: &str) -> Option<std::sync::Arc<[u8]>> {
     // The shell's own package is what the part runs, never one it loads beside itself: the
     // store holds it, and sending it here would load a second copy.
-    if app == tilo_surface_host::shell_part::SHELL_APP {
+    if app == tilo_session_core::shell::SHELL_APP {
         return None;
     }
     let catalog = package_store::Catalog::from_env().ok()?;
@@ -122,8 +122,8 @@ pub fn module_from_store(app: &str) -> Option<std::sync::Arc<[u8]>> {
 
 /// One app whose module did not read: a style the switch says it cannot load, named by the
 /// package, so a person who installed it sees why rather than seeing nothing.
-fn unreadable(package: &str) -> tilo_surface_host::shell_part::DeskStyleReading {
-    tilo_surface_host::shell_part::DeskStyleReading {
+fn unreadable(package: &str) -> tilo_session_core::shell::DeskStyleReading {
+    tilo_session_core::shell::DeskStyleReading {
         style: format!("{package}:"),
         package: package.to_owned(),
         name: String::new(),
@@ -142,7 +142,7 @@ fn styles_of(
     package: &str,
     meta: &Meta,
     modules: &[(String, Meta)],
-) -> Vec<tilo_surface_host::shell_part::DeskStyleReading> {
+) -> Vec<tilo_session_core::shell::DeskStyleReading> {
     // The arrangement type as any view names it: the package declaring it, and the name the
     // declaring package gives it. `parse_ty`, below, turns a style's parameter into the same
     // app and name, whether the style writes `Arrangement` (the declaring package) or
@@ -193,7 +193,7 @@ fn styles_of(
                         .any(|(app, name)| app == &key.app && name == &key.name)
             ))
         })
-        .map(|v| tilo_surface_host::shell_part::DeskStyleReading {
+        .map(|v| tilo_session_core::shell::DeskStyleReading {
             style: format!("{package}:{}", v.name),
             package: package.to_owned(),
             name: v.name.clone(),

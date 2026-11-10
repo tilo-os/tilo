@@ -29,7 +29,7 @@ the old file and function, what the new code has, and where the two stand.
 
 1. **The new session draws the portable surface, not
    `crates/session/desktop/src/composition.rs`.** `session/src/desk.rs` calls
-   `tilo_surface_host::desktop_with`, which builds
+   `platform::surfaces::desktop_with`, which builds
    `tilo_desktop_surface::DesktopSurface`. That surface shows **one strip at
    a time**: `show_active_strip` swaps `self.shown` and marks its own
    structure dirty, so a strip or workspace change replaces the child row in

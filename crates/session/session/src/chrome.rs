@@ -5,6 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
+use crate::platform::surfaces::{Placement as SurfacePlacement, WidgetHost};
 use tilo_action_policy::Role;
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::chrome::{
@@ -21,7 +22,6 @@ use tilo_desktop_surface::host::chrome::{ChromeSource, Facts, HostChrome, Notice
 use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_desktop_surface::notifications::Notification;
 use tilo_desktop_surface::{DesktopHandle, DesktopNotifications};
-use tilo_surface_host::{Placement as SurfacePlacement, WidgetHost};
 use ui::floating_layer::Card;
 use ui::live_activity::{Published, Summary};
 use ui::search::Scope;

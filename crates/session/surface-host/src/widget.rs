@@ -19,7 +19,7 @@ use winit::event::Modifiers;
 use winit::keyboard::ModifiersState;
 
 use crate::frames::Frames;
-use crate::{Placement, ime_event, key_event, modifiers_state, mouse_input};
+use crate::{Placement, ime_event, key_event, modifiers_of, mouse_input};
 use tilo_desktop_surface::DesktopSurface;
 use ui::widget::Widget;
 
@@ -776,7 +776,7 @@ impl SurfaceHost for WidgetHost {
     }
 
     fn key(&mut self, key: &HostKey) {
-        let modifiers = modifiers_state(key.modifiers);
+        let modifiers = modifiers_of(key.modifiers);
         if modifiers != self.modifiers {
             self.modifiers = modifiers;
             self.input(&WindowEvent::ModifiersChanged(Modifiers::from(modifiers)));

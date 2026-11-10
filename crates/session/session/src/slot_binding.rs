@@ -144,7 +144,7 @@ impl Session {
             tracing::warn!(slot, "the slot has no state for a view of it to read");
             return;
         };
-        let spec = tilo_surface_host::slot_view::Spec {
+        let spec = crate::platform::surfaces::slot_view::Spec {
             app,
             view,
             dir,
@@ -211,7 +211,7 @@ impl Session {
                 .invoke(
                     &ActionAddress::new(&ask.resource, &ask.action),
                     &arguments,
-                    &mut tilo_surface_host::Look::none(),
+                    &mut tilo_session_core::door::Look::none(),
                 )
                 .map(drop)
                 .map_err(|error| error.to_string())

@@ -31,7 +31,7 @@ pub(crate) type Observed = RefCell<Option<Vec<(usize, (u64, u64))>>>;
 pub(crate) struct Shared {
     pub(crate) handle: DesktopHandle,
     #[cfg(target_os = "linux")]
-    pub(crate) desktop: tilo_surface_host::DesktopHost,
+    pub(crate) desktop: crate::platform::surfaces::DesktopHost,
     /// The workspace's activity: the desk's changes, and the records its
     /// apps keep.
     #[cfg(target_os = "linux")]
@@ -348,7 +348,7 @@ pub(crate) struct Shared {
     /// The chrome above the windows as the session hosts it: where its
     /// bars stand on the displays, read back for the tests that drive them.
     #[cfg(target_os = "linux")]
-    pub(crate) chrome: Rc<RefCell<tilo_surface_host::WidgetHost>>,
+    pub(crate) chrome: Rc<RefCell<crate::platform::surfaces::WidgetHost>>,
     /// Who is here, as the bar's faces open it: the roster it shows and
     /// where everyone else's pointer is.
     #[cfg(target_os = "linux")]

@@ -18,9 +18,9 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use crate::platform::surfaces::DesktopHost;
 use tilo_app_launch::Launch;
 use tilo_desktop_model::{DesktopTree, TabId, TileContent, WorkspaceSlot};
-use tilo_surface_host::DesktopHost;
 
 use crate::apps::{self, Apps};
 use crate::i18n::t_args;

@@ -9,4 +9,5 @@ pub mod desk;
 pub mod door;
 pub mod presence;
 pub mod remote;
+pub mod shell;
 pub mod surface;
