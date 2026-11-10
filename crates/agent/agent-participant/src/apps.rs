@@ -242,16 +242,12 @@ pub struct Replica {
     view: AttachedView,
     /// Where its last operation left it.
     place: Option<Place>,
-    /// It also offers the record's read effects (a workspace digest, a
-    /// route plan): a bot's steps read through them, where a person's
-    /// reads go through the record's mounted component.
-    offers_reads: bool,
     /// It also runs the record's effects that answer ([`offered_to_agents`]),
     /// waiting for what they end as: whoever the host runs a record for, a
     /// person or an agent acting for one, has no window of it there (a
     /// script, an agent's session, a key), and is offered what a window
     /// offers them, as the desktop's broker does. The answer is the same as
-    /// a window's. A bot's steps read through [`Self::offers_reads`].
+    /// a window's. A bot's steps read through [`Self::offers_reads`] instead.
     runs_effects: bool,
     /// An agent's or a bot's: offered only what reaches agents. An agent's
     /// also runs the effects its host renders.
@@ -425,7 +421,6 @@ impl Replica {
         let kind = catalogue
             .kind(app_id)
             .ok_or_else(|| AppError::UnknownApp(app_id.to_owned()))?;
-        let offers_reads = matches!(actor, ReplicaActor::Bot { .. });
         let for_agent = matches!(actor, ReplicaActor::Member { agent: Some(_), .. });
         let runs_effects = !matches!(actor, ReplicaActor::Bot { .. });
         let automated =
@@ -448,7 +443,6 @@ impl Replica {
             kind,
             view,
             place: None,
-            offers_reads,
             runs_effects,
             automated,
             runs_views,
@@ -461,6 +455,14 @@ impl Replica {
     /// `audience = "people"` included.
     const fn automated(&self) -> bool {
         self.automated
+    }
+
+    /// Whether it offers the record's read effects (a workspace digest, a
+    /// route plan): a bot's, held by something automated that runs no
+    /// effects. A bot's steps read through them, where a person's reads go
+    /// through the record's mounted component or the effects it runs.
+    const fn offers_reads(&self) -> bool {
+        self.automated && !self.runs_effects
     }
 
     #[must_use]
@@ -549,7 +551,7 @@ impl Replica {
             }
             tilo_actions::OperationKind::Effect => {
                 member_own(descriptor)
-                    || (self.offers_reads && descriptor.contract.kind == policy::ActionKind::Read)
+                    || (self.offers_reads() && descriptor.contract.kind == policy::ActionKind::Read)
                     || (self.runs_effects && offered_to_agents(descriptor))
             }
             tilo_actions::OperationKind::View => self.runs_views && offered_to_agents(descriptor),
