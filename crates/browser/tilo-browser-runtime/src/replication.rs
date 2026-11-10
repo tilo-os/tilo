@@ -879,10 +879,6 @@ impl Joined {
     /// its whole tail at once. Each merge into an open record copies the
     /// document, so the mutations of one route are coalesced first (see
     /// [`tilo_peer_state::document_frame::coalesce`]) and merged once per run instead of once per change.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one arm per peer event: the receiver is a table, read top to bottom"
-    )]
     fn receive(&mut self) -> Vec<Arc<dyn Fn() + Send + Sync>> {
         let mut woken: HashSet<u64> = HashSet::new();
         let mut batches: Vec<(DocumentRoute, Vec<DocumentMutation>)> = Vec::new();

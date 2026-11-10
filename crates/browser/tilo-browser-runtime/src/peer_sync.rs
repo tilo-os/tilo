@@ -418,12 +418,8 @@ pub(crate) fn due(peer: u32, workspace: &str) -> Result<f64, JsError> {
 /// page with no board there takes none.
 pub(crate) fn hear(peer: u32, workspace_id: u64, from: [u8; 32], body: &[u8]) {
     let changed = PAGES.with_borrow(|pages| {
-        let Some(page) = pages.get(&peer) else {
-            return None;
-        };
-        let Some(workspace) = page.workspaces.get(&workspace_id) else {
-            return None;
-        };
+        let page = pages.get(&peer)?;
+        let workspace = page.workspaces.get(&workspace_id)?;
         let before = page.client.here_revision(workspace);
         let Ok(from) = EndpointId::from_bytes(&from) else {
             return None;
