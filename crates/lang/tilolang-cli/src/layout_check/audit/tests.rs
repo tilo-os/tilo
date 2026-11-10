@@ -100,6 +100,7 @@ fn a_header_row_the_shell_reports_is_checked_where_it_stands() {
     shell.layout = Some(ui::widget::LayoutInfo::Shell(ui::widget::ShellLayout {
         sidebar: ui::widget::SidebarStanding::None,
         beside: ui::widget::arrange::WidthClass::Compact,
+        needs: ui::widget::arrange::WidthClass::Compact,
         beside_width: 400.0,
         rows: ui::widget::HeaderRows {
             rows: [
