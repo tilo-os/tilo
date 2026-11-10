@@ -83,10 +83,7 @@ impl Workspace {
     /// The labels of the tree the root's shell holds, in its order: the rows of a window that
     /// lists its items as an outline (a notebook's notes).
     pub(super) fn tree_labels(&mut self) -> Vec<String> {
-        self.tree_rows()
-            .iter()
-            .filter_map(|row| label_of(row))
-            .collect()
+        self.tree_rows().iter().filter_map(label_of).collect()
     }
 
     /// The labels of the buttons a header slot `slot` of the composed shell holds, however
@@ -134,7 +131,6 @@ impl Workspace {
         ResourceRef::parse_id(field.0, ty).expect("a resource id")
     }
 }
-
 
 // The window's search narrows the tree: the notes the store finds, with the notes they stand
 // under shown for them, and the tree as the person left it when the search clears.
