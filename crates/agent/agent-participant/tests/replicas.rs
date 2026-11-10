@@ -700,9 +700,81 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
     let before = doc.get_heads();
     tilo_automerge::ApplyIncoming::load_incoming(&mut doc, &wrote).unwrap();
     assert!(
-        doc.get_changes(&before)
-            .iter()
-            .any(|change| change.actor_id().to_bytes() == b"agent:Claude Code"),
+        doc.get_changes(&before).iter().any(|change| {
+            ui::history_source::authors::actor_handle(&change.actor_id().to_hex_string()).as_deref()
+                == Some("agent:Claude Code")
+        }),
         "written as the agent"
+    );
+}
+
+/// The agent the person invited, acting for them in two replicas of one
+/// record: each opened from what the workspace kept, as a host opens one per
+/// turn and again after a restart or a refused write. Each replica writes
+/// under a writer of its own, so the workspace takes both writes: two
+/// changes under one writer and sequence would leave the record unable to
+/// hold both, and whoever read it whole after would refuse it.
+#[test]
+fn two_replicas_of_one_agent_never_write_one_sequence_twice() {
+    let mut made = common::open("so.tilo.notes", "ada", ReplicaActor::Owner, Seed::New).unwrap();
+    let Some(DocumentMutation::Snapshot(genesis)) = made.take_mutation() else {
+        panic!("a new record is published whole");
+    };
+    let standing = ui::permissions::PermissionContext::member_of(
+        WORKSPACE,
+        "ada",
+        ui::permissions::Role::Owner,
+    )
+    .standing()
+    .clone();
+    let mut wrote = Vec::new();
+    for title in ["Launch plan", "Retro notes"] {
+        let mut agent = common::open(
+            "so.tilo.notes",
+            "ada",
+            ReplicaActor::Member {
+                standing: standing.clone(),
+                sandbox: Vec::new(),
+                unix_time: 1_900_000_000,
+                agent: Some("Claude Code".into()),
+                agent_name: None,
+            },
+            Seed::Existing {
+                record: made.record_id().clone(),
+                changes: vec![genesis.clone()],
+            },
+        )
+        .unwrap();
+        let _ = agent.take_mutation();
+        let new_note = agent
+            .survey()
+            .into_iter()
+            .find(|descriptor| descriptor.address.action == "new-note")
+            .expect("the notebook offers the agent a new note")
+            .address;
+        let arguments = serde_json::json!({ "title": title });
+        agent
+            .invoke(&new_note, arguments.as_object().unwrap(), false)
+            .unwrap();
+        let Some(DocumentMutation::Incremental(changes)) = agent.take_mutation() else {
+            panic!("the agent's note is handed back to be saved");
+        };
+        wrote.push(changes);
+    }
+    let mut doc = automerge::AutoCommit::new();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut doc, &genesis).unwrap();
+    for changes in &wrote {
+        tilo_automerge::ApplyIncoming::load_incoming(&mut doc, changes)
+            .expect("the workspace takes each replica's write");
+    }
+    let changes = doc.get_changes(&[]);
+    let sequences: std::collections::BTreeSet<_> = changes
+        .iter()
+        .map(|change| (change.actor_id().to_bytes().to_vec(), change.seq()))
+        .collect();
+    assert_eq!(
+        sequences.len(),
+        changes.len(),
+        "one change per writer and sequence"
     );
 }

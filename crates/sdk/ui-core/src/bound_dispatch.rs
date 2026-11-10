@@ -2386,14 +2386,18 @@ pub fn minted_items(
 }
 
 /// Canonical Document executor, retaining its actual envelope for owned bookkeeping.
-/// Who writes a document change `actor` makes here. An agent principal
-/// names one writer; a person may write from several devices at once.
+/// Who writes a document change `actor` makes here: `actor`'s handle, which
+/// history reads back, joined to the writer of this copy of the record.
+///
+/// Automerge numbers each writer's changes, so a writer must belong to one
+/// copy: a person writes from several devices at once, an agent from a
+/// replica per turn, and a copy opened from a workspace's record that lacks the
+/// writer's own latest change (one refused, one not yet published, a state
+/// restored from a backup) would number its next change again. Two changes
+/// under one writer and sequence cannot both be held, and a record keeping
+/// both no longer reads whole.
 pub fn document_writer(actor: &str, doc: &AutoCommit) -> Vec<u8> {
-    if crate::history_source::authors::agent_principal_name(actor).is_some() {
-        actor.as_bytes().to_vec()
-    } else {
-        crate::history_source::authors::device_actor(actor, doc.get_actor())
-    }
+    crate::history_source::authors::device_actor(actor, doc.get_actor())
 }
 
 fn execute_document(
