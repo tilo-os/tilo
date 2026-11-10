@@ -636,15 +636,20 @@ mod tests {
     }
 }
 
-/// A row led by an author's face: a person's round face in their colour, or
-/// the agent mark for software acting for someone — which is where what an
-/// author is shows, never words in the line beside it.
+/// A row led by an author's face: a person's round face, or the agent mark
+/// for software acting for someone — which is where what an author is shows,
+/// never words in the line beside it. Either wears the colour presence paints
+/// its author in.
 #[must_use]
 pub fn author_face(
     mut row: crate::widget::ListRow,
     author: &wire::Author,
 ) -> crate::widget::ListRow {
     row = row.avatar(author.name.clone(), author.identity.clone());
+    let [red, green, blue] = author.rgb;
+    if [red, green, blue] != [0; 3] {
+        row = row.avatar_colour(crate::peniko::Color::from_rgb8(red, green, blue));
+    }
     if author.relation == wire::Relation::Software {
         row = row.square().avatar_glyph(crate::icons::Icon::Bot);
     }

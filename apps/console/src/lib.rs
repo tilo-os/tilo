@@ -278,14 +278,10 @@ pub(crate) fn ago(at_ms: i64) -> String {
 }
 
 /// A row led by `author`'s face: a person's round avatar, or an agent's
-/// square one with the agent mark, so the two are never mistaken, tinted by
-/// the client it is an agent of.
+/// square one with the agent mark, so the two are never mistaken — both in
+/// the colour presence paints them in.
 pub(crate) fn faced(row: ListRow, author: &wire::Author) -> ListRow {
-    let row = ui::author_face(row, author);
-    match (author.relation, client::of(&author.name).hue()) {
-        (wire::Relation::Software, Some(hue)) => row.avatar_hue(hue),
-        _ => row,
-    }
+    ui::author_face(row, author)
 }
 
 /// A page of the window: its content in a readable column that scrolls.

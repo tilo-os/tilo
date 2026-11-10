@@ -42,7 +42,7 @@ fn reader(name: &str, rgb: [u8; 3]) -> wire::Author {
 fn agent(name: &str, person: &str) -> wire::Author {
     wire::Author {
         name: name.to_owned(),
-        rgb: [120, 110, 220],
+        rgb: [214, 130, 77],
         identity: format!("agent:{}", name.to_lowercase()),
         relation: wire::Relation::Software,
         kind: ui::tilo_actions::ActorKind::Agent,
