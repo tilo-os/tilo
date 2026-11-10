@@ -212,7 +212,8 @@ def open_terminal(ctx, name: str, workspace: dict) -> Terminal:
 
     new = wait_until(fresh, 60, interval=0.5)
     if new is None:
-        raise CheckFailed(f"{name}: the Terminal opened published no session of its own")
+        raise CheckFailed(f"{name}: the Terminal opened published no session of its own "
+                          f"(journal: {journal(ctx, 'terminal')})")
     terminal = Terminal(ctx, next(iter(new)), name, workspace)
     info = wait_until(lambda: (i if (i := terminal.inspect()).get("lifecycle") == "open" else None),
                       SHELL_S, interval=1.0)
@@ -685,6 +686,19 @@ def own_workspace(ctx, res):
         raise CheckFailed("; ".join(problems))
 
 
+def journal(ctx, word: str, lines: int = 25) -> str:
+    """The session journal's last `lines` lines naming `word`, kept beside the report too: what the
+    box said about it when a check needs it."""
+    try:
+        out = ctx.vm.run("logs", ctx.vm.slot, timeout=90, check=False)
+    except VmError as exc:
+        return f"no journal: {exc}"
+    text = out if isinstance(out, str) else str(out)
+    hits = [line for line in text.splitlines() if word.lower() in line.lower()]
+    ctx.write(f"journal-{word}.txt", "\n".join(hits))
+    return " | ".join(line[-220:] for line in hits[-lines:])
+
+
 def settled(agent: Agent, reply: dict, within: float = 90.0) -> dict:
     """`reply`, or, where it says the action is still `pending <id>`, what `tilo_status` answers
     for it once it settled: the outcome the agent reads back, as an agent waiting on it does."""
@@ -697,15 +711,14 @@ def settled(agent: Agent, reply: dict, within: float = 90.0) -> dict:
         reply = agent.tool("tilo_status", {"invocation_id": pending.group(1)})
 
 
-def closed_app(agent: Agent, avoid=()) -> str | None:
-    """An app installed in the agent's workspace that is not running, as its `tilo_ls` lists the
-    apps (`name  Label  installed`), the plainest first and none of `avoid` (what the other agent
-    opened: each workspace's launch is its own); None when every one runs."""
+def closed_app(agent: Agent, opened=()) -> str | None:
+    """An app installed in the agent's workspace that is not running there, as its `tilo_ls` lists
+    the apps (`name  Label  installed`): the one the other agent opened in its own workspace when
+    it is one, else the plainest; None when every one runs."""
     listed = text_of(agent.tool("tilo_ls", {}))
     closed = [line.split()[0] for line in listed.splitlines()[1:]
-              if line.split() and line.rstrip().endswith("  installed")
-              and line.split()[0] not in avoid]
-    for plain in ("sheets", "calculator", "calendar", "contacts", "mail"):
+              if line.split() and line.rstrip().endswith("  installed")]
+    for plain in (*[o for o in opened if o], "sheets", "calculator", "calendar", "contacts", "mail"):
         if plain in closed:
             return plain
     return closed[0] if closed else None
@@ -724,7 +737,8 @@ def own_change(ctx, res):
         # Opening an app that is not running yet is a host action of the agent's run (the
         # workspace launching it): its answer is what the agent reads back, and it must say how
         # the open went, not only put up a window. A running app's `#open` is its own action.
-        closed = closed_app(agent, avoid=[o.get("opened_app") for o in envs if o is not e])
+        # The same app in both workspaces: each workspace's open starts an instance of its own.
+        closed = closed_app(agent, opened=[o.get("opened_app") for o in envs if o is not e])
         if closed is None:
             raise Unobservable(f"{e['name']}: the agent's workspace lists no installed app that is "
                                "not running, to open")
@@ -744,7 +758,7 @@ def own_change(ctx, res):
         agent = agents[e["name"]]
         if is_error(e["opened"]) is not False or not text_of(e["opened"]).startswith("ok"):
             problems.append(f"{e['name']}: {e['opened_app']}#open did not answer ok: "
-                            f"{text_of(e['opened'])[:300]}")
+                            f"{text_of(e['opened'])[:300]} (journal: {journal(ctx, e['opened_app'])})")
         if is_error(e["new_note"]) is not False:
             problems.append(f"{e['name']}: new-note was refused: {text_of(e['new_note'])[:300]}")
             continue
