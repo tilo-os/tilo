@@ -1566,6 +1566,64 @@ mod tests {
         }
     }
 
+    /// A session that holds workspaces reads an app's record outside the app —
+    /// this device's own copy, sealed writes opened with the record channel's
+    /// keys — and one that holds none reads only on the app's own channel.
+    #[test]
+    fn a_session_that_holds_workspaces_reads_a_record_outside_its_app() {
+        let wake: Wake = std::sync::Arc::new(|| ());
+        let services = |engine| {
+            let mut hosted = hosted(None);
+            hosted.engine = engine;
+            host_services(
+                Link::new(std::sync::Arc::clone(&wake)),
+                std::sync::Arc::new(Launches::default()),
+                None,
+                hosted,
+                None,
+                None,
+            )
+            .committed_documents
+            .is_some()
+        };
+        assert!(
+            !services(None),
+            "a session that holds no workspace reads a record only on the app's own channel"
+        );
+        let state = tempfile::tempdir().expect("a state directory");
+        let engine = std::sync::Arc::new(
+            crate::engine::Engine::open(
+                held_identity(),
+                Some(state.path()),
+                std::iter::empty(),
+                crate::platform::custody::of_this_desk(),
+            )
+            .expect("this device's engine opens"),
+        );
+        assert!(
+            services(Some(engine)),
+            "this device's copy of the workspace's records is what an app's Open reads"
+        );
+    }
+
+    /// A device of a person, certified for their root, that holds workspaces.
+    fn held_identity() -> tilo_identity_host::custody::HostIdentity {
+        let person = ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[0x34; 32]);
+        let mut cert = tilo_user_identity::DeviceCert {
+            user_public_key: person.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Laptop".to_owned(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: tilo_clock::unix_now_ns(),
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
+        tilo_identity_host::custody::HostIdentity::kept(cert, device)
+    }
+
     /// Every seam the broker offers is decided here: served, served where
     /// this run has what it carries, or not served with the reason it was
     /// left out. Every seam a shipped app's sources call is served, or named

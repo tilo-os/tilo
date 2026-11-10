@@ -489,7 +489,6 @@ impl Engine {
             }
             view.peer()
                 .check_document_read(reader, app, record, SystemTime::now())
-                .map_err(|error| error.to_string())
         })
     }
 

@@ -46,6 +46,20 @@ impl NativeDocumentReadContext {
             revalidate,
         }
     }
+
+    /// A read of `route` by `certificate`'s device with nothing else to check: what a test of a
+    /// document owner outside this crate reads with.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn for_reader(route: CrdtRoute, certificate: tilo_user_identity::DeviceCert) -> Self {
+        Self {
+            route,
+            certificate,
+            record_kind: None,
+            creation: None,
+            revalidate: Arc::new(|| Ok(())),
+        }
+    }
     pub fn route(&self) -> &CrdtRoute {
         &self.route
     }
