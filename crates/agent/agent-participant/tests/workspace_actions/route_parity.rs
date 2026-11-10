@@ -5,8 +5,9 @@
 //!
 //! One person, an editor of a workspace another person's host governs,
 //! acts as themselves, through an agent their own device handed its session
-//! to, and through two keys they certified (one for all their workspaces,
-//! one for this workspace alone). For every action the workspace's Notes,
+//! to, through two keys they certified (one for all their workspaces, one
+//! for this workspace alone), and through an agent device they certified,
+//! which the workspace lets make notes. For every action the workspace's Notes,
 //! PDF Viewer, Writer and Terminal records publish, each caller is offered
 //! on the host exactly what the broker offers them; and a set of actions
 //! (a note, the form's fields, a Word export, a paragraph, a command) runs,
@@ -60,12 +61,28 @@ impl Member {
     }
 }
 
-/// The workspace's policy: the member an editor of it.
+/// The workspace's policy: the member an editor of it, whose agent device
+/// (`assistant`) may make notes.
 fn workspace_policy(member: &str) -> tilo_action_policy::WorkspacePolicy {
-    ui::permissions::PermissionContext::member_of(WORKSPACE, member.to_owned(), Role::Editor)
-        .standing()
-        .policy
-        .clone()
+    use tilo_action_policy::agent_answers::{AnswerScope, grant};
+    let mut policy =
+        ui::permissions::PermissionContext::member_of(WORKSPACE, member.to_owned(), Role::Editor)
+            .standing()
+            .policy
+            .clone();
+    for kind in [
+        tilo_action_policy::ActionKind::Read,
+        tilo_action_policy::ActionKind::Undoable,
+    ] {
+        policy.grants.push(grant(
+            WORKSPACE,
+            "assistant",
+            (&AnswerScope::app(NOTES), kind),
+            Answer::Allow,
+            tilo_action_policy::Subject::person(member),
+        ));
+    }
+    policy
 }
 
 impl WorkspaceRecordsLink for Member {
@@ -370,6 +387,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
     let guest_device = enrol(&guest, "guest-browser", DeviceCapabilities::member());
     let all_key = enrol(&guest, "visa-backend", DeviceCapabilities::member());
     let one_key = enrol(&guest, "applicant-7", DeviceCapabilities::member());
+    let agent_device = enrol(&guest, "assistant-box", DeviceCapabilities::member());
     let state = support::scratch_dir();
     // A workspace's shell works in a directory an environment may be
     // granted: not one below /dev, where the scratch state is.
@@ -399,6 +417,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
             guest_device.cert.device_public_key,
             all_key.cert.device_public_key,
             one_key.cert.device_public_key,
+            agent_device.cert.device_public_key,
         ],
         asked: AtomicUsize::new(0),
         content: tilo_content::ContentStore::in_dir(state.path().join("member-content")),
@@ -425,6 +444,13 @@ async fn both_routes_decide_every_callers_actions_alike() {
         (
             "their workspace key",
             key(person, one_key.cert.device_public_key, "Applicant 7"),
+        ),
+        (
+            "their agent device",
+            Caller::delegated_agent("assistant", person, agent_device.cert.device_public_key)
+                .named("Assistant")
+                .in_workspace(WORKSPACE)
+                .in_new_execution(),
         ),
     ];
     let owner = Caller::authenticated(
@@ -540,6 +566,8 @@ async fn both_routes_decide_every_callers_actions_alike() {
         ),
     ];
     let mut commands_ran = 0;
+    // The agents and keys whose note the host made: each made a run.
+    let mut agents = Vec::new();
     for (app, action, arguments) in invocations {
         let (route, all) = &every[app];
         let descriptor = all
@@ -580,6 +608,12 @@ async fn both_routes_decide_every_callers_actions_alike() {
                     "{who} {app}#{action}: the host {by_host:?} ({status:?}), the broker {by_broker:?}"
                 ));
             }
+            if app == NOTES
+                && by_host == Admitted::Runs
+                && let Some(run) = caller.agent_run()
+            {
+                agents.push(run.label);
+            }
             // A command the host runs for anyone runs in the workspace's
             // shell, and answers with how it ran: never left waiting.
             if app == TERMINAL && by_host != Admitted::Refused {
@@ -601,23 +635,28 @@ async fn both_routes_decide_every_callers_actions_alike() {
     // own changes are no run. The page sees what History, Activity and undo
     // read.
     let notes = &every[NOTES].0;
-    let agents = ["Claude Code", "Visa backend", "Applicant 7"];
+    assert!(
+        ["Claude Code", "Visa backend", "Applicant 7", "Assistant"]
+            .iter()
+            .all(|name| agents.iter().any(|agent| agent == name)),
+        "every agent and key made a note: {agents:?}"
+    );
     let deadline = tilo_test_env::hang_deadline();
     let runs = loop {
         let runs = runs_of(&mut browser, notes);
         if agents
             .iter()
-            .all(|name| runs.iter().any(|run| run.label == *name))
+            .all(|name| runs.iter().any(|run| &run.label == name))
             || Instant::now() >= deadline
         {
             break runs;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    for name in agents {
+    for name in &agents {
         let named: BTreeSet<_> = runs
             .iter()
-            .filter(|run| run.label == name)
+            .filter(|run| run.label == *name)
             .map(|run| (run.id.clone(), run.kind.clone()))
             .collect();
         if named.len() != 1

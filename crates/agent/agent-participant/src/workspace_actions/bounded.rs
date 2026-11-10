@@ -326,8 +326,8 @@ pub(super) fn member_actor(
 
 impl Worker {
     /// `caller` as the host acts for them within bounds: a person who is not
-    /// the host's own, or an agent a person's own device handed its session
-    /// to. `None` for the host's own person, and for anyone the host acts for
+    /// the host's own, an agent a person's own device handed its session to,
+    /// or an agent device a person certified. `None` for the host's own person, and for anyone the host acts for
     /// in no person's name.
     pub(super) fn bounded(&self, caller: &Caller) -> Option<Bounded> {
         match caller.principal() {
@@ -340,7 +340,20 @@ impl Worker {
                 agent_name: None,
             }),
             CallerPrincipal::Agent(agent) => {
-                let person_caller = caller.delegating_person()?;
+                // An agent the person's device handed its session to acts on
+                // that device's admission; an agent device the person
+                // certified, on its own device's: either is bounded by the
+                // person it acts for, as `Caller::invoker` reads it.
+                let person_caller = caller.delegating_person().or_else(|| {
+                    let person = Caller::authenticated(
+                        *caller.user_public_key()?,
+                        *caller.device_public_key()?,
+                    );
+                    Some(match caller.workspace() {
+                        Some(workspace) => person.in_workspace(workspace),
+                        None => person,
+                    })
+                })?;
                 let CallerPrincipal::Person(person) = person_caller.principal() else {
                     return None;
                 };

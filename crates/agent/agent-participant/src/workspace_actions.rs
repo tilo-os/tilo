@@ -2801,15 +2801,19 @@ fn exact_view_query(
 }
 
 /// Whether `caller` speaks for someone a workspace may admit as a member: a
-/// person themselves, or the agent a device of theirs handed its session to
-/// (an agent's grant), which every decision then holds to what an agent of
-/// theirs may do. The workspace's governance still decides whether it admits
-/// them.
+/// person themselves, the agent a device of theirs handed its session to (an
+/// agent's grant), which every decision then holds to what an agent of
+/// theirs may do, or an agent device they certified, held to what the
+/// workspace grants that agent. The workspace's governance still decides
+/// whether it admits them.
 fn speaks_for_a_member(caller: &Caller) -> bool {
     match caller.principal() {
         CallerPrincipal::Person(_) => true,
+        CallerPrincipal::Agent(_) if caller.is_session_delegated() => {
+            caller.acting_for_person().is_some()
+        }
         CallerPrincipal::Agent(_) => {
-            caller.is_session_delegated() && caller.acting_for_person().is_some()
+            caller.user_public_key().is_some() && caller.device_public_key().is_some()
         }
         _ => false,
     }

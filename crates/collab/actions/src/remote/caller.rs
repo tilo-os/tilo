@@ -372,8 +372,14 @@ impl Caller {
             (CallerPrincipal::Agent(agent), _) => {
                 let actor =
                     crate::InteractionActor::new(format!("agent:{agent}"), crate::ActorKind::Agent);
-                match &self.acting_for {
-                    Some(person) => actor.acting_for(person.clone()),
+                // An agent device acts for the person who certified it, as
+                // `Self::invoker` reads it.
+                match self
+                    .acting_for
+                    .clone()
+                    .or_else(|| self.user_public_key.map(hex::encode))
+                {
+                    Some(person) => actor.acting_for(person),
                     None => actor,
                 }
             }
