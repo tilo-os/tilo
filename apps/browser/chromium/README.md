@@ -383,6 +383,13 @@ navigation is not the action's answer: it arrives in the `network` log as its
 document request, marked `navigation` with Chromium's `user_gesture`. `none`:
 the action ran none of the page's code (reading, reader view).
 
+A drawn `path` sends each point once the page has heard the one before (a
+move the page has not handled yet reaches it together with the next, as one),
+so a line through seven points is six strokes, one to each point after the
+first, on a busy page as on an idle one. The button then comes up where the
+pointer is, with no move of no length before it. A page that says of two
+points in a row that it did not hear them is sent the rest a frame apart.
+
 ```sh
 python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromium-host
 ```

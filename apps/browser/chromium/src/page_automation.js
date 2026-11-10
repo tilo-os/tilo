@@ -891,6 +891,29 @@ globalThis.__tiloPage ||= (() => {
     setTimeout(() => { current.dispatched = true; report(); });
   };
   for (const type of ['pointerup', 'mouseup', 'click', 'drop']) addEventListener(type, arrived('pointer'), true);
+  // The moves of the pointer this document has heard. A drawn path sends
+  // its next point once the page has heard the one before: two moves the
+  // page has not handled yet reach it as one, and a line drawn through
+  // seven points would have six.
+  let heardMove = {x: -1, y: -1, n: 0}, moveWaiter = null;
+  addEventListener('pointermove', event => {
+    if (!event.isTrusted) return;
+    heardMove = {x: event.clientX, y: event.clientY, n: heardMove.n + 1};
+    if (moveWaiter) moveWaiter();
+  }, true);
+  function pointerHeard(x, y, after, wait) {
+    const there = () => heardMove.n > after && Math.abs(heardMove.x - x) <= 1.5 && Math.abs(heardMove.y - y) <= 1.5;
+    if (there()) return {ok: true, heard: true, n: heardMove.n};
+    return new Promise(done => {
+      const timer = setTimeout(() => { moveWaiter = null; done({ok: true, heard: false, n: heardMove.n}); }, wait);
+      moveWaiter = () => {
+        if (!there()) return;
+        clearTimeout(timer);
+        moveWaiter = null;
+        done({ok: true, heard: true, n: heardMove.n});
+      };
+    });
+  }
   // A press that started a drag ends with its drop in the engine, where these
   // listeners may never hear a pointerup; the drag's own end says so instead.
   addEventListener('dragend', arrived('pointer'), true);
@@ -3139,7 +3162,11 @@ globalThis.__tiloPage ||= (() => {
           // A contact path for the engine's pointer, in viewport pixels.
           case 'path': {
             const {points} = contactPath(command.element, command.points || []);
-            return {ok: true, points, message: `Drawing ${points.length} points on ${command.element}`};
+            return {ok: true, points, heard: heardMove.n, message: `Drawing ${points.length} points on ${command.element}`};
+          }
+          case 'pointer_heard': {
+            const wait = Math.max(0, Math.min(Number(command.wait_ms) || 0, 1000));
+            return pointerHeard(Number(command.x), Number(command.y), Number(command.after) || 0, wait);
           }
           // A contact path the engine cannot send, replayed as pointer events.
           case 'path_fallback': {

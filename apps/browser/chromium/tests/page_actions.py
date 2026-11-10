@@ -91,11 +91,13 @@ CANVAS = b'''<!doctype html><title>Sign</title>
 <canvas id="c" width="500" height="150" aria-label="Signature pad" style="border:1px solid #000"></canvas>
 <button type="button" id="s">Submit signature</button><p id="m"></p>
 <script>let ink=0,down=false;const x=document.getElementById("c").getContext("2d");
-const c=document.getElementById("c");
+const c=document.getElementById("c"),marks=[];
+const at=e=>{const b=c.getBoundingClientRect();return [Math.round(e.clientX-b.left),Math.round(e.clientY-b.top)]};
 c.onpointerdown=e=>{down=true;x.beginPath();x.moveTo(e.offsetX,e.offsetY)};
-c.onpointermove=e=>{if(down){x.lineTo(e.offsetX,e.offsetY);x.stroke();ink++}};
+c.onpointermove=e=>{if(down){x.lineTo(e.offsetX,e.offsetY);x.stroke();ink++;marks.push(at(e))}};
 window.onpointerup=()=>down=false;
 window.strokes=()=>ink;
+window.strokesAt=()=>JSON.stringify(marks);
 document.getElementById("s").onclick=()=>{document.getElementById("m").textContent=ink<5?"Draw your signature first":"Signature received"};
 </script>'''
 
@@ -120,9 +122,16 @@ li{border:1px solid #000;padding:8px;margin:4px;list-style:none}
 let ink = 0, down = false;
 const pad = document.getElementById('c'), ctx = pad.getContext('2d');
 pad.onpointerdown = e => { down = true; ctx.beginPath(); ctx.moveTo(e.offsetX, e.offsetY); };
-pad.onpointermove = e => { if (!down) return; ctx.lineTo(e.offsetX, e.offsetY); ctx.stroke(); ink++; };
+const marks = [];
+pad.onpointermove = e => {
+  if (!down) return;
+  ctx.lineTo(e.offsetX, e.offsetY); ctx.stroke(); ink++;
+  const box = pad.getBoundingClientRect();
+  marks.push([Math.round(e.clientX - box.left), Math.round(e.clientY - box.top)]);
+};
 pad.onpointerup = () => { down = false; };
 window.drawn = () => ink;
+window.strokesAt = () => JSON.stringify(marks);
 window.opened = name => { document.getElementById('m').textContent = 'opened ' + name; };
 window.order = () => [...document.getElementById('l').children].map(x => x.textContent).join(' > ');
 window.saveOrder = () => { document.getElementById('m').textContent = 'saved ' + order(); };
@@ -2116,7 +2125,15 @@ class PageActions(unittest.TestCase):
         canvas = self.ref(self.outline(), 'canvas "Signature pad"')
         points = [[50, 100], [80, 40], [110, 110], [140, 45], [170, 105], [200, 60], [240, 100]]
         drawn = self.ok('path', element=canvas, points=points)
-        self.assertEqual(self.main_world('strokes()'), len(points), drawn)
+        # The page hears the press at the first point and a stroke to each
+        # point after it, in order and where each is: a line through seven
+        # points is six strokes. (This asserted seven: the six, and one of no
+        # length from a move the engine repeated at the last point before
+        # letting go, which reached the page by itself or together with the
+        # move before it as the page had time. The engine no longer repeats
+        # it, and each stroke is asserted by where it landed.)
+        self.assertEqual(json.loads(self.main_world('strokesAt()')), points[1:], drawn)
+        self.assertEqual(self.main_world('strokes()'), len(points) - 1, drawn)
 
     def test_a_click_still_lands_after_a_drag(self):
         # A drag leaves the engine's own drag behind it; the click that follows
@@ -2138,10 +2155,15 @@ class PageActions(unittest.TestCase):
         pad = self.ref(outline, 'canvas "Signature pad"')
         points = [[20, 110], [40, 60], [60, 100], [80, 50], [100, 105], [120, 70], [140, 95]]
         drawn = self.ok('path', element=pad, points=points)
-        # Every point after the press is a move the page strokes; the reply
-        # names how many it drew so an agent can tell ink landed.
+        # Every point after the press is a move the page strokes, where the
+        # point is; the reply names how many points it drew so an agent can
+        # tell ink landed.
         self.assertEqual(drawn['data']['drew'], len(points), drawn)
-        self.assertEqual(self.main_world('drawn()'), len(points), drawn)
+        inked = json.loads(self.main_world('strokesAt()'))
+        self.assertEqual(len(inked), len(points) - 1, (inked, drawn))
+        for (x, y), (wanted_x, wanted_y) in zip(inked, points[1:]):
+            self.assertTrue(abs(x - wanted_x) <= 1 and abs(y - wanted_y) <= 1, (inked, drawn))
+        self.assertEqual(self.main_world('drawn()'), len(points) - 1, drawn)
         self.ok('click', element=self.ref(self.outline(), 'button "Submit signature"'))
         self.assertIn('text "Signature received"', self.outline())
 

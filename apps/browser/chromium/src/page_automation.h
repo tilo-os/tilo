@@ -364,9 +364,15 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // shortly after the frame that carried it.
   static constexpr int64_t kHoverFrameMs=80;
   static constexpr int64_t kReleaseFrameMs=80;
-  // A drawing path's points are one per frame: pointer moves sent within a
-  // single frame are coalesced, and the page would see only the last.
+  // A drag's first move waits a frame for the drag the press began.
   static constexpr int64_t kPathPointMs=16;
+  // A drawn path's next point is sent when the page has heard the one
+  // before (see `PathHeard`): how long that is waited for after the press,
+  // after a move, and how much longer for a page that never answers.
+  static constexpr int64_t kPathPressMs=80,kPathHeardMs=1000,kPathSlackMs=150;
+  // How many points in a row a page may not hear before the rest are sent
+  // by the clock.
+  static constexpr int kPathMissed=2;
   // One turn of the scroll wheel is one frame: a page's scroll listeners and
   // intersection observers run between two turns, as they do under a hand,
   // so a lazy list loads while the wheel keeps turning.
@@ -469,6 +475,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // last point was sent, which of its points was last sent and which was
     // last gone on from.
     double moves=0;int asked_point=0,heard_point=0;
+    // Whether the page heard the pointer arrive at the last point sent, how
+    // many points in a row it did not, and whether it is asked no more.
+    bool heard_last=false,path_blind=false;int path_missed=0;
     // Whether a gesture of pointer steps has told the page that it began.
     bool acting_told=false;
     Pending()=default;
@@ -1874,9 +1883,40 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // The points of a frame's document are moved by where the frame sits.
     for(auto& point:path) { point.first+=world_frame_.x;point.second+=world_frame_.y; }
     pending_->points=std::move(path);pending_->point_index=0;pending_->drawing=true;
-    const auto& first=pending_->points.front();
+    pending_->moves=Number(value,"heard");
+    const auto first=pending_->points.front();
     PressPointer(CefPoint(static_cast<int>(std::lround(first.first)),static_cast<int>(std::lround(first.second))),true);
-    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self) { self->PathStep(); },CefRefPtr<PageAutomation>(this)),kPathPointMs);
+    PathHeard(first,kPathPressMs,[this] { PathStep(); });
+  }
+  // The next point of a path is sent once the page has heard the one
+  // before. Moves of the pointer the page has not handled yet reach it as
+  // one, so points sent by the clock alone run together on a page that is
+  // busy, and a line through seven points has six. The page says when the
+  // move arrived; one it never hears (the pointer was there already, or
+  // the page is not answering) is waited for briefly and gone on from.
+  void PathHeard(std::pair<double,double> point,int64_t wait,std::function<void()> then) {
+    const int asked=++pending_->asked_point;const uint64_t token=pending_->token;
+    const std::function<void()> heard=[this,asked,token,then] {
+      if(!pending_ || pending_->token!=token || pending_->heard_point>=asked) return;
+      pending_->heard_point=asked;then();
+    };
+    auto command=CefDictionaryValue::Create();
+    command->SetString("action","pointer_heard");command->SetInt("doc",document_);
+    if(!world_frame_.number.empty()) command->SetString("frame",world_frame_.number);
+    command->SetDouble("x",std::lround(point.first)-world_frame_.x);command->SetDouble("y",std::lround(point.second)-world_frame_.y);
+    command->SetDouble("after",pending_->moves);command->SetInt("wait_ms",static_cast<int>(wait));
+    pending_->heard_last=false;
+    Ask(world_session_,"Runtime.evaluate",PointerEvaluate(command,world_),[this,heard,asked](bool success,CefRefPtr<CefDictionaryValue> result) {
+      // An answer that comes after the path went on without it says nothing.
+      if(pending_->heard_point>=asked) return;
+      if(auto value=Said(success,result)) {
+        pending_->moves=Number(value,"n");
+        pending_->heard_last=value->GetType("heard")==VTYPE_BOOL && value->GetBool("heard");
+      }
+      heard();
+    });
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation>,std::function<void()> heard) { heard(); },
+      CefRefPtr<PageAutomation>(this),heard),wait+kPathSlackMs);
   }
   static bool ReadPoints(CefRefPtr<CefListValue> points,std::vector<std::pair<double,double>>& out) {
     if(!points || points->GetSize()<2 || points->GetSize()>1024) return false;
@@ -1897,13 +1937,35 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   void PathStep() {
     if(!pending_ || !pending_->drawing) return;
     if(++pending_->point_index<pending_->points.size()) {
-      const auto& point=pending_->points[pending_->point_index];
+      const auto point=pending_->points[pending_->point_index];
+      // The point before it not having been heard counts against the page:
+      // one that hears none of them is not waited on point after point.
+      if(pending_->point_index>1 && !pending_->path_blind) {
+        pending_->path_missed=pending_->heard_last?0:pending_->path_missed+1;
+        if(pending_->path_missed>=kPathMissed) pending_->path_blind=true;
+      }
+      const auto before=pending_->points[pending_->point_index-1];
       MovePointer(CefPoint(static_cast<int>(std::lround(point.first)),static_cast<int>(std::lround(point.second))),true);
-      CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self) { self->PathStep(); },CefRefPtr<PageAutomation>(this)),kPathPointMs);
+      // A point where the pointer already is moves nothing, so the page
+      // hears no move to wait for; and a page that has not said it heard
+      // the points before is sent the rest by the clock, a frame apart.
+      const bool same=std::lround(point.first)==std::lround(before.first) && std::lround(point.second)==std::lround(before.second);
+      if(same || pending_->path_blind) {
+        pending_->heard_last=false;
+        CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,uint64_t token) {
+          if(self->pending_ && self->pending_->token==token) self->PathStep();
+        },CefRefPtr<PageAutomation>(this),pending_->token),kPathPointMs);
+        return;
+      }
+      PathHeard(point,kPathHeardMs,[this] { PathStep(); });
       return;
     }
     const auto& last=pending_->points.back();
-    PressPointer(CefPoint(static_cast<int>(std::lround(last.first)),static_cast<int>(std::lround(last.second))),false);
+    // The button comes up where the pointer is. Once the page has heard the
+    // pointer arrive there it is not moved there once more: a move of no
+    // length is one stroke more on a page that counts them, and whether it
+    // came with the move before it or by itself was a matter of timing.
+    PointerAt(CefPoint(static_cast<int>(std::lround(last.first)),static_cast<int>(std::lround(last.second))),"up",false,pending_->heard_last);
     CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,uint64_t token) {
       if(self->pending_ && self->pending_->token==token) self->GesturePage(Stage::GestureEnd,PageGesture::End);
     },CefRefPtr<PageAutomation>(this),pending_->token),kReleaseFrameMs);
@@ -1911,7 +1973,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // The engine's pointer, at a point in the view's space.
   void MovePointer(CefPoint point,bool down) { PointerAt(point,"move",down); }
   void PressPointer(CefPoint point,bool down) { PointerAt(point,down?"down":"up",down); }
-  void PointerAt(CefPoint point,const char* type,bool down) {
+  void PointerAt(CefPoint point,const char* type,bool down,bool still=false) {
     if(!browser_ || !pointer_) return;
     auto d=CefDictionaryValue::Create();
     // The app's pointer ops take physical pixels; the view's space is DIPs.
@@ -1919,6 +1981,8 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // button stays held through the move that follows a press.
     d->SetString("kind",type);d->SetString("type",type);d->SetBool("down",down);
     d->SetDouble("x",point.x);d->SetDouble("y",point.y);
+    // A step where the pointer already is presses or lets go without a move.
+    if(still) d->SetBool("still",true);
     pointer_(d);
     // The page's `:hover` styles follow the browser's own pointer, which an
     // isolated world cannot move, so the page is told where it came to rest:

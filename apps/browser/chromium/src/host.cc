@@ -1595,7 +1595,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     event.x=static_cast<int>(std::lround(Number(step,"x")*zoom));event.y=static_cast<int>(std::lround(Number(step,"y")*zoom));
     event.modifiers=mouse_modifiers_|key_modifiers_;
     if(dragging_) { DragPointer(kind,event);if(kind=="up")mouse_modifiers_&=~button;return; }
-    host->SendMouseMoveEvent(event,false);
+    // A step where the pointer already is (the end of a drawn path the page
+    // heard arrive there) presses or lets go without moving it there again.
+    if(!step->GetBool("still")) host->SendMouseMoveEvent(event,false);
     // The page may have begun a drag on this very move: carry it to where the
     // hand went, so the element under the pointer hears the drag over it.
     if(dragging_) {host->DragTargetDragOver(event,kPageDragOps);return;}
