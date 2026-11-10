@@ -123,6 +123,11 @@ fn args() -> anyhow::Result<Args> {
     })
 }
 
+fn log_filter() -> tracing_subscriber::EnvFilter {
+    tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "warn,tilo_channels=info".into())
+}
+
 fn main() -> ExitCode {
     // The host's workspaces keep their documents in workers that re-enter
     // this executable; serve them first.
@@ -135,7 +140,10 @@ fn main() -> ExitCode {
     }
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
+            // The channel service says at info when it upgrades the
+            // channel state an earlier build saved, which the first program
+            // to open the host's channels after an upgrade does.
+            log_filter(),
         )
         .with_writer(std::io::stderr)
         .try_init();
@@ -433,14 +441,19 @@ async fn repair_workspace(
         {
             Ok(Some(history)) => history,
             Ok(None) => continue,
+            // A person's own record, sealed for their devices alone (their
+            // drafts), is not the host's to read, nor to repair.
+            Err(_) if tilo_action_policy::member_record(&record).is_some() => continue,
             Err(error) => {
-                reports.push(RecordReport {
+                let report = RecordReport {
                     workspace: workspace.to_owned(),
                     app: record_app.clone(),
                     record: record.clone(),
                     failed: Some(format!("its history does not read here: {error}")),
                     ..RecordReport::default()
-                });
+                };
+                report.print(dry_run);
+                reports.push(report);
                 continue;
             }
         };
