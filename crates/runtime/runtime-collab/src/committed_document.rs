@@ -136,9 +136,12 @@ pub enum Request {
     /// Hold until an `Open { known_revision }` would answer anything but
     /// what the caller already holds (`Unchanged` for that revision, or
     /// for `None` the `Unavailable` or `Absent` this channel last
-    /// answered), then answer [`Reply::Stale`]. Refused once
-    /// the caller may no longer read. Never carries document bytes and
-    /// never publishes readiness: the caller re-`Open`s.
+    /// answered), then answer as that Open does (as `OpenChanges` for a
+    /// revision this channel handed out): the changed record comes with the
+    /// wake, read on and acknowledged as any Open's capture. Refused once
+    /// the caller may no longer read. A caller that gives up the wait
+    /// before its answer came just Opens: the capture it never saw is
+    /// dropped.
     Await {
         known_revision: Option<[u8; 32]>,
     },
@@ -188,8 +191,9 @@ pub enum Reply {
     PrivateWindowBinding {
         instance: Option<u64>,
     },
-    /// An [`Request::Await`] ended: what the caller holds may be stale.
-    Stale,
+    /// Retired: an [`Request::Await`] answers with the read itself. Kept in
+    /// place so later variants keep their tags.
+    RetiredStale,
     /// The first piece of the changes that turn the document with heads
     /// `base` (the revision the caller asked from) into `revision`, as
     /// Automerge change bytes. Only an answer to [`Request::OpenChanges`].
@@ -215,8 +219,8 @@ pub enum Reply {
     Absent,
     /// An Open the broker cannot capture yet: its byte budget is held by
     /// other reads. The read is queued in order, and nothing is refused: an
-    /// [`Request::Await`] on this channel answers [`Reply::Stale`] once the
-    /// read's turn has come, and the next Open captures. A caller that
+    /// [`Request::Await`] on this channel answers with the Open's capture
+    /// once the read's turn has come. A caller that
     /// stops reading on the channel sends [`Request::Leave`].
     Busy,
     /// The answer to [`Request::Writes`]. `sealed`: the record's workspace
@@ -500,8 +504,8 @@ mod tests {
             .unwrap(),
             [5, 0]
         );
-        assert_eq!(Reply::Stale.encode().unwrap(), [8]);
-        assert_eq!(Reply::decode(&[8]).unwrap(), Reply::Stale);
+        assert_eq!(Reply::RetiredStale.encode().unwrap(), [8]);
+        assert_eq!(Reply::decode(&[8]).unwrap(), Reply::RetiredStale);
         assert!(Reply::decode(&[8, 0]).is_err());
     }
 

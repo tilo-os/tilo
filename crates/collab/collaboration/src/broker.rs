@@ -6954,17 +6954,13 @@ mod tests {
         /// does until the read changes. Without it every `Await` fails, as a
         /// call to a broker can, and the reader re-Opens at its own pace.
         pub committed_awaits: Option<Arc<tokio::sync::Notify>>,
-        /// End the next held `Await` though the read did not change, as a
-        /// broker does when an announced change leaves the reader's Open to
-        /// decide.
-        pub committed_await_stale: bool,
         /// Answer Opens `Busy`, as a broker whose byte budget other reads
         /// hold: the reader's place in its queue. While set, a held `Await`
         /// waits for the turn (cleared, then [`Captures::committed_awaits`]
         /// notified) as the broker's does.
         pub committed_busy: bool,
         /// An Open was answered `Busy`: once the turn comes the held
-        /// `Await` answers `Stale`, as the broker's does.
+        /// `Await` answers with the Open's capture, as the broker's does.
         pub committed_queued: bool,
         /// The changes `OpenChanges` answers a reader holding their `from`
         /// revision with. `OpenChanges` is answered as the broker does: with
@@ -7097,6 +7093,117 @@ mod tests {
 
     fn answered(result: Result<Reply, String>) -> FakeAnswer {
         Box::pin(std::future::ready(result))
+    }
+
+    /// The fixture's answer to a committed read `decoded` on `channel_id`, as
+    /// the broker answers it, kept in [`Captures::committed_reads`].
+    fn committed_answer(
+        captures: &SharedCaptures,
+        channel_id: &str,
+        decoded: Result<runtime_collab::committed_document::Request, String>,
+    ) -> FakeAnswer {
+        use runtime_collab::committed_document::{Reply as Read, Request as Ask};
+        let encode = |reply: Read| reply.encode().map(Reply::Answer).map_err(str::to_owned);
+        let result = (|| {
+            let request = decoded?;
+            let mut captures = captures.lock().unwrap();
+            captures.committed_reads.push(request.clone());
+            let changes = captures.committed_changes.clone();
+            let opens = matches!(request, Ask::Open { .. } | Ask::OpenChanges { .. });
+            if opens {
+                if let Some(error) = captures.committed_open_failure.clone() {
+                    return Err(error);
+                }
+                if captures
+                    .committed_open_refused_channels
+                    .iter()
+                    .any(|held| held == channel_id)
+                {
+                    return Err("committed read custody refused for this route".into());
+                }
+            }
+            let busy = opens && captures.committed_busy;
+            let current_revision = captures.committed_revision.unwrap_or([7; 32]);
+            let absent = captures
+                .committed_absent_channels
+                .iter()
+                .any(|held| held == channel_id)
+                && matches!(request, Ask::Open { .. });
+            let reply = match captures.committed_history_fixture.as_ref() {
+                Some(_) if absent => Read::Absent,
+                None => Read::Legacy,
+                Some(_) if busy => {
+                    captures.committed_queued = true;
+                    Read::Busy
+                }
+                Some(bytes) => match request {
+                    Ask::PrivateWindowBinding => Read::PrivateWindowBinding {
+                        instance: captures.committed_private_binding,
+                    },
+                    Ask::Open {
+                        known_revision: Some(revision),
+                    } if revision == current_revision => Read::Unchanged { revision },
+                    Ask::OpenChanges { known_revision } => match changes {
+                        _ if known_revision == current_revision => Read::Unchanged {
+                            revision: known_revision,
+                        },
+                        Some(changes) if changes.from == known_revision => Read::Changes {
+                            capture: 1,
+                            revision: current_revision,
+                            base: changes.base,
+                            total: changes.bytes.len() as u32,
+                            bytes: changes.bytes,
+                            token: [3; 16],
+                        },
+                        _ => Read::Chunk {
+                            capture: 1,
+                            revision: current_revision,
+                            total: bytes.len() as u32,
+                            offset: 0,
+                            bytes: bytes.clone(),
+                            token: [3; 16],
+                        },
+                    },
+                    Ask::Open { .. } => Read::Chunk {
+                        capture: 1,
+                        revision: current_revision,
+                        total: bytes.len() as u32,
+                        offset: 0,
+                        bytes: bytes.clone(),
+                        token: [3; 16],
+                    },
+                    Ask::Cancel { capture: 1, token } if token == [3; 16] => {
+                        if let Some(error) = captures.committed_ack_failure.take() {
+                            return Err(error);
+                        }
+                        captures
+                            .committed_ack_reply
+                            .take()
+                            .unwrap_or(Read::Cancelled)
+                    }
+                    _ => return Err("fixture read continuation refused".into()),
+                },
+            };
+            let gate = if matches!(reply, Read::Unchanged { .. }) {
+                captures.committed_recheck_gate.take()
+            } else if matches!(reply, Read::Cancelled) {
+                captures.committed_ack_gate.take().map(|(entered, gate)| {
+                    entered.send(()).unwrap();
+                    gate
+                })
+            } else {
+                None
+            };
+            Ok((encode(reply)?, gate))
+        })();
+        Box::pin(async move {
+            let (reply, gate) = result?;
+            if let Some(gate) = gate {
+                gate.await
+                    .map_err(|_| "fixture recheck gate dropped".to_owned())?;
+            }
+            Ok(reply)
+        })
     }
 
     /// One channel a fake host's connection joined.
@@ -7899,13 +8006,8 @@ mod tests {
             })
         }
 
-        #[expect(
-            clippy::too_many_lines,
-            reason = "the committed read's every answer, as the broker gives it"
-        )]
         fn committed_document(&self, channel: &FakeChannel, body: &[u8]) -> FakeAnswer {
-            use runtime_collab::committed_document::{Reply as Read, Request as Ask};
-            let encode = |reply: Read| reply.encode().map(Reply::Answer).map_err(Into::into);
+            use runtime_collab::committed_document::Request as Ask;
             let decoded = Ask::decode(body).map_err(|error| error.to_string());
             if let Ok(Ask::Await { known_revision }) = decoded {
                 let held = {
@@ -7937,14 +8039,12 @@ mod tests {
                         // its turn in a busy broker's queue has not come.
                         let holds = {
                             let mut captures = captures.lock().unwrap();
-                            let stale = std::mem::take(&mut captures.committed_await_stale);
-                            if !stale && captures.committed_busy {
+                            if captures.committed_busy && captures.committed_queued {
                                 Some(known_revision)
                             } else if std::mem::take(&mut captures.committed_queued) {
                                 None
                             } else {
-                                (!stale
-                                    && captures.committed_open_failure.is_none()
+                                (captures.committed_open_failure.is_none()
                                     && captures.committed_history_fixture.is_some())
                                 .then(|| captures.committed_revision.unwrap_or([7; 32]))
                                 .filter(|current| Some(*current) == known_revision)
@@ -7956,107 +8056,17 @@ mod tests {
                         }
                         notified.await;
                     }
-                    encode(Read::Stale)
+                    // The wait answers as the Open it stands for.
+                    let open = known_revision.map_or(
+                        Ask::Open {
+                            known_revision: None,
+                        },
+                        |known_revision| Ask::OpenChanges { known_revision },
+                    );
+                    committed_answer(&captures, &channel, Ok(open)).await
                 });
             }
-            let result = (|| {
-                let request = decoded?;
-                let mut captures = self.captures();
-                captures.committed_reads.push(request.clone());
-                let changes = captures.committed_changes.clone();
-                let opens = matches!(request, Ask::Open { .. } | Ask::OpenChanges { .. });
-                if opens {
-                    if let Some(error) = captures.committed_open_failure.clone() {
-                        return Err(error);
-                    }
-                    if captures
-                        .committed_open_refused_channels
-                        .contains(&channel.channel_id)
-                    {
-                        return Err("committed read custody refused for this route".into());
-                    }
-                }
-                let busy = opens && captures.committed_busy;
-                let current_revision = captures.committed_revision.unwrap_or([7; 32]);
-                let absent = captures
-                    .committed_absent_channels
-                    .contains(&channel.channel_id)
-                    && matches!(request, Ask::Open { .. });
-                let reply = match captures.committed_history_fixture.as_ref() {
-                    Some(_) if absent => Read::Absent,
-                    None => Read::Legacy,
-                    Some(_) if busy => {
-                        captures.committed_queued = true;
-                        Read::Busy
-                    }
-                    Some(bytes) => match request {
-                        Ask::PrivateWindowBinding => Read::PrivateWindowBinding {
-                            instance: captures.committed_private_binding,
-                        },
-                        Ask::Open {
-                            known_revision: Some(revision),
-                        } if revision == current_revision => Read::Unchanged { revision },
-                        Ask::OpenChanges { known_revision } => match changes {
-                            _ if known_revision == current_revision => Read::Unchanged {
-                                revision: known_revision,
-                            },
-                            Some(changes) if changes.from == known_revision => Read::Changes {
-                                capture: 1,
-                                revision: current_revision,
-                                base: changes.base,
-                                total: changes.bytes.len() as u32,
-                                bytes: changes.bytes,
-                                token: [3; 16],
-                            },
-                            _ => Read::Chunk {
-                                capture: 1,
-                                revision: current_revision,
-                                total: bytes.len() as u32,
-                                offset: 0,
-                                bytes: bytes.clone(),
-                                token: [3; 16],
-                            },
-                        },
-                        Ask::Open { .. } => Read::Chunk {
-                            capture: 1,
-                            revision: current_revision,
-                            total: bytes.len() as u32,
-                            offset: 0,
-                            bytes: bytes.clone(),
-                            token: [3; 16],
-                        },
-                        Ask::Cancel { capture: 1, token } if token == [3; 16] => {
-                            if let Some(error) = captures.committed_ack_failure.take() {
-                                return Err(error);
-                            }
-                            captures
-                                .committed_ack_reply
-                                .take()
-                                .unwrap_or(Read::Cancelled)
-                        }
-                        _ => return Err("fixture read continuation refused".into()),
-                    },
-                };
-                let gate = if matches!(reply, Read::Unchanged { .. }) {
-                    captures.committed_recheck_gate.take()
-                } else if matches!(reply, Read::Cancelled) {
-                    captures.committed_ack_gate.take().map(|(entered, gate)| {
-                        entered.send(()).unwrap();
-                        gate
-                    })
-                } else {
-                    None
-                };
-                Ok((encode(reply)?, gate))
-            })();
-            Box::pin(async move {
-                let (reply, gate) = result?;
-                if let Some(gate) = gate {
-                    gate.await
-                        .map_err(|_| "fixture recheck gate dropped".to_owned())?;
-                }
-                Ok(reply)
-            })
+            committed_answer(&self.broker.captures, &channel.channel_id, decoded)
         }
     }
 

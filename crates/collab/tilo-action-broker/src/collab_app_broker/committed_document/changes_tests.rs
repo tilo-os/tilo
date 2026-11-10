@@ -275,6 +275,31 @@ fn changes_start_only_from_a_revision_this_channel_handed_out_entirely() {
     assert_eq!(service.since.load(Ordering::Acquire), 3);
 }
 
+/// A capture that answered a held wait the reader gave up before the
+/// answer came is never seen: the reader's next read replaces it. Once the
+/// reader reads on, it is the reader's, and blocks the next read until
+/// acknowledged.
+#[test]
+fn a_waits_capture_the_reader_never_saw_is_replaced_by_its_next_read() {
+    let service = Service::new(true, CHUNK_BYTES + 1);
+    let mut channel = Channel::new(&service);
+    let first = channel.open(None).unwrap();
+    channel.slot.active.as_mut().unwrap().unseen = true;
+    let again = channel.open(None).unwrap();
+    assert!(matches!(again, Reply::Chunk { .. }), "{again:?}");
+    channel.slot.active.as_mut().unwrap().unseen = true;
+    let (capture, _, token) = channel.read_rest(&again).unwrap();
+    assert!(
+        channel.open(None).is_err(),
+        "a capture the reader read on blocks the next read"
+    );
+    assert_eq!(
+        channel.slot.acknowledge(capture, token),
+        Ok(Reply::Cancelled)
+    );
+    drop(first);
+}
+
 #[test]
 fn a_capture_abandoned_before_its_end_hands_out_nothing_to_start_from() {
     let service = Service::new(true, CHUNK_BYTES + 1);

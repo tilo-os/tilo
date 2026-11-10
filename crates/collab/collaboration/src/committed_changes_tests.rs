@@ -181,8 +181,8 @@ fn a_revocation_while_a_collaborator_edits_closes_on_the_first_read() {
     assert_eq!(delivered, 0, "a revoked reader is handed nothing");
     assert_eq!(
         (refused_changes, refused_opens),
-        (1, 1),
-        "one read after the revocation, its OpenChanges, refused"
+        (2, 2),
+        "the wait's OpenChanges after the revocation is refused, and so is the Open after it"
     );
 }
 

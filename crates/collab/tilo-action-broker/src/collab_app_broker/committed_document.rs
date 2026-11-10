@@ -251,6 +251,10 @@ struct Active {
     capture: capture::Capture,
     context: NativeDocumentReadContext,
     service: Arc<dyn NativeDocumentReads>,
+    /// Started as the answer to a held `Await`, and asked nothing since: a
+    /// reader that gave up the wait before its answer came never saw it, so
+    /// its next read replaces it.
+    unseen: bool,
 }
 /// A held `Await` on this channel; a newer request on the channel ends it.
 struct HeldWait {
@@ -359,6 +363,13 @@ impl Slot {
     fn held(&self, known: [u8; 32]) -> Option<HeldRevision> {
         self.delivered.clone().filter(|held| held.revision == known)
     }
+    /// Drop a capture that answered a held `Await` the reader gave up before
+    /// the answer came: the reader asks again, and never saw it.
+    fn drop_unseen(&mut self) {
+        if self.active.as_ref().is_some_and(|active| active.unseen) {
+            self.active = None;
+        }
+    }
     /// The next piece of the active capture, re-checking custody and the
     /// owner's authorization before it is handed out.
     fn next(&mut self, capture: u64, offset: u32, token: [u8; 16]) -> Result<Reply, String> {
@@ -369,6 +380,7 @@ impl Slot {
         if active.capture.id != capture {
             return Err("committed read capture mismatch".into());
         }
+        active.unseen = false;
         active.context.revalidate()?;
         active.service.authorize(&active.context)?;
         active.capture.chunk(offset, token)
@@ -676,9 +688,6 @@ impl JoinedChannel {
         known_revision: Option<[u8; 32]>,
         held: Option<&HeldRevision>,
     ) -> Result<Reply, String> {
-        if slot.active.is_some() {
-            return Err("committed read requires previous response acknowledgement".into());
-        }
         let Some(service) = self.state.services.committed_documents.clone() else {
             return Ok(Reply::Unavailable);
         };
@@ -739,6 +748,7 @@ fn open_read(
         budget,
         ids,
     } = reading;
+    slot.drop_unseen();
     if slot.active.is_some() {
         return Err("committed read requires previous response acknowledgement".into());
     }
@@ -794,6 +804,7 @@ fn open_read(
         capture,
         context,
         service,
+        unseen: false,
     });
     Ok((reply, Some(id)))
 }
@@ -852,26 +863,26 @@ fn captured_unchanged(
 }
 
 /// Re-run `check` whenever `wake` fires (re-`arm`ed before each check, so a
-/// change made while it runs is kept), until it says the read changed, and
-/// answer [`Reply::Stale`]. `check` answers `Some(announced)` while the read
-/// is unchanged: with `announced` false some input can change unannounced,
-/// and it re-runs every [`UNANNOUNCED_RECHECK`] as well.
+/// change made while it runs is kept), until it says the read changed.
+/// `check` answers `Some(announced)` while the read is unchanged: with
+/// `announced` false some input can change unannounced, and it re-runs every
+/// [`UNANNOUNCED_RECHECK`] as well.
 ///
 /// A sealed record's read also changes when this device's channel `keys`
 /// do: a write sealed under an epoch or branch whose key had not reached the
 /// device opens once it has, with nothing written to the record.
-async fn hold_until_stale(
+async fn hold_until_changed(
     wake: &tokio::sync::Notify,
     keys: Option<&ChannelKeyProvider>,
     mut arm: impl FnMut(),
     mut check: impl FnMut() -> Result<Option<bool>, String>,
-) -> Result<Reply, String> {
+) -> Result<(), String> {
     // Read before the first check, so keys arriving while it runs are seen.
     let mut keyed = keys.map(ChannelKeyProvider::generation);
     loop {
         arm();
         let Some(announced) = check()? else {
-            return Ok(Reply::Stale);
+            return Ok(());
         };
         let keys_changed = async move {
             match keys.zip(keyed) {
@@ -910,6 +921,18 @@ pub(super) fn next_unannounced_recheck() -> tokio::time::Instant {
         .unwrap_or_else(|| now.checked_add(UNANNOUNCED_RECHECK).unwrap_or(now))
 }
 
+/// Whether `reply` is what a reader holding `known` holds already: its own
+/// revision unchanged, or for `None` the `Unavailable` or `Absent` (as
+/// `absent` says) the channel last answered.
+fn holds_what_it_answers(reply: &Reply, known: Option<[u8; 32]>, absent: bool) -> bool {
+    match (reply, known) {
+        (Reply::Unchanged { revision }, Some(known)) => *revision == known,
+        (Reply::Unavailable, None) => !absent,
+        (Reply::Absent, None) => absent,
+        _ => false,
+    }
+}
+
 /// Ends the slot's record of a held wait when the wait is dropped (answered,
 /// cancelled by its caller, or its connection gone), unless a newer request
 /// already replaced it.
@@ -932,8 +955,10 @@ impl Drop for WaitGuard<'_> {
 
 impl JoinedChannel {
     /// Answer an `Await { known_revision }`: hold until an
-    /// `Open { known_revision }` on this channel would answer anything but
-    /// what the caller holds, then answer [`Reply::Stale`].
+    /// `Open { known_revision }` on this channel (an `OpenChanges` when the
+    /// caller holds a revision) would answer anything but what the caller
+    /// holds, then answer with what that Open answers: the changed record
+    /// goes to the reader with the wake.
     ///
     /// The checks are the Open's own (custody, admission, the owner's
     /// authorization and capture), re-run whenever something they read may
@@ -941,10 +966,8 @@ impl JoinedChannel {
     /// ([`tilo_identity_host::policy_change`]), and the first instant a
     /// time-bound input changes is registered with `wake_at`. Where that
     /// cannot be relied on, they re-run every [`UNANNOUNCED_RECHECK`], as the
-    /// reader's poll did. A check that fails answers `Stale` too: the
-    /// caller's Open then meets the same refusal and fails closed, so a
-    /// revocation ends the reader as it always did, only without the poll.
-    /// No document byte and no readiness ever comes from this answer.
+    /// reader's poll did. A check that fails ends the hold too, and the Open
+    /// meets the same refusal: a revocation ends the reader as it always did.
     #[allow(
         clippy::future_not_send,
         reason = "channel handles are Rc-based; driven only on the broker LocalSet"
@@ -954,9 +977,10 @@ impl JoinedChannel {
         known_revision: Option<[u8; 32]>,
     ) -> Result<Reply, String> {
         let wake = Arc::new(tokio::sync::Notify::new());
-        let generation = {
+        let (generation, turn) = {
             let mut slot = self.committed_read.borrow_mut();
             slot.expire()?;
+            slot.drop_unseen();
             if slot.active.is_some() {
                 return Err(
                     "committed read wait requires previous response acknowledgement".into(),
@@ -975,7 +999,6 @@ impl JoinedChannel {
                 .map(|queued| (Rc::clone(&queued.granted), Rc::clone(&queued.wake)));
             (generation, turn)
         };
-        let (generation, turn) = generation;
         let _guard = WaitGuard {
             handle: &self,
             generation,
@@ -990,7 +1013,7 @@ impl JoinedChannel {
             // A read waiting in the budget's queue: what changes its Open's
             // answer is its turn coming, announced by the queue itself, or
             // its custody or admission ending, announced as any policy
-            // change is. Either way its next Open decides.
+            // change is. Either way the Open decides now.
             loop {
                 if !self.holds_wait(generation) {
                     return Err("committed read wait was replaced".into());
@@ -1002,7 +1025,7 @@ impl JoinedChannel {
                         .and_then(|context| context.revalidate())
                         .is_err()
                 {
-                    return Ok(Reply::Stale);
+                    return self.answer_wait(known_revision);
                 }
                 tokio::select! {
                     () = turn.notified() => {}
@@ -1013,20 +1036,47 @@ impl JoinedChannel {
         let keys = (self.record_read() == RecordRead::Sealed)
             .then(|| self.state.services.channel_keys.clone())
             .flatten();
-        hold_until_stale(
-            &wake,
-            keys.as_ref(),
-            || {
-                let _ = watch.arm();
-            },
-            || {
-                if !self.holds_wait(generation) {
-                    return Err("committed read wait was replaced".into());
-                }
-                Ok(self.committed_read_unchanged(known_revision))
-            },
-        )
-        .await
+        loop {
+            hold_until_changed(
+                &wake,
+                keys.as_ref(),
+                || {
+                    let _ = watch.arm();
+                },
+                || {
+                    if !self.holds_wait(generation) {
+                        return Err("committed read wait was replaced".into());
+                    }
+                    Ok(self.committed_read_unchanged(known_revision))
+                },
+            )
+            .await?;
+            let absent = self.committed_read.borrow().absent;
+            let reply = self.answer_wait(known_revision)?;
+            if !holds_what_it_answers(&reply, known_revision, absent) {
+                return Ok(reply);
+            }
+            // The check and the Open disagreed: look again on the next
+            // announcement or tick, not at once.
+            let _ = tokio::time::timeout_at(next_unannounced_recheck(), wake.notified()).await;
+        }
+    }
+
+    /// What the Open a held wait stands for answers now: `OpenChanges` for a
+    /// revision this channel handed out, otherwise `Open`. A capture it
+    /// starts is the reader's to read on.
+    fn answer_wait(&self, known_revision: Option<[u8; 32]>) -> Result<Reply, String> {
+        if self.record_read() == RecordRead::Own {
+            return Ok(Reply::Legacy);
+        }
+        let mut slot = self.committed_read.borrow_mut();
+        slot.expire()?;
+        let held = known_revision.and_then(|known| slot.held(known));
+        let reply = self.open_committed_document(&mut slot, known_revision, held.as_ref())?;
+        if let Some(active) = slot.active.as_mut() {
+            active.unseen = true;
+        }
+        Ok(reply)
     }
 
     fn holds_wait(&self, generation: u64) -> bool {

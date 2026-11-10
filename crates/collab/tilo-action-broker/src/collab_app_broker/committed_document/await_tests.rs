@@ -2,8 +2,8 @@
 //! when told something changed (or, where nothing can tell it, on the clock
 //! readers used to poll at).
 use super::{
-    Budget, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads, Reply,
-    UNANNOUNCED_RECHECK, hold_until_stale, next_unannounced_recheck, read_unchanged,
+    Budget, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
+    UNANNOUNCED_RECHECK, hold_until_changed, next_unannounced_recheck, read_unchanged,
 };
 use std::cell::Cell;
 use std::sync::{
@@ -261,7 +261,7 @@ fn a_capture_the_owner_cannot_avoid_respects_the_shared_byte_budget() {
             false,
         )
         .is_none(),
-        "with the budget spent the wait answers Stale and the Open decides"
+        "with the budget spent the wait ends and the Open decides"
     );
     assert_eq!(service.captures.load(Ordering::Acquire), 0);
     drop(held);
@@ -283,7 +283,7 @@ async fn an_announced_wait_checks_again_only_when_woken() {
     let wake = Arc::new(tokio::sync::Notify::new());
     let checks = Cell::new(0_u32);
     let stale = Cell::new(false);
-    let held = hold_until_stale(
+    let held = hold_until_changed(
         &wake,
         None,
         || {},
@@ -312,7 +312,7 @@ async fn an_announced_wait_checks_again_only_when_woken() {
     stale.set(true);
     let started = tokio::time::Instant::now();
     wake.notify_one();
-    assert_eq!(held.await, Ok(Reply::Stale));
+    assert_eq!(held.await, Ok(()));
     assert_eq!(checks.get(), 3);
     assert!(started.elapsed() < UNANNOUNCED_RECHECK);
 }
@@ -322,7 +322,7 @@ async fn an_unannounced_input_keeps_the_old_poll_interval() {
     let wake = Arc::new(tokio::sync::Notify::new());
     let checks = Cell::new(0_u32);
     let started = tokio::time::Instant::now();
-    let held = hold_until_stale(
+    let held = hold_until_changed(
         &wake,
         None,
         || {},
@@ -332,7 +332,7 @@ async fn an_unannounced_input_keeps_the_old_poll_interval() {
             Ok((checks.get() < 6).then_some(false))
         },
     );
-    assert_eq!(held.await, Ok(Reply::Stale));
+    assert_eq!(held.await, Ok(()));
     assert_eq!(checks.get(), 6);
     assert!(
         started.elapsed() <= UNANNOUNCED_RECHECK * 5,
@@ -344,7 +344,7 @@ async fn an_unannounced_input_keeps_the_old_poll_interval() {
 async fn a_change_while_checking_is_not_missed() {
     let wake = Arc::new(tokio::sync::Notify::new());
     let checks = Cell::new(0_u32);
-    let held = hold_until_stale(
+    let held = hold_until_changed(
         &wake,
         None,
         || {},
@@ -361,7 +361,7 @@ async fn a_change_while_checking_is_not_missed() {
     );
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(1), held).await,
-        Ok(Ok(Reply::Stale))
+        Ok(Ok(()))
     );
     assert_eq!(checks.get(), 2);
 }
@@ -370,7 +370,7 @@ async fn a_change_while_checking_is_not_missed() {
 async fn a_replaced_wait_is_refused() {
     let wake = Arc::new(tokio::sync::Notify::new());
     let replaced = Cell::new(false);
-    let held = hold_until_stale(
+    let held = hold_until_changed(
         &wake,
         None,
         || {},
@@ -457,7 +457,7 @@ async fn a_sealed_read_waiting_for_its_key_ends_when_the_key_arrives() {
     let wake = Arc::new(tokio::sync::Notify::new());
     let custody = Arc::new(AtomicBool::new(true));
     let service = Service::new(Owner::Pending, false);
-    let held = hold_until_stale(
+    let held = hold_until_changed(
         &wake,
         Some(&keys),
         || {},
@@ -481,7 +481,7 @@ async fn a_sealed_read_waiting_for_its_key_ends_when_the_key_arrives() {
     assert!(keys_here());
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(5), held).await,
-        Ok(Ok(Reply::Stale)),
+        Ok(Ok(())),
         "keys arriving end the wait, with nothing written to the record"
     );
 }

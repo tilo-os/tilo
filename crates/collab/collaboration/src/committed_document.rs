@@ -1553,42 +1553,39 @@ impl NativeReadJoin {
 /// is still healthy and current. The merge itself wakes it at once.
 const MERGE_RECHECK: Duration = Duration::from_millis(100);
 
-/// The shortest gap between two Opens of one route, however often its
-/// document changes, and so how often a reader re-Opens while its broker's
-/// `Await` keeps failing.
+/// The shortest gap between two Opens of one route that something on this
+/// side asked for (the owner wanting a fresh read, a route replaced), however
+/// often that happens. A change the broker hands over is read at once.
 const READ_RECHECK: Duration = Duration::from_millis(200);
 
 /// What ended a reader's wait for its committed read to change.
-#[derive(Debug, PartialEq, Eq)]
 enum Woke {
-    /// The broker says an Open would now answer differently: a new
-    /// revision, a refusal, the record becoming readable.
-    Stale,
-    /// Something on this side changed: the route closed or was replaced,
-    /// or the owner asked for a fresh read.
+    /// The broker's answer: what an Open of the route answers now that it
+    /// differs from what the reader holds (a capture of the change, the
+    /// record becoming readable).
+    Read(Reply),
+    /// Something on this side changed (the route closed or was replaced,
+    /// or the owner asked for a fresh read), or the wait failed: the next
+    /// Open decides, and meets any refusal itself.
     Local,
-    /// The wait failed or was answered with something other than `Stale`:
-    /// the next Open decides.
-    Refused,
 }
 
 /// Wait, without traffic and without a timer, until an Open of this route
 /// would answer differently from the `known` revision the reader holds
-/// (`None` after `Unavailable`), or until something on this side changes.
-/// The answer is never a read: the caller Opens, under its delivery turn,
-/// and only that Open publishes readiness or hands out bytes.
+/// (`None` after `Unavailable`), and take that answer; or until something on
+/// this side changes. The caller handles the answer under its delivery turn,
+/// as it does an Open's: only then is readiness published or a capture read.
 ///
 /// No clock ends the wait. An owner that stops answering matters only to a
-/// reader that asks it something, and every ask has its deadline: the Open
-/// that follows any wake (a change, the owner asking for a fresh read, a
-/// route replaced) gives up after two seconds and renews the read as it
-/// always did. A read nobody asks about arms no timer, so an idle app's
-/// shovel sleeps; a hang meanwhile is met by the next ask.
+/// reader that asks it something, and every ask has its deadline. A read
+/// nobody asks about arms no timer, so an idle app's shovel sleeps. A wait
+/// the broker refuses (one that predates it) leaves the next Open to decide,
+/// as a wake from this side does.
 #[allow(
     clippy::future_not_send,
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
-async fn until_stale(
+async fn until_changed(
     channel: &runtime_collab::ChannelHandle,
     known: Option<[u8; 32]>,
     inbound: &InboundBridge,
@@ -1609,12 +1606,11 @@ async fn until_stale(
     };
     tokio::select! {
         () = &mut local => Woke::Local,
-        reply = channel.committed_document(&request) => {
-            match reply {
-                Ok(Reply::Stale) => Woke::Stale,
-                _ => Woke::Refused,
-            }
-        }
+        reply = channel.committed_document(&request) => match reply {
+            Ok(reply) => Woke::Read(reply),
+            // ignored-failure: a refused wait (a broker that predates it) leaves the next Open to decide, and that Open meets any refusal itself
+            Err(_) => Woke::Local,
+        },
     }
 }
 
@@ -1714,13 +1710,20 @@ pub(super) async fn install(
         let mut renewed = false;
         let mut current = initial;
         let mut revision = revision;
-        let mut last_open;
+        let mut last_open = crate::time::now();
         // Whether the broker may hold this channel's place in its byte
         // budget's queue: after `Busy`, or an Open whose answer never came.
         let mut queued = matches!(waiting, Some(Waiting::Turn));
+        // The broker's answer to the last wait, which stands for the next
+        // Open: the change it handed over.
+        let mut answered = None;
         match waiting {
             Some(Waiting::Turn) => {
-                until_stale(&channel, None, &inbound, &key, &ready).await;
+                if let Woke::Read(reply) =
+                    until_changed(&channel, None, &inbound, &key, &ready).await
+                {
+                    answered = Some(reply);
+                }
             }
             Some(Waiting::Capacity(bytes)) => {
                 capture_budget().until_capacity(bytes, CAPTURE_LIMIT).await
@@ -1786,18 +1789,24 @@ pub(super) async fn install(
             if refresh {
                 set_read_ready(&inbound, &ready, false);
             }
-            last_open = crate::time::now();
             let known = if refresh { None } else { revision };
-            // A reader holding a revision asks for only the changes since.
-            let request = known.map_or(
-                Request::Open {
-                    known_revision: None,
-                },
-                |known_revision| Request::OpenChanges { known_revision },
-            );
-            let result =
+            // What the wait was answered with is this Open's answer, unless
+            // the owner wants the whole document: then the broker drops the
+            // capture this reader never reads.
+            let result = if let Some(reply) = answered.take().filter(|_| !refresh) {
+                Ok(Ok(reply))
+            } else {
+                last_open = crate::time::now();
+                // A reader holding a revision asks for only the changes since.
+                let request = known.map_or(
+                    Request::Open {
+                        known_revision: None,
+                    },
+                    |known_revision| Request::OpenChanges { known_revision },
+                );
                 tokio::time::timeout(Duration::from_secs(2), channel.committed_document(&request))
-                    .await;
+                    .await
+            };
             queued = matches!(result, Ok(Ok(Reply::Busy)) | Err(_));
             let renew = match result {
                 Ok(Ok(Reply::Unchanged { revision: checked })) if Some(checked) == revision => {
@@ -1951,13 +1960,16 @@ pub(super) async fn install(
                 }
             }
             drop(turn);
-            // Nothing to do until the read changes: wait for the broker to
-            // say so instead of asking five times a second. However the wait
-            // ends, the next Open decides, no sooner than READ_RECHECK after
-            // the last.
-            until_stale(&channel, revision, &inbound, &key, &ready).await;
-            let since = crate::time::now().saturating_duration_since(last_open);
-            tokio::time::sleep(READ_RECHECK.saturating_sub(since)).await;
+            // Nothing to do until the read changes: the broker hands the
+            // change over with its answer. A wake from this side Opens
+            // again, no sooner than READ_RECHECK after the last Open.
+            match until_changed(&channel, revision, &inbound, &key, &ready).await {
+                Woke::Read(reply) => answered = Some(reply),
+                Woke::Local => {
+                    let since = crate::time::now().saturating_duration_since(last_open);
+                    tokio::time::sleep(READ_RECHECK.saturating_sub(since)).await;
+                }
+            }
         }
         set_read_ready(&inbound, &ready, false);
         if inbound.state.document_reads.current(&key, &ready) {
@@ -2002,7 +2014,7 @@ fn reply_kind(reply: &Reply) -> &'static str {
         Reply::Created { .. } => "created",
         Reply::Initialized { .. } => "initialized",
         Reply::PrivateWindowBinding { .. } => "private window binding",
-        Reply::Stale => "stale",
+        Reply::RetiredStale => "retired stale",
         Reply::Changes { .. } => "changes",
         Reply::ConnectionSnapshot(_) => "connection snapshot",
         Reply::Busy => "busy",
