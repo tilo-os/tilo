@@ -20,103 +20,124 @@ A hosted workspace has three pools:
 Each workspace that opens Browser gets one **browser environment**: a
 Firecracker microVM named `<workspace>/browser` on the VM hosts
 (`crates/runtime/legacy-vm/src/hosted`), which already run each workspace's
-Linux VM. A browser environment is that service's VM with three
-differences:
+Linux VM. A browser environment is that service's VM with these differences:
 
-- **Its image** is the browser guest: the hosted guest's kernel and init,
-  the Chromium engine runtime Browser requires, and Browser's engine host
-  (`apps/browser/chromium`). CI builds, signs and pins it next to the
-  hosted guest (`registry.tilo.so/tilo/hosted-browser-guest`). Hosts never
-  build it.
+- **Its image** is the browser guest: the hosted guest's kernel and init, a
+  headless Tilo session (`--backend headless`, rendering on the CPU: the
+  hosts have no GPU), Browser, and the Chromium engine runtime Browser
+  requires. It has no compiler, shell tools or language runtimes. CI builds,
+  signs and pins it next to the hosted guest
+  (`registry.tilo.so/tilo/hosted-browser-guest`). Hosts never build it.
 - **Its size** is `browser`: 2 vCPU, 2 GiB, an 8 GiB disk.
 - **It keeps nothing.** Its disk is a fresh copy of the image every time it
   starts, it is never snapshotted, and once it has been idle for 10 minutes,
   or alive for 2 hours, it is stopped and its disk deleted. Cookies, storage
   and downloads go with it.
+- **It is started directly.** A Linux VM wakes only for a shell run. A
+  browser environment is asked for by the relay when someone in the
+  workspace opens Browser.
 
-Each VM host keeps two browser environments booted and unassigned, with
-Chromium started on an empty profile. Opening Browser takes one of those
-and hands it to the workspace, so the first page loads in about a second
-instead of after a boot. A new spare boots to replace it. An environment
-serves only the workspace it was handed to, and it is never handed back to
-the pool.
+The session in the VM is **a device of the workspace**, like the VM host's
+member device: the relay certifies a fresh device for it when it hands the
+environment to the workspace, admits that device to that workspace only, and
+forgets it when the environment stops. The session opens the Browser window
+on the workspace's Browser record, so the window is live, published and
+subscribed like a Browser window on anyone's computer, and its page actions
+(`browser@<window>/page#read-page`, …) are the ones Browser already has.
 
-### Why a microVM, not a container
+Each VM host keeps two browser environments booted with an idle session and
+no workspace. Opening Browser takes one of those and hands it to the
+workspace, so the window appears in about a second instead of after a boot.
+A new spare boots to replace it. An environment serves only the workspace it
+was handed to, and it is never handed back to the pool.
 
-Web pages are strangers' code, and Chromium runs a JIT on them. The job
-sandbox's threat model ([`job-sandbox.md`](job-sandbox.md#threat-model)) sends
-every host that runs strangers' code to a VM per workspace, so that getting
-out takes a hypervisor escape, not a kernel bug. The VM hosts already give
-each workspace a VM with everything this needs: a jail per VM, a public-only
-network, bandwidth limits, eviction handling, a memory budget, and a placer.
-A container pool would be a second mechanism next to it with weaker
-isolation. A booted spare answers as fast as a container would start.
+### Why a session in a VM
+
+- **The relay cannot hold the window.** It runs no apps. Its record workers
+  are confined processes with no sockets, no exec and no files, and Browser's
+  page actions exist only on a live Browser window. Opening Browser on the
+  relay today would make a record and nothing else.
+- **A session in the VM is what any device already is.** Browser runs
+  unchanged, against a real engine, and the workspace sees another device
+  with a window. There is no remote engine protocol, and pixels never leave
+  the VM.
+- **A microVM, not a container.** Web pages are strangers' code, and
+  Chromium runs a JIT on them. The job sandbox's threat model
+  ([`job-sandbox.md`](job-sandbox.md#threat-model)) sends every host that
+  runs strangers' code to a VM per workspace, so getting out takes a
+  hypervisor escape, not a kernel bug. The VM hosts already give each
+  workspace a VM with a jail, a public-only network, bandwidth limits,
+  eviction handling, a memory budget and a placer. A container pool would be
+  a second mechanism with weaker isolation, and a booted spare answers as
+  fast as a container would start.
 
 ## Isolation
 
-- **No shared profile.** One environment per workspace session, and every
-  environment starts from the image. No workspace or account ever shares a
-  profile, a disk or a process with another.
-- **Cookies and storage stay in the VM.** The profile lives on the VM's disk.
-  What leaves the VM is the engine's protocol: page events, layout
-  snapshots, action answers and, for `capture-page` only, a picture of the
-  page. The relay never receives a cookie, a stored value or a request
-  header.
+- **No shared profile.** One environment per workspace session, every one
+  started from the image. No workspace or account ever shares a profile, a
+  disk, a device or a process with another.
+- **Cookies and storage stay in the VM.** The profile lives on the VM's
+  disk. What leaves the VM is what leaves any device in the workspace: the
+  Browser record's changes, action answers, the page's display list for the
+  members viewing it, and, for `capture-page`, a picture of the page. No
+  cookie, stored value or request header leaves.
 - **Egress is the public internet only.** This is the hosted VM network
   unchanged: pasta is the only route out, and a bridge filter drops private,
   shared, link-local (including the metadata endpoint), loopback, multicast
   and reserved networks, Azure's platform address, and anything the host
-  adds. So no cluster-internal address is reachable. IPv6 is off.
+  adds. No cluster-internal address is reachable, so the session reaches the
+  relay at its public address, like any member's device. IPv6 is off.
 - **Limits:** the jail's cgroup bounds CPU (2 vCPU), memory (2 GiB) and
-  processes, Firecracker's rate limiters bound bandwidth, and the idle and
-  lifetime limits above bound time.
+  processes, Firecracker's rate limiters bound bandwidth (200 Mbit/s), and
+  the idle and lifetime limits above bound time.
 
-## Placement
+## Placement and routing
 
 The relay places a workspace's Browser the way it places a shell
 ([`crates/hosting/tilo-relay/src/placed_shells.rs`](../crates/hosting/tilo-relay/src/placed_shells.rs)):
 
-1. It asks the placer for the host of `<workspace>/browser`
-   (`Request::Place`, environment `browser`, size `browser`). The placer
-   counts browser environments in each host's memory budget like any VM,
-   prefers a host with a spare, and starts another host only when the budget
-   says so. While every host is full, the open waits and says so once.
-2. It opens a stream to that host's member device, on the iroh connection
-   the device plane already holds to it, as this relay's device. The
-   member asks its hosted-VM service to start the engine host in the
-   environment with its standard input and output relayed over vsock
-   (`legacy_agent_protocol::Launch`, `Stdio::Relay`).
-3. Browser's engine on the relay (`ui::webview::chromium::ChromiumEngine`)
-   speaks its host protocol over that stream instead of a child process's
-   pipes. Nothing else in the app changes.
+1. Someone in the workspace opens Browser: a person on the desk, or an agent
+   with a scoped key calling `app.so.tilo.browser#open`. In a hosted
+   workspace the relay answers that by asking the placer for the host of
+   `<workspace>/browser` (size `browser`). The placer counts browser
+   environments in each host's memory budget like any VM and starts another
+   host only when the budget says so. While every host is full, the open
+   waits and says so once.
+2. The relay asks that host's member device, over the device plane, to start
+   the environment for the workspace, handing it the new device's
+   certificate and the record to open. The member hands both to the session
+   in the VM through the guest agent.
+3. The session joins the workspace and opens the Browser window on the
+   record. The window counts as the workspace's Browser for as long as the
+   environment runs. Opening Browser again attaches to it.
 
-Browser's record, its window, its page actions, their admission and History
-stay on the relay, held by the app worker like every other hosted app
-(`tilo_agent_participant::apps`). Only the engine host is elsewhere. This is
-the same split as Terminal, where the session record lives on the relay and
-only the command runs on the VM host.
+Door agents' calls go to the workspace host's device. So the relay forwards
+a page action addressed to the hosted Browser window to the device holding
+it, as it already carries remote actions between a workspace's devices. The
+action runs on the window, and History records it as the caller's: the
+agent's run, for the person it acts for.
+
+Page actions are `Outside`, so an agent's call asks the person first. The
+relay already does this, asking the person's approving devices with a
+five-minute token bound to the call. That is the approval before
+`submit-page`, and it needs nothing new.
 
 ## The paint path
 
-The engine host runs every tab hidden, so it paints no frames. The relay's
-engine wraps it in `ui::webview::paint::PaintEngine`, which reads the
-page's layout whenever it may have changed and turns it into a paint-stream
-frame and patches (`crates/browser/paint-stream`). Images travel by content
-hash, read from the engine's cache.
+A web page is foreign content, like a legacy X11 window, so it is the one
+kind of window whose drawing is sent to viewers. Tilo apps' own UI is never
+streamed. The Browser window already offers its page as a paint stream
+(`ui::webview::paint::PaintEngine::streaming`, `PaintStream` on the floating
+surface): a frame of paint-ordered items, then patches, with images sent once
+by content hash (`crates/browser/paint-stream`). The session in the VM
+publishes it on the workspace's live scope as one track per Browser window
+(`tilo-page/1`), on the same MoQ carrier calls and window shares use
+(`crates/collab/tilo-live`), only while someone views it.
 
-The relay publishes those payloads on the workspace's live scope as one
-track per Browser record (`tilo-page/1`), on the same MoQ carrier that calls
-and window shares use (`crates/collab/tilo-live`). A member's desk shows the
-Browser window by subscribing to the track and drawing it with
-`ui::webview::paint::PageRenderer`, the same Vello and text code natively and
-in a web tab. A viewer that joins late gets a keyframe. No video is
-streamed, and a page that nobody watches publishes nothing.
-
-The agent drives the page through Browser's page actions (`read-page`,
-`fill-page`, `capture-page`, `submit-page`, …) over the workspace's scoped
-MCP and SDK, as on any device. Each one is an invocation on the Browser
-record, so History shows it as the agent's run. `submit-page` reaches
-outside the workspace, so the person is asked before it runs.
+A member's desk shows the hosted Browser window by subscribing to that
+track and drawing it with `ui::webview::paint::PageRenderer`, the same Vello
+and text code natively and in a web tab. A viewer who joins late gets a
+keyframe first. No video is streamed.
 
 ## Metering
 
@@ -155,20 +176,21 @@ spares take 4 GiB of the warm node's 12 GiB budget.
 
 ## What is built and what is not
 
-See the commit history touching this file and the files it links. Each part
-above is a unit:
+Each part above is a unit:
 
 1. **Metering and the gate** on the relay, with the plans file's allowance.
-2. **The engine's host link**: the Chromium engine driving a host over a
-   byte stream as well as a child process.
-3. **Browser environments** in the hosted-VM service: the `browser` size,
-   no persistence, idle and lifetime limits, spares, and the member's
-   stream to the engine host.
-4. **The browser guest image** in CI.
-5. **The relay's Browser**: the app in the hosted catalogue, its engine
-   placed through 1–3.
-6. **The page track** on the live carrier, and the desk drawing it.
-7. **The end-to-end test**: a workspace key opens Browser, fills a test form
-   added to Browser's test pages (`apps/browser/test-pages`), captures it, stops before
-   submitting, a reviewer who joined by invite sees the filled page and its
-   History, and the agent submits after approval.
+2. **Browser environments** in the hosted-VM service: the `browser` size, a
+   direct start, no persistence, idle and lifetime limits, spares.
+3. **The browser guest image** in CI: a headless session, Browser and the
+   engine runtime.
+4. **Joining and routing**: `#open` in a hosted workspace places an
+   environment, its session joins as a device of that workspace only and
+   opens the window, and the relay routes page actions to it through the
+   gate.
+5. **The page track** on the live carrier, and the desk drawing it,
+   natively and in a web tab.
+6. **The end-to-end test**: a workspace key opens Browser, fills a test form
+   added to Browser's test pages (`apps/browser/test-pages`) with a real
+   engine, captures it, stops before submitting, a reviewer who joined by
+   invite sees the filled page and its History, and the agent submits after
+   approval.
