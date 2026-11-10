@@ -394,6 +394,9 @@ A key named by a letter reaches the page as that letter on every system: an
 upper-case one carries Shift for its own events on Linux, where the engine
 reads a key from its key code and Shift alone.
 
+A click that opens a file chooser holds it for `fill_files` on every system;
+the platform's own panel is never opened for an action.
+
 ```sh
 python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromium-host
 ```

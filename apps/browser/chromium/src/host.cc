@@ -425,10 +425,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   bool OnFileDialog(CefRefPtr<CefBrowser>,FileDialogMode mode,const CefString& title,const CefString&,const std::vector<CefString>&,const std::vector<CefString>& extensions,const std::vector<CefString>&,CefRefPtr<CefFileDialogCallback> callback) override {
 #if defined(OS_MAC)
     Event("file_dialog");
-    // An agent's page action cannot drive a native panel, so while it is
-    // driving the chooser is held for fill-page-files instead. A person's
-    // own click keeps the platform panel.
+#endif
+    // An agent's page action cannot drive a native panel on any platform,
+    // so while it is driving the chooser is held for fill-page-files
+    // instead. A person's own click keeps the platform panel.
     if(page_automation_ && page_automation_->HoldFileDialog(callback)) return true;
+#if defined(OS_MAC)
     return ShowHostFileDialog(mode,title,extensions,callback);
 #else
     return false;
