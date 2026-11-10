@@ -1677,12 +1677,7 @@ pub(crate) fn admit_local_action(
     confirmed: bool,
 ) -> Result<(), tilo_actions::DoorError> {
     let answer = permissions.invocation_answer(app_id, resource, action, typed, argument);
-    crate::permissions::admit_in_window(
-        answer,
-        action,
-        permissions.standing().bounds.is_empty(),
-        confirmed,
-    )
+    crate::permissions::admit_in_window(answer, action, permissions.asker(), confirmed)
 }
 
 /// Why an invocation the person made did not run, in words for them: what
@@ -2966,15 +2961,16 @@ pub(crate) fn invoke_resource_action(
                         arguments.as_ref(),
                         argument,
                     );
-                    let direct = binding.permissions.borrow().standing().bounds.is_empty();
-                    // Someone acting for the person does not get past an ask
-                    // here. Where the workspace's grants ask first, the person's
-                    // confirmation in the host is the answer; the broker took
-                    // it before admitting what it delivers.
+                    let asker = binding.permissions.borrow().asker();
+                    // Someone acting for the person gets past an ask only
+                    // where the host reaches the person. Where the workspace's
+                    // grants ask first, the person's confirmation in the host
+                    // is the answer; the broker took it before admitting what
+                    // it delivers.
                     crate::permissions::admit_in_window(
                         answer,
                         spec,
-                        direct,
+                        asker,
                         confirmed || broker_admitted,
                     )?;
                     crate::invocation_scope::check_continuation(

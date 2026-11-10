@@ -220,6 +220,11 @@ pub struct PermissionContext {
     /// The `Once` grants admissions here spent, never relied on again even
     /// before the host's revocation reaches this context.
     spent: std::collections::BTreeSet<policy::GrantId>,
+    /// Whether the host running this context's actions reaches the person
+    /// to ask them, when someone acts for them here: the host running a
+    /// hosted workspace's records puts an ask to the person on their own
+    /// devices ([`Self::reaching_person`]).
+    reaches_person: bool,
 }
 
 /// Inert directory cache identity. It cannot make a permission decision.
@@ -249,7 +254,25 @@ impl PermissionContext {
             action_authority: None,
             once_spender: None,
             spent: std::collections::BTreeSet::new(),
+            reaches_person: false,
         }
+    }
+
+    /// The same context, run by a host that puts an ask to the person on
+    /// their own devices when someone acts for them: such an invocation asks
+    /// first ([`tilo_actions::DoorError::ConfirmationRequired`]) where it
+    /// would otherwise be refused, as the desktop's broker asks.
+    #[must_use]
+    pub fn reaching_person(mut self) -> Self {
+        self.reaches_person = true;
+        self
+    }
+
+    /// Who an invocation admitted here asks ([`tilo_action_policy::Invoker::asker`]):
+    /// the person, who answers themselves, or whom the host reaches; and
+    /// whether someone acts for them.
+    pub fn asker(&self) -> policy::Asker {
+        self.standing.asker(self.reaches_person)
     }
 
     /// The **unrestricted local user**: the owner of [`LOCAL_WORKSPACE`] holding
@@ -1245,11 +1268,10 @@ mod action_authority;
 pub mod capability;
 use action_authority::ActionAuthoritySampler;
 
-/// The shared admission ([`tilo_action_policy::admit`]) as a window takes
-/// it for its own person, the decision a broker takes for a caller: an ask
-/// is theirs to confirm in the window when they act themselves (`direct`),
-/// and nobody else's here. `confirmed` is their confirmation, or the broker
-/// having admitted it.
+/// The shared admission ([`tilo_action_policy::admit`]) as a window's door
+/// takes it, the decision a broker takes for a caller: `asker` is who the
+/// invocation asks ([`PermissionContext::asker`]), and `confirmed` is their
+/// confirmation, or the broker having admitted it.
 ///
 /// # Errors
 /// Refused, or [`tilo_actions::DoorError::ConfirmationRequired`] until
@@ -1257,7 +1279,7 @@ use action_authority::ActionAuthoritySampler;
 pub fn admit_in_window(
     answer: tilo_action_policy::Answer,
     action: &tilo_actions::ActionSpec,
-    direct: bool,
+    asker: tilo_action_policy::Asker,
     confirmed: bool,
 ) -> Result<(), tilo_actions::DoorError> {
     let admitted = tilo_action_policy::admit(
@@ -1266,12 +1288,7 @@ pub fn admit_in_window(
             attended: action.contract.is_attended(),
             record: None,
         },
-        tilo_action_policy::Asker {
-            reachable: direct,
-            // A window has no session delegate: an agent acting in it holds a
-            // bounded standing (`direct` false), so its asks already refuse.
-            delegated: false,
-        },
+        asker,
     );
     match admitted {
         Err(_) => Err(crate::bound_dispatch::denied(action)),
