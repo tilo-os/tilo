@@ -1555,8 +1555,13 @@ try {
         // waiting for its word.
         await agent.close();
         const closedAt = Date.now();
-        const present = async () => (await semantics(tab))
-          .some(node => /^claude code, agent$/i.test(node.name) || /^following claude code/i.test(node.name));
+        // What the page says of the agent: its face in the bar, the banner of following it, or the
+        // row who is here lists it in. A phone-wide bar draws no faces, and the panel is the
+        // place it names who is here.
+        const present = async () => (await semantics(tab)).some(node =>
+          /^claude code, agent$/i.test(node.name)
+          || /^following claude code/i.test(node.name)
+          || /^claude code$/i.test(node.name) && /^agent;\s*\S/i.test(node.description ?? ''));
         const gone = await until(async () => (await present()) ? undefined : true, 30000, 250);
         const leftAfter = (Date.now() - closedAt) / 1000;
         log(`${combo}: the agent left who is here ${leftAfter.toFixed(1)} s after its tilo mcp ended`);
