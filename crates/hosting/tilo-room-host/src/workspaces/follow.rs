@@ -133,11 +133,24 @@ impl GovernedWorkspace {
         message: &neighbour_wire::NeighbourMsg,
     ) -> Option<String> {
         let neighbour_wire::NeighbourMsg::AppDocument {
-            app_id, record_id, ..
+            app_id,
+            record_id,
+            envelope,
+            ..
         } = message
         else {
             return None;
         };
+        // A write too large for one frame travels in segments, and is decided
+        // a segment at a time: no segment is a record write on its own, so
+        // the workspace has no verdict to give on one. Its last segment is the
+        // whole write, and that is refused or taken as this one would be.
+        if matches!(
+            collab_types::DocumentFrame::decode(&envelope.payload),
+            Ok(collab_types::DocumentFrame::Segment(_))
+        ) {
+            return None;
+        }
         let mut decided = {
             let peer = self.peer();
             if !peer.holds_document(app_id, record_id) {
