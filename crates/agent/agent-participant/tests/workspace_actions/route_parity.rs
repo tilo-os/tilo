@@ -858,3 +858,72 @@ async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
         );
     }
 }
+
+/// Seen on another person's host: a workspace a node someone else runs
+/// governs (a Lounge's), a member's agent through `tilo mcp`'s path is seen
+/// once, as the run that host speaks for, by the member's own page.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
+    use tilo_peer_state::join::MemberRole;
+    let (operator, _) = tilo_user_identity::UserIdentity::generate("Operator", 1);
+    let (guest, _) = tilo_user_identity::UserIdentity::generate("Grace", 1);
+    let host = enrol(
+        &operator,
+        "lounge",
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    );
+    let page_device = enrol(&guest, "browser", DeviceCapabilities::member());
+    let computer = enrol(
+        &guest,
+        "Claude Code on laptop",
+        DeviceCapabilities::member(),
+    );
+    let state = support::scratch_dir();
+    let hosted = start(&operator, &host, state.path()).await;
+    let workspaces = hosted.relay.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Grace's workspace").await.unwrap();
+    let cluster = workspace.workspace.clone();
+    for device in [&page_device, &computer] {
+        super::resource_support::admit_person(&hosted, &host, &cluster, device, MemberRole::Editor)
+            .await;
+    }
+    let mut browser =
+        super::resource_support::open_admitted_peer(&hosted, &page_device, &host, &cluster).await;
+    let agent =
+        super::resource_support::open_admitted_peer(&hosted, &computer, &host, &cluster).await;
+    let _ = tilo_session_host::device::run_as_agent(&agent.peer, "Claude Code").await;
+    let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
+        collab_types::Ed25519PublicKey::from_bytes(guest.verifying_key().to_bytes()),
+    ) else {
+        panic!("a key names a person")
+    };
+    let actions = tilo_session_host::session_actions::SessionActions::new(
+        &agent.peer,
+        agent.workspace,
+        host.cert.device_public_key,
+    );
+    let server = tilo_runtime::mcp::McpServer::new(actions, cluster.clone(), person)
+        .with_surface(tilo_runtime::mcp::Surface::Agent)
+        .with_agent_run("run-guest", "Claude Code");
+    let listed = super::hosted_documents::tool(&server, "tilo_ls", serde_json::json!({})).await;
+
+    let spoken_by = hex::encode(host.cert.device_public_key);
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        browser.pump();
+        let here = browser.here();
+        let agents: Vec<_> = here.iter().filter(|member| member.agent).collect();
+        if agents.len() == 1
+            && agents[0].label == "Claude Code"
+            && agents[0].spoken_by.as_deref() == Some(spoken_by.as_str())
+            && agents[0].activity.as_deref() == Some("Looking at the apps")
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the member's agent is not seen once on the operator's host ({listed}): {here:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}

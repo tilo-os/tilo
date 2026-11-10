@@ -994,19 +994,22 @@ impl Workspace {
     }
 
     /// The cluster id of the workspace `workspace_id` names, from what the member has
-    /// seen of it.
+    /// seen of it: its records, or, in a workspace with none yet, its governance.
     fn cluster_id(&self, workspace_id: u64) -> Option<String> {
         let of_workspace =
             |route: &DocumentRoute| room_workspace_id(&route.cluster_id).ok() == Some(workspace_id);
         if let Some((route, _)) = self.log.iter().find(|(route, _)| of_workspace(route)) {
             return Some(route.cluster_id.clone());
         }
-        self.peer
-            .status()
+        let status = self.peer.status();
+        let named = |name: &String| room_workspace_id(name).ok() == Some(workspace_id);
+        status
             .routes
             .into_keys()
             .find(|route| of_workspace(route))
             .map(|route| route.cluster_id)
+            .or_else(|| status.room_members.into_keys().find(named))
+            .or_else(|| status.room_devices.into_keys().find(named))
     }
 
     /// Take the session's events until `settled`, or until `deadline`.
