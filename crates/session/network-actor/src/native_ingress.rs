@@ -162,17 +162,62 @@ impl Drop for NativeLink {
     }
 }
 
+/// How a message this device publishes into a workspace it takes part in over
+/// its host's link travels there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Carried {
+    /// Over the link itself, as this device's own: a sealed write, which the
+    /// workspace's governor never admits and its host keeps for the record's
+    /// channel members, and the workspace's channel governance, which the
+    /// host takes in and sends on to the other members.
+    Link,
+    /// In the workspace's own publication: a cleartext write, which the
+    /// device's engine published already and the link publishes in order.
+    Publication,
+    /// Nowhere: the link syncs the workspace's state by itself.
+    Nowhere,
+}
+
+/// How `msg` travels in a workspace this device takes part in over its
+/// host's link; `None` for what goes on the workspace's live plane instead.
+pub(super) fn carried(msg: &NeighbourMsg) -> Option<Carried> {
+    match msg {
+        NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some() => {
+            Some(Carried::Link)
+        }
+        _ if is_channel_governance(msg) => Some(Carried::Link),
+        NeighbourMsg::AppDocument { .. } => Some(Carried::Publication),
+        NeighbourMsg::SyncReq { .. } | NeighbourMsg::SyncResp { .. } => Some(Carried::Nowhere),
+        _ => None,
+    }
+}
+
+/// Whether `msg` is a workspace's channel governance: a frame of a channel's
+/// group, or a device asking to join one.
+pub(super) fn is_channel_governance(msg: &NeighbourMsg) -> bool {
+    matches!(
+        msg,
+        NeighbourMsg::MlsGovernance { .. }
+            | NeighbourMsg::MlsAccessRequest { .. }
+            | NeighbourMsg::MlsRoutedAccessRequest { .. }
+    )
+}
+
 impl ActorState {
-    /// Send `msg`, a member's own write, to the workspace's host as its link
-    /// carries it: the link keeps it at its store, and the next link the
-    /// workspace has sends it again.
-    pub(super) fn publish_sealed_native(&self, ws: u64, msg: &NeighbourMsg) {
+    /// Send `msg` to the workspace's host over the link up now
+    /// ([`Carried::Link`]). A sealed write is kept at the link's store, and
+    /// the next link the workspace has sends it again; channel governance
+    /// with no link up waits for the next one, which sends what this device
+    /// remembers of it as it connects.
+    pub(super) fn publish_over_link(&self, ws: u64, msg: &NeighbourMsg) {
         if let Some(link) = self.native_links.get(&ws)
             && let Err(error) = link.link.send(msg.clone())
         {
-            tracing::debug!(ws, %error, "sealed write kept for the workspace's next link");
+            tracing::debug!(ws, %error, "kept for the workspace's next link");
         }
-        self.tell_unsynced(ws);
+        if !is_channel_governance(msg) {
+            self.tell_unsynced(ws);
+        }
     }
 
     /// Tell the workspace on topic `ws`'s apps how many of this device's writes
@@ -462,5 +507,44 @@ fn drop_unpinned(
     });
     if unpinned {
         links.remove(&ws);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Carried, NeighbourMsg, carried};
+    use collab_types::{ChannelId, MlsAccessRequestV1, MlsGovernanceAction, MlsGovernanceFrame};
+
+    /// A workspace a device takes part in over its host's link has no other
+    /// path to its host: channel governance kept off the link left every
+    /// device founding the channel's group on its own, with keys no other
+    /// member held.
+    #[test]
+    fn channel_governance_travels_over_the_workspaces_link() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let channel = ChannelId::new();
+        let genesis = NeighbourMsg::MlsGovernance {
+            workspace: "workspace".into(),
+            frame: Box::new(
+                MlsGovernanceFrame::signed(channel, [0; 32], 0, MlsGovernanceAction::Genesis, &key)
+                    .unwrap(),
+            ),
+            delivery: 0,
+        };
+        let request = || Box::new(MlsAccessRequestV1::signed(channel, vec![1], 1, &key).unwrap());
+        let asking = NeighbourMsg::MlsAccessRequest {
+            workspace: "workspace".into(),
+            request: request(),
+            delivery: 0,
+        };
+        let routed = NeighbourMsg::MlsRoutedAccessRequest {
+            room: "workspace".into(),
+            request: request(),
+            route: Box::new(collab_types::ChannelRoute::new("app", "record")),
+            delivery: 0,
+        };
+        for message in [genesis, asking, routed] {
+            assert_eq!(carried(&message), Some(Carried::Link), "{}", message.kind());
+        }
     }
 }

@@ -1416,27 +1416,19 @@ impl ActorState {
             Some(NetCmd::Publish { ws, msg }) => {
                 self.observe_surface_stream(ws, &msg);
                 remember_governance(&mut self.governance, ws, &msg);
-                if self.native_routes.contains(ws)
-                    && matches!(&msg, NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some())
-                {
-                    // A sealed write in a workspace whose records are sealed
-                    // channels: the governor never admits it, the relay
-                    // retains it for the record's channel members.
-                    self.publish_sealed_native(ws, &msg);
-                    return true;
-                }
-                if self.native_routes.contains(ws)
-                    && matches!(
-                        &msg,
-                        NeighbourMsg::AppDocument { .. }
-                            | NeighbourMsg::SyncReq { .. }
-                            | NeighbourMsg::SyncResp { .. }
-                    )
-                {
-                    if matches!(msg, NeighbourMsg::AppDocument { .. }) {
-                        self.drive_native_publication(ws);
+                if self.native_routes.contains(ws) {
+                    match native_ingress::carried(&msg) {
+                        Some(native_ingress::Carried::Link) => {
+                            self.publish_over_link(ws, &msg);
+                            return true;
+                        }
+                        Some(native_ingress::Carried::Publication) => {
+                            self.drive_native_publication(ws);
+                            return true;
+                        }
+                        Some(native_ingress::Carried::Nowhere) => return true,
+                        None => {}
                     }
-                    return true;
                 }
                 if matches!(msg, NeighbourMsg::SurfaceFrame { .. }) {
                     self.surface_fanout_viewers
@@ -3659,12 +3651,7 @@ fn remember_governance(
     ws: WorkspaceId,
     msg: &NeighbourMsg,
 ) {
-    if !matches!(
-        msg,
-        NeighbourMsg::MlsGovernance { .. }
-            | NeighbourMsg::MlsAccessRequest { .. }
-            | NeighbourMsg::MlsRoutedAccessRequest { .. }
-    ) {
+    if !native_ingress::is_channel_governance(msg) {
         return;
     }
     let (Some((channel, Retention::Checkpoint)), Ok(bytes)) =

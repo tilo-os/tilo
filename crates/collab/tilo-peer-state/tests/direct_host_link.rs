@@ -17,8 +17,8 @@ use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use collab_types::CommitNamed as _;
 use collab_types::{
-    ChannelId, ContentRetention, Ed25519PublicKey, OpKind, SignedOp, document_artifact_id,
-    document_attestation_id, document_channel_id, sign_op,
+    ChannelId, ContentRetention, Ed25519PublicKey, MlsAccessRequestV1, OpKind, SignedOp,
+    document_artifact_id, document_attestation_id, document_channel_id, sign_op,
 };
 use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
@@ -554,6 +554,33 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
         peer.document_heads(APP, RECORD) == written
     })
     .await;
+
+    // A channel's governance one member sends reaches the others through the device that holds
+    // the workspace, which admits none of it into the workspace: a request to join a record's
+    // channel that only its sender heard left each member founding the channel's group alone.
+    let mut c_heard = c.heard();
+    let asking = NeighbourMsg::MlsAccessRequest {
+        workspace: WORKSPACE.into(),
+        request: Box::new(MlsAccessRequestV1::signed(channel(), vec![1], 1, &b_key).unwrap()),
+        delivery: 0,
+    };
+    b.send(asking.clone()).unwrap();
+    let heard = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            match c_heard.recv().await {
+                Ok(heard) if heard.message == asking => return heard,
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(error) => panic!("the late joiner's link closed: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("the joiner's channel governance reaches the late joiner");
+    assert_eq!(heard.author, b_key.verifying_key().to_bytes());
+    assert!(
+        !heard.landed,
+        "channel governance is never the workspace's state"
+    );
 
     // A workspace this device does not hold is refused, rather than answered for.
     let elsewhere =

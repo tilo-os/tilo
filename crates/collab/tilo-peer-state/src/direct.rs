@@ -683,6 +683,10 @@ impl DirectSync {
         retained: bool,
     ) -> Result<(), String> {
         let author = store::author_of(&message).unwrap_or(claimed);
+        if channel_governance(&message) {
+            self.carry_governance(author, message, retained);
+            return Ok(());
+        }
         let heard = match &self.0.admission {
             Some(admission) => self.admit_owned(admission, author, message, retained),
             None => self.admit_local(author, message, retained)?,
@@ -702,6 +706,30 @@ impl DirectSync {
         }
         let _ = self.0.heard.send(heard);
         Ok(())
+    }
+
+    /// Carry `message`, `author`'s channel governance, without admitting it:
+    /// a channel's group is settled between its members, never in the
+    /// workspace's state, so no admission decides it. The workspace's host
+    /// sends it on to its other links, as it does every member's frame, and
+    /// this device's own channel service takes it from [`Self::heard`]. A host
+    /// that dropped it left each member founding the channel's group alone,
+    /// sealing what it wrote under keys no other member held.
+    fn carry_governance(&self, author: [u8; 32], message: NeighbourMsg, retained: bool) {
+        if self.fans_out() {
+            self.outgoing(Authored {
+                from: author,
+                message: message.clone(),
+                published: false,
+            });
+        }
+        let _ = self.0.heard.send(Heard {
+            author,
+            message,
+            landed: false,
+            retained,
+            report: Err(NOT_WORKSPACE_STATE.into()),
+        });
     }
 
     /// Take `message` into the workspace's own live replica, which the
@@ -1056,6 +1084,22 @@ async fn forward(
             Err(broadcast::error::RecvError::Closed) => return Ok(()),
         }
     }
+}
+
+/// Why a channel's governance is never admitted into the workspace: what a
+/// [`Heard`] carrying it reports.
+const NOT_WORKSPACE_STATE: &str =
+    "channel governance is settled by the channel's members, not admitted into the workspace";
+
+/// Whether `message` is a channel's governance: a frame of its group, or a
+/// device asking to join it.
+fn channel_governance(message: &NeighbourMsg) -> bool {
+    matches!(
+        message,
+        NeighbourMsg::MlsGovernance { .. }
+            | NeighbourMsg::MlsAccessRequest { .. }
+            | NeighbourMsg::MlsRoutedAccessRequest { .. }
+    )
 }
 
 /// Whether `authored` is the other end's already: the device `remote` sent it
