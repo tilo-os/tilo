@@ -784,6 +784,9 @@ d-7j7tzynq = Show as
 d-dkylvhw4 = In front
     .doc = Makes the strip `strip` the one in front: what a press on a column's header does.
 
+d-nljxfsom = Place it here
+    .doc = Puts a resource dropped on the canvas where it was let go: the drag carries the resource and the canvas point it landed at, and the placement is the system's own (`session.place`, the action an agent's `place_at` runs), attributed and undone as one step of the person's.
+
 d-zoqbhs7o = Seed
     .doc = A shell that has never been arranged: the bar's parts and the dock's, in the order the default shell shows them.
 
