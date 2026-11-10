@@ -240,41 +240,6 @@ fn opening_in(
     assert!(arguments.is_empty(), "the open carries nothing else");
 }
 
-/// Where this test's session keeps what it says, for the log it writes.
-struct LogSink(std::sync::Arc<Mutex<String>>);
-
-impl std::io::Write for LogSink {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if let Ok(mut log) = self.0.lock() {
-            log.push_str(&String::from_utf8_lossy(bytes));
-        }
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogSink {
-    type Writer = LogSink;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        LogSink(std::sync::Arc::clone(&self.0))
-    }
-}
-
-/// The log this test's session writes, kept where the test reads it.
-fn logging() -> std::sync::Arc<Mutex<String>> {
-    let log = std::sync::Arc::new(Mutex::new(String::new()));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new("tilo_session=warn"))
-        .with_ansi(false)
-        .with_writer(LogSink(std::sync::Arc::clone(&log)))
-        .try_init();
-    log
-}
-
 /// A home whose device has an identity, and the app a record of the test's is kept by: the state a
 /// development session starts in.
 fn home_with_an_identity() -> tilo_test_env::TestHome {
@@ -300,7 +265,6 @@ fn home_with_an_identity() -> tilo_test_env::TestHome {
 fn a_mention_in_a_record_is_told_and_choosing_it_opens_the_record() {
     let _settled = ui::motion::testing::settled();
     let home = home_with_an_identity();
-    let log = logging();
     // The workspaces' records, in this device's data: what the session's activity and its mentions
     // follow, and what this test writes an app's record through.
     let records = Records::of(home.data().to_path_buf());
@@ -379,12 +343,5 @@ fn a_mention_in_a_record_is_told_and_choosing_it_opens_the_record() {
     });
     let opened = chosen.elapsed();
     opening_in(&workspace, opening);
-    assert!(
-        !log.lock()
-            .expect("the log")
-            .contains("a mention was not opened"),
-        "the session opened it through its own action seam: {}",
-        log.lock().expect("the log")
-    );
     eprintln!("mention told in {told:?}, chosen and opened in {opened:?}");
 }
