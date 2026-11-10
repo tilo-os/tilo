@@ -400,16 +400,18 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         0.0
     };
 
-    // 2. The inspector docks while the content keeps a column's width beside it;
-    //    narrower, it is a sheet up from the window's foot.
+    // 2. The inspector docks while the pane it leaves keeps the content's width; narrower, it is
+    //    a sheet up from the window's foot. Beside a sidebar that pane keeps a column, as the
+    //    sidebar does; an inspector alone stands beside the content's own minimum, which a
+    //    surface drawn on or a grid of tiles works below (`ContentKind`).
+    let between = if g.sidebar == SidebarPlacement::Docked {
+        beside_need
+    } else {
+        content_need
+    };
     g.inspector = if !inputs.has_inspector {
         InspectorPlacement::None
-    } else if reaches(
-        w - docked_target,
-        beside_need + iw,
-        held.inspector_docked,
-        band,
-    ) {
+    } else if reaches(w - docked_target, between + iw, held.inspector_docked, band) {
         InspectorPlacement::Docked
     } else {
         InspectorPlacement::Sheet
