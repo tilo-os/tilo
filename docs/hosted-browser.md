@@ -57,10 +57,13 @@ on the workspace's Browser record, so the window is live, published and
 subscribed like a Browser window on anyone's computer, and its page actions
 (`browser@<window>/page#read-page`, …) are the ones Browser already has.
 
-Each VM host keeps two browser environments booted with an idle session and
-no workspace. Opening Browser takes one of those and hands it to the
-workspace, so the window appears in about a second instead of after a boot.
-A new spare boots to replace it. An environment serves only the workspace it
+Each VM host keeps two browser environments booted and no workspace on them.
+A session reads its identity once, as it starts, so a spare's session has not
+started yet: the host boots the VM, its guest agent answers, and the session
+starts at the hand-off, with the material as the first line of its input.
+Opening Browser takes a spare and hands it to the workspace, so the window
+appears about as fast as a booted session starts instead of after a boot. A
+new spare boots to replace it. An environment serves only the workspace it
 was handed to, and it is never handed back to the pool.
 
 ### Why a session in a VM
