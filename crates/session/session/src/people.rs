@@ -1198,6 +1198,11 @@ impl Panel {
     ) {
         let now = ui::motion::frame_now();
         let motion = theme.motion();
+        // The roster is the panel's only while it is up or kept at an edge: closed, it draws
+        // nothing, so the surface stands transparent and a press under the bar reaches the bar.
+        if shown.pinned.is_none() && !self.open.get() {
+            return;
+        }
         if shown.pinned.is_none() {
             self.draw_one_roster(scene, transform, text, theme, presence, shown, None);
             return;
