@@ -15,6 +15,7 @@ fn every_text_and_number_method_compiles_to_a_typed_value() {
     // types it gives, and the compiler refuses any of them that gives another.
     compile_body(
         "fn count(t: Text) -> Int { return t.len() }\n\
+fn words(t: Text) -> Int { return t.words() }\n\
 fn empty(t: Text) -> Bool { return t.is_empty() }\n\
 fn tidy(t: Text) -> Text { return t.trim() }\n\
 fn shout(t: Text) -> Text { return t.upper() }\n\
@@ -171,7 +172,7 @@ fn a_wrong_method_message_names_what_the_type_has() {
     assert_eq!(text.code, "E027");
     assert!(
         text.message
-            .contains("len, is_empty, trim, lower, upper, starts_with"),
+            .contains("len, words, is_empty, trim, lower, upper, starts_with"),
         "{}",
         text.message
     );

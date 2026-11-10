@@ -20,17 +20,32 @@ mod cases {
         rt: Runtime,
         app: App,
         nb: ResourceRef,
+        /// What the workspace's clock says: when a note is made, and when it is written since.
+        clock: std::rc::Rc<std::cell::RefCell<String>>,
     }
 
     impl Notes {
         fn new() -> Self {
+            Self::at("2026-06-30T08:00:00Z")
+        }
+
+        /// A notebook whose clock says `now`.
+        fn at(now: &str) -> Self {
             let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let clock = std::rc::Rc::new(std::cell::RefCell::new(now.to_owned()));
+            let reading = std::rc::Rc::clone(&clock);
+            rt.set_clock(move || reading.borrow().clone());
             let discussion = App::compile(DISCUSSION, &[]);
             discussion.load(&rt);
             let app = App::compile(SOURCE, &[discussion.meta().clone()]);
             app.load(&rt);
             let nb = rt.create("Notebook").unwrap();
-            Self { rt, app, nb }
+            Self { rt, app, nb, clock }
+        }
+
+        /// The clock reads `now` from here on: a change made now is later than those before it.
+        fn set_clock(&self, now: &str) {
+            now.clone_into(&mut self.clock.borrow_mut());
         }
 
         fn call(&self, action: &str, args: Vec<Value>) -> InvokeOutcome {
@@ -489,6 +504,128 @@ mod cases {
         );
         // One row per note: a window shows an item once, so its actions have one address.
         assert_eq!(labels(&view), ["Q3 plan"]);
+    }
+
+    /// The places a note's line says it stands in, the outermost first: the trail's segments,
+    /// the note itself last.
+    fn trail(view: &ViewInstance) -> Vec<String> {
+        of_kind(view.tree(), "ui.BreadcrumbSegment")
+            .iter()
+            .map(|segment| text_prop(segment, "label"))
+            .collect()
+    }
+
+    /// The moments the window shows as how long ago they were, in the order it shows them.
+    fn moments(view: &ViewInstance) -> Vec<String> {
+        of_kind(view.tree(), "ui.Time")
+            .iter()
+            .map(|moment| text_prop(moment, "at"))
+            .collect()
+    }
+
+    /// What the window says in words, in the order it says them.
+    fn said(view: &ViewInstance) -> Vec<String> {
+        of_kind(view.tree(), "ui.Text")
+            .iter()
+            .map(|text| text_prop(text, "value"))
+            .collect()
+    }
+
+    /// The note page's own line under the title, as the words it says: the facts, and the
+    /// words of the path among them.
+    fn line_says(view: &ViewInstance, word: &str) -> bool {
+        said(view).iter().any(|said| said == word)
+    }
+
+    #[test]
+    fn the_line_under_a_note_says_where_it_stands_and_when_it_was_written() {
+        let n = Notes::at("2026-06-30T08:00:00Z");
+        let plan = n.titled("Q3 plan");
+        let standups = n.child_of(&plan);
+        n.call(
+            "retitle",
+            vec![Value::resource(&standups), Value::text("Standups")],
+        );
+        let monday = n.child_of(&standups);
+        n.call(
+            "retitle",
+            vec![Value::resource(&monday), Value::text("Monday")],
+        );
+        let mut view = n.window();
+        let tree = the_tree(&view).key.clone();
+        view.fire_with(&tree, "select", Some(&Value::resource(&monday)))
+            .unwrap();
+        view.poll_patches().unwrap();
+
+        // Where it stands: every note over it, then the note itself, which its title says
+        // again — a trail opens every place before its last.
+        assert_eq!(
+            trail(&view),
+            ["Q3 plan", "Standups", "Monday"],
+            "{}",
+            dump(view.tree())
+        );
+        // When it was made: one moment, because nothing has written it since. The note's line
+        // stands before its body and its history, whose own times come after it.
+        assert_eq!(moments(&view)[..1], ["2026-06-30T08:00:00Z"]);
+        assert!(line_says(&view, "Created"), "{}", dump(view.tree()));
+        assert!(!line_says(&view, "Edited"), "nothing wrote it since");
+
+        // Written into: the note holds those words, and the moment it was written is its own.
+        n.set_clock("2026-06-30T08:05:00Z");
+        let body = of_kind(view.tree(), "ui.BlockEditor")[0].key.clone();
+        view.edit(
+            &body,
+            &Value::Rich(RichValue::from_text("Ada is on the sync bug.")),
+        )
+        .unwrap();
+        view.poll_patches().unwrap();
+        assert_eq!(
+            moments(&view)[..2],
+            ["2026-06-30T08:00:00Z", "2026-06-30T08:05:00Z"],
+            "the note was made at one moment and written at another"
+        );
+        assert!(line_says(&view, "Edited"), "{}", dump(view.tree()));
+        assert!(line_says(&view, "6 words"), "{:?}", said(&view));
+
+        // A place over the note opens that note.
+        let above = of_kind(view.tree(), "ui.BreadcrumbSegment")
+            .into_iter()
+            .find(|segment| text_prop(segment, "label") == "Standups")
+            .unwrap_or_else(|| panic!("no Standups in\n{}", dump(view.tree())))
+            .key
+            .clone();
+        view.fire_with(&above, "activate", None).unwrap();
+        assert!(
+            matches!(
+                view.poll_events().as_slice(),
+                [tilolang_runtime::ViewEvent::Open { target, .. }] if *target == standups
+            ),
+            "pressing a place opens the note it names"
+        );
+
+        // A phone keeps the one place above the note: the trail is shorter, and still opens it.
+        view.set_space("", tilolang_runtime::Space::from_rem(24.4, 50.0));
+        view.poll_patches().unwrap();
+        assert_eq!(
+            trail(&view),
+            ["Standups", "Monday"],
+            "a narrow page keeps the note it stands under"
+        );
+
+        // A note at the top of the tree stands nowhere: it shows no path.
+        view.fire_with(&tree, "select", Some(&Value::resource(&plan)))
+            .unwrap();
+        view.poll_patches().unwrap();
+        assert!(
+            trail(&view).is_empty(),
+            "a note of nothing shows no trail: {}",
+            dump(view.tree())
+        );
+        assert!(
+            line_says(&view, "Created"),
+            "and still says what is known of it"
+        );
     }
 
     #[test]

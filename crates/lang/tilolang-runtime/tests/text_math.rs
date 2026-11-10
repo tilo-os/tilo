@@ -12,6 +12,7 @@ mod cases {
 
     const SOURCE: &str = "app so.tilo.text \"Text\"\n\
 action count(t: Text) -> Int { return t.len() }\n\
+action words(t: Text) -> Int { return t.words() }\n\
 action empty(t: Text) -> Bool { return t.is_empty() }\n\
 action tidy(t: Text) -> Text { return t.trim() }\n\
 action shout(t: Text) -> Text { return t.upper() }\n\
@@ -131,6 +132,19 @@ action flag(b: Bool) -> Text { return b.to_text() }";
         assert_eq!(s.text("tidy", vec![t("\u{a0} pad \t")]), "pad");
         assert_eq!(s.text("shout", vec![t("straße")]), "STRASSE");
         assert_eq!(s.text("whisper", vec![t("ΟΔΟΣ")]), "οδος");
+    }
+
+    /// The words of a text are its runs of non-whitespace: what a person counts of what they
+    /// wrote, whatever the whitespace between them and whether or not it is a letter.
+    #[test]
+    fn a_text_is_counted_in_words_as_a_person_counts_them() {
+        let s = surface();
+        assert_eq!(s.int("words", vec![t("a note of four words")]), 5);
+        assert_eq!(s.int("words", vec![t("  one\ttwo\n\nthree  ")]), 3);
+        assert_eq!(s.int("words", vec![t("")]), 0);
+        assert_eq!(s.int("words", vec![t(" \n\t ")]), 0);
+        assert_eq!(s.int("words", vec![t("— …")]), 2, "punctuation counts");
+        assert_eq!(s.int("words", vec![t("👩‍👩‍👧‍👦 x")]), 2);
     }
 
     #[test]

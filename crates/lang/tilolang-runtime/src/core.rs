@@ -412,8 +412,8 @@ impl Core {
             RichTime, RunChanges, SeenBy, SetAdd, SetRemove, Single, SomeF, SomeH, SomeI, SortLit,
             SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains,
             StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrReplace,
-            StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim, StrUpper, Suggest, Take,
-            TimeClock, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke,
+            StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim, StrUpper, StrWords, Suggest,
+            Take, TimeClock, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke,
             TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction,
             UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH,
             UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions,
@@ -421,11 +421,10 @@ impl Core {
             WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
         };
         match imp {
-            StrLit | StrConcat | StrEq | StrLen | IntToStr | StrToInt | FloatToStr | StrCmp
-            | StrFind | StrSlice | StrReplace | StrTrim | StrLower | StrUpper | StrStartsWith
-            | StrEndsWith | StrContains | StrSplit | StrJoin | StrMatches | DurationText => {
-                self.text_import(imp, mem, a)
-            }
+            StrLit | StrConcat | StrEq | StrLen | StrWords | IntToStr | StrToInt | FloatToStr
+            | StrCmp | StrFind | StrSlice | StrReplace | StrTrim | StrLower | StrUpper
+            | StrStartsWith | StrEndsWith | StrContains | StrSplit | StrJoin | StrMatches
+            | DurationText => self.text_import(imp, mem, a),
             IntMin | IntMax | IntClamp | IntAbs | FloatMin | FloatMax | FloatClamp | FloatAbs
             | FloatRound | FloatRoundTo | FloatFloor | FloatFloorTo | FloatCeil | FloatCeilTo
             | ListSumI | ListSumF | ListAvg => self.num_import(imp, a),

@@ -42,6 +42,7 @@ imports! {
     StrConcat = "str_concat" ([H, H] -> [H]);
     StrEq = "str_eq" ([H, H] -> [I32]);
     StrLen = "str_len" ([H] -> [I64]);
+    StrWords = "str_words" ([H] -> [I64]);
     IntToStr = "int_to_str" ([I64] -> [H]);
     StrToInt = "str_to_int" ([H] -> [H]);
     FloatToStr = "float_to_str" ([F64] -> [H]);

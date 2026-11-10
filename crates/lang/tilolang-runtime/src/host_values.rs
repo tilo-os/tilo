@@ -58,6 +58,8 @@ impl Core {
             // Every count, place and cut is `tilolang::text`'s: graphemes, so what a person
             // sees as one character is one.
             Imp::StrLen => ret_i64(len_to_i64(tilolang::text::len(&self.text(a.h(0)?)?))),
+            // The words of a text, as a person counts them.
+            Imp::StrWords => ret_i64(len_to_i64(tilolang::text::words(&self.text(a.h(0)?)?))),
             Imp::IntToStr => self.ret_h(Value::Text(a.long(0)?.to_string())),
             Imp::StrToInt => {
                 let number = self.text(a.h(0)?)?.trim().parse::<i64>().ok();

@@ -28,6 +28,7 @@ imports! {
     (StrConcat, "str_concat", "ii", "i"),
     (StrEq, "str_eq", "ii", "i"),
     (StrLen, "str_len", "i", "l"),
+    (StrWords, "str_words", "i", "l"),
     (IntToStr, "int_to_str", "l", "i"),
     (StrToInt, "str_to_int", "i", "i"),
     (FloatToStr, "float_to_str", "f", "i"),

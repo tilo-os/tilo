@@ -407,13 +407,15 @@ view note_editor(n: Note) {
     }
 }
 
-/// The open note: its title, its tags as chips, its body, what links to it, its discussion and
-/// its history. Its body's `[[` writes a link to another of the notebook's notes.
+/// The open note: its title, where it stands and when it was written, its tags as chips, its
+/// body, what links to it, its discussion and its history. Its body's `[[` writes a link to
+/// another of the notebook's notes.
 view note_page(n: Note) {
     let nb = root Notebook
     state linking: Bool = false
     state link_text: Text = ""
     ui.TextInput(bind: n.title, title: true)
+    note_details(n)
     if not n.tags.is_empty() {
         row(gap: .related, wrap: true) {
             for t in n.tags {
@@ -439,6 +441,59 @@ view note_page(n: Note) {
     std.linked(n, compact: true)
     discussion.thread(n)
     std.history(n)
+}
+
+/// What a note says of itself, as one quiet line under its title: the notes it stands under,
+/// each opening it, and beside them when it was made, when it was last written and how many
+/// words it holds.
+view note_details(n: Note) {
+    // The notes over `n`, the outermost first, ending at `n` itself: a trail opens every place
+    // before its last, so each note it stands under stays a press and nothing of the path is
+    // inert. A narrow window keeps the one place above it, the note it stands under.
+    let places = if space.compact { above(n).take(1) } else { above(n).sort_by(a -> depth_of(a)) }
+    let made = created(n)?.at
+    let edited = updated(n)?.at
+    let count = n.body.text.words()
+    row(gap: .related, align: .center) {
+        if not places.is_empty() {
+            ui.Breadcrumb {
+                for a in places {
+                    ui.BreadcrumbSegment(meta(a).title) {
+                        on activate: open(a)
+                    }
+                }
+                ui.BreadcrumbSegment(meta(n).title)
+            }
+        }
+        row(gap: .related, align: .center) {
+            // When it was made, and when it was written since: one moment says both.
+            if let at = made {
+                row(gap: .tight) {
+                    text("Created", role: .caption, secondary: true)
+                    ui.Time(at, role: .caption, secondary: true)
+                }
+            }
+            if edited != made {
+                if let at = edited {
+                    row(gap: .tight) {
+                        text("Edited", role: .caption, secondary: true)
+                        ui.Time(at, role: .caption, secondary: true)
+                    }
+                }
+            }
+            // A note nobody has written yet holds no words to count.
+            if count == 1 {
+                text("1 word", role: .caption, secondary: true)
+            } else if count > 1 {
+                text("{count} words", role: .caption, secondary: true)
+            }
+        }
+    }
+}
+
+/// The notes `n` stands under, the one it stands under first: the path its page shows above it.
+fn above(n: Note) -> List<Note> {
+    if let p = n.parent { [[p], above(p)].flat_map(notes -> notes) } else { [] }
 }
 
 /// A note's own file commands: a picture in, the note out as a file of its own.

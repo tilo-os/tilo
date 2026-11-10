@@ -9,6 +9,7 @@ use crate::types::Ty;
 /// it is cased, how it is asked about, and what it becomes.
 pub const TEXT: &[&str] = &[
     "len",
+    "words",
     "is_empty",
     "trim",
     "lower",
@@ -202,6 +203,6 @@ mod tests {
                 .contains(&"sum")
         );
         assert_eq!(names(&Ty::Unit), None);
-        assert!(described(&Ty::Text).starts_with("len, is_empty, trim"));
+        assert!(described(&Ty::Text).starts_with("len, words, is_empty, trim"));
     }
 }

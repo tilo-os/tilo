@@ -122,6 +122,12 @@ d-xqxkoqbj = Notizzeile
 
 d-6wqou47w = Notizeditor
 
+d-nki6assy = Notizangaben
+    .w-created = Erstellt
+    .w-edited = Bearbeitet
+    .w-1-word = 1 Wort
+    .w-words = { $count } Wörter
+
 d-x7x7sbtj = Notizmenü
     .w-file = Datei
     .w-insert-an-image = Ein Bild einfügen…

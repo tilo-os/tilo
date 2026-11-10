@@ -124,6 +124,12 @@ d-6wqou47w = Note editor
 d-osyh3odz = Note page
     .w-write-something = Write something
 
+d-nki6assy = Note details
+    .w-created = Created
+    .w-edited = Edited
+    .w-1-word = 1 word
+    .w-words = { $count } words
+
 d-x7x7sbtj = Note menu
     .w-file = File
     .w-insert-an-image = Insert an image…
