@@ -2422,6 +2422,7 @@ fn execute_document(
     let capture_context = observation.as_ref().map(|_| context.clone());
     let step = action.change_kind().is_step() && context.change.is_step();
     let writer = document_writer(actor, doc);
+    note_active_writer(&writer);
     let dispatched =
         if broker_admitted && action.locus() == tilo_actions::ExecutionLocus::ServerPreferred {
             tilo_actions::Dispatched::AppliedLocal(
@@ -2458,6 +2459,21 @@ fn execute_document(
         report_typed_action(doc, before, after, step);
     }
     Ok(dispatched)
+}
+
+/// Note `writer` among the writers of the record the active operation runs
+/// on ([`RecordActionState::writers`]): what an action writes as its author
+/// (an agent's own principal among them) is this replica's to publish, as
+/// what it writes as itself is.
+fn note_active_writer(writer: &[u8]) {
+    let writers = ACTIVE.with_borrow(|active| {
+        let handle = active.as_ref().and_then(|entry| entry.3.clone())?;
+        let frame = handle.try_borrow().ok()?;
+        frame.as_ref().map(|frame| Rc::clone(&frame.state.writers))
+    });
+    if let Some(writers) = writers {
+        writers.borrow_mut().note(automerge::ActorId::from(writer));
+    }
 }
 
 /// The refusal of an own-device effect for someone not at this device.

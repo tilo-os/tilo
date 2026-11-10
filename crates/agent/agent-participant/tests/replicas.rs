@@ -648,3 +648,60 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
         .collect();
     assert_eq!(posted, [("bot:b1".to_owned(), "welcome!".to_owned())]);
 }
+
+/// An agent acting for a person writes as the agent (its own principal is
+/// the change's author) and the replica hands that change back to be saved:
+/// what it wrote as the agent is its own, as what it writes as the person is.
+#[test]
+fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
+    let mut made = common::open("so.tilo.notes", "ada", ReplicaActor::Owner, Seed::New).unwrap();
+    let Some(DocumentMutation::Snapshot(genesis)) = made.take_mutation() else {
+        panic!("a new record is published whole");
+    };
+    let standing = ui::permissions::PermissionContext::member_of(
+        WORKSPACE,
+        "ada",
+        ui::permissions::Role::Owner,
+    )
+    .standing()
+    .clone();
+    let mut agent = common::open(
+        "so.tilo.notes",
+        "ada",
+        ReplicaActor::Member {
+            standing,
+            sandbox: Vec::new(),
+            unix_time: 1_900_000_000,
+            agent: Some("Claude Code".into()),
+        },
+        Seed::Existing {
+            record: made.record_id().clone(),
+            changes: vec![genesis.clone()],
+        },
+    )
+    .unwrap();
+    let _ = agent.take_mutation();
+    let new_note = agent
+        .survey()
+        .into_iter()
+        .find(|descriptor| descriptor.address.action == "new-note")
+        .expect("the notebook offers the agent a new note")
+        .address;
+    let arguments = serde_json::json!({"title": "Launch plan"});
+    agent
+        .invoke(&new_note, arguments.as_object().unwrap(), false)
+        .unwrap();
+    let Some(DocumentMutation::Incremental(wrote)) = agent.take_mutation() else {
+        panic!("the agent's note is handed back to be saved");
+    };
+    let mut doc = automerge::AutoCommit::new();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut doc, &genesis).unwrap();
+    let before = doc.get_heads();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut doc, &wrote).unwrap();
+    assert!(
+        doc.get_changes(&before)
+            .iter()
+            .any(|change| change.actor_id().to_bytes() == b"agent:Claude Code"),
+        "written as the agent"
+    );
+}
