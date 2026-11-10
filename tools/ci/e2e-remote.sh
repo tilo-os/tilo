@@ -14,7 +14,9 @@
 #
 # `t test e2e-remote --test hold`, or a scripts/e2e-remote/HOLD in the working tree, keeps the
 # micro-VM and its guests up for an hour after the run, whatever its outcome, for `t vm ssh`
-# (and `t vm extend`).
+# (and `t vm extend`). A HOLD that holds an SSH public key lets that key's holder in as root:
+# `t vm list`, then `t vm ssh VM -- -i KEY`; from there the boxes are `tilo-vm`'s, as the run's
+# user.
 set -euo pipefail
 
 arch=x86_64
@@ -95,11 +97,43 @@ caps=$(as_user virsh --connect qemu:///session capabilities)
 grep -q "<domain type='kvm'" <<<"$caps" || { echo "libvirt's session daemon offers no KVM domain" >&2; exit 1; }
 phase 'host ready'
 
+# Let the holder of the key in scripts/e2e-remote/HOLD into this micro-VM while it holds the
+# boxes: t's attach agent relays `t vm ssh` to an sshd on the loopback that takes that key and
+# nothing else, as os-vm.sh's VM is reached. Nothing listens on the node's network.
+reach_held_boxes() {
+  local key agent port=2200
+  key=$(grep -m1 -E '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-[a-z0-9-]+) ' scripts/e2e-remote/HOLD 2>/dev/null) \
+    || { echo 'e2e-remote: HOLD names no SSH public key' >&2; return 1; }
+  [[ -n ${T_ATTACH_URL:-} && -n ${T_ATTACH_TOKEN:-} ]] \
+    || { echo 'e2e-remote: this t server gives the job no attach token' >&2; return 1; }
+  rpm -q openssh-server >/dev/null 2>&1 \
+    || dnf install -y --setopt=install_weak_deps=False openssh-server >/dev/null || return 1
+  ssh-keygen -A >/dev/null || return 1
+  install -d -m 0700 /root/.ssh /run/sshd
+  printf '%s\n' "$key" > /root/.ssh/authorized_keys
+  chmod 0600 /root/.ssh/authorized_keys
+  /usr/sbin/sshd -o ListenAddress=127.0.0.1 -o Port="$port" -o PasswordAuthentication=no \
+    -o PermitRootLogin=prohibit-password -o PidFile=/run/e2e-remote-sshd.pid || return 1
+  agent=$work/t-attach-agent.py
+  curl -fsS --retry 3 -H "authorization: Bearer $T_ATTACH_TOKEN" -o "$agent" \
+    "${T_ATTACH_URL%/}/v1/attach-agent/agent.py" || return 1
+  python3 -I "$agent" --label 'e2e-remote boxes' --lifetime 6600 --max 7000 \
+    --ssh "tcp:127.0.0.1:$port" -- sleep 7000 >"$work/attach-agent.log" 2>&1 &
+  sleep 3
+  head -n 5 "$work/attach-agent.log" || true
+  kill -0 $! 2>/dev/null || { echo 'e2e-remote: the attach agent ended' >&2; return 1; }
+  echo 'e2e-remote: reachable while it holds the boxes: t vm list, then t vm ssh VM -- -i KEY'
+}
+
 args=(--work "$work" --out "$out" --commit "$commit" --tilo-vm /usr/local/bin/tilo-vm
       --taps "$(IFS=,; echo "${taps[*]}")")
 echo "e2e-remote: test filter: ${T_TEST_FILTER:-none}"
 # A working tree holding scripts/e2e-remote/HOLD (never committed) holds the boxes too.
-[[ ${T_TEST_FILTER:-} != *hold* && ! -e scripts/e2e-remote/HOLD ]] || args+=(--hold 3600)
+if [[ ${T_TEST_FILTER:-} == *hold* || -e scripts/e2e-remote/HOLD ]]; then
+  args+=(--hold 3600)
+  [[ ! -s scripts/e2e-remote/HOLD ]] || reach_held_boxes \
+    || echo 'e2e-remote: the held boxes cannot be reached through t' >&2
+fi
 status=0
 as_user env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*' \
   python3 scripts/e2e-remote/run.py "${args[@]}" || status=$?
