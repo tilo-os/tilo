@@ -73,10 +73,9 @@ const fn room_role(role: MemberRole) -> WorkspaceRole {
 }
 
 /// `workspace` as a page sees it, with `summary` its people as
-/// [`Workspaces::people`] names them.
-fn page_room(workspace: &GovernedWorkspace, summary: WorkspaceSummary) -> Workspace {
-    let certificates = workspace.peer().certificates();
-    let owner = workspace.peer().owner();
+/// [`Workspaces::people`] names them, `certificates` the devices its
+/// governance records and `owner` the person whose workspace it is.
+fn page_room(summary: WorkspaceSummary, certificates: &[DeviceCert], owner: [u8; 32]) -> Workspace {
     let members: Vec<_> = summary
         .members
         .into_iter()
@@ -602,10 +601,14 @@ impl Workspaces {
         let mut listed = Vec::with_capacity(workspaces.len());
         for workspace in workspaces {
             let workspace = workspace.lock().await;
-            if self.lists_to(device, workspace.workspace()) {
-                let summary = self.people(workspace.workspace(), &workspace);
-                listed.push(page_room(&workspace, summary));
+            if !self.lists_to(device, workspace.workspace()) {
+                continue;
             }
+            let summary = self.people(workspace.workspace(), &workspace);
+            let certificates = workspace.peer().certificates();
+            let owner = workspace.peer().owner();
+            drop(workspace);
+            listed.push(page_room(summary, &certificates, owner));
         }
         Ok(WorkspacesReply::Workspaces(listed))
     }
@@ -614,7 +617,14 @@ impl Workspaces {
         let workspace = self.workspace(workspace).await?;
         let workspace = workspace.lock().await;
         let summary = self.people(workspace.workspace(), &workspace);
-        Ok(WorkspacesReply::Workspace(page_room(&workspace, summary)))
+        let certificates = workspace.peer().certificates();
+        let owner = workspace.peer().owner();
+        drop(workspace);
+        Ok(WorkspacesReply::Workspace(page_room(
+            summary,
+            &certificates,
+            owner,
+        )))
     }
 
     async fn page_pending(
