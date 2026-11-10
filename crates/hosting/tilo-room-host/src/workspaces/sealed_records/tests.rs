@@ -1940,3 +1940,125 @@ async fn a_repair_is_tried_for_a_write_only_when_that_write_could_release_what_i
     );
     lounge.relay.shutdown().await;
 }
+
+/// The write of `record` of `app` the host published last, whoever signed it.
+async fn last_published(
+    workspaces: &Workspaces,
+    workspace: &str,
+    record: &str,
+) -> Option<SignedOp> {
+    let state = workspaces.workspace(workspace).await.unwrap();
+    let published: Vec<Vec<u8>> = state
+        .lock()
+        .await
+        .record
+        .outgoing
+        .iter()
+        .map(|publication| publication.bytes.clone())
+        .collect();
+    published
+        .iter()
+        .rev()
+        .filter_map(|bytes| postcard::from_bytes::<NeighbourMsg>(bytes).ok())
+        .find_map(|message| match message {
+            NeighbourMsg::AppDocument {
+                record_id,
+                envelope,
+                ..
+            } if record_id == record => Some(*envelope),
+            _ => None,
+        })
+}
+
+/// A record's repair kept a change a bot made showing another name. The
+/// record is held sealed, so its writes are decided without holding anyone to
+/// a name, and the change goes in as the host's own write, as any kept change
+/// does, keeping the name it showed. Once the host runs the bot the change
+/// names, its kept changes are tried then ([`Workspaces::keep_bot_device`]).
+#[cfg(feature = "agents")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_kept_change_a_bot_showed_another_name_in_keeps_the_name_it_showed() {
+    use crate::workspaces::tests::bots::{bridge_program, install_command};
+    use automerge::transaction::Transactable as _;
+    use tilo_actions::{ActionContext, ActionInvoker, ActorKind, Appearance};
+
+    let lounge = Box::new(lounge().await);
+    let (workspaces, workspace) = (&lounge.workspaces, lounge.workspace.as_str());
+    // The bot's own device, installed with personas: only a bot may show
+    // another name, and only the bot it names may say so.
+    let installation = "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6";
+    let bot_key = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+    workspaces
+        .govern_bot(
+            workspace,
+            &lounge.governor,
+            install_command(
+                workspace,
+                &bridge_program(),
+                (installation, 8),
+                tilo_peer_state::AppearancePolicy::Personas,
+            ),
+        )
+        .await
+        .unwrap();
+    // The change the bot made on top of the record, showing a name of its own.
+    let record = workspaces
+        .record_document(workspace, APP, RECORD)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut bot = automerge::AutoCommit::load(&record).unwrap();
+    bot.set_actor(automerge::ActorId::from(b"bridge".as_slice()));
+    bot.put(ROOT, "posted", "for Ada").unwrap();
+    let context = ActionContext::default().with_invoker(
+        ActionInvoker::actor(format!("bot:{installation}"))
+            .with_kind(ActorKind::Bot)
+            .with_appearance(Some(Appearance::new("Ada", None, None).unwrap())),
+    );
+    bot.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(context.change_message().unwrap()),
+    );
+    let kept = bot.get_last_local_change().unwrap();
+    // The relay's state root, which holds the governed records' `rooms`.
+    let root = workspaces
+        .workspace(workspace)
+        .await
+        .unwrap()
+        .lock()
+        .await
+        .path
+        .parent()
+        .and_then(std::path::Path::parent)
+        .unwrap()
+        .to_path_buf();
+    let archive =
+        crate::workspaces::repaired_records::repaired_record_dir(&root, workspace, APP, RECORD);
+    std::fs::create_dir_all(&archive).unwrap();
+    let kept_at = archive.join(format!("{}.change", kept.hash()));
+    std::fs::write(&kept_at, kept.raw_bytes()).unwrap();
+
+    // The bot's device arrives, as it does once the host runs the bot: what it
+    // made goes in then, as its own write.
+    workspaces.keep_bot_device(workspace, installation, bot_key.clone());
+    tilo_test_env::within("the kept change is taken in", async {
+        while kept_at.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+    let published = last_published(workspaces, workspace, RECORD)
+        .await
+        .expect("the host published the kept change");
+    assert_eq!(
+        published.author.as_bytes(),
+        &lounge.governor.device_public_key,
+        "a sealed record's kept change goes in as the host's write"
+    );
+    assert_eq!(
+        read_key(workspaces, workspace, "posted").await.as_deref(),
+        Some("for Ada"),
+        "the record holds the change, showing the name it showed"
+    );
+    lounge.relay.shutdown().await;
+}

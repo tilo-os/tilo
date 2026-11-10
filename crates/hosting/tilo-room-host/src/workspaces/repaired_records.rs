@@ -23,16 +23,27 @@
 //! change (the branch a repair carried forward rather than kept) can never
 //! merge, and stays as kept.
 //!
+//! A change a bot made showing a name other than its own is admitted only as
+//! that bot's write: a member holds a change that names a bot and shows a name
+//! ([`collab_types::check_appearances`]) to the bot it names. A record held in
+//! the clear therefore takes such a change in as the bot's own write
+//! ([`Workspaces::publish_as_bot`]), signed by the device the bot runs as,
+//! which the embedder hands the host with [`Workspaces::keep_bot_device`]; the
+//! host's own write of it would be refused, its own admission included. A
+//! record held sealed decides its writes without that check, and takes one in
+//! as any kept change does.
+//!
 //! A record whose archive is not empty changes constantly (the shared desktop
 //! does), and re-reading and re-writing it for every write of it costs more
 //! than the kept changes are worth. Each record's kept changes say what they
-//! wait for ([`Waits`]), and a write is only tried against its record when the
+//! wait for (`Waits`), and a write is only tried against its record when the
 //! changes it carried could release one of them: its hash is one they build
 //! on, or its place in its writer's sequence is the one they follow. The write
 //! is read for that here, never the record.
 
 use super::{GovernedWorkspace, RecordWrite, WeakWorkspaces, Workspaces};
 use automerge::{ActorId, AutoCommit, Change, ChangeHash};
+use ed25519_dalek::SigningKey;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use tilo_automerge::ApplyIncoming as _;
@@ -149,7 +160,8 @@ impl Waits {
 
 /// What the kept changes of each repaired record wait for, by record, read
 /// from the archive and kept as every pass leaves it
-/// ([`Workspaces::carried_into`]).
+/// ([`Workspaces::carried_into`]), and the devices of the bots this host runs
+/// that make their own changes back.
 #[derive(Default)]
 pub(crate) struct Repairs {
     /// A record with an entry here has been read: what is left of its kept
@@ -157,9 +169,35 @@ pub(crate) struct Repairs {
     /// when this names nothing. A record without one has not been read, or
     /// keeps nothing.
     waits: std::sync::Mutex<BTreeMap<Record, Waits>>,
+    /// The device of each bot this host runs, by workspace and installation
+    /// ([`Workspaces::keep_bot_device`]).
+    bots: std::sync::RwLock<BTreeMap<(String, String), ed25519_dalek::SigningKey>>,
 }
 
 impl Repairs {
+    /// Keep `key`, the device bot installation `installation` runs as in
+    /// `workspace`.
+    pub(super) fn keep_bot_device(
+        &self,
+        workspace: &str,
+        installation: &str,
+        key: ed25519_dalek::SigningKey,
+    ) {
+        self.bots
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert((workspace.to_owned(), installation.to_owned()), key);
+    }
+
+    /// The device of bot `installation` in `workspace`, when this host runs it.
+    fn bot_device(&self, workspace: &str, installation: &str) -> Option<ed25519_dalek::SigningKey> {
+        self.bots
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&(workspace.to_owned(), installation.to_owned()))
+            .cloned()
+    }
+
     /// What the kept changes of `record` under `root`'s archive wait for;
     /// `None` when the record keeps nothing, or its archive does not read
     /// here.
@@ -278,6 +316,45 @@ impl Workspaces {
         });
     }
 
+    /// Keep `key`, the device bot installation `installation` runs as in
+    /// `workspace`, for as long as this host runs it: what a change that bot
+    /// made showing another name is published with. A host that keeps no key
+    /// for it leaves such a change in its archive.
+    #[cfg(feature = "agents")]
+    pub fn keep_bot_device(&self, workspace: &str, installation: &str, key: SigningKey) {
+        self.inner
+            .repairs
+            .keep_bot_device(workspace, installation, key);
+        // A record's repair has read what it keeps by now, and left what this
+        // bot made waiting for a device that was not here yet: it goes in now.
+        self.retry_kept_records(workspace);
+    }
+
+    /// Try every record of `workspace` whose repair keeps changes again, for a
+    /// bot's device that came after the host read them
+    /// ([`Workspaces::keep_bot_device`]).
+    pub(super) fn retry_kept_records(&self, workspace: &str) {
+        let Some(root) = self.repaired_records_root() else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let workspaces = self.downgrade();
+        let wanted = workspace.to_owned();
+        runtime.spawn(async move {
+            for (workspace, app, record) in kept_records(&root) {
+                if workspace != wanted {
+                    continue;
+                }
+                let Some(live) = workspaces.upgrade() else {
+                    return;
+                };
+                live.take_in_kept(&root, &workspace, &app, &record).await;
+            }
+        });
+    }
+
     /// What `message`, a member's write of `record` of `app` in `workspace`,
     /// carried that the record's repair could take in, decided from what its
     /// kept changes wait for and the write alone: the record itself is not
@@ -371,22 +448,61 @@ impl Workspaces {
         if kept.is_empty() {
             return Ok(TakenIn::default());
         }
-        let governor = self.serving_certificate().clone();
-        let changes: Vec<Change> = kept.iter().map(|kept| kept.change.clone()).collect();
-        let decided = self
-            .author_room_record(workspace, &governor, (app, record), move |document| {
-                merge_ready(document, changes)
-            })
-            .await
-            .map_err(|error| error.to_string())?;
+        // A change a bot made showing a name other than its own that the
+        // record held in the clear goes in as that bot's own write: a member
+        // holds such a change to the bot it names, so the host's write of it
+        // is refused, its own admission included. One the record held sealed
+        // is decided without that check, and goes in as any kept change does.
+        let sealed = self.record_is_sealed(workspace, app, record).await;
+        let (shown, own): (Vec<Kept>, Vec<Kept>) = kept
+            .into_iter()
+            .partition(|kept| !sealed && shown_by(&kept.change).is_some());
         let mut taken = TakenIn::default();
-        for kept in &kept {
-            let hash = kept.change.hash();
-            if decided.merged.contains(&hash) {
-                taken.merged = taken.merged.saturating_add(1);
-            } else if decided.held.contains(&hash) {
-                taken.held = taken.held.saturating_add(1);
-            } else {
+        // What the record holds by now, whichever write took it in.
+        let mut done: BTreeSet<ChangeHash> = BTreeSet::new();
+        if !own.is_empty() {
+            let governor = self.serving_certificate().clone();
+            let changes: Vec<Change> = own.iter().map(|kept| kept.change.clone()).collect();
+            let decided = self
+                .author_room_record(workspace, &governor, (app, record), move |document| {
+                    merge_ready(document, changes)
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+            for kept in &own {
+                let hash = kept.change.hash();
+                if decided.merged.contains(&hash) {
+                    taken.merged = taken.merged.saturating_add(1);
+                } else if decided.held.contains(&hash) {
+                    taken.held = taken.held.saturating_add(1);
+                } else {
+                    continue;
+                }
+                done.insert(hash);
+            }
+        }
+        for (installation, changes) in by_bot(&shown) {
+            let hashes: Vec<ChangeHash> = changes.iter().map(|kept| kept.change.hash()).collect();
+            match self
+                .take_in_as_bot(workspace, (app, record), &installation, &changes)
+                .await
+            {
+                Ok(()) => {
+                    taken.merged = taken.merged.saturating_add(hashes.len());
+                    done.extend(hashes);
+                }
+                Err(error) => tracing::warn!(
+                    %workspace,
+                    %app,
+                    %record,
+                    bot = %installation,
+                    %error,
+                    "changes a record's repair left out that a bot showed another name in stay kept"
+                ),
+            }
+        }
+        for kept in own.iter().chain(&shown) {
+            if !done.contains(&kept.change.hash()) {
                 taken.waiting = taken.waiting.saturating_add(1);
                 continue;
             }
@@ -407,6 +523,85 @@ impl Workspaces {
         }
         Ok(taken)
     }
+
+    /// Whether `record` of `app` is written sealed in `workspace`: its writes
+    /// are ciphertext, and a member decides what they say only once it opens
+    /// them.
+    async fn record_is_sealed(&self, workspace: &str, app: &str, record: &str) -> bool {
+        let Ok(state) = self.workspace(workspace).await else {
+            return false;
+        };
+        let governed = state.lock().await;
+        governed.peer().publication().is_sealed_record(app, record)
+    }
+
+    /// Publish `changes`, kept changes a bot showed a name other than its own
+    /// in, as the write of the bot `installation` that made them.
+    ///
+    /// # Errors
+    ///
+    /// This host does not run that bot, so it holds no key to sign them with,
+    /// or the workspace refused them as the bot's.
+    async fn take_in_as_bot(
+        &self,
+        workspace: &str,
+        (app, record): (&str, &str),
+        installation: &str,
+        changes: &[Kept],
+    ) -> Result<(), String> {
+        let Some(key) = self.inner.repairs.bot_device(workspace, installation) else {
+            return Err("this host runs no such bot".into());
+        };
+        let governor = self.serving_certificate().clone();
+        let bytes: Vec<u8> = changes
+            .iter()
+            .flat_map(|kept| kept.change.raw_bytes().to_vec())
+            .collect();
+        self.publish_as_bot(
+            workspace,
+            &governor,
+            &key,
+            &tilo_agent_participant::AppCatalogue::native(),
+            app,
+            record,
+            &bytes,
+        )
+        .await
+        .map_err(|error| error.to_string())
+    }
+}
+
+/// The bot installation a kept change says made it showing a name other than
+/// its own, which a member holds the change's author to as the bot it names.
+fn shown_by(change: &Change) -> Option<String> {
+    let invoker = tilo_actions::ActionContext::from_change_message(change.message()?)?.invoker?;
+    if invoker.kind != tilo_actions::ActorKind::Bot || invoker.appearance.is_none() {
+        return None;
+    }
+    Some(
+        invoker
+            .actor
+            .strip_prefix("bot:")
+            .unwrap_or(&invoker.actor)
+            .to_owned(),
+    )
+}
+
+/// `kept` by the bot installation each change says made it showing a name
+/// other than its own.
+fn by_bot(kept: &[Kept]) -> BTreeMap<String, Vec<Kept>> {
+    let mut bots: BTreeMap<String, Vec<Kept>> = BTreeMap::new();
+    for kept in kept {
+        let Some(installation) = shown_by(&kept.change) else {
+            continue;
+        };
+        let change = Kept {
+            path: kept.path.clone(),
+            change: kept.change.clone(),
+        };
+        bots.entry(installation).or_default().push(change);
+    }
+    bots
 }
 
 /// Take in, for each member write that lands, its record's kept changes, once
@@ -700,6 +895,47 @@ mod tests {
         assert!(record.get(ROOT, "after").unwrap().is_some());
         let again = merge_ready(&mut record, vec![after.clone()]).unwrap();
         assert_eq!(again.held, BTreeSet::from([after.hash()]));
+    }
+
+    /// `document` with a change made by `invoker`, named in its message.
+    fn edit_by(document: &mut AutoCommit, invoker: tilo_actions::ActionInvoker) -> Change {
+        document.put(ROOT, "shown", 1).unwrap();
+        let context = tilo_actions::ActionContext::default().with_invoker(invoker);
+        document.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(context.change_message().unwrap()),
+        );
+        document.get_last_local_change().unwrap()
+    }
+
+    #[test]
+    fn only_a_bot_change_that_shows_a_name_is_the_bots_to_publish() {
+        use tilo_actions::{ActionInvoker, ActorKind, Appearance};
+
+        let shown = Appearance::new("Ada", None, None).unwrap();
+        let bot_showing = edit_by(
+            &mut AutoCommit::new(),
+            ActionInvoker::actor("bot:7f1c")
+                .with_kind(ActorKind::Bot)
+                .with_appearance(Some(shown.clone())),
+        );
+        assert_eq!(
+            shown_by(&bot_showing).as_deref(),
+            Some("7f1c"),
+            "the bot a change shows another name for is the one that publishes it"
+        );
+        let bot_itself = edit_by(
+            &mut AutoCommit::new(),
+            ActionInvoker::actor("bot:7f1c").with_kind(ActorKind::Bot),
+        );
+        assert_eq!(shown_by(&bot_itself), None, "a bot posting as itself");
+        let person = edit_by(
+            &mut AutoCommit::new(),
+            ActionInvoker::actor("person:ada").with_appearance(Some(shown)),
+        );
+        assert_eq!(shown_by(&person), None, "only a bot shows another name");
+        let unnamed = edit_by(&mut AutoCommit::new(), ActionInvoker::actor("person:ada"));
+        assert_eq!(shown_by(&unnamed), None);
     }
 
     #[test]

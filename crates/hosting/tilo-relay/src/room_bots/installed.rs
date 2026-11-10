@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
+use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tilo_actions::remote::{Caller, Pending};
@@ -188,7 +189,7 @@ pub struct BotRunner {
     workspace: String,
     host: DeviceCert,
     /// The bot's own device, which signs what its runs change.
-    bot_key: ed25519_dalek::SigningKey,
+    bot_key: SigningKey,
     catalogue: AppCatalogue,
     bot: InstalledBot,
     shortcut: Arc<Shortcut>,
@@ -219,7 +220,7 @@ impl BotRunner {
         workspaces: Workspaces,
         workspace: String,
         host: DeviceCert,
-        bot_key: ed25519_dalek::SigningKey,
+        bot_key: SigningKey,
         bot: InstalledBot,
         connectors: BTreeMap<String, Arc<ConnectorProcess>>,
         state_file: PathBuf,

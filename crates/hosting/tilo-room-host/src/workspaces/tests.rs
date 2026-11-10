@@ -13,7 +13,7 @@ pub(crate) use super::fixtures::{
 };
 
 #[cfg(feature = "agents")]
-mod bots;
+pub(crate) mod bots;
 
 #[tokio::test]
 async fn a_pre_admission_for_one_person_issues_an_invitation_only_they_can_redeem() {

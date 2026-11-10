@@ -1156,12 +1156,19 @@ impl Workspaces {
             // What the relay's log revoked while the workspace was closed.
             this.carry_revocations(&mut workspace, &[]).await?;
         }
-        this.follow_activity();
-        this.follow_missing_surfaces();
-        #[cfg(feature = "agents")]
-        this.follow_repaired_records();
-        this.inner.hosting.resume().await;
+        this.start_following().await;
         Ok(this)
+    }
+
+    /// Follow what a host watches once its workspaces are open: their
+    /// activity, the app surfaces their writes wait for, and each record's
+    /// repair, then whatever its hosted workspaces left running.
+    async fn start_following(&self) {
+        self.follow_activity();
+        self.follow_missing_surfaces();
+        #[cfg(feature = "agents")]
+        self.follow_repaired_records();
+        self.inner.hosting.resume().await;
     }
 
     /// The certificate this host serves its workspaces with: its own, or the

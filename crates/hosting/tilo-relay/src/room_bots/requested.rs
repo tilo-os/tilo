@@ -252,12 +252,17 @@ impl Follower {
             &bot,
         )
         .await?;
+        let bot_key = certifier.device_key(&bot.installation);
+        // What a record's repair puts this bot's own change back with: the
+        // change is admitted only as the bot's, never as the host's.
+        self.workspaces
+            .keep_bot_device(&self.workspace, &bot.installation, bot_key.clone());
         let running = tokio::spawn(
             BotRunner::new(
                 self.workspaces.clone(),
                 self.workspace.clone(),
                 self.host.clone(),
-                certifier.device_key(&bot.installation),
+                bot_key,
                 bot.clone(),
                 connectors,
                 dir.join("progress.json"),
