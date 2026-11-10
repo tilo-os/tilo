@@ -2247,7 +2247,13 @@ mod tests {
 
     /// The list row the tree builds for the node `key`, read as the list row it is.
     fn row_face<R>(tree: &DescribedTreeView, key: &str, read: impl FnOnce(&ListRow) -> R) -> R {
-        let element = row_of(tree.rows(), key, crate::motion::Feel::Standard, &tree.marks);
+        let element = row_of(
+            tree.rows(),
+            key,
+            crate::motion::Feel::Standard,
+            &tree.marks,
+            None,
+        );
         let row = element
             .as_any()
             .and_then(|any| any.downcast_ref::<ListRow>())
