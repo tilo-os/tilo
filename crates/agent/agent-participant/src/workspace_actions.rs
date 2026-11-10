@@ -1260,6 +1260,14 @@ fn live_actions(app: &ConfinedReplica) -> Vec<tilo_actions::ActionDescriptor> {
     app.survey()
 }
 
+/// Whether a failure is this invocation's answer. One the caller may ask
+/// again is not: the same request under the same id runs it again rather
+/// than being handed the failure it already has, which is what a change the
+/// workspace took none of because the session it rode was replaced needs.
+fn settles(error: &ActionFailure) -> bool {
+    !error.retryable
+}
+
 /// The outcome of an action whose change could not be committed.
 fn commit_failed(message: String, retryable: bool) -> Outcome {
     Outcome::Failed(ActionFailure {
@@ -2028,6 +2036,17 @@ impl Worker {
         ledger.running = None;
         let (update, left_at) = match outcome {
             Ok((output, left_at)) => (InvocationUpdate::Succeeded { invocation, output }, left_at),
+            Err(Outcome::Failed(error)) if !settles(&error) => {
+                // A failure the caller may ask again is not this
+                // invocation's answer: forgotten, the same request under the
+                // same id runs it again rather than being handed the failure
+                // it already has.
+                ledger.forget(&invocation);
+                return InvocationReceipt {
+                    invocation,
+                    status: ReceiptStatus::Failed { error },
+                };
+            }
             Err(Outcome::Failed(error)) => (InvocationUpdate::Failed { invocation, error }, None),
             // Answered accepted while the person was asked: it ends refused,
             // and stays to say so.
@@ -2842,6 +2861,28 @@ mod tests {
             awaiting_keys: awaiting,
             ..RouteStatus::default()
         }
+    }
+
+    /// A failure the caller may ask again is not the invocation's answer; one
+    /// that is, is, and the same id keeps saying it.
+    #[test]
+    fn a_retryable_failure_leaves_the_id_free_to_run_again() {
+        let failure = |retryable| super::ActionFailure {
+            code: "commit_failed".into(),
+            message: "the host did not save the change: the workspace refused the change: \
+                      workspace membership changed"
+                .into(),
+            details: None,
+            retryable,
+        };
+        assert!(
+            !super::settles(&failure(true)),
+            "asking again runs it again, over the session the workspace holds now"
+        );
+        assert!(
+            super::settles(&failure(false)),
+            "a failure of its own is its answer"
+        );
     }
 
     #[test]
