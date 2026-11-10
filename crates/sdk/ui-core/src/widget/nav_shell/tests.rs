@@ -255,7 +255,7 @@ fn the_sidebar_docks_while_the_contents_real_minimum_fits() {
     // breakpoint a painted app guesses at (840).
     assert!(
         m.sidebar_min + m.beside_sidebar_min(ContentKind::List)
-            < f64::from(Metrics::BASE.compact_breakpoint)
+            < f64::from(crate::tokens::Metrics::BASE.compact_breakpoint)
     );
 }
 

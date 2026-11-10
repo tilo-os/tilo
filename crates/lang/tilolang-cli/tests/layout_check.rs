@@ -126,7 +126,9 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // lines its edges with a card or a notice, nor stands one against another.
             | Kind::DockedColumn
             | Kind::RoundedOnEdge
-            | Kind::CrampedCard => "(no view)",
+            | Kind::CrampedCard
+            // No window in this fixture docks a sidebar beside content it squeezes.
+            | Kind::ContentBesideSidebar => "(no view)",
         };
         assert_eq!(
             finding.view,

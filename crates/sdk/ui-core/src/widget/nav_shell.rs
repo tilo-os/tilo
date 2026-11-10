@@ -1139,6 +1139,23 @@ impl NavShell {
         self
     }
 
+    /// How wide the pane beside the sidebar stands: the window without the columns that dock
+    /// beside it (the sidebar's own and the inspector's).
+    fn beside_sidebar(&self) -> f64 {
+        let g = &self.geometry;
+        let docked = |placement: bool, width: f64| if placement { width } else { 0.0 };
+        (g.size.x
+            - docked(
+                g.sidebar == SidebarPlacement::Docked,
+                g.sidebar_column.width(),
+            )
+            - docked(
+                g.inspector == InspectorPlacement::Docked,
+                g.inspector_column.width(),
+            ))
+        .max(0.0)
+    }
+
     /// The narrowest window this shell works at, in logical pixels: its
     /// compact layout, one column at a time, at the theme it was last
     /// built with ([`Widget::minimum_window_width`]).
@@ -3471,23 +3488,6 @@ impl Widget for NavShell {
                 rows: crate::widget::HeaderRows { rows },
             },
         ))
-    }
-
-    /// How wide the pane beside the sidebar stands: the window without the columns that dock
-    /// beside it (the sidebar's own and the inspector's).
-    fn beside_sidebar(&self) -> f64 {
-        let g = &self.geometry;
-        let docked = |placement: bool, width: f64| if placement { width } else { 0.0 };
-        (g.size.x
-            - docked(
-                g.sidebar == SidebarPlacement::Docked,
-                g.sidebar_column.width(),
-            )
-            - docked(
-                g.inspector == InspectorPlacement::Docked,
-                g.inspector_column.width(),
-            ))
-        .max(0.0)
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
