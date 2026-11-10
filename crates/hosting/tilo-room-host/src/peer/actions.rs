@@ -340,7 +340,7 @@ fn session_caller(
         .read_recover()
         .get(&peer.device_public_key)
         .cloned();
-    Ok(match agent {
+    let caller = match agent {
         Some(Some(delegation)) => match delegation.delegate {
             tilo_relay_protocol::delegation::Delegate::Agent { agent_id } => {
                 Caller::delegated_agent(agent_id, peer.user_public_key, peer.device_public_key)
@@ -368,6 +368,14 @@ fn session_caller(
                 None => person,
             }
         }
+    };
+    // An agent's (or a key's) requests on this connection are one run, the
+    // host's to name.
+    Ok(match caller.principal() {
+        tilo_actions::remote::CallerPrincipal::Agent(_) => {
+            caller.in_execution(session.execution.clone())
+        }
+        _ => caller,
     })
 }
 

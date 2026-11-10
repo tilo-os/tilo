@@ -28,8 +28,9 @@ use tilo_session_host::session_actions::SessionActions;
 pub const PDF: &str = "so.tilo.pdf-viewer";
 pub const WRITER: &str = "so.tilo.word-processor";
 
-/// The agent's run, as History names it.
+/// The agent's run, as the client names it: the host names the run itself.
 pub const RUN: &str = "visa-run-1";
+/// The agent the session runs, as History names its run.
 pub const RUN_LABEL: &str = "Visa agent";
 
 /// The form an applicant fills: text fields, a choice and a checkbox, each
@@ -318,6 +319,8 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
     // makes one, serving the MCP projection of the workspace's host. No
     // person's page is open.
     let agent = Browser::open(&hosted, &computer, &host).await;
+    // Its session runs the agent, as `tilo login` makes it say.
+    let _ = tilo_session_host::device::run_as_agent(&agent.peer, RUN_LABEL).await;
     let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
         collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
     ) else {
@@ -392,7 +395,7 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
         let edit = json!({"path": fields[name]["path"], "op": "set", "value": value});
         act(
             &server,
-            "pdf-viewer/PDF Viewer#field-edit",
+            "pdf-viewer/application.pdf#field-edit",
             json!({"edit": edit}),
         )
         .await;
@@ -492,22 +495,31 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    // History names the agent's run for every edit.
+    // History names the agent's run for every edit: one run, the host's,
+    // whatever the client called it.
+    let mut run = None;
     for route in [&pdf, &writer] {
         let runs = runs_of(&mut page, route);
+        let id = runs.first().map(|first| first.id.clone());
         assert!(
             !runs.is_empty()
-                && runs
-                    .iter()
-                    .all(|run| run.id == RUN && run.label == RUN_LABEL),
+                && runs.iter().all(|each| {
+                    Some(&each.id) == id.as_ref()
+                        && each.id != RUN
+                        && each.id.starts_with("agent-run:")
+                        && each.label == RUN_LABEL
+                })
+                && run.as_ref().is_none_or(|run| Some(run) == id.as_ref()),
             "{} keeps its changes as the agent's run: {runs:?}",
             route.app_id
         );
+        run = id;
     }
+    let run = run.expect("the agent's run");
 
     // Undoing the run takes the agent's edits back.
-    undo_run(&mut page, &pdf, RUN).await;
-    undo_run(&mut page, &writer, RUN).await;
+    undo_run(&mut page, &pdf, &run).await;
+    undo_run(&mut page, &writer, &run).await;
     loop {
         let values = form_values(&mut page, &pdf);
         let text = writer_text(&mut page, &writer);

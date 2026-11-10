@@ -205,10 +205,7 @@ impl Caller {
     /// This changes invocation ownership, never the caller's permissions.
     #[must_use]
     pub fn in_new_execution(mut self) -> Self {
-        self.execution = Some(ExecutionLease {
-            id: uuid::Uuid::new_v4(),
-            live: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        });
+        self.execution = Some(ExecutionLease::mint());
         self
     }
 
@@ -442,6 +439,25 @@ impl Caller {
                 Vec::new(),
             ),
         }
+    }
+
+    /// The run this caller's actions are part of, as the host that admitted it
+    /// says: an agent (or a key it holds) in an execution the host minted for
+    /// its connection works in one run, named by the name the host knows for
+    /// it. History groups the run's changes, Activity lists it and undo takes
+    /// it back whole, whatever the client says of itself. `None` for anyone
+    /// else.
+    #[must_use]
+    pub fn agent_run(&self) -> Option<crate::WorkGroup> {
+        let CallerPrincipal::Agent(agent) = &self.principal else {
+            return None;
+        };
+        let execution = self.execution_id()?;
+        Some(crate::WorkGroup {
+            id: format!("{}:{execution}", crate::context::AGENT_RUN_GROUP),
+            label: self.agent_name().unwrap_or(agent).to_owned(),
+            kind: crate::context::AGENT_RUN_GROUP.to_owned(),
+        })
     }
 
     /// Confine the caller to one workspace: the connection was admitted to that

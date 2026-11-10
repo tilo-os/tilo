@@ -100,6 +100,8 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     // The agent's computer enters the workspace as a device of the person's,
     // as `tilo login` does, and serves the projection over its session.
     let agent = Browser::open(&hosted, &computer, &host).await;
+    // Its session runs the agent, as `tilo login` makes it say.
+    let _ = tilo_session_host::device::run_as_agent(&agent.peer, "Claude Code").await;
     let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
         collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
     ) else {
@@ -233,7 +235,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
                     .unwrap();
                 assert!(
                     runs.iter()
-                        .any(|run| run.id == "run-1" && run.label == "Claude Code"),
+                        .any(|run| run.id.starts_with("agent-run:") && run.label == "Claude Code"),
                     "the change names the agent's run: {runs:?}"
                 );
                 edited = true;
@@ -405,6 +407,8 @@ async fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
     let _laptop = participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let agent = Browser::open(&hosted, &computer, &host).await;
+    // Its session runs the agent, as `tilo login` makes it say.
+    let _ = tilo_session_host::device::run_as_agent(&agent.peer, "Claude Code").await;
     let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
         collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
     ) else {
@@ -478,7 +482,7 @@ async fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
             assert!(
                 groups
                     .iter()
-                    .any(|run| run.id == "run-7" && run.label == "Claude Code"),
+                    .any(|run| run.id.starts_with("agent-run:") && run.label == "Claude Code"),
                 "History keeps the runs as the agent's: {groups:?}"
             );
             assert!(
@@ -527,6 +531,8 @@ async fn an_agents_long_run_shows_its_output_and_its_cancel_ends_it() {
     let _laptop = participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let agent = Browser::open(&hosted, &computer, &host).await;
+    // Its session runs the agent, as `tilo login` makes it say.
+    let _ = tilo_session_host::device::run_as_agent(&agent.peer, "Claude Code").await;
     let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
         collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
     ) else {

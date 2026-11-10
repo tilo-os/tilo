@@ -72,6 +72,7 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
         member_limits: None,
         resumes: Box::leak(Box::default()),
         agent: Box::leak(Box::default()),
+        execution: Box::leak(Box::new(tilo_actions::remote::ExecutionLease::mint())),
         lag: Box::leak(Box::default()),
     };
     let frame = tilo_actions::remote::RemoteActionFrame::new(
@@ -204,6 +205,7 @@ async fn a_members_actions_served_by_the_host_spend_their_change_budget() {
         member_limits: Some(&limits),
         resumes: Box::leak(Box::default()),
         agent: Box::leak(Box::default()),
+        execution: Box::leak(Box::new(tilo_actions::remote::ExecutionLease::mint())),
         lag: Box::leak(Box::default()),
     };
     let encode = |message| {
@@ -380,6 +382,7 @@ async fn requests_the_plane_does_not_answer_are_refused() {
         member_limits: None,
         resumes: Box::leak(Box::default()),
         agent: Box::leak(Box::default()),
+        execution: Box::leak(Box::new(tilo_actions::remote::ExecutionLease::mint())),
         lag: Box::leak(Box::default()),
     };
     let route = || RemoteActionRoute {

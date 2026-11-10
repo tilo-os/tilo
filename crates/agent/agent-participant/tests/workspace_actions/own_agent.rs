@@ -495,7 +495,7 @@ async fn a_persons_own_agent_starts_a_stopped_app_writes_and_reads_as_one_run() 
                     .iter()
                     .all(|group| group.as_ref().is_some_and(|group| {
                         group.kind == "agent-run"
-                            && group.id == "run-7"
+                            && group.id.starts_with("agent-run:")
                             && group.label == "Claude Code"
                     })),
                 "every change the agent made is its run: {groups:?}"

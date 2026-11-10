@@ -2197,7 +2197,7 @@ impl Worker {
         );
         let holder = self.holder_of(&route);
         let mounted = self.mounted.get_mut(&holder).ok_or_else(unknown_action)?;
-        let context = caller_context(request);
+        let context = caller_context(caller, request);
         let output = mounted
             .app
             .invoke_in(
@@ -2714,12 +2714,27 @@ impl Worker {
 /// work it belongs to (an agent's run), what it is for, and the gesture it
 /// was part of. Who invoked it is the host's to say, from the session that
 /// carried it, and what it did the action's.
-fn caller_context(request: &InvokeRequest) -> Option<tilo_actions::ActionContext> {
-    let said = request.context.as_ref()?;
+/// The context the host stamps on what `caller`'s `request` changes: the
+/// purpose and gesture the caller said, and the work it is part of. A run is
+/// the host's to say: an agent's or a key's actions on one connection are the
+/// run [`Caller::agent_run`] names, by the name the host knows for it; a run
+/// a client claims for itself is never taken.
+fn caller_context(caller: &Caller, request: &InvokeRequest) -> Option<tilo_actions::ActionContext> {
+    let said = request.context.as_ref();
+    let group = caller.agent_run().or_else(|| {
+        said.and_then(|context| context.group.clone())
+            .filter(|group| {
+                group.kind != tilo_actions::context::AGENT_RUN_GROUP
+                    && group.kind != tilo_actions::context::TASK_RUN_GROUP
+            })
+    });
+    if said.is_none() && group.is_none() {
+        return None;
+    }
     Some(tilo_actions::ActionContext {
-        group: said.group.clone(),
-        purpose: said.purpose.clone(),
-        gesture: said.gesture,
+        group,
+        purpose: said.and_then(|context| context.purpose.clone()),
+        gesture: said.and_then(|context| context.gesture),
         ..tilo_actions::ActionContext::default()
     })
 }

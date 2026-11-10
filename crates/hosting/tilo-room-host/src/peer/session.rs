@@ -178,6 +178,7 @@ where
     let connection_live = ConnectionLease(Arc::new(std::sync::atomic::AtomicBool::new(true)));
     // Presence is batched per connection, in the order it was posted.
     let presence = Arc::new(crate::presence_mailbox::PresenceMailbox::default());
+    let execution = tilo_actions::remote::ExecutionLease::mint();
     let session = SessionCtx {
         workspaces: &workspaces,
         autobind: autobind.as_ref(),
@@ -202,6 +203,7 @@ where
         member_limits: member_limits.as_deref(),
         resumes: &resumes,
         agent: &agent,
+        execution: &execution,
         lag: &lag,
         presence: Some(&presence),
     };
@@ -242,6 +244,8 @@ where
         )
         .await
     };
+    // What an agent's run on this connection started is not followed again.
+    execution.close();
     if let Some(admin) = &admin {
         admin.agent_session_ended(&peer.device_public_key, &stop);
     }

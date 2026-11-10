@@ -94,6 +94,7 @@ async fn a_fanned_delivery_skips_the_rooms_lock_until_authority_moves() {
         member_limits: None,
         resumes: Box::leak(Box::default()),
         agent: Box::leak(Box::default()),
+        execution: Box::leak(Box::new(tilo_actions::remote::ExecutionLease::mint())),
         lag: Box::leak(Box::default()),
     };
     let delivery = |fanned: Option<FanoutStamp>| StateDelivery {

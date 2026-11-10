@@ -178,6 +178,16 @@ impl std::hash::Hash for ExecutionLease {
     }
 }
 impl ExecutionLease {
+    /// A new execution, live until [`Self::close`]: the host that admitted a
+    /// connection mints one for it.
+    #[must_use]
+    pub fn mint() -> Self {
+        Self {
+            id: uuid::Uuid::new_v4(),
+            live: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        }
+    }
+
     #[must_use]
     pub fn is_live(&self) -> bool {
         self.live.load(std::sync::atomic::Ordering::Acquire)

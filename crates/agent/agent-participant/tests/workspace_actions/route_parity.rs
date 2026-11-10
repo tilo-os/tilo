@@ -318,11 +318,41 @@ fn json(value: serde_json::Value) -> InvokeArgument {
 
 /// A key the person certified for a service acting for an agent they
 /// approved, as the host admits it: the agent the key is, for the person.
+/// Each connection is an execution the host minted for it, as the room
+/// host's session gives an agent's or a key's requests.
 fn key(person: [u8; 32], device: [u8; 32], label: &str) -> Caller {
     Caller::authenticated(person, device)
         .delegated_to(format!("grant-{}", hex::encode(device)))
         .named(label)
         .in_workspace(WORKSPACE)
+        .in_new_execution()
+}
+
+/// The run a client claims for itself, which no host takes.
+fn claimed_run() -> tilo_actions::ActionContext {
+    tilo_actions::ActionContext {
+        group: Some(tilo_actions::WorkGroup {
+            id: "agent-run:claimed".into(),
+            label: "Not me".into(),
+            kind: tilo_actions::context::AGENT_RUN_GROUP.into(),
+        }),
+        ..tilo_actions::ActionContext::default()
+    }
+}
+
+/// The runs the changes of `route` the page received are grouped under.
+fn runs_of(page: &mut Browser, route: &DocumentRoute) -> Vec<tilo_actions::WorkGroup> {
+    page.pump();
+    let mut doc = automerge::AutoCommit::new();
+    for (_, bytes) in page.documents.get(route).into_iter().flatten() {
+        let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes);
+    }
+    doc.get_changes(&[])
+        .iter()
+        .filter_map(|change| change.message())
+        .filter_map(tilo_actions::ActionContext::from_change_message)
+        .filter_map(|context| context.group)
+        .collect()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -371,7 +401,10 @@ async fn both_routes_decide_every_callers_actions_alike() {
     let callers = [
         (
             "their agent",
-            themselves.clone().delegated_to("Claude Code"),
+            themselves
+                .clone()
+                .delegated_to("Claude Code")
+                .in_new_execution(),
         ),
         ("the editor", themselves),
         (
@@ -446,7 +479,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
                             "people"
                         },
                         BrokerActor::for_caller(caller).action_answer_in(
-                            &broker_workspace,
+                            broker_workspace,
                             &route.app_id,
                             (
                                 &descriptor.resource_kind,
@@ -504,11 +537,14 @@ async fn both_routes_decide_every_callers_actions_alike() {
                 &actions,
                 workspace,
                 caller,
-                &request(
-                    &record_provider(route),
-                    descriptor.address.clone(),
-                    json(arguments.clone()),
-                ),
+                &InvokeRequest {
+                    context: Some(claimed_run()),
+                    ..request(
+                        &record_provider(route),
+                        descriptor.address.clone(),
+                        json(arguments.clone()),
+                    )
+                },
             );
             let was_asked = member.asked.load(Ordering::SeqCst) > asked;
             let by_host = match &status {
@@ -529,6 +565,42 @@ async fn both_routes_decide_every_callers_actions_alike() {
                 ));
             }
         }
+    }
+
+    // Recorded: each agent's and key's changes are one run the host names,
+    // by the name it knows for them, whatever the client claimed; a person's
+    // own changes are no run. The page sees what History, Activity and undo
+    // read.
+    let notes = &every[NOTES].0;
+    let names = ["Claude Code", "Visa backend", "Applicant 7"];
+    let deadline = tilo_test_env::hang_deadline();
+    let runs = loop {
+        let runs = runs_of(&mut browser, notes);
+        if names
+            .iter()
+            .all(|name| runs.iter().any(|run| run.label == *name))
+            || Instant::now() >= deadline
+        {
+            break runs;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    for name in names {
+        let named: BTreeSet<_> = runs
+            .iter()
+            .filter(|run| run.label == name)
+            .map(|run| (run.id.clone(), run.kind.clone()))
+            .collect();
+        if named.len() != 1
+            || named.iter().any(|(id, kind)| {
+                kind != tilo_actions::context::AGENT_RUN_GROUP || id == "agent-run:claimed"
+            })
+        {
+            differences.push(format!("{name}'s changes on the host: runs {named:?}"));
+        }
+    }
+    if runs.iter().any(|run| run.label == "Not me") {
+        differences.push("the host took a run a client claimed".into());
     }
 
     // A file put into the workspace is an edit of the workspace on both.

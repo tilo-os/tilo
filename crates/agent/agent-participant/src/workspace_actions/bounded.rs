@@ -622,7 +622,7 @@ impl Worker {
         let given = witness.as_ref().or(request.confirmation.as_ref());
         let binding = WitnessBinding::of(workspace_id, caller, request);
         let confirmed = witnessed(&self.shared.witnesses, given, &binding);
-        let context = super::caller_context(request);
+        let context = super::caller_context(caller, request);
         let output = match app.invoke_in(
             context.as_ref(),
             None,

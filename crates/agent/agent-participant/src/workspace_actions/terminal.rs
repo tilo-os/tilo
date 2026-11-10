@@ -115,6 +115,8 @@ pub(super) struct Ended {
     pub(super) invocation: InvocationId,
     pub(super) route: DocumentRoute,
     pub(super) request: InvokeRequest,
+    /// Who asked for it: the run its record's change is part of.
+    pub(super) caller: Caller,
     pub(super) ran: Result<ShellRan, String>,
 }
 
@@ -237,11 +239,7 @@ impl Worker {
             cluster_id: workspace.clone(),
             ..route
         };
-        let run = request
-            .context
-            .as_ref()
-            .and_then(|context| context.group.as_ref())
-            .filter(|group| group.kind == "agent-run" && !group.id.is_empty());
+        let run = caller.agent_run();
         let agent = run.is_some();
         let jobs = self.shared.jobs.lock_recover().clone()?;
         // An agent's run has a shell of its own, wherever its runs are
@@ -273,6 +271,7 @@ impl Worker {
                 invocation,
                 route,
                 request: request.clone(),
+                caller: caller.clone(),
                 ran: Ok(ShellRan::default()),
             },
         }
@@ -398,7 +397,7 @@ impl Worker {
                 },
             )
             .map_err(|error| failed(error.to_string()))?;
-        let context = caller_context(&ended.request);
+        let context = caller_context(&ended.caller, &ended.request);
         let mounted = self.mount(&ended.route, &state).map_err(failed)?;
         mounted
             .app

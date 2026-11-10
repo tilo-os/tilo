@@ -256,6 +256,11 @@ struct SessionCtx<'a> {
     /// person, as the session's caller. Said once, it stays: a session
     /// handed to an agent is never handed back.
     agent: &'a std::sync::OnceLock<String>,
+    /// The execution the host minted for this connection: an agent's or a
+    /// key's requests on it are one run, whatever the client says
+    /// ([`tilo_actions::remote::Caller::agent_run`]). Closed when the
+    /// connection ends.
+    execution: &'a tilo_actions::remote::ExecutionLease,
     /// Workspaces whose live deliveries this connection could not take.
     lag: &'a Arc<Lag>,
     /// Where this connection's workspaces post the presence they fan out to it;

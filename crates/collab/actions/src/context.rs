@@ -1332,6 +1332,11 @@ pub struct Cause {
 /// history keeps and undoes the run whole and each version names its run.
 pub const TASK_RUN_GROUP: &str = "task";
 
+/// The [`WorkGroup::kind`] of an agent connection's run: every action one
+/// connection of an agent (or a key it holds) takes, which history keeps,
+/// lists in Activity and undoes whole.
+pub const AGENT_RUN_GROUP: &str = "agent-run";
+
 /// The unit of work an action belongs to: an issue, a task, an agent run.
 /// Not a group of actions applied as one; that is `tilo_resource::ActionGroup`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

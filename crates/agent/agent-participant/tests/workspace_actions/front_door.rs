@@ -584,8 +584,8 @@ async fn one_key_makes_and_works_in_hundreds_of_workspaces_at_once() {
 
 /// A minted key's agent goes by the name the key was minted with: History
 /// names its changes "Jane Doe's agent", in the colour presence draws it in,
-/// and a run it does not title is that name and its number, never the key's
-/// grant id.
+/// and its run by that name as the host knows it, never the key's grant id
+/// nor anything the client says of itself.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn history_names_a_minted_keys_agent_by_the_name_it_was_minted_with() {
     let on_relay = door_on_relay(ISSUER).await;
@@ -643,9 +643,7 @@ async fn history_names_a_minted_keys_agent_by_the_name_it_was_minted_with() {
             && by_agent.iter().all(|version| {
                 version["actor"]["name"] == "Jane Doe's agent"
                     && version["actor"]["colour"] == colour.as_str()
-                    && version["run"]
-                        .as_str()
-                        .is_some_and(|run| run.starts_with("Jane Doe's agent #"))
+                    && version["run"] == "Jane Doe's agent"
             }),
         "{history}"
     );
