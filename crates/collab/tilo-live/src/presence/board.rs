@@ -687,8 +687,8 @@ impl Board {
             .find(|member| member.publisher == publisher)
     }
 
-    /// Everyone whose pointer is over `tab` now, by publisher, smoothed at
-    /// `now_ms`.
+    /// Everyone whose pointer is over `tab` now, by publisher, smoothed at `now_ms`: the point is
+    /// in that tile's own pixels, and a surface places it where that tile stands.
     #[must_use]
     pub fn pointers(&self, tab: u64, now_ms: f64) -> Vec<(Device, f64, f64)> {
         self.here()

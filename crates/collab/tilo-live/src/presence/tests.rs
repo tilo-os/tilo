@@ -95,13 +95,10 @@ fn a_pointer_is_placed_on_the_tile_it_is_over_and_a_rest_draws_nothing() {
     let over = Tile::new(3, 100.0, 50.0, 400.0, 300.0);
     assert_eq!(
         board.pointers(3, 1_000.0),
-        vec![(
-            [1; 32],
-            over.point((12.0, 34.0)).0,
-            over.point((12.0, 34.0)).1
-        )],
-        "the pointer is drawn where the tile it is over stands"
+        vec![([1; 32], 12.0, 34.0)],
+        "the pointer is said in the pixels of the tile it is over"
     );
+    assert_eq!(over.point((12.0, 34.0)), (112.0, 84.0));
     assert!(board.pointers(4, 1_000.0).is_empty());
     let drawn = board.revision();
     board.hear([1; 32], &pointed(WORKSPACE, 3, 12.0, 34.0), 1_000.5);
