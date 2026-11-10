@@ -213,7 +213,9 @@ impl AgentArgs {
             catalogue: None,
             feedback_reviewer: None,
             shell: None,
-            browsers: None,
+            browsers: tilo_relay::hosted_browser::HostedBrowsers::from_env()
+                .map_err(anyhow::Error::msg)?
+                .map(std::sync::Arc::new),
         }))
     }
 }
@@ -317,6 +319,9 @@ pub async fn start_relay_lending(
     }
     #[cfg(feature = "agents")]
     if args.agents.room_records {
+        let browsers = tilo_relay::hosted_browser::HostedBrowsers::from_env()
+            .map_err(anyhow::Error::msg)?
+            .map(std::sync::Arc::new);
         let relay = tilo_relay::agents::start_serving_records(
             cfg,
             identity,
@@ -326,7 +331,7 @@ pub async fn start_relay_lending(
                 tilo_relay::agents::host_shells(state_root.join("shells"))
                     .map_err(anyhow::Error::msg)?,
             ),
-            None,
+            browsers,
         )
         .await
         .context("start the relay serving its workspaces' records")?;

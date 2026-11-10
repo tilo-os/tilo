@@ -600,10 +600,14 @@ fn ask(flags: &Flags, request: &Request) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         Reply::Done | Reply::Ready { .. } => Ok(ExitCode::SUCCESS),
-        Reply::Opened { opened_ms } => {
+        Reply::Opened {
+            opened_ms,
+            provider,
+        } => {
             println!(
-                "{}",
-                opened_ms.map_or_else(|| "attached".to_string(), |ms| format!("opened in {ms} ms"))
+                "{} {}",
+                opened_ms.map_or_else(|| "attached".to_string(), |ms| format!("opened in {ms} ms")),
+                provider,
             );
             Ok(ExitCode::SUCCESS)
         }

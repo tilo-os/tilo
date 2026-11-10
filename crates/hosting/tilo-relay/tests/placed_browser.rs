@@ -73,6 +73,7 @@ fn hosted_service(dir: &std::path::Path) -> (std::path::PathBuf, Arc<Opened>) {
                     let opened = counted.times.fetch_add(1, Ordering::SeqCst) == 0;
                     Reply::Opened {
                         opened_ms: opened.then_some(900),
+                        provider: "42".into(),
                     }
                 }
                 Request::StopBrowser { .. } => Reply::Done,
@@ -203,6 +204,10 @@ async fn a_workspace_opens_browser_where_its_vm_host_is() {
         opened.opened_ms,
         Some(900),
         "the environment was opened for it"
+    );
+    assert_eq!(
+        opened.provider, "42",
+        "and the window it holds names the provider page actions go to"
     );
 
     // Opening again attaches to the environment already serving it.

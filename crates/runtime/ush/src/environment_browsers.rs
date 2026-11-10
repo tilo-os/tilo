@@ -52,7 +52,15 @@ impl BrowserHost {
         loop {
             let reply = self.ask(&request)?;
             match reply {
-                Reply::Opened { opened_ms } => return Ok(OpenedBrowser { opened_ms }),
+                Reply::Opened {
+                    opened_ms,
+                    provider,
+                } => {
+                    return Ok(OpenedBrowser {
+                        opened_ms,
+                        provider,
+                    });
+                }
                 // Every machine is full: a VM going idle, or another machine
                 // starting, makes room. A browser is never refused for it.
                 Reply::Busy(words) => {

@@ -150,9 +150,12 @@ pub enum Reply {
     },
     /// A workspace's browser environment is up, its session in the workspace.
     /// `opened_ms`: what opening took, when this request opened it; `None`
-    /// when it attached to the environment someone else opened.
+    /// when it attached to the environment someone else opened. `provider`:
+    /// the token the window it holds publishes under, which the relay routes
+    /// page actions on that window by.
     Opened {
         opened_ms: Option<u64>,
+        provider: String,
     },
 }
 

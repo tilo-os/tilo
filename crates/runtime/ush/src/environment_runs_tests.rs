@@ -305,6 +305,7 @@ fn opening_a_browser_environment_asks_the_hosts_service() {
             Reply::Busy("Starting another machine for it, about 3 minutes.".into()),
             Reply::Opened {
                 opened_ms: Some(900),
+                provider: "42".into(),
             },
         ],
     );
@@ -313,6 +314,10 @@ fn opening_a_browser_environment_asks_the_hosts_service() {
     let receipt = answered(runs.invoke(&host(), request)).unwrap();
     let opened = opened(&runs, &host(), receipt.invocation).unwrap();
     assert_eq!(opened.opened_ms, Some(900), "the spare was handed over");
+    assert_eq!(
+        opened.provider, "42",
+        "and with it the window the session in it opened"
+    );
     let asked = asked.lock().unwrap().clone();
     assert_eq!(asked.len(), 2, "asked again once there was room");
     let Request::OpenBrowser {

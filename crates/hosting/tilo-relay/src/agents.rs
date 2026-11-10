@@ -759,7 +759,10 @@ fn attach_records(
             user_public_key: relay.workspace_records().user_public_key(),
             cert: host_cert.clone(),
             key: relay.workspace_records().signing_key().clone(),
-            relay: relay.node_addr(),
+            // The sessions in the environments dial this host from a machine
+            // that reaches the public internet and nothing of this network:
+            // the address they are given is the public one.
+            relay: crate::hosted_browser::relay_address()?,
             workspaces: relay.workspaces().cloned(),
             runtime: tokio::runtime::Handle::current(),
         });

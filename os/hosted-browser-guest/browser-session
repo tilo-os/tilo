@@ -2,25 +2,27 @@
 # The hosted Browser guest's session: one headless Tilo desktop, drawn on the
 # CPU, that joins a workspace as a device of it (docs/hosted-browser.md).
 #
-# The guest agent runs this when the relay hands its environment to a workspace.
-# What that workspace is, and the certificate the relay certified for this
-# session, arrive in the configuration file named here: a shell-compatible
-# KEY=VALUE file the agent writes, sourced below, whose keys become the
-# session's environment. `TILO_SESSION_ARGS` holds the session's own arguments
-# (for example the window to open); everything else is what any device's
-# session has, arranged for a root filesystem with no GPU, no systemd and no
-# login.
+# The guest agent runs this when the environment's session starts
+# (`crates/runtime/legacy-vm/src/hosted/browser.rs`, "The session in the
+# guest"): it runs the session headless, on its own bus, drawing with the
+# image's software Vulkan driver, and the session knows it serves an
+# environment from `TILO_HOSTED_BROWSER`. What workspace it joins arrives on
+# its standard input, as one line of material, and what it reports goes to its
+# standard output.
+#
+# Every setting here has a default the image needs; an operator or the build's
+# smoke test may name a shell-compatible KEY=VALUE file to override them, and
+# `TILO_SESSION_ARGS` holds the session's own arguments.
 #
 # Usage: browser-session [CONFIG]
-#   CONFIG  default: $TILO_BROWSER_SESSION_CONFIG, else
-#           /run/tilo/browser-session.env
+#   CONFIG  default: $TILO_BROWSER_SESSION_CONFIG, when it names one
 #
 # The process it starts is the sandbox's own: nothing here runs as root, and
 # SIGTERM to this script ends the session and the bus beside it.
 set -eu
 
-config=${1:-${TILO_BROWSER_SESSION_CONFIG:-/run/tilo/browser-session.env}}
-if [ -r "$config" ]; then
+config=${1:-${TILO_BROWSER_SESSION_CONFIG:-}}
+if [ -n "$config" ] && [ -r "$config" ]; then
     # shellcheck disable=SC1090 # the file the agent wrote is the point
     . "$config"
 fi

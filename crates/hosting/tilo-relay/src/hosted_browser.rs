@@ -57,46 +57,37 @@ pub const PAGE_RESOURCE: &str = "browser.page";
 pub const DEVICE_LIFETIME: Duration = Duration::from_secs(2 * 60 * 60);
 /// The label the workspace shows the environment's device under.
 pub const DEVICE_LABEL: &str = "Browser";
+/// The address the sessions in the environments reach this host at, written
+/// `KEY@HOST:PORT` ([`tilo_relay_protocol::hosted::endpoint`]): this host's
+/// device key and its **public** address.
+///
+/// A browser environment's network reaches the public internet and nothing
+/// else — no cluster-internal, private or link-local address answers it — so
+/// a host that places environments names the address they reach it at, and
+/// never its own local one.
+pub const RELAY_ENV: &str = "TILO_HOSTED_BROWSER_RELAY";
+
+/// Where the sessions in this host's browser environments reach it: the
+/// address [`RELAY_ENV`] names, which the host must set to serve them.
+///
+/// # Errors
+///
+/// Nothing is named, or what is named is not `KEY@HOST:PORT`.
+pub fn relay_address() -> Result<EndpointAddr, String> {
+    let named = std::env::var(RELAY_ENV).map_err(|_| {
+        format!(
+            "a host that places browser environments sets {RELAY_ENV} to the address their \
+             sessions reach it at (KEY@HOST:PORT): their network reaches no private one"
+        )
+    })?;
+    tilo_relay_protocol::hosted::endpoint(&named)
+}
 
 /// What a host hands a browser environment when it gives it a workspace: the
-/// device it certified for it, and where to be that device.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Material {
-    /// The workspace, by its UUID: the one that lists the device.
-    pub workspace: String,
-    /// The workspace, as the relay carries it.
-    pub workspace_id: u64,
-    /// The Browser record the window opens on.
-    pub record: String,
-    /// The device the workspace lists while the environment runs, and no
-    /// other: certified by this host as a member device of the person the
-    /// workspace belongs to, for [`DEVICE_LIFETIME`].
-    pub device: DeviceCert,
-    /// That device's signing key, the only copy: the environment holds it.
-    pub secret: [u8; 32],
-    /// Where the session joins the workspace: this host's endpoint.
-    pub relay: EndpointAddr,
-    /// The person the workspace belongs to.
-    pub user_public_key: [u8; 32],
-    /// Who pays for the workspace's VMs, as this host knows it.
-    pub account: String,
-}
-
-impl Material {
-    /// This device's signing key.
-    ///
-    /// # Errors
-    ///
-    /// The secret is not a key.
-    pub fn key(&self) -> Result<SigningKey, String> {
-        let bytes: [u8; 32] = self
-            .secret
-            .as_slice()
-            .try_into()
-            .map_err(|_| "an environment's secret is a 32-byte key".to_owned())?;
-        Ok(SigningKey::from_bytes(&bytes))
-    }
-}
+/// device it certified for it, and where to be that device. The session in
+/// the environment reads the same type, so the two ends of the hand-off
+/// cannot disagree about what it holds.
+pub use tilo_relay_protocol::hosted::Material;
 
 /// A browser environment that is up, and the window it holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -126,7 +117,7 @@ pub trait BrowserEnvironments: Send + Sync {
 
     /// The workspace's environment stopped, or must: its device is forgotten
     /// and its window no longer exists.
-    fn stop(&self, workspace_id: u64);
+    fn stop(&self, workspace: &str);
 }
 
 /// What a host counts page actions against: its plans and the account's
@@ -182,6 +173,8 @@ pub struct Authority {
 
 /// One workspace's window, while its environment runs.
 struct Open {
+    /// The workspace, by its UUID, as its environment is named.
+    workspace: String,
     window: Window,
     /// The device the workspace lists for it, forgotten when it stops.
     device: DeviceCert,
@@ -218,6 +211,41 @@ impl HostedBrowsers {
             open: Mutex::default(),
             authority: Mutex::default(),
         }
+    }
+
+    /// The Browser this host's environment names, when it runs environments
+    /// at all: where they start and stop (a placer and its VM hosts,
+    /// [`crate::placed_browsers::PlacedBrowsers`]), the ledger their page
+    /// actions are counted in ([`crate::browser_actions::BrowserMeter`]), and
+    /// the address the sessions in them reach this host at.
+    ///
+    /// # Errors
+    ///
+    /// Environments are named but cannot be started, or their page actions
+    /// cannot be counted: a host that runs browsers without counting them
+    /// would serve them free of charge, so the start fails rather than run
+    /// half of it.
+    pub fn from_env() -> Result<Option<Self>, String> {
+        let Some(environments) = crate::placed_browsers::PlacedBrowsers::from_env()? else {
+            return Ok(None);
+        };
+        let meter = crate::browser_actions::BrowserMeter::from_env()?.ok_or_else(|| {
+            format!(
+                "{} names where browser environments start, so {} must name the ledger their \
+                 page actions are counted in",
+                crate::placed_shells::PLACER_ENV,
+                tilo_host_account::browser_actions::LEDGER_ENV
+            )
+        })?;
+        // The address their sessions reach this host at is part of serving
+        // them: a host that cannot say it fails here, not at the first open.
+        relay_address()?;
+        let account = environments.account().to_owned();
+        Ok(Some(Self::new(
+            Box::new(environments),
+            Box::new(meter),
+            account,
+        )))
     }
 
     /// Name the host's identity and workspaces, once it runs: needed to
@@ -321,6 +349,7 @@ impl HostedBrowsers {
         open.insert(
             workspace_id,
             Open {
+                workspace: workspace.to_owned(),
                 window: window.clone(),
                 device,
             },
@@ -334,7 +363,7 @@ impl HostedBrowsers {
         let Some(stopped) = stopped else {
             return;
         };
-        self.environments.stop(workspace_id);
+        self.environments.stop(&stopped.workspace);
         self.list(workspace_id, &stopped.device, false);
     }
 

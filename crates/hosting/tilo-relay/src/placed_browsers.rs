@@ -22,7 +22,9 @@ use tilo_actions::remote::browser::{self, OpenBrowser, OpenedBrowser};
 use tilo_actions::remote::{ActionHost as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus};
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_peer_state::actions::{ActionPlane, RemoteDevice};
+use tilo_relay_protocol::hosted::Material;
 
+use super::hosted_browser::Window;
 use super::placed_shells::{self, PlacedShells};
 
 /// The environment of a workspace that holds its Browser.
@@ -39,6 +41,9 @@ pub struct Opened {
     /// What opening took, when this call opened it; `None` when it attached to
     /// the environment already serving the workspace.
     pub opened_ms: Option<u64>,
+    /// The provider token of the window the session in the VM opened, which
+    /// page actions on it name.
+    pub provider: String,
 }
 
 /// Why a workspace's browser environment did not open.
@@ -139,6 +144,7 @@ impl PlacedBrowsers {
         Ok(Opened {
             host,
             opened_ms: opened.opened_ms,
+            provider: opened.provider,
         })
     }
 
@@ -156,6 +162,11 @@ impl PlacedBrowsers {
         let (plane, endpoint) = self.placed.asking()?;
         let device = plane.remote(endpoint, &address, workspace);
         stop_on(&device, workspace).map_err(|words| format!("{host}: {words}"))
+    }
+
+    /// Who pays for the workspaces' machines, as this host knows it.
+    pub(crate) fn account(&self) -> &str {
+        self.placed.account()
     }
 
     /// Where `host`'s member device is reached.
@@ -270,6 +281,31 @@ fn follow(
             InvocationUpdate::Accepted { .. }
             | InvocationUpdate::Progress { .. }
             | InvocationUpdate::Item { .. } => {}
+        }
+    }
+}
+
+/// The environments a host places: what the relay's Browser asks for a
+/// workspace's environment, on the VM host the placer names.
+impl super::hosted_browser::BrowserEnvironments for PlacedBrowsers {
+    /// Hand `material` to the workspace's environment on its VM host, and
+    /// answer its window once the session in it is up.
+    fn start(&self, material: &Material) -> Result<Window, String> {
+        let written = serde_json::to_string(material)
+            .map_err(|error| format!("a browser environment's material: {error}"))?;
+        let opened = self
+            .open(&material.workspace, &written)
+            .map_err(|error| format!("a browser environment did not open: {error}"))?;
+        Ok(Window {
+            device: material.device.device_public_key,
+            provider: opened.provider,
+        })
+    }
+
+    /// End the workspace's environment now, with everything it wrote.
+    fn stop(&self, workspace: &str) {
+        if let Err(words) = PlacedBrowsers::stop(self, workspace) {
+            tracing::warn!(%workspace, %words, "a browser environment did not stop");
         }
     }
 }

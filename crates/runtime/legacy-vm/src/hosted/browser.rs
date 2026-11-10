@@ -26,24 +26,31 @@
 //! channel, and no addition to the agent's protocol. What the guest image
 //! must therefore ship, and what the joining code must do, is exactly this:
 //!
-//! - **argv** [`SESSION`] `--backend headless`, with [`MARK`] set to `1` in
-//!   its environment: a session that shows its window nowhere and knows it
-//!   serves a hosted browser environment.
-//! - **stdout, one line each, nothing else:** [`READY`] once the engine is up
-//!   and the session waits for a workspace; then — after it has read the
-//!   material — [`UP`] once it has joined the workspace and opened the
-//!   workspace's Browser window; then [`USED`] whenever a page action runs or
+//! - **argv** [`SESSION`], the guest image's own entry: the script that makes
+//!   the runtime directory, points the session at the image's software Vulkan
+//!   driver and starts it on its own bus, headless and with no X11
+//!   (`os/hosted-browser-guest/browser-session`). [`MARK`] is set in its
+//!   environment: a session that shows its window nowhere and knows it serves
+//!   a hosted browser environment.
+//! - **stdout, one line each, nothing else**
+//!   ([`Report`](tilo_actions::remote::browser::Report)): `ready` once the
+//!   engine is up and the session waits for a workspace; then — after it has
+//!   read the material — `up <provider>` once it has joined the workspace and
+//!   opened the workspace's Browser window, with the provider token the
+//!   window publishes under; then `used` whenever a page action runs or
 //!   somebody views the page. The host counts the idle limit from the last of
-//!   them.
+//!   them, and hands the provider to the relay, which routes page actions to
+//!   that window.
 //! - **stdin, one line** at hand-off: the material the relay gives, opaque
 //!   here — the JSON that names the workspace, the record to open and the
-//!   device certificate the session joins with. One line, and well under a
+//!   device certificate the session joins with
+//!   ([`tilo_relay_protocol::hosted::Material`]). One line, and well under a
 //!   megabyte: the host relays it as the session's input, one line at a
 //!   time.
 //! - **stderr** is the environment's log, nothing else.
 //!
 //! A spare is booted with that session and no workspace: it waits after
-//! [`READY`], so opening Browser hands it one line instead of a boot. A spare
+//! `ready`, so opening Browser hands it one line instead of a boot. A spare
 //! keeps the name it booted with (`spare/browser-<n>`) when it serves a
 //! workspace; the placer's and the relay's name for that environment is
 //! `<workspace>/browser`, which is what places and routes it. An environment
@@ -62,26 +69,19 @@ use legacy_agent_protocol::client::{self, LaunchIo, LaunchSignals};
 use legacy_agent_protocol::link::{AgentLink, AgentStream};
 use legacy_agent_protocol::{AGENT_PORT, Display, Launch, ProtocolError, Signal, Stdio};
 use thiserror::Error;
+use tilo_actions::remote::browser::{MARK, READY, Report, UP};
 
 use super::firecracker::Machine;
 
-/// The session a browser environment runs, as the guest image ships it.
-pub const SESSION: &str = "/usr/libexec/tilo-session";
-/// Set in that session's environment: it is a hosted browser environment's.
-pub const MARK: &str = "TILO_HOSTED_BROWSER";
-/// The line it prints once its engine is up and it waits for a workspace.
-pub const READY: &str = "ready";
-/// The line it prints once it has joined the workspace and opened the window.
-pub const UP: &str = "up";
-/// The line it prints whenever the page is used: an action ran, or a viewer
-/// is viewing it.
-pub const USED: &str = "used";
+/// The session a browser environment runs, as the guest image ships it: the
+/// script that sets the environment up and starts the session on it.
+pub const SESSION: &str = "/usr/libexec/tilo/browser-session";
 
-/// How long a started session may take to print [`READY`], engine start
+/// How long a started session may take to print `ready`, engine start
 /// included.
 pub const READY_PATIENCE: Duration = Duration::from_secs(120);
 
-/// How long an environment's session is given to report [`UP`] after the
+/// How long an environment's session is given to report `up` after the
 /// material was handed to it.
 pub const UP_PATIENCE: Duration = Duration::from_secs(60);
 
@@ -127,27 +127,6 @@ impl BrowserGuest {
 pub struct Limits {
     pub idle_stop: Duration,
     pub lifetime: Duration,
-}
-
-/// What a session printed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Report {
-    Ready,
-    Up,
-    Used,
-}
-
-impl Report {
-    /// The report `line` is, if it is one.
-    #[must_use]
-    pub fn parse(line: &str) -> Option<Self> {
-        match line.trim() {
-            READY => Some(Self::Ready),
-            UP => Some(Self::Up),
-            USED => Some(Self::Used),
-            _ => None,
-        }
-    }
 }
 
 /// Why a browser environment ended.
@@ -202,6 +181,8 @@ struct State {
     ready_ms: Option<u64>,
     used_ms: u64,
     up: bool,
+    /// The provider token of the window its session opened, once it is up.
+    provider: Option<String>,
     opening: bool,
     ended: Option<String>,
 }
@@ -231,9 +212,10 @@ impl Life {
                     state.ready_ms.get_or_insert(now_ms);
                     state.used_ms = state.used_ms.max(now_ms);
                 }
-                Report::Up => {
+                Report::Up { provider } => {
                     state.up = true;
                     state.opening = false;
+                    state.provider = Some(provider);
                     state.used_ms = state.used_ms.max(now_ms);
                 }
                 Report::Used => {
@@ -257,9 +239,23 @@ impl Life {
         lock(&self.state).ready_ms.is_some()
     }
 
+    /// Whether its session reported a page used since [`Self::report`] last
+    /// counted one: `used` is one of its reports, and reads as such.
+    #[must_use]
+    pub const fn used() -> Report {
+        Report::Used
+    }
+
     #[must_use]
     pub fn up(&self) -> bool {
         lock(&self.state).up
+    }
+
+    /// The provider token of the window this environment holds, once its
+    /// session opened it: what page actions on it name.
+    #[must_use]
+    pub fn provider(&self) -> Option<String> {
+        lock(&self.state).provider.clone()
     }
 
     #[must_use]
@@ -368,11 +364,7 @@ impl Session {
     ) -> Result<Self, SessionError> {
         let stream = link.connect(AGENT_PORT)?;
         let launch = Launch {
-            argv: vec![
-                SESSION.to_owned(),
-                "--backend".to_owned(),
-                "headless".to_owned(),
-            ],
+            argv: vec![SESSION.to_owned()],
             cwd: None,
             env: vec![(MARK.to_owned(), "1".to_owned())],
             stdio: Stdio::Relay,
@@ -799,8 +791,14 @@ mod tests {
             Some(End::Lifetime),
             "a spare that was never taken still ends when its lifetime is up"
         );
-        life.report(Report::Up, 5_000);
+        life.report(
+            Report::Up {
+                provider: "42".into(),
+            },
+            5_000,
+        );
         assert!(life.up());
+        assert_eq!(life.provider().as_deref(), Some("42"));
         // phase: the idle limit counts from the last use, not from the boot
         assert_eq!(life.expired(4_000, LIMITS), None);
         assert_eq!(life.expired(604_999, LIMITS), None);
@@ -841,9 +839,19 @@ mod tests {
             std::thread::spawn(move || browser.open("{\"workspace\":\"ws1\"}", UP_PATIENCE))
         };
         std::thread::sleep(Duration::from_millis(50));
-        browser.life().report(Report::Up, 3_000);
+        browser.life().report(
+            Report::Up {
+                provider: "42".into(),
+            },
+            3_000,
+        );
         let opened = opening.join().unwrap().unwrap();
         assert!(opened.is_some(), "this request handed it the workspace");
+        assert_eq!(
+            browser.life().provider().as_deref(),
+            Some("42"),
+            "the window it holds is what the provider names"
+        );
         assert_eq!(attaching.join().unwrap(), Ok(None), "this one attached");
         assert!(
             handed.try_recv().is_err(),
@@ -921,7 +929,12 @@ mod tests {
         pool.spare_booted(environment("spare/browser-1"));
         let browser = pool.serving("ws1").unwrap().browser;
         browser.life().report(Report::Ready, 1_000_000);
-        browser.life().report(Report::Up, 1_000_000);
+        browser.life().report(
+            Report::Up {
+                provider: "42".into(),
+            },
+            1_000_000,
+        );
         assert_eq!(pool.maintain(1_000_100, LIMITS, 1).end, Vec::new());
         let work = pool.maintain(1_600_000, LIMITS, 1);
         assert_eq!(
@@ -945,13 +958,14 @@ mod tests {
         let mut reporter = Reporter::new(&log, Arc::clone(&life), clock);
         reporter.write_all(b"booting\nrea").unwrap();
         assert!(!life.ready());
-        reporter.write_all(b"dy\nup\nsomething else\n").unwrap();
+        reporter.write_all(b"dy\nup 42\nsomething else\n").unwrap();
         reporter.flush().unwrap();
         assert!(life.ready() && life.up());
+        assert_eq!(life.provider().as_deref(), Some("42"));
         assert!(
             std::fs::read_to_string(&log)
                 .unwrap()
-                .contains("booting\nready\nup\n"),
+                .contains("booting\nready\nup 42\n"),
             "everything it printed is the environment's log"
         );
         // phase: only whole lines that are reports count
@@ -959,6 +973,7 @@ mod tests {
         let mut reporter = Reporter::new(&log, life, Arc::new(|| 7_000));
         reporter.write_all(b"notup\nused\n").unwrap();
         assert!(!reporter.life.up(), "`notup` is not `up`");
+        assert_eq!(reporter.life.provider(), None, "and names no window");
         assert_eq!(reporter.life.expired(0, LIMITS), None);
     }
 }

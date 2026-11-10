@@ -61,7 +61,7 @@ impl BrowserEnvironments for InProcessEnvironments {
         })
     }
 
-    fn stop(&self, _: u64) {}
+    fn stop(&self, _: &str) {}
 }
 
 /// Counts what reached it, and refuses what it is told to.

@@ -446,8 +446,12 @@ impl Service {
     /// Open `request`'s workspace's browser environment: the one already
     /// serving it, a spare, or a freshly booted one. `Some(ms)` when this
     /// request handed it the workspace; `None` when it attached to the
-    /// environment a person already opened.
-    pub fn open_browser(&self, request: &OpenBrowser) -> Result<Option<u64>, BrowserError> {
+    /// environment a person already opened. Either way, the provider token of
+    /// the window it holds, which page actions on it name.
+    pub fn open_browser(
+        &self,
+        request: &OpenBrowser,
+    ) -> Result<(Option<u64>, String), BrowserError> {
         if !valid_name(&request.workspace) {
             return Err(BrowserError::Invalid(format!(
                 "{:?} is not a workspace id",
@@ -461,9 +465,14 @@ impl Service {
             .ok_or(BrowserError::NotOffered)?;
         let named = self.browser_for(&request.workspace, &request.account)?;
         match named.browser.open(&request.material, UP_PATIENCE) {
-            Ok(opened) => {
+            Ok(opened_ms) => {
                 lock(&self.waiting).remove(&browser::environment(&request.workspace));
-                Ok(opened)
+                let provider = named.browser.life().provider().ok_or_else(|| {
+                    BrowserError::Session(
+                        "the browser environment came up without a window".to_owned(),
+                    )
+                })?;
+                Ok((opened_ms, provider))
             }
             Err(message) => {
                 // A spare or a fresh environment that did not come up is of
@@ -740,7 +749,10 @@ impl Service {
                 load: self.load(),
             },
             Request::OpenBrowser { browser } => match self.open_browser(&browser) {
-                Ok(opened_ms) => Reply::Opened { opened_ms },
+                Ok((opened_ms, provider)) => Reply::Opened {
+                    opened_ms,
+                    provider,
+                },
                 Err(BrowserError::Full(words)) => Reply::Busy(words),
                 Err(error) => Reply::Error(error.to_string()),
             },

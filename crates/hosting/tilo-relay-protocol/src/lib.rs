@@ -46,6 +46,7 @@ pub mod compaction;
 pub mod config;
 pub mod directory;
 pub mod home_peer;
+pub mod hosted;
 pub mod live;
 pub mod login_code;
 pub mod mesh;
