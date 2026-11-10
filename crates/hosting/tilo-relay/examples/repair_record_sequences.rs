@@ -53,8 +53,7 @@
 //! changes nothing:
 //!
 //! ```text
-//! rcargo build --release -p tilo-relay --features agents --example repair_record_sequences \
-//!     --fetch release/examples/repair_record_sequences
+//! cargo build --release -p tilo-relay --features agents --example repair_record_sequences
 //! repair_record_sequences --state /srv/lounge --root-file /etc/lounge/root --persistent lounge --dry-run
 //! repair_record_sequences --state /srv/lounge --root-file /etc/lounge/root --persistent lounge
 //! ```

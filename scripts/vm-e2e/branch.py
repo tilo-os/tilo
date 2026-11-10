@@ -379,7 +379,7 @@ for p in $(pgrep -u "$u" -f /usr/bin/tilo-session); do
   grep -E '^(Uid|Gid|Groups|CapPrm|CapEff|CapAmb|NoNewPrivs|Seccomp):' /proc/$p/status
 done
 echo "== identity files"
-ls -la --time-style=full-iso /var/home/tds-me/.config/tilo/identity /var/lib/tilo/device   /var/lib/tilo/device/certs /var/lib/tilo/device-private /var/lib/tilo/user-identity 2>&1
+ls -la --time-style=full-iso ~tds-me/.config/tilo/identity /var/lib/tilo/device   /var/lib/tilo/device/certs /var/lib/tilo/device-private /var/lib/tilo/user-identity 2>&1
 echo "== the session's own check, as the person"
 runuser -u tds-me -- env XDG_RUNTIME_DIR=/run/user/$u DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$u/bus   /usr/bin/tilo-session --provision-identity 2>&1 | tail -n 20
 echo "== the session's stderr this boot"

@@ -39,8 +39,7 @@
 //! fresh backup and with the host stopped:
 //!
 //! ```text
-//! rcargo build --release -p tilo-relay --features agents --example move_relay_content \
-//!     --fetch release/examples/move_relay_content
+//! cargo build --release -p tilo-relay --features agents --example move_relay_content
 //! move_relay_content --state /srv/lounge --root-file /etc/lounge/root --persistent lounge --dry-run
 //! move_relay_content --state /srv/lounge --root-file /etc/lounge/root --persistent lounge
 //! # once the upgraded host serves its workspaces' files and pictures:
