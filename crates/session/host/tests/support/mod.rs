@@ -379,20 +379,27 @@ pub async fn start_workspace_host_relaying(
     keep_web_identity: bool,
     packet_relay: bool,
 ) -> TestHost {
-    let relay = Relay::start(
-        tilo_relay::RelayConfig {
-            state_root: state.to_path_buf(),
-            packet_relay: packet_relay.then(|| (std::net::Ipv4Addr::LOCALHOST, 0).into()),
-            ..Default::default()
-        },
-        RelayIdentity {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_signing_key: host.key.clone(),
-            device_cert: host.cert.clone(),
-            revocations: RevocationList::new(),
-        },
-    )
-    .await
+    let config = tilo_relay::RelayConfig {
+        state_root: state.to_path_buf(),
+        packet_relay: packet_relay.then(|| (std::net::Ipv4Addr::LOCALHOST, 0).into()),
+        ..Default::default()
+    };
+    let identity = RelayIdentity {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_signing_key: host.key.clone(),
+        device_cert: host.cert.clone(),
+        revocations: RevocationList::new(),
+    };
+    // A host running its own packet relay is reached through it. One that
+    // runs none is reached on the network the test runs in, and looks up no
+    // public relay or address: an invitation names what a stranger can dial
+    // of its host, which would otherwise be a relay and an address out on
+    // the internet, and the test would stand on whether those answer.
+    let relay = if packet_relay {
+        Relay::start(config, identity).await
+    } else {
+        Relay::start_with_relay_mode(config, identity, iroh::RelayMode::Disabled).await
+    }
     .unwrap();
     let web = relay
         .serve_web(WebConfig {

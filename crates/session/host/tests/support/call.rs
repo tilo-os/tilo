@@ -14,6 +14,7 @@ use automerge::AutoCommit;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use neighbour_wire::NeighbourMsg;
+use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
 use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_relay::RelayClient;
@@ -41,6 +42,24 @@ pub async fn endpoint(key: &SigningKey) -> iroh::Endpoint {
         .bind()
         .await
         .unwrap()
+}
+
+/// An endpoint whose key is the device's own, dialling as whoever was handed
+/// an invitation does: through the relay the invitation names, when it names
+/// one. An invitation names the relay its host is reached through and the
+/// addresses anyone can dial, never the ones only the host's own network
+/// knows, so a device that reaches no relay reaches nothing of what a relayed
+/// host's invitation names.
+pub async fn invited(key: &SigningKey, named: &iroh::EndpointAddr) -> iroh::Endpoint {
+    let builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()));
+    match named.relay_urls().next() {
+        Some(relay) => builder.relay_mode(iroh::RelayMode::Custom(relay.clone().into())),
+        None => builder,
+    }
+    .bind()
+    .await
+    .unwrap()
 }
 
 /// The next envelope from the browser session that `pick` accepts.
@@ -121,11 +140,16 @@ pub async fn invite(
         tilo_clock::unix_now_ns(),
     )
     .unwrap();
+    let hint = verified.grant().transport.first().unwrap();
+    // What the invitation tells whoever holds it to dial.
+    let named = IrohWorkspaceHostHintV1::from_transport_hint(hint)
+        .unwrap()
+        .endpoint_addr;
     let mut request = [0; 32];
     getrandom::fill(&mut request).unwrap();
-    WorkspaceJoinClient::new(endpoint(&page.key).await)
+    WorkspaceJoinClient::new(invited(&page.key, &named).await)
         .redeem_hint(
-            verified.grant().transport.first().unwrap(),
+            hint,
             invitation.signed_invitation.clone(),
             page.cert.clone(),
             &page.key,
