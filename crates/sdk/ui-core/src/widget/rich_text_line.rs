@@ -109,6 +109,10 @@ pub(super) struct StackMeasure {
     pub(super) height: f32,
 }
 
+/// How many widths one line keeps its height for: the width the host solved and the ones it
+/// probes for an intrinsic size.
+const STACKED_WIDTHS: usize = 4;
+
 fn default_measurement_theme() -> Arc<Theme> {
     static DEFAULT: LazyLock<Arc<Theme>> = LazyLock::new(|| Arc::new(Theme::dark()));
     Arc::clone(&DEFAULT)
@@ -133,9 +137,12 @@ pub struct RichTextLine {
     /// Shared by every line of one editor: the editor hands out one `Arc`
     /// per theme, so preparing an unchanged theme is a pointer comparison.
     measurement_theme: Arc<Theme>,
-    /// The height a stacking host last measured for this line, valid while
-    /// the line reports no pending measurement and its layout inputs match.
-    stack_measure: Option<StackMeasure>,
+    /// The heights stacking hosts measured, newest first, one per width: valid while the line
+    /// reports no pending measurement. A host asks for the height at the width it solved and
+    /// applies the layout at that width, but it asks at widths it never applies too, and a
+    /// line answering one of those with its only remembered height is stacked shorter than
+    /// its text needs at the applied width, which clips its last rows.
+    stack_measures: Vec<StackMeasure>,
     layout_inset: f32,
     layout_header_height: f32,
     table_preview: Option<bool>,
@@ -206,7 +213,7 @@ impl RichTextLine {
             wrap: false,
             inline_formatting: true,
             measurement_theme: default_measurement_theme(),
-            stack_measure: None,
+            stack_measures: Vec::new(),
             layout_inset: 0.0,
             layout_header_height: 0.0,
             table_preview: None,
@@ -310,7 +317,7 @@ impl RichTextLine {
     pub fn set_mono(&mut self, mono: bool) {
         self.paint_dirty = true;
         if self.inner.is_mono() != mono {
-            self.stack_measure = None;
+            self.forget_stack_heights();
         }
         self.inner.set_mono(mono);
     }
@@ -321,7 +328,7 @@ impl RichTextLine {
         self.paint_dirty = true;
         if self.inline_formatting != enabled {
             self.dirty.styled_layout = true;
-            self.stack_measure = None;
+            self.forget_stack_heights();
         }
         self.inline_formatting = enabled;
         self.inner.set_compact_multiline(!enabled);
@@ -380,7 +387,7 @@ impl RichTextLine {
     pub fn set_wrap(&mut self, wrap: bool) {
         self.paint_dirty = true;
         if self.wrap != wrap {
-            self.stack_measure = None;
+            self.forget_stack_heights();
         }
         self.wrap = wrap;
         self.inner.set_multiline(wrap);
@@ -394,7 +401,7 @@ impl RichTextLine {
     pub(super) fn set_layout_inset(&mut self, inset: f32) {
         self.paint_dirty = true;
         if self.layout_inset.to_bits() != inset.to_bits() {
-            self.stack_measure = None;
+            self.forget_stack_heights();
         }
         self.layout_inset = inset;
     }
@@ -402,7 +409,7 @@ impl RichTextLine {
     pub(super) fn set_layout_header_height(&mut self, height: f32) {
         self.paint_dirty = true;
         if self.layout_header_height.to_bits() != height.to_bits() {
-            self.stack_measure = None;
+            self.forget_stack_heights();
         }
         self.layout_header_height = height;
     }
@@ -410,7 +417,7 @@ impl RichTextLine {
     pub(super) fn set_table_preview(&mut self, visual: Option<bool>) {
         self.paint_dirty = true;
         if self.table_preview != visual {
-            self.stack_measure = None;
+            self.forget_stack_heights();
         }
         self.table_preview = visual;
     }
@@ -422,7 +429,7 @@ impl RichTextLine {
     pub(super) fn set_image_preview(&mut self, preview: ImagePreview) {
         self.paint_dirty = true;
         if self.image_preview != preview {
-            self.stack_measure = None;
+            self.forget_stack_heights();
         }
         self.image_preview = preview;
     }
@@ -589,7 +596,7 @@ impl RichTextLine {
     pub(crate) fn set_size(&mut self, size: f32) {
         self.paint_dirty = true;
         if self.font_size.to_bits() != size.to_bits() {
-            self.stack_measure = None;
+            self.forget_stack_heights();
             self.font_size = size;
             self.inner.set_base_size(size);
         }
@@ -1086,7 +1093,7 @@ impl RichTextLine {
             self.prepare_attributes(theme);
             self.inner.capture_layout_text_scale(theme.text_scale);
             self.measurement_theme = Arc::clone(theme);
-            self.stack_measure = None;
+            self.forget_stack_heights();
         }
         self.inner.set_base_size(self.font_size);
         self.inner.set_multiline(self.wrap);
@@ -1113,22 +1120,29 @@ impl RichTextLine {
     /// The height last measured at `width`, while nothing that feeds the
     /// measurement has changed since.
     pub(super) fn stacked_height(&self, width: f32) -> Option<f32> {
-        self.stack_measure
-            .filter(|measure| measure.width.to_bits() == width.to_bits())
+        self.stack_measures
+            .iter()
+            .find(|measure| measure.width.to_bits() == width.to_bits())
             .filter(|_| !self.layout_needs_measure())
             .map(|measure| measure.height)
     }
 
     pub(super) fn forget_stacked_height(&mut self) {
         self.paint_dirty = true;
-        self.stack_measure = None;
+        self.forget_stack_heights();
     }
 
-    /// The height the line last measured, at whatever width it measured at: what a host that
-    /// stacks lines without a text renderer keeps, where measuring again is not possible, so a
-    /// restack cannot clip content whose height is already known.
-    pub(super) fn last_height(&self) -> Option<f32> {
-        self.stack_measure.map(|measure| measure.height)
+    fn forget_stack_heights(&mut self) {
+        self.stack_measures.clear();
+    }
+
+    /// The tallest height the line took at any width: what a host that cannot measure keeps for
+    /// a width it never measured, where a wider width's height is too short for this one.
+    pub(super) fn tallest_height(&self) -> Option<f32> {
+        self.stack_measures
+            .iter()
+            .map(|measure| measure.height)
+            .max_by(f32::total_cmp)
     }
 
     /// Measure the line's content at `width` for a host that stacks lines
@@ -1150,7 +1164,11 @@ impl RichTextLine {
         if self.wrap && self.table_preview.is_none() && !self.image_preview.is_present() {
             self.inner.adopt_measured_layout();
         }
-        self.stack_measure = Some(StackMeasure { width, height });
+        self.stack_measures
+            .retain(|measure| measure.width.to_bits() != width.to_bits());
+        self.stack_measures
+            .insert(0, StackMeasure { width, height });
+        self.stack_measures.truncate(STACKED_WIDTHS);
         height
     }
 
@@ -1273,7 +1291,48 @@ impl Default for RichTextLine {
     }
 }
 
+impl crate::widget::TextFits for RichTextLine {
+    fn cut_text(&mut self, text: &mut TextRenderer) -> Option<crate::widget::CutText> {
+        if !self.wrap {
+            return None;
+        }
+        let rect = self.get_rect();
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return None;
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "the line's on-screen box is a bounded size, far inside f32's range"
+        )]
+        let width = rect.width() as f32;
+        let needs = self
+            .measure(
+                Size {
+                    width: Some(width),
+                    height: None,
+                },
+                Size {
+                    width: taffy::AvailableSpace::Definite(width),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                text,
+            )
+            .height;
+        (f64::from(needs) > rect.height() + 1.0).then(|| crate::widget::CutText {
+            said: self.inner.value().chars().take(80).collect(),
+            needs,
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "the line's on-screen box is a bounded size, far inside f32's range"
+            )]
+            has: rect.height() as f32,
+        })
+    }
+}
+
 impl Widget for RichTextLine {
+    crate::provides!(dyn crate::widget::TextFits);
+
     /// The inner field's timers (a settling squiggle, a suggestion for the
     /// word under the caret) must wake the host; the field is not a child.
     fn next_wake_deadline(&self) -> Option<crate::time::Instant> {

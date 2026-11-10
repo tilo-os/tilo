@@ -3622,6 +3622,27 @@ pub use tree_component::{
     DescribedTreeView, RemovedNodes, TREE_ROW_HEIGHT, TreeTone, TreeViewNodeProps, TreeViewProps,
     TreeViewRowProps,
 };
+/// A box a widget paints text into, whose own box cannot hold that text: the height the text
+/// takes at the width of its box, the room the box gives it, and what it says. Rows a box lays
+/// out and never paints read as a line that had nothing to say above space standing empty, so
+/// an audit looks for them rather than trusting the geometry around them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CutText {
+    /// What the text in that box says, as much of it as a report needs.
+    pub said: String,
+    /// The height the text takes at the width of its box.
+    pub needs: f32,
+    /// The height the box gives that text.
+    pub has: f32,
+}
+
+/// A widget that paints text into boxes of its own: a box that cannot hold its text is asked for
+/// through [`capability`](crate::widget::capability::capability).
+pub trait TextFits {
+    /// The first box of this widget whose text is taller than the box, if any.
+    fn cut_text(&mut self, text: &mut crate::text_render::TextRenderer) -> Option<CutText>;
+}
+
 mod row_selection;
 mod rows;
 pub mod virtual_list;

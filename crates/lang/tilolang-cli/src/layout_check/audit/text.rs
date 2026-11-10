@@ -1,5 +1,7 @@
 //! Text that does not fit what layout gave it: a widget's own measurement read against its
-//! box while walking the tree, one widget at a time.
+//! box while walking the tree, one widget at a time, and every box a widget paints text into
+//! read against the text it holds, so rows laid out and cut off are found rather than read as
+//! a line that never had anything to say.
 
 use ui::kurbo::Rect;
 use ui::widget::Widget;
@@ -78,6 +80,7 @@ fn measure_walk(
         .map(|id| keys.push(id.to_owned()))
         .is_some();
     measure_one(widget, keys, clip, text, out);
+    cut_text(widget, keys, text, out);
     selection_lifts(widget, keys, out);
     prompt_fits(widget, keys, out);
     let inner = widget
@@ -162,6 +165,31 @@ fn measure_one(
             });
         }
     }
+}
+
+/// A box that paints text but cannot hold it: the rows past the box are laid out and painted
+/// nowhere, so a person sees one line cut short over space that stands empty.
+fn cut_text(
+    widget: &mut dyn Widget,
+    keys: &[String],
+    text: &mut ui::TextRenderer,
+    out: &mut Vec<Problem>,
+) {
+    let Some(cut) = ui::widget::capability::capability_mut::<dyn ui::widget::TextFits>(widget)
+        .and_then(|fits| fits.cut_text(text))
+    else {
+        return;
+    };
+    out.push(Problem {
+        kind: Kind::ClippedText,
+        keys: keys.iter().rev().cloned().collect(),
+        widget: widget.name().to_owned(),
+        id: widget.test_id().map(str::to_owned),
+        detail: format!(
+            "needs {:.0} high at its width, has {:.0}, so its last rows are never painted ({:?})",
+            cut.needs, cut.has, cut.said
+        ),
+    });
 }
 
 /// A lift a list painted past the row it selects: it stands around what the row shows, grown by

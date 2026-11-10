@@ -1115,6 +1115,31 @@ fn text_that_cannot_break_a_word_wider_than_its_column_is_caught() {
     assert_eq!(clipped(ui::text_render::TextWrapMode::Indented), 1);
 }
 
+/// A line given less room than its text needs: its last rows are laid out and painted nowhere,
+/// which reads as a line cut short over empty space. A line with room for its text is no
+/// finding.
+#[test]
+fn a_line_with_less_room_than_its_text_needs_is_caught() {
+    let cut = |height: f32| {
+        let mut line = ui::widget::RichTextLine::new();
+        line.set_wrap(true);
+        line.set_text("The new onboarding build is on the test machines.");
+        let mut h = ui::headless::FrameHarness::for_root(
+            ui::State::new(),
+            ui::widget::Container::new()
+                .with_width(216.0)
+                .with_height(height)
+                .with_child(Box::new(line)),
+            (320, 200),
+            ui::Theme::light(),
+        );
+        let mut renderer = ui::TextRenderer::new();
+        clipped_text(h.root_widget_mut(), &mut renderer, (320, 200)).len()
+    };
+    assert_eq!(cut(17.5), 1, "one row of a two-row sentence is cut");
+    assert_eq!(cut(200.0), 0, "room for the whole sentence is no finding");
+}
+
 /// A place on a canvas past its viewport is reached by panning, so it is no finding; the
 /// same place in a region of a plain column reaches past it, and is caught.
 #[test]

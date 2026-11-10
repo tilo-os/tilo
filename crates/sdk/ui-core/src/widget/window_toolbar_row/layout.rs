@@ -558,10 +558,9 @@ impl Slots {
         }
         // The room the location leaves empty beside its label, once the notice has its own, and
         // above the least it needs: what a label of the actions could stand in.
-        self.spare = (self.location.width()
-            - (forms.width(form) + forms.chrome)
-            - super::MIN_LOCATION_PX)
-            .max(0.0);
+        self.spare =
+            (self.location.width() - (forms.width(form) + forms.chrome) - super::MIN_LOCATION_PX)
+                .max(0.0);
     }
 
     /// Put the notice's buttons in order right after its text, `text` wide

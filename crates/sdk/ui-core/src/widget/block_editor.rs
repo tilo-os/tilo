@@ -8710,11 +8710,10 @@ impl BlockEditor {
                     }
                     block.line.measure_stacked(width, text_renderer)
                 }
-                // No renderer to measure with: the line keeps the height it last measured, at
-                // this width or the one before it, so a restack the host solves without
-                // measuring cannot clip a line it cannot measure here. A line never measured
-                // counts as empty.
-                (None, None) => block.line.last_height().unwrap_or(0.0),
+                // No renderer to measure with: the line keeps the tallest height it measured
+                // at any width, so a restack the host solves without measuring cannot clip a
+                // line it cannot measure here. A line never measured counts as empty.
+                (None, None) => block.line.tallest_height().unwrap_or(0.0),
             };
             stack.measured |= stack_box.fixed.is_none();
             let height = stack_box.fixed.unwrap_or(content).max(stack_box.min);
@@ -8775,6 +8774,17 @@ impl BlockEditor {
             rects.push(Rect::new(x0, y0, x0 + width, y0 + f64::from(height)));
         }
         rects
+    }
+}
+
+impl crate::widget::TextFits for BlockEditor {
+    /// A block's box is the height its text measured at the width it is applied at, so a box
+    /// that cannot hold its text means the stack gave the line another width's height: rows
+    /// laid out and never painted.
+    fn cut_text(&mut self, text: &mut TextRenderer) -> Option<crate::widget::CutText> {
+        self.blocks
+            .iter_mut()
+            .find_map(|block| crate::widget::TextFits::cut_text(&mut block.line, text))
     }
 }
 
@@ -8911,7 +8921,8 @@ impl super::find_bar::Findable for BlockEditor {
 impl Widget for BlockEditor {
     crate::provides!(
         dyn crate::presence::capability::PublishesPresence,
-        dyn super::find_bar::Findable
+        dyn super::find_bar::Findable,
+        dyn crate::widget::TextFits
     );
 
     /// The described component's instance, for the generic adapter to take new props in place
