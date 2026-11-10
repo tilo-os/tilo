@@ -11,6 +11,11 @@
 //! refused with [`Refusal::NoPaymentMethod`], and nothing asks for a card
 //! before that. The hosting provider adds the account once a card is on
 //! file, and the next admission lets it in.
+//!
+//! The same file sets how many Browser page actions an account without a
+//! card runs in a billing period ([`Sells::browser_free_actions`]). Past
+//! them, Browser is refused with [`Refusal::BrowserActionsUsed`], which
+//! asks for the same card at the same page.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -85,6 +90,11 @@ pub struct Sells {
     /// Where the person raises the account's limits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raise_limit: Option<String>,
+    /// Browser page actions an account without a card on file may run per
+    /// billing period; `None` for none, so every Browser action waits for a
+    /// card. An account the file names has a card and is never stopped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_free_actions: Option<u32>,
 }
 
 impl Sells {
@@ -165,6 +175,35 @@ pub enum Refusal {
     NoPaymentMethod {
         host: String,
     },
+    /// The host sells Browser, the account has no card on file, and it ran
+    /// every free page action this billing period has.
+    BrowserActionsUsed {
+        /// The page actions the period is free for.
+        free: u32,
+        host: String,
+    },
+}
+
+/// Whether Browser may run a page action for `account` under `plans`, given
+/// the page actions it already ran in the billing period. A host that sells
+/// nothing counts none and refuses none; an account the file names has a
+/// card and is never stopped.
+pub fn admit_browser(plans: &Plans, account: &str, used: u64) -> Result<(), Refusal> {
+    let Some(sells) = &plans.sells else {
+        return Ok(());
+    };
+    if plans.accounts.contains_key(account) {
+        return Ok(());
+    }
+    let free = sells.browser_free_actions.unwrap_or(0);
+    if used < u64::from(free) {
+        Ok(())
+    } else {
+        Err(Refusal::BrowserActionsUsed {
+            free,
+            host: sells.host.clone(),
+        })
+    }
 }
 
 /// Whether `vm` (of `size`) may wake for `account` under `plans`. `awake`
@@ -233,7 +272,7 @@ impl Refusal {
         };
         let names = |sizes: &[VmSize]| sizes.iter().map(ToString::to_string).collect();
         let (reason, next) = match self {
-            Self::NoPaymentMethod { .. } => (
+            Self::NoPaymentMethod { .. } | Self::BrowserActionsUsed { .. } => (
                 Reason::NoPaymentMethod,
                 vec![NextStep {
                     kind: NextStepKind::AddPaymentMethod,
@@ -291,6 +330,15 @@ impl fmt::Display for Refusal {
                     f,
                     "This needs a Linux machine. {host} runs Linux machines for accounts with \
                      a card on file, and this account has none yet. Add a card to continue."
+                )
+            }
+            Self::BrowserActionsUsed { free, host } => {
+                let host = if host.is_empty() { "this host" } else { host };
+                write!(
+                    f,
+                    "Browser runs {} a month free on {host}, and this account used them. \
+                     Add a card to continue.",
+                    plural(*free, "page action", "page actions")
                 )
             }
             Self::SizeNotInPlan { size, allowed } => {
@@ -431,6 +479,92 @@ mod tests {
         assert_eq!(plans.for_account("someone").unwrap().sizes, [VmSize::Small]);
         std::fs::write(&path, b"{not json").unwrap();
         assert!(Plans::load(&path).is_err());
+    }
+
+    #[test]
+    fn browser_runs_a_free_allowance_and_then_asks_for_a_card() {
+        // phase: a host that sells nothing counts nothing and refuses nothing
+        {
+            assert_eq!(admit_browser(&Plans::default(), "acct-1", 1_000), Ok(()));
+        }
+        let plans: Plans = serde_json::from_str(
+            r#"{"sells":{"host":"tilo.sh",
+                "plans":[],
+                "add_payment_method":"https://tilo.sh/billing/card?account={account}",
+                "browser_free_actions":100}}"#,
+        )
+        .unwrap();
+        // phase: under the allowance runs, at and over it are refused
+        {
+            assert_eq!(admit_browser(&plans, "acct-1", 0), Ok(()));
+            assert_eq!(admit_browser(&plans, "acct-1", 99), Ok(()));
+            let refusal = admit_browser(&plans, "acct-1", 100).unwrap_err();
+            assert_eq!(
+                refusal.to_string(),
+                "Browser runs 100 page actions a month free on tilo.sh, and this account used \
+                 them. Add a card to continue."
+            );
+            assert!(matches!(
+                admit_browser(&plans, "acct-1", 101),
+                Err(Refusal::BrowserActionsUsed { free: 100, .. })
+            ));
+        }
+        // phase: the refusal is the VM path's card refusal, with its page
+        {
+            let typed = admit_browser(&plans, "acct-1", 100)
+                .unwrap_err()
+                .typed(plans.sells.as_ref(), "acct-1");
+            assert_eq!(typed.reason, Reason::NoPaymentMethod);
+            assert_eq!(
+                typed.message,
+                "Browser runs 100 page actions a month free on tilo.sh, and this account used \
+                 them. Add a card to continue."
+            );
+            assert!(typed.awaits_the_account());
+            assert_eq!(typed.next.len(), 1);
+            assert_eq!(
+                typed
+                    .step(NextStepKind::AddPaymentMethod)
+                    .and_then(|step| step.url.as_deref()),
+                Some("https://tilo.sh/billing/card?account=acct-1")
+            );
+        }
+        // phase: an account the file names has a card and is never stopped
+        {
+            let mut plans = plans;
+            plans.accounts.insert("acct-1".into(), Plan::default());
+            assert_eq!(admit_browser(&plans, "acct-1", 10_000), Ok(()));
+        }
+        // phase: a selling host that sets no allowance gives none
+        {
+            let plans: Plans = serde_json::from_str(
+                r#"{"sells":{"host":"tilo.sh","plans":[],"add_payment_method":"https://tilo.sh/card"}}"#,
+            )
+            .unwrap();
+            let refusal = admit_browser(&plans, "acct-1", 0).unwrap_err();
+            assert_eq!(
+                refusal.to_string(),
+                "Browser runs 0 page actions a month free on tilo.sh, and this account used \
+                 them. Add a card to continue."
+            );
+        }
+        // phase: one free action reads as one
+        {
+            let plans = Plans {
+                sells: Some(Sells {
+                    host: "tilo.sh".into(),
+                    add_payment_method: "https://tilo.sh/card".into(),
+                    browser_free_actions: Some(1),
+                    ..Sells::default()
+                }),
+                ..Plans::default()
+            };
+            assert_eq!(
+                admit_browser(&plans, "acct-1", 1).unwrap_err().to_string(),
+                "Browser runs 1 page action a month free on tilo.sh, and this account used them. \
+                 Add a card to continue."
+            );
+        }
     }
 
     #[test]

@@ -19267,6 +19267,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "legacy-vm",
+ "serde",
  "serde_json",
  "tempfile",
  "tilo-actions",
@@ -20750,6 +20751,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-files",
  "tilo-fs",
+ "tilo-host-account",
  "tilo-identity-host",
  "tilo-live",
  "tilo-lock",
