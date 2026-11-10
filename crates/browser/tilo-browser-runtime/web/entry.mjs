@@ -326,7 +326,6 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
     onProgress: event => {
       onStep('join');
       say(event.phase === 'pairing' ? 'Asking to pair this device…'
-        : event.phase === 'waiting' ? 'Waiting for someone in the workspace to let you in…'
         : event.phase === 'asking' ? 'Asking to join…' : event.phase === 'joining' ? 'Joining…' : 'Connecting…');
     },
   });

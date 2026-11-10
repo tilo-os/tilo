@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, renewDevice, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withCustody, withStartFields} from './peer.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
+import {memberText} from './json-text.mjs';
 
 const WORKSPACE = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -58,14 +59,16 @@ function fakeRuntime({phase = 'ready'} = {}) {
       return JSON.stringify({kind: 'invitation', room: WORKSPACE, workspaceId: '7', name: 'Acme', role: 'Editor', expiresAtNs: '9',
         members: 4, inviter: {name: 'Ada', userPublicKey: 'aa'.repeat(32)}});
     },
-    async askToJoin(post, invitation, root, custody, requestId, name, label, token) {
-      calls.asked = {invitation: [...invitation], root, requestId, name, label, token: token && new TextDecoder().decode(token)};
-      if (token) return JSON.stringify({reply: {kind: 'admitted', room: WORKSPACE, workspaceId: '7', name: 'Acme', role: 'Editor'}, cert: {guest: true, device_public_key: Array(32).fill(0xdd)}});
-      return JSON.stringify({reply: {kind: 'waiting'}, cert: {guest: true, device_public_key: Array(32).fill(0xdd)}});
-    },
-    async joinStatus(post, requestId, device) {
-      calls.status = [...(calls.status ?? []), {requestId, device}];
-      return JSON.stringify(calls.status.length < 2 ? {kind: 'waiting'} : {kind: 'admitted', room: WORKSPACE, workspaceId: '7', name: 'Acme', role: 'Editor'});
+    /** The shared entry: admits at once, under the certificate the page
+     * held when it held one (as text, so its nanoseconds stay exact), else
+     * under a guest certificate of the root's. */
+    async acceptInvitation(post, invitation, custody, root, options) {
+      const asked = JSON.parse(options);
+      calls.accepted = {invitation: [...invitation], root, ...asked};
+      if (calls.refuse) throw Object.assign(new Error(calls.refuse), {name: 'HostRefusal', code: 'not_admitted'});
+      const cert = asked.held ? memberText(asked.held, 'cert') : JSON.stringify({guest: true, device_public_key: Array(32).fill(0xdd)});
+      const host = memberText(await runtime.hostInfo(post), 'hostCert');
+      return `{"admission":{"workspace":"${WORKSPACE}","workspace_id":7,"name":"Acme","role":"Editor"},"certificate":{"cert":${cert},"hostCert":${host}}}`;
     },
     /** The platform secret store's channel vault key of a namespace. */
     async channelVault(namespace) {
@@ -188,7 +191,7 @@ test('a certificate reaches the session byte for byte, its nanosecond timestamps
 
 test('a guest certificate from an invitation reaches the session byte for byte', async () => {
   const runtime = fakeRuntime();
-  runtime.askToJoin = async () => `{"reply":{"kind":"admitted","room":"${WORKSPACE}","workspaceId":"7","name":"Acme","role":"Editor"},"cert":${LINUX_CERT}}`;
+  runtime.acceptInvitation = async () => `{"admission":{"workspace":"${WORKSPACE}","workspace_id":7,"name":"Acme","role":"Editor"},"certificate":{"cert":${LINUX_CERT},"hostCert":{"issued_at_ns":${NANOS}}}}`;
   runtime.hostInfo = async () => `{"address":${JSON.stringify(HOST_ADDRESS)},"hostCert":{"issued_at_ns":${NANOS}}}`;
   const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
   const peer = await joinWorkspace({
@@ -381,7 +384,8 @@ test('a device the host set up again admitted keeps its state apart; what was ke
   assert.equal(textOf(values.get(`${profile}/${PROFILE_DEVICE}/certificate`)), kept, 'what was kept for the previous host is untouched');
   assert.deepEqual(JSON.parse(textOf(values.get(`${profile}/${fresh}/certificate`))).hostCert, hostCertOf(1, 3));
   assert.equal(profileDevice(profile, namespaces), fresh, 'the profile keeps its peer there from now on');
-  assert.equal(runtime.calls.asked.root, identity, 'the kept certificate is the previous host\'s: the device is certified anew');
+  assert.equal(runtime.calls.accepted.held, kept, 'the entry is handed what the device kept, and decides it no longer serves');
+  assert.equal(runtime.calls.accepted.root, identity, 'with the root that certifies it anew');
   // The refused reconnect, the join reading the device's certificate there,
   // the admitted session leaving it, and the new host's namespace.
   assert.deepEqual(handles.map(handle => [handle.device, handle.released]),
@@ -403,7 +407,9 @@ test('a device the host set up again admitted keeps its state apart; what was ke
 test('a device the workspace let go asks to join again under the certificate it already holds from that host', async () => {
   // The workspace keeps the certificate of every device it admitted, also once
   // its person was removed or pruned after an absence, and refuses the same
-  // device under another one: a certificate made anew would never get back in.
+  // device under another one. Whether the kept one still serves is the shared
+  // entry's to say (tilo-session-host's `entering_certificate`); the page
+  // hands it over exactly as kept.
   const runtime = fakeRuntime();
   const {values, handles, desktop, namespaces} = profileFakes(runtime);
   const profile = 'tilo-identity:ee@host.example:8443';
@@ -415,34 +421,16 @@ test('a device the workspace let go asks to join again under the certificate it 
   const kept = JSON.stringify({cert: certificate, hostCert: host}).replace('"issued_at_ns":5', '"issued_at_ns":1792040183583123457');
   values.set(`${profile}/${PROFILE_DEVICE}/certificate`, new TextEncoder().encode(kept));
   runtime.hostInfo = async () => JSON.stringify({address: HOST_ADDRESS, hostCert: host});
-  runtime.askToJoinAs = async (post, invitation, held, custodyKey, requestId, name, token) => {
-    runtime.calls.askedAs = {held, token: token && new TextDecoder().decode(token)};
-    return JSON.stringify({reply: {kind: 'admitted', room: WORKSPACE, workspaceId: '7', name: 'Acme', role: 'Editor'}, cert: JSON.parse(held).cert});
-  };
   const common = {origin: 'https://host.example:8443', identity, runtime, custody, desktop, namespaces, profile,
     fetch: async () => { throw new Error('no network in tests'); }};
   const peer = await joinWorkspace({...common, invitation: Uint8Array.from([1, 2, 3]), admissionToken: 'one-time-token', storage: null});
-  assert.equal(runtime.calls.askedAs.held, kept, 'asked under the certificate the device holds');
-  assert.equal(runtime.calls.askedAs.token, 'one-time-token');
-  assert.equal(runtime.calls.asked, undefined, 'no certificate made anew');
+  assert.equal(runtime.calls.accepted.held, kept, 'asked with the certificate the device holds');
+  assert.equal(runtime.calls.accepted.admissionToken, 'one-time-token');
   assert.match(runtime.peer.configText, /"issued_at_ns":1792040183583123457[,}]/, 'and the session runs under it, exactly');
   assert.equal(textOf(values.get(`${profile}/${PROFILE_DEVICE}/certificate`)), kept, 'kept as the very text it was');
   assert.equal(runtime.calls.certify.length, 0);
   assert.deepEqual(handles.map(handle => [handle.device, handle.released]), [[PROFILE_DEVICE, 1], [PROFILE_DEVICE, 0]]);
   await peer.dispose();
-
-  // Not the device's, or not the person's: certified anew, as before.
-  for (const other of [{...certificate, device_public_key: Array(32).fill(0xdd)}, {...certificate, user_public_key: Array(32).fill(0xaa)}]) {
-    const fresh = fakeRuntime();
-    const fakes = profileFakes(fresh);
-    fakes.values.set(`${profile}/${PROFILE_DEVICE}/certificate`, new TextEncoder().encode(JSON.stringify({cert: other, hostCert: host})));
-    fresh.hostInfo = runtime.hostInfo;
-    fresh.askToJoinAs = async () => assert.fail('another device\'s or person\'s certificate is never presented');
-    const joined = await joinWorkspace({...common, runtime: fresh, desktop: fakes.desktop, namespaces: fakes.namespaces,
-      invitation: Uint8Array.from([1, 2, 3]), admissionToken: 'one-time-token', storage: null});
-    assert.equal(fresh.calls.asked.root, identity);
-    await joined.dispose();
-  }
 });
 
 test('a peer with a store of its own never moves it: a host set up again is refused even once it admitted the device', async () => {
@@ -823,11 +811,9 @@ test('recertification retires voice before disposing the certified peer', async 
   await peer.dispose();
 });
 
-test('an invitation asks the door to admit the root-certified device, and a door that answers waiting is polled', async () => {
+test('an invitation is accepted as the root-certified device, through the shared entry', async () => {
   const runtime = fakeRuntime();
   const store = memoryStore();
-  const rows = new Map();
-  const storage = {getItem: key => rows.get(key) ?? null, setItem: (key, value) => rows.set(key, value)};
   const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
   const offer = await inspectInvitation('https://host.example:8443', 'AQID', {runtime});
   assert.deepEqual(runtime.calls.inspected, [1, 2, 3]);
@@ -839,21 +825,19 @@ test('an invitation asks the door to admit the root-certified device, and a door
   const progress = [];
   const peer = await joinWorkspace({
     origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity, displayName: 'Bob',
-    runtime, custody, store, storage, pollMs: 1, onProgress: event => progress.push(event.phase),
+    runtime, custody, store, storage: null, onProgress: event => progress.push(event.phase),
     fetch: async () => { throw new Error('no network in tests'); },
   });
-  assert.deepEqual(progress, ['asking', 'waiting', 'waiting', 'admitted']);
-  assert.equal(runtime.calls.asked.root, identity);
-  assert.equal(runtime.calls.asked.name, 'Bob');
-  assert.equal(runtime.calls.status[0].device, 'dd'.repeat(32));
-  assert.equal(runtime.calls.status[0].requestId, runtime.calls.asked.requestId);
+  assert.deepEqual(progress, ['asking', 'admitted']);
+  assert.deepEqual(runtime.calls.accepted.invitation, [1, 2, 3]);
+  assert.equal(runtime.calls.accepted.root, identity);
+  assert.equal(runtime.calls.accepted.name, 'Bob');
+  assert.equal(runtime.calls.accepted.held, null, 'a store with no certificate holds none to enter with');
   assert.equal(runtime.calls.certify.length, 0, 'no certification at the host');
   assert.deepEqual(runtime.peer.config.cert, {guest: true, device_public_key: Array(32).fill(0xdd)});
   assert.equal(runtime.peer.workspace, WORKSPACE);
-  assert.equal(rows.get('tilo-join-requests'), '{}', 'the answered request is forgotten');
   await peer.dispose();
 });
-
 test('a device key opened for a peer is let go when it is disposed, aborted or fails to connect', async () => {
   const custody = () => ({closed: 0, close() { this.closed += 1; }});
   const disposed = custody();
@@ -886,8 +870,7 @@ test('a pre-admitted person joins without waiting for the owner', async () => {
     fetch: async () => { throw new Error('no network in tests'); },
   });
   assert.deepEqual(progress, ['asking', 'admitted']);
-  assert.equal(runtime.calls.asked.token, 'one-time-token');
-  assert.equal(runtime.calls.status, undefined, 'never polled');
+  assert.equal(runtime.calls.accepted.admissionToken, 'one-time-token');
   assert.equal(runtime.peer.workspace, WORKSPACE);
   await peer.dispose();
 });
@@ -900,16 +883,12 @@ test('an invitation the host will not honour is refused in plain words, and so i
   await assert.rejects(inspectInvitation('https://host.example:8443', 'AQID', {runtime}),
     {name: 'AdmissionError', code: 'invitation-unusable', message: UNUSABLE_INVITATION});
   const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
-  const join = async reply => {
-    const refusing = fakeRuntime();
-    refusing.askToJoin = async () => JSON.stringify({reply, cert: {guest: true, device_public_key: Array(32).fill(0xdd)}});
-    return joinWorkspace({origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity,
-      admissionToken: 'another-persons-token', runtime: refusing, custody, store: memoryStore(), storage: null,
-      fetch: async () => { throw new Error('no network in tests'); }});
-  };
-  await assert.rejects(join({kind: 'refused', reason: 'this invitation is bound to another person'}),
-    {name: 'AdmissionError', code: 'refused', message: REFUSED_JOIN});
-  await assert.rejects(join({kind: 'declined'}), {name: 'AdmissionError', code: 'refused', message: /declined/});
+  const refusing = fakeRuntime();
+  refusing.calls.refuse = 'The workspace did not let this device in: this invitation is bound to another person';
+  await assert.rejects(joinWorkspace({origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity,
+    admissionToken: 'another-persons-token', runtime: refusing, custody, store: memoryStore(), storage: null,
+    fetch: async () => { throw new Error('no network in tests'); }}),
+  {name: 'AdmissionError', code: 'refused', message: REFUSED_JOIN});
 });
 
 test('a person renamed since the page started says the new name with the next frame', async () => {

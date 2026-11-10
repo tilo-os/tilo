@@ -395,6 +395,7 @@ impl Connection {
         self.device
             .redeem(&self.relay, invitation, &label)
             .await
+            .map(drop)
             .map_err(RelayError::from)
     }
 

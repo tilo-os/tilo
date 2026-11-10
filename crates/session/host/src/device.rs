@@ -9,7 +9,7 @@ use tilo_actions::remote::{
     ActionHost as _, ActionHostError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionTarget,
 };
-use tilo_relay_client::login::redeem;
+use tilo_relay_client::login::{Admission, redeem};
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_relay_client::login::{Door, SignIn, through_door};
 use tilo_relay_client::{CertifyError, DeviceSigner, HttpClient};
@@ -247,7 +247,8 @@ impl Device {
         }
     }
 
-    /// Redeem `invitation`, which admits this device to a workspace.
+    /// Redeem `invitation`, which admits this very device to a workspace, shown to its people as
+    /// `name`.
     ///
     /// # Errors
     /// The invitation was not one of the person's, or the workspace refused the entry.
@@ -255,9 +256,17 @@ impl Device {
         &self,
         client: &dyn HttpClient,
         invitation: &[u8],
-        label: &str,
-    ) -> Result<(), CertifyError> {
-        redeem(client, invitation, &self.cert, self.signer.as_ref(), label).await
+        name: &str,
+    ) -> Result<Admission, CertifyError> {
+        redeem(
+            client,
+            invitation,
+            &self.cert,
+            self.signer.as_ref(),
+            name,
+            None,
+        )
+        .await
     }
 
     /// The person's own workspace on the host, asked from inside `workspace_id`, and the invitation
@@ -393,6 +402,121 @@ impl Device {
     }
 }
 
+/// How long before it ends a certificate a device holds is certified anew rather than entered with.
+const RENEWING_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
+
+/// A certificate a device holds from an earlier entry, and the host's own certificate as it was
+/// then: what the page keeps, as `{cert, hostCert}`.
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct Held {
+    pub cert: DeviceCert,
+    #[serde(rename = "hostCert")]
+    pub host_cert: Option<DeviceCert>,
+}
+
+/// The certificate `device` enters a workspace of the host `host` with: the one it `held` from that
+/// same host where it still serves (it certifies this very key, as `root`'s person when a root is
+/// at hand, and does not end within a day), else one `root` certifies now, labeled `label`. A
+/// workspace keeps the certificate of every device it admitted, also once its person left, and
+/// admits that device again only under the same one: so a device that holds one enters with it,
+/// and never with another device's.
+///
+/// # Errors
+/// Nothing held serves and no root is at hand ([`HostRefusal::NO_CERTIFICATE`]), or the root did
+/// not sign.
+pub async fn entering_certificate(
+    held: Option<&Held>,
+    host: &DeviceCert,
+    device: &dyn DeviceSigner,
+    root: Option<&dyn DeviceSigner>,
+    label: &str,
+    now_ns: u64,
+) -> Result<DeviceCert, HostRefusal> {
+    let serves = |held: &&Held| {
+        let same_host = held.host_cert.as_ref().is_some_and(|kept| {
+            kept.user_public_key == host.user_public_key
+                && kept.device_public_key == host.device_public_key
+        });
+        let person = root.is_none_or(|root| held.cert.user_public_key == root.device_public_key());
+        let lasting = held
+            .cert
+            .expires_at_ns
+            .is_none_or(|end| end > now_ns.saturating_add(RENEWING_NS));
+        held.cert.device_public_key == device.device_public_key() && same_host && person && lasting
+    };
+    if let Some(held) = held.filter(serves) {
+        return Ok(held.cert.clone());
+    }
+    let Some(root) = root else {
+        return Err(HostRefusal {
+            code: HostRefusal::NO_CERTIFICATE.to_owned(),
+            message: "This device holds no certificate of this host's for its key, and no root \
+                      to certify it with."
+                .to_owned(),
+            refusal: None,
+        });
+    };
+    tilo_relay_client::invite::guest_certificate(root, device.device_public_key(), label, now_ns)
+        .await
+        .map_err(|error| HostRefusal {
+            code: HostRefusal::NO_CERTIFICATE.to_owned(),
+            message: error.to_string(),
+            refusal: None,
+        })
+}
+
+/// A device entering a workspace with an invitation: `held` and `root` choose the certificate
+/// ([`entering_certificate`]), `label` names a certificate made now, `name` is how the
+/// workspace's people see the person, and `token` is the one-time token of the pre-admission the
+/// invitation was issued under, if any.
+pub struct Entering<'a> {
+    pub held: Option<&'a Held>,
+    pub root: Option<&'a dyn DeviceSigner>,
+    pub label: &'a str,
+    pub name: &'a str,
+    pub token: Option<&'a [u8]>,
+}
+
+/// Accept `invitation` on the host `client` reaches, as `device`: the host says who it is, the
+/// device enters with the certificate [`entering_certificate`] chooses, and the workspace admits
+/// it. Resolves to the admission, the certificate the device was admitted under and the host's
+/// own: what its session starts with.
+///
+/// # Errors
+/// The host was not reached, the device holds no certificate it could enter with, or the
+/// workspace did not admit it.
+pub async fn accept_invitation(
+    client: &dyn HttpClient,
+    invitation: &[u8],
+    device: &dyn DeviceSigner,
+    entering: Entering<'_>,
+) -> Result<(Admission, DeviceCert, DeviceCert), HostRefusal> {
+    let host = tilo_relay_client::https::host_info(client)
+        .await
+        .map_err(|error| HostRefusal::unanswered(&error.to_string()))?
+        .host_cert;
+    let cert = entering_certificate(
+        entering.held,
+        &host,
+        device,
+        entering.root,
+        entering.label,
+        tilo_clock::unix_now_ns(),
+    )
+    .await?;
+    let admission = redeem(
+        client,
+        invitation,
+        &cert,
+        device,
+        entering.name,
+        entering.token,
+    )
+    .await
+    .map_err(HostRefusal::from)?;
+    Ok((admission, cert, host))
+}
+
 /// Why a workspace's host did not do what a device asked of it, as the host said it: what every
 /// caller (the CLI, the front door, the page) reads and shows, never a sentence to parse.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -417,6 +541,8 @@ impl HostRefusal {
     pub const MALFORMED: &'static str = "malformed";
     /// The workspace did not admit the device.
     pub const NOT_ADMITTED: &'static str = "not_admitted";
+    /// The device holds no certificate it could enter with, and no root to certify it.
+    pub const NO_CERTIFICATE: &'static str = "no_certificate";
 
     /// The host's refusal `error`, its typed refusal read off it where it carries one.
     #[must_use]

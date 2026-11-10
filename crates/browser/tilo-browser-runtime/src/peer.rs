@@ -666,137 +666,73 @@ pub async fn inspect_invitation(post: Function, invitation: Vec<u8>) -> Result<S
     Ok(join_reply_json(reply).to_string())
 }
 
-/// Ask to join with `invitation` as this page's device (`custody`),
-/// certified by the person's own root (`root`) as `label`, named `name` to
-/// the workspace's owner, under request `requestIdHex`; with `admissionToken`,
-/// the one-time token of the owner's pre-admission, the host admits it at
-/// once. Resolves to JSON
-/// `{reply, cert}`: the host's answer (`waiting`, `admitted`, `declined`,
-/// `refused`) and the device certificate the page then connects with.
-#[wasm_bindgen(js_name = askToJoin)]
-pub async fn ask_to_join(
-    post: Function,
-    invitation: Vec<u8>,
-    root: JsValue,
-    custody: JsValue,
-    request_id_hex: String,
-    name: String,
+/// What a page says as it accepts an invitation ([`accept_invitation`]): the certificate this
+/// device holds (`{cert, hostCert}` as the page keeps it, or as pairing certified it), the label a
+/// certificate made now carries, the name the workspace's people see, and the pre-admission's
+/// one-time token.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Accepting {
+    #[serde(default)]
+    held: Option<String>,
     label: String,
-    admission_token: Option<Vec<u8>>,
-) -> Result<String, JsError> {
-    let root = PageSigner::from_js(&root)?;
-    let signer = PageSigner::from_js(&custody)?;
-    let cert = tilo_relay_client::invite::guest_certificate(
-        &root,
-        signer.device_public_key(),
-        &label,
-        ui::time::unix_now_ns(),
-    )
-    .await
-    .map_err(js_error)?;
-    ask_as(
-        post,
-        &invitation,
-        cert,
-        &signer,
-        &request_id_hex,
-        &name,
-        admission_token,
-    )
-    .await
+    name: String,
+    #[serde(default)]
+    admission_token: Option<String>,
 }
 
-/// [`ask_to_join`] as a device already certified elsewhere (`certificate`,
-/// `{cert}` JSON as `certifyDevice` resolves to: a device a person paired
-/// from another of theirs) rather than by a root the page holds.
-#[wasm_bindgen(js_name = askToJoinAs)]
-pub async fn ask_to_join_as(
+/// Accept `invitation` at the host `post` reaches, as this page's device (`custody`), through the
+/// one entry every device takes ([`tilo_session_host::device::accept_invitation`]): it enters with
+/// the certificate it holds from that host where that still serves, else with one the person's
+/// root (`root`, when the page holds it) certifies now. `options` is [`Accepting`] JSON. Resolves
+/// to `{admission: {workspace, workspace_id, name, role}, certificate: {cert, hostCert}}` JSON,
+/// the certificate what the page's session starts with.
+///
+/// # Errors
+///
+/// Rejects with an `Error` named `HostRefusal`, its `code` saying why: `not_admitted` (the
+/// workspace refused, the reason in its words), `no_certificate`, or `unanswered`.
+#[wasm_bindgen(js_name = acceptInvitation)]
+pub async fn accept_invitation(
     post: Function,
     invitation: Vec<u8>,
-    certificate: String,
     custody: JsValue,
-    request_id_hex: String,
-    name: String,
-    admission_token: Option<Vec<u8>>,
-) -> Result<String, JsError> {
-    #[derive(Deserialize)]
-    struct Stored {
-        cert: DeviceCert,
-    }
-    let Stored { cert } = serde_json::from_str(&certificate).map_err(js_error)?;
-    let signer = PageSigner::from_js(&custody)?;
-    if signer.device_public_key() != cert.device_public_key {
-        return Err(js_error("custody does not hold the certified device key"));
-    }
-    ask_as(
-        post,
-        &invitation,
-        cert,
-        &signer,
-        &request_id_hex,
-        &name,
-        admission_token,
-    )
-    .await
-}
-
-async fn ask_as(
-    post: Function,
-    invitation: &[u8],
-    cert: DeviceCert,
-    signer: &PageSigner,
-    request_id_hex: &str,
-    name: &str,
-    admission_token: Option<Vec<u8>>,
-) -> Result<String, JsError> {
-    let request_id = request_id(request_id_hex)?;
-    let reply = match admission_token {
-        None => {
-            tilo_relay_client::invite::ask_to_join(
-                &PageHttp(post),
-                invitation,
-                &cert,
-                signer,
-                request_id,
-                name,
-            )
-            .await
-        }
-        Some(token) => {
-            tilo_relay_client::invite::ask_to_join_pre_admitted(
-                &PageHttp(post),
-                invitation,
-                &cert,
-                signer,
-                request_id,
-                name,
-                &token,
-            )
-            .await
-        }
-    }
-    .map_err(js_error)?;
-    Ok(serde_json::json!({"reply": join_reply_json(reply), "cert": cert}).to_string())
-}
-
-/// Where join request `requestIdHex` of device `devicePublicKeyHex` stands:
-/// JSON as [`ask_to_join`]'s `reply`.
-#[wasm_bindgen(js_name = joinStatus)]
-pub async fn join_status(
-    post: Function,
-    request_id_hex: String,
-    device_public_key_hex: String,
-) -> Result<String, JsError> {
-    let reply = tilo_relay_client::https::join(
+    root: JsValue,
+    options: String,
+) -> Result<String, JsValue> {
+    use tilo_session_host::device::{Entering, Held};
+    let options: Accepting = serde_json::from_str(&options).map_err(js_error)?;
+    let held: Option<Held> = options
+        .held
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(js_error)?;
+    let device = PageSigner::from_js(&custody)?;
+    let root = if root.is_undefined() || root.is_null() {
+        None
+    } else {
+        Some(PageSigner::from_js(&root)?)
+    };
+    let (admission, cert, host_cert) = tilo_session_host::device::accept_invitation(
         &PageHttp(post),
-        &tilo_relay_protocol::workspaces::JoinStep::Status {
-            request_id: request_id(&request_id_hex)?,
-            device_public_key: device_key(&device_public_key_hex)?,
+        &invitation,
+        &device,
+        Entering {
+            held: held.as_ref(),
+            root: root.as_ref().map(|root| root as &dyn DeviceSigner),
+            label: &options.label,
+            name: &options.name,
+            token: options.admission_token.as_deref().map(str::as_bytes),
         },
     )
     .await
-    .map_err(js_error)?;
-    Ok(join_reply_json(reply).to_string())
+    .map_err(|refusal| refusal_error(&refusal))?;
+    Ok(serde_json::json!({
+        "admission": admission,
+        "certificate": {"cert": cert, "hostCert": host_cert},
+    })
+    .to_string())
 }
 
 /// The canonical encoding of a certificate (JSON in): what a native device

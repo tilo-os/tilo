@@ -28,7 +28,7 @@ import {resolveResourceReference, openResourceReference} from './resource-refere
 import {backoffDelay} from './reconnect.mjs';
 import {createSpeakers} from './live-speakers.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
-import {memberText, objectText} from './json-text.mjs';
+import {memberText} from './json-text.mjs';
 import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
 import {AdmissionError} from './admission.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
@@ -1355,7 +1355,6 @@ export async function pairDevice(options) {
   return options.custody ? pairing() : withCustody(own, pairing, signal);
 }
 
-const JOIN_REQUESTS = 'tilo-join-requests';
 const hexOf = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
 
 /**
@@ -1363,12 +1362,10 @@ const hexOf = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '
  * `origin`, as `identity` (default the current one): this page's device for
  * that host is certified by the person's own root, and the invitation is the
  * approval of whoever made it, so the host admits at once. Resolves to the
- * `CertifiedPeer` in the workspace; rejects when the host refuses. A door
- * that answers `waiting` anyway (a build of its own) is polled every
- * `pollMs` (`onProgress({phase: 'waiting'})`), and a page that reloads while
- * waiting asks again under the same request. With `admissionToken` (the
- * one-time token of an owner's pre-admission for this invitation) the host
- * admits the page at once too.
+ * `CertifiedPeer` in the workspace; rejects when the host refuses. With
+ * `admissionToken` (the one-time token of an owner's pre-admission for this
+ * invitation) the host admits the page at once too. The entry itself is the
+ * shared one every device takes (`acceptInvitation` in wasm).
  */
 export async function joinWorkspace(options) {
   const identity = options.identity ?? currentIdentity();
@@ -1380,15 +1377,13 @@ export async function joinWorkspace(options) {
 }
 
 /**
- * The certificate (`{cert, hostCert}` JSON) this profile's device already
- * holds from the host answering at `post`, as the person `identity`, or
- * `null`. A workspace keeps the certificate of every device it admitted, also
- * once its person left (removed, or pruned after an absence), and admits
- * that device again only under the same certificate: a device that holds
- * one asks under it rather than certify itself anew. Read from `store`, else
- * from the namespace the profile keeps its peer in now.
+ * The certificate (`{cert, hostCert}` JSON text) this profile's device kept
+ * from an earlier entry, or `null`: read from `store`, else from the namespace
+ * the profile keeps its peer in now. Whether it still serves to enter with
+ * (this very key, this person, the same host, not ending soon) is the shared
+ * entry's to decide (`acceptInvitation`).
  */
-async function keptDeviceCertificate({runtime, profile, slot = 0, store, desktop, namespaces = globalThis.localStorage, custody, identity, host}) {
+async function keptDeviceCertificate({runtime, profile, slot = 0, store, desktop, namespaces = globalThis.localStorage}) {
   let opened;
   try {
     if (!store) {
@@ -1398,15 +1393,7 @@ async function keptDeviceCertificate({runtime, profile, slot = 0, store, desktop
       opened = await surface.openProfileStorage(profile, device);
       store = profileStore(runtime, profile, device);
     }
-    const kept = await store.get(CERTIFICATE);
-    const cert = kept ? JSON.parse(kept)?.cert : undefined;
-    const keptHost = kept ? JSON.parse(kept)?.hostCert : undefined;
-    const ours = cert && hexKey(cert.device_public_key) === hexKey(custody.publicKey)
-      && hexKey(cert.user_public_key) === identity.userPublicKey;
-    // Only one this host certified and pinned: a host set up again is
-    // never handed what was kept for the one before it.
-    const here = keptHost && host?.hostCert && sameHost(keptHost, host.hostCert);
-    return ours && here && !expiresWithinADay(kept) ? kept : null;
+    return (await store.get(CERTIFICATE)) ?? null;
   } catch (error) {
     console.warn('join: the device\'s certificate could not be read', error);
     return null;
@@ -1416,8 +1403,8 @@ async function keptDeviceCertificate({runtime, profile, slot = 0, store, desktop
 }
 
 async function join({
-  origin, invitation, identity, displayName = '', label = 'Browser', signal, onProgress, pollMs = 2000,
-  admissionToken, runtime, custody, profile, storage = globalThis.localStorage, fetch: fetcher, certified, admitOnly = false, ...connectOptions
+  origin, invitation, identity, displayName = '', label = 'Browser', signal, onProgress,
+  admissionToken, runtime, custody, profile, fetch: fetcher, certified, ...connectOptions
 }) {
   // A device certified elsewhere (`certified`, a paired device) asks as
   // itself; any other asks as the person whose root the page holds.
@@ -1429,56 +1416,30 @@ async function join({
   profile ??= identityProfile(person, origin);
   custody ??= await openDeviceCustody({profile, storage: idbStorage()});
   const custodyForWasm = custody.kind === 'sealed-seed' ? await custody.unseal() : custody;
-  const post = httpsPost(origin, fetcher);
-  const bytes = invitationBytes(invitation);
-  // The request id is public: it lets a reloaded page resume its request.
-  const key = `${profile}:${hexOf(bytes.slice(-32))}`;
-  const saved = JSON.parse(storage?.getItem?.(JOIN_REQUESTS) ?? '{}');
-  const requestId = saved[key] ?? hexOf(crypto.getRandomValues(new Uint8Array(32)));
-  saved[key] = requestId;
-  storage?.setItem?.(JOIN_REQUESTS, JSON.stringify(saved));
-  const forget = () => {
-    const current = JSON.parse(storage?.getItem?.(JOIN_REQUESTS) ?? '{}');
-    delete current[key];
-    storage?.setItem?.(JOIN_REQUESTS, JSON.stringify(current));
-  };
   signal?.throwIfAborted();
   onProgress?.({phase: 'asking'});
-  const token = admissionToken ? new TextEncoder().encode(admissionToken) : undefined;
-  const hostText = await runtime.hostInfo(post);
-  const host = JSON.parse(hostText);
-  const kept = certified ? null : await keptDeviceCertificate({runtime, profile, slot: custody.slot, store: connectOptions.store,
-    desktop: connectOptions.desktop, namespaces: connectOptions.namespaces, custody: custodyForWasm, identity, host});
-  const held = certified ?? kept;
-  const askedText = held
-    ? await runtime.askToJoinAs(post, bytes, held, custodyForWasm, requestId, fitDisplayName(displayName || label), token)
-    : await runtime.askToJoin(post, bytes, identity, custodyForWasm, requestId, fitDisplayName(displayName || label), fitDisplayName(label), token);
-  const asked = JSON.parse(askedText);
-  let reply = asked.reply;
-  const device = hexOf(asked.cert.device_public_key);
-  while (reply.kind === 'waiting') {
-    onProgress?.({phase: 'waiting'});
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(resolve, pollMs);
-      signal?.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, {once: true});
-    });
-    reply = JSON.parse(await runtime.joinStatus(post, requestId, device));
+  const held = certified ?? await keptDeviceCertificate({runtime, profile, slot: custody.slot, store: connectOptions.store,
+    desktop: connectOptions.desktop, namespaces: connectOptions.namespaces});
+  // The shared entry chooses the certificate (the one this very key holds
+  // from this host, else one the root makes now) and has the workspace admit
+  // this device under it.
+  let accepted;
+  try {
+    accepted = await runtime.acceptInvitation(httpsPost(origin, fetcher), invitationBytes(invitation), custodyForWasm,
+      identity ?? undefined, JSON.stringify({held, label: fitDisplayName(label), name: fitDisplayName(displayName || label),
+        ...(admissionToken ? {admissionToken} : {})}));
+  } catch (error) {
+    console.warn('join refused:', error?.code ?? error?.name, error?.message ?? error);
+    throw Object.assign(new AdmissionError('refused', REFUSED_JOIN), {reason: error?.message ?? String(error), code: 'refused'});
   }
-  if (reply.kind !== 'admitted') {
-    forget();
-    if (reply.kind === 'declined') throw new AdmissionError('refused', 'The workspace owner declined your request to join');
-    console.warn('join refused:', reply.reason ?? reply.kind);
-    throw Object.assign(new AdmissionError('refused', REFUSED_JOIN), {reason: reply.reason ?? reply.kind});
-  }
-  forget();
-  onProgress?.({phase: 'admitted', room: reply.room, workspaceName: reply.name, role: reply.role.toLowerCase()});
-  if (admitOnly) return {workspace: reply.room};
+  const {admission} = JSON.parse(accepted);
+  onProgress?.({phase: 'admitted', room: admission.workspace, workspaceName: admission.name, role: admission.role.toLowerCase()});
   return connect({
-    ...connectOptions, origin, identity, userPublicKey: person.userPublicKey, workspace: reply.room, label, displayName, custody, runtime, signal,
+    ...connectOptions, origin, identity, userPublicKey: person.userPublicKey, workspace: admission.workspace, label, displayName, custody, runtime, signal,
     profile: connectOptions.store ? undefined : profile,
-    // Certificates go on as the text they were kept or written as: their
+    // The certificate goes on as the text the entry wrote it as: its
     // nanosecond timestamps exceed what a JavaScript number holds exactly
     // (json-text.mjs).
-    fetch: fetcher, deviceCertificate: kept ?? objectText({cert: memberText(askedText, 'cert'), hostCert: memberText(hostText, 'hostCert')}),
+    fetch: fetcher, deviceCertificate: memberText(accepted, 'certificate'),
   });
 }

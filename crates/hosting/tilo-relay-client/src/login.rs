@@ -323,51 +323,79 @@ pub async fn through_door(
     label: &str,
 ) -> Result<(), CertifyError> {
     let (invitation, token) = ask_door(door, cert, name).await?;
-    let reply = ask_to_join_pre_admitted(
+    redeem(
         client,
         &invitation,
         cert,
         signer,
-        rand::random(),
         label,
-        token.as_bytes(),
+        Some(token.as_bytes()),
     )
-    .await?;
-    let_in(reply, "This workspace did not let this computer in.")
+    .await
+    .map(drop)
 }
 
-/// Redeem `invitation` on the host `client` posts to, as the device `cert`
-/// certifies, labeled `label`.
+/// What a workspace said as it admitted a device.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct Admission {
+    /// The workspace's UUID.
+    pub workspace: String,
+    /// Its relay workspace.
+    pub workspace_id: u64,
+    /// Its name.
+    pub name: String,
+    /// What the device's person may do there.
+    pub role: tilo_relay_protocol::workspaces::WorkspaceRole,
+}
+
+/// Redeem `invitation` on the host `client` posts to, as the device `cert` certifies (`signer`
+/// holding its key), shown to the workspace's people as `name`; with `token`, the one-time token of
+/// the pre-admission it was issued under. An invitation admits by the grant of whoever issued it,
+/// so the workspace admits the device at once or refuses.
 ///
 /// # Errors
 ///
-/// The host was not reached, or did not admit the device.
+/// The host was not reached ([`CertifyError::Transport`]), or did not admit the device
+/// ([`CertifyError::Denied`], with the workspace's own reason).
 pub async fn redeem(
     client: &dyn HttpClient,
     invitation: &[u8],
     cert: &DeviceCert,
     signer: &dyn DeviceSigner,
-    label: &str,
-) -> Result<(), CertifyError> {
-    let reply = ask_to_join(client, invitation, cert, signer, rand::random(), label).await?;
-    let_in(
-        reply,
-        "The person's workspace did not let this computer in.",
-    )
-}
-
-/// `reply` when the workspace admitted the device, or `refused` with the
-/// workspace's own reason after it.
-fn let_in(
-    reply: tilo_relay_protocol::workspaces::JoinReply,
-    refused: &str,
-) -> Result<(), CertifyError> {
-    match reply {
-        tilo_relay_protocol::workspaces::JoinReply::Admitted { .. } => Ok(()),
-        tilo_relay_protocol::workspaces::JoinReply::Refused(reason) => {
-            Err(CertifyError::Denied(format!("{refused} {reason}")))
+    name: &str,
+    token: Option<&[u8]>,
+) -> Result<Admission, CertifyError> {
+    use tilo_relay_protocol::workspaces::JoinReply;
+    let request = rand::random();
+    let reply = match token {
+        Some(token) => {
+            ask_to_join_pre_admitted(client, invitation, cert, signer, request, name, token).await?
         }
-        _ => Err(CertifyError::Denied(refused.to_owned())),
+        None => ask_to_join(client, invitation, cert, signer, request, name).await?,
+    };
+    match reply {
+        JoinReply::Admitted {
+            workspace,
+            workspace_id,
+            name,
+            role,
+        } => Ok(Admission {
+            workspace,
+            workspace_id,
+            name,
+            role,
+        }),
+        JoinReply::Refused(reason) => Err(CertifyError::Denied(format!(
+            "The workspace did not let this device in: {reason}"
+        ))),
+        JoinReply::Declined => Err(CertifyError::Denied(
+            "The workspace no longer admits this device.".to_owned(),
+        )),
+        JoinReply::Invitation { .. } | JoinReply::Challenge { .. } | JoinReply::RetiredWaiting => {
+            Err(CertifyError::Denied(
+                "The workspace answered something other than an admission.".to_owned(),
+            ))
+        }
     }
 }
 
