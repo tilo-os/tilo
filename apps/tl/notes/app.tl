@@ -768,3 +768,13 @@ scenario "a first note" -> Note {
         ),
     )
 }
+
+/// A note under another, open: the trail above it says where it stands.
+scenario "a nested note" -> Note {
+    let home = notebook.notes.insert(
+        Note(title: "Home", body: RichText("What the flat needs, and what we cook in it.")),
+    )
+    notebook.notes.insert(
+        Note(title: "Groceries", body: RichText("Oat milk, eggs, two lemons."), parent: home),
+    )
+}

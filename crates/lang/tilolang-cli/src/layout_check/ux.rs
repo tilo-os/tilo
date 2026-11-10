@@ -728,7 +728,11 @@ fn listed_detail(
     keys: &mut Vec<String>,
     out: &mut Vec<Problem>,
 ) {
+    // A navigation list offers places, not the items a page is of: its chosen place says where
+    // the person is, and a page may name a place inside the one chosen (`Inbox` under `All
+    // inboxes`). That is `UnchosenPlace`'s rule, not this one.
     if is_list(node)
+        && node.widget != NAV_LIST
         && let Some(semantics) = &node.semantics
     {
         let rows: Vec<(String, bool)> = semantics

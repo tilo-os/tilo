@@ -764,6 +764,8 @@ view video_page(v: Video) {
                     on press: watch_later(v)
                 }
             }
+        }
+        stack(gap: .group) {
             ui.Facts {
                 ui.Fact(views_text(v.views), icon: .eye)
                 ui.Fact(v.published, icon: .calendar)

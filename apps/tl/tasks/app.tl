@@ -825,69 +825,76 @@ view task_page(t: Task) {
 /// A task where it stands: opened in the list it is an item of, or as a page of its own.
 template view task_body(t: Task) {
     state step: Text
-    stack(gap: .related) {
-        row(gap: .related, align: .start) {
-            ui.Checkbox(bind: t.done) {
-                on check: check(t)
-            }
-            ui.TextInput(bind: t.title, placeholder: "What to do", title: true, fill: 1.0)
-        }
-        stack(lead: 1) {
-            std.origin(t)
-            ui.BlockEditor(bind: t.notes, placeholder: "Anything worth remembering about it.")
-        }
-    }
-    std.body() {
-        std.suggestions(t)
-        facts(t) {
-            ui.MenuButton(t.project?.name ?? "Inbox", icon: .folder) {
-                ui.MenuItem("Inbox", icon: .inbox, checked: t.project == .none) {
-                    on choose: unfile(t)
+    // The task's head — what it is and what was written of it — and the groups under it: the
+    // page's own blocks, a group gutter apart.
+    stack(gap: .group) {
+        stack(gap: .related) {
+            row(gap: .related, align: .start) {
+                ui.Checkbox(bind: t.done) {
+                    on check: check(t)
                 }
-                for p in tasks.projects {
-                    ui.MenuItem(p.name, icon: .folder, checked: t.project == p) {
-                        on choose: file(t, p)
+                ui.TextInput(bind: t.title, placeholder: "What to do", title: true, fill: 1.0)
+            }
+            stack(lead: 1) {
+                std.origin(t)
+                ui.BlockEditor(bind: t.notes, placeholder: "Anything worth remembering about it.")
+            }
+        }
+        std.body() {
+            std.suggestions(t)
+            facts(t) {
+                ui.MenuButton(t.project?.name ?? "Inbox", icon: .folder) {
+                    ui.MenuItem("Inbox", icon: .inbox, checked: t.project == .none) {
+                        on choose: unfile(t)
+                    }
+                    for p in tasks.projects {
+                        ui.MenuItem(p.name, icon: .folder, checked: t.project == p) {
+                            on choose: file(t, p)
+                        }
+                    }
+                }
+                ui.MenuButton(
+                    if t.remind == .none { "Remind" } else { "Reminder set" },
+                    icon: .bell,
+                ) {
+                    ui.MenuItem("Remind me…", icon: .bell) {
+                        on choose: remind_at(t)
+                    }
+                    ui.MenuItem("No reminder", icon: .bell_off, checked: t.remind == .none) {
+                        on choose: remind_clear(t)
                     }
                 }
             }
-            ui.MenuButton(if t.remind == .none { "Remind" } else { "Reminder set" }, icon: .bell) {
-                ui.MenuItem("Remind me…", icon: .bell) {
-                    on choose: remind_at(t)
+            section("Subtasks") {
+                // The walk over the tasks under this one is made only where there is one.
+                if not tasks.items.filter(x -> x.parent == t).is_empty() {
+                    let kids = tasks.items.descendants(t, .parent)
+                    std.outline(
+                        "Subtasks",
+                        kids,
+                        x -> x.parent,
+                        x -> x.title,
+                        "No subtasks yet",
+                        (moved, parent, before) -> move_to(
+                            tasks,
+                            moved,
+                            parent,
+                            before,
+                        ),
+                        x -> check(x),
+                        progress: x -> subtask_count(kids, x),
+                        fill: false,
+                    ) { (x, under) ->
+                        task_outline_row(x, t.project, under)
+                    }
                 }
-                ui.MenuItem("No reminder", icon: .bell_off, checked: t.remind == .none) {
-                    on choose: remind_clear(t)
+                ui.TextInput(bind: step, placeholder: "Add a subtask") {
+                    on submit: add_subtask(tasks, t, step).then(set(step, ""))
                 }
             }
+            std.linked(t, without: discussion.said_about(t))
+            discussion.thread(t)
+            std.history(t)
         }
-        section("Subtasks") {
-            // The walk over the tasks under this one is made only where there is one.
-            if not tasks.items.filter(x -> x.parent == t).is_empty() {
-                let kids = tasks.items.descendants(t, .parent)
-                std.outline(
-                    "Subtasks",
-                    kids,
-                    x -> x.parent,
-                    x -> x.title,
-                    "No subtasks yet",
-                    (moved, parent, before) -> move_to(
-                        tasks,
-                        moved,
-                        parent,
-                        before,
-                    ),
-                    x -> check(x),
-                    progress: x -> subtask_count(kids, x),
-                    fill: false,
-                ) { (x, under) ->
-                    task_outline_row(x, t.project, under)
-                }
-            }
-            ui.TextInput(bind: step, placeholder: "Add a subtask") {
-                on submit: add_subtask(tasks, t, step).then(set(step, ""))
-            }
-        }
-        std.linked(t, without: discussion.said_about(t))
-        discussion.thread(t)
-        std.history(t)
     }
 }

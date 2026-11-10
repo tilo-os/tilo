@@ -619,7 +619,9 @@ view document<R>(of: R, content: View) {
 /// title's text does, and the box that says the item is done stands in the gutter to their
 /// left. A document whose heading opens with its title alone has no lead to make.
 template view body(content: View) {
-    stack(lead: 1) {
+    // A document's blocks under its heading are groups of their own, a group gutter apart: a
+    // section's heading keeps its content a step under it and more room over it.
+    stack(lead: 1, gap: .group) {
         content
     }
 }
