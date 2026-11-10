@@ -384,6 +384,94 @@ impl Workspaces {
         )
     }
 
+    /// Everything the governor's copy holds of `record` of `app` in
+    /// `workspace`: its cleartext base and, for a sealed record, every write
+    /// of its history opened with the channel's keys this relay holds, none
+    /// merged. What an operator repairing a record that does not read whole
+    /// reads it from; `None` for a record not held here.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not governed here, or the record is sealed and its
+    /// channel's keys are not here.
+    pub async fn record_history(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+    ) -> Result<Option<tilo_peer_state::OpenedHistory>, super::CollaborationError> {
+        let state = self.workspace(workspace).await?;
+        let governed = state.lock().await;
+        let keys = governed
+            .record_keys(app, record)
+            .await
+            .map_err(super::CollaborationError::new)?;
+        let mut sealed_shut = |_: &SignedOp| Err("this host holds no keys of it".to_owned());
+        let history = match &keys {
+            Some(keys) => {
+                governed
+                    .peer()
+                    .publication()
+                    .opened_history(app, record, &mut keys.open())
+            }
+            None => governed
+                .peer()
+                .publication()
+                .opened_history(app, record, &mut sealed_shut),
+        };
+        drop(governed);
+        Ok(history)
+    }
+
+    /// Replace the sealed history of `record` of `app` in `workspace` with
+    /// `rebuilt`, the record as an operator rebuilt it from that history
+    /// ([`Self::record_history`]) where it does not merge whole: one sealed
+    /// checkpoint, compacted by this host as the workspace's governor and
+    /// published like any compaction, which every member takes in place of
+    /// exactly the writes it covers.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not governed here, the record is held in the clear or
+    /// its channel's keys are not here, or the compaction could not be made,
+    /// committed or published.
+    pub async fn compact_record_into(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+        rebuilt: Vec<u8>,
+    ) -> Result<(), super::CollaborationError> {
+        let state = self.workspace(workspace).await?;
+        let mut governed = state.lock().await;
+        let keys = governed
+            .record_keys(app, record)
+            .await
+            .map_err(super::CollaborationError::new)?
+            .ok_or_else(|| super::CollaborationError::new("the record is held in the clear"))?;
+        let now = SystemTime::now();
+        let mut candidate = governed.peer().clone();
+        candidate
+            .publication_mut()
+            .compact_sealed_history_into(
+                app,
+                record,
+                rebuilt,
+                &mut keys.open(),
+                &mut keys.seal(ContentRetention::Checkpoint),
+                &self.inner.host.key,
+                now,
+            )
+            .map_err(super::CollaborationError::new)?;
+        let collaboration = governed.collaboration().clone();
+        governed.commit(candidate, &self.inner.host.key, now, |_, _| {
+            Ok(collaboration)
+        })?;
+        self.settle(&mut governed).await?;
+        drop(governed);
+        Ok(())
+    }
+
     /// Seal the records the workspaces this relay takes part in hold in the clear, from
     /// now on: the host's operator decided it (the relay's `reseal`).
     #[cfg(feature = "agents")]

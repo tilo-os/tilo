@@ -87,7 +87,8 @@ pub use seed::{seed_workspace, workspace_seed};
 mod sealed_compaction;
 mod sealed_history;
 pub use sealed_compaction::{
-    OpenedRecord, SealCheckpoint, SealDelta, UnmergedReason, UnmergedWrite,
+    OpenedHistory, OpenedRecord, OpenedWrite, SealCheckpoint, SealDelta, UnmergedReason,
+    UnmergedWrite,
 };
 
 #[expect(

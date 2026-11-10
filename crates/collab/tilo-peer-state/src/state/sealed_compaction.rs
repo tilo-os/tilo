@@ -54,11 +54,47 @@ impl PeerPublicationMut<'_> {
             .documents
             .get(&route)
             .ok_or("sealed compaction of a record this state does not hold")?;
+        let merged = merge_sealed(document, open)?;
+        self.compact_sealed_history_into(app, record, merged, open, seal, key, now)
+    }
+
+    /// [`Self::compact_sealed_history`] into `rebuilt`, the record as its
+    /// key holder rebuilt it from a history that does not merge whole: one
+    /// writer wrote a sequence twice, so no merge holds both changes, and the
+    /// operator repairing the record carried what the change left out wrote
+    /// into `rebuilt`. The compaction replaces exactly the writes it covers,
+    /// as any compaction does; a replica without the key admits it the same
+    /// way. Nothing checks that `rebuilt` holds what the writes did: that is
+    /// the repair's to answer for.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::compact_sealed_history`], or `rebuilt` does not load.
+    pub fn compact_sealed_history_into(
+        self,
+        app: &str,
+        record: &str,
+        rebuilt: Vec<u8>,
+        open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+        seal: &mut SealCheckpoint<'_>,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<NeighbourMsg, String> {
+        AutoCommit::load(&rebuilt).map_err(err)?;
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        let document = self
+            .peer
+            .core
+            .documents
+            .get(&route)
+            .ok_or("sealed compaction of a record this state does not hold")?;
         if document.sealed.is_empty() {
             return Err("the record holds no sealed history to compact".into());
         }
-        let merged = merge_sealed(document, open)?;
-        let snapshot = DocumentMutation::Snapshot(merged).encode().map_err(err)?;
+        let snapshot = DocumentMutation::Snapshot(rebuilt).encode().map_err(err)?;
         let (metadata, ciphertext) = seal(&snapshot)?;
         if metadata.retention() != Some(ContentRetention::Checkpoint)
             || metadata.channel
@@ -418,7 +454,62 @@ pub(super) fn open_sealed(
     })
 }
 
+/// Everything a record's history holds, each write opened on its own and
+/// nothing merged ([`PeerPublication::opened_history`]): what an operator
+/// repairing a record that does not read whole reads it from.
+#[derive(Clone, Debug)]
+pub struct OpenedHistory {
+    /// The record's cleartext base, saved: the whole record for one written in
+    /// the clear.
+    pub base: Vec<u8>,
+    /// The record's sealed writes, in history order.
+    pub writes: Vec<OpenedWrite>,
+}
+
+/// One write of a sealed history, opened.
+#[derive(Clone, Debug)]
+pub struct OpenedWrite {
+    pub author: [u8; 32],
+    pub seq: u64,
+    /// What it writes, or why it does not open.
+    pub mutation: Result<DocumentMutation, String>,
+}
+
 impl PeerPublication<'_> {
+    /// The cleartext base of `record` of `app` and every write of its sealed
+    /// history opened with `open`, none merged: `None` for a record this state
+    /// does not hold. A record written in the clear has no writes.
+    pub fn opened_history(
+        self,
+        app: &str,
+        record: &str,
+        open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+    ) -> Option<OpenedHistory> {
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        let document = self.peer.core.documents.get(&route)?;
+        let writes = if document.encryption_required {
+            document
+                .sealed
+                .iter()
+                .map(|write| OpenedWrite {
+                    author: *write.author.as_bytes(),
+                    seq: write.seq,
+                    mutation: open(write)
+                        .and_then(|plain| DocumentMutation::decode(&plain).map_err(err)),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Some(OpenedHistory {
+            base: document.doc.saved(),
+            writes,
+        })
+    }
+
     /// `record` of `app` as its channel's key holder reads it: the cleartext
     /// base with every sealed write `open` opens merged over it, and the
     /// writes it leaves out (see [`OpenedRecord`]). A record that is not

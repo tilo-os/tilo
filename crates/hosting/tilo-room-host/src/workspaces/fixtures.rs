@@ -182,14 +182,27 @@ pub async fn test_host_taking_part(
     key: &SigningKey,
     cert: &DeviceCert,
 ) -> TestHost {
+    test_host_holding(state_root, key, cert, Arc::default()).await
+}
+
+/// [`test_host_taking_part`] whose device holds `keys`: the same keys open
+/// what a host before it on the same state sealed, as a device's channel
+/// service keeps its keys across a restart.
+///
+/// # Panics
+///
+/// The endpoint cannot bind or the host cannot open.
+pub async fn test_host_holding(
+    state_root: &Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+    keys: Arc<TestChannelKeys>,
+) -> TestHost {
     host_on(
         state_root,
         key,
         cert,
-        Some(DeviceChannels {
-            keys: Arc::new(TestChannelKeys::default()),
-            sink: None,
-        }),
+        Some(DeviceChannels { keys, sink: None }),
         None,
     )
     .await

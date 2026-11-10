@@ -308,6 +308,13 @@ name = "move_relay_content"
 required-features = ["web"]
 test = true
 
+# A one-off: repairs a record whose history holds a writer's sequence twice,
+# keeping what both of its branches wrote.
+[[example]]
+name = "repair_record_sequences"
+required-features = ["agents"]
+test = true
+
 [lints]
 workspace = true
 
