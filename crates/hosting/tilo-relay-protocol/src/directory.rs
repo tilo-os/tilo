@@ -205,7 +205,8 @@ pub const MAX_PAGE_ERROR_BYTES: usize = 4096;
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PageError {
-    /// What happened: `error` or `unhandledrejection`.
+    /// What happened: `error`, `unhandledrejection`, or `panic` for a runtime
+    /// panic the page heard but the browser could not throw.
     #[serde(default)]
     pub kind: String,
     #[serde(default)]

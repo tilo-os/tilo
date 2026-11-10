@@ -5,7 +5,9 @@
 //! must start over. The panic hook tells the page which window's application
 //! was running ([`ui::widget::panic_scope`]); `web/app-crash.mjs` keeps that
 //! window out of the next load, and [`quarantined`] shows its error in its
-//! place while every other window runs.
+//! place while every other window runs. A panic that named no window is the
+//! page's own: the same script starts the page over once, and says so on a
+//! screen rather than starting it over again when it comes straight back.
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};

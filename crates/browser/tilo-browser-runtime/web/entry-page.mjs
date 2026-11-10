@@ -21,7 +21,7 @@ import {doorCopy, failureMessage, inviteLinkTarget, localeMessages, localeMessag
 import {servedVersion, watchForUpdate} from './bundle-update.mjs';
 import {mountWaitList} from './door-wait-list.mjs';
 import {boot, grammar} from './entry.mjs';
-import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetchOfferedApplications, prepareGpu} from './host.mjs';
+import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetchOfferedApplications, prepareGpu, reportPageErrors} from './host.mjs';
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {CustodyError, idbStorage, openDeviceCustody} from './device-custody.mjs';
@@ -686,7 +686,9 @@ function rendererCard({reason, steps}) {
 
 /** The page's uncaught errors, for the door its entry names (`<door>errors`):
  * the site's host logs them, and sizes and rate-limits them there. Five a
- * page load at most, and none of them waits for an answer. */
+ * page load at most, and none of them waits for an answer. `report` is handed
+ * to the host as well, which sends a runtime panic this way
+ * (`reportPageErrors`). */
 function reportErrors() {
   let door = null;
   let sent = 0;
@@ -702,7 +704,7 @@ function reportErrors() {
   addEventListener('error', event => report('error', event.message, event.error?.stack,
     {source: event.filename, line: event.lineno, column: event.colno}));
   addEventListener('unhandledrejection', event => report('unhandledrejection', event.reason?.message ?? event.reason, event.reason?.stack));
-  return {at: next => { if (!door && typeof next === 'string' && next) door = next; }};
+  return {at: next => { if (!door && typeof next === 'string' && next) door = next; }, report};
 }
 
 export async function startEntryPage({mode}) {
@@ -752,6 +754,9 @@ export async function startEntryPage({mode}) {
     onTryNow: () => reconnect.tryNow()})});
   /** What this page did not catch, for the site's host to log. */
   const pageErrors = reportErrors();
+  // A panic that named no window is the page's own crash, which the host
+  // hears: it reaches the door's log the same way, before the page starts over.
+  reportPageErrors((kind, message) => pageErrors.report(kind, message));
   /** Where an embed's state goes: the site the web host names as its embedder, once the entry is read. */
   let embedder = null;
   const tell = state => { if (embed && embedder && parent !== window) parent.postMessage({type: 'tilo-embed', state}, embedder); };

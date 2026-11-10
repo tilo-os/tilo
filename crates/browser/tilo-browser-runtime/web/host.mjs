@@ -10,7 +10,7 @@ import {acquireStorage} from './storage.mjs';
 import {createDurableHost} from './durable-host.mjs';
 import {semanticBridge,applySemanticsPatch} from './semantics.mjs';
 import {recoverableClose} from './close-recovery.mjs';
-import {createCrashQuarantine,crashAction} from './app-crash.mjs';
+import {createCrashQuarantine,createPageRestarts,crashAction,pageCrashAction,showPageCrash} from './app-crash.mjs';
 import {createDesktopNavigation} from './desktop-navigation.mjs';
 import {createHere} from './here.mjs';
 import {fetchPersonProfile,followPhotos,photoPixels} from './profile-photos.mjs';
@@ -37,9 +37,23 @@ const recoveryJobs=new Set();
 // module is dead after it, so each mount restarts the page without that window.
 const crashes=createCrashQuarantine();
 const crashListeners=new Set();
+// A panic that names no window leaves no application to close: the page
+// itself is what starts over (`app-crash.mjs`), once.
+const pageRestarts=createPageRestarts();
+let pageCrashed=false;
+/** Where the page reports what it did not catch, for the door it came in
+ * through to log (`entry-page.mjs`). A panic is reported the same way. */
+let pageErrorReport=null;
+export function reportPageErrors(report){pageErrorReport=report;}
 globalThis.__tiloRuntimePanic=raw=>{
   let crash;try{crash=JSON.parse(raw);}catch{return;}
   for(const listener of crashListeners)listener(crash);
+  if(crash?.tab!=null||pageCrashed)return;
+  pageCrashed=true;
+  // The report leaves first, as a crashed window's does; the load that follows
+  // shows the workspace, its windows and their drafts as the session saved them.
+  pageCrashAction(crash,{restarts:pageRestarts,reload:()=>setTimeout(()=>location.reload(),250),
+    show:message=>showPageCrash(message),reportError:(kind,message)=>pageErrorReport?.(kind,message)});
 };
 // One startup timeline from navigation start, so a slow phase names itself
 // instead of hiding in "loading". tools/perf/web_startup.mjs reads it.
