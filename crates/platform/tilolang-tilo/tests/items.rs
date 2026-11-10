@@ -9,6 +9,7 @@ use tilolang_runtime::store::{FieldSpec, FieldValue, Store as _};
 use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_runtime::{Principal, SourceWords};
 use tilolang_tilo::action::{DynAction, DynEdit};
+use tilolang_tilo::host::Host;
 use tilolang_tilo::publish::PlanRequest;
 use tilolang_tilo::record::{DynRecord, DynValue};
 
@@ -732,4 +733,95 @@ fn a_card_removed_with_its_column_has_no_type_in_either_copy() {
         r.grace.host.store().type_of(&at(&r, &leaves)).unwrap(),
         card
     );
+}
+
+/// The index a window of the record `doc` keeps under `dir`: built from the record and left
+/// there for the next window to open over.
+fn kept_index(doc: &AutoCommit, lock: &str, dir: &std::path::Path) -> Host {
+    std::fs::create_dir_all(dir).unwrap();
+    let host = Host::open(
+        tilolang_tilo::host::Opening {
+            record: Some(doc),
+            chunks: None,
+            index_dir: Some(dir.to_owned()),
+            device: None,
+        },
+        Principal::new("ada"),
+        || None,
+    )
+    .unwrap();
+    host.load_builtin(KANBAN, lock).unwrap();
+    assert!(host.wait_index(), "the window reads its index");
+    host.store().persist_index();
+    host
+}
+
+#[test]
+fn a_card_that_left_its_column_is_gone_in_a_window_opened_over_the_index_kept() {
+    let mut r = workspace();
+    let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
+    let stays = r.card("ada", &todo, "stays");
+    let leaves = r.card("ada", &todo, "leaves");
+    r.file("ada", &doing, &leaves);
+    r.sync();
+    let card = r
+        .meta
+        .types
+        .iter()
+        .find(|t| t.name == "Card")
+        .unwrap()
+        .id
+        .clone();
+    let stays = ResourceRef::parse_id(&r.at(&stays), card).unwrap();
+    let root = r.root.clone();
+    let todo_at = r.at(&todo);
+    // The column goes, and the card in it: the record still holds what the card held, so a copy
+    // of it answers the card's fields, and only the index says the card is gone.
+    r.act(
+        "ada",
+        ("Board", &root),
+        "drop_column",
+        json!({ "c": todo_at }),
+    );
+    assert!(
+        r.ada.host.store().type_of(&stays).is_err(),
+        "the card went with its column"
+    );
+    // The indexes a window of that record keeps, and the record itself: a window opened over
+    // them answers what they name, before it reads the record.
+    let dir = std::env::temp_dir().join(format!("tilolang-kept-index-card-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (doc, lock) = (r.ada.doc.clone(), r.lock.clone());
+    drop(kept_index(&doc, &lock, &dir));
+    // Done reading, the window closes, and its index is the disk's.
+    drop(r);
+    let host = Host::open(
+        tilolang_tilo::host::Opening {
+            record: None,
+            chunks: None,
+            index_dir: Some(dir.clone()),
+            device: None,
+        },
+        Principal::new("ada"),
+        || None,
+    )
+    .unwrap();
+    host.load_builtin(KANBAN, &lock).unwrap();
+    host.store().set_loader(Box::new(move || Some(doc.clone())));
+    assert!(
+        host.index_ready(),
+        "the window opens over the index it kept"
+    );
+    assert!(!host.store().has_record(), "before its record");
+    let read = host.runtime().read(&stays, "title");
+    assert!(read.is_err(), "the card went with its column: {read:?}");
+    assert!(
+        !host.store().has_record(),
+        "the record is not read for a card the workspace no longer holds"
+    );
+    assert!(
+        host.store().type_of(&stays).is_err(),
+        "and its window says it is gone"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
