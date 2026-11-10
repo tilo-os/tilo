@@ -243,6 +243,55 @@ browser-library-extensions-empty = Keine Erweiterungen installiert
 browser-library-remove-bookmark = Lesezeichen { $title } entfernen
 browser-library-forget-visit = { $title } aus dem Verlauf entfernen
 
+## The page's review: its forms, who set each answer, and what was done
+browser-review-open = Seite prüfen
+browser-review-title = Prüfung
+browser-review-done = Fertig
+browser-review-empty = Keine Formulare auf dieser Seite
+browser-review-unreadable = Diese Seite konnte nicht gelesen werden
+browser-review-unreadable-hint = Laden Sie die Seite neu und versuchen Sie es erneut.
+browser-review-form-untitled = Formular
+browser-review-form-other = Weitere Felder
+browser-review-question-unnamed = Unbenanntes Feld
+browser-review-no-answer = Keine Antwort
+browser-review-yes = Ja
+browser-review-no = Nein
+browser-review-secret-set = Gesetzt
+browser-review-secret-not-set = Nicht gesetzt
+browser-review-set-by = Gesetzt von { $name }
+browser-review-set-by-you = Von Ihnen gesetzt
+browser-review-set-typed = In die Seite eingetippt
+browser-review-set-by-page = Von der Seite gesetzt
+browser-review-set-by-no-one = Von niemandem gesetzt
+browser-review-changed = Seit dem Setzen geändert
+browser-review-required = Erforderlich
+browser-review-invalid = Ungültig
+browser-review-record = In diesem Tab ausgeführt
+browser-review-earlier = { $count ->
+    [one] { $count } frühere Aktion wird nicht angezeigt
+   *[other] { $count } frühere Aktionen werden nicht angezeigt
+}
+browser-review-by = Von { $name }
+browser-review-by-you = Von Ihnen
+browser-review-failed = Fehlgeschlagen
+browser-review-did-click = { $target } angeklickt
+browser-review-did-fill = { $target } ausgefüllt
+browser-review-did-select = In { $target } ausgewählt
+browser-review-did-files = Dateien an { $target } angehängt
+browser-review-did-press = Taste in { $target } gedrückt
+browser-review-did-key = Taste gedrückt
+browser-review-did-hover = Auf { $target } gezeigt
+browser-review-did-drag = { $target } gezogen
+browser-review-did-pointer = Zeiger verwendet
+browser-review-did-submit = Formular gesendet
+browser-review-did-scroll = Seite gescrollt
+browser-review-did-reader = Leseansicht umgeschaltet
+browser-review-did-form = { $count ->
+    [one] { $count } Frage beantwortet
+   *[other] { $count } Fragen beantwortet
+}
+browser-review-did-other = Auf der Seite gehandelt
+
 ## Downloads: the list in the Library and its progress
 browser-downloads-empty = Noch keine Downloads
 browser-download-open = Öffnen

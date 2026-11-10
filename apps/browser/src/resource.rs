@@ -211,6 +211,7 @@ const SCENARIOS: &[&str] = &[
     "error",
     "permission",
     "page-dialog",
+    "review",
     "suggestions",
     "library-history",
     "library-bookmarks",
@@ -300,6 +301,7 @@ impl ResourceApp for BrowserShell {
             Some("pip-empty" | "suggestions") => (1000, 650),
             Some("settings" | "history-paused") => (900, 700),
             Some("loading" | "error" | "permission" | "page-dialog") => (900, 620),
+            Some("review") => (1000, 1340),
             Some(name) if name.starts_with("library-") || name.starts_with("downloads-") => {
                 (1000, 700)
             }

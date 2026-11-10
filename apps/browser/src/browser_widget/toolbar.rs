@@ -137,6 +137,14 @@ impl BrowserWidget {
                 self.queue_command("browser.page", "reader-view"),
             )
             .with_checked(self.reader_view),
+            {
+                let (resource, action) = self.review_command();
+                row(
+                    &t("browser-review-open"),
+                    self.queue_command(resource, action),
+                )
+                .with_checked(self.page_review_shown())
+            },
             row(
                 &t("browser-menu-pause-history"),
                 self.queue_command("browser.session", "toggle-pause"),

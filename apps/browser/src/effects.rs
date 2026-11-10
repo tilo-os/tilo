@@ -316,6 +316,32 @@ pub enum BrowserEffect {
     /// again.
     #[effect(row, job, returns)]
     ReaderView,
+    /// Review page
+    ///
+    /// Shows the person at this window what the page's forms hold now and
+    /// who set each answer: an agent by its name, a person typing, or the
+    /// page itself, and what was done in the tab, in order. Show current
+    /// page closes it.
+    #[effect(
+        row,
+        returns,
+        idempotent,
+        keywords = "review form, check answers, who filled"
+    )]
+    ReviewPage,
+    /// Show field on the page
+    ///
+    /// Shows the page again with the field in view: what choosing a row of
+    /// the page's review does.
+    #[effect(row, job, cancellable, returns, untrusted)]
+    ShowPageField {
+        #[param("Element ref of the field, such as d1e5")]
+        element: String,
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the field is then one of that frame's own document"
+        )]
+        frame: Option<String>,
+    },
     /// Download address
     #[effect(row, returns)]
     StartDownload {
@@ -1111,6 +1137,11 @@ impl BrowserEffect {
             Self::TogglePause => BrowserOperation::ToggleHistoryPause,
             Self::PictureInPicture => BrowserOperation::TogglePictureInPicture,
             Self::ReaderView => BrowserOperation::ToggleReaderView,
+            Self::ReviewPage => BrowserOperation::ReviewPage,
+            Self::ShowPageField { element, frame } => BrowserOperation::ShowPageField {
+                element,
+                frame: page_frame(frame),
+            },
             Self::StartDownload { url } => BrowserOperation::StartDownload { url },
             Self::CancelDownload { id } => BrowserOperation::CancelDownload { id },
             Self::RetryDownload { id } => BrowserOperation::RetryDownload { id },
@@ -1451,6 +1482,13 @@ pub enum BrowserOperation {
     TogglePictureInPicture,
     /// Show the page's article in reader view, or the page again.
     ToggleReaderView,
+    /// Show the review of the page: what its forms hold and who set it.
+    ReviewPage,
+    /// Show the page again with the field `element` in view.
+    ShowPageField {
+        element: String,
+        frame: Option<FrameId>,
+    },
     ToggleHistoryPause,
     StartDownload {
         url: String,

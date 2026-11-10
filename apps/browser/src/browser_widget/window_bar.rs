@@ -84,6 +84,8 @@ pub(super) struct BarInputs {
     /// The Library's place while it is shown: its name, then its section's,
     /// each with the place it commits.
     library: Option<Vec<(String, &'static str)>>,
+    /// Whether the page's review stands in the page's place.
+    review: bool,
 }
 
 /// The address field's mark for how the page arrived: a lock over
@@ -166,6 +168,7 @@ impl BrowserWidget {
             favicon: self.favicon_png.clone(),
             suggestions: self.bar_suggestions(),
             library: self.show_library.then(|| self.library_segments()),
+            review: self.page_review_shown(),
         }
     }
 
@@ -260,6 +263,7 @@ impl BrowserWidget {
                         "reader-view",
                     )
                     .on(self.reader_view),
+                    self.review_bar_entry(),
                     unit(
                         "picture-in-picture-2",
                         "browser-menu-picture-in-picture",
@@ -352,6 +356,8 @@ impl BrowserWidget {
         };
         let location = if self.show_library {
             self.library_location()
+        } else if self.page_review_shown() {
+            self.review_location()
         } else {
             self.address_location(icon)
         };
@@ -468,6 +474,10 @@ impl BrowserWidget {
                 if let Some(resource) = Self::library_section_at(&text) {
                     self.queue_unit_operation(resource, "show");
                 }
+            }
+            // A segment of the review's place shows the page or the review.
+            ToolbarEvent::Commit { text } if self.page_review_shown() => {
+                self.commit_review_place(&text);
             }
             ToolbarEvent::Commit { text } => {
                 // Exactly what Enter in the window's own address field does;

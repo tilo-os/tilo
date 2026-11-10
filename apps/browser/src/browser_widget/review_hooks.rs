@@ -17,6 +17,7 @@ impl BrowserWidget {
             Some("error") => self.debug_show_load_error(),
             Some("permission") => self.debug_request_permission(),
             Some("page-dialog") => self.debug_page_dialog(),
+            Some("review") => self.stage_page_review(),
             Some("suggestions") => {
                 self.debug_force_typed_suggestions("youtube.com");
                 self.suggestions.move_selection(1);

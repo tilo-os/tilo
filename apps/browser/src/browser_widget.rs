@@ -87,6 +87,7 @@ mod page_answer;
 mod page_clipboard;
 mod page_find;
 mod page_record;
+mod page_review_view;
 mod page_stopping;
 mod page_turns;
 pub(crate) mod personal;
@@ -403,6 +404,7 @@ enum CompositionView {
     Page { find: bool },
     Settings,
     Library(LibrarySection),
+    Review,
 }
 
 #[derive(Clone, PartialEq)]
@@ -688,6 +690,9 @@ pub struct BrowserWidget {
     /// What the window knows of its page's forms: the actions the page
     /// publishes for them, from a read of it or from site memory.
     forms: crate::page_forms::PageForms,
+    /// The review of the page in front, while it stands in the page's
+    /// place, and what the engine last answered about the page.
+    page_review: page_review_view::PageReview,
     /// Effects waiting on an operation this window accepted.
     pending_replies: Vec<(ui::tilo_actions::InvocationId, ui::framework::EffectReply)>,
     page_request_seq: u32,
@@ -1594,6 +1599,7 @@ impl BrowserWidget {
             page_record_answers: Vec::new(),
             page_record: crate::page_record::TabRecorder::default(),
             forms: crate::page_forms::PageForms::default(),
+            page_review: page_review_view::PageReview::default(),
             pending_replies: Vec::new(),
             page_request_seq: 0,
             pending_pip: None,
@@ -1883,6 +1889,7 @@ impl BrowserWidget {
                 self.clear_address_error();
                 self.show_library = false;
                 self.show_settings = false;
+                self.close_page_review();
                 self.structure_dirty = true;
                 self.set_loading_progress(0.0);
                 self.send_navigation(NavigationCommand::Navigate { url: target }, owner)?;
@@ -1925,6 +1932,7 @@ impl BrowserWidget {
             BrowserOperation::ShowPage => {
                 self.show_settings = false;
                 self.show_library = false;
+                self.close_page_review();
                 self.structure_dirty = true;
             }
             operation @ (BrowserOperation::BookmarkPersonalPage { .. }
@@ -2055,6 +2063,10 @@ impl BrowserWidget {
             }
             BrowserOperation::Form(_) => {
                 return Err("form actions report their result; start them as an invocation".into());
+            }
+            BrowserOperation::ReviewPage => self.open_page_review()?,
+            BrowserOperation::ShowPageField { .. } => {
+                return Err("showing a field reports its result; start it as an invocation".into());
             }
         }
         Ok(())
@@ -2207,6 +2219,12 @@ impl BrowserWidget {
             self.accept_page_record(request_id, result);
             return;
         }
+        if self.reads_page_review(request_id) {
+            self.accept_page_review(request_id, result);
+            return;
+        }
+        // Another request answered: the tab's record may have moved.
+        self.page_review_moved();
         let Some(operation) = self.page_operation.take_if(|operation| {
             operation.request_id == request_id && matches!(operation.phase, PagePhase::Sent)
         }) else {
@@ -2830,6 +2848,8 @@ impl BrowserWidget {
                 CompositionView::Settings
             } else if self.show_library {
                 CompositionView::Library(self.library_section)
+            } else if self.page_review_shown() {
+                CompositionView::Review
             } else {
                 CompositionView::Page {
                     find: self.daily.open,
@@ -2885,7 +2905,7 @@ impl BrowserWidget {
         // Messages from the window: over a web page they run edge to edge
         // under the toolbar, over the settings or library page they are the
         // first part of the page.
-        let on_page = self.show_settings || self.show_library;
+        let on_page = self.show_settings || self.show_library || self.page_review_shown();
         let mut notices: Vec<crate::notice::Notice> = Vec::new();
         if self.service_pending.is_some() {
             notices.push(crate::service_sessions::PendingView::notice());
@@ -2940,6 +2960,8 @@ impl BrowserWidget {
             )
         } else if self.show_library {
             self.build_library_composition(theme, &notices)
+        } else if self.page_review_shown() {
+            self.build_review_composition(&notices)
         } else if self.engine_failed {
             engine_failed_state()
         } else if let Some(error) = &self.load_error {
@@ -3999,7 +4021,11 @@ impl BrowserWidget {
         let WindowEvent::KeyboardInput { event: key, .. } = event else {
             return false;
         };
-        if key.state != ElementState::Pressed || self.show_settings || self.show_library {
+        if key.state != ElementState::Pressed
+            || self.show_settings
+            || self.show_library
+            || self.page_review_shown()
+        {
             return false;
         }
         let modifiers = modifiers.state();
@@ -4899,6 +4925,10 @@ impl Widget for BrowserWidget {
             *ctx.handled = true;
             return;
         }
+        if self.review_shortcut(event, *ctx.modifiers) {
+            *ctx.handled = true;
+            return;
+        }
 
         // Conventional browser navigation keys. These must be handled before
         // forwarding into the page: an embedded site should not be able to
@@ -5173,6 +5203,7 @@ impl Widget for BrowserWidget {
             .into_iter()
             .chain(feedback_expiry)
             .chain(self.credentials.deadline())
+            .chain(self.page_review_deadline())
             .chain(waiting)
             .chain(
                 self.children()
@@ -5404,6 +5435,12 @@ impl BrowserWidget {
         } else {
             reader.unavailable("no_web_page", "Open a web page first")
         });
+        let review = E::ReviewPage.bound();
+        page.actions.push(if web_page {
+            review
+        } else {
+            review.unavailable("no_web_page", "Open a web page first")
+        });
         page.actions.extend(self.daily.zoom_actions());
         // A page waiting on a permission asks in the page's own actions too:
         // whoever reads the page answers it there, next to the page's other
@@ -5542,6 +5579,13 @@ impl BrowserWidget {
                     frame: None,
                 },
                 &["quiet_ms", "timeout_ms", "frame"][..],
+            ),
+            (
+                E::ShowPageField {
+                    element: String::new(),
+                    frame: None,
+                },
+                &["element", "frame"][..],
             ),
             (E::ReadPageConsole { since: None }, &["since"][..]),
             (E::ReadPageNetwork { since: None }, &["since"][..]),
@@ -6065,6 +6109,7 @@ impl BrowserWidget {
         self.structure_dirty |= self.run_pending_commands();
         self.apply_review_stage();
         self.drive_page_operation();
+        self.sync_page_review();
         self.structure_dirty |= self.capabilities.ask(self.extensions.take_questions());
         let downloads_changed = self.capabilities.downloads_changed();
         self.structure_dirty |= downloads_changed;
@@ -6161,6 +6206,10 @@ impl BrowserWidget {
             self.start_page_operation(invocation, actor, request)?;
             return Ok(ui::framework::Effected::Pending);
         }
+        if let BrowserOperation::ShowPageField { element, frame } = operation {
+            self.show_page_field(invocation, actor, element, frame)?;
+            return Ok(ui::framework::Effected::Pending);
+        }
         if matches!(&operation, BrowserOperation::ToggleReaderView) {
             if !is_supported_web_url(&self.current_uri) {
                 return Err("Reader view needs a web page".into());
@@ -6200,6 +6249,9 @@ impl BrowserWidget {
                 matches!(&operation, BrowserOperation::ToggleHistoryPause);
             let is_zoom = matches!(&operation, BrowserOperation::Zoom { .. });
             let output = match &operation {
+                BrowserOperation::ReviewPage => {
+                    local_output("The review of this page is open in the window.")
+                }
                 BrowserOperation::ForgetVisit { .. } => {
                     local_output("Browsing history entry removed.")
                 }

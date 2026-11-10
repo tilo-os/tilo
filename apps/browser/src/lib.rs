@@ -78,6 +78,7 @@ pub mod page_forms;
 pub mod page_menu;
 pub mod page_popups;
 pub mod page_record;
+mod page_review;
 mod personal_bookmark_view;
 pub mod personal_bookmarks;
 pub mod private_window;

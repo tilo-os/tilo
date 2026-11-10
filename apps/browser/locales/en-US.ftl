@@ -243,6 +243,55 @@ browser-library-extensions-empty = No extensions installed
 browser-library-remove-bookmark = Remove bookmark { $title }
 browser-library-forget-visit = Remove { $title } from history
 
+## The page's review: its forms, who set each answer, and what was done
+browser-review-open = Review page
+browser-review-title = Review
+browser-review-done = Done
+browser-review-empty = No forms on this page
+browser-review-unreadable = Couldn’t read this page
+browser-review-unreadable-hint = Reload the page and try again.
+browser-review-form-untitled = Form
+browser-review-form-other = Other fields
+browser-review-question-unnamed = Unnamed field
+browser-review-no-answer = No answer
+browser-review-yes = Yes
+browser-review-no = No
+browser-review-secret-set = Set
+browser-review-secret-not-set = Not set
+browser-review-set-by = Set by { $name }
+browser-review-set-by-you = Set by you
+browser-review-set-typed = Typed into the page
+browser-review-set-by-page = Set by the page
+browser-review-set-by-no-one = No one set this
+browser-review-changed = Changed since it was set
+browser-review-required = Required
+browser-review-invalid = Not valid
+browser-review-record = Done in this tab
+browser-review-earlier = { $count ->
+    [one] { $count } earlier action is not shown
+   *[other] { $count } earlier actions are not shown
+}
+browser-review-by = By { $name }
+browser-review-by-you = By you
+browser-review-failed = Failed
+browser-review-did-click = Clicked { $target }
+browser-review-did-fill = Filled { $target }
+browser-review-did-select = Chose in { $target }
+browser-review-did-files = Attached files to { $target }
+browser-review-did-press = Pressed a key in { $target }
+browser-review-did-key = Pressed a key
+browser-review-did-hover = Pointed at { $target }
+browser-review-did-drag = Dragged { $target }
+browser-review-did-pointer = Used the pointer
+browser-review-did-submit = Sent the form
+browser-review-did-scroll = Scrolled the page
+browser-review-did-reader = Switched reader view
+browser-review-did-form = { $count ->
+    [one] Answered { $count } question
+   *[other] Answered { $count } questions
+}
+browser-review-did-other = Acted on the page
+
 ## Downloads: the list in the Library and its progress
 browser-downloads-empty = No downloads yet
 browser-download-open = Open
