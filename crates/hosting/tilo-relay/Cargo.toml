@@ -254,7 +254,11 @@ uuid = { workspace = true, features = ["js"] }
 # The TLS tests write a PEM pair and read it back.
 rcgen.workspace = true
 # The room host's fixtures: a certified test host and the devices around it.
-tilo-room-host = { path = "../tilo-room-host", features = ["test-support"] }
+# The tests author a room's record through the host's app plane
+# (`author_room_record`), which the `agents` feature carries: asking for it here
+# keeps them building on their own, rather than only when another crate in the
+# same build turns it on.
+tilo-room-host = { path = "../tilo-room-host", features = ["test-support", "agents"] }
 tilo-desktop-model = { path = "../../session/desktop-model" }
 tokio = { workspace = true, features = ["test-util"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
