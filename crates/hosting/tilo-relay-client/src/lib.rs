@@ -68,7 +68,7 @@ pub use certify::{
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound};
 pub use error::{CertifyError, LinkError};
 pub use host::{Carrier, Host};
-pub use https::{HttpClient, HttpFuture};
+pub use https::{Answer, AnswerFuture, HttpClient, HttpFuture};
 pub use pairing::{
     IssuedRole, NODE_CERT_LIFETIME_NS, answer_pairing, certify_with_root, decide_pairing,
     issue_agent_grant, issue_device_cert, issue_stand_in, pending_pairings, revoke_device,

@@ -224,7 +224,8 @@ export function httpsPost(origin, fetcher = (...args) => globalThis.fetch(...arg
       headers: {'content-type': 'application/octet-stream'},
       body, credentials: 'omit', cache: 'no-store', redirect: 'error',
     });
-    return {status: response.status, body: new Uint8Array(await response.arrayBuffer())};
+    return {status: response.status, retryAfter: response.headers?.get?.('retry-after') ?? undefined,
+      body: new Uint8Array(await response.arrayBuffer())};
   };
 }
 

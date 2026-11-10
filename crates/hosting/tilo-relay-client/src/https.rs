@@ -19,11 +19,47 @@ pub type HttpFuture<'a> = Pin<Box<dyn Future<Output = Result<(u16, Vec<u8>), Str
 #[cfg(target_family = "wasm")]
 pub type HttpFuture<'a> = Pin<Box<dyn Future<Output = Result<(u16, Vec<u8>), String>> + 'a>>;
 
+/// A host's or a site's whole answer: its status, the wait it asks for before the next try
+/// (`Retry-After`, seconds) and its body.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Answer {
+    pub status: u16,
+    pub retry_after_secs: Option<u64>,
+    pub body: Vec<u8>,
+}
+
+/// A pending [`Answer`].
+#[cfg(not(target_family = "wasm"))]
+pub type AnswerFuture<'a> = Pin<Box<dyn Future<Output = Result<Answer, String>> + Send + 'a>>;
+/// A pending [`Answer`].
+#[cfg(target_family = "wasm")]
+pub type AnswerFuture<'a> = Pin<Box<dyn Future<Output = Result<Answer, String>> + 'a>>;
+
 /// `POST` to the host origin. The page implements it with `fetch`; native
 /// peers and tests with a Rust client. `Err` means the host was not reached.
 pub trait HttpClient: crate::MaybeSendSync {
     /// Post `body` to `path` (below the host origin).
     fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_>;
+
+    /// [`Self::post`], answered whole: with the wait the answer asks for. A client that reads no
+    /// headers answers none.
+    fn post_answer(&self, path: &str, body: Vec<u8>) -> AnswerFuture<'_> {
+        let posted = self.post(path, body);
+        Box::pin(async move {
+            let (status, body) = posted.await?;
+            Ok(Answer {
+                status,
+                retry_after_secs: None,
+                body,
+            })
+        })
+    }
+}
+
+/// The wait a `Retry-After` value asks for, in seconds; a date is no wait this reads.
+#[must_use]
+pub fn retry_after(value: &str) -> Option<u64> {
+    value.trim().parse().ok()
 }
 
 /// The longest body read from a host or a site; a page's fetch reads its own.
@@ -81,6 +117,14 @@ impl Origin {
 #[cfg(not(target_family = "wasm"))]
 impl HttpClient for Origin {
     fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_> {
+        let answer = self.post_answer(path, body);
+        Box::pin(async move {
+            let answer = answer.await?;
+            Ok((answer.status, answer.body))
+        })
+    }
+
+    fn post_answer(&self, path: &str, body: Vec<u8>) -> AnswerFuture<'_> {
         let url = format!("{}{path}", self.origin);
         let client = self.client.clone();
         Box::pin(async move {
@@ -92,11 +136,20 @@ impl HttpClient for Origin {
                 .await
                 .map_err(|error| error.to_string())?;
             let status = response.status().as_u16();
+            let retry_after_secs = response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .and_then(retry_after);
             let body = response
                 .bytes_limited(MAX_BODY)
                 .await
                 .map_err(|error| error.to_string())?;
-            Ok((status, body.to_vec()))
+            Ok(Answer {
+                status,
+                retry_after_secs,
+                body: body.to_vec(),
+            })
         })
     }
 }

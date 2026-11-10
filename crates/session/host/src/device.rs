@@ -512,6 +512,7 @@ pub async fn entering_certificate(
                       to certify it with."
                 .to_owned(),
             refusal: None,
+            retry_after_secs: None,
         });
     };
     tilo_relay_client::invite::guest_certificate(root, device.device_public_key(), label, now_ns)
@@ -520,6 +521,7 @@ pub async fn entering_certificate(
             code: HostRefusal::NO_CERTIFICATE.to_owned(),
             message: error.to_string(),
             refusal: None,
+            retry_after_secs: None,
         })
 }
 
@@ -575,6 +577,49 @@ pub async fn accept_invitation(
     Ok((admission, cert, host))
 }
 
+/// Go through `door` on the host `client` reaches, as `device`: the host says who it is, the device
+/// takes the certificate [`entering_certificate`] chooses (`entering.token` is not read: the door
+/// hands out its own), the door lets the person in, and the workspace admits the device with what
+/// the door answered. Resolves as [`accept_invitation`].
+///
+/// # Errors
+/// The host or the door was not reached, the device holds no certificate it could enter with, the
+/// door refused (its own code: `banned`, `removed`, `invitation-only`, `full` with the wait it
+/// asked for), or the workspace did not admit the device.
+pub async fn enter_through_door(
+    client: &dyn HttpClient,
+    door: &tilo_relay_client::login::Door<'_>,
+    device: &dyn DeviceSigner,
+    entering: Entering<'_>,
+) -> Result<(Admission, DeviceCert, DeviceCert), HostRefusal> {
+    let host = tilo_relay_client::https::host_info(client)
+        .await
+        .map_err(|error| HostRefusal::unanswered(&error.to_string()))?
+        .host_cert;
+    let cert = entering_certificate(
+        entering.held,
+        &host,
+        device,
+        entering.root,
+        entering.label,
+        tilo_clock::unix_now_ns(),
+    )
+    .await?;
+    let (invitation, token) =
+        tilo_relay_client::login::ask_door(door, &cert, entering.name).await?;
+    let admission = redeem(
+        client,
+        &invitation,
+        &cert,
+        device,
+        entering.name,
+        Some(token.as_bytes()),
+    )
+    .await
+    .map_err(HostRefusal::from)?;
+    Ok((admission, cert, host))
+}
+
 /// Why a workspace's host did not do what a device asked of it, as the host said it: what every
 /// caller (the CLI, the front door, the page) reads and shows, never a sentence to parse.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -588,6 +633,9 @@ pub struct HostRefusal {
     pub message: String,
     /// The host's typed refusal, when it gave one: its reason and the ways through it.
     pub refusal: Option<Refusal>,
+    /// How long the host asks to wait before the next try, in seconds, when it asked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_secs: Option<u64>,
 }
 
 impl HostRefusal {
@@ -611,6 +659,7 @@ impl HostRefusal {
                 code: other.code().to_owned(),
                 message: other.to_string(),
                 refusal: None,
+                retry_after_secs: None,
             },
         }
     }
@@ -628,6 +677,7 @@ impl HostRefusal {
             code: Self::UNANSWERED.to_owned(),
             message: why.to_owned(),
             refusal: None,
+            retry_after_secs: None,
         }
     }
 
@@ -638,6 +688,7 @@ impl HostRefusal {
             code: Self::MALFORMED.to_owned(),
             message: why,
             refusal: None,
+            retry_after_secs: None,
         }
     }
 
@@ -650,6 +701,7 @@ impl HostRefusal {
                 .as_ref()
                 .map_or_else(|| reason.to_owned(), |refusal| refusal.message.clone()),
             refusal,
+            retry_after_secs: None,
         }
     }
 }
@@ -671,8 +723,31 @@ impl From<CertifyError> for HostRefusal {
                 code: Self::NOT_ADMITTED.to_owned(),
                 message: why,
                 refusal: None,
+                retry_after_secs: None,
             },
             other => Self::unanswered(&other.to_string()),
+        }
+    }
+}
+
+/// A door's refusal reads with the door's own code (`banned`, `removed`, `invitation-only`,
+/// `full`, `refused`) and the wait it asked for; anything else as a device's entry fails.
+impl From<tilo_relay_client::login::DoorError> for HostRefusal {
+    fn from(error: tilo_relay_client::login::DoorError) -> Self {
+        match error {
+            tilo_relay_client::login::DoorError::Refused {
+                refused,
+                retry_after_secs,
+            } => Self {
+                code: serde_json::to_value(refused.code)
+                    .ok()
+                    .and_then(|code| code.as_str().map(str::to_owned))
+                    .unwrap_or_else(|| "refused".to_owned()),
+                message: refused.error,
+                refusal: None,
+                retry_after_secs,
+            },
+            tilo_relay_client::login::DoorError::Entry(error) => error.into(),
         }
     }
 }

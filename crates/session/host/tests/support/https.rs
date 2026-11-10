@@ -7,6 +7,7 @@ use std::sync::Arc;
 use http_body_util::BodyExt as _;
 use rustls::pki_types::ServerName;
 use sha2::Digest as _;
+use tilo_relay_client::{Answer, AnswerFuture};
 use tilo_session_host::{HttpClient, HttpFuture};
 
 /// HTTPS to `addr`, pinned to one certificate.
@@ -29,7 +30,7 @@ impl DevHttps {
         })
     }
 
-    async fn request(&self, path: &str, body: Vec<u8>) -> Result<(u16, Vec<u8>), String> {
+    async fn request(&self, path: &str, body: Vec<u8>) -> Result<Answer, String> {
         let tcp = tokio::net::TcpStream::connect(self.addr)
             .await
             .map_err(|error| error.to_string())?;
@@ -54,6 +55,11 @@ impl DevHttps {
             .await
             .map_err(|error| error.to_string())?;
         let status = response.status().as_u16();
+        let retry_after_secs = response
+            .headers()
+            .get(hyper::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(tilo_relay_client::https::retry_after);
         let body = response
             .into_body()
             .collect()
@@ -61,12 +67,24 @@ impl DevHttps {
             .map_err(|error| error.to_string())?
             .to_bytes()
             .to_vec();
-        Ok((status, body))
+        Ok(Answer {
+            status,
+            retry_after_secs,
+            body,
+        })
     }
 }
 
 impl HttpClient for DevHttps {
     fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_> {
+        let path = path.to_owned();
+        Box::pin(async move {
+            let answer = self.request(&path, body).await?;
+            Ok((answer.status, answer.body))
+        })
+    }
+
+    fn post_answer(&self, path: &str, body: Vec<u8>) -> AnswerFuture<'_> {
         let path = path.to_owned();
         Box::pin(async move { self.request(&path, body).await })
     }

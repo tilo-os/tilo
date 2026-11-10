@@ -824,6 +824,8 @@ fn door_responder(
                     ),
                     Err(
                         refusal @ (tilo_relay::workspaces::DoorRefusal::Refused(_)
+                        | tilo_relay::workspaces::DoorRefusal::Banned
+                        | tilo_relay::workspaces::DoorRefusal::Removed
                         | tilo_relay::workspaces::DoorRefusal::InvitationOnly),
                     ) => Some(
                         Reply::status(403)

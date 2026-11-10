@@ -172,6 +172,35 @@ pub struct DoorAnswer {
     pub origin: Option<String>,
 }
 
+/// Why a door did not let a person in, as it says it: what every caller reads, never a sentence
+/// to match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DoorRefusalCode {
+    /// The workspace's people banned them.
+    Banned,
+    /// They were removed from the workspace within the day: only an invitation brings them back.
+    Removed,
+    /// The workspace takes people by invitation, and they hold none.
+    InvitationOnly,
+    /// The door holds as many open grants as the workspace keeps: they come back after the
+    /// `Retry-After` the answer carries.
+    Full,
+    /// Anything else; the sentence says what.
+    Refused,
+}
+
+/// What a door answers a person it does not let in (HTTP 403, or 503 with `Retry-After` when
+/// [`DoorRefusalCode::Full`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoorRefused {
+    /// What kind of refusal it is.
+    pub code: DoorRefusalCode,
+    /// What happened, in plain words.
+    pub error: String,
+}
+
 /// A report of a public workspace to the people who run it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

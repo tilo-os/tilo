@@ -52,6 +52,10 @@ pub(crate) const DOOR_LABEL: &str = "the public directory";
 pub enum DoorRefusal {
     /// The person may not join now; `Display` says why.
     Refused(String),
+    /// The workspace's people banned the person.
+    Banned,
+    /// The person was removed from the workspace within the day.
+    Removed,
     /// The door admits only people invited or pre-admitted, and this person
     /// holds neither: their page asks them to be invited.
     InvitationOnly,
@@ -67,12 +71,30 @@ impl DoorRefusal {
     fn refused(reason: impl Into<String>) -> Self {
         Self::Refused(reason.into())
     }
+
+    /// The refusal as the door answers it.
+    #[must_use]
+    pub fn answer(&self) -> tilo_relay_protocol::directory::DoorRefused {
+        use tilo_relay_protocol::directory::DoorRefusalCode;
+        tilo_relay_protocol::directory::DoorRefused {
+            code: match self {
+                Self::Refused(_) => DoorRefusalCode::Refused,
+                Self::Banned => DoorRefusalCode::Banned,
+                Self::Removed => DoorRefusalCode::Removed,
+                Self::InvitationOnly => DoorRefusalCode::InvitationOnly,
+                Self::Full { .. } => DoorRefusalCode::Full,
+            },
+            error: self.to_string(),
+        }
+    }
 }
 
 impl std::fmt::Display for DoorRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Refused(reason) => f.write_str(reason),
+            Self::Banned => f.write_str("you were banned from this workspace"),
+            Self::Removed => f.write_str("you were removed from this workspace within the day"),
             Self::InvitationOnly => f.write_str("this workspace is joined by invitation"),
             Self::Full { retry_after_secs } => write!(
                 f,
@@ -514,12 +536,10 @@ impl Workspaces {
                 .map_err(|error| refused(CollaborationError::new(error.to_string())))?
                 .policy;
             if policy.is_blocked(&hex::encode(user)) {
-                return Err(DoorRefusal::refused("you were banned from this workspace"));
+                return Err(DoorRefusal::Banned);
             }
             if governed.door.refuses(user, now) {
-                return Err(DoorRefusal::refused(
-                    "you were removed from this workspace within the day",
-                ));
+                return Err(DoorRefusal::Removed);
             }
             // A person an invitation of the workspace's own names is handed
             // that invitation, not a new one: the inviter decided its role and
@@ -1232,10 +1252,7 @@ mod door_tests {
             .admit_listed(&workspace, &join)
             .await
             .unwrap_err();
-        assert_eq!(
-            refused,
-            DoorRefusal::Refused("you were removed from this workspace within the day".into())
-        );
+        assert_eq!(refused, DoorRefusal::Removed);
         assert!(
             workspaces
                 .removed_within_the_day(&workspace, guest.user_public_key)
@@ -1328,7 +1345,7 @@ mod door_tests {
                 .admit_listed(&workspace, &join)
                 .await
                 .unwrap_err(),
-            DoorRefusal::Refused("you were removed from this workspace within the day".into())
+            DoorRefusal::Removed
         );
         relay.shutdown().await;
     }

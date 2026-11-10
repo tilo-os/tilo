@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use tilo_channels::VAULT_SECRET_APP as CHANNEL_VAULT_APP;
 use tilo_live::live::Track;
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_relay_client::{Answer, AnswerFuture};
 use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveRecord, OpsFrame, PreviewOp};
 use tilo_session_host::device::{Device, HostRefusal};
 use tilo_session_host::{
@@ -298,11 +299,20 @@ impl PeerStore for PageStore {
 }
 
 /// HTTP through the page: `post(path, body)` resolves to
-/// `{status, body}`, rejecting only when the host was not reached.
+/// `{status, body, retryAfter}` (`retryAfter` the header's text, when the answer carries one),
+/// rejecting only when the host was not reached.
 struct PageHttp(Function);
 
 impl HttpClient for PageHttp {
     fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_> {
+        let answer = self.post_answer(path, body);
+        Box::pin(async move {
+            let answer = answer.await?;
+            Ok((answer.status, answer.body))
+        })
+    }
+
+    fn post_answer(&self, path: &str, body: Vec<u8>) -> AnswerFuture<'_> {
         let called = self.0.call2(
             &JsValue::NULL,
             &path.into(),
@@ -322,12 +332,20 @@ impl HttpClient for PageHttp {
                 .ok_or("post answer has no status")?;
             let body =
                 Reflect::get(&answer, &"body".into()).map_err(|_| "post answer has no body")?;
+            let retry_after_secs = Reflect::get(&answer, &"retryAfter".into())
+                .ok()
+                .and_then(|value| value.as_string())
+                .and_then(|value| tilo_relay_client::https::retry_after(&value));
             #[allow(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
                 reason = "an HTTP status is a small positive integer"
             )]
-            Ok((status as u16, Uint8Array::new(&body).to_vec()))
+            Ok(Answer {
+                status: status as u16,
+                retry_after_secs,
+                body: Uint8Array::new(&body).to_vec(),
+            })
         })
     }
 }

@@ -496,9 +496,11 @@ async fn directory_door(
         let full = match &error {
             crate::workspaces::DoorRefusal::Full { .. } => StatusCode::SERVICE_UNAVAILABLE,
             crate::workspaces::DoorRefusal::Refused(_)
+            | crate::workspaces::DoorRefusal::Banned
+            | crate::workspaces::DoorRefusal::Removed
             | crate::workspaces::DoorRefusal::InvitationOnly => StatusCode::FORBIDDEN,
         };
-        let mut response = json_status(full, &serde_json::json!({ "error": error.to_string() }));
+        let mut response = json_status(full, &error.answer());
         if let crate::workspaces::DoorRefusal::Full { retry_after_secs } = error
             && let Ok(seconds) = header::HeaderValue::from_str(&retry_after_secs.to_string())
         {
