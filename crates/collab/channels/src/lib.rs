@@ -11,6 +11,16 @@
 //! and the session's roles reach it through, and [`GovernancePump`] the pass that settles the
 //! groups over a host's workspace transport.
 
+#![cfg_attr(
+    all(target_arch = "wasm32", target_os = "unknown"),
+    allow(
+        clippy::future_not_send,
+        clippy::arc_with_non_send_sync,
+        reason = "a page runs on one thread, and the directory and gates a page hands the engine \
+                  are `MaybeSendSync`, never `Send` there"
+    )
+)]
+
 mod encryption;
 pub use encryption::*;
 mod history;
