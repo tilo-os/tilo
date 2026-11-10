@@ -974,9 +974,7 @@ impl Core {
         };
         let id = subject.target.id_string();
         let published = self.published.borrow();
-        let Some(verb) = published.get(&id, &aref.action) else {
-            return None;
-        };
+        let verb = published.get(&id, &aref.action)?;
         // The verb's parameters as its app declares them, after the resource the address names
         // (`post(channel: Text, text: Text)`); the resource is the subject, never an argument.
         let args: Vec<(String, Value)> = verb

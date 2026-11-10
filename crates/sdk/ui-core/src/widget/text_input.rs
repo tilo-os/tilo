@@ -3982,7 +3982,7 @@ impl TextInput {
     }
 
     /// Tell the reader the selection settled, as [`Self::with_selection_event`] describes it.
-    fn report_selection(&mut self) {
+    fn report_selection(&self) {
         let Some(event) = self.selection_event.clone() else {
             return;
         };

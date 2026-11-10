@@ -367,9 +367,10 @@ impl Asked {
                 Some(deadline) => {
                     let now = std::time::Instant::now();
                     if now >= deadline {
+                        // The deadline has come: the question is still up.
                         return None;
                     }
-                    std::thread::park_timeout(deadline - now);
+                    std::thread::park_timeout(deadline.saturating_duration_since(now));
                 }
                 None => std::thread::park(),
             }

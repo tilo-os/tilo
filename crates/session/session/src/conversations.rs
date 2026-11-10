@@ -14,6 +14,7 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -420,7 +421,6 @@ impl Conversations {
             let names = Self::channel_names(opened, &me);
             // The draft the composer holds (a drop on it attached one) rides with the page:
             // the same reading every other field comes in, never a second one at the view.
-            drop(opened);
             let reading = chat::views::Channel::read(&chat, &rows, channel, &me, &names);
             return Some(self.with_draft(reading, channel));
         }
@@ -562,20 +562,6 @@ impl Conversations {
     #[must_use]
     pub fn draft_attachment(&self, channel: &str) -> Option<String> {
         self.drafts.borrow().get(channel).cloned()
-    }
-
-    /// Post `text` in `channel`, as the person seated here, through Chat's own `post`: a message
-    /// in the workspace whose open record holds the channel, written to the head part as Chat's
-    /// composer writes it. This is the verb a place's composer runs, so the page Chat's window
-    /// shows and the page a place draws post to one record.
-    ///
-    /// A resource the person attached to the draft by dropping it on the composer rides with
-    /// the message, as Chat's own composer gives it; the draft lets go of it once sent.
-    ///
-    /// # Errors
-    /// No open workspace holds the channel, or Chat refused the post.
-    pub fn post(&self, channel: &str, text: &str) -> Result<(), String> {
-        self.post_span(channel, text, None, None)
     }
 
     /// Post `text` in `channel` as the person seated here, answering the message `parent` and —
@@ -1190,16 +1176,15 @@ pub(crate) fn attached_resource(
     resource: &str,
     published: Option<&crate::arrangement::Target>,
 ) -> tilo_reference::Attached {
-    let (app, kind, label) = match published {
-        Some(target) => (
+    let (app, kind, label) = if let Some(target) = published {
+        (
             target.app.clone(),
             target.kind.clone(),
             target.title.trim().to_owned(),
-        ),
-        None => {
-            let (kind, app) = unpublished_address(resource);
-            (app, kind, String::new())
-        }
+        )
+    } else {
+        let (kind, app) = unpublished_address(resource);
+        (app, kind, String::new())
     };
     let label = if label.is_empty() {
         address_label(resource)
@@ -1308,7 +1293,8 @@ pub(crate) fn retry_action() -> tilo_actions::ActionSpec {
 ///
 /// It is `ClientLocal` with an empty encoded action, and that is correct here: the dispatcher
 /// never applies this verb's envelope. The session's `ChatViewService::invoke` runs the verb
-/// itself — `Conversations::post` commits `ChatPart::POST` to the workspace's open Chat record
+/// itself — `Conversations::post_span` commits `ChatPart::POST` to the workspace's open Chat
+/// record
 /// (`invoke` reads the invocation's `channel` and `text` directly), and the record's own CRDT is
 /// what syncs the message to the person's other devices. So there is no client-local envelope to
 /// replay with no text: the change that travels is the record's, and the encoded action is inert
@@ -1698,11 +1684,12 @@ pub fn instruction_of(message: &chat::record::Message) -> String {
         };
         let label = label.trim();
         let address = &at.reference.id;
-        if label.is_empty() || label == address {
-            instruction.push_str(&format!("\n\nAttached: {address}"));
+        // Writing into a `String` never fails.
+        let _ = if label.is_empty() || label == address {
+            write!(instruction, "\n\nAttached: {address}")
         } else {
-            instruction.push_str(&format!("\n\nAttached: {label} ({address})"));
-        }
+            write!(instruction, "\n\nAttached: {label} ({address})")
+        };
     }
     instruction
 }

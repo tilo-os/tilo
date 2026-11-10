@@ -75,7 +75,7 @@ impl AppActionConsentPrompter for TurnQuestions {
             handle: format!("turn-question:{}", uuid::Uuid::new_v4().simple()),
             kind: KIND.to_owned(),
             app_id: None,
-            label: request.action_label.clone(),
+            label: request.action_label,
             details,
         });
         let (answer, answered) = oneshot::channel();
@@ -85,7 +85,7 @@ impl AppActionConsentPrompter for TurnQuestions {
         let spawned = std::thread::Builder::new()
             .name("turn-question-answer".into())
             .spawn(move || {
-                let _ = answer.send(answer_to(wait(asked)));
+                let _ = answer.send(answer_to(wait(asked).as_ref()));
             });
         if spawned.is_err() {
             return None;
@@ -105,7 +105,7 @@ fn wait(mut asked: Asked) -> Option<Answer> {
 }
 
 /// What the person's answer to a turn's question means for the step.
-fn answer_to(answer: Option<Answer>) -> AppActionAnswer {
+fn answer_to(answer: Option<&Answer>) -> AppActionAnswer {
     // Confirming is the answer; a question that asks nothing else carries
     // no choice, so its presence is the person's allow.
     if answer.is_some() {

@@ -59,16 +59,28 @@ impl AppBrokerState {
         let (_, run) = self.turn_step_run(caller, workspace, turn)?;
         if confirmed {
             return self
-                .authorize_turn_step(workspace, steps, descriptor, argument, &run, true)
+                .authorize_turn_step(
+                    workspace,
+                    steps,
+                    descriptor,
+                    argument.as_deref(),
+                    &run,
+                    true,
+                )
                 .map_err(|reason| ActionHostError::Refused { reason })
                 .map(|()| TurnStep::Run {
                     argument: argument.clone(),
                     confirmed: true,
                 });
         }
-        if let Err(reason) =
-            self.authorize_turn_step(workspace, steps, descriptor, argument, &run, false)
-        {
+        if let Err(reason) = self.authorize_turn_step(
+            workspace,
+            steps,
+            descriptor,
+            argument.as_deref(),
+            &run,
+            false,
+        ) {
             // The turn's grants refuse it, in the words the app action hears; the one answer
             // that is not a refusal is a question still to be put to the person, below.
             if !crate::services::NativeTaskActionRequirement::awaits_confirmation(&reason) {
@@ -102,13 +114,14 @@ impl AppBrokerState {
                 (&descriptor.address.resource, &descriptor.address.action),
                 argument.as_deref(),
                 |contract_argument| {
+                    let contract_argument = contract_argument
+                        .map(str::to_owned)
+                        .or_else(|| argument.clone());
                     self.authorize_turn_step(
                         workspace,
                         steps,
                         descriptor,
-                        &contract_argument
-                            .map(str::to_owned)
-                            .or_else(|| argument.clone()),
+                        contract_argument.as_deref(),
                         &run,
                         false,
                     )
@@ -127,8 +140,15 @@ impl AppBrokerState {
                 // What the person confirmed is what runs, decided as their answer. A step that
                 // collected nothing has nothing they could have edited: it runs with none.
                 let answered = argument.as_ref().map(|_| answered);
-                self.authorize_turn_step(workspace, steps, descriptor, &answered, &run, true)
-                    .map_err(|reason| ActionHostError::Refused { reason })?;
+                self.authorize_turn_step(
+                    workspace,
+                    steps,
+                    descriptor,
+                    answered.as_deref(),
+                    &run,
+                    true,
+                )
+                .map_err(|reason| ActionHostError::Refused { reason })?;
                 Ok(TurnStep::Run {
                     argument: answered,
                     confirmed: true,
@@ -190,7 +210,7 @@ impl AppBrokerState {
         workspace: &str,
         steps: &dyn HostStepServices,
         descriptor: &tilo_actions::ActionDescriptor,
-        argument: &Option<String>,
+        argument: Option<&str>,
         run: &crate::services::TrackerRun,
         confirmed: bool,
     ) -> Result<(), String> {
@@ -211,7 +231,7 @@ impl AppBrokerState {
             resource: descriptor.address.resource.clone(),
             action: descriptor.address.action.clone(),
             need: descriptor.contract.need(),
-            consequential: descriptor.contract.asks_for_argument(argument.as_deref()),
+            consequential: descriptor.contract.asks_for_argument(argument),
             attended: descriptor.contract.is_attended(),
             confirmed,
         };

@@ -7,10 +7,6 @@
 //! id is a conversation turn's message. The one thing this file adds is the
 //! person's sheet, which stands where a desktop's sheet stands
 //! ([`AppActionConsentPrompter`]) and answers as the person does.
-#![expect(
-    clippy::future_not_send,
-    reason = "the broker's Rc-backed channel handles stay on the test LocalSet"
-)]
 use super::super::tests::confirmation::{
     append, append_target, ask_first_for_notes, nothing_delivered,
 };
@@ -517,7 +513,7 @@ async fn a_turn_step_that_cannot_be_routed_is_refused_at_once() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let steps = Arc::new(TurnArrangement::default());
-            let f = Fixture::with_services(None, vec![steps.clone()]);
+            let f = Fixture::with_services(None, vec![steps]);
             f.approve();
             let turn = tilo_action_policy::turn::Turn::new(
                 "chat.workspace/channels/the-conversation",
@@ -530,7 +526,7 @@ async fn a_turn_step_that_cannot_be_routed_is_refused_at_once() {
             f.caused("asked");
             arrangement_grant(&f, tilo_action_policy::Answer::Ask);
             let sheet = Arc::new(PersonSheet::default());
-            f.state.set_app_action_consent(sheet.clone());
+            f.state.set_app_action_consent(sheet);
             let agent = Caller::agent_turn(
                 "scribe",
                 hex::encode(f.native.certificate.user_public_key),
