@@ -385,14 +385,25 @@ impl Engine {
         let history = self.keys.get().and_then(|keys| {
             keys.history_keys(workspace, &collab_types::ChannelRoute::new(app, record))
         });
-        self.read_in(workspace, (app, record), known, maximum, &mut |write| {
+        // A sealed write the keys this device holds do not open yet — its epoch's key, or the key
+        // of the branch it was sealed on, has not reached this device — is a record still
+        // arriving here: it reads whole once the keys have, as the app's own channel holds such a
+        // write until they do.
+        let mut unopened = false;
+        let read = self.read_in(workspace, (app, record), known, maximum, &mut |write| {
             let keys = history
                 .as_ref()
                 .ok_or("this session's channel service is not running")?
                 .as_ref()
                 .map_err(Clone::clone)?;
-            keys.open(write)
-        })
+            let opened = keys.open(write);
+            unopened |= opened.is_err();
+            opened
+        });
+        match read {
+            Err(_) if unopened => Ok(RecordReading::Pending),
+            read => read,
+        }
     }
 
     /// [`Self::read_record`] under keys the caller holds itself rather than this device's channel

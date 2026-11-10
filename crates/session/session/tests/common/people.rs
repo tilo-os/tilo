@@ -1750,8 +1750,9 @@ impl Chat<'_> {
                 self.device.diagnostic()
             ),
             other => panic!(
-                "{} Chat's {operation} ended as {other:?}: {answer}",
-                self.device.label
+                "{} Chat's {operation} ended as {other:?}: {answer}\n{}",
+                self.device.label,
+                self.device.diagnostic()
             ),
         }
     }
