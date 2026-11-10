@@ -819,13 +819,6 @@ fn seams(
         approved_checks: Seam::unserved(
             "no project's approved check runs here: this session installs no check service",
         ),
-        // Resources an app asks to look at are published by the app that
-        // holds them and reached through the action door's own catalogue; the
-        // session reads none of them on an app's behalf.
-        resource_views: Seam::unserved(
-            "an app reads another app's resources through the action door's catalogue, over \
-             the holding app's own route",
-        ),
         // A record is held on the collaboration plane of the app that owns
         // it, in everyone's copy at once; the session keeps no documents of
         // its own to read one from.
@@ -839,9 +832,14 @@ fn seams(
             std::sync::Arc::new(media)
                 as std::sync::Arc<dyn tilo_action_broker::services::NativeMediaServices>
         })),
-        audio_output: Seam::unserved(
-            "the sound service publishes its outputs as a resource of its own",
-        ),
+        // An app's sound plays on this device's output, rendered here: a hosted app has no socket
+        // and no mixer of its own.
+        #[cfg(target_os = "linux")]
+        audio_output: Seam::served(std::sync::Arc::new(
+            crate::audio_output::AppAudioOutput::new(),
+        )),
+        #[cfg(not(target_os = "linux"))]
+        audio_output: Seam::unserved("this host plays no app audio itself"),
         workspace_memberships: Seam::when(memberships),
         // What people ask this session's agents to do: a turn a person's
         // message in a conversation started. A run is the broker's to

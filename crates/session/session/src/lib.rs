@@ -85,6 +85,8 @@ pub mod arrangement;
 #[cfg(target_os = "linux")]
 mod asks;
 #[cfg(target_os = "linux")]
+mod audio_output;
+#[cfg(target_os = "linux")]
 mod automation;
 #[cfg(target_os = "linux")]
 mod bars;

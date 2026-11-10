@@ -26,31 +26,6 @@ pub use crate::collab_app_broker::{
     PreparingElsewhere, RecordRead,
 };
 
-/// One read-only host view lookup. The original admitted channel and exact
-/// source record are retained in the existing committed-read context.
-pub type NativeResourceViewFuture = std::pin::Pin<
-    Box<
-        dyn std::future::Future<
-                Output = Result<
-                    tilo_actions::remote::CataloguePage,
-                    tilo_actions::remote::ActionHostError,
-                >,
-            > + Send,
-    >,
->;
-
-/// Host-installed bridge to the workspace's authenticated resource publisher.
-/// Implementations revalidate the original caller and exact record Read
-/// before requesting metadata and before returning it. No action is invoked.
-pub trait NativeResourceViews: Send + Sync {
-    /// Read one existing resource's inert views and current host locator.
-    fn query(
-        &self,
-        context: NativeDocumentReadContext,
-        query: tilo_actions::remote::CatalogueQuery,
-    ) -> NativeResourceViewFuture;
-}
-
 /// A workspace's status once it changed ([`WorkspaceMemberships::workspace_status_change`]).
 pub type WorkspaceStatusFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = runtime_collab::WorkspaceStatus> + Send>>;
@@ -912,7 +887,6 @@ pub struct HostServices {
     /// Fixed project-host registrations, unavailable unless actual enforcement is configured.
     pub approved_checks: Option<Arc<dyn crate::collab_app_broker::ApprovedCheckServices>>,
     /// Read-only existing-resource discovery, absent unless the host can carry it.
-    pub resource_views: Option<Arc<dyn NativeResourceViews>>,
     pub committed_documents: Option<Arc<dyn NativeDocumentReads>>,
     pub native_media: Option<Arc<dyn NativeMediaServices>>,
     pub audio_output: Option<Arc<dyn AudioOutputServices>>,
@@ -997,7 +971,6 @@ impl HostServices {
     /// above belongs here too, and a host's own test compares its decisions to this list.
     pub const SEAMS: &[&str] = &[
         "approved_checks",
-        "resource_views",
         "committed_documents",
         "native_media",
         "audio_output",

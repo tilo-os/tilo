@@ -1170,13 +1170,6 @@ impl JoinedChannel {
                 Err(refusal) => return Ok(ready(*refusal)),
             },
         };
-        if let tilo_actions::remote::RemoteActionMessage::CatalogueRequest { correlation, query } =
-            &request.message
-            && query.view_resource.is_some()
-        {
-            return Ok(self.resource_view_query(*correlation, query.clone()));
-        }
-
         if tilo_actions::remote::refuse(
             &request.message,
             tilo_actions::remote::ActionHostError::UnknownAction,

@@ -108,7 +108,6 @@ macro_rules! seams {
 
 seams! {
     approved_checks: Arc<dyn tilo_action_broker::collab_app_broker::ApprovedCheckServices>,
-    resource_views: Arc<dyn tilo_action_broker::services::NativeResourceViews>,
     committed_documents: Arc<dyn tilo_action_broker::services::NativeDocumentReads>,
     native_media: Arc<dyn tilo_action_broker::services::NativeMediaServices>,
     audio_output: Arc<dyn AudioOutputServices>,
