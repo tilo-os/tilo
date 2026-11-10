@@ -461,6 +461,11 @@ pub(crate) fn device_key(text: &str) -> Result<[u8; 32], JsError> {
 /// The secret store is unavailable, or the stored key is not 32 bytes.
 #[wasm_bindgen(js_name = channelVault)]
 pub async fn channel_vault(namespace: String) -> Result<Vec<u8>, JsError> {
+    // The store answers from page memory once its secrets are loaded there; the entry page asks
+    // before anything else has loaded them.
+    tilo_secrets::web::mirror()
+        .await
+        .map_err(|error| js_error(error.to_string()))?;
     let mut candidate = [0_u8; 32];
     getrandom::fill(&mut candidate).map_err(|error| js_error(error.to_string()))?;
     let stored = tilo_secrets::web::get_or_create(
