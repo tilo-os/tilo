@@ -104,6 +104,12 @@ fn a_bound_fields_edit_names_a_verb_the_surface_publishes() {
     let first = replica.host.next_ticket();
     view.edit(&input, &tilolang_runtime::value::Value::text("Groceries"))
         .unwrap();
+    // The keystroke holds a change open while the person types: it lands as one when the field
+    // leaves the keyboard.
+    assert!(
+        replica.host.store().close_edit(),
+        "the typing landed as one change"
+    );
     let committed = replica.host.take_committed_from(first);
     assert_eq!(committed.len(), 1, "the keystroke commits one change");
     let surfaces = package_surfaces(&meta);

@@ -6,8 +6,10 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use automerge::AutoCommit;
+#[cfg(feature = "record")]
+use tilolang_runtime::ViewEvent;
 use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, MAX_CHOSEN, SaveRequest};
-use tilolang_runtime::{UiNode, Value, ViewEvent, ViewInstance};
+use tilolang_runtime::{UiNode, Value, ViewInstance};
 
 use crate::fixtures::Replica;
 
@@ -166,32 +168,33 @@ fn shown(view: &ViewInstance) -> Vec<String> {
         .collect()
 }
 
-/// The key of the button saying `label`.
-fn button(view: &ViewInstance, label: &str) -> String {
+/// The keys of the buttons saying `label`, in the order the view draws them.
+fn buttons(view: &ViewInstance, label: &str) -> Vec<String> {
     nodes(view.tree())
         .into_iter()
-        .find(|node| {
+        .filter(|node| {
             node.kind == "ui.Button"
                 && matches!(node.props.get("label"), Some(Value::Text(said)) if said == label)
         })
-        .map_or_else(
-            || panic!("a `{label}` button: {:#?}", shown(view)),
-            |node| node.key.clone(),
-        )
+        .map(|node| node.key.clone())
+        .collect()
+}
+
+/// The key of the button saying `label`.
+fn button(view: &ViewInstance, label: &str) -> String {
+    let keys = buttons(view, label);
+    keys.first()
+        .cloned()
+        .unwrap_or_else(|| panic!("a `{label}` button: {:#?}", shown(view)))
 }
 
 /// The key of the last button saying `label`: the newest of a list's rows.
+#[cfg(feature = "record")]
 fn last_button(view: &ViewInstance, label: &str) -> String {
-    nodes(view.tree())
-        .into_iter()
-        .rfind(|node| {
-            node.kind == "ui.Button"
-                && matches!(node.props.get("label"), Some(Value::Text(said)) if said == label)
-        })
-        .map_or_else(
-            || panic!("a `{label}` button: {:#?}", shown(view)),
-            |node| node.key.clone(),
-        )
+    let keys = buttons(view, label);
+    keys.last()
+        .cloned()
+        .unwrap_or_else(|| panic!("a `{label}` button: {:#?}", shown(view)))
 }
 
 fn target(v: &Value) -> tilolang_runtime::ResourceRef {
