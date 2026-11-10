@@ -753,7 +753,7 @@ impl std::fmt::Debug for Say {
     }
 }
 
-impl crate::platform::plane::SayPresence for Say {
+impl crate::sync::SayPresence for Say {
     fn say(
         &self,
         workspace: WorkspaceId,

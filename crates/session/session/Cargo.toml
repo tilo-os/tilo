@@ -55,6 +55,9 @@ tilo-secrets.workspace = true
 # executable decodes them, and `main` serves that worker.
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-desktop = { path = "../desktop" }
+# The participant's own client of the collaboration plane: the boards of who is here and this
+# device's own word, which this session hosts with its own endpoint.
+tilo-session-client = { path = "../client" }
 # The roles every host runs: the desk's document and the arrangement it holds.
 tilo-session-core = { path = "../core" }
 tilo-desktop-model = { path = "../desktop-model" }

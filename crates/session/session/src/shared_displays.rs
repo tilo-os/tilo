@@ -325,7 +325,7 @@ mod tests {
         .expect("a runtime");
         crate::platform::fabric::SessionFabric::new(
             runtime,
-            outgoing,
+            crate::sync::HostOutbox::of(outgoing),
             [7; 32],
             ed25519_dalek::SigningKey::from_bytes(&[7; 32]),
             crate::platform::fabric::Continuity::default(),

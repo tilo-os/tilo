@@ -17,22 +17,15 @@
 #[cfg(target_os = "linux")]
 pub mod session;
 
-/// What a session says to the collaboration plane, as every host carries it.
-pub(crate) mod plane;
-
 /// What a host lists as apps.
 pub mod apps;
 
-/// Whether this device still holds custody of a workspace, as its host checks it.
+/// Whether this device still holds custody of a workspace, as this desktop checks it.
 pub mod custody;
 
 /// The person's certified devices, as a role reaches them.
 #[cfg(target_os = "linux")]
 pub mod fabric;
-
-/// The identity this device signs with, as its host keeps it.
-#[cfg(target_os = "linux")]
-pub mod identity;
 
 /// What apps hold and what the person's files say, as this host indexes them.
 pub mod indexes;

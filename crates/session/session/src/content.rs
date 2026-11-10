@@ -31,7 +31,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_network_actor::{RecordContentDelivery, WorkspaceId, workspace_topic_id};
 use tilo_runtime::offload::{BindError, BlobScope, MediaFuture, WorkspaceMedia};
 
-use crate::platform::plane::Cmd;
+use crate::sync::{Cmd, HostOutbox};
 
 /// Where record content is kept under the session's state: beside the engine's records, apart from
 /// the blocks their history keeps.
@@ -174,11 +174,7 @@ impl Plane {
 
     /// Where this device's plane says and hears on the network: the workspace topics it publishes
     /// on, and this device's handle there.
-    pub(crate) fn bind(
-        &self,
-        outgoing: tokio::sync::mpsc::UnboundedSender<Cmd>,
-        publisher: EndpointId,
-    ) {
+    pub(crate) fn bind(&self, outgoing: HostOutbox, publisher: EndpointId) {
         self.peers.bind(outgoing, publisher);
     }
 
@@ -538,13 +534,13 @@ struct Peers {
 }
 
 struct Link {
-    outgoing: tokio::sync::mpsc::UnboundedSender<Cmd>,
+    outgoing: HostOutbox,
     /// This device's handle here, as the wire names it.
     own: ContentPeer,
 }
 
 impl Peers {
-    fn bind(&self, outgoing: tokio::sync::mpsc::UnboundedSender<Cmd>, publisher: EndpointId) {
+    fn bind(&self, outgoing: HostOutbox, publisher: EndpointId) {
         *self.link.lock_recover() = Some(Link {
             outgoing,
             own: peer_handle(publisher.as_bytes()),
@@ -575,7 +571,7 @@ impl Peers {
     /// Say `msg` on the topic of `ws` , when this device's plane runs.
     fn say(&self, ws: WorkspaceId, msg: NeighbourMsg) {
         if let Some(link) = self.link.lock_recover().as_ref() {
-            let _ = link.outgoing.send(Cmd::Publish {
+            let _ = link.outgoing.plane(Cmd::Publish {
                 ws,
                 msg: Box::new(msg),
             });
@@ -586,9 +582,8 @@ impl Peers {
     /// through the workspace's hosts, which hand it to that device alone.
     fn send(&self, ws: WorkspaceId, target: Option<EndpointId>, msg: NeighbourMsg) {
         if let Some(link) = self.link.lock_recover().as_ref() {
-            let _ = link
-                .outgoing
-                .send(Cmd::Content(RecordContentDelivery { ws, target, msg }));
+            link.outgoing
+                .content(RecordContentDelivery { ws, target, msg });
         }
     }
 }

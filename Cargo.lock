@@ -21531,6 +21531,7 @@ dependencies = [
  "tilo-seal",
  "tilo-secrets",
  "tilo-service",
+ "tilo-session-client",
  "tilo-session-core",
  "tilo-session-logging",
  "tilo-session-power",
@@ -21573,6 +21574,32 @@ dependencies = [
  "xkeysym",
  "zbus",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-session-client"
+version = "0.1.0"
+dependencies = [
+ "collab-types",
+ "hex",
+ "iroh",
+ "neighbour-wire",
+ "postcard",
+ "serde",
+ "tilo-action-policy",
+ "tilo-clock",
+ "tilo-desktop-model",
+ "tilo-identity-host",
+ "tilo-live",
+ "tilo-peer-state",
+ "tilo-relay-protocol",
+ "tilo-ui",
+ "tilo-user-identity",
+ "tokio",
+ "tracing",
+ "uuid",
+ "web-time",
+ "workspace-hack",
 ]
 
 [[package]]

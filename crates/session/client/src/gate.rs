@@ -147,7 +147,7 @@ mod tests {
             collab_types::Ed25519PublicKey::from_bytes([2; 32]),
             collab_types::document_attestation_id("so.tilo.notes", WORKSPACE, "notes"),
             collab_types::OpKind::Change,
-            std::time::SystemTime::UNIX_EPOCH,
+            web_time::SystemTime::UNIX_EPOCH,
             1,
         ))
     }

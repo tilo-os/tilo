@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::platform::fabric::Continuity;
-use crate::platform::plane::Event;
+use crate::sync::Event;
 use channel_crypto::{ChannelGroup, MemberKey, VaultKey};
 use collab_types::presence::{Availability, Payload, Presence};
 use collab_types::{ChannelRoute, Ed25519PublicKey};

@@ -21,7 +21,7 @@ use super::{
     WakeRoute, clock, open_wifi_credential,
 };
 use crate::platform::fabric::{DeviceId, nonzero};
-use crate::platform::plane::Cmd;
+use crate::sync::HostOutbox;
 
 /// What the person lets of this device continue on their other devices: each
 /// facet's switch of their `continuity` settings, under the master switch,
@@ -81,7 +81,7 @@ impl Continuity {
 /// frames leave.
 pub(crate) struct SessionFabric {
     runtime: Arc<Mutex<FabricRuntime>>,
-    outgoing: tokio::sync::mpsc::UnboundedSender<Cmd>,
+    outgoing: HostOutbox,
     /// The person's root key: a frame goes only to the devices that proved a certificate of it.
     user_public_key: [u8; 32],
     /// This device's key: what a credential one of the person's devices sealed for it opens with.
@@ -103,7 +103,7 @@ impl std::fmt::Debug for SessionFabric {
 impl SessionFabric {
     pub(crate) fn new(
         runtime: FabricRuntime,
-        outgoing: tokio::sync::mpsc::UnboundedSender<Cmd>,
+        outgoing: HostOutbox,
         user_public_key: [u8; 32],
         device_signing_key: ed25519_dalek::SigningKey,
         continuity: Continuity,
@@ -273,11 +273,7 @@ impl SessionFabric {
     }
 
     fn publish(&self, target: Option<EndpointId>, payload: PersonalFabricPayload) {
-        let _ = self.outgoing.send(Cmd::Fabric {
-            user_public_key: self.user_public_key,
-            target,
-            payload,
-        });
+        self.outgoing.fabric(self.user_public_key, target, payload);
     }
 }
 
@@ -362,16 +358,15 @@ impl FabricLink for SessionFabric {
             .ok_or_else(|| {
                 PersonalFabricSendError::Rejected("that device has no session with this one".into())
             })?;
-        self.outgoing
-            .send(Cmd::NearbySpool {
-                user_public_key: self.user_public_key,
-                target: endpoint,
-                checkpoint: offer.checkpoint,
-                file: offer.file,
-            })
-            .map_err(|_| {
-                PersonalFabricSendError::Rejected("this session's transport stopped".into())
-            })
+        if !self
+            .outgoing
+            .nearby_spool(self.user_public_key, endpoint, offer.checkpoint, offer.file)
+        {
+            return Err(PersonalFabricSendError::Rejected(
+                "this session's transport stopped".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn require_wifi_settings(&self) -> Result<(), String> {

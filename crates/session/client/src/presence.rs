@@ -2,17 +2,13 @@
 //! themselves there, and this device's own word on it. Every host drives the same board and says
 //! what it owes on its own transport; nothing here knows one.
 
-use crate::platform::plane::{Event, Topic};
+use crate::plane::{Event, Topic};
 use collab_types::presence::{Availability, Presence, Shown};
 use iroh::EndpointId;
 use neighbour_wire::NeighbourMsg;
-use tilo_desktop::here::LiveMember;
 use tilo_desktop_model::WorkspaceId as DeskWorkspaceId;
-use tilo_desktop_surface::host::records::{app_of, wire_record};
 use tilo_live::presence;
 use tilo_live::presence::{Board, Device};
-use tilo_relay_protocol::live::{LiveLayout, LiveRecord};
-use ui::record::RecordId;
 
 /// What this session says of itself here.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -35,7 +31,7 @@ pub struct OwnPresence {
 impl OwnPresence {
     /// What the board says of this device: the person's own word, and what only its certificate and
     /// its last wave add.
-    pub(super) fn word(&self, device: &str, wave: Option<presence::Wave>) -> presence::Own {
+    pub fn word(&self, device: &str, wave: Option<presence::Wave>) -> presence::Own {
         presence::Own {
             label: self.label.clone(),
             device: device.to_owned(),
@@ -57,23 +53,23 @@ impl OwnPresence {
     clippy::cast_precision_loss,
     reason = "milliseconds since the epoch are exact in an f64 for the life of a session"
 )]
-pub(super) fn now_ms() -> f64 {
+pub fn now_ms() -> f64 {
     ui::time::unix_now_ms() as f64
 }
 
 /// One workspace this session takes part in: its topic, and the board of who is here.
 #[derive(Debug)]
-pub(crate) struct Workspace {
+pub struct Workspace {
     /// The workspace's topic.
-    pub(super) ws: Topic,
+    pub ws: Topic,
     /// The workspace, as its id travels: the uuid string every publish names.
-    pub(super) id: String,
+    pub id: String,
     /// What each member here said of themselves, and what this device says.
-    pub(super) board: Board,
+    pub board: Board,
 }
 
 impl Workspace {
-    pub(super) fn new(ws: Topic, id: String, publisher: Device) -> Self {
+    pub fn new(ws: Topic, id: String, publisher: Device) -> Self {
         Self {
             board: Board::new(id.clone(), publisher),
             ws,
@@ -81,21 +77,13 @@ impl Workspace {
         }
     }
 
-    /// Who is here, as the desktop lists them, on the clock presence is heard on.
-    pub(super) fn members(&self, now_ms: f64) -> Vec<LiveMember> {
-        self.board
-            .here()
-            .map(|member| LiveMember::of(&presence::shown(member, now_ms)))
-            .collect()
-    }
-
     /// The calls in progress here, as those in them say.
-    pub(super) fn calls(&self) -> Vec<super::LiveCall> {
+    pub fn calls(&self) -> Vec<super::LiveCall> {
         self.board.calls()
     }
 
     /// Everyone here, as a surface that draws them reads them, at `now_ms`.
-    pub(super) fn shown(&self, now_ms: f64) -> Vec<Shown> {
+    pub fn shown(&self, now_ms: f64) -> Vec<Shown> {
         self.board
             .here()
             .map(|member| presence::shown(member, now_ms))
@@ -104,7 +92,7 @@ impl Workspace {
 
     /// Their device's certificate arrived: only the sender's own, validly signed one says who is
     /// here, and what everyone calls them is the person's own word, never their device's name.
-    pub(super) fn certify(&mut self, from: EndpointId, cert: &tilo_user_identity::DeviceCert) {
+    pub fn certify(&mut self, from: EndpointId, cert: &tilo_user_identity::DeviceCert) {
         if cert.device_public_key != *from.as_bytes() {
             tracing::warn!(
                 peer = %from,
@@ -129,16 +117,16 @@ impl Workspace {
 
 /// The workspaces this session takes part in, and the one in front.
 #[derive(Debug)]
-pub(crate) struct Plane {
+pub struct Plane {
     /// This device's publisher.
-    pub(super) publisher: EndpointId,
-    pub(super) workspaces: Vec<Workspace>,
+    pub publisher: EndpointId,
+    pub workspaces: Vec<Workspace>,
     /// The workspace in front: whose roster the desktop shows.
-    pub(super) active: Option<Topic>,
+    pub active: Option<Topic>,
 }
 
 impl Plane {
-    pub(super) fn new(publisher: EndpointId) -> Self {
+    pub fn new(publisher: EndpointId) -> Self {
         Self {
             publisher,
             workspaces: Vec::new(),
@@ -146,7 +134,7 @@ impl Plane {
         }
     }
 
-    pub(super) fn workspace(&mut self, ws: Topic) -> Option<&mut Workspace> {
+    pub fn workspace(&mut self, ws: Topic) -> Option<&mut Workspace> {
         self.workspaces
             .iter_mut()
             .find(|workspace| workspace.ws == ws)
@@ -168,7 +156,7 @@ impl Plane {
     }
 
     /// Take one message a peer published on `ws`.
-    pub(super) fn message(&mut self, ws: Topic, from: EndpointId, msg: NeighbourMsg) {
+    pub fn message(&mut self, ws: Topic, from: EndpointId, msg: NeighbourMsg) {
         if from == self.publisher {
             return;
         }
@@ -180,7 +168,7 @@ impl Plane {
     }
 
     /// Take one thing the plane heard that its boards keep.
-    pub(super) fn apply(&mut self, event: Event) {
+    pub fn apply(&mut self, event: Event) {
         match event {
             Event::Msg { ws, peer, msg } => self.message(ws, peer, *msg),
             Event::PeerLeft { ws, peer } => {
@@ -193,13 +181,13 @@ impl Plane {
     }
 
     /// How many times what the workspace in front knows of its people changed.
-    pub(super) fn revision(&self) -> u64 {
+    pub fn revision(&self) -> u64 {
         self.front()
             .map_or(0, |workspace| workspace.board.revision())
     }
 
     /// How many times what `workspace` knows of its people changed.
-    pub(super) fn revision_of(&self, workspace: &str) -> u64 {
+    pub fn revision_of(&self, workspace: &str) -> u64 {
         self.workspaces
             .iter()
             .find(|held| held.id == workspace)
@@ -207,7 +195,7 @@ impl Plane {
     }
 
     /// Everyone here in `workspace`, as a surface that draws them reads them.
-    pub(super) fn shown(&self, workspace: &str, now_ms: f64) -> Vec<Shown> {
+    pub fn shown(&self, workspace: &str, now_ms: f64) -> Vec<Shown> {
         self.workspaces
             .iter()
             .find(|held| held.id == workspace)
@@ -215,14 +203,14 @@ impl Plane {
     }
 
     /// When what this device says is next due, on the clock presence is heard on, if anything is.
-    pub(super) fn next_due(&self, now_ms: f64) -> Option<f64> {
+    pub fn next_due(&self, now_ms: f64) -> Option<f64> {
         self.front()
             .and_then(|workspace| workspace.board.next_due(now_ms))
     }
 
     /// Say `word` in the workspace in front and take what it owes now, each frame with its object
     /// on that workspace's presence track.
-    pub(super) fn say_in_front(
+    pub fn say_in_front(
         &mut self,
         word: &presence::Own,
         now_ms: f64,
@@ -234,10 +222,7 @@ impl Plane {
     }
 
     /// Take what the workspace in front's board owes at `now_ms`.
-    pub(super) fn due_in_front(
-        &mut self,
-        now_ms: f64,
-    ) -> Option<(DeskWorkspaceId, Vec<(u32, Presence)>)> {
+    pub fn due_in_front(&mut self, now_ms: f64) -> Option<(DeskWorkspaceId, Vec<(u32, Presence)>)> {
         let workspace = self.front_mut()?;
         let desk = DeskWorkspaceId::parse(&workspace.id)?;
         Some((desk, workspace.board.due(now_ms)?))
@@ -245,7 +230,7 @@ impl Plane {
 
     /// Take what `workspace`'s board owes at `now_ms`, as a host that names one workspace at a time
     /// asks with its own timer: the keepalives, the repeats and the loss repairs it holds.
-    pub(super) fn due_in(
+    pub fn due_in(
         &mut self,
         workspace: &str,
         now_ms: f64,
@@ -259,71 +244,10 @@ impl Plane {
     }
 
     /// When `workspace`'s board next owes a word, on the clock presence is heard on.
-    pub(super) fn next_due_in(&self, workspace: &str, now_ms: f64) -> Option<f64> {
+    pub fn next_due_in(&self, workspace: &str, now_ms: f64) -> Option<f64> {
         self.workspaces
             .iter()
             .find(|held| held.id == workspace)
             .and_then(|held| held.board.next_due(now_ms))
     }
-}
-
-/// Who each window of this desk is, by tab, as presence names records: the short digest of the app
-/// and the record its component bound. What places a person in the window they work in, and a
-/// follower's view bringing it forward.
-#[must_use]
-pub(crate) fn bindings(
-    tree: &tilo_desktop_model::DesktopTree,
-    records: &std::collections::BTreeMap<tilo_desktop_model::TabId, String>,
-) -> Vec<(tilo_desktop_model::TabId, String)> {
-    records
-        .iter()
-        .filter_map(|(&tab, record)| {
-            Some((
-                tab,
-                hex::encode(live_record(tree, tab, record)?.short_digest()),
-            ))
-        })
-        .collect()
-}
-
-/// Where this person's windows are on their screen, as presence says it to the others: the windows of
-/// `shown` that name a record, laid out in `area` by the rule every host places by, and which of them
-/// the person works in. `None` while the surface shows no screen to place anything on.
-#[must_use]
-pub fn placed(
-    area: Option<ui::kurbo::Rect>,
-    shown: &[(tilo_desktop_model::TabId, ui::kurbo::Rect)],
-    record_of: impl Fn(tilo_desktop_model::TabId) -> Option<(String, String)>,
-    focused: Option<tilo_desktop_model::TabId>,
-) -> Option<LiveLayout> {
-    let windows: Vec<(LiveRecord, [f64; 4], bool)> = shown
-        .iter()
-        .filter_map(|&(tab, rect)| {
-            let (app, record) = record_of(tab)?;
-            Some((
-                LiveRecord { app, record },
-                [rect.x0, rect.y0, rect.x1, rect.y1],
-                focused == Some(tab),
-            ))
-        })
-        .collect();
-    let area = area?;
-    LiveLayout::place([area.x0, area.y0, area.x1, area.y1], &windows)
-}
-
-/// What the window `tab` shows, as presence names it to the others: the app it runs and its record's
-/// wire spelling ([`wire_record`]), the spelling a receiver matches against its own records. `None`
-/// for a window that runs no app, or shows a record this session does not know yet.
-pub(crate) fn live_record(
-    tree: &tilo_desktop_model::DesktopTree,
-    tab: tilo_desktop_model::TabId,
-    record: &str,
-) -> Option<LiveRecord> {
-    let app = app_of(tree, tab)?;
-    let record =
-        RecordId::parse(record).map_or_else(|| record.to_owned(), |id| wire_record(&id).to_owned());
-    Some(LiveRecord {
-        app: app.to_owned(),
-        record,
-    })
 }

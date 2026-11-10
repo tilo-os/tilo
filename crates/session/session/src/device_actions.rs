@@ -476,7 +476,7 @@ mod tests {
     use tilo_user_identity::DeviceCert;
 
     use super::*;
-    use crate::platform::plane::Cmd;
+    use crate::sync::Cmd;
 
     const WORKSPACE: &str = testing::WORKSPACE;
     /// How long the device asked has to answer before the test fails.
@@ -765,7 +765,7 @@ mod tests {
     struct Content {
         plane: Arc<crate::content::Plane>,
         address: EndpointId,
-        said: tokio::sync::mpsc::UnboundedReceiver<Cmd>,
+        said: tokio::sync::mpsc::UnboundedReceiver<crate::sync::HostCmd>,
     }
 
     impl Content {
@@ -774,8 +774,8 @@ mod tests {
         fn open(key: &SigningKey) -> Self {
             let address = SecretKey::from_bytes(&key.to_bytes()).public();
             let plane = crate::content::Plane::open(None);
-            let (say, said) = tokio::sync::mpsc::unbounded_channel();
-            plane.bind(say, address);
+            let (say, said) = tokio::sync::mpsc::unbounded_channel::<crate::sync::HostCmd>();
+            plane.bind(crate::sync::HostOutbox::of(say), address);
             Self {
                 plane,
                 address,
@@ -798,15 +798,15 @@ mod tests {
     /// workspace's topic, and an answer to the one device that asked.
     fn carry(
         from: EndpointId,
-        said: &mut tokio::sync::mpsc::UnboundedReceiver<Cmd>,
+        said: &mut tokio::sync::mpsc::UnboundedReceiver<crate::sync::HostCmd>,
         to: &crate::content::Plane,
     ) {
         while let Ok(outgoing) = said.try_recv() {
             match outgoing {
-                Cmd::Publish { ws, msg } => {
+                crate::sync::HostCmd::Plane(Cmd::Publish { ws, msg }) => {
                     to.heard(ws, WORKSPACE, from, &msg);
                 }
-                Cmd::Content(RecordContentDelivery { ws, msg, .. }) => {
+                crate::sync::HostCmd::Content(RecordContentDelivery { ws, msg, .. }) => {
                     to.heard(ws, WORKSPACE, from, &msg);
                 }
                 _ => {}

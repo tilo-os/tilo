@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use tilo_identity_host::custody::Custody;
+use tilo_identity_host::custody::{Custody, HostIdentity};
 
 /// This device's custody, when this host holds an identity at all.
 #[must_use]
@@ -23,4 +23,13 @@ pub fn custody() -> Option<Arc<dyn Custody>> {
     {
         None
     }
+}
+
+/// This device's collaboration identity: the key and certificate a session's endpoint runs on, when
+/// this host holds one.
+/// A session on a host without one takes part in no workspace as anybody: it binds a fresh key and
+/// stays anonymous until the person sets a device up.
+#[must_use]
+pub fn device_identity() -> Option<HostIdentity> {
+    HostIdentity::open(custody()?)
 }

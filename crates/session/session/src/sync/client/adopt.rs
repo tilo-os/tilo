@@ -6,8 +6,9 @@ use std::sync::Arc;
 use tilo_desktop_model::WorkspaceId as DeskWorkspaceId;
 use tilo_network_actor::{HostIdentity, NetCmd, NetEvent, workspace_topic_id};
 
-use super::{ChannelLink, Engine, Enrolling, Entering};
-use crate::sync::{REDEEM_WITHIN, SETTLE_WITHIN};
+use crate::channels::ChannelLink;
+use crate::engine::Engine;
+use crate::sync::{Enrolling, Entering, REDEEM_WITHIN, SETTLE_WITHIN};
 
 /// Redeem an invitation into the workspace the desk made for its workspace: this device becomes a
 /// member of the workspace, takes in what it held before it arrived, and takes part in it from then

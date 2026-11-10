@@ -2,7 +2,7 @@
 //! the invitations they redeemed, whose view this device follows, and where this person is on the
 //! desk for everyone here to read.
 
-use crate::sync::presence::live_record;
+use crate::sync::layout::live_record;
 use collab_types::presence::{ShellPresence, ShellWindow};
 use tilo_desktop_surface::navigation;
 use tilo_live::presence::{Point, Tile, anchor};
@@ -112,7 +112,7 @@ fn shell(
     area: Option<ui::kurbo::Rect>,
     focus: &Focus,
 ) -> Option<Box<ShellPresence>> {
-    let layout = crate::sync::presence::placed(
+    let layout = crate::sync::layout::placed(
         area,
         shown,
         |tab| {

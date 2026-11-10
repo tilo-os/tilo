@@ -884,7 +884,7 @@ impl Panel {
             .map(|workspace| workspace.id().to_string());
         // What each window here shows, by the digest presence names it with: what a person's window
         // on the same record is called here.
-        let titled: BTreeMap<String, String> = crate::sync::presence::bindings(&tree, &records)
+        let titled: BTreeMap<String, String> = crate::sync::layout::bindings(&tree, &records)
             .into_iter()
             .filter_map(|(tab, digest)| {
                 let title = tree.tab(tab)?.title.trim().to_owned();

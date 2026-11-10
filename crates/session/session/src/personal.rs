@@ -153,7 +153,7 @@ mod tests {
     use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
     use super::*;
-    use crate::platform::plane::Cmd;
+    use crate::sync::Cmd;
 
     /// One of the person's devices' certificates, signed by their root.
     fn certificate(root: &SigningKey, n: u8, now: SystemTime) -> DeviceCert {
@@ -194,7 +194,10 @@ mod tests {
         let sync = PersonalSync::over(PeerPersonal::new(store), SigningKey::from_bytes(&[1; 32]));
 
         let (outgoing, mut commands) = tokio::sync::mpsc::unbounded_channel();
-        let dials = SiblingDials::new(here.device_public_key, outgoing);
+        let dials = SiblingDials::new(
+            here.device_public_key,
+            crate::sync::HostOutbox::of(outgoing),
+        );
         for device in held_devices(&sync) {
             dials.dial(device);
         }
@@ -202,7 +205,9 @@ mod tests {
         let mut dialled = Vec::new();
         while let Ok(command) = commands.try_recv() {
             match command {
-                Cmd::ConnectDevice(addr) => dialled.push(*addr.id.as_bytes()),
+                crate::sync::HostCmd::Plane(Cmd::ConnectDevice(addr)) => {
+                    dialled.push(*addr.id.as_bytes());
+                }
                 other => panic!("a sibling dial sent something else: {other:?}"),
             }
         }

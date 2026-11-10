@@ -61,6 +61,7 @@ default-members = [
     "crates/packaging/tilo-app-package",
 ]
 members = [
+    "crates/session/client",
     "crates/lang/tilolang",
     "crates/lang/tilolang-cli",
     "apps/poker",

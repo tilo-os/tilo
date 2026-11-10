@@ -24,7 +24,7 @@ use std::os::fd::AsFd as _;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use crate::platform::plane::Event;
+use crate::sync::Event;
 use iroh::EndpointId;
 use neighbour_wire::NeighbourMsg;
 use serde_json::Value;
@@ -61,7 +61,7 @@ use wayland_protocols_misc::zwp_input_method_v2::client::{
 };
 
 use super::SHARES_RESOURCE;
-use crate::platform::plane::Cmd;
+use crate::sync::Cmd;
 use crate::sync::{Client, OwnPresence};
 use crate::{Options, Session};
 

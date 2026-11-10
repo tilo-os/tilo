@@ -272,7 +272,7 @@ pub(crate) fn register(
     let (_landed, enrolled) = std::sync::mpsc::channel();
     let client = Rc::new(Client::over(
         Transport {
-            outgoing,
+            outgoing: Rc::new(outgoing),
             arrived,
             enrolled,
             saying: Some(Rc::new(PagePlane {

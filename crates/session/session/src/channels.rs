@@ -26,7 +26,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tilo_clock::{SystemTime, UNIX_EPOCH};
 
-use crate::platform::plane::{Cmd, RosterDevice, Topic, topic_of};
+use crate::sync::{Cmd, RosterDevice, Topic, topic_of};
+
 use collab_types::{ChannelId, ChannelRoute, Ed25519PublicKey};
 use neighbour_wire::NeighbourMsg;
 #[cfg(target_os = "linux")]
@@ -166,7 +167,7 @@ pub struct ChannelLink {
     /// read asks once, and the plane asks a host session that starts later itself.
     asked: Mutex<BTreeSet<(Topic, [u8; 32])>>,
     /// What this session says on the collaboration plane, once it is running.
-    outgoing: Mutex<Option<tokio::sync::mpsc::UnboundedSender<Cmd>>>,
+    outgoing: Mutex<Option<std::sync::Arc<dyn tilo_session_client::Outbox>>>,
     park: Arc<GovernancePark>,
 }
 
@@ -183,7 +184,7 @@ impl ChannelLink {
     }
 
     /// Say `message` on the collaboration plane from now on; `None` once the plane is gone.
-    pub(crate) fn attach(&self, outgoing: tokio::sync::mpsc::UnboundedSender<Cmd>) {
+    pub(crate) fn attach(&self, outgoing: std::sync::Arc<dyn tilo_session_client::Outbox>) {
         *self.outgoing.lock_recover() = Some(outgoing);
         // What was told before the plane ran was told to no one: every workspace this device holds
         // is read and told again.
@@ -260,7 +261,7 @@ impl ChannelLink {
         if asked.contains(&(ws, channel)) {
             return;
         }
-        if outgoing.send(Cmd::OpenRecord { ws, channel }).is_err() {
+        if !outgoing.send(Cmd::OpenRecord { ws, channel }) {
             // The plane is gone: the next read asks again.
             return;
         }
@@ -290,7 +291,7 @@ impl ChannelLink {
     /// roster is told again when a later pass finds it changed.
     fn tell_roster(&self, ws: Topic, devices: Roster) -> bool {
         let outgoing = self.outgoing.lock_recover().clone();
-        outgoing.is_some_and(|outgoing| outgoing.send(Cmd::Roster { ws, devices }).is_ok())
+        outgoing.is_some_and(|outgoing| outgoing.send(Cmd::Roster { ws, devices }))
     }
 }
 
@@ -309,12 +310,10 @@ impl GovernanceTransport for ChannelLink {
         };
         let outgoing = self.outgoing.lock_recover().clone();
         outgoing.is_some_and(|outgoing| {
-            outgoing
-                .send(Cmd::Publish {
-                    ws: topic_of(workspace),
-                    msg: Box::new(message),
-                })
-                .is_ok()
+            outgoing.send(Cmd::Publish {
+                ws: topic_of(workspace),
+                msg: Box::new(message),
+            })
         })
     }
 
@@ -638,7 +637,7 @@ mod tests {
         );
 
         let (outgoing, mut sent) = tokio::sync::mpsc::unbounded_channel();
-        link.attach(outgoing);
+        link.attach(std::sync::Arc::new(outgoing));
         rosters.tell(&link, workspace, vec![(device, None)]);
         assert!(
             link.take_changed().is_empty(),

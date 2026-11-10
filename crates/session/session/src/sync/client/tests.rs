@@ -1,8 +1,9 @@
 use super::*;
 use collab_types::PeerPresencePayload;
-use collab_types::presence::{DESKTOP_APP, Payload, PresenceKey};
+use collab_types::presence::{DESKTOP_APP, Payload, Presence, PresenceKey};
 use ed25519_dalek::SigningKey;
 use tilo_desktop_model::{Workspace, WorkspaceId as ModelWorkspaceId};
+use tilo_session_client::{InCall, presence::now_ms, topic_of};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
 /// The workspace the tests' only workspace is.
@@ -17,7 +18,7 @@ fn device(seed: u8) -> EndpointId {
 }
 
 fn topic(workspace: &str) -> WorkspaceId {
-    super::topic_of(ModelWorkspaceId::parse(workspace).expect("a workspace id"))
+    topic_of(ModelWorkspaceId::parse(workspace).expect("a workspace id"))
 }
 
 /// A desktop showing one workspace, in `workspace` .
@@ -63,7 +64,7 @@ fn list_of(
     );
     let workspace = ModelWorkspaceId::parse(workspace).expect("a workspace id");
     directory
-        .add_workspace_with_topic(super::topic_of(workspace), &workspace.to_string(), "Desk")
+        .add_workspace_with_topic(topic_of(workspace), &workspace.to_string(), "Desk")
         .expect("a listed workspace");
     let update = directory
         .signed_snapshot(signing, tilo_clock::unix_now_ns())
@@ -236,7 +237,7 @@ fn a_transport_another_host_brings_carries_the_same_words() {
     let (_landed, enrolled) = std::sync::mpsc::channel();
     let sync = Client::over(
         Transport {
-            outgoing,
+            outgoing: Rc::new(outgoing),
             arrived,
             enrolled,
             saying: None,
@@ -284,7 +285,7 @@ fn a_device_of_the_person_coming_up_owes_it_the_list() {
         !sync.sibling_arrived(),
         "no device of the person said anything yet"
     );
-    sync.keep_personal(&Event::Sibling {
+    sync.hear(Event::Sibling {
         peer: device(0x11),
         certs: Vec::new(),
         revocations: Vec::new(),
@@ -304,16 +305,16 @@ fn a_list_is_kept_only_from_the_device_that_said_it() {
     let (phone, _) = certified(0x04, 0x12, "Phone");
     let by_laptop = list_of(&laptop, &laptop_key, WORKSPACE);
 
-    let kept = author_of(&[phone.clone(), laptop.clone()], &by_laptop)
+    let kept = tilo_session_client::client::author_of(&[phone.clone(), laptop.clone()], &by_laptop)
         .expect("the laptop's own list is the laptop's");
     assert_eq!(kept.device_public_key, laptop.device_public_key);
 
     // Someone else's device, and a list the laptop's session carried but another device signed:
     // neither says the laptop said it.
     let (stranger, _) = certified(0x55, 0x13, "Stranger");
-    assert!(author_of(&[stranger], &by_laptop).is_none());
-    assert!(author_of(&[phone], &by_laptop).is_none());
-    assert!(author_of(&[], &by_laptop).is_none());
+    assert!(tilo_session_client::client::author_of(&[stranger], &by_laptop).is_none());
+    assert!(tilo_session_client::client::author_of(&[phone], &by_laptop).is_none());
+    assert!(tilo_session_client::client::author_of(&[], &by_laptop).is_none());
 }
 
 #[test]
@@ -615,8 +616,8 @@ fn the_relays_wait_until_a_workspace_with_someone_else_is_shown() {
         label: "Quinten".into(),
         ..OwnPresence::default()
     };
-    let (mut sync, _said) = Client::offline(device(0xf0), own);
-    sync.reachability = reachability.clone();
+    let (sync, _said) = Client::offline(device(0xf0), own);
+    sync.hold_relays_with(reachability.clone());
     sync.follow_desktop(&desk(WORKSPACE));
 
     // Nobody else in the workspace this desktop shows: it names no relay,
@@ -890,7 +891,7 @@ fn waving_says_a_new_wave_each_time() {
         .collect();
     assert_eq!(waves, vec![(1, target.clone()), (2, target)]);
     assert_eq!(
-        sync.own_member().wave.map(|wave| wave.seq),
+        sync.own_here().wave.map(|wave| wave.seq),
         Some(2),
         "this person's row reads their last wave as sent"
     );
@@ -1007,7 +1008,7 @@ fn a_device_of_the_person_says_where_its_workspaces_are_reached() {
         "no device of the person said where a workspace is reached yet"
     );
     let (cert, hint) = host_hint(0x04, 0x21, "one address");
-    sync.keep_personal(&Event::SiblingMsg {
+    sync.hear(Event::SiblingMsg {
         peer: device(0x11),
         msg: Box::new(NeighbourMsg::PersonalHosts {
             user_public_key: root(0x04),
@@ -1032,7 +1033,7 @@ fn another_persons_host_hints_are_not_where_this_persons_workspaces_are() {
     let (sync, _said) = session("Desk", Some(0x04));
     let sync = sync.taking_part_as(&person(0x04));
     let (_, hint) = host_hint(0x05, 0x22, "someone else's address");
-    sync.keep_personal(&Event::SiblingMsg {
+    sync.hear(Event::SiblingMsg {
         peer: device(0x12),
         msg: Box::new(NeighbourMsg::PersonalHosts {
             user_public_key: root(0x05),
@@ -1115,7 +1116,7 @@ fn a_host_that_names_its_workspaces_says_and_pumps_each_of_them() {
     let (_landed, enrolled) = std::sync::mpsc::channel();
     let sync = Client::over(
         Transport {
-            outgoing,
+            outgoing: Rc::new(outgoing),
             arrived,
             enrolled,
             saying: None,

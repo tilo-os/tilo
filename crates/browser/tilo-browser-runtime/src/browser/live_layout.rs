@@ -2,7 +2,7 @@
 //! the strip shown, as the desktop surface laid them out, each named by its
 //! app and the short digest of its record only
 //! ([`tilo_relay_protocol::live::LiveLayout`], placed by
-//! [`tilo_session::sync::presence::placed`], the rule every host places by). Others draw a mini view of this screen from what they
+//! [`tilo_session::sync::layout::placed`], the rule every host places by). Others draw a mini view of this screen from what they
 //! hold themselves; a window on something not shared with them tells them
 //! only its app.
 
@@ -76,7 +76,7 @@ fn named(app: String, record: String) -> serde_json::Value {
 /// The layout's JSON as the page's presence carries it: `{size: [w, h],
 /// windows: [{app, record, rect, focused}]}`, `record` the 16-hex short
 /// digest, laid out in the content `area` (the strip's, under the bar) by the
-/// placement rule every host uses ([`tilo_session::sync::presence::placed`]).
+/// placement rule every host uses ([`tilo_session::sync::layout::placed`]).
 /// `record_of` names a tab's live record; a window without one is left out.
 /// `None` for an area of no size.
 pub(super) fn layout_value(
@@ -85,7 +85,7 @@ pub(super) fn layout_value(
     record_of: impl Fn(TabId) -> Option<(String, String)>,
     focused: Option<TabId>,
 ) -> Option<serde_json::Value> {
-    let layout = tilo_session::sync::presence::placed(Some(area), shown, record_of, focused)?;
+    let layout = tilo_session::sync::layout::placed(Some(area), shown, record_of, focused)?;
     Some(serde_json::json!({
         "size": layout.size,
         "windows": layout.windows.iter().map(|window| serde_json::json!({

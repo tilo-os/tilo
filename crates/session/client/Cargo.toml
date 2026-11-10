@@ -1,0 +1,52 @@
+[package]
+name = "tilo-session-client"
+description = "A participant's client of the collaboration plane: the workspaces it takes part in, who is here in each, and this device's own word on them, over whatever transport the host brings."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# The desk's model: the workspaces a participant takes part in, and the windows presence places
+# people in.
+tilo-desktop-model = { path = "../desktop-model" }
+# The toolkit's clock and presence vocabulary, which a participant's face is drawn with on every
+# host.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+collab-types = { path = "../../collab/collab-types" }
+# The workspace's live plane: the board of who is here, and the tracks presence travels on.
+tilo-live = { path = "../../collab/tilo-live", features = ["plane"] }
+# This device's workspaces as its host keeps them, and where a device hosting one is reached.
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+# The certificates that say which person a device belongs to, and their revocations.
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+# What members say on a workspace's plane.
+neighbour-wire = { path = "../../collab/neighbour-wire" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+# How a workspace numbers itself on the plane.
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+# The action a message from another member is, and the claims access answers it with, holding
+# every message to the workspace's own policy.
+tilo-action-policy = { path = "../../collab/action-policy" }
+# This device's identity: the certificate it presents and the key it signs with, from the store
+# its host keeps them in.
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+# The endpoint every device dials: presence names a publisher and where it is reached with it.
+iroh.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+serde.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+hex.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# The gate's table of every wire variant builds ids and channels as the wire does.
+uuid.workspace = true
+web-time = { version = "1", features = ["serde"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

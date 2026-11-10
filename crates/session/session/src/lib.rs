@@ -47,7 +47,9 @@ pub mod records;
 pub mod search;
 mod search_ask;
 mod session_actions;
-pub mod workspace_gate;
+// What a message from another member is, and whether the workspace's policy grants it: the gate
+// table every host asks, named here as the session always has.
+pub use tilo_session_client::gate as workspace_gate;
 
 // The Linux host's effects: the compositor, the services it starts, the
 // devices and the processes. A web host provides these through `platform`.
