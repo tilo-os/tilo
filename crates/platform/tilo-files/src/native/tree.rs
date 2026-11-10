@@ -164,7 +164,6 @@ impl Walk<'_> {
         if !cloned {
             io::copy(&mut input, &mut output)?;
         }
-        drop(input);
         output.set_modified(metadata.modified()?)?;
         Ok(cloned)
     }
