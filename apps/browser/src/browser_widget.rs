@@ -69,6 +69,8 @@ mod dialog;
 mod download_read;
 mod engine_runtime;
 mod form_actions;
+#[cfg(test)]
+mod form_actions_tests;
 mod http_fallback;
 mod library;
 #[cfg(test)]
