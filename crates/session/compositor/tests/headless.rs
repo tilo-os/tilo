@@ -46,11 +46,14 @@ use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::{Logical, Point, Rectangle, Transform};
 use tilo_compositor::{
-    Arrangement, BackdropImage, BackdropRequest, Compositor, GestureEvent, HostDrag, HostFrame,
-    HostIme, HostKey, HostLayer, HostTextInput, IconArtwork, InputEvent, KeyClaim, KeyboardLayout,
-    LayoutPoint, LayoutRect, OutputConfig, PadAction, StackPolicy, SurfaceHost, Switch,
-    TabletEvent, TabletPadEvent, TabletPhase, TextField, TextFieldRefusal, TextInsertion,
-    WindowEffect, WindowFrame, WindowIcon, WindowInfo, WindowPicture, WindowPolicy,
+    Arrangement, Compositor, GestureEvent, HostDrag, HostFrame, HostIme, HostLayer, HostTextInput,
+    IconArtwork, InputEvent, KeyboardLayout, LayoutPoint, LayoutRect, OutputConfig, PadAction,
+    StackPolicy, SurfaceHost, Switch, TabletEvent, TabletPadEvent, TabletPhase, TextField,
+    TextFieldRefusal, TextInsertion, WindowEffect, WindowFrame, WindowIcon, WindowInfo,
+    WindowPolicy,
+};
+use tilo_session_core::surface::{
+    BackdropImage, BackdropRequest, HostKey, KeyClaim, WindowPicture,
 };
 use wayland_client::Connection;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{

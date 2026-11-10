@@ -14,9 +14,8 @@
     reason = "a fixture's pixels are small whole numbers it laid out itself"
 )]
 
-use tilo_compositor::{
-    Compositor, HostFrame, HostLayer, OutputConfig, Region, StackPolicy, SurfaceHost,
-};
+use tilo_compositor::{Compositor, HostFrame, HostLayer, OutputConfig, StackPolicy, SurfaceHost};
+use tilo_session_core::surface::Region;
 
 /// A hosted surface whose host fills its frame row by row, the way a toolkit app draws into one:
 /// red above the middle, blue below.
