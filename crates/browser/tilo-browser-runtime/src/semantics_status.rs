@@ -77,6 +77,15 @@ impl SemanticsGate {
     pub(crate) fn request(&mut self) {
         self.requested = true;
     }
+    /// The keyboard owner path of the tree the host holds: what the page
+    /// matches its own accessible elements against, without building the
+    /// tree again. A focus change is a structure change, so it is published
+    /// at once rather than deferred, and this is the current one.
+    pub(crate) fn published_keyboard_owner(&self) -> Option<String> {
+        self.last
+            .as_ref()
+            .and_then(|last| last.keyboard_focus_owner.clone())
+    }
     /// Whether a frame that only moved laid-out content would leave its
     /// tree unbuilt at `now` ([`Self::defer_unbuilt`], the IME line held),
     /// without scheduling anything.

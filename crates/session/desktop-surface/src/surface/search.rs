@@ -37,6 +37,9 @@ pub(super) enum SearchRequest {
         query: Option<String>,
     },
     Toggle,
+    /// Close search wherever it stands: a host dismissing the one that holds the keyboard, which
+    /// asks nothing of what is under it and does nothing when none is open.
+    Close,
 }
 
 /// The search the windows of strip `strip` asked for: a new-tab control asks which application to
@@ -382,6 +385,14 @@ impl DesktopHandle {
         self.shared.borrow_mut().search_request = Some(SearchRequest::Toggle);
     }
 
+    /// Close search, wherever it stands; nothing to close is nothing to do. The host schedules a
+    /// frame. A host that sees a press the desk's own hit test never reaches (a page's chrome
+    /// beside the canvas) dismisses the search holding the keyboard this way, as a press beside
+    /// the card does on the desk itself, however often it asks.
+    pub fn close_search(&self) {
+        self.shared.borrow_mut().search_request = Some(SearchRequest::Close);
+    }
+
     /// Open search at `scope` , with `query` typed. The host schedules a frame.
     pub fn open_search(&self, scope: Scope, query: Option<String>) {
         self.shared.borrow_mut().search_request = Some(SearchRequest::Open { scope, query });
@@ -431,6 +442,23 @@ impl DesktopHandle {
     /// Whether the search palette is open, as of the last update pass.
     pub fn search_open(&self) -> bool {
         self.shared.borrow().search_open
+    }
+
+    /// Who holds the keyboard: `"system-search"` while the search palette is up (it takes the
+    /// keyboard, the pointer and Escape), else the application of the active workspace's focused
+    /// window. `None` while no window does — an empty desk, or one whose windows are all gone.
+    ///
+    /// A host that stands outside the desk's own hit test (a page's chrome over the canvas) reads
+    /// this to know whose input a press elsewhere belongs to.
+    pub fn input_owner(&self) -> Option<String> {
+        let shared = self.shared.borrow();
+        if shared.search_open {
+            return Some("system-search".to_owned());
+        }
+        let route = crate::navigation::active_route(&shared.tree)?;
+        let window = crate::navigation::locate(&shared.tree, route)?;
+        let tab = window.tabs.iter().find(|tab| tab.id == route.tab)?;
+        tilo_desktop_model::apps::canonical_app_id(&tab.tile)
     }
 
     /// The palette the desk searches with, shared with the host that draws it over the windows: the
@@ -1053,6 +1081,8 @@ impl DesktopSurface {
         match request {
             Some(SearchRequest::Toggle) if opened => self.close_search(),
             Some(SearchRequest::Toggle) => self.open_search(doc, Scope::Workspace, None),
+            Some(SearchRequest::Close) if opened => self.close_search(),
+            Some(SearchRequest::Close) => {}
             Some(SearchRequest::Open { scope, query }) => self.open_search(doc, scope, query),
             None => {}
         }

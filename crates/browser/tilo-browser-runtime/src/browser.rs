@@ -965,6 +965,21 @@ fn admit_runtime() -> Result<(), JsValue> {
         .with(crate::mount_service_custody::reject_reentry)
         .map_err(|_| error("the runtime is busy (an owned mount callback)"))
 }
+
+/// The box of the field an input method is helping, and what that field is
+/// for, as the page places its hidden editor and hints the browser's input
+/// method. The one shape both the status and the input-owner read hand over.
+pub(crate) fn ime_json(window: &ui::ime::ImeWindowState) -> serde_json::Value {
+    serde_json::json!({
+        "x": window.x,
+        "y": window.y,
+        "width": window.width,
+        "height": window.height,
+        "purpose": format!("{:?}", window.content.purpose),
+        "hints": window.content.html(),
+    })
+}
+
 fn with_mount<R>(
     id: u64,
     run: impl FnOnce(&mut Mount) -> Result<R, JsValue>,
@@ -2876,9 +2891,7 @@ impl Mount {
             self.presented_ime = self.frame.ime_window();
         }
         let ime_window = self.presented_ime;
-        let ime = ime_window.as_ref().map(|i| {
-            serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.content.purpose),"hints":i.content.html()})
-        });
+        let ime = ime_window.as_ref().map(ime_json);
         let unbuilt = self.tree_unbuilt(change, ime_window.as_ref())
             || (presented
                 && self

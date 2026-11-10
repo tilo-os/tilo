@@ -29,6 +29,41 @@ pub fn desktop_navigation_snapshot(id: u64) -> Result<Option<String>, JsValue> {
     })
 }
 
+/// Who holds the input on the desk, and the field an input method is helping
+/// (`{owner, holder, ime}` JSON). `owner` is the keyboard owner path of the
+/// semantics tree the page holds, which the page matches its own accessible
+/// elements against; `holder` is who that is — `"system-search"` while the
+/// desk's search is up, else the application of the focused window, `null`
+/// while no window has it; `ime` is the field an input method is helping,
+/// `null` while none is. `None` for a single-application mount, whose page
+/// holds its own input.
+///
+/// The page reads it live, not from a status: routing a press on the page's own
+/// chrome and handing focus back after the desk activates something both need
+/// who holds the keyboard now. The owner path and the field are the last
+/// presented frame's, as the status reports them — the same tree the page
+/// holds, and a tree a keystroke retired between frames names no keyboard
+/// owner, so reading a fresher one would move the page's focus on every key.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
+#[wasm_bindgen]
+pub fn desktop_input_ownership(id: u64) -> Result<Option<String>, JsValue> {
+    // A read: it changes nothing a semantics tree shows.
+    with_mount_quietly(id, |m| {
+        let owner = m.semantics.borrow().published_keyboard_owner();
+        Ok(m.desktop.as_ref().map(|desktop| {
+            serde_json::json!({
+                "owner": owner,
+                "holder": desktop.handle.input_owner(),
+                "ime": m.presented_ime.as_ref().map(super::ime_json),
+            })
+            .to_string()
+        }))
+    })
+}
+
 /// Offer what only the page can do for the person (`[{id, title,
 /// subtitle?}]` JSON; in place of earlier ones): desktop search lists them
 /// beside the desktop's commands, and choosing one reaches the page as a
@@ -62,6 +97,28 @@ pub fn desktop_set_host_actions(id: u64, actions: &str) -> Result<(), JsValue> {
         if withdrew {
             m.window.request_redraw();
         }
+        Ok(())
+    })
+}
+
+/// Close desktop search wherever it stands, and nothing when none is open: the
+/// page dismissing the search that holds the keyboard after a press on its own
+/// chrome, which the desk's hit test never reaches.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount.
+#[wasm_bindgen]
+pub fn desktop_search_close(id: u64) -> Result<(), JsValue> {
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop search unavailable"))?;
+        desktop.handle.close_search();
+        desktop.shared.wake();
+        m.pending = true;
+        m.window.request_redraw();
         Ok(())
     })
 }

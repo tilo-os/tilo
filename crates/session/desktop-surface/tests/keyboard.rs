@@ -991,6 +991,37 @@ fn an_apps_own_search_button_opens_search_over_its_window() {
 }
 
 #[test]
+fn the_desk_says_who_holds_the_keyboard() {
+    let mut desk = Desk::new(2, 450);
+    assert_eq!(
+        desk.handle.input_owner().as_deref(),
+        Some(APP),
+        "the focused window's application holds it"
+    );
+    desk.driver.click_named("search-open").unwrap();
+    desk.settle();
+    assert_eq!(
+        desk.handle.input_owner().as_deref(),
+        Some("system-search"),
+        "search takes the keyboard while its palette is up"
+    );
+    desk.handle.close_search();
+    desk.settle();
+    assert_eq!(
+        desk.handle.input_owner().as_deref(),
+        Some(APP),
+        "and gives it back to the window under it when it closes"
+    );
+    // A host that saw a press beside the card asks again: closing a closed search opens nothing.
+    desk.handle.close_search();
+    desk.settle();
+    assert!(
+        !desk.handle.search_open(),
+        "dismissing twice never opens a search"
+    );
+}
+
+#[test]
 fn search_an_app_opened_asks_it_and_follows_its_answer_once_it_is_in() {
     let mut desk = Desk::new(1, 450);
     desk.driver.click_named("search-open").unwrap();
