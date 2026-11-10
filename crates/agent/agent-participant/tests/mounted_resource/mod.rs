@@ -304,7 +304,7 @@ pub async fn run() {
     .await;
     let voice_channel = common::channel(&doc, chat::model::ChannelKind::Voice);
     if voice_journey {
-        use tilo_browser_peer::{PeerEvent, VoiceEvent};
+        use tilo_session_host::{PeerEvent, VoiceEvent};
         native
             .peer
             .voice_call(

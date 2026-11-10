@@ -4,9 +4,9 @@
 //! session as one of the person's devices.
 use super::*;
 use serde_json::{Value, json};
-use tilo_browser_peer::session_actions::SessionActions;
 use tilo_relay_protocol::live::{LiveFrame, LiveRecord, OpsFrame};
 use tilo_runtime::mcp::{McpServer, Surface};
+use tilo_session_host::session_actions::SessionActions;
 
 /// The presence `tilo mcp` says of its agent, as the CLI itself says it: the
 /// same source, so what this test's other device hears is what a person's
@@ -60,14 +60,14 @@ fn heard(browser: &mut Browser) -> (Vec<collab_types::presence::Presence>, Vec<N
     let mut frames = Vec::new();
     let mut narrated = Vec::new();
     for event in browser.events.drain() {
-        if let tilo_browser_peer::PeerEvent::Live { from, frame, .. } = &event
+        if let tilo_session_host::PeerEvent::Live { from, frame, .. } = &event
             && let Ok(LiveFrame::Ops(OpsFrame::Semantic { record, event })) =
                 LiveFrame::decode(frame)
             && let Ok(interaction) = serde_json::from_str(&event.interaction_json)
         {
             narrated.push((*from, record, interaction));
         }
-        if let tilo_browser_peer::PeerEvent::LivePlane {
+        if let tilo_session_host::PeerEvent::LivePlane {
             workspace_id,
             track: tilo_live::live::Track::Presence,
             body,
@@ -277,7 +277,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     // What it wrote is its selection in the document, which every window
     // showing the document highlights in its colour.
     let selected = selected.expect("where the agent left off");
-    let (key, _, _) = tilo_browser_peer::presence_anchors::read_presence_anchors(
+    let (key, _, _) = tilo_session_host::presence_anchors::read_presence_anchors(
         &tilo_relay_protocol::live::LiveAnchor {
             cursor: hex::decode(&selected.anchor).unwrap(),
         },

@@ -1,0 +1,253 @@
+//! `SessionHealth` recovery against a real host: refreshing the shared state
+//! re-requests the workspace's checkpoints (also after the host restarted), and
+//! failures the page reports for its store, surfaces and assets are scoped
+//! and cleared.
+
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "a test holds its fixtures' locks for the length of a step"
+)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
+#[path = "support/participant.rs"]
+mod participant;
+mod support;
+
+// Placing the workspace has the host build its governance in an automerge worker.
+tilo_automerge_isolate::test_worker!();
+
+use collab_types::DocumentMutation;
+use tilo_session_host::{FailureSubject, LocalState, PeerEvent, PeerSnapshot};
+use tilo_user_identity::{DeviceCapabilities, UserIdentity};
+
+use support::{
+    enrol, next_document, ready, route, start_host, start_host_at, start_peer, wait_for, workspace,
+};
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let browser = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    // The restarted host answers at the same web and iroh addresses, as a
+    // host that kept its place does.
+    let host = start_host_at(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let listen = host.web.addr;
+    let iroh_listen = host.iroh_listen();
+    let peer = start_peer(
+        host.iroh(),
+        browser.cert.clone(),
+        host_device.cert.clone(),
+        browser.key.clone(),
+    );
+    peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
+    ready(&[&peer]).await;
+    let tree = DocumentMutation::Snapshot(b"desktop tree".to_vec());
+    peer.publish(route(), &tree).unwrap();
+    let receipt = peer.barrier().unwrap();
+    wait_for("the snapshot to be durable", || async {
+        receipt.try_recv().ok()
+    })
+    .await
+    .unwrap();
+
+    drop(host.web);
+    host.relay.shutdown().await;
+    let host = start_host_at(&root, &host_device, state.path(), listen, iroh_listen).await;
+    // A reconnect resumes: the page already holds what it published.
+    peer.reconnect().unwrap();
+    let mut events = Vec::new();
+    ready(&[&peer]).await;
+    events.clear();
+    let _ = peer.drain();
+
+    let before = peer.status().generation;
+    peer.refresh().unwrap();
+    assert_eq!(
+        next_document(&peer, &mut events).await,
+        tree,
+        "the host sends the workspace's checkpoint again"
+    );
+    ready(&[&peer]).await;
+    let status = peer.status();
+    assert!(status.generation > before);
+    assert!(status.workspaces.values().all(|ready| *ready));
+    assert!(
+        status
+            .failures
+            .iter()
+            .all(|failure| failure.subject != FailureSubject::Admission)
+    );
+    peer.close();
+    host.relay.shutdown().await;
+}
+
+/// Back online after a long outage, a session waiting out its backoff
+/// reconnects when told the network is back, not up to half a minute
+/// later; a connected session is left as it is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_backoff() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let browser = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host_at(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let listen = host.web.addr;
+    let iroh_listen = host.iroh_listen();
+    let peer = start_peer(
+        host.iroh(),
+        browser.cert.clone(),
+        host_device.cert.clone(),
+        browser.key.clone(),
+    );
+    peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
+    // Wait for the join's own `Ready` event, not a ready phase: the join
+    // is a command the session takes up later, so the phase can read
+    // ready (connected, no workspace waiting) before the workspace is even asked
+    // for, and the session marks the workspace ready before it emits the
+    // event. Either way that `Ready` would land after the drain below.
+    wait_for("the workspace's Ready", || async {
+        peer.drain()
+            .iter()
+            .any(|event| {
+                matches!(event, PeerEvent::Ready { workspace_id } if *workspace_id == workspace())
+            })
+            .then_some(())
+    })
+    .await;
+    ready(&[&peer]).await;
+    // Any status change bumps the generation (each envelope's contact
+    // time does); a reconnect is what subscribes the workspace anew.
+    let _ = peer.drain();
+    peer.retry_now().unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !peer
+            .drain()
+            .iter()
+            .any(|event| matches!(event, PeerEvent::Ready { .. })),
+        "a connected session is left as it is"
+    );
+
+    drop(host.web);
+    host.relay.shutdown().await;
+    // Gone long enough that the next attempt is many seconds away.
+    let due = wait_for("a long backoff", || async {
+        let status = peer.status();
+        (status.attempt >= 5)
+            .then_some(status.next_attempt_at_ms)
+            .flatten()
+    })
+    .await;
+    let host = start_host_at(&root, &host_device, state.path(), listen, iroh_listen).await;
+    peer.retry_now().unwrap();
+    ready(&[&peer]).await;
+    assert!(
+        tilo_clock::unix_now_ms() < due,
+        "back before the backoff ran out"
+    );
+    peer.close();
+    host.relay.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn page_failures_are_scoped_offer_their_recovery_and_clear() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let browser = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let peer = start_peer(
+        host.iroh(),
+        browser.cert.clone(),
+        host_device.cert.clone(),
+        browser.key.clone(),
+    );
+    // Page-owned failures only; the session may be connecting meanwhile.
+    let page_failures = || {
+        let health =
+            serde_json::to_value(PeerSnapshot::from_status(&peer.status()).health).unwrap();
+        health["failures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|failure| failure["scope"] != "transport")
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+
+    peer.set_local_state(route(), LocalState::Failed);
+    peer.set_local_state(route(), LocalState::Failed);
+    peer.report_failure(
+        FailureSubject::Surface("tilo-desktop-1".into()),
+        "gpu-device-lost",
+        "lost",
+    )
+    .unwrap();
+    peer.report_failure(
+        FailureSubject::Asset {
+            surface: "tilo-desktop-1".into(),
+            asset: "4".into(),
+        },
+        "asset-unavailable",
+        "missing",
+    )
+    .unwrap();
+    assert!(
+        peer.report_failure(FailureSubject::Session, "gpu-device-lost", "x")
+            .is_err()
+    );
+    assert!(
+        peer.report_failure(FailureSubject::Storage, "certificate-expired", "x")
+            .is_err()
+    );
+    let recovery: Vec<_> = page_failures()
+        .iter()
+        .map(|failure| failure["recovery"][0].clone())
+        .collect();
+    assert_eq!(
+        recovery,
+        [
+            serde_json::json!({"kind": "retry-saving"}),
+            serde_json::json!({"kind": "retry-desktop", "surfaceId": "tilo-desktop-1"}),
+            serde_json::json!({"kind": "retry-asset", "surfaceId": "tilo-desktop-1", "assetId": "4"}),
+        ],
+        "one storage failure however often a write fails"
+    );
+
+    peer.set_local_state(route(), LocalState::Durable);
+    peer.clear_surface("tilo-desktop-1");
+    assert!(page_failures().is_empty());
+    peer.report_failure(FailureSubject::Storage, "storage-quota", "full")
+        .unwrap();
+    peer.clear_failure(&FailureSubject::Storage);
+    assert!(page_failures().is_empty());
+    peer.close();
+    host.relay.shutdown().await;
+}

@@ -30,9 +30,9 @@
     reason = "in a test these are the assertion, not a hazard; one scenario in order"
 )]
 
-#[path = "../../../browser/tilo-browser-peer/tests/support/participant.rs"]
+#[path = "../../../session/host/tests/support/participant.rs"]
 mod participant;
-#[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
+#[path = "../../../session/host/tests/support/mod.rs"]
 mod support;
 
 mod common;

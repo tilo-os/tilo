@@ -32,9 +32,9 @@
               driven on the test's own thread (the agent's apps are not Send)"
 )]
 
-#[path = "../../../browser/tilo-browser-peer/tests/support/participant.rs"]
+#[path = "../../../session/host/tests/support/participant.rs"]
 mod participant;
-#[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
+#[path = "../../../session/host/tests/support/mod.rs"]
 mod support;
 
 mod common;
@@ -60,7 +60,6 @@ use tilo_agent_participant::{
     AgentIdentity, AgentParticipant, AgentSupervisor, DirectPlanner, ParticipantConfig, Replica,
     ReplicaActor, Seed, SupervisorHost,
 };
-use tilo_browser_peer::{PeerEvent, PeerHandle, certify};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::certify::{ApproverDecision, ApproverReply};
 use tilo_relay::daemon::{Relay, RelayIdentity};
@@ -72,6 +71,7 @@ use tilo_relay_protocol::agents::{
     agent_resource,
 };
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
+use tilo_session_host::{PeerEvent, PeerHandle, certify};
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, UserIdentity,
     issue_device_cert,
@@ -273,7 +273,7 @@ async fn status(
 /// each was authored by `author`, until the record contains `text`.
 async fn receive_until(
     agent: &mut AgentParticipant,
-    events: &tilo_browser_peer::PeerEvents,
+    events: &tilo_session_host::PeerEvents,
     route: &DocumentRoute,
     page: &mut Replica,
     author: [u8; 32],

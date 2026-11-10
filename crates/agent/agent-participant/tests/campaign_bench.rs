@@ -35,9 +35,9 @@
 mod hosted;
 #[path = "harness/page.rs"]
 mod page;
-#[path = "../../../browser/tilo-browser-peer/tests/support/participant.rs"]
+#[path = "../../../session/host/tests/support/participant.rs"]
 mod participant;
-#[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
+#[path = "../../../session/host/tests/support/mod.rs"]
 mod support;
 
 // Agents hold each record in a confined app worker (this binary, started

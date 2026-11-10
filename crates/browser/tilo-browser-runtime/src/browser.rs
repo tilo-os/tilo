@@ -2749,7 +2749,7 @@ impl Mount {
             _ => return None,
         };
         let (anchor, head) =
-            tilo_browser_peer::presence_anchors::presence_anchors(&key, start, end)?;
+            tilo_session_host::presence_anchors::presence_anchors(&key, start, end)?;
         Some(
             serde_json::json!({"anchor": hex::encode(anchor.cursor), "head": hex::encode(head.cursor)}),
         )

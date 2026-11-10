@@ -18,8 +18,8 @@ use std::sync::Arc;
 use tilo_actions::remote::feedback::FeedbackDestination;
 use tilo_app::feedback::{DurableStore, Error, PickedReport, Subject};
 use tilo_app::feedback_composer::FeedbackServices;
-use tilo_browser_peer::PeerHandle;
 use tilo_feedback_transport::Startup;
+use tilo_session_host::PeerHandle;
 use tilo_user_identity::DeviceCert;
 use ui::models::Models;
 

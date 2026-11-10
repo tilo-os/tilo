@@ -526,16 +526,16 @@ fn page(
     key: ed25519_dalek::SigningKey,
     cert: tilo_user_identity::DeviceCert,
     host_cert: &tilo_user_identity::DeviceCert,
-) -> tilo_browser_peer::PeerHandle {
-    tilo_browser_peer::PeerHandle::start(
-        tilo_browser_peer::PeerConfig {
+) -> tilo_session_host::PeerHandle {
+    tilo_session_host::PeerHandle::start(
+        tilo_session_host::PeerConfig {
             host,
             cert,
             host_cert: host_cert.clone(),
             revocations: tilo_user_identity::RevocationList::new(),
         },
         std::sync::Arc::new(key),
-        std::sync::Arc::new(tilo_browser_peer::MemoryPeerStore::default()),
+        std::sync::Arc::new(tilo_session_host::MemoryPeerStore::default()),
     )
 }
 
@@ -607,14 +607,14 @@ fn unenrolled_owner_device() -> (ed25519_dalek::SigningKey, tilo_user_identity::
 /// the page's copy of it.
 async fn assert_page_reads_the_chat(
     who: &str,
-    visiting: &tilo_browser_peer::PeerHandle,
+    visiting: &tilo_session_host::PeerHandle,
     workspace_id: u64,
     route: &tilo_peer_state::document_frame::DocumentRoute,
     channels: &[&str],
 ) -> automerge::AutoCommit {
     use collab_types::DocumentMutation;
     use tilo_automerge::ApplyIncoming;
-    use tilo_browser_peer::PeerEvent;
+    use tilo_session_host::PeerEvent;
 
     let mut ready = false;
     let mut doc = automerge::AutoCommit::new();
@@ -995,7 +995,7 @@ async fn persons_read_the_room_and_are_refused(
     (sibling_key, sibling_cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
 ) {
     use collab_types::DocumentMutation;
-    use tilo_browser_peer::PeerEvent;
+    use tilo_session_host::PeerEvent;
 
     let (host, host_cert, route) = chat_route(plain, cluster).await;
 
@@ -1071,7 +1071,7 @@ async fn an_editor_page_writes_and_is_committed(
     (editor_key, editor_cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
 ) {
     use collab_types::DocumentMutation;
-    use tilo_browser_peer::PeerEvent;
+    use tilo_session_host::PeerEvent;
 
     let (host, host_cert, route) = chat_route(plain, cluster).await;
     let editor = page(host, editor_key, editor_cert, &host_cert);

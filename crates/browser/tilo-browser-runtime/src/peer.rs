@@ -1,4 +1,4 @@
-//! The page's certified peer: `tilo_browser_peer` behind wasm-bindgen for
+//! The page's certified peer: `tilo_session_host` behind wasm-bindgen for
 //! `web/peer.mjs`, reaching the host over HTTPS only.
 //!
 //! The device key stays in custody (`web/device-custody.mjs`): either a
@@ -28,14 +28,14 @@ use std::sync::Arc;
 
 use js_sys::{Function, Promise, Reflect, Uint8Array};
 use serde::{Deserialize, Serialize};
-use tilo_browser_peer::{
-    DeviceSigner, FailureSubject, Host, HttpClient, HttpFuture, LocalState, PeerConfig, PeerEvent,
-    PeerEvents, PeerHandle, PeerRecord, PeerSnapshot, PeerStore, SignError, SignFuture,
-};
 use tilo_channels::VAULT_SECRET_APP as CHANNEL_VAULT_APP;
 use tilo_live::live::Track;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveRecord, OpsFrame, PreviewOp};
+use tilo_session_host::{
+    DeviceSigner, FailureSubject, Host, HttpClient, HttpFuture, LocalState, PeerConfig, PeerEvent,
+    PeerEvents, PeerHandle, PeerRecord, PeerSnapshot, PeerStore, SignError, SignFuture,
+};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList, RevocationReason};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
@@ -1253,10 +1253,10 @@ fn workspace_of(
 }
 
 fn voice_event(
-    event: tilo_browser_peer::VoiceEvent,
+    event: tilo_session_host::VoiceEvent,
     workspaces: &RefCell<std::collections::HashMap<u64, String>>,
 ) -> JsVoiceEvent {
-    use tilo_browser_peer::VoiceEvent;
+    use tilo_session_host::VoiceEvent;
     match event {
         VoiceEvent::Calls {
             workspace_id,
@@ -1775,7 +1775,7 @@ impl WasmPeer {
     /// host refuses.
     #[wasm_bindgen(js_name = preAdmit)]
     pub async fn pre_admit(&self, root: JsValue, options: String) -> Result<String, JsError> {
-        use tilo_browser_peer::DeviceSigner as _;
+        use tilo_session_host::DeviceSigner as _;
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Options {
@@ -2122,10 +2122,10 @@ impl WasmPeer {
             opus: String,
         }
         let frames: Vec<Frame> = serde_json::from_str(frames).map_err(js_error)?;
-        let frames: Vec<tilo_browser_peer::CallFrame> = frames
+        let frames: Vec<tilo_session_host::CallFrame> = frames
             .into_iter()
             .filter_map(|frame| {
-                Some(tilo_browser_peer::CallFrame {
+                Some(tilo_session_host::CallFrame {
                     timestamp_48k: frame.timestamp48k,
                     opus: hex::decode(frame.opus).ok()?,
                 })
@@ -2160,10 +2160,10 @@ impl WasmPeer {
             payload: String,
         }
         let pictures: Vec<Picture> = serde_json::from_str(pictures).map_err(js_error)?;
-        let pictures: Vec<tilo_browser_peer::CallPicture> = pictures
+        let pictures: Vec<tilo_session_host::CallPicture> = pictures
             .into_iter()
             .filter_map(|picture| {
-                Some(tilo_browser_peer::CallPicture {
+                Some(tilo_session_host::CallPicture {
                     source: source_of_name(&picture.source)?,
                     layer: layer_of_name(&picture.layer)?,
                     sequence: picture.sequence,
@@ -2197,11 +2197,11 @@ impl WasmPeer {
             screen: Vec<String>,
         }
         let shown: Vec<Shown> = serde_json::from_str(shown).map_err(js_error)?;
-        let shown: Vec<tilo_browser_peer::CallShown> = shown
+        let shown: Vec<tilo_session_host::CallShown> = shown
             .into_iter()
             .filter_map(|entry| {
                 let device: [u8; 32] = hex::decode(&entry.device).ok()?.try_into().ok()?;
-                Some(tilo_browser_peer::CallShown {
+                Some(tilo_session_host::CallShown {
                     device,
                     camera: entry
                         .camera
@@ -2453,7 +2453,7 @@ impl WasmPeer {
             .ok_or_else(|| js_error("this page holds no session with a host"))?;
         let caller =
             tilo_actions::remote::Caller::local_person(person.to_owned()).in_workspace(workspace);
-        tilo_browser_peer::session_actions::ask(&door, &caller, message)
+        tilo_session_host::session_actions::ask(&door, &caller, message)
             .await
             .map_err(|error| js_error(&error))
     }

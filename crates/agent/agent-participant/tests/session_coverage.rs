@@ -28,9 +28,9 @@ mod common;
 // again), whose changes are admitted through the Automerge isolate.
 tilo_agent_participant::app_worker!();
 tilo_automerge_isolate::test_worker!();
-#[path = "../../../browser/tilo-browser-peer/tests/support/participant.rs"]
+#[path = "../../../session/host/tests/support/participant.rs"]
 mod participant;
-#[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
+#[path = "../../../session/host/tests/support/mod.rs"]
 mod support;
 
 use std::collections::BTreeMap;
@@ -48,10 +48,10 @@ use tilo_agent_participant::{
     AgentControl, AgentIdentity, AgentParticipant, ModelPlanner, ParticipantConfig, Replica, Seed,
     StepAction, record_provider,
 };
-use tilo_browser_peer::PeerEvent;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::agents::{AgentStatus, TaskState};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
+use tilo_session_host::PeerEvent;
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
 use support::{WORKSPACE, enrol, ready, start_host, start_peer, wait_for, workspace};
@@ -84,8 +84,8 @@ impl Driveable for Agent<'_> {
 /// Send `message` from the browser to the agent's device and wait for the
 /// agent's answer, pumping the agent meanwhile.
 async fn ask(
-    browser: &tilo_browser_peer::PeerHandle,
-    events: &tilo_browser_peer::PeerEvents,
+    browser: &tilo_session_host::PeerHandle,
+    events: &tilo_session_host::PeerEvents,
     agent: &mut AgentParticipant,
     agent_key: [u8; 32],
     message: RemoteActionMessage,

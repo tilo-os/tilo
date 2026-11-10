@@ -733,7 +733,7 @@ impl Door {
         if let Some(shared) = shared
             && let Some(connection) = shared.lock().await.upgrade()
         {
-            connection.peer.close();
+            connection.device.close();
         }
     }
 

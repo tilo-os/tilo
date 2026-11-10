@@ -438,7 +438,7 @@ tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["te
 # governs the workspace a join enrolls into, folding what its pages write,
 # and the page of its person that recorded there first.
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["web"] }
-tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
+tilo-session-host = { path = "../../session/host" }
 # What `NetworkManager` says, fed in rather than read from a bus.
 tilo-nm = { path = "../../system/tilo-nm" }
 # The other device's tunnel and this one's, in memory, for what a route

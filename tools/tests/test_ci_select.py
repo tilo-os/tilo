@@ -1599,11 +1599,11 @@ class DependencyKindTests(unittest.TestCase):
             "shell": [("tilo-owner-commit", None)],
             "tilo-runtime": [("tilo-owner-commit", None)],
             "agent": [("shell", "dev")],
-            "tilo-browser-peer": [("tilo-owner-replica", "dev")],
-            "tilo-relay": [("tilo-browser-peer", None)],
-            "tilo-agent-participant": [("tilo-browser-peer", None), ("agent", None)],
-            "tilo-sync-load": [("tilo-browser-peer", None)],
-            "tilo-browser-runtime": [("tilo-browser-peer", None)],
+            "tilo-session-host": [("tilo-owner-replica", "dev")],
+            "tilo-relay": [("tilo-session-host", None)],
+            "tilo-agent-participant": [("tilo-session-host", None), ("agent", None)],
+            "tilo-sync-load": [("tilo-session-host", None)],
+            "tilo-browser-runtime": [("tilo-session-host", None)],
             "tilo-web-desktop": [("tilo-browser-runtime", None)],
             "tilo-relay-shell": [("tilo-relay", "dev")],
             "discord-worker": [("tilo-relay", "dev")],
@@ -1616,14 +1616,14 @@ class DependencyKindTests(unittest.TestCase):
         self.assertEqual(plan["selected_count"], 11)
         self.assertEqual(set(plan["selected"]) - set(self.contracts), {
             "tilo-owner-commit", "tilo-action-broker", "tilo-owner-replica", "shell",
-            "tilo-runtime", "agent", "tilo-browser-peer"})
+            "tilo-runtime", "agent", "tilo-session-host"})
         self.assertEqual(plan["wasm"], [])
         self.assertFalse(plan["wasm_required"])
         # Every direct dependant, the dev one included, is still tested.
         self.assertLessEqual({"tilo-action-broker", "tilo-owner-replica", "shell", "tilo-runtime"},
                              set(plan["tested"]))
         # A change to browser-peer itself still reaches relay and the wasm crates.
-        plan = ci_select.make_plan(metadata, self.root, ["tilo-browser-peer/src/lib.rs"], 2)
+        plan = ci_select.make_plan(metadata, self.root, ["tilo-session-host/src/lib.rs"], 2)
         self.assertLessEqual({"tilo-relay", "tilo-relay-shell", "discord-worker", "tilo-web-desktop"},
                              set(plan["selected"]))
         self.assertEqual(plan["wasm"], ["tilo-browser-runtime", "tilo-web-desktop"])

@@ -221,7 +221,7 @@ fn selection_anchors(
     let head = tilo_relay_protocol::live::LiveAnchor {
         cursor: hex::decode(&selection.head).ok()?,
     };
-    tilo_browser_peer::presence_anchors::read_presence_anchors(&anchor, &head)
+    tilo_session_host::presence_anchors::read_presence_anchors(&anchor, &head)
 }
 
 impl Mount {

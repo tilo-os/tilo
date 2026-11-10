@@ -40,8 +40,8 @@ use collab_types::DocumentMutation;
 use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
 use neighbour_wire::content::ContentWants;
 use tilo_automerge::ApplyIncoming as _;
-use tilo_browser_peer::{PeerEvent, PeerEvents, PeerHandle};
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_session_host::{PeerEvent, PeerEvents, PeerHandle};
 use ui::automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
 use ui::collaboration::record_content::ContentLane;
 use ui::record::{RecordId, RecordStore, RecordSync};
@@ -412,7 +412,7 @@ pub(crate) fn committed_record(
 pub(crate) fn host_then(
     id: u32,
     request: impl FnOnce(&str) -> tilo_relay_protocol::workspaces::WorkspacesRequest,
-    done: tilo_browser_peer::RoomsCompletion,
+    done: tilo_session_host::RoomsCompletion,
 ) -> Result<(), String> {
     let joined = replica_of(id).ok_or("this page joined no workspace")?;
     let joined = joined.borrow();
@@ -1017,7 +1017,7 @@ impl Joined {
                 if workspace != self.uuid {
                     return None;
                 }
-                tilo_browser_peer::surfaces::read(app, hash).or_else(|| {
+                tilo_session_host::surfaces::read(app, hash).or_else(|| {
                     apps.contains(app)
                         .then(|| crate::page_content::page_content().read(hash))
                         .flatten()

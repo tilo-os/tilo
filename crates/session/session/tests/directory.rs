@@ -40,7 +40,6 @@ use collab_types::DocumentMutation;
 use ed25519_dalek::Signer as _;
 use sha2::Digest as _;
 use test_http::{Reply, Responder};
-use tilo_browser_peer::{MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle};
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, SharedDesktop};
 use tilo_desktop_model::{
@@ -53,6 +52,7 @@ use tilo_relay_client::Host;
 use tilo_relay_protocol::directory::{DirectoryEntry, DirectoryPage, Face, door_path};
 use tilo_relay_protocol::workspaces::{PreAdmission, WorkspaceRole};
 use tilo_session::{Options, Session};
+use tilo_session_host::{MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle};
 use tilo_sheets::Seat as _;
 use tilo_sheets::directory::{Listing, ListingAction, Status};
 

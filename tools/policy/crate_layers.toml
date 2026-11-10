@@ -89,9 +89,9 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
 
   [[rule.allow]]
   package = "tilo-browser-runtime"
-  why = "the browser runtime coalesces the engine's document-frame route for the app it mounts; the engine itself stays in tilo-browser-peer"
+  why = "the browser runtime coalesces the engine's document-frame route for the app it mounts; the engine itself stays in the participant's host"
 
   [[rule.allow]]
-  package = "tilo-browser-peer"
-  why = "the browser peer runs the same admission as a native device: it is the engine's browser glue"
+  package = "tilo-session-host"
+  why = "a participant's host runs the same admission as the desktop: it is the glue between a session and the engine's frames"
 

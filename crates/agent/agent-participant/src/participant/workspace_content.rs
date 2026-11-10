@@ -4,7 +4,7 @@
 //! places, a still it drew) is kept in the workspace's content store on the
 //! agent's host, and a record names it by address alone. A member whose
 //! record references such content and who lacks it asks the workspace on its
-//! presence ([`PeerEvent::ContentWanted`](tilo_browser_peer::PeerEvent)),
+//! presence ([`PeerEvent::ContentWanted`](tilo_session_host::PeerEvent)),
 //! as every device asks; the agent answers from the workspace's store, to that
 //! member alone, in the pieces any member answers with. So a person's
 //! editor, or an agent on another host, reads what this agent put in the

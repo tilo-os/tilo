@@ -82,7 +82,7 @@ word-processor = { path = "../../../apps/word-processor" }
 mail = { path = "../../../apps/mail" }
 # The certified relay session (iroh for a host-side agent) and its live
 # plane; the same code a browser page runs.
-tilo-browser-peer = { path = "../../browser/tilo-browser-peer", features = ["toolkit"] }
+tilo-session-host = { path = "../../session/host", features = ["toolkit"] }
 iroh-base.workspace = true
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
@@ -163,7 +163,7 @@ tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 # The MCP projection `tilo mcp` serves, driven over a device's session.
 tilo-runtime = { path = "../../runtime/tilo-runtime" }
 iroh.workspace = true
-# tilo-browser-peer's test support (its host fixture), included by path.
+# tilo-session-host's test support (its host fixture), included by path.
 tilo-net = { path = "../../platform/tilo-net" }
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
@@ -183,7 +183,7 @@ tilo-doc = { path = "../../doc/tilo-doc" }
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 
 [package.metadata.cargo-machete]
-# Used by tilo-browser-peer's test support, which the tests include by path.
+# Used by tilo-session-host's test support, which the tests include by path.
 ignored = ["bytes", "http-body-util", "hyper", "hyper-util", "rustls", "sha2", "tilo-net", "tokio-rustls"]
 
 [lints]

@@ -28,11 +28,11 @@ use tilo_actions::remote::{
     InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
 };
 
-use tilo_browser_peer::{Host, PeerEvent, PeerEvents, PeerHandle};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::agents::{
     AGENTS_PROVIDER, AgentsStatus, STATUS_ACTION, SUPERVISOR_RESOURCE,
 };
+use tilo_session_host::{Host, PeerEvent, PeerEvents, PeerHandle};
 
 use super::hosted::Hosted;
 use crate::support::{Device, WORKSPACE, ready, start_peer};

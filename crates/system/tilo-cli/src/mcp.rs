@@ -25,11 +25,10 @@ use std::time::Duration;
 use anyhow::Result;
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
-use tilo_browser_peer::PeerHandle;
-use tilo_browser_peer::login::{action, say_here};
-use tilo_browser_peer::session_actions::SessionActions;
 use tilo_relay_protocol::web::HereAction;
 use tilo_runtime::mcp::{McpServer, Surface};
+use tilo_session_host::device::{Device as Entered, action};
+use tilo_session_host::session_actions::SessionActions;
 
 use crate::login::{Device, NOT_LOGGED_IN};
 use crate::mcp_presence;
@@ -45,7 +44,7 @@ const ENTERING: Duration = Duration::from_secs(25);
 /// This device in the workspace, serving the agent.
 struct Session {
     server: McpServer<SessionActions>,
-    peer: PeerHandle,
+    device: Entered,
     workspace_id: u64,
     agent: String,
     shown: Mutex<Vec<HereAction>>,
@@ -58,7 +57,7 @@ impl Drop for Session {
         // The agent leaves with the connection: nothing of it is drawn
         // after this.
         self.presence.leave();
-        self.peer.close();
+        self.device.close();
     }
 }
 
@@ -105,27 +104,19 @@ impl Serving {
     }
 }
 
-/// The projection over the workspace `peer` is in, its actions asked of the
-/// workspace's host.
-fn open(
-    (peer, workspace_id): (PeerHandle, u64),
-    device: &Device,
-    run: &str,
-) -> Result<Session, String> {
-    let host = device
-        .certs()
-        .map_err(|error| format!("this computer's login is damaged ({error}); log in again"))?
-        .1
-        .device_public_key;
+/// The projection over the workspace `entered` is in, its actions asked of
+/// the workspace's host.
+fn open(entered: Entered, device: &Device, run: &str) -> Result<Session, String> {
+    let workspace_id = entered.workspace_id();
     let user: [u8; 32] = hex::decode(&device.user)
         .ok()
         .and_then(|bytes| bytes.try_into().ok())
         .ok_or("this computer's login names no person; log in again")?;
-    let actions = SessionActions::new(&peer, workspace_id, host);
+    let actions = entered.actions(workspace_id);
     // The person's desktops see the agent present from the moment it enters
     // the workspace, not from its first action.
     let presence = mcp_presence::Presence::new(
-        &peer,
+        entered.session(),
         actions.clone(),
         collab_types::Principal::of_person(user).id().to_owned(),
         (device.workspace.clone(), workspace_id),
@@ -144,7 +135,7 @@ fn open(
     .with_narration(Arc::new(move |acting| narrating.acting(&acting)));
     Ok(Session {
         server,
-        peer,
+        device: entered,
         workspace_id,
         agent: device.agent.clone(),
         shown: Mutex::new(Vec::new()),
@@ -281,14 +272,10 @@ fn show(session: &Arc<Session>, request: &Value, answer: &Value) {
     };
     let session = Arc::clone(session);
     tokio::spawn(async move {
-        let _ = say_here(
-            &session.peer,
-            session.workspace_id,
-            &session.agent,
-            actions,
-            true,
-        )
-        .await;
+        let _ = session
+            .device
+            .say_here(session.workspace_id, &session.agent, actions, true)
+            .await;
     });
 }
 

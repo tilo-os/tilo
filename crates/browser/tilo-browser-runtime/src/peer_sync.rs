@@ -15,9 +15,9 @@ use collab_types::presence::{
 };
 use iroh::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
-use tilo_browser_peer::PeerHandle;
-use tilo_browser_peer::session_actions::SessionActions;
 use tilo_session::sync::{Client, Cmd, Device, OwnPresence, SayPresence, Topic, Transport};
+use tilo_session_host::PeerHandle;
+use tilo_session_host::session_actions::SessionActions;
 use tilo_user_identity::DeviceCert;
 use wasm_bindgen::prelude::*;
 
@@ -233,7 +233,7 @@ struct Page {
     interactions: HashMap<String, Vec<tilo_actions::SemanticInteraction>>,
     /// The doors this page asks the host's actions through, one per workspace: one session path,
     /// shared by the page's Rust and its JavaScript.
-    doors: RefCell<HashMap<u64, tilo_browser_peer::session_actions::SessionActions>>,
+    doors: RefCell<HashMap<u64, tilo_session_host::session_actions::SessionActions>>,
 }
 
 thread_local! {
@@ -455,7 +455,7 @@ pub(crate) fn hear(peer: u32, workspace_id: u64, from: [u8; 32], body: &[u8]) {
 
 /// Take semantic work `from` narrated on a record's live stream in `workspace_id` (`event`):
 /// admitted only from a member here that this page's board knows as an agent
-/// ([`tilo_browser_peer::narration::admit`]), and held for the mounts that draw the workspace,
+/// ([`tilo_session_host::narration::admit`]), and held for the mounts that draw the workspace,
 /// whose next frame shows it. Work from anyone else, or that does not hold, is dropped.
 pub(crate) fn narrated(
     peer: u32,
@@ -471,7 +471,7 @@ pub(crate) fn narrated(
             return false;
         };
         let here = page.client.members(&workspace);
-        let Some(interaction) = tilo_browser_peer::narration::admit(&here, from, event) else {
+        let Some(interaction) = tilo_session_host::narration::admit(&here, from, event) else {
             return false;
         };
         let held = page.interactions.entry(workspace).or_default();

@@ -40,11 +40,11 @@ use tilo_actions::remote::{
     InvokeRequest, ReceiptStatus, application_action_target, application_record_target,
     settle_with,
 };
-use tilo_browser_peer::session_actions::SessionActions;
-use tilo_browser_peer::{PeerHandle, narration};
 use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveRecord, OpsFrame};
 use tilo_relay_protocol::live::{presence_anchors, read_presence_anchors};
 use tilo_runtime::mcp::{ActedRecord, Acting};
+use tilo_session_host::session_actions::SessionActions;
+use tilo_session_host::{PeerHandle, narration};
 
 /// How often the agent restates itself between calls: the workspace's other
 /// agents restate theirs this often, and a reader that joined after the last
@@ -229,7 +229,7 @@ impl Presence {
         // The device asks for the record's keys once; what it narrates waits
         // for them, and is sealed with them.
         if joining {
-            let _ = self.peer.open_route(tilo_browser_peer::DocumentRoute {
+            let _ = self.peer.open_route(tilo_session_host::DocumentRoute {
                 app_id: record.app.clone(),
                 cluster_id: self.cluster.clone(),
                 record: record.record.clone(),

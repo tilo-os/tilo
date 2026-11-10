@@ -91,12 +91,12 @@ setup = "lounge-siblings"
 # feature `agents` that gives it the `room` subcommand.
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-browser-peer) and binary(lounge_fresh_page)"
+filter = "package(tilo-session-host) and binary(lounge_fresh_page)"
 setup = "lounge-siblings"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-browser-peer) and binary(lounge_fresh_page)"
+filter = "package(tilo-session-host) and binary(lounge_fresh_page)"
 setup = "lounge-siblings"
 
 # The browser peer's page tests drive the page's own modules in headless
@@ -110,12 +110,12 @@ command = ["bash", "tools/build-page-bundle.sh"]
 
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-browser-peer) and (binary(passkey_root) or binary(node_workspace))"
+filter = "package(tilo-session-host) and (binary(passkey_root) or binary(node_workspace))"
 setup = "page-bundle"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-browser-peer) and (binary(passkey_root) or binary(node_workspace))"
+filter = "package(tilo-session-host) and (binary(passkey_root) or binary(node_workspace))"
 setup = "page-bundle"
 
 # Chat's acceptance drives the app itself, as a desktop starts it: the app, the
@@ -248,7 +248,7 @@ slow-timeout = { period = "30s", terminate-after = 40 }
 # Megabytes of fsynced commits: these take the runner's disk and CPUs, so
 # they run alone rather than slowing every test beside them.
 [[profile.default.overrides]]
-filter = 'package(tilo-browser-peer) and binary(compaction)'
+filter = 'package(tilo-session-host) and binary(compaction)'
 threads-required = "num-cpus"
 
 [[profile.default.overrides]]

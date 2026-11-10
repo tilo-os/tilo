@@ -6,8 +6,8 @@
 //! for the person; and an action that asks first goes to the person.
 use super::*;
 use serde_json::{Value, json};
-use tilo_browser_peer::session_actions::SessionActions;
 use tilo_runtime::mcp::{McpServer, Surface};
+use tilo_session_host::session_actions::SessionActions;
 
 const NOTES: &str = "so.tilo.notes";
 const TASKS: &str = "so.tilo.tasks";
@@ -105,7 +105,7 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
     // The agent's computer enters as a device of the person's and says, as
     // `tilo login` makes it, that its session runs the agent.
     let agent = Browser::open(&hosted, &computer, &host).await;
-    let _ = tilo_browser_peer::login::say_here(
+    let _ = tilo_session_host::device::say_here(
         &agent.peer,
         agent.workspace,
         "Claude Code",

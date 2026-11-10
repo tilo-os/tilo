@@ -33,8 +33,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use tilo_browser_peer::Host;
 use tilo_content::ContentStore;
+use tilo_session_host::Host;
 
 use tilo_content::WorkspaceStores;
 use tilo_relay_protocol::agents::AgentStatus;
@@ -98,7 +98,7 @@ struct Shared {
     content: Arc<WorkspaceStores>,
     /// Each agent's session state, by its agent id: kept while the host
     /// runs, so an agent stopped and started again keeps its channel keys.
-    sessions: Mutex<BTreeMap<String, Arc<tilo_browser_peer::MemoryPeerStore>>>,
+    sessions: Mutex<BTreeMap<String, Arc<tilo_session_host::MemoryPeerStore>>>,
     /// The wall clock the keeper judges grants by.
     clock: HostClock,
 }

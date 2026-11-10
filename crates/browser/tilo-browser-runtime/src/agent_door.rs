@@ -21,9 +21,9 @@ use tilo_actions::remote::{
     InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
 };
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
-use tilo_browser_peer::session_actions::SessionActions;
 use tilo_desktop_surface::session::DesktopSession;
 use tilo_lock::MutexRecover as _;
+use tilo_session_host::session_actions::SessionActions;
 
 /// The grants the person took back here, for the page to sign: device keys,
 /// as hex.

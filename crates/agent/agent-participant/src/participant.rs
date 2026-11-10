@@ -30,14 +30,14 @@ use crate::planner::{MESSAGE_APPS, Planner, Step, StepAction, written_steps};
 use crate::worker::ConfinedReplica;
 use tilo_actions::ActionOutput;
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
-use tilo_browser_peer::{
-    Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle, TransportPhase,
-};
 use tilo_live::presence::KEEPALIVE_MS;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::agents::{AgentStatus, AgentStep, TaskState};
 use tilo_relay_protocol::live::{LiveAnchor, LiveRecord};
+use tilo_session_host::{
+    Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle, TransportPhase,
+};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 pub mod actions;
@@ -373,7 +373,7 @@ impl AgentParticipant {
         control: Arc<AgentControl>,
         catalogue: AppCatalogue,
         planner: Box<dyn Planner>,
-        store: Arc<dyn tilo_browser_peer::PeerStore>,
+        store: Arc<dyn tilo_session_host::PeerStore>,
     ) -> Result<Self, String> {
         let workspace_id = tilo_relay_protocol::room_workspace_id(&config.workspace)
             .map_err(|_| "the workspace is not a uuid".to_string())?;

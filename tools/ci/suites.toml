@@ -1408,7 +1408,7 @@ package = "tilo-agent-participant"
 # confined workers inside the test environment script.
 inputs = [
   "crates/sdk/ui-core/assets/fonts/",
-  "crates/browser/tilo-browser-peer/tests/support/",
+  "crates/session/host/tests/support/",
   "tools/with-test-environment.sh",
   # The workspace's MCP test [path]-includes the presence the CLI reports.
   "crates/system/tilo-cli/src/mcp_presence.rs",
@@ -1519,11 +1519,11 @@ readers = [
 ]
 
 [[cargo]]
-package = "tilo-browser-peer"
+package = "tilo-session-host"
 # The actual microphone fixture serves the production web modules to
 # Chromium and carries the page's pictures to a native participant of its call.
 inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh", "apps/notes/surface.toml"]
-readers = ["crates/browser/tilo-browser-peer/tests/voice_browsers.rs", "crates/browser/tilo-browser-peer/tests/headless_audio_lifetime.rs", "crates/browser/tilo-browser-peer/tests/surface_by_hash.rs"]
+readers = ["crates/session/host/tests/voice_browsers.rs", "crates/session/host/tests/headless_audio_lifetime.rs", "crates/session/host/tests/surface_by_hash.rs"]
 scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs"], test = "voice_browsers", filter = "binary(voice_browsers)" }
 
 [[cargo]]

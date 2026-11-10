@@ -20,9 +20,9 @@ mod common;
 
 tilo_agent_participant::app_worker!();
 tilo_automerge_isolate::test_worker!();
-#[path = "../../../browser/tilo-browser-peer/tests/support/participant.rs"]
+#[path = "../../../session/host/tests/support/participant.rs"]
 mod participant;
-#[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
+#[path = "../../../session/host/tests/support/mod.rs"]
 mod support;
 
 use std::sync::{Arc, Mutex};

@@ -3,7 +3,7 @@
 //!
 //! The carrier runs the exchange over its transport ([`crate::carrier`]); the
 //! page runs the same bytes over its WebTransport session
-//! (`tilo_browser_peer::live`). Both encode and read the preface here, so the
+//! (`tilo_session_host::live`). Both encode and read the preface here, so the
 //! two carriers cannot drift: one layout, one version, one set of answers.
 //!
 //! Client to host, on the first bidirectional stream, exactly once:

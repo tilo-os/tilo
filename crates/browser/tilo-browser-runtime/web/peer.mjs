@@ -5,7 +5,7 @@
  *
  * - durable documents over HTTPS: signed commits from a persisted outbox,
  *   acknowledged in host order, received by long-poll from a host cursor,
- *   replayed after every reconnect (`tilo-browser-peer` in wasm);
+ *   replayed after every reconnect (`tilo-session-host` in wasm);
  * - device certification over HTTPS: the page shows the pairing code while
  *   a root-holding device of the user approves;
  * - the live plane (`peer.live`): this page as one member device of the

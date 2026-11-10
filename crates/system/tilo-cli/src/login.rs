@@ -29,13 +29,13 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::{Signer as _, SigningKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tilo_browser_peer::{PeerHandle, login as peer_login};
 use tilo_relay_client::CertifyError;
 use tilo_relay_client::HttpClient;
 use tilo_relay_client::https::{self, Origin};
 use tilo_relay_client::login::{Door, PairingLink, SignIn, door_at, sign_in};
 use tilo_relay_protocol::login_code::{self, Claim, Claimed, Report, Resolve, Resolved, Step};
 use tilo_relay_protocol::web::API_PREFIX;
+use tilo_session_host::device::Device as Entered;
 
 use crate::agent::{self, Agent, Registered, Tool};
 
@@ -229,7 +229,7 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
 }
 
 /// Enter the workspace `device` names, as that device.
-pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<(PeerHandle, u64)> {
+pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<Entered> {
     let link = PairingLink::parse(&format!(
         "{}#/@{}/w/{}?pair={}",
         device.site,
@@ -256,9 +256,7 @@ pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<(PeerHa
         client,
         path: path.clone(),
     });
-    let peer = peer_login::enter(&host_web, door.as_ref(), &signed, Arc::new(key.clone())).await?;
-    let workspace_id = tilo_relay_protocol::room_workspace_id(&device.workspace)?;
-    Ok((peer, workspace_id))
+    Ok(Entered::enter(&host_web, door.as_ref(), &signed, Arc::new(key.clone())).await?)
 }
 
 /// The site `--site` or [`SITE_ENV`] names, else [`DEFAULT_SITE`], as an
@@ -585,10 +583,10 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
         },
     );
     match connect(&key, &device).await {
-        Ok((peer, _)) => {
+        Ok(entered) => {
             reporter.step(Step::Entered).await;
             println!("Entered {place}: their tab shows you there.");
-            peer.close();
+            entered.close();
         }
         Err(error) => {
             reporter

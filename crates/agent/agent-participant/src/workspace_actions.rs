@@ -81,10 +81,10 @@ use tilo_actions::remote::{
 use tilo_actions::{
     ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId, InvocationUpdate, PROMPTED_PARAM,
 };
-use tilo_browser_peer::{MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::room_workspace_id;
+use tilo_session_host::{MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle};
 use tilo_user_identity::RevocationList;
 use ui::permissions::policy::{ActionKind, Answer, TreePath};
 
@@ -874,7 +874,7 @@ struct GaveUp {
 /// documents that arrived and open only once the member holds their keys, or
 /// has the surface they were written with and their workspace's governance.
 fn sealed_for(
-    routes: &BTreeMap<DocumentRoute, tilo_browser_peer::session::RouteStatus>,
+    routes: &BTreeMap<DocumentRoute, tilo_session_host::session::RouteStatus>,
     workspace_id: u64,
     needs: Needs<'_>,
     gave_up: &GaveUp,
@@ -2676,8 +2676,8 @@ fn speaks_for_a_member(caller: &Caller) -> bool {
 mod tests {
     use super::{GaveUp, Needs, sealed_for};
     use std::collections::{BTreeMap, HashSet};
-    use tilo_browser_peer::session::RouteStatus;
     use tilo_peer_state::document_frame::DocumentRoute;
+    use tilo_session_host::session::RouteStatus;
 
     const WORKSPACE: &str = "6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11";
     const OTHER_WORKSPACE: &str = "0b7f1d2e-5a6c-4d3b-8e9f-a0b1c2d3e4f5";

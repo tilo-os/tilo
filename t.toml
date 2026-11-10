@@ -153,7 +153,7 @@ packages = [
     "containers", "discord-worker", "file-explorer", "imager", "launcher", "local-model-service",
     "notes", "osk", "runtime-bundle", "runtime-portal", "scratchpad", "settings", "store",
     "tilo-agent-participant", "tilo-app", "tilo-bluez", "tilo-browser-compute",
-    "tilo-browser-peer", "tilo-clipboard", "tilo-cpu-raster", "tilo-dialogs", "tilo-doc-codecs",
+    "tilo-session-host", "tilo-clipboard", "tilo-cpu-raster", "tilo-dialogs", "tilo-doc-codecs",
     "tilo-doc-pdf", "tilo-files", "tilo-font-catalog", "tilo-fs", "tilo-install-helpers",
     "tilo-location", "tilo-model-gateway", "tilo-notify", "tilo-ntfs-protocol",
     "tilo-paint-stream", "tilo-pdf", "tilo-relay", "tilo-staging-reclaim", "tilo-ui", "tilo-vmd",
@@ -1982,7 +1982,7 @@ arch = ["x86_64", "aarch64"]
 # The browser regressions that once broke on a builder, run in the candidate. They compile the
 # browser peer and the agent participant, which read nearly every source file, so in every
 # head's publication they ran again for each commit while the image stayed the same. Each commit
-# runs the same tests in the pinned builder (`test/tilo-browser-peer`,
+# runs the same tests in the pinned builder (`test/tilo-session-host`,
 # `test-x86_64/tilo-agent-participant`), so what this adds is the candidate: it gates a release
 # candidate's signature and publication, runs when dispatched and on main's newest head when t
 # has room (bisected to the commit that broke it), and main's development tags go without it.

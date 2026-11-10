@@ -17,7 +17,7 @@ ed25519-dalek.workspace = true
 iroh-base.workspace = true
 collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }
-tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
+tilo-session-host = { path = "../../session/host" }
 tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 # HTTPS to the relay and the site, as every client of the relay makes its requests.
 tilo-relay-client = { path = "../tilo-relay-client" }

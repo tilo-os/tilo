@@ -35,8 +35,8 @@ use std::{
     sync::{Arc, Mutex},
     time::Instant,
 };
-use tilo_browser_peer::session_actions::SessionActions;
 use tilo_runtime::mcp::{McpServer, Surface};
+use tilo_session_host::session_actions::SessionActions;
 
 /// The header naming an MCP session (Streamable HTTP).
 pub const SESSION_HEADER: &str = "mcp-session-id";
@@ -195,13 +195,13 @@ impl Session {
             .relay
             .enter(&self.connection, self.parent.as_deref(), workspace)
             .await?;
-        let peer = &self.connection.peer;
-        let actions = SessionActions::new(peer, id, self.connection.host_cert.device_public_key);
+        let device = &self.connection.device;
+        let actions = device.actions(id);
         // The person's desktops see the agent present from the moment it
         // enters the workspace, not from its first action, and each action it
         // takes in a record as it goes.
         let presence = mcp_presence::Presence::new(
-            peer,
+            device.session(),
             actions.clone(),
             self.person.clone(),
             (workspace.to_owned(), id),

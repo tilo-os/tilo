@@ -10,10 +10,10 @@ use std::sync::Arc;
 use ed25519_dalek::SigningKey;
 use tilo_actions::ActionOutput;
 use tilo_actions::door::{ActionAddress, DoorError};
-use tilo_browser_peer::{MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::delegation::Delegation;
 use tilo_relay_protocol::live::LiveRecord;
+use tilo_session_host::{MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::apps::{AppCatalogue, ReplicaActor, Seed};

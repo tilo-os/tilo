@@ -143,7 +143,7 @@ After that, files go through the apps' own actions, which take the
 The door holds no device of anyone. The grant's own key is the device: it
 dials the relay's iroh endpoint with the grant's certificate, as a `tilo
 login` computer dials with its own, and enters the way that computer does
-(`tilo_browser_peer::login`).
+(`tilo_session_host::login`).
 
 The relay admits an agent's grant (`tilo_room_host::workspace_access`) as
 its person's agent, iff

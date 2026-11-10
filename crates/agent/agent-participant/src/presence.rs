@@ -3,9 +3,9 @@
 //! every desktop draws it beside the people.
 
 use collab_types::presence::{Presence, ShellPresence, ShellSelection, ShellWindow};
-use tilo_browser_peer::PeerHandle;
 use tilo_live::presence::{Board, Own};
 use tilo_relay_protocol::live::{LiveAnchor, LiveRecord};
+use tilo_session_host::PeerHandle;
 use tilo_user_identity::DeviceCert;
 
 /// The view an agent states: its face, what it is doing, and the record it acts in with its caret

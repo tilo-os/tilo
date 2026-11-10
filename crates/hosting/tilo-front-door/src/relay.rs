@@ -28,14 +28,12 @@ use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tilo_browser_peer::{
-    PeerHandle,
-    login::{admitted, own_workspace},
-};
 use tilo_relay_client::CertifyError;
 use tilo_relay_client::https::{self, Origin};
-use tilo_relay_client::login::{Door, door_at, redeem, through_door};
-use tilo_user_identity::{AgentScope, DeviceCert};
+use tilo_relay_client::login::{Door, door_at, through_door};
+use tilo_session_host::PeerConfig;
+use tilo_session_host::device::Device;
+use tilo_user_identity::AgentScope;
 
 /// How long entering a workspace may take.
 const ENTERING: Duration = Duration::from_secs(30);
@@ -124,19 +122,18 @@ impl Relay {
         let endpoint = tilo_relay_client::https::host_endpoint(&info).ok_or_else(|| {
             RelayError::Unavailable("the relay takes no device sessions".to_owned())
         })?;
-        let peer = PeerHandle::start(
-            tilo_browser_peer::PeerConfig {
+        let device = Device::over(
+            PeerConfig {
                 host: tilo_relay_client::Host::at(endpoint),
                 cert: key.cert().clone(),
-                host_cert: info.host_cert.clone(),
+                host_cert: info.host_cert,
                 revocations: tilo_user_identity::RevocationList::new(),
             },
             Arc::new(key.key().clone()),
-            Arc::new(tilo_browser_peer::MemoryPeerStore::default()),
+            &key.cert().device_label,
         );
         Ok(Connection {
-            peer,
-            host_cert: info.host_cert,
+            device,
             key: key.clone(),
             relay: self.host.clone(),
             host: self.name.clone(),
@@ -192,8 +189,10 @@ impl Relay {
         arguments: Map<String, Value>,
     ) -> Result<(Workspace, Vec<u8>), RelayError> {
         let lobby = self.lobby(connection).await?;
-        let (listing, invitation) =
-            own_workspace(&connection.peer, lobby, &connection.host_cert, arguments).await?;
+        let (listing, invitation) = connection
+            .device
+            .own_workspace(lobby, arguments, "tilo front door")
+            .await?;
         Ok((connection.workspace(&listing), invitation))
     }
 
@@ -204,12 +203,15 @@ impl Relay {
     pub async fn workspaces(&self, connection: &Connection) -> Result<Vec<Workspace>, RelayError> {
         let lobby = self.lobby(connection).await?;
         let listed = connection
-            .host_operation(
+            .device
+            .host_action(
                 lobby,
                 tilo_relay_session::workspaces::LIST_ROOMS,
                 Map::new(),
+                "tilo front door",
             )
-            .await?;
+            .await
+            .map_err(RelayError::from)?;
         let listed: Vec<tilo_relay_session::workspaces::WorkspaceListing> =
             serde_json::from_value(listed)
                 .map_err(|error| RelayError::Unavailable(error.to_string()))?;
@@ -319,8 +321,7 @@ impl Relay {
 /// A grant's session with the relay. The relay keeps one session per key,
 /// so every run of the grant shares this one.
 pub struct Connection {
-    pub peer: PeerHandle,
-    pub host_cert: DeviceCert,
+    pub device: Device,
     pub key: GrantKey,
     relay: Origin,
     host: String,
@@ -332,7 +333,7 @@ pub struct Connection {
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        self.peer.close();
+        self.device.close();
     }
 }
 
@@ -349,88 +350,30 @@ impl Connection {
     /// the relay for good.
     #[must_use]
     pub fn is_live(&self) -> bool {
-        !matches!(
-            self.peer.status().phase,
-            tilo_browser_peer::TransportPhase::Closed | tilo_browser_peer::TransportPhase::Failed
-        )
+        self.device.is_live()
     }
 
     async fn redeem(&self, invitation: &[u8]) -> Result<(), RelayError> {
         let label = self.key.cert().device_label.clone();
-        redeem(
-            &self.relay,
-            invitation,
-            self.key.cert(),
-            self.key.key(),
-            &label,
-        )
-        .await
-        .map_err(RelayError::from)
+        self.device
+            .redeem(&self.relay, invitation, &label)
+            .await
+            .map_err(RelayError::from)
     }
 
     /// Join `workspace`, which admitted this grant: its id on the session.
     async fn join(&self, workspace: &str) -> Result<u64, RelayError> {
-        let id =
-            tilo_relay_protocol::room_workspace_id(workspace).map_err(|_| RelayError::NotFound)?;
-        self.peer.join(id).map_err(RelayError::Unavailable)?;
-        let admitted = tokio::time::timeout(ENTERING, admitted(&self.peer, id))
-            .await
-            .unwrap_or(false);
-        if !admitted {
-            return Err(RelayError::Refused(
-                "the workspace did not admit this key".to_owned(),
-            ));
+        if tilo_relay_protocol::room_workspace_id(workspace).is_err() {
+            return Err(RelayError::NotFound);
         }
-        Ok(id)
-    }
-
-    /// The relay's own operation `action` with `arguments`, asked in the
-    /// workspace `workspace_id` this session is in.
-    async fn host_operation(
-        &self,
-        workspace_id: u64,
-        action: &str,
-        arguments: Map<String, Value>,
-    ) -> Result<Value, RelayError> {
-        use tilo_actions::remote::{
-            ActionHost as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
-            RemoteActionTarget,
-        };
-        use tilo_relay_session::workspaces::{HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE};
-        let host = tilo_browser_peer::session_actions::SessionActions::new(
-            &self.peer,
-            workspace_id,
-            self.host_cert.device_public_key,
-        );
-        let receipt = host
-            .invoke(
-                &Caller::local_person("tilo front door"),
-                InvokeRequest {
-                    on_behalf_of: None,
-                    invocation: tilo_actions::InvocationId::new(),
-                    target: RemoteActionTarget {
-                        provider: HOST_ACTIONS_PROVIDER.to_owned(),
-                        address: tilo_actions::ActionAddress::new(HOST_ROOMS_RESOURCE, action),
-                    },
-                    argument: InvokeArgument::Json(arguments),
-                    context: None,
-                    confirmation: None,
-                    revision: None,
-                    wait_ms: Some(20_000),
-                    appearance: None,
-                },
-            )
+        tokio::time::timeout(ENTERING, self.device.join(workspace))
             .await
-            .ok_or_else(|| RelayError::Unavailable("the relay did not answer".to_owned()))?
-            .map_err(|error| RelayError::Refused(error.to_string()))?;
-        match receipt.status {
-            ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
-            ReceiptStatus::Failed { error } => Err(RelayError::Refused(error.message)),
-            ReceiptStatus::Rejected { error } => Err(RelayError::Refused(error.to_string())),
-            ReceiptStatus::Cancelled { .. } | ReceiptStatus::Accepted => Err(
-                RelayError::Unavailable("the relay did not finish".to_owned()),
-            ),
-        }
+            .unwrap_or_else(|_| {
+                Err(CertifyError::Denied(
+                    "the workspace did not admit this key".to_owned(),
+                ))
+            })
+            .map_err(RelayError::from)
     }
 }
 
