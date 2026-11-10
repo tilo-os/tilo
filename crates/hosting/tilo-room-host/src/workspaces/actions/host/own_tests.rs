@@ -20,7 +20,8 @@ use tilo_relay_session::workspaces::{
     CREATE_OWN_ROOM, CreatedWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
 };
 use tilo_user_identity::{
-    AgentScope, DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert,
+    AgentScope, DeviceCapabilities, DeviceCert, RevocationList, prepare_minted_grant,
+    sign_device_cert,
 };
 
 use super::super::HostWorkspaceActions;
@@ -306,6 +307,29 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
         Some((MemberRole::Editor, true)),
         "its person is a member, who administers their own workspace"
     );
+    // A key the grant mints for that workspace alone redeems the person's
+    // invitation the grant asks for, as the grant did.
+    let again = settled(host.as_host(&all).invoke(&agent, own_request(json!({}))))
+        .await
+        .unwrap();
+    let ReceiptStatus::Completed { output } = again.status else {
+        panic!("the grant asks again: {again:?}");
+    };
+    let again: CreatedWorkspace = serde_json::from_value(output.value.unwrap()).unwrap();
+    let minted_key = SigningKey::from_bytes(&rand::random());
+    let mut minted = prepare_minted_grant(
+        &all,
+        minted_key.verifying_key().to_bytes(),
+        hex::decode(created.workspace.workspace.replace('-', ""))
+            .unwrap()
+            .try_into()
+            .unwrap(),
+        "minted",
+        now,
+        now + 60_000_000_000,
+    );
+    sign_device_cert(&mut minted, &grant_key).unwrap();
+    join(workspaces, &again, &minted_key, &minted).await;
     // Listing answers the grant's person only their own workspace, not the
     // host's others.
     workspaces.create("Someone else's").await.unwrap();

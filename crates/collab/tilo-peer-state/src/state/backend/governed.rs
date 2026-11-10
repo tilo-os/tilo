@@ -302,8 +302,18 @@ impl Work {
         value: &DeviceCert,
         now: Option<u64>,
     ) -> Result<VerifiedCertificate, ImportError> {
+        let value = self.cert(value)?;
+        match now {
+            Some(now) => VerifiedCertificate::new_typed(value, now),
+            None => VerifiedCertificate::historical_typed(value),
+        }
+        .map_err(ImportError::Certificate)
+    }
+    /// A copy of `value` within the budget, with the certificate that
+    /// issued it: a minted grant's signature is its issuer's.
+    fn cert(&mut self, value: &DeviceCert) -> Result<DeviceCert, ImportError> {
         self.debit(Some(size_of::<DeviceCert>()))?;
-        let value = DeviceCert {
+        Ok(DeviceCert {
             user_public_key: value.user_public_key,
             device_public_key: value.device_public_key,
             device_label: self.text(&value.device_label)?,
@@ -311,13 +321,11 @@ impl Work {
             issued_at_ns: value.issued_at_ns,
             expires_at_ns: value.expires_at_ns,
             signature: value.signature,
-            issuer: None,
-        };
-        match now {
-            Some(now) => VerifiedCertificate::new_typed(value, now),
-            None => VerifiedCertificate::historical_typed(value),
-        }
-        .map_err(ImportError::Certificate)
+            issuer: match value.issuer.as_deref() {
+                Some(issuer) => Some(Box::new(self.cert(issuer)?)),
+                None => None,
+            },
+        })
     }
 }
 #[cfg(test)]

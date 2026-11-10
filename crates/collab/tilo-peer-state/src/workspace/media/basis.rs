@@ -152,16 +152,7 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
             }
             work.tree_entry::<[u8; 32], [u8; 32]>()?;
             certificates.insert(device, row.device_cert.user_public_key);
-            let cert = DeviceCert {
-                user_public_key: row.device_cert.user_public_key,
-                device_public_key: row.device_cert.device_public_key,
-                device_label: work.text(&row.device_cert.device_label)?,
-                capabilities: row.device_cert.capabilities.clone(),
-                issued_at_ns: row.device_cert.issued_at_ns,
-                expires_at_ns: row.device_cert.expires_at_ns,
-                signature: row.device_cert.signature,
-                issuer: None,
-            };
+            let cert = work.cert(&row.device_cert)?;
             work.tree_entry::<[u8; 32], (DeviceCert, BTreeSet<Vec<u8>>, BTreeSet<Vec<u8>>)>()?;
             rows.insert(device, (cert, admissions, delegations));
             Ok(())
@@ -236,6 +227,23 @@ impl Work {
     }
     fn push<T>(&mut self, values: &mut Vec<T>, value: T) -> Result<(), Error> {
         self.collections.push(values, value).map_err(capacity)
+    }
+    /// A copy of `value` within the limit, with the certificate that issued
+    /// it, which a minted grant's signature and so its basis rest on.
+    fn cert(&mut self, value: &DeviceCert) -> Result<DeviceCert, Error> {
+        Ok(DeviceCert {
+            user_public_key: value.user_public_key,
+            device_public_key: value.device_public_key,
+            device_label: self.text(&value.device_label)?,
+            capabilities: value.capabilities.clone(),
+            issued_at_ns: value.issued_at_ns,
+            expires_at_ns: value.expires_at_ns,
+            signature: value.signature,
+            issuer: match value.issuer.as_deref() {
+                Some(issuer) => Some(Box::new(self.cert(issuer)?)),
+                None => None,
+            },
+        })
     }
     fn encoded<T: Serialize>(&mut self, value: &T) -> Result<Vec<u8>, Error> {
         let length = crate::postcard_sink::encoded_len(value, usize::MAX)

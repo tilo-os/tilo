@@ -314,6 +314,22 @@ async fn a_key_works_through_the_door_on_the_relay_and_ends_when_revoked() {
         .as_str()
         .unwrap_or_else(|| panic!("a key is minted: {minted}"))
         .to_owned();
+    // It joins that workspace and is answered there.
+    let mut minted_session = Mcp {
+        door: &door,
+        path: format!("/w/{workspace}/mcp"),
+        token: minted_key.clone(),
+        session: None,
+    };
+    let (status, init) = minted_session.initialize().await;
+    assert_eq!(status, 200, "a minted key reaches its workspace: {init}");
+    // Its door is that workspace's, so it names none.
+    let (status, listed) = minted_session
+        .post(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                     "params": {"name": "tilo_ls", "arguments": {}}}))
+        .await;
+    assert_eq!(status, 200, "{listed}");
+    assert_eq!(listed["result"]["isError"], false, "{listed}");
     // It reaches no other workspace: not the site's home workspace.
     let mut lobby_session = Mcp {
         door: &door,
@@ -341,13 +357,17 @@ async fn a_key_works_through_the_door_on_the_relay_and_ends_when_revoked() {
         .post(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}))
         .await;
     assert_eq!(status, 401, "the key's session ended");
-    let mut minted_session = Mcp {
+    let (status, _) = minted_session
+        .post(json!({"jsonrpc": "2.0", "id": 4, "method": "tools/list"}))
+        .await;
+    assert_eq!(status, 401, "the minted key's session ended with it");
+    let mut minted_again = Mcp {
         door: &door,
         path: format!("/w/{workspace}/mcp"),
         token: minted_key,
         session: None,
     };
-    let (status, _) = minted_session.initialize().await;
+    let (status, _) = minted_again.initialize().await;
     assert_eq!(status, 401, "the key it minted ended with it");
     assert_eq!(door.session_count(), 0);
     drop(site);
