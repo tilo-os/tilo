@@ -52,7 +52,6 @@ pub mod message_lines;
 pub mod model;
 pub mod participant;
 pub mod planner;
-mod presence;
 pub mod profile;
 pub mod render;
 pub mod search;

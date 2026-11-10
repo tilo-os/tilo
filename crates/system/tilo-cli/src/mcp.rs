@@ -31,7 +31,7 @@ use tilo_session_host::device::{Device as Entered, action};
 use tilo_session_host::session_actions::SessionActions;
 
 use crate::login::{Device, NOT_LOGGED_IN};
-use crate::mcp_presence;
+use tilo_runtime::mcp_presence;
 
 /// How many of the agent's actions the workspace shows at once.
 const SHOWN_ACTIONS: usize = 8;
@@ -116,12 +116,13 @@ fn open(entered: Entered, device: &Device, run: &str) -> Result<Session, String>
     // The person's desktops see the agent present from the moment it enters
     // the workspace, not from its first action.
     let presence = mcp_presence::Presence::new(
-        entered.session(),
+        (entered.session(), entered.cert()),
         actions.clone(),
         collab_types::Principal::of_person(user).id().to_owned(),
         (device.workspace.clone(), workspace_id),
         device.agent.clone(),
-    );
+    )
+    .ok_or("this computer's login names no workspace; log in again")?;
     presence.arrive();
     // And see each action it takes in a record as it goes.
     let narrating = Arc::clone(&presence);

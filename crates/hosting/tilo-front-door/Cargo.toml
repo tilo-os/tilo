@@ -18,7 +18,6 @@ iroh-base.workspace = true
 collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-session-host = { path = "../../session/host" }
-tilo-session-client = { path = "../../session/client" }
 tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 # HTTPS to the relay and the site, as every client of the relay makes its requests.
 tilo-relay-client = { path = "../tilo-relay-client" }

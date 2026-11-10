@@ -23,6 +23,7 @@ pub mod device_grants;
 mod i18n;
 pub mod mcp;
 pub mod mcp_http;
+pub mod mcp_presence;
 pub mod mcp_process;
 pub mod offload;
 mod os_search;

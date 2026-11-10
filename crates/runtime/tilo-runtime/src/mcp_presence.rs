@@ -8,10 +8,11 @@
 //! desktops of the workspace read that frame as a member of kind agent, draw
 //! its face beside the people's with the line it works on
 //! ([`Presence::called`]), and bring whoever follows it to the record the
-//! frame names. The server says one when it enters the workspace, after
-//! every tool call, and restates it while the agent thinks, so an agent that
-//! idles between calls stays present; the frame that says the agent has left
-//! goes out when the connection ends.
+//! frame names. The agent's word is the client's board, as every member's is
+//! ([`tilo_session_client::Presence`]): the server sets it when it enters the
+//! workspace and after every tool call, and the board restates it on its own
+//! schedule while the agent thinks, so an agent that idles between calls
+//! stays present; the board takes the agent down when the connection ends.
 //!
 //! The record it acts in is open as a window on the workspace's desk before
 //! a frame names it: the host the agent acts through opens it there, as a
@@ -26,12 +27,9 @@
 //! highlights in the agent's colour, and then settles to a caret at its end.
 
 use std::sync::{Arc, Mutex, PoisonError, Weak};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
-use collab_types::PeerPresencePayload;
-use collab_types::presence::{
-    MAX_ACTIVITY_BYTES, Presence as Frame, PresenceKey, ShellSelection, agent_rgb,
-};
+use collab_types::presence::{MAX_ACTIVITY_BYTES, PresenceKey, ShellSelection, agent_rgb};
 use serde_json::Value;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
@@ -41,14 +39,14 @@ use tilo_actions::remote::{
 };
 use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveRecord, OpsFrame};
 use tilo_relay_protocol::live::{presence_anchors, read_presence_anchors};
-use tilo_runtime::mcp::{ActedRecord, Acting};
 use tilo_session_host::session_actions::SessionActions;
 use tilo_session_host::{PeerHandle, narration};
+use tilo_user_identity::DeviceCert;
 
-/// How often the agent restates itself between calls: the workspace's other
-/// agents restate theirs this often, and a reader that joined after the last
-/// frame still draws it.
-const KEEPALIVE: Duration = Duration::from_secs(1);
+use crate::mcp::{ActedRecord, Acting};
+
+/// The longest the board's clock sleeps before it looks again.
+const LONGEST_WAIT: Duration = Duration::from_secs(1);
 
 /// How long what an action changed stays the agent's selection, highlighted
 /// in its colour, before it settles to the caret at its end: long enough to
@@ -68,6 +66,8 @@ const OPENING: tilo_clock::Duration = tilo_clock::Duration::from_secs(5);
 /// The agent `tilo mcp` serves, present in the workspace its device entered.
 pub struct Presence {
     peer: PeerHandle,
+    /// The agent's word in the workspace, as every member's board reads it.
+    board: Mutex<tilo_session_client::Presence>,
     /// The host the agent acts through, which opens the windows it acts in.
     actions: SessionActions,
     /// Who asks it: the person the agent acts for.
@@ -85,7 +85,7 @@ pub struct Presence {
     said: Mutex<Said>,
 }
 
-/// What the agent says of itself: the frame's sequence, its line and the
+/// What the agent says of itself: its view's sequence, its line and the
 /// record it acts in.
 #[derive(Default)]
 struct Said {
@@ -112,17 +112,20 @@ struct Highlight {
 }
 
 impl Presence {
-    /// The agent's presence in the workspace `cluster` this device entered.
+    /// The agent's presence in the workspace `cluster` this device (`cert`) entered; `None` when
+    /// the certificate names no device or `cluster` no workspace.
     #[must_use]
     pub fn new(
-        peer: &PeerHandle,
+        (peer, cert): (&PeerHandle, &DeviceCert),
         actions: SessionActions,
         person: String,
         (cluster, workspace_id): (String, u64),
         label: String,
-    ) -> Arc<Self> {
-        Arc::new(Self {
+    ) -> Option<Arc<Self>> {
+        let board = tilo_session_host::saying::enter(peer, cert, &label, &cluster)?;
+        Some(Arc::new(Self {
             peer: peer.clone(),
+            board: Mutex::new(board),
             actions,
             caller: Caller::local_person(person),
             colour: agent_rgb(&label),
@@ -130,27 +133,42 @@ impl Presence {
             workspace_id,
             label,
             said: Mutex::new(Said::default()),
-        })
+        }))
     }
 
-    /// Show the agent present from now on: the frame that says it is here,
-    /// then one every [`KEEPALIVE`] until the last [`Arc<Presence>`] is
-    /// dropped.
+    /// Show the agent present from now on: its word, then what the board owes — its repeats and
+    /// keepalives — until the last [`Arc<Presence>`] is dropped.
     pub fn arrive(self: &Arc<Self>) {
         self.say();
         let weak: Weak<Self> = Arc::downgrade(self);
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(KEEPALIVE).await;
+                let Some(wait) = weak.upgrade().map(|presence| presence.owed_in()) else {
+                    return;
+                };
+                tokio::time::sleep(wait).await;
                 let Some(presence) = weak.upgrade() else {
                     return;
                 };
-                presence.say();
-                // Held for this frame alone, so the loop keeps the agent
+                presence.board().due_in(&presence.cluster);
+                // Held for this pass alone, so the loop keeps the agent
                 // present without keeping it alive.
                 drop(presence);
             }
         });
+    }
+
+    /// The agent's board; a poisoned lock still holds a whole word.
+    fn board(&self) -> std::sync::MutexGuard<'_, tilo_session_client::Presence> {
+        self.board.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// How long until the board next owes its workspace, the one in front, a word.
+    fn owed_in(&self) -> Duration {
+        self.board().next_deadline().map_or(LONGEST_WAIT, |due| {
+            due.saturating_duration_since(tilo_clock::Instant::now())
+                .min(LONGEST_WAIT)
+        })
     }
 
     /// Say what the call `request` made is doing now, and the record it
@@ -241,7 +259,7 @@ impl Presence {
             action: &acting.action,
             phase: acting.phase.clone(),
         };
-        if let Some(event) = narration::frame(&narrated, seq, now_ms()) {
+        if let Some(event) = narration::frame(&narrated, seq, tilo_clock::unix_now_ms()) {
             let frame = LiveFrame::Ops(OpsFrame::Semantic { record, event });
             if let Ok(bytes) = frame.encode() {
                 let _ = self.peer.publish_live(self.workspace_id, bytes);
@@ -304,11 +322,11 @@ impl Presence {
     /// Say the agent has left, so the workspace drops it from the list
     /// instead of holding a member that never speaks again.
     pub fn leave(&self) {
-        self.send(Frame::desktop(&self.cluster, PeerPresencePayload::Left));
+        self.board().taking_part(&[], None);
     }
 
-    /// Say the whole of what the agent is: the frame every reader draws it
-    /// by, numbered past the last one it said.
+    /// Set the whole of what the agent is as its word: the view every reader
+    /// draws it by, numbered past the last one it said.
     fn say(&self) {
         let (seq, activity, focus, selection) = {
             let mut said = self.said.lock().unwrap_or_else(PoisonError::into_inner);
@@ -322,7 +340,7 @@ impl Presence {
         };
         let mut view = tilo_session_client::presence::view(
             seq,
-            now_ms(),
+            tilo_clock::unix_now_ms(),
             &self.label,
             self.colour.into(),
             activity,
@@ -330,16 +348,7 @@ impl Presence {
             None,
         );
         view.selection = selection;
-        self.send(Frame::desktop(
-            &self.cluster,
-            PeerPresencePayload::Shell(Box::new(view)),
-        ));
-    }
-
-    /// Say `frame` on the workspace's presence track. A frame that does not
-    /// leave is no authority: the next one says the same.
-    fn send(&self, frame: Frame) {
-        let _ = self.peer.publish_presence(self.workspace_id, vec![frame]);
+        self.board().set_where(None, Some(Box::new(view)));
     }
 }
 
@@ -412,15 +421,6 @@ fn shell_selection(key: &PresenceKey, start: usize, end: usize) -> Option<ShellS
         anchor: hex::encode(anchor.cursor),
         head: hex::encode(head.cursor),
     })
-}
-
-/// When the frame is said, in this device's wall-clock milliseconds.
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 /// What the call `request` makes is doing now, in the person's words: what

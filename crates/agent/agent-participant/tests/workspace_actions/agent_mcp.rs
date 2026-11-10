@@ -6,13 +6,8 @@ use super::*;
 use serde_json::{Value, json};
 use tilo_relay_protocol::live::{LiveFrame, LiveRecord, OpsFrame};
 use tilo_runtime::mcp::{McpServer, Surface};
+use tilo_runtime::mcp_presence;
 use tilo_session_host::session_actions::SessionActions;
-
-/// The presence `tilo mcp` says of its agent, as the CLI itself says it: the
-/// same source, so what this test's other device hears is what a person's
-/// desktop hears.
-#[path = "../../../../system/tilo-cli/src/mcp_presence.rs"]
-mod mcp_presence;
 
 /// The app the agent writes in.
 const WRITER: &str = "so.tilo.word-processor";
@@ -114,12 +109,13 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     // The agent shows itself present in the workspace from the moment it
     // enters it, as `tilo mcp` does, and each action it takes as it goes.
     let presence = mcp_presence::Presence::new(
-        &agent.peer,
+        (&agent.peer, &computer.cert),
         actions.clone(),
         person.clone(),
         (WORKSPACE.into(), agent.workspace),
         "Claude Code".into(),
-    );
+    )
+    .expect("the agent's certificate names a device");
     presence.arrive();
     let narrating = std::sync::Arc::clone(&presence);
     let server = McpServer::new(actions, WORKSPACE.into(), person)
@@ -312,6 +308,27 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         desk_windows(&mut browser, &desk, &sheets.record),
         1,
         "one window shows the workbook"
+    );
+
+    // An agent that idles between calls restates itself, so a member that came in after its last
+    // call still draws it within one restatement.
+    let _ = heard(&mut browser);
+    let (idle, mut last, mut longest) = (Instant::now(), Instant::now(), Duration::ZERO);
+    while idle.elapsed() < Duration::from_secs(10) {
+        let (frames, _) = heard(&mut browser);
+        if frames
+            .iter()
+            .any(|frame| matches!(frame.payload, collab_types::PeerPresencePayload::Shell(_)))
+        {
+            longest = longest.max(last.elapsed());
+            last = Instant::now();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    longest = longest.max(last.elapsed());
+    assert!(
+        longest <= Duration::from_secs(4),
+        "an idle agent went {longest:?} without a word"
     );
 
     // And it leaves with the connection, rather than standing there.

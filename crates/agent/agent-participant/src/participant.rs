@@ -11,7 +11,7 @@
 //! the agent. Around each action it publishes presence — the record it
 //! focuses, where in it the action left it (the record's own item and
 //! position, [`ConfinedReplica::presence`]), and its own view of itself as an
-//! agent with its label, colour and activity ([`crate::presence`]) — so every
+//! agent with its label, colour and activity ([`tilo_session_host::saying`]) — so every
 //! participant's window draws it there as it draws any collaborator. Other
 //! participants' presence arrives the same way and is readable through
 //! [`AgentParticipant::remote_members`].
@@ -398,7 +398,7 @@ impl AgentParticipant {
         let woken = Arc::clone(&control);
         peer.on_change(Arc::new(move || woken.wake()));
         peer.join(workspace_id)?;
-        let presence = crate::presence::enter(
+        let presence = tilo_session_host::saying::enter(
             &peer,
             &identity.cert,
             &identity.delegation.label,
@@ -523,7 +523,7 @@ impl AgentParticipant {
         while self.step() && slice.elapsed() < STEP_SLICE {}
         self.publish_changes();
         self.finish_committed();
-        self.say_presence_due();
+        self.presence.due_in(&self.workspace);
         self.next_pump()
     }
 
@@ -2222,11 +2222,7 @@ impl AgentParticipant {
             self.focus.as_ref(),
             self.place.as_ref(),
         );
-        crate::presence::say(&self.presence, &view);
-    }
-
-    fn say_presence_due(&self) {
-        crate::presence::due(&self.presence, &self.workspace);
+        self.presence.set_where(None, Some(Box::new(view)));
     }
 
     fn leave(&mut self) {
@@ -2238,7 +2234,7 @@ impl AgentParticipant {
         self.focus = None;
         self.place = None;
         self.publish_presence();
-        crate::presence::leave(&self.presence);
+        self.presence.taking_part(&[], None);
         self.apps.clear();
         self.left = true;
     }

@@ -169,6 +169,12 @@ impl Device {
         &self.peer
     }
 
+    /// This device's certificate.
+    #[must_use]
+    pub fn cert(&self) -> &DeviceCert {
+        &self.cert
+    }
+
     /// The workspace this device entered.
     #[must_use]
     pub fn workspace_id(&self) -> u64 {

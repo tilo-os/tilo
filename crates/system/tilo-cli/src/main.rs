@@ -46,7 +46,6 @@ mod health;
 mod hosted;
 mod login;
 mod mcp;
-mod mcp_presence;
 mod nouns;
 mod os;
 mod sdk;

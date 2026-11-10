@@ -19,13 +19,6 @@
 //! and which the workspace shows present, doing what it does, while the
 //! session lives (`mcp_presence`, as `tilo mcp` shows its agent).
 
-#[path = "../../../system/tilo-cli/src/mcp_presence.rs"]
-#[allow(
-    dead_code,
-    unreachable_pub,
-    reason = "the presence `tilo mcp` says of its agent, the same source here"
-)]
-mod mcp_presence;
 pub mod members;
 
 use crate::relay::{Connection, Relay, RelayError};
@@ -37,6 +30,7 @@ use std::{
     time::Instant,
 };
 use tilo_runtime::mcp::{McpServer, Surface};
+use tilo_runtime::mcp_presence;
 use tilo_session_host::session_actions::SessionActions;
 
 /// The header naming an MCP session (Streamable HTTP).
@@ -202,12 +196,13 @@ impl Session {
         // enters the workspace, not from its first action, and each action it
         // takes in a record as it goes.
         let presence = mcp_presence::Presence::new(
-            device.session(),
+            (device.session(), device.cert()),
             actions.clone(),
             self.person.clone(),
             (workspace.to_owned(), id),
             self.label.clone(),
-        );
+        )
+        .ok_or(RelayError::NotFound)?;
         presence.arrive();
         let narrating = Arc::clone(&presence);
         let server = McpServer::new(actions, workspace.to_owned(), self.person.clone())

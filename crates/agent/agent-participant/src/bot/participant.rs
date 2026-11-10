@@ -94,7 +94,7 @@ impl BotParticipant {
         );
         let events = peer.events();
         peer.join(workspace_id)?;
-        let presence = crate::presence::enter(
+        let presence = tilo_session_host::saying::enter(
             &peer,
             &identity.cert,
             &identity.delegation.label,
@@ -316,7 +316,7 @@ impl BotParticipant {
             focus.as_ref(),
             None,
         );
-        crate::presence::say(&self.presence, &view);
+        self.presence.set_where(None, Some(Box::new(view)));
     }
 
     /// The bot's device key.
@@ -328,7 +328,7 @@ impl BotParticipant {
     /// Leave the workspace and end the session.
     pub fn close(mut self) {
         self.publish_presence(None, None);
-        crate::presence::leave(&self.presence);
+        self.presence.taking_part(&[], None);
         self.replicas.clear();
         self.peer.close();
     }
