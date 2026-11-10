@@ -544,6 +544,7 @@ fn heard(
     tokio::task::JoinHandle<()>,
     Option<tokio::task::JoinHandle<()>>,
 ) {
+    let opened = link.clone();
     let (admissions, attending) = if holds_custody {
         let (say, hear) = tokio::sync::mpsc::unbounded_channel();
         let attending = tokio::spawn(async move { take_in(hear, link, documents).await });
@@ -554,8 +555,31 @@ fn heard(
     let (events, mut heard) = tokio::sync::mpsc::channel::<NetEvent>(256);
     let carrying = tokio::spawn(async move {
         while let Some(event) = heard.recv().await {
-            if let (NetEvent::NativeInput(input), Some(say)) = (&event, admissions.as_ref()) {
-                let _ = say.send(input.as_ref().clone());
+            match (&event, admissions.as_ref()) {
+                (NetEvent::NativeInput(input), Some(say)) => {
+                    let _ = say.send(Taken::Input(input.clone()));
+                }
+                // The host sent all it retains of a record this device asked for, behind the
+                // record's writes: told after they are taken in, so a read waiting for the record
+                // decides on what landed.
+                (NetEvent::RecordOpened { ws, channel, .. }, Some(say)) => {
+                    let _ = say.send(Taken::Opened(*ws, *channel));
+                }
+                (NetEvent::RecordOpened { ws, channel, .. }, None) => {
+                    if let Some(link) = &opened {
+                        link.record_opened(*ws, *channel);
+                    }
+                }
+                // Its replay ended, behind the replay's writes: told after they are taken in.
+                (NetEvent::HostReady { ws, .. }, Some(say)) => {
+                    let _ = say.send(Taken::Ready(*ws));
+                }
+                (NetEvent::HostReady { ws, .. }, None) => {
+                    if let Some(link) = &opened {
+                        link.host_ready(*ws);
+                    }
+                }
+                _ => {}
             }
             match event_of(event) {
                 Some(Ok(event)) => {
@@ -576,21 +600,60 @@ fn heard(
     (events, carrying, attending)
 }
 
+/// What a host says that is taken in on the replay's own thread, in the order it said it.
+enum Taken {
+    /// A write it replays or carries into a workspace this device holds.
+    Input(Box<tilo_network_actor::native_ingress::Input>),
+    /// It sent everything it retains of the record on this channel, in the workspace on this
+    /// topic.
+    Opened(u64, [u8; 32]),
+    /// It finished replaying what it retains of the workspace on this topic.
+    Ready(u64),
+}
+
 /// Take what hosts replay into the workspaces this device holds, as it arrives: each run of one
 /// session admitted together and in the order the host said it, on a blocking thread so no replay
 /// holds up the collaboration plane.
 async fn take_in(
-    mut replayed: tokio::sync::mpsc::UnboundedReceiver<tilo_network_actor::native_ingress::Input>,
+    mut replayed: tokio::sync::mpsc::UnboundedReceiver<Taken>,
     link: Option<Arc<ChannelLink>>,
     documents: Option<PeerDocuments>,
 ) {
-    while let Some(input) = replayed.recv().await {
-        let mut waiting = vec![input];
+    while let Some(taken) = replayed.recv().await {
+        let mut waiting = vec![taken];
         while let Ok(next) = replayed.try_recv() {
             waiting.push(next);
         }
         let mut run: Vec<tilo_network_actor::native_ingress::Input> = Vec::new();
-        for input in waiting {
+        for taken in waiting {
+            let input = match taken {
+                Taken::Input(input) => *input,
+                Taken::Opened(ws, channel) => {
+                    // What came before it is the record's: taken in first.
+                    admit(
+                        std::mem::take(&mut run),
+                        link.as_deref(),
+                        documents.as_ref(),
+                    )
+                    .await;
+                    if let Some(link) = &link {
+                        link.record_opened(ws, channel);
+                    }
+                    continue;
+                }
+                Taken::Ready(ws) => {
+                    admit(
+                        std::mem::take(&mut run),
+                        link.as_deref(),
+                        documents.as_ref(),
+                    )
+                    .await;
+                    if let Some(link) = &link {
+                        link.host_ready(ws);
+                    }
+                    continue;
+                }
+            };
             // The channels' governance is between the workspace's devices: its governor never
             // admits it, and the channel service settles the groups with it instead.
             if link

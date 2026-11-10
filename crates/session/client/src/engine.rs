@@ -441,10 +441,60 @@ impl Engine {
 
     /// Ask `workspace`'s hosts for `app`'s `record` when it is one they send a device only once
     /// asked, and this device holds none of it.
-    pub fn request_record(&self, workspace: &str, app: &str, record: &str) {
-        if let Some(workspace) = WorkspaceId::parse(workspace) {
-            let _ = self.asks_for_record(workspace, app, record);
-        }
+    /// Whether a host was asked, now or before, so an answer is coming: `false` when there is no
+    /// one to ask (a record sent without asking, one held already, no plane).
+    pub fn request_record(&self, workspace: &str, app: &str, record: &str) -> bool {
+        WorkspaceId::parse(workspace).is_some_and(|workspace| {
+            self.asks_for_record(workspace, app, record)
+                .unwrap_or(false)
+        })
+    }
+
+    /// Whether `workspace`'s host said it sent everything it retains of `app`'s `record`: a record
+    /// this device then holds nothing of is one the workspace has none of.
+    #[must_use]
+    pub fn record_answered(&self, workspace: &str, app: &str, record: &str) -> bool {
+        let Some(workspace) = WorkspaceId::parse(workspace) else {
+            return false;
+        };
+        self.link.lock_recover().as_ref().is_some_and(|link| {
+            link.has_opened(workspace, neighbour_wire::app_document_channel(app, record))
+        })
+    }
+
+    /// Whether `workspace`'s host finished replaying to this device what it retains: a record it
+    /// sends without being asked that is not here then is one the workspace has none of.
+    #[must_use]
+    pub fn host_replayed(&self, workspace: &str) -> bool {
+        let Some(workspace) = WorkspaceId::parse(workspace) else {
+            return false;
+        };
+        self.link
+            .lock_recover()
+            .as_ref()
+            .is_some_and(|link| link.has_replayed(workspace))
+    }
+
+    /// Whether `app`'s `record` is one a host sends only once asked for it.
+    #[must_use]
+    pub fn sent_when_asked(record: &str) -> bool {
+        neighbour_wire::record_sync(record) != neighbour_wire::RecordSync::Eager
+    }
+
+    /// What ticks whenever a host says it sent a record whole, or finished its replay; `None` with
+    /// no plane.
+    #[must_use]
+    pub fn record_opens(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        self.link.lock_recover().as_ref().map(|link| link.opens())
+    }
+
+    /// Whether this device is `workspace`'s own host: everything the workspace retains is here,
+    /// and no other device replays any of it.
+    #[must_use]
+    pub fn hosts_itself(&self, workspace: &str) -> bool {
+        WorkspaceId::parse(workspace).is_some_and(|workspace| {
+            self.host_of(workspace) == Some(self.identity.device_cert.device_public_key)
+        })
     }
 
     /// Whether this device can ask its workspaces' hosts for what they retain: a session whose
@@ -687,8 +737,7 @@ impl Engine {
         let Some(link) = self.link.lock_recover().clone().filter(|_| !held) else {
             return Ok(false);
         };
-        link.ask_record(workspace, neighbour_wire::app_document_channel(app, record));
-        Ok(true)
+        Ok(link.ask_record(workspace, neighbour_wire::app_document_channel(app, record)))
     }
 
     /// The devices the workspace `workspace` admits, by the publisher each of their

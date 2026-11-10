@@ -63,8 +63,11 @@ impl NativeDocumentReads for Records {
     /// have the app make a second one.
     fn await_sealed_history(&self, context: &NativeDocumentReadContext) -> Option<AwaitingHistory> {
         let route = context.route();
+        // A workspace this device hosts itself keeps everything it retains here: nothing is
+        // replayed to it, so a record it holds nothing of is new.
         if !self.seals_records(&route.cluster_id)
             || !self.engine.reaches_host()
+            || self.engine.hosts_itself(&route.cluster_id)
             || self
                 .engine
                 .holds_record(&route.cluster_id, &route.app_id, &route.record_id)
@@ -78,13 +81,34 @@ impl NativeDocumentReads for Records {
             route.record_id.clone(),
         );
         let mut landed = self.engine.arrivals().watching();
-        engine.request_record(&workspace, &app, &record);
+        let mut opens = self.engine.record_opens()?;
+        // A record the host sends only when asked is decided by its answer; one it sends of its
+        // own accord by the end of its replay. Nobody asked, or the replay done, answers now.
+        let asked = Engine::sent_when_asked(&record);
+        if asked {
+            if !engine.request_record(&workspace, &app, &record) {
+                return None;
+            }
+        } else if engine.host_replayed(&workspace) {
+            return None;
+        }
         Some(Box::pin(async move {
-            while !engine.holds_record(&workspace, &app, &record) {
-                // A write landing here may be the record's: the host's replay reaches this device
-                // as the writes of the records it keeps.
-                if landed.changed().await.is_err() {
-                    // The session's own event is gone: decide on what this device holds.
+            // The host's replay reaches this device as the record's writes, and then says it is
+            // done: a record still not held then is one the workspace has none of.
+            let answered = |engine: &Engine| {
+                if asked {
+                    engine.record_answered(&workspace, &app, &record)
+                } else {
+                    engine.host_replayed(&workspace)
+                }
+            };
+            while !engine.holds_record(&workspace, &app, &record) && !answered(&engine) {
+                let gone = tokio::select! {
+                    changed = landed.changed() => changed.is_err(),
+                    changed = opens.changed() => changed.is_err(),
+                };
+                if gone {
+                    // The session's own events are gone: decide on what this device holds.
                     return;
                 }
             }
@@ -165,6 +189,8 @@ mod tests {
     use crate::engine::Engine;
 
     const APP: &str = "so.tilo.notes";
+    /// A record a host sends only once asked for it.
+    const ON_DEMAND: &str = "derived:on-demand@history";
     const RECORD: &str = "note-1";
     /// What one read may hand out: more than these tests' records hold.
     const MAXIMUM: usize = 1024 * 1024;
@@ -299,5 +325,93 @@ mod tests {
                 .is_err(),
             "a device the workspace does not certify reads nothing"
         );
+    }
+
+    /// A plane this engine asks its workspaces' hosts on, the commands it says kept.
+    fn planed(
+        engine: &Engine,
+    ) -> (
+        Arc<tilo_session_client::channels::ChannelLink>,
+        tokio::sync::mpsc::UnboundedReceiver<tilo_session_client::Cmd>,
+    ) {
+        let link = tilo_session_client::channels::ChannelLink::new();
+        let (said, heard) = tokio::sync::mpsc::unbounded_channel();
+        link.attach(Arc::new(said));
+        engine.attach_link(Arc::clone(&link));
+        (link, heard)
+    }
+
+    /// A workspace this device hosts itself keeps everything it retains here: an app's Open of a
+    /// record it holds nothing of is answered as new at once, with a host reached, never held for a
+    /// replay no device sends (a new Terminal session's record waited for one for good).
+    #[test]
+    fn an_open_in_a_workspace_this_device_hosts_waits_for_nobody() {
+        let state = tempfile::tempdir().expect("a state directory");
+        let (engine, cert, key) = device(state.path(), 0x54);
+        let workspace = workspace_with_record(&engine, &key);
+        let (_link, mut said) = planed(&engine);
+        let records = Records::new(Arc::clone(&engine));
+        assert!(engine.reaches_host(), "a plane is running");
+        assert!(
+            engine.hosts_itself(&workspace.to_string()),
+            "it was founded here"
+        );
+        assert!(
+            records
+                .await_sealed_history(&context(workspace, "terminal-session", cert))
+                .is_none(),
+            "nothing is waited for"
+        );
+        assert!(said.try_recv().is_err(), "and nobody is asked");
+    }
+
+    /// A host that says it sent all it retains of a record answers the read waiting for it: a
+    /// record still not held then is one the workspace has none of.
+    #[test]
+    fn a_hosts_word_that_it_sent_a_record_whole_answers_the_wait() {
+        let state = tempfile::tempdir().expect("a state directory");
+        let (engine, _cert, key) = device(state.path(), 0x55);
+        let workspace = workspace_with_record(&engine, &key);
+        let (link, mut said) = planed(&engine);
+        let id = workspace.to_string();
+        let opens = engine.record_opens().expect("a plane is running");
+        assert!(
+            engine.request_record(&id, APP, ON_DEMAND),
+            "the host is asked"
+        );
+        assert!(
+            matches!(
+                said.try_recv(),
+                Ok(tilo_session_client::Cmd::OpenRecord { .. })
+            ),
+            "the record is asked for on the plane"
+        );
+        assert!(
+            engine.request_record(&id, APP, ON_DEMAND),
+            "asked already: still answered"
+        );
+        assert!(said.try_recv().is_err(), "a read asks once");
+        assert!(!engine.record_answered(&id, APP, ON_DEMAND));
+        link.record_opened(
+            tilo_session_client::plane::topic_of(workspace),
+            neighbour_wire::app_document_channel(APP, ON_DEMAND),
+        );
+        assert!(
+            opens.has_changed().expect("the plane's word"),
+            "the wait wakes"
+        );
+        assert!(engine.record_answered(&id, APP, ON_DEMAND));
+        assert!(
+            !engine.record_answered(&id, APP, "derived:on-demand@another"),
+            "only the record it said that of"
+        );
+        assert!(
+            !engine.request_record(&id, APP, RECORD),
+            "a record held here is asked of nobody"
+        );
+        // A record the host sends of its own accord is decided by the end of its replay.
+        assert!(!engine.host_replayed(&id));
+        link.host_ready(tilo_session_client::plane::topic_of(workspace));
+        assert!(engine.host_replayed(&id), "the replay ended");
     }
 }
