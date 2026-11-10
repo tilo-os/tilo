@@ -37,7 +37,8 @@ fn walk<'a>(node: &'a UiNode, kind: &str, out: &mut Vec<&'a UiNode>) {
     }
 }
 
-/// The notes as the notebook's tree shows them: what each row is called, in the order it stands.
+/// The notes as the notebook's tree holds them: what each row is called, in the order the store
+/// keeps them.
 fn titled(view: &mut ViewInstance) -> Vec<String> {
     view.poll_patches().unwrap();
     all(view.tree(), "ui.TreeViewNode")

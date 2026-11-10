@@ -44,6 +44,7 @@ mod make_from;
 mod marks;
 mod naming;
 mod note_import;
+mod notebook_order;
 mod notes;
 mod notices;
 mod outbox;
@@ -60,7 +61,6 @@ mod rich_text;
 mod scenarios;
 #[cfg(feature = "record")]
 mod shell_record;
-mod sorting;
 mod suggest;
 mod surface;
 mod sync;
