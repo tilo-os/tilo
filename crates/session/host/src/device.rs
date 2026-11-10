@@ -4,8 +4,10 @@
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
+use tilo_actions::remote::host_account::Refusal;
 use tilo_actions::remote::{
-    ActionHost as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
+    ActionHost as _, ActionHostError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
+    RemoteActionTarget,
 };
 use tilo_relay_client::login::redeem;
 #[cfg(not(target_arch = "wasm32"))]
@@ -64,6 +66,26 @@ impl Device {
             ),
             cert: config.cert,
             host_cert: config.host_cert,
+            signer,
+            workspace_id: 0,
+            label: label.to_owned(),
+        }
+    }
+
+    /// The device whose session `peer` already is: a page's, which started its session itself.
+    /// `cert` and `signer` must be the ones `peer` was started with.
+    #[must_use]
+    pub fn of(
+        peer: PeerHandle,
+        cert: DeviceCert,
+        host_cert: DeviceCert,
+        signer: Arc<dyn DeviceSigner>,
+        label: &str,
+    ) -> Self {
+        Self {
+            peer,
+            cert,
+            host_cert,
             signer,
             workspace_id: 0,
             label: label.to_owned(),
@@ -248,24 +270,55 @@ impl Device {
         workspace_id: u64,
         arguments: Map<String, Value>,
         caller: &str,
-    ) -> Result<(WorkspaceListing, Vec<u8>), CertifyError> {
-        let refused = |why: String| {
-            CertifyError::Denied(format!(
+    ) -> Result<(WorkspaceListing, Vec<u8>), HostRefusal> {
+        let output = self
+            .host_action(workspace_id, CREATE_OWN_ROOM, arguments, caller)
+            .await?;
+        let malformed = |why: String| {
+            HostRefusal::malformed(format!(
                 "The host made no workspace of the person's own: {why}"
             ))
         };
-        let output = self
-            .host_action(workspace_id, CREATE_OWN_ROOM, arguments, caller)
-            .await
-            .map_err(|error| CertifyError::Denied(error.to_string()))?;
         let made: CreatedWorkspace = serde_json::from_value(output)
-            .map_err(|error| refused(format!("it answered something else: {error}")))?;
+            .map_err(|error| malformed(format!("it answered something else: {error}")))?;
         let invitation = made
             .invitation
-            .ok_or_else(|| refused("it issued no invitation".to_owned()))?;
+            .ok_or_else(|| malformed("it issued no invitation".to_owned()))?;
         let invitation =
-            hex::decode(invitation.invitation).map_err(|error| refused(error.to_string()))?;
+            hex::decode(invitation.invitation).map_err(|error| malformed(error.to_string()))?;
         Ok((made.workspace, invitation))
+    }
+
+    /// Have this device in the person's own workspace on the host, asked from inside
+    /// `workspace_id`: the host makes it the first time, or answers the one the person has (another
+    /// for each `name` they give), and this very device redeems the invitation into it, so the key
+    /// this session holds is the one that opens it next. A workspace `entered` says this device is
+    /// in already is not redeemed again. `shown_as` is the name its members see.
+    ///
+    /// # Errors
+    /// The host did not answer or refused (typed, as it said), or the workspace did not admit this
+    /// device.
+    pub async fn enter_own_workspace(
+        &self,
+        client: &dyn HttpClient,
+        workspace_id: u64,
+        name: Option<&str>,
+        shown_as: &str,
+        entered: impl FnOnce(&str) -> bool,
+    ) -> Result<WorkspaceListing, HostRefusal> {
+        let mut arguments = Map::new();
+        if let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) {
+            arguments.insert("name".to_owned(), Value::String(name.to_owned()));
+        }
+        let (listing, invitation) = self
+            .own_workspace(workspace_id, arguments, &self.label)
+            .await?;
+        if !entered(&listing.workspace) {
+            self.redeem(client, &invitation, shown_as)
+                .await
+                .map_err(HostRefusal::from)?;
+        }
+        Ok(listing)
     }
 
     /// The host's own operation `action` with `arguments`, asked in `workspace_id`.
@@ -278,7 +331,7 @@ impl Device {
         action: &str,
         arguments: Map<String, Value>,
         caller: &str,
-    ) -> Result<Value, CertifyError> {
+    ) -> Result<Value, HostRefusal> {
         let target = RemoteActionTarget {
             provider: HOST_ACTIONS_PROVIDER.to_owned(),
             address: tilo_actions::ActionAddress::new(HOST_ROOMS_RESOURCE, action),
@@ -298,8 +351,7 @@ impl Device {
         target: RemoteActionTarget,
         arguments: Map<String, Value>,
         caller: &str,
-    ) -> Result<Value, CertifyError> {
-        let unreachable = |why: String| CertifyError::Request(why);
+    ) -> Result<Value, HostRefusal> {
         let receipt = self
             .actions(workspace_id)
             .invoke(
@@ -317,15 +369,15 @@ impl Device {
                 },
             )
             .await
-            .ok_or_else(|| unreachable("the host did not answer".to_owned()))?
-            .map_err(|error| CertifyError::Denied(error.to_string()))?;
+            .ok_or_else(|| HostRefusal::unanswered("the host did not answer"))?
+            .map_err(|error| HostRefusal::of(&error))?;
         match receipt.status {
             ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
-            ReceiptStatus::Failed { error } => Err(CertifyError::Denied(error.message)),
-            ReceiptStatus::Rejected { error } => Err(CertifyError::Denied(error.to_string())),
-            ReceiptStatus::Cancelled { .. } | ReceiptStatus::Accepted => Err(unreachable(
-                "the host did not finish what was asked of it".to_owned(),
-            )),
+            ReceiptStatus::Failed { error } => Err(HostRefusal::failed(&error.message)),
+            ReceiptStatus::Rejected { error } => Err(HostRefusal::of(&error)),
+            ReceiptStatus::Cancelled { .. } | ReceiptStatus::Accepted => Err(
+                HostRefusal::unanswered("the host did not finish what was asked of it"),
+            ),
         }
     }
 
@@ -338,6 +390,117 @@ impl Device {
     /// Close the session: it says this device left, and stops.
     pub fn close(&self) {
         self.peer.close();
+    }
+}
+
+/// Why a workspace's host did not do what a device asked of it, as the host said it: what every
+/// caller (the CLI, the front door, the page) reads and shows, never a sentence to parse.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct HostRefusal {
+    /// What kind of answer it was: an [`ActionHostError::code`] when the host refused,
+    /// [`HostRefusal::FAILED`] when the operation ran and failed, [`HostRefusal::UNANSWERED`] when
+    /// no answer came, [`HostRefusal::MALFORMED`] when the answer was not what the operation
+    /// answers, and [`HostRefusal::NOT_ADMITTED`] when a workspace did not let the device in.
+    pub code: String,
+    /// What happened, in plain words for whoever asked.
+    pub message: String,
+    /// The host's typed refusal, when it gave one: its reason and the ways through it.
+    pub refusal: Option<Refusal>,
+}
+
+impl HostRefusal {
+    /// The operation ran on the host and failed.
+    pub const FAILED: &'static str = "failed";
+    /// The host did not answer, or did not finish.
+    pub const UNANSWERED: &'static str = "unanswered";
+    /// The host answered something the operation does not answer.
+    pub const MALFORMED: &'static str = "malformed";
+    /// The workspace did not admit the device.
+    pub const NOT_ADMITTED: &'static str = "not_admitted";
+
+    /// The host's refusal `error`, its typed refusal read off it where it carries one.
+    #[must_use]
+    pub fn of(error: &ActionHostError) -> Self {
+        match error {
+            ActionHostError::Refused { reason } => Self::said(error.code(), reason),
+            other => Self {
+                code: other.code().to_owned(),
+                message: other.to_string(),
+                refusal: None,
+            },
+        }
+    }
+
+    /// The operation failed, saying `message` (a typed refusal's text, where it is one).
+    #[must_use]
+    pub fn failed(message: &str) -> Self {
+        Self::said(Self::FAILED, message)
+    }
+
+    /// No answer came: `why`.
+    #[must_use]
+    pub fn unanswered(why: &str) -> Self {
+        Self {
+            code: Self::UNANSWERED.to_owned(),
+            message: why.to_owned(),
+            refusal: None,
+        }
+    }
+
+    /// The answer was not the operation's: `why`.
+    #[must_use]
+    pub fn malformed(why: String) -> Self {
+        Self {
+            code: Self::MALFORMED.to_owned(),
+            message: why,
+            refusal: None,
+        }
+    }
+
+    /// `reason` as the host said it, typed where it is a [`Refusal`]'s text.
+    fn said(code: &str, reason: &str) -> Self {
+        let refusal = Refusal::from_reason(reason);
+        Self {
+            code: code.to_owned(),
+            message: refusal
+                .as_ref()
+                .map_or_else(|| reason.to_owned(), |refusal| refusal.message.clone()),
+            refusal,
+        }
+    }
+}
+
+impl std::fmt::Display for HostRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for HostRefusal {}
+
+/// A device's entry failed: a workspace that did not admit it was refused; anything else was not
+/// answered.
+impl From<CertifyError> for HostRefusal {
+    fn from(error: CertifyError) -> Self {
+        match error {
+            CertifyError::Denied(why) => Self {
+                code: Self::NOT_ADMITTED.to_owned(),
+                message: why,
+                refusal: None,
+            },
+            other => Self::unanswered(&other.to_string()),
+        }
+    }
+}
+
+/// What a computer's entry reports: a refusal is the host's denial, no answer a failed request.
+impl From<HostRefusal> for CertifyError {
+    fn from(refusal: HostRefusal) -> Self {
+        if refusal.code == HostRefusal::UNANSWERED {
+            Self::Request(refusal.message)
+        } else {
+            Self::Denied(refusal.message)
+        }
     }
 }
 
@@ -365,4 +528,66 @@ pub async fn run_as_agent(peer: &PeerHandle, label: &str) -> Result<(), String> 
     receive
         .await
         .map_err(|_| "the session ended before the host answered".to_owned())?
+}
+
+#[cfg(test)]
+mod tests {
+    use tilo_actions::remote::host_account::{Reason, Refusal};
+
+    use super::*;
+
+    fn too_many() -> Refusal {
+        Refusal {
+            reason: Reason::TooManyWorkspaces {
+                limit: 1,
+                existing: vec!["a".into()],
+            },
+            message: "You already have a workspace of your own here.".into(),
+            next: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_hosts_typed_refusal_reads_typed_with_its_own_words() {
+        let refused = HostRefusal::of(&ActionHostError::Refused {
+            reason: too_many().to_reason(),
+        });
+        assert_eq!(refused.code, "refused");
+        assert_eq!(refused.message, too_many().message);
+        assert_eq!(refused.refusal, Some(too_many()));
+        // An operation that ran and failed with one reads the same way.
+        let failed = HostRefusal::failed(&too_many().to_reason());
+        assert_eq!(failed.code, HostRefusal::FAILED);
+        assert_eq!(failed.refusal, Some(too_many()));
+    }
+
+    #[test]
+    fn a_refusal_in_words_alone_keeps_them_and_every_other_answer_its_code() {
+        let refused = HostRefusal::of(&ActionHostError::Refused {
+            reason: "that workspace is not one of your own".into(),
+        });
+        assert_eq!(refused.message, "that workspace is not one of your own");
+        assert_eq!(refused.refusal, None);
+        let unknown = HostRefusal::of(&ActionHostError::UnknownAction);
+        assert_eq!(unknown.code, "unknown_action");
+        assert_eq!(unknown.message, "no such action is offered");
+        assert_eq!(
+            HostRefusal::of(&ActionHostError::StaleRevision).code,
+            "stale_revision"
+        );
+    }
+
+    #[test]
+    fn a_computers_entry_reports_no_answer_as_a_request_and_a_refusal_as_a_denial() {
+        assert!(matches!(
+            CertifyError::from(HostRefusal::unanswered("the host did not answer")),
+            CertifyError::Request(_)
+        ));
+        assert!(matches!(
+            CertifyError::from(HostRefusal::of(&ActionHostError::NotPermitted)),
+            CertifyError::Denied(_)
+        ));
+        let admitted = HostRefusal::from(CertifyError::Denied("not in".into()));
+        assert_eq!(admitted.code, HostRefusal::NOT_ADMITTED);
+    }
 }

@@ -32,6 +32,7 @@ use tilo_channels::VAULT_SECRET_APP as CHANNEL_VAULT_APP;
 use tilo_live::live::Track;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveRecord, OpsFrame, PreviewOp};
+use tilo_session_host::device::{Device, HostRefusal};
 use tilo_session_host::{
     DeviceSigner, FailureSubject, Host, HttpClient, HttpFuture, LocalState, PeerConfig, PeerEvent,
     PeerEvents, PeerHandle, PeerRecord, PeerSnapshot, PeerStore, SignError, SignFuture,
@@ -44,6 +45,23 @@ use crate::peer_sync::{JsPresence, due, hear, members, release, say, set_label};
 
 pub(crate) fn js_error(error: impl std::fmt::Display) -> JsError {
     JsError::new(&error.to_string())
+}
+
+/// `refusal` as the page reads it: an `Error` named `HostRefusal`, with the refusal's `code` and,
+/// where the host gave one, its typed `refusal` (`{reason, message, next}`).
+pub(crate) fn refusal_error(refusal: &HostRefusal) -> JsValue {
+    let error = js_sys::Error::new(&refusal.message);
+    error.set_name("HostRefusal");
+    let _ = Reflect::set(&error, &"code".into(), &refusal.code.as_str().into());
+    if let Some(typed) = refusal
+        .refusal
+        .as_ref()
+        .and_then(|typed| serde_json::to_string(typed).ok())
+        .and_then(|text| js_sys::JSON::parse(&text).ok())
+    {
+        let _ = Reflect::set(&error, &"refusal".into(), &typed);
+    }
+    error.into()
 }
 
 /// The page store without a surface; a desktop surface; its asset.
@@ -1451,6 +1469,8 @@ pub struct WasmPeer {
     reporter_cert: DeviceCert,
     owner_cert: DeviceCert,
     handle: PeerHandle,
+    /// This page's device in its person's workspaces, over the same session: how it enters them.
+    device: Device,
     durable_events: PeerEvents,
     live_events: PeerEvents,
     voice_events: PeerEvents,
@@ -1464,6 +1484,45 @@ pub struct WasmPeer {
     /// The workspace the person takes part in through this page, once joined
     /// as a person: the one that names them.
     speaking_workspace: RefCell<Option<String>>,
+}
+
+/// A page peer's record store, and the profile store it lives in when it has one.
+type KeptPeer = (Arc<dyn PeerStore>, Option<Rc<durable_store::MemoryStore>>);
+
+/// Where a page's peer keeps its record: the profile `namespace`'s durable store, sealed under
+/// its `channelVault`, with that store returned too for the workspace's documents; else the
+/// stored `record` bytes, saved through `save`.
+#[allow(
+    clippy::arc_with_non_send_sync,
+    reason = "the session takes shared handles; in the page they stay on its one thread"
+)]
+fn peer_store(
+    namespace: Option<String>,
+    record: Option<Vec<u8>>,
+    save: Option<Function>,
+    channel_vault: Option<&[u8]>,
+    user: &[u8; 32],
+) -> Result<KeptPeer, JsError> {
+    if let Some(namespace) = namespace {
+        let channel_vault: [u8; 32] = channel_vault
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| js_error("a profile peer needs its 32-byte channel vault"))?;
+        let durable = DurablePeerStore::open(&namespace, user, channel_vault)?;
+        let kept = Rc::clone(&durable.store);
+        return Ok((Arc::new(durable), Some(kept)));
+    }
+    let record = record
+        .map(|bytes| postcard::from_bytes::<PeerRecord>(&bytes))
+        .transpose()
+        .map_err(js_error)?;
+    let save = save.ok_or_else(|| js_error("a peer needs a namespace or a save callback"))?;
+    Ok((
+        Arc::new(PageStore {
+            current: RefCell::new(record),
+            save,
+        }),
+        None,
+    ))
 }
 
 /// Tell `workspace` its member, the page's person, goes by `name` from now on:
@@ -1540,27 +1599,14 @@ impl WasmPeer {
         if signer.device_public_key() != config.cert.device_public_key {
             return Err(js_error("custody does not hold the certified device key"));
         }
-        let mut profile_store = None;
-        let store: Arc<dyn PeerStore> = if let Some(namespace) = namespace {
-            let channel_vault: [u8; 32] = channel_vault
-                .as_deref()
-                .and_then(|bytes| bytes.try_into().ok())
-                .ok_or_else(|| js_error("a profile peer needs its 32-byte channel vault"))?;
-            let durable =
-                DurablePeerStore::open(&namespace, &config.cert.user_public_key, channel_vault)?;
-            profile_store = Some(Rc::clone(&durable.store));
-            Arc::new(durable)
-        } else {
-            let record = record
-                .map(|bytes| postcard::from_bytes::<PeerRecord>(&bytes))
-                .transpose()
-                .map_err(js_error)?;
-            Arc::new(PageStore {
-                current: RefCell::new(record),
-                save: save
-                    .ok_or_else(|| js_error("a peer needs a namespace or a save callback"))?,
-            })
-        };
+        let signer: Arc<dyn DeviceSigner> = Arc::new(signer);
+        let (store, profile_store) = peer_store(
+            namespace,
+            record,
+            save,
+            channel_vault.as_deref(),
+            &config.cert.user_public_key,
+        )?;
         let device_key = config.cert.device_public_key;
         let reporter_cert = config.cert.clone();
         let owner_cert = config.host_cert.clone();
@@ -1573,8 +1619,15 @@ impl WasmPeer {
                 host_cert: config.host_cert,
                 revocations,
             },
-            Arc::new(signer),
+            signer.clone(),
             store,
+        );
+        let device = Device::of(
+            handle.clone(),
+            reporter_cert.clone(),
+            owner_cert.clone(),
+            signer,
+            &reporter_cert.device_label,
         );
         let id = NEXT_PEER.with(|next| {
             let id = next.get();
@@ -1632,6 +1685,7 @@ impl WasmPeer {
             voice_events: handle.events(),
             voice_workspaces: RefCell::default(),
             handle,
+            device,
             listeners,
             replication,
             speaking_workspace: RefCell::default(),
@@ -2348,6 +2402,40 @@ impl WasmPeer {
         tilo_session_host::session_actions::ask(&door, &caller, message)
             .await
             .map_err(|error| js_error(&error))
+    }
+
+    /// Have this page's device in the person's own workspace on the host, asked from inside
+    /// `workspace` (a UUID) through the session it holds there: made the first time, answered again
+    /// after, another for each `name` ([`Device::enter_own_workspace`]). This very device redeems
+    /// the invitation (at the host `post` reaches), shown to the workspace's people as `shownAs`,
+    /// unless `entered(workspace)` says it is in already. Resolves to the workspace's listing,
+    /// `{workspace, workspace_id, name, generation}` JSON.
+    ///
+    /// # Errors
+    ///
+    /// Rejects with an `Error` named `HostRefusal` whose `code` says how the host refused
+    /// ([`HostRefusal`]: `unknown_action` for a host that keeps no workspaces of people's own) and
+    /// whose `refusal` is the host's typed refusal where it gave one.
+    #[wasm_bindgen(js_name = enterOwnWorkspace)]
+    pub async fn enter_own_workspace(
+        &self,
+        workspace: String,
+        post: Function,
+        name: Option<String>,
+        shown_as: String,
+        entered: Function,
+    ) -> Result<String, JsValue> {
+        let number = workspace_number(&workspace)?;
+        let listing = self
+            .device
+            .enter_own_workspace(&PageHttp(post), number, name.as_deref(), &shown_as, |id| {
+                entered
+                    .call1(&JsValue::NULL, &JsValue::from_str(id))
+                    .is_ok_and(|answer| answer.is_truthy())
+            })
+            .await
+            .map_err(|refusal| refusal_error(&refusal))?;
+        serde_json::to_string(&listing).map_err(|error| js_error(error).into())
     }
 
     /// Whether the page holds the workspace's record `record` of `app`: open in

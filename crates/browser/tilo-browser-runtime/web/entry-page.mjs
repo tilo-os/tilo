@@ -37,7 +37,6 @@ import {followConnection} from './connection-status.mjs';
 import {followRefusal, hostUnreachable, reachedHost, refusalText, rejoinedName, retryUnreachable} from './session-refusal.mjs';
 import {rendererUnavailable} from './webgpu-safety.mjs';
 import {createWorkspaceActions, invitedLine} from './workspace-actions.mjs';
-import {ensureOwnWorkspace} from './own-workspace.mjs';
 import {sameEntry} from './entered-workspaces.mjs';
 import {
   chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneWorkspaces,
@@ -1904,7 +1903,7 @@ function offerFirstRun({page, identityActions}) {
         try {
           hostedOwn = await ensureOwnWorkspace(page);
         } catch (error) {
-          if (error?.code !== 'unknown_action' && !/no such action is offered/i.test(error?.message ?? '')) throw error;
+          if (error?.code !== 'unknown_action') throw error;
           console.info('first run: this host keeps no workspaces of people\'s own;', error?.message);
         }
       }
@@ -1943,6 +1942,25 @@ const takeOpenOwn = () => {
   } catch { return false; }
 };
 /** The workspace switcher's choice of the person's own hosted workspace. */
+/**
+ * The person's own workspace on the host of the page's peer, with this
+ * page's device in it (the shared device entry makes or finds it and redeems
+ * its invitation), remembered among the workspaces this browser entered so
+ * the switcher offers it and opening it reconnects. Resolves to `{id, name,
+ * origin}`.
+ */
+async function ensureOwnWorkspace(page, store = globalThis.localStorage) {
+  const peer = page.peer;
+  const origin = new URL(peer.origin).origin;
+  const own = await peer.enterOwnWorkspace({
+    entered: id => enteredWorkspaces(store).some(kept => kept.origin === origin && kept.room === id),
+  });
+  const name = own.name || null;
+  const hostDevice = hostDeviceOf(peer.host?.hostCert);
+  if (hostDevice) rememberEntered({origin, room: own.workspace, hostDevice, name}, store);
+  return {id: own.workspace, name, origin};
+}
+
 const ownChoice = own => ({id: `${OPEN_WORKSPACE}${own.id}`, name: own.name ?? 'My workspace', origin: own.origin, room: own.id});
 
 /**

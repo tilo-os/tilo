@@ -1026,16 +1026,15 @@ async function connect({
     /** Issue an invitation to the workspace (`rooms.rs`): resolves to its
      * text, when the person's role lets them invite. */
     createInvitation: options => membership.createInvitation(options),
-    /** Redeem `invitation` (its text) at this peer's host as this very
-     * device, under the certificate it holds: the workspace it grants admits
-     * this device, so connecting to it later with the same device key gets
-     * in. Resolves to `{workspace}` once admitted; nothing connects. */
-    admitTo: async invitation => {
-      const certified = await store.get(CERTIFICATE);
-      if (!certified) throw new AdmissionError('refused', 'This device holds no certificate to ask with yet');
-      return join({origin, invitation, certified, custody, runtime, fetch: fetcher, displayName, label,
-        ...(profile ? {profile} : {}), admitOnly: true});
-    },
+    /** The person's own workspace on this host, with this very device in it
+     * (the shared device entry, `enterOwnWorkspace` in wasm): made the first
+     * time, answered again after, another for each `name`. `entered(id)`
+     * says this browser is in that workspace already, so it is not redeemed
+     * again. Resolves to the workspace's listing `{workspace, workspace_id,
+     * name}`; rejects with the host's refusal as it typed it (`HostRefusal`:
+     * `code`, and `refusal` where the host gave one). */
+    enterOwnWorkspace: async ({name = null, entered = () => false} = {}) => JSON.parse(
+      await peer.enterOwnWorkspace(workspace, post, name, fitDisplayName(displayName || label), entered)),
     /** Who is in the workspace, for its owner (`rooms.rs`): `list()`,
      * `setRole`, `remove`, `cancelInvitation`. */
     get membership() { return membership; },

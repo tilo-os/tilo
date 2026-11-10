@@ -25,7 +25,7 @@ use crate::account::{Outcome, answer, failed, refused};
 use base64::Engine as _;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::RemoteActionTarget;
-use tilo_relay_client::CertifyError;
+use tilo_session_host::device::HostRefusal;
 
 /// The path of a workspace's people.
 pub const ROOT: &str = "workspace/members";
@@ -92,14 +92,17 @@ impl Session {
             .device
             .ask_host(id, target, arguments, "tilo front door")
             .await
-            .map_err(|error| match error {
-                CertifyError::Denied(reason) => failed(
-                    "forbidden",
-                    format!("the workspace refused: {reason}"),
-                    "a key you created, reaching all your workspaces, invites into the ones you \
-                     administer, as an editor at most",
-                ),
-                other => failed("unavailable", other.to_string(), "try again shortly"),
+            .map_err(|error| {
+                if error.code == HostRefusal::UNANSWERED {
+                    failed("unavailable", error.message, "try again shortly")
+                } else {
+                    failed(
+                        "forbidden",
+                        format!("the workspace refused: {}", error.message),
+                        "a key you created, reaching all your workspaces, invites into the ones \
+                         you administer, as an editor at most",
+                    )
+                }
             })
     }
 

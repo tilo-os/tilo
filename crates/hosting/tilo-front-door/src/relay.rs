@@ -32,7 +32,7 @@ use tilo_relay_client::CertifyError;
 use tilo_relay_client::https::{self, Origin};
 use tilo_relay_client::login::{Door, door_at, through_door};
 use tilo_session_host::PeerConfig;
-use tilo_session_host::device::Device;
+use tilo_session_host::device::{Device, HostRefusal};
 use tilo_user_identity::AgentScope;
 
 /// How long entering a workspace may take.
@@ -82,6 +82,12 @@ impl From<CertifyError> for RelayError {
             CertifyError::Denied(reason) => Self::Refused(reason),
             other => Self::Unavailable(other.to_string()),
         }
+    }
+}
+
+impl From<HostRefusal> for RelayError {
+    fn from(refusal: HostRefusal) -> Self {
+        CertifyError::from(refusal).into()
     }
 }
 

@@ -624,7 +624,6 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/host-core-screen.test.mjs",
   "crates/browser/tilo-browser-runtime/web/machine-setup.test.mjs",
   "crates/browser/tilo-browser-runtime/web/native-catalogue.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/own-workspace.test.mjs",
   "crates/browser/tilo-browser-runtime/web/panorama.test.mjs",
   "crates/browser/tilo-browser-runtime/web/semantic-presentation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/semantics.test.mjs",
