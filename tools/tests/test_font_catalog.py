@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 import types
 import unittest
 import urllib.error
@@ -334,14 +335,114 @@ class CatalogTest(unittest.TestCase):
                     fc.verify(dest, "product")
 
 
+def admits(requirement, version):
+    """Whether a requirement admits a version: caret (the default), `=` or `~`."""
+    if requirement.strip() in ("", "*"):
+        return True
+    operator = requirement[0] if requirement[:1] in ("=", "^", "~") else "^"
+    requirement = requirement.lstrip("=^~")
+    want = [int(part) for part in requirement.split("+")[0].split("-")[0].split(".")]
+    have = [int(part) for part in version.split("+")[0].split("-")[0].split(".")]
+    if operator == "=":
+        return have[:len(want)] == want
+    width = max(len(want), len(have))
+    padded_want = want + [0] * (width - len(want))
+    padded_have = have + [0] * (width - len(have))
+    if padded_have < padded_want:
+        return False
+    if operator == "~":
+        return padded_have[:len(want) - 1] == padded_want[:len(want) - 1]
+    # Caret: the leading component the requirement names may not change.
+    if want[0] or len(want) == 1:
+        return padded_have[0] == want[0]
+    if len(want) == 2 or want[1]:
+        return padded_have[:2] == padded_want[:2]
+    return padded_have[:3] == padded_want[:3]
+
+
+def locked_version(name, requirement):
+    """The version this workspace's lock resolves `name`'s requirement to.
+
+    A workspace can lock two majors of one crate (0.8 and 1.0 of `toml` here), and the build
+    dependency is the one its requirement admits, so the test builds what this tree builds.
+    """
+    versions = [package["version"] for package in
+                tomllib.loads((ROOT / "Cargo.lock").read_text())["package"]
+                if package["name"] == name]
+    admitted = [version for version in versions if admits(requirement, version)]
+    if len(admitted) != 1:
+        raise AssertionError(f"{name} {requirement}: the lock admits {admitted} of {versions}")
+    return admitted[0]
+
+
+def build_script_package():
+    """A cargo manifest whose build script is the crate's own, with the crate's build dependencies.
+
+    The crate's manifest is the source of the dependencies and the workspace's lock is the source
+    of their versions, so the test compiles the script with what the product is built with.
+    """
+    crate = tomllib.loads((ROOT / "crates/sdk/font-catalog/Cargo.toml").read_text())
+    workspace = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["dependencies"]
+    lines = ["[package]", 'name = "font-catalog-build-script"', 'version = "0.0.0"',
+             'edition = "2024"', 'build = "build.rs"', "", "[build-dependencies]"]
+    for name, spec in crate["build-dependencies"].items():
+        if isinstance(spec, dict) and spec.get("workspace"):
+            inherited = workspace[name]
+            inherited = {"version": inherited} if isinstance(inherited, str) else inherited
+            spec = {**inherited, **{key: value for key, value in spec.items() if key != "workspace"}}
+        if isinstance(spec, str):
+            spec = {"version": spec}
+        if "path" in spec:
+            raise AssertionError(f"build dependency {name} is a path dependency no lock pins")
+        fields = [f'version = "={locked_version(name, spec["version"])}"']
+        if spec.get("features"):
+            features = ", ".join(json.dumps(feature) for feature in spec["features"])
+            fields.append(f"features = [{features}]")
+        if spec.get("default-features") is False:
+            fields.append("default-features = false")
+        lines.append(f"{name} = {{ {', '.join(fields)} }}")
+    lines += ["", "[workspace]", ""]
+    return "\n".join(lines)
+
+
 class CatalogBuildTest(unittest.TestCase):
+    """The crate's build script, built the way cargo builds it: the crate's own file, compiled with
+    the crate's build dependencies.
+
+    Bare `rustc` cannot: the script parses the manifest with `toml`, which is a build dependency,
+    so a test that compiled the file alone tested a program the build never makes. The package
+    here is a stand-in for the crate — its script and its manifest are the crate's, and its build
+    dependencies are the crate's, at the versions this workspace's lock pins.
+    """
+
     @classmethod
     def setUpClass(cls):
         cls.directory = tempfile.TemporaryDirectory()
-        cls.build = Path(cls.directory.name) / "font-catalog-build"
-        environment = dict(os.environ, CARGO_MANIFEST_DIR=str(ROOT / "crates/sdk/font-catalog"))
-        subprocess.run(["rustc", "--edition=2024", str(ROOT / "crates/sdk/font-catalog/build.rs"),
-                        "-o", str(cls.build)], env=environment, check=True)
+        root = Path(cls.directory.name)
+        source = ROOT / "crates/sdk/font-catalog"
+        package = root / "crates/sdk/font-catalog"
+        (package / "src").mkdir(parents=True)
+        (package / "src/lib.rs").write_text("")
+        (package / "build.rs").write_bytes((source / "build.rs").read_bytes())
+        (package / "manifest.toml").write_bytes((source / "manifest.toml").read_bytes())
+        (package / "Cargo.toml").write_text(build_script_package())
+        # A job's cargo runs under t's compiler cache, which refuses a package that is not the
+        # job's own; this one is the test's, under a temporary directory, so it is built without
+        # the wrapper.
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER")}
+        subprocess.run(["cargo", "build", "--manifest-path", str(package / "Cargo.toml"),
+                        "--target-dir", str(root / "target")], env=environment, check=True)
+        scripts = sorted((root / "target/debug/build").glob("font-catalog-build-script-*/build-script-build"))
+        if len(scripts) != 1:
+            raise AssertionError(f"cargo built no single build script: {scripts}")
+        cls.build = scripts[0]
+        # The script asks its own tree, when it runs, whether that tree is a source checkout. The
+        # build that compiled it ran it once without one — a checkout's tool and catalog, which
+        # are this repository's, are what the tests below give it.
+        (root / "tools").symlink_to(ROOT / "tools")
+        (root / "crates/sdk/ui-core/assets").mkdir(parents=True)
+        (root / "crates/sdk/ui-core/assets/fonts").symlink_to(FONTS)
 
     @classmethod
     def tearDownClass(cls):
