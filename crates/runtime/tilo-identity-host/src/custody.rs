@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use collab_types::signer::{DeviceSigner, MaybeSendSync};
 use ed25519_dalek::VerifyingKey;
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 
@@ -14,13 +15,13 @@ pub type WorkspaceId = u64;
 
 /// Where a host reads its device custody from, when it keeps one beyond memory: the identity
 /// files of the person's own machine, the page's store on the web.
-pub trait Custody: Send + Sync {
-    /// This device's own certificate and the key it signs with, when this host holds an identity
-    /// at all.
+pub trait Custody: MaybeSendSync {
+    /// This device's own certificate and the signer that holds its key, when this host holds an
+    /// identity at all.
     ///
     /// # Errors
     /// This host has no identity, or its stored key and certificate differ.
-    fn device(&self) -> Result<(DeviceCert, ed25519_dalek::SigningKey), String>;
+    fn device(&self) -> Result<(DeviceCert, Arc<dyn DeviceSigner>), String>;
 
     /// The certificate this device presents in `workspace` and the revocations advertised beside
     /// it, as the store holds them now: never an older snapshot than the last write. A workspace
@@ -52,8 +53,8 @@ pub trait Custody: Send + Sync {
 pub struct HostIdentity {
     /// The certificate this device was issued, as it was read.
     pub device_cert: DeviceCert,
-    /// The key that certificate names.
-    pub device_signing_key: ed25519_dalek::SigningKey,
+    /// Signs with the key that certificate names; the key stays in custody.
+    pub signer: Arc<dyn DeviceSigner>,
     /// Where the custody above is read from when it changes: the identity files of this host, or
     /// the material it keeps in memory.
     pub custody: Arc<dyn Custody>,
@@ -64,17 +65,17 @@ pub struct HostIdentity {
 /// device's own, which answers for every workspace that has none.
 pub struct Kept {
     device: DeviceCert,
-    key: ed25519_dalek::SigningKey,
+    signer: Arc<dyn DeviceSigner>,
     workspaces: std::collections::HashMap<WorkspaceId, (DeviceCert, Vec<RevocationEntry>)>,
 }
 
 impl Kept {
-    /// Custody of `device` and the key it names.
+    /// Custody of `device` and the signer of the key it names.
     #[must_use]
-    pub fn new(device: DeviceCert, key: ed25519_dalek::SigningKey) -> Self {
+    pub fn new(device: DeviceCert, signer: Arc<dyn DeviceSigner>) -> Self {
         Self {
             device,
-            key,
+            signer,
             workspaces: std::collections::HashMap::new(),
         }
     }
@@ -94,8 +95,8 @@ impl Kept {
 }
 
 impl Custody for Kept {
-    fn device(&self) -> Result<(DeviceCert, ed25519_dalek::SigningKey), String> {
-        Ok((self.device.clone(), self.key.clone()))
+    fn device(&self) -> Result<(DeviceCert, Arc<dyn DeviceSigner>), String> {
+        Ok((self.device.clone(), Arc::clone(&self.signer)))
     }
 
     fn read(
@@ -103,7 +104,7 @@ impl Custody for Kept {
         workspace: WorkspaceId,
         device: &VerifyingKey,
     ) -> Result<(DeviceCert, Vec<RevocationEntry>), String> {
-        if self.key.verifying_key() != *device {
+        if self.signer.device_public_key() != device.to_bytes() {
             return Err("kept device custody changed".into());
         }
         Ok(self
@@ -131,14 +132,18 @@ impl HostIdentity {
     /// presents and the key it signs with.
     #[must_use]
     pub fn open(custody: Arc<dyn Custody>) -> Option<Self> {
-        let (device_cert, device_signing_key) = match custody.device() {
+        let (device_cert, signer) = match custody.device() {
             Ok(device) => device,
             Err(error) => {
                 tracing::warn!(%error, "this device holds no identity to sign in with");
                 return None;
             }
         };
-        Some(Self::held(device_cert, device_signing_key, custody))
+        Some(Self {
+            device_cert,
+            signer,
+            custody,
+        })
     }
 
     /// The identity `cert` and `key` are, with `custody` keeping it current: for a host that read
@@ -147,21 +152,49 @@ impl HostIdentity {
     #[must_use]
     pub fn held(
         device_cert: DeviceCert,
-        device_signing_key: ed25519_dalek::SigningKey,
+        signer: impl DeviceSigner + 'static,
         custody: Arc<dyn Custody>,
     ) -> Self {
         Self {
             device_cert,
-            device_signing_key,
+            signer: Arc::new(signer),
             custody,
         }
     }
 
-    /// This device's identity kept in memory alone: the certificate and the key it was given.
+    /// This device's identity kept in memory alone: the certificate and the signer it was given
+    /// (a native key, or a page's non-extractable one).
     #[must_use]
-    pub fn kept(device_cert: DeviceCert, device_signing_key: ed25519_dalek::SigningKey) -> Self {
-        let custody = Arc::new(Kept::new(device_cert.clone(), device_signing_key.clone()));
-        Self::held(device_cert, device_signing_key, custody)
+    pub fn kept(device_cert: DeviceCert, signer: impl DeviceSigner + 'static) -> Self {
+        let signer: Arc<dyn DeviceSigner> = Arc::new(signer);
+        let custody = Arc::new(Kept::new(device_cert.clone(), Arc::clone(&signer)));
+        Self {
+            device_cert,
+            signer,
+            custody,
+        }
+    }
+
+    /// The device's public key.
+    #[must_use]
+    pub fn device_public_key(&self) -> [u8; 32] {
+        self.signer.device_public_key()
+    }
+
+    /// The device key itself, for a signing path that cannot wait on custody (a native carrier,
+    /// governance a founder commits).
+    ///
+    /// # Errors
+    /// This device's custody keeps its key unextractable (a page's).
+    pub fn signing_key(&self) -> Result<ed25519_dalek::SigningKey, String> {
+        self.signer
+            .device_signing_key()
+            .map(|key| ed25519_dalek::SigningKey::from_bytes(&key))
+            .ok_or_else(|| "this device's key signs only through its custody".to_owned())
+    }
+
+    fn device_verifying_key(&self) -> Result<VerifyingKey, String> {
+        VerifyingKey::from_bytes(&self.device_public_key()).map_err(|error| error.to_string())
     }
 
     /// This device's custody as its host keeps it now: what an enrolled operation signs and
@@ -176,7 +209,7 @@ impl HostIdentity {
     ) -> Result<(DeviceCert, Vec<RevocationEntry>), String> {
         let (cert, revocations) = self
             .custody
-            .read(workspace, &self.device_signing_key.verifying_key())?;
+            .read(workspace, &self.device_verifying_key()?)?;
         tilo_user_identity::verify_device_cert(&cert).map_err(|e| e.to_string())?;
         let mut checked = RevocationList::new();
         for entry in &revocations {
@@ -193,12 +226,12 @@ impl HostIdentity {
     #[must_use]
     pub fn material_for(&self, workspace: WorkspaceId) -> (DeviceCert, Vec<RevocationEntry>) {
         let read = self
-            .custody
-            .read(workspace, &self.device_signing_key.verifying_key())
+            .device_verifying_key()
+            .and_then(|device| self.custody.read(workspace, &device))
             .ok()
             .filter(|(cert, _)| {
                 tilo_user_identity::verify_device_cert(cert).is_ok()
-                    && cert.device_public_key == self.device_signing_key.verifying_key().to_bytes()
+                    && cert.device_public_key == self.device_public_key()
             });
         read.unwrap_or_else(|| (self.device_cert.clone(), Vec::new()))
     }

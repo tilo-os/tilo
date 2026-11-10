@@ -154,8 +154,11 @@ async fn once(
     if super::hosted_by(&hint, &own) && reach.own_host.is_none() {
         return Outcome::Wait;
     }
+    let Ok(key) = identity.signing_key() else {
+        return Outcome::Failed;
+    };
     let dial = |via: TransportHint, reach: Reach| {
-        let key = identity.device_signing_key.clone();
+        let key = key.clone();
         async move {
             reach
                 .session(connect, &via, key)

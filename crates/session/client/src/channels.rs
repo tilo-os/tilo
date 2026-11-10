@@ -102,7 +102,7 @@ impl Channels {
                 ChannelEncryptionConfig {
                     state: vault.channel_state(),
                     vault: vault.channel_state_key(),
-                    signer: Arc::new(engine.identity().device_signing_key.clone()),
+                    signer: Arc::clone(&engine.identity().signer),
                     role: tilo_channels::Role::Participant,
                 },
                 directory,

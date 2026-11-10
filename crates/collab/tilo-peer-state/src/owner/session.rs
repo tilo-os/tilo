@@ -276,7 +276,7 @@ impl Scope {
         }
         self.connect.owner.compact_outgoing(
             self.connect.workspace,
-            &identity.device_signing_key,
+            &identity.signing_key()?,
             open,
             seal,
             std::time::SystemTime::now(),
@@ -330,12 +330,14 @@ impl Scope {
             tracing::warn!(workspace = %self.connect.workspace, %error, "native publication retirement not committed");
         }
         if let Some(reseal) = reseal
-            && let Err(error) = self.connect.owner.renew_outgoing(
-                self.connect.workspace,
-                &identity.device_signing_key,
-                reseal,
-                std::time::SystemTime::now(),
-            )
+            && let Err(error) = identity.signing_key().and_then(|key| {
+                self.connect.owner.renew_outgoing(
+                    self.connect.workspace,
+                    &key,
+                    reseal,
+                    std::time::SystemTime::now(),
+                )
+            })
         {
             tracing::warn!(workspace = %self.connect.workspace, %error, "native sealed write renewal blocked");
         }

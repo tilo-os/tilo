@@ -700,7 +700,7 @@ impl WorkspaceMemberships for SessionMemberships {
             let identity = engine.identity();
             engine.owner().commit_workspace_membership_command(
                 request,
-                &identity.device_signing_key,
+                &identity.signing_key()?,
                 std::time::SystemTime::now(),
             )
         })

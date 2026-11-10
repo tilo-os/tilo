@@ -171,7 +171,7 @@ impl Joined {
                 .map_err(|error| error.to_string())?,
             proof: self
                 .custody
-                .device_signing_key
+                .signing_key()?
                 .sign(&runtime_identity::collaboration_join_signing_bytes(
                     workspace,
                 ))

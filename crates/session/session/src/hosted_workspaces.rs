@@ -103,7 +103,7 @@ impl HostedWorkspaces {
                 host_cert: placed.host.host_device_certificate.clone(),
                 revocations: tilo_user_identity::RevocationList::new(),
             },
-            Arc::new(identity.device_signing_key.clone()),
+            Arc::clone(&identity.signer),
             &identity.device_cert.device_label,
         );
         let host = Arc::new(Host {

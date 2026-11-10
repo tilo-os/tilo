@@ -117,7 +117,7 @@ impl Fixture {
         self.install_identity(&paths);
         tilo_user_identity::persist::write_device_key(
             &paths.device_privkey,
-            &self.joined.custody.device_signing_key,
+            &self.joined.custody.signing_key().expect("a native key"),
         )
         .unwrap();
         self.joined.install_custody_paths(paths);
@@ -219,7 +219,7 @@ async fn custody_that_cannot_be_read_keeps_the_run() {
     // The identity material is back: the same run acts again.
     tilo_user_identity::persist::write_device_key(
         &paths.device_privkey,
-        &fixture.joined.custody.device_signing_key,
+        &fixture.joined.custody.signing_key().expect("a native key"),
     )
     .unwrap();
     execution

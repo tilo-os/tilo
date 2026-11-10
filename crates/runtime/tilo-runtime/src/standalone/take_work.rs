@@ -195,7 +195,11 @@ pub(in crate::standalone) fn plane(
         relay,
     ));
     let _entered = tilo_rt::app().handle().enter();
-    Ok(ActionPlane::over(joined.device_key(), dispatcher, entering))
+    Ok(ActionPlane::over(
+        joined.device_key().map_err(std::io::Error::other)?,
+        dispatcher,
+        entering,
+    ))
 }
 
 /// The runs this member answers with: the workspace's shell, asked by the

@@ -163,7 +163,7 @@ impl Joined {
             ),
             tilo_room_host::host::HostIdentity {
                 user_public_key: joined.custody.device_cert.user_public_key,
-                device_signing_key: joined.custody.device_signing_key.clone(),
+                device_signing_key: joined.custody.signing_key().expect("a native key"),
                 device_cert: joined.custody.device_cert.clone(),
                 revocations: RevocationList::new(),
             },
@@ -320,7 +320,7 @@ fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor
     // In memory only: this probe compares what it holds, never a disk.
     custody.custody = std::sync::Arc::new(tilo_identity_host::custody::Kept::new(
         custody.device_cert.clone(),
-        custody.device_signing_key.clone(),
+        std::sync::Arc::clone(&custody.signer),
     ));
     let workspace_cert = custody.device_cert.clone();
     let default_root = SigningKey::from_bytes(&[95; 32]);
@@ -331,11 +331,11 @@ fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor
     );
     custody = HostIdentity::held(
         custody.device_cert.clone(),
-        custody.device_signing_key.clone(),
+        custody.signing_key().expect("a native key"),
         std::sync::Arc::new(
             tilo_identity_host::custody::Kept::new(
                 custody.device_cert.clone(),
-                custody.device_signing_key.clone(),
+                std::sync::Arc::clone(&custody.signer),
             )
             .in_workspace(
                 workspace_topic(workspace).unwrap(),
@@ -385,12 +385,12 @@ fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor
     sign_device_cert(&mut renewed, &default_root).unwrap();
     let kept = tilo_identity_host::custody::Kept::new(
         probe.custody.device_cert.clone(),
-        probe.custody.device_signing_key.clone(),
+        std::sync::Arc::clone(&probe.custody.signer),
     )
     .in_workspace(workspace_topic(workspace).unwrap(), renewed, Vec::new());
     probe.custody = HostIdentity::held(
         probe.custody.device_cert.clone(),
-        probe.custody.device_signing_key.clone(),
+        probe.custody.signing_key().expect("a native key"),
         std::sync::Arc::new(kept),
     );
     assert!(
@@ -1451,7 +1451,7 @@ async fn the_profile_workspace_is_placed_once_on_its_own_host_and_held() {
 async fn a_write_to_a_record_the_workspace_lacks_is_taken_only_in_a_declared_kind() {
     let workspace = WorkspaceId::new();
     let (joined, _directory) = Joined::test_hosting(workspace).await;
-    let key = joined.custody.device_signing_key.clone();
+    let key = joined.custody.signing_key().expect("a native key");
     for (app, kind) in [
         ("dev.tilo.declared", None),
         ("dev.tilo.declared", Some("dev.tilo.other")),
@@ -1495,7 +1495,7 @@ async fn writes_to_a_workspace_the_desktop_session_governs_are_refused() {
         .commit(signed_write(
             workspace,
             "dev.tilo.declared",
-            &empty.custody.device_signing_key,
+            &empty.custody.signing_key().expect("a native key"),
         ))
         .await
         .unwrap_err();

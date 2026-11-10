@@ -19,7 +19,15 @@ impl Files {
 }
 
 impl Custody for Files {
-    fn device(&self) -> Result<(DeviceCert, ed25519_dalek::SigningKey), String> {
+    fn device(
+        &self,
+    ) -> Result<
+        (
+            DeviceCert,
+            std::sync::Arc<dyn collab_types::signer::DeviceSigner>,
+        ),
+        String,
+    > {
         let key =
             tilo_user_identity::persist::load_device_key(&self.paths).map_err(|e| e.to_string())?;
         let cert = tilo_user_identity::persist::read_device_cert(&self.paths.device_cert)
@@ -27,7 +35,7 @@ impl Custody for Files {
         if cert.device_public_key != key.verifying_key().to_bytes() {
             return Err("the collaboration device key and its certificate differ".into());
         }
-        Ok((cert, key))
+        Ok((cert, std::sync::Arc::new(key)))
     }
 
     fn read(

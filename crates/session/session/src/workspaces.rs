@@ -779,7 +779,10 @@ impl Personal {
     /// This device's whole list, signed for the person's other devices.
     pub(crate) fn snapshot(&mut self) -> Option<DirectoryUpdate> {
         self.directory
-            .signed_snapshot(&self.identity.device_signing_key, tilo_clock::unix_now_ns())
+            .signed_snapshot(
+                &self.identity.signing_key().ok()?,
+                tilo_clock::unix_now_ns(),
+            )
             .ok()
     }
 
@@ -1748,8 +1751,8 @@ mod tests {
             tilo_peer_state::join::TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1,
             opaque,
             identity.device_cert.clone(),
-            identity.device_signing_key.verifying_key().to_bytes(),
-            &identity.device_signing_key,
+            identity.device_public_key(),
+            &identity.signing_key().expect("a native key"),
         )
         .expect("a host signs its own address")
     }

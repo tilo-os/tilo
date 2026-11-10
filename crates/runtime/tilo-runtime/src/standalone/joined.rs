@@ -179,8 +179,8 @@ impl Joined {
     }
 
     /// This device's signing key, as its plane signs every request it makes.
-    pub(in crate::standalone) fn device_key(&self) -> ed25519_dalek::SigningKey {
-        self.custody.device_signing_key.clone()
+    pub(in crate::standalone) fn device_key(&self) -> Result<ed25519_dalek::SigningKey, String> {
+        self.custody.signing_key()
     }
 
     /// The device certificate this profile's custody holds.
@@ -212,7 +212,7 @@ impl Joined {
         let plane = {
             let _entered = runtime.enter();
             tilo_peer_state::actions::ActionPlane::over(
-                self.custody.device_signing_key.clone(),
+                self.custody.signing_key().ok()?,
                 Arc::new(tilo_peer_state::actions::NoActions),
                 Arc::new(self.owner.clone()),
             )
@@ -299,7 +299,7 @@ impl Joined {
             .material_for(workspace_topic(workspace).map_err(io::Error::other)?);
         tilo_fs::identity::PeerCredentials::certified(
             cert,
-            self.custody.device_signing_key.clone(),
+            self.custody.signing_key().map_err(io::Error::other)?,
             tilo_clock::unix_now_ns(),
         )
         .map_err(io::Error::other)
@@ -585,7 +585,7 @@ impl Joined {
     /// this profile's own and the host it is linked to, which its link
     /// already names.
     fn membership(&self, workspace: WorkspaceId, device: [u8; 32]) {
-        if device == self.custody.device_signing_key.verifying_key().to_bytes() {
+        if device == self.custody.device_public_key() {
             return;
         }
         if let Ok(mut sessions) = self.sessions.lock()

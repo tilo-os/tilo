@@ -3018,9 +3018,10 @@ impl ActorState {
     /// Whether a host-relayed message was authored by this device: the host
     /// names authors by the device key it authenticated them with.
     fn is_own_device(&self, author: &EndpointId) -> bool {
-        self.host_identity.as_ref().is_some_and(|identity| {
-            *author.as_bytes() == identity.device_signing_key.verifying_key().to_bytes()
-        }) || *author == self.endpoint.id()
+        self.host_identity
+            .as_ref()
+            .is_some_and(|identity| *author.as_bytes() == identity.device_public_key())
+            || *author == self.endpoint.id()
     }
 
     /// Keep `msg` for the workspace's host when the host should retain it but no
@@ -3801,6 +3802,7 @@ impl HostRouteScheduler<'_> {
         let host = addr.id;
         if let Some(expectation) = expectation.clone()
             && !content_discovery_tasks.contains_key(&(ws, host))
+            && let Ok(discovery_key) = identity.signing_key()
         {
             let discovery_endpoint = endpoint.clone();
             let discovery_addr = addr.clone();
@@ -3827,7 +3829,7 @@ impl HostRouteScheduler<'_> {
                             expectation.user_public_key,
                             expectation.device_public_key,
                             discovery_cert.clone(),
-                            discovery_identity.device_signing_key.clone(),
+                            discovery_key.clone(),
                             discovery_revocations.clone(),
                         ),
                     )
@@ -3859,6 +3861,10 @@ impl HostRouteScheduler<'_> {
         }
         let endpoint = endpoint.clone();
         let identity = identity.clone();
+        let Ok(key) = identity.signing_key() else {
+            connecting.remove(&(ws, host));
+            return;
+        };
         let (device_cert, revocation_entries) = identity.material_for(ws);
         // A member's device reaches a workspace host over the v2 stream; a
         // device that can act as a host itself uses the v1 stream.
@@ -3882,7 +3888,7 @@ impl HostRouteScheduler<'_> {
                         endpoint,
                         addr.clone(),
                         device_cert,
-                        identity.device_signing_key.clone(),
+                        key,
                         revocations,
                     ),
                 )
@@ -3890,12 +3896,8 @@ impl HostRouteScheduler<'_> {
                 .map_err(|_| "workspace host connection timed out".to_string())
                 .and_then(|result| result.map_err(|error| relay_error(&host, &error)))
                 .and_then(|client| {
-                    RelayCoeditSession::join(
-                        client,
-                        ws,
-                        identity.device_signing_key.verifying_key().to_bytes(),
-                    )
-                    .map_err(|error| error.to_string())
+                    RelayCoeditSession::join(client, ws, identity.device_public_key())
+                        .map_err(|error| error.to_string())
                 });
                 let _ = tx
                     .send(InternalEvent::HostConnected {
@@ -3918,7 +3920,7 @@ impl HostRouteScheduler<'_> {
                         expectation.user_public_key,
                         expectation.device_public_key,
                         device_cert,
-                        identity.device_signing_key.clone(),
+                        key,
                         revocations,
                     )
                     .await
@@ -3929,7 +3931,7 @@ impl HostRouteScheduler<'_> {
                         expectation.user_public_key,
                         expectation.device_public_key,
                         device_cert,
-                        identity.device_signing_key.clone(),
+                        key,
                         revocations,
                     )
                     .await
@@ -3939,12 +3941,8 @@ impl HostRouteScheduler<'_> {
             .map_err(|_| "workspace host connection timed out".to_string())
             .and_then(|result| result.map_err(|error| relay_error(&host, &error)))
             .and_then(|client| {
-                RelayCoeditSession::join(
-                    client,
-                    ws,
-                    identity.device_signing_key.verifying_key().to_bytes(),
-                )
-                .map_err(|error| error.to_string())
+                RelayCoeditSession::join(client, ws, identity.device_public_key())
+                    .map_err(|error| error.to_string())
             });
             let _ = tx
                 .send(InternalEvent::HostConnected {

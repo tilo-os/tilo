@@ -47,10 +47,7 @@ impl Personal {
         let root = identity.device_cert.user_public_key;
         let store = personal::open(state, root, identity.device_cert.clone(), SystemTime::now())?;
         Ok(Self {
-            sync: PersonalSync::over(
-                PeerPersonal::new(store),
-                identity.device_signing_key.clone(),
-            ),
+            sync: PersonalSync::over(PeerPersonal::new(store), identity.signing_key()?),
             root,
             state: state.to_owned(),
         })

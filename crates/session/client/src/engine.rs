@@ -279,7 +279,7 @@ impl Engine {
         {
             Ok(store) => Some(tilo_peer_state::direct::Owning::new(
                 owner,
-                engine.identity.device_signing_key.clone(),
+                engine.identity.signing_key()?,
                 Arc::new(store),
             )),
             Err(error) => {
@@ -583,7 +583,7 @@ impl Engine {
         sealed: Option<&channel_crypto::ChannelContentKeys>,
     ) -> Result<(), String> {
         use tilo_broker_core::custody::OwnerCustody as _;
-        let key = self.identity.device_signing_key.clone();
+        let key = self.identity.signing_key()?;
         let now = SystemTime::now();
         let artifact = collab_types::document_artifact_id(app, &workspace.to_string(), record);
         self.owner.commit_document_with_current(
@@ -865,7 +865,7 @@ impl Engine {
                 request_id: cancellation_id(invite_id),
                 invite_id,
             },
-            &identity.device_signing_key,
+            &identity.signing_key()?,
             now,
         )
     }
@@ -877,13 +877,12 @@ impl Engine {
         let Some(workspace) = WorkspaceId::parse(workspace) else {
             return false;
         };
-        let identity = self.identity();
+        let Ok(key) = self.identity().signing_key() else {
+            return false;
+        };
         self.owner
             .with_current(workspace, |view| {
-                Ok(view
-                    .peer()
-                    .governance()
-                    .may_invite(&identity.device_signing_key, SystemTime::now()))
+                Ok(view.peer().governance().may_invite(&key, SystemTime::now()))
             })
             .unwrap_or(false)
     }
@@ -946,7 +945,9 @@ impl Engine {
         let Some(workspace) = WorkspaceId::parse(workspace) else {
             return Vec::new();
         };
-        let identity = self.identity();
+        let Ok(key) = self.identity().signing_key() else {
+            return Vec::new();
+        };
         self.owner
             .with_current(workspace, |view| {
                 let now = SystemTime::now();
@@ -958,11 +959,9 @@ impl Engine {
                 ]
                 .into_iter()
                 .filter(|role| {
-                    view.peer().governance().may_invite_role(
-                        &identity.device_signing_key,
-                        (*role).into(),
-                        now,
-                    )
+                    view.peer()
+                        .governance()
+                        .may_invite_role(&key, (*role).into(), now)
                 })
                 .collect())
             })
@@ -1014,7 +1013,7 @@ impl Engine {
                 inviter_name: None,
             },
             vec![hint],
-            &identity.device_signing_key,
+            &identity.signing_key()?,
             now,
         )?;
         Ok(Issued {
@@ -1225,7 +1224,7 @@ impl Engine {
             host_device_certificate: identity.device_cert.clone(),
             packet_relay_url,
         }
-        .transport_hint(&identity.device_signing_key)
+        .transport_hint(&identity.signing_key()?)
         .map_err(|error| error.to_string())
     }
 
@@ -1266,14 +1265,16 @@ impl Engine {
             },
             None => None,
         };
-        match self.owner.create_workspace(
-            workspace,
-            name,
-            &identity.device_cert,
-            &identity.device_signing_key,
-            host_hint,
-            SystemTime::now(),
-        ) {
+        match identity.signing_key().and_then(|key| {
+            self.owner.create_workspace(
+                workspace,
+                name,
+                &identity.device_cert,
+                &key,
+                host_hint,
+                SystemTime::now(),
+            )
+        }) {
             Ok(_) => self.bind(slot, workspace),
             Err(error) => {
                 tracing::warn!(%error, %workspace, "the workspace was not founded here");
@@ -1366,7 +1367,7 @@ impl tilo_broker_core::custody::OwnerCustody for Engine {
         workspace_id: WorkspaceId,
     ) -> Result<ed25519_dalek::SigningKey, String> {
         self.check_custody(owner, workspace_id)?;
-        Ok(self.identity.device_signing_key.clone())
+        self.identity.signing_key()
     }
 
     /// Send the owner's outgoing custody of `workspace` to its peers soon: what was just committed

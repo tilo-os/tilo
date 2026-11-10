@@ -1678,7 +1678,7 @@ fn restored_fabric(
         runtime,
         outgoing,
         identity.device_cert.user_public_key,
-        identity.device_signing_key.clone(),
+        identity.signing_key().ok()?,
         continuity,
     ))
 }
@@ -1698,7 +1698,7 @@ fn endpoint_for(
             .map_err(|error| format!("no loopback address: {error}"))?;
         return Ok((builder, iroh::RelayMap::empty()));
     };
-    let key = iroh::SecretKey::from_bytes(&identity.device_signing_key.to_bytes());
+    let key = iroh::SecretKey::from_bytes(&identity.signing_key()?.to_bytes());
     // What `presets::N0` builds, with its publisher behind number 0's directory gate and its public
     // relays held back ([`tilo_endpoint_reachability`]): binding with an empty relay map keeps net
     // report, address discovery and port mapping off the network until a workspace this session

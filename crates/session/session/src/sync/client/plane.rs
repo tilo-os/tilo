@@ -464,8 +464,9 @@ async fn listening(
     // devices, when it offers one.
     served.extend(protocols);
     let _ = bound.endpoint.set(endpoint.clone());
-    if let Some(identity) = identity {
-        let device = DeviceActions::start(identity, endpoint.clone(), engine.cloned());
+    if let Some(device) = identity
+        .and_then(|identity| DeviceActions::start(identity, endpoint.clone(), engine.cloned()))
+    {
         served.push((
             tilo_peer_state::actions::ACTIONS_ALPN.to_vec(),
             Box::<dyn iroh::protocol::DynProtocolHandler>::from(device.plane()),
@@ -477,19 +478,21 @@ async fn listening(
     if let (Some(identity), Some(engine)) = (identity, engine) {
         // A link this device hands out names this endpoint, so the joins those links are redeemed
         // by are answered here: this device's own owner admits whoever a link it signed is for.
-        served.push((
-            tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN.to_vec(),
-            Box::<dyn iroh::protocol::DynProtocolHandler>::from(
-                tilo_peer_state::join_transport::WorkspaceJoinProtocol::new(
-                    tilo_peer_state::join_answer::JoinAnswer(
-                        tilo_peer_state::owner::OwnerJoinWorkspaces::new(
-                            engine.owner().clone(),
-                            identity.device_signing_key.clone(),
+        if let Ok(key) = identity.signing_key() {
+            served.push((
+                tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN.to_vec(),
+                Box::<dyn iroh::protocol::DynProtocolHandler>::from(
+                    tilo_peer_state::join_transport::WorkspaceJoinProtocol::new(
+                        tilo_peer_state::join_answer::JoinAnswer(
+                            tilo_peer_state::owner::OwnerJoinWorkspaces::new(
+                                engine.owner().clone(),
+                                key,
+                            ),
                         ),
                     ),
                 ),
-            ),
-        ));
+            ));
+        }
         // The workspaces this device holds, for their own devices to sync with and catch up from:
         // the same link every workspace host answers on.
         served.extend(engine.direct_protocols());

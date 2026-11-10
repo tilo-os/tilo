@@ -334,11 +334,7 @@ impl ActorState {
         let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(cluster_id) else {
             return;
         };
-        members.carry(
-            workspace,
-            identity.device_signing_key.verifying_key().to_bytes(),
-            msg.clone(),
-        );
+        members.carry(workspace, identity.device_public_key(), msg.clone());
     }
 
     /// The workspace on topic `ws`'s link has its host's retained history in

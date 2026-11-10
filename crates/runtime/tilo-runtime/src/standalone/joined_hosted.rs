@@ -79,7 +79,7 @@ impl Joined {
     }
 
     fn own_device(&self) -> [u8; 32] {
-        self.custody.device_signing_key.verifying_key().to_bytes()
+        self.custody.device_public_key()
     }
 
     /// Place `workspace`, the profile's workspace called `name`, on this

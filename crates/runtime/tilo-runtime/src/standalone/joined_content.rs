@@ -161,7 +161,7 @@ impl Joined {
     }
 
     fn own_handle(&self) -> ContentPeer {
-        peer_handle(&self.custody.device_signing_key.verifying_key().to_bytes())
+        peer_handle(&self.custody.device_public_key())
     }
 
     /// A member of `workspace` asked it for content. Returns whether `message`

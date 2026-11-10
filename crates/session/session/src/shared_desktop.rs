@@ -403,7 +403,9 @@ impl SharedDesktops {
         let founding = heads.is_empty();
         let artifact =
             collab_types::document_artifact_id(DESKTOP_APP, &room.to_string(), DESKTOP_RECORD);
-        let key = engine.identity().device_signing_key.clone();
+        let Ok(key) = engine.identity().signing_key() else {
+            return false;
+        };
         let committed = engine.owner().commit_document_with_current(
             room,
             |view| {

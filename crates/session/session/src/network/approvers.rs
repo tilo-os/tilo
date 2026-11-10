@@ -72,12 +72,15 @@ impl Approvers for Answering {
         let Some(questions) = self.questions.clone() else {
             return;
         };
+        let Ok(key) = identity.signing_key() else {
+            return;
+        };
         let id = host.id;
         let session = tokio::spawn(answer_host(
             endpoint.clone(),
             host,
             identity.device_cert.clone(),
-            identity.device_signing_key.clone(),
+            key,
             questions,
         ));
         self.sessions.insert(id, session);

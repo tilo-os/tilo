@@ -173,7 +173,7 @@ impl<'a> Membership<'a> {
             .owner()
             .commit_workspace_membership_command(
                 request,
-                &identity.device_signing_key,
+                &identity.signing_key()?,
                 tilo_clock::SystemTime::now(),
             )
             .map(|_receipt| ())

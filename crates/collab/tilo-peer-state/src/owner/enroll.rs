@@ -168,7 +168,7 @@ pub async fn prepare_and_complete(
             return Err("native host challenge changed original identity or scope".into());
         }
         let complete = JoinCompleteRequest {
-            proof: join::sign_join_proof(challenge, &identity.device_signing_key)?,
+            proof: join::sign_join_proof(challenge, &identity.signing_key()?)?,
         };
         let intent = VerifiedNativeEnrollmentIntent::from_proof(
             join,
@@ -342,7 +342,7 @@ async fn prove_membership(
         JoinTransportResponse::Error { message, .. } => return Err(refused(&message)),
         _ => return Err("the host answered no membership challenge".into()),
     };
-    let proof = join::sign_membership_proof(challenge, &identity.device_signing_key)?;
+    let proof = join::sign_membership_proof(challenge, &identity.signing_key()?)?;
     match client
         .request(
             host.clone(),
