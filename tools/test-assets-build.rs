@@ -1,4 +1,5 @@
-// Shared build-time preparation for embedded image fixtures. Runtime stays offline.
+// Shared build-time preparation for embedded image fixtures. The pinned bytes are in the
+// tree (tools/test-assets/seed), so neither the build nor the runtime reaches the network.
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -10,37 +11,25 @@ fn prepare_fixture_assets(
     let package =
         PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").ok_or("missing package root")?);
     let tool = package.join(repository).join("tools/test-assets.py");
+    let seed = package.join(repository).join("tools/test-assets/seed");
     let manifest = package.join(manifest);
     println!("cargo::rerun-if-changed={}", tool.display());
     println!("cargo::rerun-if-changed={}", manifest.display());
-    for key in [
-        "PYTHON",
-        "TILO_TEST_ASSET_CACHE",
-        "TILO_TEST_ASSET_SEED",
-        "TILO_TEST_ASSETS_OFFLINE",
-        "CARGO_NET_OFFLINE",
-    ] {
-        println!("cargo::rerun-if-env-changed={key}");
-    }
+    println!("cargo::rerun-if-env-changed=PYTHON");
     let python = std::env::var_os("PYTHON")
         .unwrap_or_else(|| if cfg!(windows) { "python" } else { "python3" }.into());
     let directory = PathBuf::from(std::env::var_os("OUT_DIR").ok_or("missing build output")?);
     let mut command = Command::new(python);
-    command.arg(tool).arg(manifest);
-    // TILO_TEST_ASSET_SEED, inherited from the environment, names read-only caches the
-    // tool takes verified assets from before it fetches (tools/test-assets.py).
-    // A build script writes only under OUT_DIR: the source tree may be read-only, as it
-    // is in the check containers. TILO_TEST_ASSET_CACHE still names a shared cache.
-    if std::env::var_os("TILO_TEST_ASSET_CACHE").is_none() {
-        command
-            .arg("--cache-root")
-            .arg(directory.join("test-assets"));
-    }
+    // Only the tree's seed, read and verified, never written: a manifest asset the seed
+    // lacks fails the build by name instead of being fetched.
+    command
+        .arg(tool)
+        .arg(manifest)
+        .arg("--offline")
+        .arg("--cache-root")
+        .arg(seed);
     if let Some(filename) = filename {
         command.args(["--file", filename]);
-    }
-    if std::env::var("CARGO_NET_OFFLINE").is_ok_and(|value| value == "true") {
-        command.arg("--offline");
     }
     let output = command.output()?;
     if !output.status.success() {

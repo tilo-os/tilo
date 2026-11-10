@@ -4,8 +4,13 @@
 The index mode inspects the bytes being committed, including sparse checkouts.
 Exceptions preserve required assets and checksum-pinned upstream bytes; changing
 an exception requires an explicit policy edit. File extensions grant no exemption.
+
+A content-addressed store holds pinned bytes a build reads instead of fetching
+them: a blob at `<store>/<sha256>/<file>` is admitted exactly when its SHA-256 is
+the directory it sits in, so changed bytes need a new path and a manifest pin.
 """
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -16,6 +21,19 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 EXCEPTIONS = "tools/policy/source_content_exceptions.json"
 NON_TEXT_BYTES = re.compile(rb"[\x00-\x08\x0e-\x1f]")
+# Fixtures the build scripts embed (tools/test-assets.py) and the NTFS-3G source the
+# NTFS helper builds (crates/session/tilo-ntfs-helper/source_artifact.py).
+CONTENT_ADDRESSED_STORES = ("tools/test-assets/seed/", "crates/session/tilo-ntfs-helper/vendor/")
+
+
+def content_addressed(path, data):
+    """Whether `path` is `<store>/<sha256>/<file>` and `data` hashes to that SHA-256."""
+    for store in CONTENT_ADDRESSED_STORES:
+        if path.startswith(store):
+            parts = path[len(store):].split("/")
+            return (len(parts) == 2 and re.fullmatch(r"[0-9a-f]{64}", parts[0]) is not None
+                    and hashlib.sha256(data).hexdigest() == parts[0])
+    return False
 
 
 def git(root, *args):
@@ -120,7 +138,7 @@ def audit(root, staged=False):
                 data = process.stdout.read(size)
                 if len(data) != size or process.stdout.read(1) != b"\n":
                     raise ValueError("incomplete blob: " + path)
-                issues = content_issues(data)
+                issues = [] if content_addressed(path, data) else content_issues(data)
                 changed_exception = staged and issues and oid not in previous.get(path, set())
                 if issues and (allowed.get(path) != oid or changed_exception):
                     failures.append(path + ": " + ", ".join(issues) + ("; new/modified non-text or non-LF blobs are forbidden" if changed_exception else ""))

@@ -32,6 +32,7 @@ COPY os/usr/share/tilo/system-interfaces.toml /build/os/usr/share/tilo/system-in
 COPY tools/protocols/airdrop_sender.py /build/tools/protocols/airdrop_sender.py
 COPY tools/test-assets-build.rs /build/tools/test-assets-build.rs
 COPY tools/test-assets.py /build/tools/test-assets.py
+COPY tools/test-assets/seed /build/tools/test-assets/seed
 COPY tools/font-catalog.py /build/tools/font-catalog.py
 COPY tools/apps/language_packs.py tools/apps/stage_sdk_services.py /build/tools/apps/
 COPY os/legacy-guest-snapshot.env /build/os/legacy-guest-snapshot.env

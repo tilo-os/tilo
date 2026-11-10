@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import re
 import tempfile
 import unittest
 
@@ -101,34 +102,27 @@ class TestAssets(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "filename"):
             assets.resolve(self.path, self.cache, opener=self.no_network)
 
-    def seed_with(self, payload):
-        seed = self.root / "seed"
-        entry = seed / self.row["sha256"] / self.row["file"]
-        entry.parent.mkdir(parents=True)
-        entry.write_bytes(payload)
-        return seed, entry
+    def test_exact_names_cache_entries_no_manifest_declares(self):
+        assets.resolve(self.path, self.cache, opener=self.fetch)
+        self.assertEqual(assets.undeclared(self.cache, [self.path]), [])
+        stale = self.cache / ("0" * 64) / "stale.png"
+        stale.parent.mkdir()
+        stale.write_bytes(b"stale")
+        self.assertEqual(assets.undeclared(self.cache, [self.path]), [Path("0" * 64) / "stale.png"])
 
-    def test_a_seeded_asset_never_reaches_the_network_or_the_writable_cache(self):
-        seed, entry = self.seed_with(self.payload)
-        resolved = assets.resolve(self.path, self.cache, opener=self.no_network, seeds=[seed])
-        self.assertEqual(resolved, [entry.resolve()])
-        self.assertFalse(self.cache.exists())
-        self.assertEqual(assets.seeds_from(f"{self.root / 'missing'}{assets.os.pathsep}{seed}"),
-                         [self.root / "missing", seed])
-
-    def test_a_corrupt_seed_entry_fails_instead_of_being_fetched_around(self):
-        seed, _ = self.seed_with(self.payload[:-2] + b"x\n")
-        with self.assertRaisesRegex(ValueError, "SHA-256"):
-            assets.resolve(self.path, self.cache, opener=self.no_network, seeds=[seed])
-
-    def test_an_asset_no_seed_holds_is_fetched_into_the_cache_not_the_seed(self):
-        seed = self.root / "seed"
-        seed.mkdir()
-        resolved = assets.resolve(self.path, self.cache, opener=self.fetch, seeds=[seed])
-        self.assertEqual(resolved[0].read_bytes(), self.payload)
-        self.assertTrue(resolved[0].is_relative_to(self.cache.resolve()))
-        self.assertEqual(list(seed.iterdir()), [])
-
+    def test_the_tree_seed_holds_every_asset_a_build_script_embeds(self):
+        """Build scripts read only the seed, offline: an asset it lacks fails their build."""
+        seed = ROOT / "tools/test-assets/seed"
+        manifests = sorted({
+            (script.parent / name).resolve()
+            for script in [*ROOT.glob("apps/*/build.rs"), *ROOT.glob("crates/*/*/build.rs")]
+            if "prepare_fixture_assets(" in script.read_text(encoding="utf-8")
+            for name in re.findall(r'"([^"]*artifacts\.json)"', script.read_text(encoding="utf-8"))
+        })
+        self.assertTrue(manifests)
+        for manifest in manifests:
+            assets.resolve(manifest, seed, True, opener=self.no_network)
+        self.assertEqual(assets.undeclared(seed, manifests), [])
 
     def test_all_six_real_cases_remain_pinned(self):
         rows = assets.manifest(ROOT / "crates/sdk/ui-core/tests/fixtures/typography/artifacts.json")

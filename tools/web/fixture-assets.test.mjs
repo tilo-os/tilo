@@ -1,20 +1,24 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {mkdtempSync, mkdirSync, writeFileSync, rmSync} from 'node:fs';
+import {copyFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import test from 'node:test';
 import {fixtureBytes} from './fixture-assets.mjs';
 
-const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const tree = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
-test('browser fixtures use verified offline bytes and reject missing, corrupt and unpinned inputs', () => {
+test('browser fixtures use the verified in-tree seed and reject missing, corrupt and unpinned inputs', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'tilo-browser-fixtures-'));
-  const previous = Object.fromEntries(['TILO_TEST_ASSET_CACHE', 'TILO_TEST_ASSETS_OFFLINE', 'CARGO_NET_OFFLINE'].map(key => [key, process.env[key]]));
+  // Even an environment that asks for a download leaves the seed the only source.
+  const previous = Object.fromEntries(['TILO_TEST_ASSET_CACHE', 'TILO_TEST_ASSETS_OFFLINE'].map(key => [key, process.env[key]]));
   try {
-    const cache = join(scratch, 'cache');
-    Object.assign(process.env, {TILO_TEST_ASSET_CACHE: cache, TILO_TEST_ASSETS_OFFLINE: '1', CARGO_NET_OFFLINE: 'true'});
+    const repository = join(scratch, 'repository');
+    mkdirSync(join(repository, 'tools'), {recursive: true});
+    copyFileSync(join(tree, 'tools/test-assets.py'), join(repository, 'tools/test-assets.py'));
+    const cache = join(repository, 'tools/test-assets/seed');
+    Object.assign(process.env, {TILO_TEST_ASSET_CACHE: join(scratch, 'elsewhere'), TILO_TEST_ASSETS_OFFLINE: '0'});
     const payload = Buffer.from('frozen fixture bytes\n');
     const sha256 = createHash('sha256').update(payload).digest('hex');
     const file = 'case.pdf';

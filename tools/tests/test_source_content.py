@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import io
 import json
@@ -48,6 +49,7 @@ class SourceContentTests(unittest.TestCase):
         self.git("add", "--", contract.EXCEPTIONS)
 
     def stage(self, name, data):
+        (self.root / name).parent.mkdir(parents=True, exist_ok=True)
         (self.root / name).write_bytes(data)
         self.git("add", "--", name)
 
@@ -109,6 +111,23 @@ class SourceContentTests(unittest.TestCase):
         self.assertEqual(contract.audit(self.root, staged=True)[0], [])
         self.stage("fixture", b"\x00replacement")
         self.assertEqual(contract.audit(self.root, staged=True)[0], ["fixture: non-text content; new/modified non-text or non-LF blobs are forbidden"])
+
+    def test_content_addressed_store_admits_bytes_only_under_their_own_sha256(self):
+        data = b"\x00pinned fixture"
+        digest = hashlib.sha256(data).hexdigest()
+        other = hashlib.sha256(b"other").hexdigest()
+        self.stage(f"tools/test-assets/seed/{digest}/case.png", data)
+        self.stage(f"crates/session/tilo-ntfs-helper/vendor/{digest}/source.tar.gz", data)
+        self.stage(f"tools/test-assets/seed/{other}/case.png", data)
+        self.stage(f"tools/test-assets/seed/{digest}/nested/case.png", data)
+        self.stage(f"elsewhere/{digest}/case.png", data)
+        failures, _ = contract.audit(self.root, staged=True)
+        forbidden = ": non-text content; new/modified non-text or non-LF blobs are forbidden"
+        self.assertEqual(sorted(failures), sorted(path + forbidden for path in [
+            f"tools/test-assets/seed/{other}/case.png",
+            f"tools/test-assets/seed/{digest}/nested/case.png",
+            f"elsewhere/{digest}/case.png",
+        ]))
 
     def test_merge_preserves_parent_asset_but_rejects_new_binary_bytes(self):
         def commit(message):

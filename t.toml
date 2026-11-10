@@ -657,8 +657,6 @@ heavy = true
 [[check]]
 name = "sdk-web-size"
 run = "cargo build --locked -p tilo-app-cli --bin tilo-app\ncargo test --locked --manifest-path tools/web/wasm-split/Cargo.toml\napp=$CARGO_TARGET_DIR/debug/tilo-app\n# model-providers-web builds the same bundle path in the dev profile, possibly\n# at the same time in the same build directory, so the release bundle has its own.\nexport CARGO_TARGET_DIR=$CARGO_TARGET_DIR/release-web\nbundle=$CARGO_TARGET_DIR/tilo-app/web/calculator/bundle\n\"$app\" build --target web --bundle desktop --release apps/calculator\npython3 tools/web/wasm_size_ratchet.py measure desktop \"$bundle\"\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nnode crates/browser/tilo-browser-compute/scripts/qualify-packaged.mjs \"$bundle\" \"$TMPDIR/compute-qualification\" --no-sandbox\n"
-needs = ["test-assets"]
-env = { TILO_TEST_ASSET_SEED = "/target/test-assets" }
 git = true
 on = ["stable", "dispatch", "idle"]
 heavy = true
@@ -666,8 +664,6 @@ heavy = true
 [[check]]
 name = "model-providers-web"
 run = "cargo build --locked -p tilo-app-cli --bin tilo-app\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/provider-chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/provider-chrome.txt\" | tail -n 1)\n\"$CARGO_TARGET_DIR/debug/tilo-app\" build --target web --bundle app apps/model-providers\nnode apps/model-providers/web/run.mjs \"$CARGO_TARGET_DIR/tilo-app/web/model-providers/bundle\"\n"
-needs = ["test-assets"]
-env = { TILO_TEST_ASSET_SEED = "/target/test-assets" }
 git = true
 on = ["stable", "dispatch", "idle"]
 heavy = true
@@ -1759,8 +1755,8 @@ on = ["dispatch"]
 [[check]]
 name = "vm-cohort-x86_64"
 run = "bash tools/ci/vm-cohort.sh produce"
-needs = ["tilo-vm-binary-x86_64", "test-assets", "engine-dev-x86_64"]
-env = { CARGO_BUILD_JOBS = "16", TILO_TEST_ASSET_SEED = "/target/test-assets", TILO_RUNTIME_BUNDLE_DIR = "/target/engine-dev/x86_64/bundles", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+needs = ["tilo-vm-binary-x86_64", "engine-dev-x86_64"]
+env = { CARGO_BUILD_JOBS = "16", TILO_RUNTIME_BUNDLE_DIR = "/target/engine-dev/x86_64/bundles", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
 isolation = "nested"
 outputs = ["/target/vm-cohort/**"]
@@ -1850,10 +1846,7 @@ id_token = ["registry.tilo.so"]
 [[check]]
 name = "web-desktop-wasm"
 run = "bash tools/ci/publish/web-desktop-bundle.sh wasm /target/publish/web-desktop/wasm"
-# The apps it builds embed image fixtures whose build script fetches them: a
-# node has no network, so the seeded cache is the only source (`test-assets`).
-needs = ["test-assets"]
-env = { CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets" }
+env = { CARGO_BUILD_JOBS = "8" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/web-desktop/wasm/**"]
 default = false
@@ -2230,9 +2223,7 @@ export CARGO_TARGET_DIR=/target/apps-build/{arch}
 export TILO_RELEASE_APPS=$(python3 -I tools/ci/python.py tools/apps/app_release.py --collection default | python3 -c 'import json, sys; print(" ".join(json.load(sys.stdin)["apps"]))')
 export TILO_APP_COMPILE_ONLY=1
 dist/apps/package-apps.sh'''
-needs = ["test-assets"]
 requires = ["arch={arch}"]
-env = { TILO_TEST_ASSET_SEED = "/target/test-assets" }
 outputs = ["/target/apps-build/{arch}/**"]
 on = ["stable", "dispatch"]
 timeout_secs = 10800
@@ -2377,8 +2368,8 @@ default = false
 [[check]]
 name = "site-door-acceptance"
 run = "export TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nbash tools/test-env.sh python3 -I dist/dev/site-door-acceptance.py --no-build --bundle /target/publish/web-desktop/bundle --out /target/site-door-acceptance\n"
-needs = ["nested-session", "test-assets", "web-desktop-bundle"]
-env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
+needs = ["nested-session", "web-desktop-bundle"]
+env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
 requires = ["arch=x86_64"]
 isolation = "vm"
 outputs = ["/target/site-door-acceptance/**"]
@@ -3692,9 +3683,9 @@ arch = ["x86_64", "aarch64"]
 [[check]]
 name = "os-release-recompile-{arch}"
 run = "env -u RUSTC_WRAPPER -u RUSTC_WORKSPACE_WRAPPER -u T_COMPILE_CACHE -u T_COMPILE_CACHE_TOKEN CARGO_TARGET_DIR=$TMPDIR/recompile TILO_COMPILER_CACHE=off bash os/image/compile.sh /target/os/{arch}/recompiled-release"
-needs = ["os-assets", "test-assets"]
+needs = ["os-assets"]
 image = { check = "os-builder-{arch}", path = "/target/os/{arch}/builder/builder-base/oci" }
-env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CARGO_BUILD_JOBS = "8", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 outputs = ["/target/os/{arch}/recompiled-release/**"]
 timeout_secs = 10800
 default = false
@@ -3909,11 +3900,11 @@ run = "TILO_GITHUB_ASSET_CACHE=/target/signing-tools TILO_ASSET_STORE= bash os/d
 outputs = ["/target/signing-tools/**"]
 default = false
 
+# The fixtures build scripts embed are in the tree (tools/test-assets/seed), read offline:
+# every manifest asset is there, verified, and nothing else is.
 [[check]]
 name = "test-assets"
-run = "python3 tools/test-assets.py --cache-root /target/test-assets apps/ebook/assets/artifacts.json apps/pdf-viewer/tests/fixtures/artifacts.json apps/settings/shots/artifacts.json apps/store/fixtures/artwork/artifacts.json apps/video-editor/sample-media/artifacts.json apps/video-player/tests/fixtures/artifacts.json crates/doc/fixtures/artifacts.json crates/platform/tilo-pdf/tests/fixtures/artifacts.json"
-outputs = ["/target/test-assets/**"]
-default = false
+run = "python3 tools/test-assets.py --offline --exact --cache-root tools/test-assets/seed apps/ebook/assets/artifacts.json apps/pdf-viewer/tests/fixtures/artifacts.json apps/settings/shots/artifacts.json apps/store/fixtures/artwork/artifacts.json apps/video-editor/sample-media/artifacts.json apps/video-player/tests/fixtures/artifacts.json crates/doc/fixtures/artifacts.json crates/platform/tilo-pdf/tests/fixtures/artifacts.json"
 
 [[check]]
 name = "os-assembler-x86_64"
@@ -3967,9 +3958,8 @@ default = false
 [[check]]
 name = "os-compile-x86_64"
 run = "bash os/image/compile.sh /target/os/x86_64/compiled"
-needs = ["test-assets"]
 image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
-env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "apart", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "apart", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/os/x86_64/compiled/**"]
 timeout_secs = 10800
@@ -3978,9 +3968,9 @@ default = false
 [[check]]
 name = "os-compile-release-x86_64"
 run = "bash os/image/compile.sh /target/os/x86_64/compiled-release"
-needs = ["test-assets", "os-chromium-x86_64"]
+needs = ["os-chromium-x86_64"]
 image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
-env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/x86_64/chromium", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/x86_64/chromium", TILO_CARGO_BUILD_JOBS = "8", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/os/x86_64/compiled-release/**"]
 timeout_secs = 10800
@@ -3989,9 +3979,8 @@ default = false
 [[check]]
 name = "os-compile-dev-x86_64"
 run = "bash os/image/compile.sh --dev /target/os/x86_64/compiled-dev"
-needs = ["test-assets"]
 image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
-env = { TILO_DEV_RUST_LTO = "off", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { TILO_DEV_RUST_LTO = "off", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/os/x86_64/compiled-dev/**"]
 timeout_secs = 10800
@@ -4158,9 +4147,8 @@ default = false
 [[check]]
 name = "os-compile-aarch64"
 run = "bash os/image/compile.sh /target/os/aarch64/compiled"
-needs = ["test-assets"]
 image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
-env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "apart", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "apart", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=arm64"]
 outputs = ["/target/os/aarch64/compiled/**"]
 timeout_secs = 10800
@@ -4169,9 +4157,9 @@ default = false
 [[check]]
 name = "os-compile-release-aarch64"
 run = "bash os/image/compile.sh /target/os/aarch64/compiled-release"
-needs = ["test-assets", "os-chromium-aarch64"]
+needs = ["os-chromium-aarch64"]
 image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
-env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/aarch64/chromium", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/aarch64/chromium", TILO_CARGO_BUILD_JOBS = "8", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=arm64"]
 outputs = ["/target/os/aarch64/compiled-release/**"]
 timeout_secs = 10800
@@ -4180,9 +4168,8 @@ default = false
 [[check]]
 name = "os-compile-dev-aarch64"
 run = "bash os/image/compile.sh --dev /target/os/aarch64/compiled-dev"
-needs = ["test-assets"]
 image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
-env = { TILO_DEV_RUST_LTO = "off", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { TILO_DEV_RUST_LTO = "off", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=arm64"]
 outputs = ["/target/os/aarch64/compiled-dev/**"]
 timeout_secs = 10800
@@ -4457,8 +4444,8 @@ on = ["idle"]
 [[check]]
 name = "lounge-switch-local"
 run = "bash tools/test-env.sh python3 -I dist/dev/lounge-switch-local.py t2024"
-needs = ["nested-session", "test-assets"]
-env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_ASSET_SEED = "/target/test-assets", TILO_TEST_NTFS_FIXTURES = "0" }
+needs = ["nested-session"]
+env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=x86_64"]
 isolation = "vm"
 outputs = ["/target/lounge-switch-local/**"]
@@ -4470,8 +4457,8 @@ on = ["idle"]
 [[check]]
 name = "lounge-invite-local"
 run = "bash tools/test-env.sh python3 -I dist/dev/lounge-invite-local.py t2024"
-needs = ["nested-session", "test-assets"]
-env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_ASSET_SEED = "/target/test-assets" }
+needs = ["nested-session"]
+env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session" }
 requires = ["arch=x86_64"]
 isolation = "vm"
 outputs = ["/target/lounge-invite-local/**"]
