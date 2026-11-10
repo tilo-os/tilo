@@ -7,7 +7,9 @@ use serde_json::{Map, Value};
 use tilo_actions::remote::{
     ActionHost as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
-use tilo_relay_client::login::{Door, SignIn, redeem, through_door};
+use tilo_relay_client::login::redeem;
+#[cfg(not(target_arch = "wasm32"))]
+use tilo_relay_client::login::{Door, SignIn, through_door};
 use tilo_relay_client::{CertifyError, DeviceSigner, HttpClient};
 use tilo_relay_protocol::web::{
     HereAction, HereReply, HereRequest, MAX_HERE_FIELD_CHARS, MAX_HERE_LABEL_CHARS, kept,
@@ -71,7 +73,10 @@ impl Device {
         }
     }
 
-    /// A session for the device `sign_in` signed in.
+    /// A session for the device `sign_in` signed in. A computer's entry: a
+    /// page writes login codes and never reads one, so it makes its device
+    /// with [`Self::over`] and joins the workplaces its grants reach.
+    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn connect(sign_in: &SignIn, signer: Arc<dyn DeviceSigner>) -> Self {
         Self::over(
@@ -91,6 +96,7 @@ impl Device {
     ///
     /// # Errors
     /// The workspace's id is not one, the host could not be asked, or the workspace refused.
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn enter(
         client: &dyn HttpClient,
         door: Option<&Door<'_>>,
@@ -354,6 +360,7 @@ impl Device {
 }
 
 /// A refusal the workspace made says `refusal`; anything else stands.
+#[cfg(not(target_arch = "wasm32"))]
 fn refused(error: CertifyError, refusal: &str) -> CertifyError {
     match error {
         CertifyError::Denied(_) => CertifyError::Denied(refusal.to_owned()),

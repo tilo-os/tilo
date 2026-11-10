@@ -47,9 +47,13 @@ pub mod frame;
 pub mod host;
 pub mod https;
 pub mod invite;
-/// A login code read, and a computer signing in as one of the person's
-/// devices (native only: a page writes the code, never reads it).
-#[cfg(all(feature = "iroh", not(target_arch = "wasm32")))]
+/// A computer signing in as one of the person's devices, and the two ways
+/// into a workspace with it: through the site's door, and by an invitation.
+/// Reading a login code is a computer's work alone (a page writes the code,
+/// never reads it), so that part of the module is native only; the ways in
+/// are a page's too ([`login::Door`], [`login::through_door`],
+/// [`login::redeem`]).
+#[cfg(feature = "iroh")]
 pub mod login;
 pub mod pairing;
 pub mod sign_in;

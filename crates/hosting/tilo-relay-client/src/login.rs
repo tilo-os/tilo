@@ -6,25 +6,39 @@
 //! workspace's host to have the person's root certify it ([`sign_in`]), and is
 //! then a device of theirs: a member for thirty days, the host pinned, no root
 //! anywhere here.
+//!
+//! Reading the code and signing in are a computer's work: a page writes the
+//! code and never reads one. The ways into the workspace a signed-in device
+//! takes — its site's door ([`through_door`]) and an invitation
+//! ([`redeem`]) — are a page's as much as a computer's, so only the first part
+//! is native.
 
+#[cfg(not(target_arch = "wasm32"))]
 use tilo_reference::link::{Link, Mode, Scope, WebEntries, WebEntry};
 use tilo_relay_protocol::directory::{DoorAnswer, DoorJoin};
 use tilo_relay_protocol::web::{MAX_HERE_LABEL_CHARS, kept};
 use tilo_user_identity::DeviceCert;
+#[cfg(not(target_arch = "wasm32"))]
 use uuid::Uuid;
 
 use crate::error::CertifyError;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::host::Host;
-use crate::https::{self, HttpClient};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::https;
+use crate::https::HttpClient;
 use crate::invite::{ask_to_join, ask_to_join_pre_admitted};
 use crate::signer::DeviceSigner;
 
 /// A person's user root, hex, in `?pair=`.
+#[cfg(not(target_arch = "wasm32"))]
 const PAIR_USER_KEY_HEX: usize = 64;
 /// The page's one-time invite, hex, after the user root.
+#[cfg(not(target_arch = "wasm32"))]
 const PAIR_INVITE_HEX: usize = 32;
 
 /// A login code, read.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PairingLink {
     /// The page that wrote the link (`https://tilo.sh/`).
@@ -40,6 +54,7 @@ pub struct PairingLink {
     pub invite: Option<[u8; 16]>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl PairingLink {
     /// Read `url` as a login code.
     ///
@@ -113,6 +128,7 @@ impl PairingLink {
 /// The page a link was written on, and its entry: everything before its `#`,
 /// minus a query the site may add. A login code is read without knowing the
 /// site in advance, which is the point: any Tilo page can hand one out.
+#[cfg(not(target_arch = "wasm32"))]
 fn entry(url: &str) -> Result<(String, WebEntry), String> {
     let refused = || {
         "This is not a web address. Copy the whole link the page gives you, like \
@@ -136,6 +152,7 @@ fn entry(url: &str) -> Result<(String, WebEntry), String> {
 }
 
 /// The user root and the invite the page wrote as one hex string.
+#[cfg(not(target_arch = "wasm32"))]
 fn pair_of(pair: &str) -> Result<([u8; 32], Option<[u8; 16]>), String> {
     let damaged = || {
         "The pairing code in this link is damaged. Ask the page for a new login code.".to_owned()
@@ -212,7 +229,9 @@ pub fn site_door(entry: &serde_json::Value, host_origin: &str) -> Option<(String
 }
 
 /// The door of the site at `site` to its workspace on the host at
-/// `host_origin`, as its `entry.json` names it.
+/// `host_origin`, as its `entry.json` names it. A computer reads a site's
+/// `entry.json` through its own HTTPS client; a page's entry names its door.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn door_at(site: &https::Origin, host_origin: &str) -> Option<(https::Origin, String)> {
     let (status, body) = site.get("/entry.json").await.ok()?;
     if status != 200 {
@@ -224,6 +243,7 @@ pub async fn door_at(site: &https::Origin, host_origin: &str) -> Option<(https::
 }
 
 /// A computer that is now one of the person's devices.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct SignIn {
     /// The link it was signed in with.
     pub link: PairingLink,
@@ -248,6 +268,7 @@ pub struct SignIn {
 /// The person declined or nobody answered in time ([`CertifyError::Expired`]),
 /// the host was not reached or refused, or what it issued is not a certificate
 /// for this device.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn sign_in(
     client: &dyn HttpClient,
     link: &PairingLink,
