@@ -85,6 +85,19 @@ keeps none. A tab keeps its newest 1000 actions and the record its 32 most
 recently used tabs; what goes beyond leaves the record's state, counted as
 dropped, and stays in its history.
 
+**What a person types is in the record.** Direct input is no action, and no
+answer carries it: the engine sets it down and says so, and the window
+writes it in its place among the actions, as the person's. It is one entry
+to a burst of editing one field, which ends when the person stops for a
+moment, leaves the field or an action begins. The entry names the field as
+an action's entry does and holds what the field then held. An agent's own
+keys and clicks stay that agent's action and are not set down twice. Of what
+was written into a secret field, typed or by an action, the record keeps
+that the field was set and nothing of what was written: a password, a card
+number or security code, a one-time code. The engine watches a document from
+when it is first read or operated, which the window's own read of a loaded
+page's forms does, so what was typed before that is not in the record.
+
 ## Reading
 
 Acting on a page starts with reading it, and reading is where an agent's time
@@ -142,17 +155,22 @@ holds now, and who set it (an agent by its name, a person typing, the page's
 own script, or no one), with a mark on a field that no longer holds what was
 set, on a required one left empty and on one the page refuses. A secret is
 said as set or not set. Under the forms stands the tab's record, in order,
-with who did each action. The Page menu, a key, the palette and an agent all
+with who did each action; what a person typed stands there as typing, and
+what was written into a secret field as set, not shown. The Page menu, a key, the palette and an agent all
 open it through that one action, and `show-page` closes it. The review keeps
 nothing: it is drawn from the forms, fields and record reads, made as the
 tab's unnamed actor, so they take no place in the record and tell no agent
 anything. It reads again when any page action answered, when the page shows
-another document, and once a second otherwise, since the engine does not yet
-say when the page's own script changes a field; fields read from a document
-the page has left are not drawn. Choosing a row is `show-page-field`: the
+another document or finished loading, and when the engine says the page
+changed a field or a form of itself or a person typed into one; it reads on
+no timer. Only with an engine that does not tell page events is the page
+read once a second. Fields read from a document the page has left are not
+drawn. Choosing a row is `show-page-field`: the
 page again, with that field in view, a scroll that takes its turn and its
-place in the record like any other action. The review covers the main
-document; fields in frames are not listed yet.
+place in the record like any other action. The review lists the fields of
+up to eight frames the tab's actors read or acted in after the page's own,
+under their frame, with what each holds and who set it; choosing one brings
+it into view in its frame. A frame nobody read or acted in is not listed.
 
 A reviewer on another device sees the tab as the live picture of its window:
 the engine's own pixels, with a password shown as the page shows it and a
@@ -247,21 +265,23 @@ reason under "Not built yet".
 
 ## Not built yet
 
-- **Direct input in the record.** The record is a resource of Browser's now,
-  and it holds what the engine sets down. The engine sets down actions; what
-  a person types straight into the page it tells apart only in the review
-  read. Once it sets that down too, the record keeps it as the person's.
 - **A page's forms as actions: what is left.** The window reads its page's
   forms itself, as the tab's unnamed actor: once the page has loaded, when
-  it moves to another address, and when a form action's answer says the form
-  asks more or is no longer the one the action was made for. So a first
-  visit and a form that grew have their actions without an agent's read. A
-  form the page's own script draws later, without loading or changing its
-  address, becomes an action only at the window's next read or when an actor
-  reads the page's forms. On a page that holds a sign-in the window's read
-  publishes each question without the answers it offers, until an actor the
-  person admitted reads the page. A form in a frame has none, and of several
-  forms that ask exactly the same the action answers the first.
+  it moves to another address, when a form action's answer says the form
+  became another form, offers other answers or is no longer on the page, and
+  when the engine says a form of the page appeared, changed or went. So a
+  first visit, a form that grew and a form the page's own script draws later
+  have their actions without an agent's read. With an engine that does not
+  tell page events, a form drawn later becomes an action only at the
+  window's next read or when an actor reads the page's forms. On a page that
+  holds a sign-in the window's read publishes each question without the
+  answers it offers, until an actor the person admitted reads the page. A
+  form in a frame is answered as one typed action through `fill-page-form`
+  with its frame, but is no action of the page named after it: the page's
+  forms read lists neither the frames a page holds nor their forms, so the
+  window cannot find a frame's form without reading the page's outline, and
+  nothing is remembered of a frame's forms. Of several forms that ask
+  exactly the same the action answers the first.
 - **Site memory: what is left.** What the Browser remembers of a site's
   forms is listed by typed actions and shown in the site panel, where one
   form or the site's forms are forgotten; clearing a site's data forgets its
@@ -302,10 +322,16 @@ reason under "Not built yet".
   there, several machines in one tab are checked only in parts: the actors
   and their record on one machine with the real engine, the door's naming of
   a remote agent, and the shared window's viewers.
-- **Gestures in a frame.** Hover, drag, a drawn path and reading the element
-  at a point still act in the page's own document only, and choosing files
-  in a frame is not checked. A find and a search read one document and name
-  the frames to look in rather than looking in them.
+- **Gestures in a frame: what is left.** Hover, drag and a drawn path on an
+  element of a frame run in the frame's document, a point over a frame is
+  answered with the frame's own element, and a find and a search look in the
+  frames a page shows: on their own when the page has no match, beside the
+  page when asked, saying the frame of what they found. Both ends of a drag
+  are elements of one frame; a drag from a frame to the page, or to a point,
+  is refused. The Browser's tests check that these requests reach the engine
+  and its answers reach the caller; the gestures themselves and choosing
+  files in a frame are checked in the engine's tests, not through the
+  Browser.
 - **Paragraphs in the reader view of old layouts.** An essay set in a table
   or run on in one block is read as an article. Its paragraphs, parted by
   line breaks, are shown with those breaks rather than as paragraphs.
