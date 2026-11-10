@@ -218,7 +218,7 @@ fn find_takes_the_palettes_words_or_a_type_and_its_filters() {
     let pinned = printed(&w.run("find(Note, pinned: true).sort_by(.title).map(.title)"));
     assert_eq!(pinned, "Lentil soup\nQ3 plan");
     let grouped =
-        printed(&w.run(r#"find(Note, pinned: false).group(.pinned).map(g -> g.items.len())"#));
+        printed(&w.run(r"find(Note, pinned: false).group(.pinned).map(g -> g.items.len())"));
     assert_eq!(grouped, "6", "one group: none of them is pinned");
     let taken = printed(&w.run(r"find(Note, pinned: false).take(2).len()"));
     assert_eq!(taken, "2");
