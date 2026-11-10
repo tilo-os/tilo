@@ -2581,6 +2581,10 @@ run = "bash tools/ci/publish/cli-release.sh build {arch}-unknown-linux-musl /tar
 setup = { run = "bash tools/ci/install-cli-toolchain.sh {arch}-unknown-linux-musl" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/cli/linux-{arch}/*"]
+# A release builds the whole program for musl from cold, beside the rest of the release on the
+# same node: over an hour when the node is full (v0.1.5's x86_64 build ended at the default
+# hour, a crate short of done).
+timeout_secs = 7200
 default = false
 [check.matrix]
 arch = ["x86_64", "aarch64"]
