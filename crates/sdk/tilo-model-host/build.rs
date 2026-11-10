@@ -28,6 +28,8 @@ fn main() -> Result<(), String> {
     // none; it is set before any path that might return.
     println!("cargo::rustc-env=TILO_MODEL_FIXTURE_DIR={}", out.display());
     println!("cargo::rerun-if-env-changed=TILO_MODEL_FIXTURE_OFFLINE");
+    println!("cargo::rerun-if-env-changed=CI");
+    let ci = std::env::var_os("CI").is_some_and(|value| !value.is_empty() && value != "false");
     // The guest crate the modules are built with, and the ABI they are built against: a module
     // of an older guest is not the module this host reads.
     let shared = [
@@ -59,9 +61,15 @@ fn main() -> Result<(), String> {
             continue;
         }
         if let Err(error) = build(&model, model_crate, &target, &module) {
-            // A host that cannot be tested without a module still builds; the test that needs
-            // one says so itself, rather than every build of this crate failing on a wasm
-            // toolchain.
+            // A developer's host that cannot be tested without a module still builds; the
+            // test that needs one says so itself, rather than every build of this crate
+            // failing on a wasm toolchain. CI has the toolchain, so there a module that does
+            // not build is the build's failure, not a host test quietly left without one.
+            if ci {
+                return Err(format!(
+                    "the {model_crate} module fixture was not built: {error}"
+                ));
+            }
             println!("cargo::warning=the {model_crate} module fixture was not built: {error}");
         }
     }
