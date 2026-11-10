@@ -65,6 +65,12 @@ pub mod watched;
 /// Where the activity model's code is, when a host does not link it in.
 pub mod pane;
 
+/// One notice a role tells the person, and where choosing it lands.
+pub mod notice;
+
+/// What a role reads of the workspaces' records, and what changed in them.
+pub mod records;
+
 /// Who a principal is, as presence shows them, and the actors this host's own mounts write as.
 pub mod authors;
 

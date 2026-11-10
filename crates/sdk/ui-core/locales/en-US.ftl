@@ -658,10 +658,6 @@ widget-mention-shortcut = Shortcut
 widget-mention-app = App
 widget-mention-bot = Bot
 widget-mention-list = People to mention
-mention-notice-title = { $name } mentioned you in ‘{ $place }’
-mention-notice-channel = { $name } mentioned you in { $channel }
-mention-notice = { $name } mentioned you
-mention-notice-someone = Someone
 rich-text-reference-unreadable = Not shared with you
 widget-block-duplicate = Duplicate block and children
 

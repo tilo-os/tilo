@@ -150,6 +150,10 @@ pub(crate) struct RecordIndex {
     queued: Mutex<BTreeSet<(String, String, String)>>,
     /// Wakes the worker: a record is waiting.
     wake: std::sync::mpsc::Sender<()>,
+    /// What a change of a record reaches besides the index: the roles that follow records, such as
+    /// the person's mentions. The queue is where the session already learns of every change, so no
+    /// role watches the store itself.
+    touched: crate::platform::records::Touched,
 }
 
 impl RecordIndex {
@@ -159,6 +163,7 @@ impl RecordIndex {
         source: Arc<dyn RecordSource>,
         reader: Arc<dyn RecordReader>,
         content: Option<Arc<AppContentIndex>>,
+        touched: crate::platform::records::Touched,
     ) -> Arc<Self> {
         let (wake, woken) = std::sync::mpsc::channel();
         let index = Arc::new(Self {
@@ -167,6 +172,7 @@ impl RecordIndex {
             content,
             queued: Mutex::new(BTreeSet::new()),
             wake,
+            touched,
         });
         // The worker reads the owner and the app's reader, neither of which may hold up the
         // session's frame: it wakes only when a record is waiting, and reads each one once.
@@ -207,11 +213,13 @@ impl RecordIndex {
         }
     }
 
-    /// Queue `record` for the next pass, once, however often it changed.
+    /// Queue `record` for the next pass, once, however often it changed, and tell the roles that
+    /// follow records that it did.
     pub(crate) fn changed(&self, workspace: &str, app: &str, record: &str) {
         if record.is_empty() || app.is_empty() {
             return;
         }
+        self.touched.note(workspace, app, record);
         self.queued.lock_recover().insert((
             workspace.to_owned(),
             app.to_owned(),

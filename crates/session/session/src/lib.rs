@@ -233,6 +233,7 @@ mod lock_service;
 #[cfg(target_os = "linux")]
 mod look;
 mod membership;
+pub mod mentions;
 #[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
 pub mod nearby_transfer;

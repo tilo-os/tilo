@@ -575,7 +575,7 @@ pub(crate) struct Desktop {
     /// The desk's revision search last read what it publishes at.
     search_seen: Cell<Option<u64>>,
     /// Mentions of this person in the workspace's records, and what was told.
-    mentions: RefCell<mention_notices::Mentions>,
+    mentions: RefCell<tilo_session::mentions::Mentions>,
     /// What this person may do here, which decides what the session opens
     /// as the workspace broker decides it on a native desktop.
     permissions: SharedPermissions,
@@ -1198,6 +1198,8 @@ fn present_desktop(
 ) -> Result<Presentation, JsValue> {
     let opening_permissions = permissions.clone();
     let dyn_history_store = Rc::clone(&dyn_store);
+    // What the person's mentions are told by, kept where their settings are.
+    let mentions_store = Rc::clone(&dyn_store);
     let wake = proxy()?;
     let (mut surface, handle, shared, persistence) = crate::desktop::mount(
         desktop_inputs(config, &dyn_store, permissions)?,
@@ -1285,9 +1287,21 @@ fn present_desktop(
             asks: session_asks::Asks::new(config.peer),
             search,
             search_seen: Cell::default(),
-            mentions: RefCell::new(mention_notices::Mentions::new(
-                &config.workspace,
+            mentions: RefCell::new(mention_notices::role(
+                mentions_store,
+                // A page with no workspace accepted yet follows no record: nothing is told.
+                config.peer.unwrap_or_default(),
                 &config.author(),
+                {
+                    let seen = Rc::clone(&here);
+                    let known = Rc::clone(&people);
+                    Rc::new(move |user: &str| {
+                        seen.borrow()
+                            .person(user)
+                            .or_else(|| known.borrow().get(user).cloned())
+                            .map_or_else(tilo_desktop::here::guest_label, |(name, _)| name)
+                    })
+                },
             )),
             permissions: opening_permissions,
             workspace: config.workspace.clone(),

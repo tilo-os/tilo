@@ -12,7 +12,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use automerge::{AutoCommit, LoadOptions, OnPartialLoad};
 use durable_store::{DurableStore, StorageKey, WriteOp};
 use serde_json::Value;
 use tilo_desktop_model::{DesktopTree, TabId, Workspace, WorkspaceId, WorkspaceSlot};
@@ -25,7 +24,6 @@ use tilo_desktop_surface::activity::{
 use tilo_desktop_surface::history_log;
 use tilo_desktop_surface::session::{ActivityRequests, activity_requests};
 use tilo_lock::MutexRecover as _;
-use ui::record::RecordCheckout;
 
 use crate::activity_provider::ActivityWire;
 use crate::desk_doc::{DeskDoc, Kept};
@@ -716,7 +714,8 @@ fn read_workspace_records(
     let mut read = Vec::new();
     let mut seen = BTreeSet::new();
     for (package, index_room) in workspace_packages(store, workspace) {
-        let Some(checkouts) = named_in(store, &package, &index_room) else {
+        let Some(checkouts) = crate::platform::records::checkouts(store, &package, &index_room)
+        else {
             continue;
         };
         for checkout in checkouts {
@@ -724,7 +723,7 @@ fn read_workspace_records(
             if !seen.insert((package.clone(), id.clone())) {
                 continue;
             }
-            let document = document_of(store, &package, workspace, &id);
+            let document = crate::platform::records::document(store, &package, workspace, &id);
             if let Some(document) = &document {
                 noted(document.get_actor());
             }
@@ -736,62 +735,6 @@ fn read_workspace_records(
         }
     }
     read
-}
-
-/// The records `package` 's index for `workspace` names; `None` when it holds no index there.
-fn named_in(
-    store: &dyn DurableStore,
-    package: &str,
-    workspace: &str,
-) -> Option<Vec<RecordCheckout>> {
-    let key = StorageKey::workspace_index(package, workspace);
-    let stored = match store.read(&key) {
-        Ok(stored) => stored?,
-        Err(error) => {
-            tracing::warn!(%error, package, %workspace, "a workspace's index is not read");
-            return None;
-        }
-    };
-    if stored.bytes.is_empty() {
-        return None;
-    }
-    // An app keeping the index appends to it, and this read may land on a tail it has not finished
-    // writing: the changes before it are the index as of the last write that completed.
-    let options = LoadOptions::new().on_partial_load(OnPartialLoad::Ignore);
-    match AutoCommit::load_with_options(&stored.bytes, options) {
-        Ok(doc) => Some(ui::record::index::discoverable_references(&doc)),
-        Err(error) => {
-            tracing::warn!(%error, package, %workspace, "a workspace's index does not load");
-            None
-        }
-    }
-}
-
-/// The document `package` keeps for `record` , as its app last committed it.
-fn document_of(
-    store: &dyn DurableStore,
-    package: &str,
-    workspace: &str,
-    record: &str,
-) -> Option<AutoCommit> {
-    let stored = match store.read(&StorageKey::record(package, workspace, record)) {
-        Ok(stored) => stored?,
-        Err(error) => {
-            tracing::warn!(%error, %package, %record, "a record is not read");
-            return None;
-        }
-    };
-    if stored.bytes.is_empty() {
-        return None;
-    }
-    let options = LoadOptions::new().on_partial_load(OnPartialLoad::Ignore);
-    match AutoCommit::load_with_options(&stored.bytes, options) {
-        Ok(doc) => Some(doc),
-        Err(error) => {
-            tracing::warn!(%error, %package, %record, "a record does not load");
-            None
-        }
-    }
 }
 
 /// What the model asks of the session, over the one state this activity keeps.
@@ -1287,7 +1230,11 @@ mod tests {
         fn frame(&mut self) {
             let tree = self.handle.read(Clone::clone);
             self.activity.record_desk(&tree, now_seconds(), &[]);
-            ui::Widget::update(&mut self.surface, &AutoCommit::new(), &ui::automerge::ROOT);
+            ui::Widget::update(
+                &mut self.surface,
+                &ui::automerge::AutoCommit::new(),
+                &ui::automerge::ROOT,
+            );
         }
 
         /// The person asks for this workspace's history, and it opens.

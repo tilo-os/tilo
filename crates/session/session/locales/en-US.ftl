@@ -397,3 +397,10 @@ session-ask-conversation = Assistant
 desk-style-failed-app-name = Desk
 desk-style-failed-title = Your desk style could not be shown
 desk-style-failed-body = { $style } could not be shown, so the desk shows Strips. Your choice is kept and the style is shown again once it is fixed. ({ $reason })
+
+## Someone mentioned the person in a record of the workspace.
+mention-notice-title = { $name } mentioned you in ‘{ $place }’
+mention-notice-channel = { $name } mentioned you in { $channel }
+mention-notice = { $name } mentioned you
+mention-notice-someone = Someone
+mention-notice-open = Open

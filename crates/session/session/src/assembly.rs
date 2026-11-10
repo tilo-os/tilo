@@ -276,6 +276,9 @@ pub(crate) struct Shared {
     /// the centre they are kept in.
     #[cfg(target_os = "linux")]
     pub(crate) notifications: Rc<RefCell<crate::notifications::SessionNotifications>>,
+    /// The person's mentions in the workspaces' records, and what they chose of them.
+    #[cfg(target_os = "linux")]
+    pub(crate) mentions: Option<crate::mentions::Mentions>,
     /// What the services ask the person, on the sheets.
     #[cfg(target_os = "linux")]
     pub(crate) asker: crate::questions::Asker,

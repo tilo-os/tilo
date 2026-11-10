@@ -153,18 +153,16 @@ struct SessionNotices {
 
 impl tilolang_tilo::notices::Tell for SessionNotices {
     fn show(&self, notice: &tilolang_tilo::notices::Notice) {
-        let place = ui::mentions::Place {
+        // Choosing it opens what the notice names: the place is the session's, whether the
+        // notification is shown by the desk or by the platform.
+        let place = crate::platform::notice::Place {
             app: notice.opens.app.clone(),
             record: notice.opens.record.clone(),
             resource: notice.opens.resource.clone(),
         };
-        let shown = ui::mentions::Notice {
-            tag: notice.tag.clone(),
-            title: notice.title.clone(),
-            body: notice.body.clone(),
-            place,
-        };
-        if let Err(error) = self.notifier.show(&shown.notification()) {
+        let shown = ui::notify::Notification::new(&notice.tag, &notice.title, &notice.body)
+            .with_activation(place.activation());
+        if let Err(error) = self.notifier.show(&shown) {
             tracing::warn!(%error, "a package's notice was not shown");
         }
     }

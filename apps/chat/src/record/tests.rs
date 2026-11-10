@@ -5,7 +5,7 @@ use super::*;
 use crate::messages::{Messages, NewMessage, chat_part};
 use crate::parts::ChatPart;
 
-const ADA: &str = "u_ada";
+pub(super) const ADA: &str = "u_ada";
 const BO: &str = "u_bo";
 
 pub(super) fn id(raw: &str) -> Id {

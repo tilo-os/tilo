@@ -374,6 +374,24 @@ type Opened = Rc<RefCell<Vec<(String, String)>>>;
 /// The senders whose notification the person chose, as `(sender, action)` .
 type Chosen = Rc<RefCell<Vec<(u32, Option<String>)>>>;
 
+/// The action a role's notice offers: choosing it goes where the notice names.
+const OPEN_NOTICE_ACTION: &str = "open";
+
+/// The place each of a role's notices opens, by the desk's notification.
+type Places = Rc<RefCell<BTreeMap<u64, (String, crate::platform::notice::Place)>>>;
+
+/// The places the person chose from a role's notices since the last look.
+type PlacesChosen = Rc<RefCell<Vec<(String, crate::platform::notice::Place)>>>;
+
+/// Which notification shows a notice a role told.
+#[derive(Clone, Copy)]
+enum Showing {
+    /// The notifications service has it: the desk's banner follows from its arrival.
+    Served(u32),
+    /// The desk shows it directly, for a session with no notifications service.
+    Desk(u64),
+}
+
 /// What ties the daemon, the desktop's log and the banners app together.
 pub(crate) struct SessionNotifications {
     daemon: Option<Notifications>,
@@ -421,6 +439,15 @@ pub(crate) struct SessionNotifications {
     history: Option<std::path::PathBuf>,
     /// What continues on the person's other devices, and what they showed here.
     mirror: Rc<mirror::Mirroring>,
+    /// The place each of a role's notices opens, by the desk's notification showing it.
+    places: Places,
+    /// What the person chose of them since it was last taken.
+    places_chosen: PlacesChosen,
+    /// The notification showing each notice a role told, by its tag.
+    showing: RefCell<BTreeMap<String, Showing>>,
+    /// A notice that went out through the notifications service, by its id, waiting to learn which
+    /// of the desk's notifications it became.
+    awaited: RefCell<BTreeMap<u32, (String, crate::platform::notice::Place)>>,
 }
 
 impl SessionNotifications {
@@ -440,11 +467,20 @@ impl SessionNotifications {
         let answering = Rc::clone(&chosen);
         let mirror = mirror::Mirroring::new();
         let answered = Rc::clone(&mirror);
+        let places: Places = Rc::default();
+        let showing_places = Rc::clone(&places);
+        let places_chosen: PlacesChosen = Rc::default();
+        let telling_places = Rc::clone(&places_chosen);
         desktop.on_outcome(move |outcome| match outcome {
             NotificationOutcome::Activated {
                 notification,
                 action,
             } => {
+                // A notice a role told: the person went where it named, and it leaves with the
+                // banner they chose.
+                if let Some((tag, place)) = showing_places.borrow_mut().remove(&notification.id) {
+                    telling_places.borrow_mut().push((tag, place));
+                }
                 // A notification another device projected is answered there: the action the person
                 // chose, or the end of it here when they only opened it. The origins that device's
                 // id names are the only ones it can reach.
@@ -475,6 +511,7 @@ impl SessionNotifications {
                 }
             }
             NotificationOutcome::Dismissed { id } => {
+                showing_places.borrow_mut().remove(id);
                 // Dismissing another device's notification here dismisses it there too: the app's
                 // notification closes, and every other copy goes with it.
                 answered.answer(*id, |_, id| PersonalFabricAction::NotificationDismiss {
@@ -503,6 +540,10 @@ impl SessionNotifications {
             quiet_changed: Cell::new(None),
             history,
             mirror,
+            places,
+            places_chosen,
+            showing: RefCell::default(),
+            awaited: RefCell::default(),
         }
     }
 
@@ -806,6 +847,66 @@ impl SessionNotifications {
         self.desktop.next_deadline()
     }
 
+    /// Tell the person `notice` a role raised, replacing one showing under its tag, and remember
+    /// where choosing it lands.
+    pub(crate) fn tell_notice(&self, notice: &crate::platform::notice::Notice) {
+        self.withdraw_notice(&notice.tag);
+        let mut machine = crate::notices::Notice::new(
+            notice.app.clone(),
+            1,
+            notice.title.clone(),
+            notice.body.clone(),
+        );
+        machine
+            .actions
+            .push((OPEN_NOTICE_ACTION.to_owned(), t("mention-notice-open")));
+        let place = (notice.tag.clone(), notice.place.clone());
+        let showing = match &self.daemon {
+            Some(daemon) => {
+                let notification = machine.into_notification(daemon);
+                let id = notification.id;
+                daemon.push(notification);
+                self.awaited.borrow_mut().insert(id, place);
+                Showing::Served(id)
+            }
+            // A session without a notifications service still draws its desk: what it tells is kept
+            // there rather than lost.
+            None => {
+                let id = machine.tell_desk(&self.desktop);
+                self.places.borrow_mut().insert(id, place);
+                Showing::Desk(id)
+            }
+        };
+        self.showing
+            .borrow_mut()
+            .insert(notice.tag.clone(), showing);
+    }
+
+    /// Take the notice under `tag` back: what it told is gone.
+    pub(crate) fn withdraw_notice(&self, tag: &str) {
+        let Some(showing) = self.showing.borrow_mut().remove(tag) else {
+            return;
+        };
+        match showing {
+            Showing::Served(id) => {
+                self.awaited.borrow_mut().remove(&id);
+                if let Some(daemon) = &self.daemon {
+                    daemon.request_close(id);
+                }
+            }
+            Showing::Desk(id) => {
+                self.places.borrow_mut().remove(&id);
+                self.desktop.withdraw(id);
+            }
+        }
+    }
+
+    /// The places the person chose from a role's notices since this was last taken, each with its
+    /// tag.
+    pub(crate) fn take_places_chosen(&self) -> Vec<(String, crate::platform::notice::Place)> {
+        std::mem::take(&mut *self.places_chosen.borrow_mut())
+    }
+
     /// Take in what arrived and what the banners asked, and hand the banners what they show now.
     /// `token` mints an activation token for each notification the person chose, so its app may
     /// raise its window.
@@ -906,6 +1007,11 @@ impl SessionNotifications {
                     self.desktop.post_quiet(notification)
                 };
                 self.by_sender.insert(sender, id);
+                // A role's notice is the desk's notification `id` now: that is what choosing it
+                // names.
+                if let Some(place) = self.awaited.borrow_mut().remove(&sender) {
+                    self.places.borrow_mut().insert(id, place);
+                }
                 if transient {
                     self.transient.insert(id);
                 }
@@ -1279,6 +1385,30 @@ impl crate::Shared {
                 other => tracing::debug!(?other, "notification chosen"),
             }
         }
+    }
+}
+
+/// The person's notifications as a role's own: what a role tells them, and where they chose to go.
+pub(crate) struct RoleNotices(Rc<RefCell<SessionNotifications>>);
+
+impl RoleNotices {
+    /// The notices the session's `notifications` show.
+    pub(crate) fn over(notifications: Rc<RefCell<SessionNotifications>>) -> Self {
+        Self(notifications)
+    }
+}
+
+impl crate::platform::notice::Notices for RoleNotices {
+    fn show(&self, notice: &crate::platform::notice::Notice) {
+        self.0.borrow().tell_notice(notice);
+    }
+
+    fn withdraw(&self, tag: &str) {
+        self.0.borrow().withdraw_notice(tag);
+    }
+
+    fn take_chosen(&self) -> Vec<(String, crate::platform::notice::Place)> {
+        self.0.borrow().take_places_chosen()
     }
 }
 

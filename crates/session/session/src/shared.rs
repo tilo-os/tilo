@@ -158,6 +158,32 @@ impl Shared {
         }
     }
 
+    /// Tell the person when someone mentions them in one of the workspaces' records, and open the
+    /// places they chose from those notices: the app's own `open` of the item, as the person's
+    /// choice runs it.
+    pub(crate) fn serve_mentions(&self) {
+        let Some(mentions) = &self.mentions else {
+            return;
+        };
+        mentions.step();
+        let chosen = mentions.take_chosen();
+        if chosen.is_empty() {
+            return;
+        }
+        let Some(apps) = &self.launch else {
+            return;
+        };
+        let workspace = self.active_workspace_id();
+        for place in chosen {
+            let target = crate::platform::notice::open_target(&workspace, &place);
+            if let Err(error) =
+                crate::search::AppActions::invoke(apps.as_ref(), target, serde_json::Map::new())
+            {
+                tracing::warn!(%error, app = %place.app, "a mention was not opened");
+            }
+        }
+    }
+
     /// The desktop's control hints: the person's record as their settings hold it, the reasons
     /// this session knows (following someone, setup standing over the desktop), and what they
     /// learned since.

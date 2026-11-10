@@ -655,10 +655,6 @@ widget-mention-shortcut = Kurzbefehl
 widget-mention-app = App
 widget-mention-bot = Bot
 widget-mention-list = Personen zum Erwähnen
-mention-notice-title = { $name } hat dich in ‘{ $place }’ erwähnt
-mention-notice-channel = { $name } hat dich in { $channel } erwähnt
-mention-notice = { $name } hat dich erwähnt
-mention-notice-someone = Jemand
 rich-text-reference-unreadable = Nicht mit dir geteilt
 widget-block-duplicate = Block mit Unterelementen duplizieren
 

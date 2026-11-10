@@ -509,6 +509,7 @@ impl Session {
         // What the history wrote back reaches the desk before anything reads it, and what the
         // person opened from it starts from here.
         self.shared.serve_activity();
+        self.shared.serve_mentions();
         self.follow_collaboration();
         self.follow_automation();
         self.shared.follow_records();

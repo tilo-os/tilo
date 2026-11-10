@@ -218,14 +218,18 @@ impl Session {
         // The workspace's activity: the desk's own document, and the records
         // its apps keep in the store. The desk records into it, the model
         // reads it, and the apps this session runs reach the same model.
+        // This device's records, as its store keeps them: the workspaces' app records, which the
+        // activity's history reads and the person's mentions are looked for in.
+        let records_store: Option<crate::platform::Store> =
+            options.search.records.as_ref().map(|records| {
+                std::sync::Arc::new(app_state::FsStore::new(records.root()))
+                    as crate::platform::Store
+            });
         let activity = crate::activity::Activity::new(
             options.state.as_deref(),
             options.old_desk.as_deref(),
             options.person.clone(),
-            options.search.records.as_ref().map(|records| {
-                std::sync::Arc::new(app_state::FsStore::new(records.root()))
-                    as crate::platform::Store
-            }),
+            records_store.clone(),
             Some(std::sync::Arc::new(options.lists.clone())
                 as std::sync::Arc<dyn crate::platform::apps::Apps>),
             Some(options.wake.handle()),
@@ -484,13 +488,18 @@ impl Session {
         let channel_link = crate::channels::ChannelLink::new();
         // Search reads the workspaces' records off the records themselves,
         // with no window of their app running: what this device holds is
-        // found before anything changes, and every change after it.
+        // found before anything changes, and every change after it. The same
+        // changes are what the person's mentions are looked for in
+        // (`crate::mentions`): one record of them here, read by both.
+        let touched = crate::platform::records::Touched::default();
+        touched.waking(options.wake.handle());
         let record_index = engine.as_ref().map(|engine| {
             crate::record_index::RecordIndex::start(
                 std::sync::Arc::clone(engine)
                     as std::sync::Arc<dyn crate::record_index::RecordSource>,
                 std::sync::Arc::new(crate::record_index::AppReader::of_device()),
                 Some(std::sync::Arc::clone(&options.content)),
+                touched.clone(),
             )
         });
         let record_changes = record_index.clone().map(|index| {
@@ -1207,6 +1216,57 @@ impl Session {
         let directory_store = crate::directory::Store::default();
         let boot_join = crate::boot_join::BootJoin::at_boot(&directory_store, &handle);
         let community = crate::community::Community::for_site(crate::directory::community_site());
+        // The person's notifications: what their apps sent, and what the session's roles tell them
+        // through the same log.
+        let session_notifications = {
+            let notifications = crate::notifications::SessionNotifications::new(
+                options
+                    .desktop
+                    .as_ref()
+                    .map(|desktop| desktop.notifications().clone()),
+                notices.clone(),
+                banners.clone(),
+                notification_policy,
+                notice_signals,
+                options.power.clone(),
+                notice_history,
+            );
+            // Notifications continue on the person's other devices, when this session runs as one
+            // of them.
+            if let Some(link) = &fabric {
+                notifications.attach_fabric(std::sync::Arc::clone(link));
+            }
+            Rc::new(RefCell::new(notifications))
+        };
+        // The person's mentions in the workspaces' records: told through those notifications, kept
+        // in the records' store, and opened through this session's own door to the apps.
+        let mentions = records_store.clone().map(|store| {
+            let naming = handle.clone();
+            crate::mentions::Mentions::over(crate::mentions::Given {
+                person: vec![options.person.clone()],
+                store: Some(store.clone()),
+                records: Some(Rc::new(crate::platform::records::Linked::over(
+                    store,
+                    touched.clone(),
+                ))),
+                notices: Some(Rc::new(crate::notifications::RoleNotices::over(Rc::clone(
+                    &session_notifications,
+                )))),
+                name: Rc::new(move |person: &str| {
+                    naming
+                        .read(|tree| {
+                            tree.workspaces
+                                .iter()
+                                .flat_map(|workspace| workspace.collaborators.iter())
+                                .find(|collaborator| collaborator.id == person)
+                                .map(|collaborator| collaborator.name.clone())
+                                .filter(|name| !name.is_empty())
+                        })
+                        .unwrap_or_else(tilo_desktop::here::guest_label)
+                }),
+                wake: Some(options.wake.handle()),
+            })
+        });
         let mut shared = Shared {
             handle,
             desktop,
@@ -1284,26 +1344,8 @@ impl Session {
             here_at: Cell::new(0),
             here_seen: Cell::new(0),
             places_seen: RefCell::default(),
-            notifications: {
-                let notifications = crate::notifications::SessionNotifications::new(
-                    options
-                        .desktop
-                        .as_ref()
-                        .map(|desktop| desktop.notifications().clone()),
-                    notices,
-                    banners.clone(),
-                    notification_policy,
-                    notice_signals,
-                    options.power.clone(),
-                    notice_history,
-                );
-                // Notifications continue on the person's other devices, when
-                // this session runs as one of them.
-                if let Some(link) = &fabric {
-                    notifications.attach_fabric(std::sync::Arc::clone(link));
-                }
-                Rc::new(RefCell::new(notifications))
-            },
+            notifications: Rc::clone(&session_notifications),
+            mentions,
             asker,
             agent_door: RefCell::new(agent_door),
             session_doors,

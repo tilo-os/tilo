@@ -88,7 +88,7 @@ impl Notice {
     }
 
     /// This notice as an ordinary notification, under a fresh id.
-    fn into_notification(self, notifications: &Notifications) -> Notification {
+    pub(crate) fn into_notification(self, notifications: &Notifications) -> Notification {
         Notification {
             id: notifications.alloc_id(),
             app_name: self.app,

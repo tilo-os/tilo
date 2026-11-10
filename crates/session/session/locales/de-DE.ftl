@@ -401,3 +401,10 @@ session-ask-conversation = Assistent
 desk-style-failed-app-name = Schreibtisch
 desk-style-failed-title = Dein Schreibtischstil konnte nicht angezeigt werden
 desk-style-failed-body = { $style } konnte nicht angezeigt werden, daher zeigt der Schreibtisch Streifen. Deine Wahl bleibt erhalten und der Stil wird wieder angezeigt, sobald er repariert ist. ({ $reason })
+
+## Someone mentioned the person in a record of the workspace.
+mention-notice-title = { $name } hat dich in ‘{ $place }’ erwähnt
+mention-notice-channel = { $name } hat dich in { $channel } erwähnt
+mention-notice = { $name } hat dich erwähnt
+mention-notice-someone = Jemand
+mention-notice-open = Öffnen
