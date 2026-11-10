@@ -168,6 +168,22 @@ class Application(Resource):
         """Runs the app's action."""
         return self.action("remember-forms", origin=origin, page=page, forms=forms, whole=whole, at=at)
 
+    def forget_form(self,
+        *,
+        origin: str,
+        signature: str,
+    ) -> Run | None:
+        """Runs the app's action."""
+        return self.action("forget-form", origin=origin, signature=signature)
+
+    def forget_site_forms(self, *, origin: str) -> Run | None:
+        """Runs the app's action."""
+        return self.action("forget-site-forms", origin=origin)
+
+    def forget_all_forms(self) -> Run | None:
+        """Runs the app's action."""
+        return self.action("forget-all-forms")
+
 
 class PersonalBookmarks(Resource):
     """Personal bookmarks — `browser.personal-bookmarks`."""

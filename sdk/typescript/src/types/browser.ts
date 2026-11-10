@@ -136,6 +136,14 @@ export interface Application extends tilo.Resource {
     whole: boolean;
     at: number;
   }): Promise<tilo.Run | void>;
+  forgetForm(args: {
+    origin: string;
+    signature: string;
+  }): Promise<tilo.Run | void>;
+  forgetSiteForms(args: {
+    origin: string;
+  }): Promise<tilo.Run | void>;
+  forgetAllForms(): Promise<tilo.Run | void>;
 }
 
 /** The `browser.application` kind at `path`. */
