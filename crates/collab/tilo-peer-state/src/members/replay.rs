@@ -175,7 +175,11 @@ fn start(
     if !legacy_heads.is_empty() && legacy::at_heads(doc, legacy_heads).is_none() {
         return None;
     }
-    Some(membership.policy())
+    // The built-in roles as this build defines them, as the rows read them:
+    // a log an earlier build started holds that build's definitions, which
+    // no operation may rewrite, so read as written they would set the log
+    // apart from the rows for good and refuse every change on top.
+    Some(membership.policy().with_current_roles())
 }
 
 /// Fold the workspace's invitation receipts into `policy`: a redemption the

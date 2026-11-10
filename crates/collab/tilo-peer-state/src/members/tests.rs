@@ -1070,3 +1070,54 @@ fn a_change_on_rows_the_log_never_wrote_says_why_it_is_refused() {
     assert!(why.contains("OwnerRole"), "{why}");
     assert_ne!(replay(&holding(&started, &[op]), WORKSPACE), rows);
 }
+
+/// A log an earlier build started holds the built-in roles as that build
+/// defined them. The log reads them as this build does, as the rows do, so
+/// it does not differ from the rows, and the owner's next change goes
+/// through.
+#[test]
+fn a_log_holding_an_earlier_builds_roles_takes_its_owners_next_change() {
+    let (owner_key, relay, mut doc) = lounge();
+    let rows = policy(&doc);
+    let mut earlier = rows.clone();
+    let preset = earlier
+        .grants
+        .iter_mut()
+        .find(|grant| tilo_action_policy::roles::is_role_grant(grant))
+        .expect("a built-in role's grant");
+    preset.kinds = KindSet::READ_UNDOABLE;
+    let renamed = earlier
+        .grants
+        .iter()
+        .filter(|grant| tilo_action_policy::roles::is_role_grant(grant))
+        .nth(1)
+        .unwrap()
+        .id
+        .clone();
+    earlier.grants.retain(|grant| grant.id != renamed);
+    let genesis = legacy::genesis_op(
+        &relay,
+        &owner_key,
+        &doc.get_heads(),
+        &earlier,
+        1_700_000_000_000_000_000,
+    )
+    .unwrap();
+    let started = holding(&doc, std::slice::from_ref(&genesis));
+    let held = replay(&started, WORKSPACE);
+    assert_eq!(differences(&held, &rows), Vec::<String>::new());
+    let (_, newcomer) = device(9);
+    let mut next = rows.clone();
+    next.members.insert(person(&newcomer), Role::Editor);
+    let op = project(
+        &relay,
+        &owner_key,
+        vec![genesis.id().unwrap()],
+        steps(&held, &next).unwrap(),
+    );
+    assert_eq!(refused(&held, &op), None);
+    assert_eq!(
+        replay(&holding(&started, &[op]), WORKSPACE).members,
+        next.members
+    );
+}
