@@ -850,6 +850,29 @@ def log_sync(vm: TiloVm) -> None:
         "systemctl daemon-reload", timeout=60, check=False)
 
 
+def notices(vm: TiloVm) -> str:
+    """What the desk tells the person of changes another device would not take, as its state
+    carries the notices."""
+    import re
+    said = re.compile(r"will not take|Your change stays|did not take|not a member|refus", re.I)
+    found: list[str] = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+        elif isinstance(node, str) and said.search(node) and node not in found:
+            found.append(node[:400])
+    try:
+        walk(vm.state())
+    except (VmError, ValueError) as exc:
+        return f"== notices: {exc}\n"
+    return "== notices\n" + "\n".join(found[:20]) + "\n"
+
+
 def sync_excerpt(vm: TiloVm) -> str:
     """The session's last words of its workspaces' sync this boot, unfiltered but for drawing."""
     text = vm.root_exec("journalctl -m --since \"$(uptime -s)\" --no-pager -o short-iso "
@@ -913,8 +936,8 @@ def edit_shows_on(run: Run, ws: dict, writer: str, reader: str, label: str, time
     if not seen:
         run.write(f"{label}-{writer}-state.json", json.dumps(w.state(), indent=1))
         run.write(f"{label}-{reader}-state.json", json.dumps(r.state(), indent=1))
-        run.write(f"{label}-{writer}-sync-session.txt", sync_excerpt(w))
-        run.write(f"{label}-{reader}-sync-session.txt", sync_excerpt(r))
+        run.write(f"{label}-{writer}-sync-session.txt", notices(w) + sync_excerpt(w))
+        run.write(f"{label}-{reader}-sync-session.txt", notices(r) + sync_excerpt(r))
         def desk(vm):
             st = vm.state()
             return {"workspaces": [(w.get("room"), w.get("name"), len(groups_in(st, w.get("room"))))
