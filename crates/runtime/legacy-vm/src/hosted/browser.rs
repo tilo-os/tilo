@@ -33,24 +33,26 @@
 //!   environment: a session that shows its window nowhere and knows it serves
 //!   a hosted browser environment.
 //! - **stdout, one line each, nothing else**
-//!   ([`Report`](tilo_actions::remote::browser::Report)): `ready` once the
-//!   engine is up and the session waits for a workspace; then — after it has
-//!   read the material — `up <provider>` once it has joined the workspace and
+//!   ([`Report`](tilo_actions::remote::browser::Report)): `ready` once it has
+//!   taken the identity it was handed, and before it is due to wait for
+//!   anything; then `up <provider>` once it has joined the workspace and
 //!   opened the workspace's Browser window, with the provider token the
-//!   window publishes under; then `used` whenever a page action runs or
+//!   window publishes under; then `used` whenever a page action runs on it or
 //!   somebody views the page. The host counts the idle limit from the last of
 //!   them, and hands the provider to the relay, which routes page actions to
 //!   that window.
-//! - **stdin, one line** at hand-off: the material the relay gives
-//!   ([`tilo_relay_protocol::hosted::Material`]) — the JSON that names the
+//! - **stdin, one line** at hand-off, written before it is told anything else:
+//!   the material the relay gives, opaque here — the JSON that names the
 //!   workspace, the record to open and the device certificate the session
-//!   joins with — with the relay's address replaced by the one this VM
-//!   dials ([`hand_off`]). One line, and well under a megabyte: the host
-//!   relays it as the session's input, one line at a time.
+//!   joins with ([`tilo_relay_protocol::hosted::Material`]) — with the relay's
+//!   address replaced by the one this VM dials ([`hand_off`]). One line, and
+//!   well under a megabyte: the host relays it as the session's input, one
+//!   line at a time. Its identity is read once, before it builds anything, so
+//!   the session of an environment starts at that hand-off and never before.
 //! - **stderr** is the environment's log, nothing else.
 //!
-//! A spare is booted with that session and no workspace: it waits after
-//! `ready`, so opening Browser hands it one line instead of a boot. A spare
+//! A spare is a booted VM whose session has not started: opening Browser
+//! starts it, with the material as the first line instead of a boot. A spare
 //! keeps the name it booted with (`spare/browser-<n>`) when it serves a
 //! workspace; the placer's and the relay's name for that environment is
 //! `<workspace>/browser`, which is what places and routes it. An environment
@@ -70,7 +72,7 @@ use legacy_agent_protocol::client::{self, LaunchIo, LaunchSignals};
 use legacy_agent_protocol::link::{AgentLink, AgentStream};
 use legacy_agent_protocol::{AGENT_PORT, Display, Launch, ProtocolError, Signal, Stdio};
 use thiserror::Error;
-use tilo_actions::remote::browser::{MARK, READY, Report, UP};
+use tilo_actions::remote::browser::{MARK, Report, UP};
 use tilo_relay_protocol::hosted::Material;
 
 use super::firecracker::Machine;
@@ -80,8 +82,7 @@ use super::network::Endpoint;
 /// script that sets the environment up and starts the session on it.
 pub const SESSION: &str = "/usr/libexec/tilo/browser-session";
 
-/// How long a started session may take to print `ready`, engine start
-/// included.
+/// How long the guest agent is given to start a session it was asked for.
 pub const READY_PATIENCE: Duration = Duration::from_secs(120);
 
 /// How long an environment's session is given to report `up` after the
@@ -221,8 +222,6 @@ pub enum SessionError {
     Agent(#[from] ProtocolError),
     #[error("the session did not start within {0:?}")]
     Silent(Duration),
-    #[error("a browser environment has no session")]
-    NoSession,
     #[error(transparent)]
     Io(#[from] io::Error),
 }
@@ -368,11 +367,6 @@ impl Life {
         }
     }
 
-    /// Wait until the session is up, ready for a workspace.
-    pub fn wait_ready(&self, patience: Duration) -> Result<(), String> {
-        self.wait_for(patience, &|state| state.ready_ms.is_some(), READY)
-    }
-
     /// Wait until the session has joined its workspace.
     pub fn wait_up(&self, patience: Duration) -> Result<(), String> {
         self.wait_for(patience, &|state| state.up, UP)
@@ -408,18 +402,18 @@ impl Life {
 /// agent: its stdin is where the workspace's material goes, its stdout is
 /// what it reports ([`Report`]), and its stderr is the environment's log.
 pub struct Session {
-    /// Lines for its stdin.
-    input: Mutex<Option<mpsc::Sender<String>>>,
     /// Its process, to end it.
     signals: Option<LaunchSignals<AgentStream>>,
     ended: Arc<AtomicBool>,
 }
 
 impl Session {
-    /// Start the session in the guest `link` reaches, reporting into `life`,
-    /// logging to `log`, timed by `clock`.
+    /// Start the session in the guest `link` reaches for the workspace
+    /// `material` names, reporting into `life`, logging to `log`, timed by
+    /// `clock`: the material is the first thing its standard input is told.
     pub fn start(
         link: &AgentLink,
+        material: &str,
         life: Arc<Life>,
         log: PathBuf,
         clock: super::vm::Clock,
@@ -433,6 +427,7 @@ impl Session {
             display: Display::None,
         };
         let (input, lines) = mpsc::channel::<String>();
+        let _ = input.send(material.trim_end().to_owned());
         let (telling, told) = mpsc::channel::<LaunchSignals<AgentStream>>();
         let ended = Arc::new(AtomicBool::new(false));
         let ending = Arc::clone(&ended);
@@ -465,19 +460,9 @@ impl Session {
             .recv_timeout(READY_PATIENCE)
             .map_err(|_| SessionError::Silent(READY_PATIENCE))?;
         Ok(Self {
-            input: Mutex::new(Some(input)),
             signals: Some(signals),
             ended,
         })
-    }
-
-    /// Hand the session one line: the workspace's material.
-    pub fn hand(&self, material: &str) -> Result<(), SessionError> {
-        lock(&self.input)
-            .as_ref()
-            .ok_or(SessionError::NoSession)?
-            .send(material.trim_end().to_owned())
-            .map_err(|_| SessionError::NoSession)
     }
 
     /// End the session in the guest.
@@ -608,10 +593,55 @@ impl Write for Log {
     }
 }
 
-/// One browser environment as the host holds it: its life, and the session in
-/// it.
+/// What starts the session in a booted environment: a spare's guest agent is
+/// answered here, and its session starts when a workspace is handed to it.
+pub trait Starts: Send + Sync {
+    /// Start the session with `material` as the first line of its input.
+    ///
+    /// # Errors
+    ///
+    /// Why no session started: the guest agent refused it, or did not answer.
+    fn start(&self, material: &str) -> Result<Session, SessionError>;
+}
+
+/// The session of one booted environment, started through the guest agent of
+/// the VM it runs in.
+pub struct Launcher {
+    link: AgentLink,
+    life: Arc<Life>,
+    log: PathBuf,
+    clock: super::vm::Clock,
+}
+
+impl Launcher {
+    #[must_use]
+    pub fn new(link: AgentLink, life: Arc<Life>, log: PathBuf, clock: super::vm::Clock) -> Self {
+        Self {
+            link,
+            life,
+            log,
+            clock,
+        }
+    }
+}
+
+impl Starts for Launcher {
+    fn start(&self, material: &str) -> Result<Session, SessionError> {
+        Session::start(
+            &self.link,
+            material,
+            Arc::clone(&self.life),
+            self.log.clone(),
+            Arc::clone(&self.clock),
+        )
+    }
+}
+
+/// One browser environment as the host holds it: its life, what starts its
+/// session, and the session once a workspace was handed to it.
 pub struct Browser {
     life: Arc<Life>,
+    launcher: Mutex<Option<Box<dyn Starts>>>,
     session: Mutex<Option<Session>>,
 }
 
@@ -620,7 +650,7 @@ impl fmt::Debug for Browser {
         f.debug_struct("Browser")
             .field("up", &self.life.up())
             .field("session", &lock(&self.session).is_some())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -631,6 +661,18 @@ impl Browser {
     pub fn new(booted_ms: u64) -> Self {
         Self {
             life: Arc::new(Life::new(booted_ms)),
+            launcher: Mutex::new(None),
+            session: Mutex::new(None),
+        }
+    }
+
+    /// An environment whose life is `life`, whose guest agent answers, and
+    /// whose session `starts` when a workspace is handed to it.
+    #[must_use]
+    pub fn booted(life: Arc<Life>, starts: Box<dyn Starts>) -> Self {
+        Self {
+            life,
+            launcher: Mutex::new(Some(starts)),
             session: Mutex::new(None),
         }
     }
@@ -645,13 +687,9 @@ impl Browser {
         *lock(&self.session) = Some(session);
     }
 
-    /// Wait until the session is up and waiting for a workspace.
-    pub fn wait_ready(&self, patience: Duration) -> Result<(), String> {
-        self.life.wait_ready(patience)
-    }
-
     /// Hand this environment `material` and wait until its session reports it
-    /// is up. `None` when it was already up: this request attached to the
+    /// is up: the session starts here, with the material as the first line of
+    /// its input. `None` when it was already up: this request attached to the
     /// environment a person already opened.
     pub fn open(&self, material: &str, patience: Duration) -> Result<Option<u64>, String> {
         if !self.life.begin_opening() {
@@ -660,16 +698,23 @@ impl Browser {
             return Ok(None);
         }
         let started = Instant::now();
-        let handed = match lock(&self.session).as_ref() {
-            Some(session) => session.hand(material).map_err(|error| error.to_string()),
+        let handed = match lock(&self.launcher).as_ref() {
+            Some(starts) => starts.start(material).map_err(|error| error.to_string()),
             None => Err("the browser environment has no session".to_owned()),
         };
-        if let Err(error) = handed {
-            // It cannot serve a workspace without a session: it is at its end.
+        match handed {
+            Ok(session) => *lock(&self.session) = Some(session),
+            Err(error) => {
+                // It cannot serve a workspace without a session: it is at its
+                // end, and the workspace opens a fresh one.
+                self.life.ended(error.clone());
+                return Err(error);
+            }
+        }
+        if let Err(error) = self.life.wait_up(patience) {
             self.life.ended(error.clone());
             return Err(error);
         }
-        self.life.wait_up(patience)?;
         Ok(Some(
             u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         ))
@@ -915,41 +960,76 @@ mod tests {
         );
     }
 
+    /// A guest agent a test drives: it hands what it was told to start to the
+    /// test, and answers with a session that reports `up` when the test says
+    /// so.
+    struct FakeGuest {
+        told: Mutex<Option<mpsc::Sender<String>>>,
+        life: Arc<Life>,
+        up: bool,
+    }
+
+    impl Starts for FakeGuest {
+        fn start(&self, material: &str) -> Result<Session, SessionError> {
+            let told = lock(&self.told).take();
+            if let Some(told) = told {
+                let _ = told.send(material.to_owned());
+            }
+            if self.up {
+                let life = Arc::clone(&self.life);
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(30));
+                    life.report(Report::Ready, 2_500);
+                    life.report(
+                        Report::Up {
+                            provider: "42".into(),
+                        },
+                        3_000,
+                    );
+                });
+            }
+            Ok(Session {
+                signals: None,
+                ended: Arc::new(AtomicBool::new(false)),
+            })
+        }
+    }
+
     #[test]
-    fn one_hand_off_hands_the_material_and_the_second_attaches() {
-        let browser = Arc::new(Browser::new(1_000));
-        browser.life().report(Report::Ready, 2_000);
-        let (input, handed) = mpsc::channel();
-        browser.attach(Session {
-            input: Mutex::new(Some(input)),
-            signals: None,
-            ended: Arc::new(AtomicBool::new(false)),
-        });
-        // phase: the hand-off writes the material and waits for `up`
+    fn one_hand_off_starts_the_session_with_the_material_and_the_second_attaches() {
+        let life = Arc::new(Life::new(1_000));
+        let (told, handed) = mpsc::channel();
+        let browser = Arc::new(Browser::booted(
+            Arc::clone(&life),
+            Box::new(FakeGuest {
+                told: Mutex::new(Some(told)),
+                life: Arc::clone(&life),
+                up: true,
+            }),
+        ));
+        // phase: the hand-off starts the session with the material and waits
+        // for `up`
         let opening = {
             let browser = Arc::clone(&browser);
             std::thread::spawn(move || browser.open("{\"workspace\":\"ws1\"}", UP_PATIENCE))
         };
         assert_eq!(
             handed.recv_timeout(Duration::from_secs(10)).unwrap(),
-            "{\"workspace\":\"ws1\"}"
+            "{\"workspace\":\"ws1\"}",
+            "the session starts with the material as its first line"
         );
         // phase: a second request for the same workspace attaches to it
         let attaching = {
             let browser = Arc::clone(&browser);
             std::thread::spawn(move || browser.open("{\"workspace\":\"ws1\"}", UP_PATIENCE))
         };
-        std::thread::sleep(Duration::from_millis(50));
-        browser.life().report(
-            Report::Up {
-                provider: "42".into(),
-            },
-            3_000,
-        );
         let opened = opening.join().unwrap().unwrap();
-        assert!(opened.is_some(), "this request handed it the workspace");
+        assert!(
+            opened.is_some(),
+            "this request started the session and handed it the workspace"
+        );
         assert_eq!(
-            browser.life().provider().as_deref(),
+            life.provider().as_deref(),
             Some("42"),
             "the window it holds is what the provider names"
         );
@@ -964,6 +1044,26 @@ mod tests {
             Ok(None)
         );
         assert_eq!(browser.life().expired(3_100, LIMITS), None);
+    }
+
+    /// A session that never comes up takes the environment with it, so the
+    /// workspace opens a fresh one instead of waiting for a wedged spare.
+    #[test]
+    fn a_session_that_never_reports_up_ends_the_environment() {
+        let life = Arc::new(Life::new(1_000));
+        let browser = Browser::booted(
+            Arc::clone(&life),
+            Box::new(FakeGuest {
+                told: Mutex::new(None),
+                life: Arc::clone(&life),
+                up: false,
+            }),
+        );
+        let error = browser
+            .open("{}", Duration::from_millis(20))
+            .expect_err("nothing came up");
+        assert!(error.contains("up"), "{error}");
+        assert_eq!(life.expired(1_100, LIMITS), Some(End::Session));
     }
 
     #[test]

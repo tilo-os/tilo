@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use legacy_agent_protocol::link::AgentLink;
 
-use super::browser::{self, Browser, Named, Pool, Session, UP_PATIENCE};
+use super::browser::{self, Browser, Named, Pool, UP_PATIENCE};
 use super::control::{
     FRAMING, HostLoad, OpenBrowser, Reply, Request, ShareRequest, VmRequest, VmStatus,
 };
@@ -475,6 +475,13 @@ impl Service {
                         "the browser environment came up without a window".to_owned(),
                     )
                 })?;
+                if let Some(opened_ms) = opened_ms {
+                    eprintln!(
+                        "tilo-legacy hosted: {}: up {provider} {}ms after hand-off",
+                        browser::environment(&request.workspace),
+                        opened_ms
+                    );
+                }
                 Ok((opened_ms, provider))
             }
             Err(message) => {
@@ -548,8 +555,9 @@ impl Service {
 
     /// Boot a browser environment named `environment` (a workspace's
     /// `<workspace>/browser`, or a spare's): the VM boots from the browser
-    /// guest image on a fresh disk, and its session starts and waits for the
-    /// workspace's material.
+    /// guest image on a fresh disk, its guest agent answers, and its session
+    /// starts when a workspace is handed to it — never before, as a session
+    /// reads its identity once, before it builds anything.
     fn boot_browser(&self, environment: &str, account: &str) -> Result<Named, BrowserError> {
         let (workspace, name) = match environment.split_once('/') {
             Some((workspace, name)) => (workspace.to_owned(), name.to_owned()),
@@ -568,7 +576,6 @@ impl Service {
                 files,
             )
             .map_err(BrowserError::Vm)?;
-        let browser = Arc::new(Browser::new((self.clock)()));
         let booted = (|| {
             let link = {
                 let mut vm = lock(&entry.vm);
@@ -581,26 +588,21 @@ impl Service {
                 .files(&entry.workspace, &entry.environment)
                 .state
                 .join("session.log");
-            let session = Session::start(
-                &link,
-                Arc::clone(browser.life()),
-                log,
-                Arc::clone(&self.clock),
-            )
-            .map_err(|error| BrowserError::Session(error.to_string()))?;
-            browser.attach(session);
-            browser
-                .wait_ready(browser::READY_PATIENCE)
-                .map_err(BrowserError::Session)
+            let life = Arc::new(browser::Life::new((self.clock)()));
+            let starts =
+                browser::Launcher::new(link, Arc::clone(&life), log, Arc::clone(&self.clock));
+            Ok(Arc::new(Browser::booted(life, Box::new(starts))))
         })();
-        if let Err(error) = booted {
-            let _ = self.end_environment(environment, "it did not come up");
-            return Err(error);
+        match booted {
+            Ok(browser) => Ok(Named {
+                environment: environment.to_owned(),
+                browser,
+            }),
+            Err(error) => {
+                let _ = self.end_environment(environment, "it did not come up");
+                Err(error)
+            }
         }
-        Ok(Named {
-            environment: environment.to_owned(),
-            browser,
-        })
     }
 
     /// End the browser environments that are at their end, and keep the
