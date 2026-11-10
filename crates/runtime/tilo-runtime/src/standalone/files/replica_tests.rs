@@ -26,6 +26,8 @@ const TEST: &str = "standalone::files::replica::tests::\
 const PERSON_INVITATION: &str = "TILO_REPLICA_TEST_PERSON_INVITATION";
 const KEPT_TEST: &str = "standalone::files::replica::tests::\
     a_file_the_relay_kept_reaches_a_device_that_joins_after_its_writer_left";
+const RETURN_TEST: &str = "standalone::files::replica::tests::\
+    content_the_relay_let_go_of_comes_back_from_the_writer_that_was_away";
 /// The invitation the device that joins last redeems, in its own process.
 const JOINER_INVITATION: &str = "TILO_REPLICA_TEST_JOINER_INVITATION";
 const WORKSPACE_NAME: &str = "Project";
@@ -449,5 +451,105 @@ fn a_file_the_relay_kept_reaches_a_device_that_joins_after_its_writer_left() {
 
     let _ = later.kill();
     let _ = later.wait();
+    run(relay.shutdown());
+}
+
+/// A member that was away longer than the relay keeps content nothing names
+/// comes back with a file whose bytes the relay let go of in the meantime:
+/// the relay asks the writer for them again, as for any content a record
+/// names and the relay lacks, and keeps them once more.
+#[test]
+fn content_the_relay_let_go_of_comes_back_from_the_writer_that_was_away() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("warn,tilo_fs=debug,tilo_runtime=debug,tilo_relay=debug")
+        .with_writer(std::io::stderr)
+        .try_init();
+    let Some(profile) = isolated_root(RETURN_TEST) else {
+        return;
+    };
+    let scenario = profile.parent().unwrap().to_path_buf();
+    let member = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
+    let (_, member_device) =
+        tilo_identity_host::broker::trusted_current_device(member.workspace()).unwrap();
+    let operator = SigningKey::from_bytes(&[61; 32]);
+    let desk = certificate(
+        &operator,
+        &SigningKey::from_bytes(&[63; 32]),
+        DeviceCapabilities::primary(),
+    );
+    let state = scenario.join("relay");
+    let relay = run(relay(&state, &operator));
+    let workspaces = relay.workspaces().unwrap();
+    let workspace = run(async {
+        let created = workspaces.create(WORKSPACE_NAME).await?;
+        workspaces
+            .enter(&created.workspace, &desk)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>(created.workspace)
+    })
+    .unwrap();
+    let joined = member.joiner().unwrap()(&run(invitation(
+        &relay,
+        &workspace,
+        &desk,
+        Some(member_device.user_public_key),
+        1,
+    )))
+    .unwrap();
+    assert_eq!(joined, workspace);
+    let member_folder = member
+        .joined_files_folder(&workspace)
+        .expect("the member holds the joined workspace's files");
+    // The member goes away.
+    drop(member);
+
+    // The relay held the bytes of the member's draft, which no record named
+    // yet; the member is away for longer than the relay keeps such content,
+    // and the relay lets go of it.
+    let draft = content(21, 300_000);
+    let (manifest, _) = tilo_fs::content::build(&draft, None);
+    let store = relay.content().get(&workspace).unwrap();
+    let id = store.put(&manifest.encode()).unwrap();
+    let chunks: Vec<String> = (0..manifest.chunks().len())
+        .map(|index| {
+            let range = manifest.chunk_range(index).unwrap();
+            let range = usize::try_from(range.start).unwrap()..usize::try_from(range.end).unwrap();
+            store.put(&draft[range]).unwrap()
+        })
+        .collect();
+    let past_the_grace = std::time::SystemTime::now() + Duration::from_secs(60);
+    let collected = run(tilo_relay::content::collection::collect(
+        workspaces,
+        &relay.content(),
+        &workspace,
+        past_the_grace,
+    ))
+    .expect("every record of the workspace reads whole");
+    assert!(
+        collected.hashes.contains(&id),
+        "nothing named the draft, so the relay let go of it: {collected:?}"
+    );
+    assert!(!store.has(&id));
+
+    // Away, the member saved the draft into the workspace's files; it comes
+    // back, and its tree names the draft.
+    std::fs::write(member_folder.join("draft.txt"), &draft).unwrap();
+    let member = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
+
+    // The relay asks the writer for the draft and keeps it again.
+    let started = std::time::Instant::now();
+    let bound = tilo_test_env::hang_bound().saturating_sub(WAIT_LEAD);
+    while !(store.has(&id) && chunks.iter().all(|chunk| store.has(chunk))) {
+        assert!(
+            started.elapsed() <= bound,
+            "the relay never took the draft back from its writer: manifest kept {}, {} of {} chunks",
+            store.has(&id),
+            chunks.iter().filter(|chunk| store.has(chunk)).count(),
+            chunks.len(),
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    drop(member);
     run(relay.shutdown());
 }
