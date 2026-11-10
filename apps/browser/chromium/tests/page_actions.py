@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Page reading and operation through the host's `page` op, in real Chromium."""
 import base64
+import html
 import http.server
 import json
 import os
@@ -552,6 +553,43 @@ TWO_SITES = {'/news': NEWS, '/consent': CONSENT, '/consent-loading': CONSENT_LOA
              '/blank': b'<!doctype html><title>blank</title>'}
 
 
+# A shop, from its search to an order's confirmation: the stand-in for a real
+# order, which is never placed on a real site. Its bag and its orders are the
+# server's own, so a test reads what the shop received.
+SHOP_ITEMS = {'walking-boots': ('Walking boots', 129), 'rain-jacket': ('Rain jacket', 89), 'wool-socks': ('Wool socks', 12)}
+SHOP_PRODUCT = """<main><h1>{name}</h1><p>EUR {price}</p>
+<label>Size <select id="size"><option value="">Choose a size</option><option>41</option><option>42</option><option>43</option><option>44</option></select></label>
+<button type="button" id="add" disabled>Add to bag</button>
+<p id="said"></p></main>
+<script>
+const size = document.getElementById('size'), add = document.getElementById('add');
+size.onchange = () => { add.disabled = !size.value; };
+add.onclick = async () => {
+  document.getElementById('said').textContent = 'Adding to your bag';
+  await fetch('/shop/add', {method: 'POST', body: new URLSearchParams({sku: '{sku}', size: size.value})});
+  location.assign('/shop/bag');
+};
+</script>"""
+SHOP_CHECKOUT = """<h1>Checkout</h1>
+<form action="/shop/order" method="post">
+<fieldset><legend>Delivery address</legend>
+<label>Full name <input name="name" required autocomplete="name"></label>
+<label>Street <input name="street" required></label>
+<label>City <input name="city" required></label>
+<label>Postcode <input name="postcode" required></label>
+<label>Country <select name="country" required><option value="">Choose a country</option><option value="NL">Netherlands</option><option value="DE">Germany</option></select></label>
+</fieldset>
+<fieldset><legend>Delivery</legend>
+<label><input type="radio" name="delivery" value="standard" checked> Standard</label>
+<label><input type="radio" name="delivery" value="express"> Express</label>
+</fieldset>
+<fieldset><legend>Payment</legend>
+<label>Card number <input name="card" inputmode="numeric" autocomplete="cc-number" required></label>
+</fieldset>
+<button>Place order</button>
+</form>"""
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def answer(self, body, kind='text/html'):
         self.send_response(200)
@@ -560,8 +598,69 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def shop(self, method):
+        state, url = self.server.shop, urlparse(self.path)
+        path, query, sent = url.path, parse_qs(url.query), {}
+        if method == 'POST':
+            body = self.rfile.read(int(self.headers.get('Content-Length', 0))).decode()
+            sent = {name: values[0] for name, values in parse_qs(body).items()}
+        page = lambda title, body: self.answer((
+            f'<!doctype html><title>{title}</title><header><a href="/shop">Fixture Outfitters</a> '
+            f'<a href="/shop/bag">Bag ({len(state["bag"])})</a></header>{body}').encode())
+        listed = lambda items: ''.join(
+            f'<li>{SHOP_ITEMS[item["sku"]][0]}, size {item["size"]}, EUR {SHOP_ITEMS[item["sku"]][1]}</li>' for item in items)
+        if path == '/shop':
+            return page('Fixture Outfitters', '<h1>Fixture Outfitters</h1><form action="/shop/search" method="get">'
+                        '<label>Search the shop <input name="q" type="search" required></label><button>Search</button></form>')
+        if path == '/shop/search':
+            wanted = query.get('q', [''])[0].lower()
+            found = [(sku, name, price) for sku, (name, price) in SHOP_ITEMS.items() if wanted and wanted in name.lower()]
+            results = ''.join(f'<li><a href="/shop/p/{sku}">{name}</a> EUR {price}</li>' for sku, name, price in found)
+            return page('Search', f'<h1>Results for {html.escape(wanted)}</h1>' +
+                        (f'<ul>{results}</ul>' if found else '<p>Nothing found</p>'))
+        if path.startswith('/shop/p/') and path.rsplit('/', 1)[1] in SHOP_ITEMS:
+            sku = path.rsplit('/', 1)[1]
+            name, price = SHOP_ITEMS[sku]
+            return page(name, SHOP_PRODUCT.replace('{name}', name).replace('{price}', str(price)).replace('{sku}', sku))
+        if path == '/shop/add' and method == 'POST':
+            state['bag'].append({'sku': sent['sku'], 'size': sent['size']})
+            return self.answer(b'{"ok":true}', 'application/json')
+        if path == '/shop/bag':
+            total = sum(SHOP_ITEMS[item['sku']][1] for item in state['bag'])
+            return page('Your bag', '<h1>Your bag</h1>' + (
+                f'<ul>{listed(state["bag"])}</ul><p>Total EUR {total}</p><a href="/shop/checkout">Checkout</a>'
+                if state['bag'] else '<p>Your bag is empty</p>'))
+        if path == '/shop/checkout':
+            return page('Checkout', SHOP_CHECKOUT)
+        if path == '/shop/order' and method == 'POST':
+            order = dict(sent, items=list(state['bag']), number=1001 + len(state['orders']))
+            state['orders'].append(order)
+            state['bag'].clear()
+            self.send_response(303)
+            self.send_header('Location', f'/shop/order/{order["number"]}')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return None
+        placed = [order for order in state['orders'] if path == f'/shop/order/{order["number"]}']
+        if placed:
+            order = placed[0]
+            return page('Order confirmed', f'<h1>Order {order["number"]} confirmed</h1>'
+                        f'<p>Thank you, {html.escape(order["name"])}.</p><ul>{listed(order["items"])}</ul>'
+                        f'<p>Delivered to {html.escape(order["street"])}, {html.escape(order["postcode"])} '
+                        f'{html.escape(order["city"])}, {html.escape(order["country"])} by {html.escape(order["delivery"])} delivery.</p>'
+                        f'<p>Paid with the card ending {html.escape(order["card"][-4:])}.</p>')
+        self.send_response(404)
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+        return None
+
+    def do_POST(self):
+        return self.shop('POST')
+
     def do_GET(self):
         path = urlparse(self.path).path
+        if path.startswith('/shop'):
+            return self.shop('GET')
         if path in TWO_SITES:
             return self.answer(TWO_SITES[path].replace(b'{OTHER}', self.server.other.encode())
                                .replace(b'{NEAR}', self.server.near.encode()))
@@ -607,6 +706,7 @@ class PageActions(unittest.TestCase):
         for server, peer in ((cls.server, cls.other), (cls.other, cls.server)):
             server.other = f'http://localhost:{peer.server_port}'
             server.near = f'http://127.0.0.1:{peer.server_port}'
+            server.shop = {'bag': [], 'orders': []}
             server.signed = None
             threading.Thread(target=server.serve_forever, daemon=True).start()
         cls.url = f'http://127.0.0.1:{cls.server.server_port}'
@@ -1841,6 +1941,99 @@ class PageActions(unittest.TestCase):
             self.assertEqual(chosen['data']['files'], ['second.pdf'], chosen)
             self.assertEqual(self.main_world('document.querySelector("[name=proof]").files[0].name'),
                              'second.pdf')
+
+    def test_an_agent_buys_one_item_in_a_shop_to_the_order_s_confirmation(self):
+        # A purchase from the search to the confirmation, through page actions
+        # alone: a form is read and answered as a form, what stands in no form
+        # is operated by its own action, and the card number goes the secret's
+        # way and is nowhere in what the tab keeps or answers.
+        shop = self.server.shop = {'bag': [], 'orders': []}
+        card = '4242424242424242'
+        self.h.navigate(self.url + '/shop')
+        # The search is a form.
+        search = self.ok('forms', actor='ada')['data']['forms'][0]
+        self.assertEqual([field['name'] for field in search['fields']], ['Search the shop'])
+        found = self.ok('fill_form', form=search['form'], answers={'Search the shop': 'boots'}, submit=True, actor='ada')
+        self.assertEqual((found['data']['submitted'], found['navigation'], urlparse(found['url']).path),
+                         (True, 'started', '/shop/search'), found)
+        # The results ask nothing: the product is a link, found by its name.
+        self.assertEqual(self.ok('forms', actor='ada')['data']['forms'], [])
+        product = self.find(role='link', name='Walking boots', actor='ada')
+        opened = self.ok('click', element=product['data']['element'], actor='ada')
+        self.assertEqual((opened['navigation'], urlparse(opened['url']).path), ('started', '/shop/p/walking-boots'), opened)
+        # The product page keeps its size and its button in no form: each is
+        # operated by its own action, and the button takes no click before a
+        # size is chosen.
+        outline = self.ok('outline', actor='ada')['outline']
+        self.assertIn('heading "Walking boots" level=1', outline)
+        size, add = self.ref(outline, 'combobox "Size"'), self._disabled(outline, 'button "Add to bag"')
+        early = self.page('click', element=add, actor='ada')
+        self.assertFalse(early['ok'], early)
+        self.assertEqual(shop['bag'], [])
+        self.ok('select', element=size, values=['43'], actor='ada')
+        self.ok('click', element=add, actor='ada')
+        # The page adds the item and goes to the bag by itself.
+        bag = self.reads('heading "Your bag" level=1', 'the bag never opened', actor='ada')['outline']
+        self.assertIn('Walking boots, size 43, EUR 129', bag)
+        self.assertIn('Total EUR 129', bag)
+        self.assertEqual(shop['bag'], [{'sku': 'walking-boots', 'size': '43'}])
+        checkout = self.ok('click', element=self.ref(bag, 'link "Checkout"'), actor='ada')
+        self.assertEqual(urlparse(checkout['url']).path, '/shop/checkout')
+        # The checkout is a form: its questions by name, the card number a
+        # secret the form action does not place.
+        asked = self.ok('forms', actor='ada')['data']['forms'][0]
+        fields = {field['name']: field for field in asked['fields']}
+        self.assertEqual(list(fields), ['Full name', 'Street', 'City', 'Postcode', 'Country', 'Delivery', 'Card number'])
+        self.assertEqual((fields['Card number']['kind'], fields['Card number']['required']), ('secret', True))
+        self.assertEqual(fields['Delivery']['choices'], ['Standard', 'Express'])
+        answered = self.ok('fill_form', form=asked['form'], actor='ada', answers={
+            'Full name': 'Ada Lovelace', 'Street': '12 Linden Street', 'City': 'Utrecht', 'Postcode': '3511 AB',
+            'Country': 'Netherlands', 'Delivery': 'Express'})
+        self.assertEqual([result['ok'] for result in answered['data']['results']], [True] * 6, answered)
+        self.assertEqual(answered['data']['unanswered'], ['Card number'])
+        # Written as ordinary text the card number is refused, and what was
+        # refused is no part of the record; it is filled as a secret.
+        refused = self.page('fill', element=fields['Card number']['element'], text=card, actor='ada')
+        self.assertEqual((refused['ok'], refused['code']), (False, 'secret_field'), refused)
+        self.ok('fill', element=fields['Card number']['element'], text=card, secret=True, actor='ada')
+        # A reviewer reads the form before it is sent: every field with what
+        # it holds and who set it, the card number by its length alone.
+        review = self.ok('fields', actor='ben')
+        held = {field['name']: field for field in review['data']['fields']}
+        self.assertEqual((held['Full name']['value'], held['Full name']['set']['by']), ('Ada Lovelace', 'ada'))
+        self.assertEqual(held['Card number']['set']['by'], 'ada')
+        self.assertIn('16', held['Card number']['value'])
+        self.assertNotIn(card, json.dumps(review))
+        self.assertNotIn(card, self.ok('outline', actor='ben')['outline'])
+        # The form is the one that was read, and it is sent by its button.
+        sent = self.ok('fill_form', form=asked['signature'], answers={}, submit='Place order', actor='ada')
+        self.assertEqual((sent['data']['submitted'], sent['navigation'], urlparse(sent['url']).path),
+                         (True, 'started', '/shop/order/1001'), sent)
+        confirmation = self.ok('outline', actor='ada')['outline']
+        self.assertIn('heading "Order 1001 confirmed" level=1', confirmation)
+        self.assertIn('Walking boots, size 43, EUR 129', confirmation)
+        self.assertIn('Delivered to 12 Linden Street, 3511 AB Utrecht, NL by express delivery.', confirmation)
+        self.assertIn('Paid with the card ending 4242.', confirmation)
+        # The shop received one order, as a person's would have arrived.
+        self.assertEqual(shop['orders'], [{
+            'name': 'Ada Lovelace', 'street': '12 Linden Street', 'city': 'Utrecht', 'postcode': '3511 AB',
+            'country': 'NL', 'delivery': 'express', 'card': card,
+            'items': [{'sku': 'walking-boots', 'size': '43'}], 'number': 1001}])
+        self.assertEqual(shop['bag'], [])
+        # The record holds every step of it in order, and the card number is
+        # in none of them, nor in any answer.
+        record = self.ok('ledger', since=0)
+        entries = record['data']['entries']
+        self.assertEqual([(entry['actor'], entry['action'], entry['ok']) for entry in entries], [
+            ('ada', 'fill_form', True), ('ada', 'click', True), ('ada', 'click', False), ('ada', 'select', True),
+            ('ada', 'click', True), ('ada', 'click', True), ('ada', 'fill_form', True), ('ada', 'fill', False),
+            ('ada', 'fill', True), ('ada', 'fill_form', True)])
+        self.assertEqual(entries[8]['target'], {'role': 'textbox', 'name': 'Card number'})
+        self.assertNotIn('text', entries[7])
+        self.assertNotIn('text', entries[8])
+        self.assertEqual(entries[9]['to_url'], sent['url'])
+        for answer in (record, refused, answered, sent, confirmation):
+            self.assertNotIn(card, json.dumps(answer))
 
     def test_secrets_and_cross_site_submissions_need_explicit_consent(self):
         self.h.navigate(self.url + '/agent')
