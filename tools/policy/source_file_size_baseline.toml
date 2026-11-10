@@ -44,7 +44,7 @@
 "apps/word-processor/src/widget/tests.rs" = 8500
 "crates/agent/local-model-service/src/lib.rs" = 3500
 "crates/agent/model-gateway/src/service.rs" = 4000
-"crates/session/host/src/session.rs" = 4000
+"crates/session/host/src/session.rs" = 3500
 "crates/browser/tilo-browser-runtime/src/browser.rs" = 3500
 "crates/collab/collaboration/src/broker.rs" = 13000
 "crates/collab/tilo-action-broker/src/collab_app_broker.rs" = 15500
