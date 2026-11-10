@@ -142,6 +142,18 @@ struct DownloadedRows {
     published: Vec<tilo_actions::ActionDescriptor>,
 }
 
+/// Why a row the person chose did not happen, in words they read: the session's own missing app host
+/// says what it means, rather than naming its code on the row.
+#[must_use]
+pub fn why_in_words(error: &DoorError) -> String {
+    match error {
+        DoorError::Unavailable { code, .. } if code == "action_host_unavailable" => {
+            tilo_desktop_surface::i18n::t("answer-why-cannot-start")
+        }
+        other => other.to_string(),
+    }
+}
+
 /// The session's part in the desk's search, mounted by every host that runs a desk: the sources
 /// only a session has, and the rows a host carries out ([`tilo_desktop_surface::SearchHost`]).
 pub struct SessionSearch {
@@ -592,6 +604,27 @@ impl SessionSearch {
         own: &mut dyn FnMut(&InvokeTarget) -> Result<(), DoorError>,
     ) -> Result<(), DoorError> {
         self.perform_checked(workspace, target, own)
+    }
+
+    /// Carry out the rows the person chose in `handle`'s palette since the last call, naming the
+    /// workspace they were asked in, and return each row that could not be carried out with why.
+    pub fn perform_choices(
+        &self,
+        handle: &tilo_desktop_surface::DesktopHandle,
+        own: &mut dyn FnMut(&InvokeTarget) -> Result<(), DoorError>,
+    ) -> Vec<(Target, DoorError)> {
+        let workspace = handle.read(|tree| {
+            tree.active_workspace()
+                .map(|held| held.id().to_string())
+                .unwrap_or_default()
+        });
+        let mut refused = Vec::new();
+        for choice in handle.take_search_choices() {
+            if let Err(error) = self.perform(&workspace, choice.clone(), own) {
+                refused.push((choice, error));
+            }
+        }
+        refused
     }
 
     /// [`Self::perform`], saying whether it was carried out: a caller that has another way to reach

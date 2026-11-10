@@ -711,15 +711,15 @@ impl Desktop {
             // lists neither.
             self.search.observe(&resources, tabs, None, Vec::new());
         }
-        let refusals =
-            crate::page_search::chosen(&self.handle, &self.search, &self.workspace, &mut |own| {
-                self.arrangement
-                    .invoke(&own.address, &own.arguments)
-                    .map(drop)
-            });
-        for (chosen, why) in refusals {
+        let refused = self.search.perform_choices(&self.handle, &mut |own| {
+            self.arrangement
+                .invoke(&own.address, &own.arguments)
+                .map(drop)
+        });
+        for (chosen, error) in refused {
             // A row that could not be carried out opens the palette again, saying why on it.
-            if !self.handle.answer_search(&chosen, why.to_string()) {
+            let why = tilo_session::search::why_in_words(&error);
+            if !self.handle.answer_search(&chosen, why.clone()) {
                 web_sys::console::warn_1(&format!("search: {why}").into());
             }
         }

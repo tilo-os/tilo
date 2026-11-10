@@ -10,8 +10,7 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
-use tilo_actions::DoorError;
-use tilo_desktop_search::{InvokeTarget, SearchPreferences, Target};
+use tilo_desktop_search::SearchPreferences;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_session::platform::apps::Apps;
 use tilo_session::search::{SearchOptions, SessionSearch};
@@ -47,22 +46,4 @@ impl tilo_session::platform::Models for PageGateway {
     fn models(&self) -> Option<ui::models::Models> {
         Some(crate::host_services::page_models())
     }
-}
-
-/// The rows the person chose since the last call, carried out as the session carries them out: the
-/// desk's own published actions go through `own`, and a row that could not be carried out is handed
-/// back for the palette to say why on it.
-pub(crate) fn chosen(
-    handle: &DesktopHandle,
-    search: &SessionSearch,
-    workspace: &str,
-    own: &mut dyn FnMut(&InvokeTarget) -> Result<(), DoorError>,
-) -> Vec<(Target, DoorError)> {
-    let mut refused = Vec::new();
-    for target in handle.take_search_choices() {
-        if let Err(error) = search.perform(workspace, target.clone(), own) {
-            refused.push((target, error));
-        }
-    }
-    refused
 }

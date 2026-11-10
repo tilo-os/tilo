@@ -138,29 +138,20 @@ impl Shared {
     /// Carry out the rows the person chose in search, and follow a row that asked the session for
     /// something of its own: that is another round of asks.
     fn follow_search_choices(&self, look: &mut tilo_surface_host::Look<'_>) {
-        let choices = self.handle.take_search_choices();
-        if choices.is_empty() {
-            return;
-        }
-        let workspace = self.handle.read(|tree| {
-            tree.active_workspace()
-                .map(|held| held.id().to_string())
-                .unwrap_or_default()
+        let refused = self.search.perform_choices(&self.handle, &mut |own| {
+            self.doors
+                .invoke(&own.address, &own.arguments, look)
+                .map(drop)
         });
-        for choice in choices {
-            let carried = self.search.perform(&workspace, choice.clone(), &mut |own| {
-                self.doors
-                    .invoke(&own.address, &own.arguments, look)
-                    .map(drop)
-            });
-            if let Err(error) = carried {
-                // The row the person chose did not happen: search opens again where it stood,
-                // saying why on that row. A row whose search is gone has nothing to answer on, and
-                // says it as a notice.
-                let why = why_in_words(&error);
-                if !self.handle.answer_search(&choice, why) {
-                    self.answer_failed(&t("action-failed-that-row"), &error);
-                }
+        for (choice, error) in refused {
+            // The row the person chose did not happen: search opens again where it stood, saying
+            // why on that row. A row whose search is gone has nothing to answer on, and says it as
+            // a notice.
+            if !self
+                .handle
+                .answer_search(&choice, crate::search::why_in_words(&error))
+            {
+                self.answer_failed(&t("action-failed-that-row"), &error);
             }
         }
         self.follow_asks(look);
@@ -833,16 +824,5 @@ impl Shared {
                 tracing::debug!(?action, "a fixed shortcut of the desk's found no window");
             }
         }
-    }
-}
-
-/// Why a row the person chose did not happen, in words they read: the session's own missing app
-/// host says what it means, rather than naming its code on the row.
-fn why_in_words(error: &tilo_actions::DoorError) -> String {
-    match error {
-        tilo_actions::DoorError::Unavailable { code, .. } if code == "action_host_unavailable" => {
-            tilo_desktop_surface::i18n::t("answer-why-cannot-start")
-        }
-        other => other.to_string(),
     }
 }
