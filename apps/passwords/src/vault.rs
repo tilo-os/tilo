@@ -1926,6 +1926,9 @@ impl Core {
                         .unwrap_or_else(|| "The item was not saved".to_owned()));
                 }
             }
+            effect @ PasswordsEffect::SaveLogin { .. } => self.save_login(effect)?,
+            // Answered with its value where effects are answered ([`Self::logins`]).
+            PasswordsEffect::ListLogins => {}
             PasswordsEffect::Cancel => self.cancel_edit(),
             PasswordsEffect::Generate => {
                 if !self.is_editing() {
@@ -1975,6 +1978,54 @@ impl Core {
             PasswordsEffect::Open { item } => open(self, item)?,
         }
         Ok(())
+    }
+
+    /// Add a login in one step, through the editor's own checks and save: the editor is left as
+    /// it was found when the save is refused, and the draft holding the password is cleared either
+    /// way.
+    fn save_login(&mut self, effect: PasswordsEffect) -> Result<(), String> {
+        let PasswordsEffect::SaveLogin {
+            name,
+            origin,
+            username,
+            password,
+        } = effect
+        else {
+            return Err("not a login to save".to_owned());
+        };
+        let password = Zeroizing::new(password);
+        self.begin_add();
+        self.set_kind(SecretItemKind::Login);
+        self.set_draft(DraftField::Name, &name);
+        self.set_draft(DraftField::Origin, &origin);
+        self.set_draft(DraftField::Username, &username);
+        self.set_draft(DraftField::Password, &password);
+        drop(password);
+        self.toast = None;
+        self.save_draft();
+        if self.is_editing() {
+            let refused = self
+                .draft_error
+                .as_ref()
+                .map(|(_, message)| message.clone())
+                .or_else(|| self.toast.clone())
+                .unwrap_or_else(|| "The login was not saved".to_owned());
+            self.cancel_edit();
+            return Err(refused);
+        }
+        Ok(())
+    }
+
+    /// The vault's logins, by opaque id and name only: what [`PasswordsEffect::ListLogins`]
+    /// answers.
+    pub(crate) fn logins(&self) -> serde_json::Value {
+        let logins: Vec<_> = self
+            .items
+            .iter()
+            .filter(|item| item.kind == SecretItemKind::Login)
+            .map(|item| serde_json::json!({"item": item.id.0, "name": item.title}))
+            .collect();
+        serde_json::json!({ "logins": logins })
     }
 
     /// Live vault rows, one per item: what agents, scripts and the palette

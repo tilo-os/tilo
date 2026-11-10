@@ -17,6 +17,10 @@ id = "add"
 kind = "read"
 
 [[resources.verbs]]
+id = "list-logins"
+kind = "read"
+
+[[resources.verbs]]
 id = "cancel"
 kind = "read"
 
