@@ -353,6 +353,49 @@ fn virtual_rows(
             diff_node(was, row, &row_path, cx, out);
         }
     }
+    // What the list holds beside its rows — the slots the host fills with rows of its own, such
+    // as an item someone removed that the person has not seen go — is no row, so no step names
+    // it: it is inserted at its place among the children it shares with the rows, and taken out
+    // where it no longer stands.
+    let stepped_in: HashSet<&str> = steps
+        .iter()
+        .filter_map(|step| match step {
+            RowStep::Insert(_, node) => Some(node.key.as_str()),
+            _ => None,
+        })
+        .collect();
+    let stepped_out: HashSet<&str> = steps
+        .iter()
+        .filter_map(|step| match step {
+            RowStep::Remove { key, .. } => Some(key.as_str()),
+            _ => None,
+        })
+        .collect();
+    for (index, child) in new.children.iter().enumerate() {
+        if before.contains_key(child.key.as_str()) || stepped_in.contains(child.key.as_str()) {
+            continue;
+        }
+        out.push(Patch::Insert {
+            parent: path.to_vec(),
+            index,
+            node: child.clone(),
+        });
+    }
+    let kept: HashSet<&str> = new
+        .children
+        .iter()
+        .map(|child| child.key.as_str())
+        .collect();
+    for child in &old.children {
+        if kept.contains(child.key.as_str()) || stepped_out.contains(child.key.as_str()) {
+            continue;
+        }
+        out.push(Patch::Remove {
+            parent: path.to_vec(),
+            key: child.key.clone(),
+            at: None,
+        });
+    }
 }
 
 /// The patches that turn `old`, the only child of the node at `parent` (keys from the root),
@@ -610,5 +653,69 @@ mod tests {
         assert!(t.find("t").is_some());
         assert!(t.find("r/x/t").is_some());
         assert!(t.find("nope").is_none());
+    }
+
+    /// A list whose rows are built as it is shown: what stands beside its rows — the slot a
+    /// host fills with rows of its own, such as the items someone removed that the person has
+    /// not seen go — is no row, so it is inserted and removed as any other child, while the
+    /// rows are the ones its steps name.
+    #[test]
+    fn a_lists_slot_stands_beside_its_rows() {
+        let list = |children: Vec<UiNode>| {
+            let mut node = node("list", children);
+            node.kind = "ui.VirtualList".into();
+            node
+        };
+        let slot = || {
+            let mut slot = node("list~slot-removed", vec![text("gone", 1)]);
+            slot.kind = "slot".into();
+            slot
+        };
+        let mut lists = VirtualLists::new();
+        lists.insert("list".into(), RowsChange::Steps(Vec::new()));
+        let path = vec!["root".to_owned(), "list".to_owned()];
+
+        // The item someone else removed appears beside the rows.
+        let before = node("root", vec![list(vec![text("row", 1)])]);
+        let after = node("root", vec![list(vec![text("row", 1), slot()])]);
+        let p = diff_with(&before, &after, &same, &lists);
+        assert!(
+            p.contains(&Patch::Insert {
+                parent: path.clone(),
+                index: 1,
+                node: slot(),
+            }),
+            "the slot stands after the rows: {p:?}"
+        );
+
+        // The person has seen it go: it leaves, with the rows as they were.
+        let p = diff_with(&after, &before, &same, &lists);
+        assert!(
+            p.contains(&Patch::Remove {
+                parent: path.clone(),
+                key: "list~slot-removed".into(),
+                at: None,
+            }),
+            "the slot leaves: {p:?}"
+        );
+        assert!(
+            !p.iter()
+                .any(|patch| matches!(patch, Patch::Remove { at: Some(_), .. })),
+            "no row leaves: {p:?}"
+        );
+
+        // A row the list built is its step's to insert, once.
+        let mut lists = VirtualLists::new();
+        lists.insert(
+            "list".into(),
+            RowsChange::Steps(vec![RowStep::Insert(0, Box::new(text("new", 1)))]),
+        );
+        let fresh = node("root", vec![list(vec![text("new", 1)])]);
+        let p = diff_with(&before, &fresh, &same, &lists);
+        let inserted = p
+            .iter()
+            .filter(|patch| matches!(patch, Patch::Insert { .. }))
+            .count();
+        assert_eq!(inserted, 1, "the row is one insert: {p:?}");
     }
 }
