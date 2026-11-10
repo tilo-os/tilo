@@ -26,6 +26,32 @@ mod windows;
 #[cfg(all(target_os = "android", feature = "native"))]
 pub(crate) use android::android_font_system;
 
+/// What a process does when no root in [`catalog_roots`] holds a catalog it
+/// accepts: say so in the log, and, where the run was promised one
+/// (`TILO_REQUIRE_FONTS=1`, [`crate::host::RunnerDiagnostics::fonts_required`]),
+/// stop. Text falls back to the host's faces either way, which is nearly right
+/// and wrong in a way only a review of the picture notices — so a run that was
+/// promised the catalog fails here, naming where a catalog comes from.
+#[allow(
+    clippy::panic,
+    reason = "a run promised the product's font catalog: a frame set in the host's faces is not \
+              evidence about this product, so the process stops rather than drawing one"
+)]
+fn no_catalog(errors: &[FontCatalogError]) {
+    tracing::error!(?errors, "Tilo font catalog unavailable");
+    if !crate::host::environment().diagnostics.fonts_required {
+        return;
+    }
+    #[cfg(feature = "native")]
+    let why = catalog_missing_message();
+    #[cfg(not(feature = "native"))]
+    let why = "no font catalog for this build, which TILO_REQUIRE_FONTS promises every process \
+               that sets text. A binary built on another machine names that machine's checkout, \
+               so it finds none of this one's."
+        .to_owned();
+    panic!("{why}");
+}
+
 /// The product catalog with the system's fonts behind it, for every process
 /// that is not handed a host font database or Android's own catalog. The
 /// catalog is verified and the system fonts discovered once per process; each
@@ -58,7 +84,7 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
                 Some(tilo_startup_metrics::span("font-files-map", || mapped(&db)))
             }
             Err(errors) => {
-                tracing::error!(?errors, "Tilo font catalog unavailable");
+                no_catalog(&errors);
                 None
             }
         }
@@ -74,9 +100,14 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
     allow(dead_code, reason = "unit tests build the fixture font system instead")
 )]
 pub(crate) fn catalog_in_memory(locale: &str) -> Option<FontSystem> {
-    let (locale, loaded) = load_first_catalog(&catalog_roots(), locale, |_| {})
-        .ok()?
-        .into_locale_and_db();
+    let (locale, loaded) = match load_first_catalog(&catalog_roots(), locale, |_| {}) {
+        Ok(loaded) => loaded,
+        Err(errors) => {
+            no_catalog(&errors);
+            return None;
+        }
+    }
+    .into_locale_and_db();
     let mut held = fontdb::Database::new();
     let mut read = HashSet::new();
     for face in loaded.faces() {

@@ -100,6 +100,7 @@ pub fn process_environment() -> super::HostEnvironment {
                 .any(|name| std::env::var_os(name).is_some_and(|v| v == "1")),
             hosted_pump_timing: std::env::var_os("TILO_HOSTED_PUMP_TIMING")
                 .is_some_and(|v| v == "1"),
+            fonts_required: std::env::var_os(super::FONTS_REQUIRED_ENV).is_some_and(|v| v == "1"),
         },
         dev_session: path("TILO_DEV_SESSION"),
         ui_graph_dir: path("TILO_UI_GRAPH_DIR"),

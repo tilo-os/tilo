@@ -100,6 +100,10 @@ impl HostIdentity {
 /// in a sandbox ([`HostPaths::font_index`]).
 pub const FONT_INDEX_ENV: &str = "TILO_FONT_INDEX";
 
+/// `TILO_REQUIRE_FONTS=1` promises every process that sets text the product's
+/// font catalog, as `TILO_REQUIRE_GPU=1` promises a GPU: a test run sets it.
+pub const FONTS_REQUIRED_ENV: &str = "TILO_REQUIRE_FONTS";
+
 /// Where this process's user files live.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HostPaths {
@@ -196,6 +200,12 @@ pub struct RunnerDiagnostics {
     pub host_perf_baseline: bool,
     /// Print one payload-free timing line per hosted pump.
     pub hosted_pump_timing: bool,
+    /// The run was promised the product's font catalog
+    /// (`TILO_REQUIRE_FONTS=1`): a test run sets it, so a process that finds no
+    /// catalog stops rather than setting text in the host's faces, whose every
+    /// overflow, truncation and weight judgement is about a font the product
+    /// does not ship.
+    pub fonts_required: bool,
 }
 
 /// The variable a launch names the item its window opens on in, for a

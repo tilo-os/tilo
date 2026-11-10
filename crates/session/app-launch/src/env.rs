@@ -63,6 +63,10 @@ const FORWARDED: &[&str] = &[
     // How much an app (and the connector the system runs for one) logs, as the session's own
     // log says: a development session's log is all a connector without a window has.
     "RUST_LOG",
+    // A run promised the product's font catalog, which the app it starts draws in: an app that
+    // finds none stops instead of setting its text in the host's faces, where a frame it draws
+    // for a comparison would be about a font the product does not ship.
+    "TILO_REQUIRE_FONTS",
     // The document-media socket this session serves its apps, where it serves one that is not
     // the image's (`fs serve-media`, `docs/architecture/apps.md`): the launcher reads it to
     // scope every app's capability, and a session started from a build under test serves its
