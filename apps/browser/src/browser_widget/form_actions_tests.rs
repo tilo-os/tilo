@@ -1378,6 +1378,15 @@ fn a_private_window_neither_publishes_from_memory_nor_writes_to_it() {
     let kept = remembered(&app, VISA).expect("memory is as it was");
     assert_eq!((kept.pages, kept.seen), (vec!["/apply".to_owned()], 1));
     assert_eq!(app.state().site_forms.len(), 1);
+    assert!(
+        app.call_on(
+            "browser.page",
+            "read-remembered-forms",
+            serde_json::json!({})
+        )
+        .is_err(),
+        "and it lists none"
+    );
 }
 
 /// A window whose history is paused publishes what its page asks and
@@ -1417,4 +1426,402 @@ fn the_windows_read_of_a_signed_in_page_publishes_no_offered_answers() {
     read_forms(&engine, &mut app, &[visa_form()]);
     let actions = form_actions(&mut app);
     assert_eq!(actions[0].params()[3].choices, ["Kenya", "Other"]);
+}
+
+/// What the Browser remembers is the person's to see and to forget: typed
+/// actions list the forms of the site in front and of every site, and
+/// forget one form, one site's forms, or all of them. A forgotten site
+/// starts over on the next visit: nothing is published before its page is
+/// read.
+#[test]
+fn what_is_remembered_is_listed_and_forgetting_a_site_removes_its_actions_on_the_next_visit() {
+    let (_, mut app) = open_on(APPLY, &[visa_form(), search_form()]);
+    let shop = "https://shop.test";
+    app.invoke(Browser::REMEMBER_FORMS.with(browser::RememberForms {
+        origin: shop.into(),
+        page: "/".into(),
+        forms: vec![RememberedForm {
+            signature: "5e4c0000".into(),
+            label: "Search the shop".into(),
+            ..RememberedForm::default()
+        }],
+        whole: true,
+        at: 1,
+    }))
+    .expect("another site's form is remembered");
+
+    // The site in front, through the page's own action.
+    let listed = app
+        .call_on(
+            "browser.page",
+            "read-remembered-forms",
+            serde_json::json!({}),
+        )
+        .expect("the page lists what is remembered of its site")
+        .expect("a list");
+    assert_eq!(listed["site"], SITE);
+    let signatures: Vec<&str> = listed["forms"]
+        .as_array()
+        .expect("forms")
+        .iter()
+        .filter_map(|form| form["signature"].as_str())
+        .collect();
+    assert_eq!(signatures, ["0a11ce00", VISA]);
+    let visa = &listed["forms"][1];
+    assert_eq!(visa["label"], "Apply for a visitor visa");
+    assert_eq!(visa["pages"], serde_json::json!(["/apply"]));
+    assert_eq!(visa["questions"][0]["name"], "Full name");
+    assert_eq!(visa["questions"].as_array().map(Vec::len), Some(7));
+    let said = listed.to_string();
+    for held in ["Ada Lovelace", "characters hidden", "d1e"] {
+        assert!(!said.contains(held), "the list holds {held}: {said}");
+    }
+
+    // Every site, through the settings' action.
+    let all = app
+        .call_on(
+            "browser.settings",
+            "read-all-remembered-forms",
+            serde_json::json!({}),
+        )
+        .expect("the settings list what is remembered")
+        .expect("a list");
+    assert_eq!(all["forms"], 3);
+    let sites: Vec<&str> = all["sites"]
+        .as_array()
+        .expect("sites")
+        .iter()
+        .filter_map(|site| site["site"].as_str())
+        .collect();
+    assert_eq!(sites, [shop, SITE]);
+
+    // One form.
+    assert!(
+        app.call(
+            "forget-form",
+            serde_json::json!({"origin": SITE, "signature": "ffff0000"}),
+        )
+        .is_err(),
+        "a form nobody remembers cannot be forgotten"
+    );
+    app.call(
+        "forget-form",
+        serde_json::json!({"origin": APPLY, "signature": "0a11ce00"}),
+    )
+    .expect("a form is forgotten, its site named by an address of it");
+    assert!(remembered(&app, "0a11ce00").is_none());
+    assert!(remembered(&app, VISA).is_some());
+
+    // The site in front, through the action bound to the page's row.
+    app.call_on(
+        "browser.page",
+        "forget-this-site-forms",
+        serde_json::json!({}),
+    )
+    .expect("the page's row forgets the forms of its site");
+    assert!(remembered(&app, VISA).is_none());
+    assert_eq!(
+        app.state().site_forms.keys().collect::<Vec<_>>(),
+        ["https://shop.test 5e4c0000"],
+        "the other site's form stays"
+    );
+    // What the page in front asks is still its action: that is the page's,
+    // read from it, not memory's.
+    assert_eq!(form_actions(&mut app).len(), 4);
+    settle(&mut app);
+    assert!(
+        find(&app.harness().resources(), "browser.page")
+            .expect("the page")
+            .action_address("forget-this-site-forms")
+            .is_none(),
+        "a site nothing is remembered of offers nothing to forget"
+    );
+
+    // The next visit starts over: while the form's page loads nothing is
+    // published, where a remembered site publishes its forms at once.
+    let (engine, mut app) = visit_again(app, "https://visa.test/help", &[]);
+    let finished = begin_visit(&engine, &mut app, APPLY);
+    assert!(
+        form_actions(&mut app).is_empty(),
+        "a forgotten site publishes no form before its page is read"
+    );
+    // Once loaded the page is read as on a first visit, and remembered.
+    page_holds(&engine, &[visa_form()]);
+    finish_visit(&engine, &mut app, finished);
+    assert_eq!(
+        ids(&form_actions(&mut app)),
+        ["form-5f1c2a9b", "send-form-5f1c2a9b"]
+    );
+    assert!(remembered(&app, VISA).is_some());
+
+    // Everything.
+    app.call("forget-all-forms", serde_json::json!({}))
+        .expect("all remembered forms are forgotten");
+    assert!(app.state().site_forms.is_empty());
+}
+
+/// Clearing every site's data forgets every remembered form with it.
+#[test]
+fn clearing_all_site_data_forgets_every_remembered_form() {
+    let (engine, mut app) = open_on(APPLY, &[visa_form()]);
+    assert!(remembered(&app, VISA).is_some());
+    app.call_confirmed_on(
+        "browser.settings",
+        "request-site-data-clear",
+        serde_json::json!({}),
+    )
+    .expect("site data is cleared");
+    settle(&mut app);
+    assert!(
+        engine
+            .commands()
+            .iter()
+            .any(|command| matches!(command, WebViewCommand::ClearWebsiteData)),
+        "the engine clears what the sites keep"
+    );
+    assert!(app.state().site_forms.is_empty());
+}
+
+/// The site's status as the engine answers it for the site panel.
+fn site_status(request_id: u32, generation: u64) -> ui::webview::SiteStatus {
+    ui::webview::SiteStatus {
+        request_id,
+        origin: SITE.into(),
+        generation,
+        blocked: 0,
+        global_enabled: true,
+        excepted: false,
+        effective: true,
+        security: "secure".into(),
+        certificate_status: 0,
+        tls_version: 6,
+        content_status: 0,
+        subject: String::new(),
+        issuer: String::new(),
+        expires: 0.0,
+        permissions: Vec::new(),
+        can_reset: true,
+    }
+}
+
+/// The site panel's connection and data page shows the forms remembered of
+/// the site in front beside what the site keeps, each with the button that
+/// forgets it; and clearing the site's data there forgets its forms too,
+/// and no other site's.
+#[test]
+fn the_site_panel_shows_what_is_remembered_and_clearing_the_sites_data_forgets_it() {
+    const GENERATION: u64 = 7;
+    let (engine, mut app) = open_on(APPLY, &[visa_form(), search_form()]);
+    app.invoke(Browser::REMEMBER_FORMS.with(browser::RememberForms {
+        origin: "https://shop.test".into(),
+        page: "/".into(),
+        forms: vec![RememberedForm {
+            signature: "5e4c0000".into(),
+            label: "Search the shop".into(),
+            ..RememberedForm::default()
+        }],
+        whole: true,
+        at: 1,
+    }))
+    .expect("another site's form is remembered");
+
+    // The panel opens on the site's connection and data, as its launcher
+    // and the window bar's entry open it.
+    app.with_widget::<crate::BrowserWindow, _>(|window| {
+        (window.page_mut().site.open_command(true))();
+    })
+    .expect("the window");
+    settle(&mut app);
+    let asked_status = engine
+        .commands()
+        .into_iter()
+        .rev()
+        .find_map(|command| match command {
+            WebViewCommand::RequestSiteStatus { request_id, .. } => Some(request_id),
+            _ => None,
+        })
+        .expect("the open panel asks the engine for the site's status");
+    engine.push_event(WebViewEvent::SiteStatus(site_status(
+        asked_status,
+        GENERATION,
+    )));
+    settle(&mut app);
+    let texts = app.texts();
+    for shown in [
+        "Remembered forms",
+        "Apply for a visitor visa",
+        "Search this site",
+    ] {
+        assert!(
+            texts.iter().any(|text| text.contains(shown)),
+            "the panel shows {shown}: {texts:?}"
+        );
+    }
+    assert!(
+        texts.iter().any(|text| text.contains("7 questions")),
+        "{texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|text| text.contains("Search the shop")),
+        "another site's forms are not this site's: {texts:?}"
+    );
+
+    // One form's own button forgets that form.
+    app.harness()
+        .perform_named(
+            "browser.site.forms.forget.0a11ce00",
+            &ui::a11y::Action::Activate,
+        )
+        .expect("the search form's Forget button");
+    settle(&mut app);
+    assert!(remembered(&app, "0a11ce00").is_none());
+    assert!(remembered(&app, VISA).is_some());
+    assert!(
+        !app.texts()
+            .iter()
+            .any(|text| text.contains("Search this site")),
+        "the panel follows what is remembered"
+    );
+
+    // Clearing the site's data forgets what is left of its forms.
+    app.harness()
+        .perform_named("browser.site.clear", &ui::a11y::Action::Activate)
+        .expect("Clear site data");
+    settle(&mut app);
+    let clearing = engine
+        .commands()
+        .into_iter()
+        .rev()
+        .find_map(|command| match command {
+            WebViewCommand::SiteAction {
+                request_id,
+                origin,
+                generation,
+                action,
+            } if action == "clear" => {
+                assert_eq!((origin.as_str(), generation), (SITE, GENERATION));
+                Some(request_id)
+            }
+            _ => None,
+        })
+        .expect("the panel asks the engine to clear this site's data");
+    assert!(
+        remembered(&app, VISA).is_some(),
+        "nothing is forgotten before the engine cleared the data"
+    );
+    engine.push_event(WebViewEvent::SiteResult {
+        request_id: clearing,
+        origin: SITE.into(),
+        generation: GENERATION,
+        action: "clear".into(),
+        success: true,
+        message: "Cleared".into(),
+    });
+    settle(&mut app);
+    assert!(remembered(&app, VISA).is_none());
+    assert_eq!(
+        app.state().site_forms.keys().collect::<Vec<_>>(),
+        ["https://shop.test 5e4c0000"],
+        "another site's forms stay"
+    );
+}
+
+/// The screenshot scenario shows the site panel of a site forms are
+/// remembered of: each form with its questions counted and its own Forget
+/// button, under what the site keeps on this device.
+#[test]
+fn the_screenshot_scenario_shows_the_forms_remembered_of_a_site() {
+    let mut app =
+        TestApp::<BrowserShell>::capture(Some("site-forms")).expect("the scenario stages");
+    settle(&mut app);
+    let texts = app.texts();
+    for shown in [
+        "Clear site data",
+        "Remembered forms",
+        "Apply for a visitor visa",
+        "6 questions",
+        "Search this site",
+        "1 question",
+        "Sign up for updates",
+        "Forget this site’s forms",
+    ] {
+        assert!(
+            texts.iter().any(|text| text.contains(shown)),
+            "the panel shows {shown}: {texts:?}"
+        );
+    }
+    let targets = app.harness().targets();
+    for control in [
+        "browser.site.clear",
+        "browser.site.forms.forget.5d0c7a1e",
+        "browser.site.forms.forget.0a11ce00",
+        "browser.site.forms.forget-all",
+    ] {
+        assert!(targets.contains_key(control), "{control} is a control");
+    }
+}
+
+/// Forgetting is the document's own action like remembering: it syncs, a
+/// site is named by its origin or an address of it, and a form nobody
+/// remembers cannot be forgotten.
+#[test]
+fn forgetting_is_the_documents_action_and_syncs() {
+    let form = |signature: &str| RememberedForm {
+        signature: signature.into(),
+        label: "Form".into(),
+        ..RememberedForm::default()
+    };
+    let remember = |origin: &str, form: RememberedForm| {
+        Browser::REMEMBER_FORMS.with(browser::RememberForms {
+            origin: origin.into(),
+            page: "/".into(),
+            forms: vec![form],
+            whole: false,
+            at: 1,
+        })
+    };
+    let forget = |origin: &str, signature: &str| {
+        Browser::FORGET_FORM.with(browser::ForgetForm {
+            origin: origin.into(),
+            signature: signature.into(),
+        })
+    };
+    let mut ours = Replica::<Browser>::new();
+    for (origin, signature) in [
+        (SITE, "aaaa1111"),
+        (SITE, "bbbb2222"),
+        ("https://shop.test", "cccc3333"),
+        ("https://bank.test", "dddd4444"),
+    ] {
+        ours.apply(remember(origin, form(signature)))
+            .expect("a form's shape is remembered");
+    }
+    let mut theirs = ours.fork();
+    assert!(ours.apply(forget(SITE, "ffff0000")).is_err());
+    assert!(ours.apply(forget("mailto:a@b", "aaaa1111")).is_err());
+    ours.apply(forget("https://visa.test/apply?step=2", "aaaa1111"))
+        .expect("a form is forgotten");
+    ours.apply(Browser::FORGET_SITE_FORMS.with(browser::ForgetSiteForms {
+        origin: "https://shop.test".into(),
+    }))
+    .expect("a site's forms are forgotten");
+    ours.sync_with(&mut theirs).expect("the two devices sync");
+    let known = |replica: &Replica<Browser>| -> Vec<String> {
+        replica
+            .state()
+            .unwrap()
+            .site_forms
+            .keys()
+            .cloned()
+            .collect()
+    };
+    assert_eq!(
+        known(&ours),
+        ["https://bank.test dddd4444", "https://visa.test bbbb2222"]
+    );
+    assert_eq!(known(&theirs), known(&ours));
+    theirs
+        .apply(Browser::FORGET_ALL_FORMS.with(()))
+        .expect("everything is forgotten");
+    assert!(known(&theirs).is_empty());
 }

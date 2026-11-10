@@ -94,6 +94,7 @@ mod page_turns;
 pub(crate) mod personal;
 #[cfg(test)]
 mod regression_tests;
+mod remembered;
 mod review_hooks;
 mod side_panel;
 #[cfg(test)]
@@ -1726,6 +1727,7 @@ impl BrowserWidget {
         let protected = !self.site_exceptions.contains(&origin);
         Browser::site_switch(&origin, protected)
             .into_iter()
+            .chain(self.forget_site_declaration(&origin))
             .collect()
     }
 
@@ -1954,6 +1956,7 @@ impl BrowserWidget {
             }
             BrowserOperation::RequestWebsiteDataClear => {
                 self.engine.send(WebViewCommand::ClearWebsiteData);
+                self.forget_all_forms();
             }
             BrowserOperation::TogglePictureInPicture => self.begin_pip_probe(),
             BrowserOperation::ToggleReaderView => {
@@ -2067,6 +2070,9 @@ impl BrowserWidget {
             }
             BrowserOperation::Form(_) => {
                 return Err("form actions report their result; start them as an invocation".into());
+            }
+            BrowserOperation::RememberedForms { .. } => {
+                return Err("remembered forms are read as an invocation".into());
             }
             BrowserOperation::ReviewPage => self.open_page_review()?,
             BrowserOperation::ShowPageField { .. } => {
@@ -3036,6 +3042,7 @@ impl BrowserWidget {
                 self.show_library = false;
                 self.credentials.stage_for_review(addresses, &url);
             }
+            ReviewStage::SiteForms => self.show_remembered_for_shot(),
         }
         self.structure_dirty = true;
     }
@@ -3827,7 +3834,8 @@ impl BrowserWidget {
         if self.site.open {
             return Some((
                 PanelKind::Site,
-                self.site.panel(width, max_height),
+                self.site
+                    .panel_with(width, max_height, self.remembered_section()),
                 anchor_ids(&["browser.site.info", toolbar::OVERFLOW_ID, URL_INPUT_ID]),
             ));
         }
@@ -5820,6 +5828,7 @@ impl BrowserWidget {
 
         let mut settings = ResourceSpec::new("browser.settings", "browser.settings", "Settings");
         settings.actions.push(E::RequestSiteDataClear.bound());
+        settings.actions.push(E::ReadAllRememberedForms.bound());
 
         let mut browser = ResourceSpec::new(
             crate::resource::Browser::KIND,
@@ -6101,6 +6110,7 @@ impl BrowserWidget {
                 Browser::SET_SITE_PROTECTION.with(browser::SetSiteProtection { origin, enabled }),
             );
         }
+        self.forget_cleared_sites();
         if self.site.open && !site_was_open {
             self.deactivate_credentials();
         }
@@ -6207,6 +6217,9 @@ impl BrowserWidget {
                 return Ok(ui::framework::Effected::value(value));
             }
             _ => {}
+        }
+        if let BrowserOperation::RememberedForms { all } = operation {
+            return self.remembered_forms(all);
         }
         if let BrowserOperation::Form(run) = operation {
             self.start_form_run(invocation, actor, &run)?;
@@ -6428,6 +6441,7 @@ impl ui::widget::search_field::Filterable for BrowserWidget {
 #[derive(Clone, Copy, Debug)]
 enum ReviewStage {
     Autofill { addresses: bool },
+    SiteForms,
 }
 
 fn is_compact_chrome(width: f64, breakpoint: f32) -> bool {

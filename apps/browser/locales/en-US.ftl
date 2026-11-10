@@ -6,6 +6,9 @@ browser-set-site-protection = { $enabled ->
    *[false] Turned tracker protection off for { $origin }
 }
 browser-remember-forms = Remembered the forms of { $origin }
+browser-forget-form = Forgot a form of { $origin }
+browser-forget-site-forms = Forgot the forms of { $origin }
+browser-forget-all-forms = Forgot all remembered forms
 browser-browser-bookmarks = Changed the bookmarks
 browser-bookmark-title = Renamed the bookmark { $item }
 browser-settings-adblock-enabled = { $new ->
@@ -358,7 +361,18 @@ browser-site-block-permissions = Block permissions
 browser-site-block-note = Blocks camera, microphone, location and notifications. Reload the page to end sessions already running.
 browser-site-ask-again = Ask again
 browser-site-clear-data = Clear site data
-browser-site-clear-note = Clears this site’s storage and cookies, including cookies shared with its subdomains. Reload the page to reset data it still holds.
+browser-site-clear-note = Clears this site’s storage, cookies and remembered forms, including cookies shared with its subdomains. Reload the page to reset data it still holds.
+browser-site-forms = Remembered forms
+browser-site-forms-none = No forms remembered for this site
+browser-site-forms-note = The questions each form asks. Answers are not kept.
+browser-site-forms-forget = Forget this site’s forms
+browser-site-form-untitled = Form
+browser-site-form-questions = { $count ->
+    [one] { $count } question
+   *[other] { $count } questions
+}
+browser-site-form-forget = Forget
+browser-site-form-forget-name = Forget { $form }
 browser-site-protection-off-settings = Protection is off in Settings
 browser-site-protection-off = Protection is off for this site
 browser-site-protection-on = Protection is on for this site

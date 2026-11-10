@@ -18,6 +18,7 @@ impl BrowserWidget {
             Some("permission") => self.debug_request_permission(),
             Some("page-dialog") => self.debug_page_dialog(),
             Some("review") => self.stage_page_review(),
+            Some("site-forms") => self.review_stage = Some(ReviewStage::SiteForms),
             Some("suggestions") => {
                 self.debug_force_typed_suggestions("youtube.com");
                 self.suggestions.move_selection(1);

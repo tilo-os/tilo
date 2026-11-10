@@ -6,6 +6,9 @@ browser-set-site-protection = { $enabled ->
    *[false] Trackerschutz für { $origin } ausgeschaltet
 }
 browser-remember-forms = Formulare von { $origin } gemerkt
+browser-forget-form = Ein Formular von { $origin } vergessen
+browser-forget-site-forms = Formulare von { $origin } vergessen
+browser-forget-all-forms = Alle gemerkten Formulare vergessen
 browser-browser-bookmarks = Die Lesezeichen geändert
 browser-bookmark-title = Lesezeichen { $item } umbenannt
 browser-settings-adblock-enabled = { $new ->
@@ -358,7 +361,18 @@ browser-site-block-permissions = Berechtigungen blockieren
 browser-site-block-note = Blockiert Kamera, Mikrofon, Standort und Benachrichtigungen. Laden Sie die Seite neu, um laufende Sitzungen zu beenden.
 browser-site-ask-again = Erneut fragen
 browser-site-clear-data = Websitedaten löschen
-browser-site-clear-note = Löscht Speicher und Cookies dieser Website, auch Cookies, die sie mit ihren Subdomains teilt. Laden Sie die Seite neu, um verbliebene Daten zurückzusetzen.
+browser-site-clear-note = Löscht Speicher, Cookies und gemerkte Formulare dieser Website, auch Cookies, die sie mit ihren Subdomains teilt. Laden Sie die Seite neu, um verbliebene Daten zurückzusetzen.
+browser-site-forms = Gemerkte Formulare
+browser-site-forms-none = Keine Formulare für diese Website gemerkt
+browser-site-forms-note = Die Fragen, die jedes Formular stellt. Antworten werden nicht gespeichert.
+browser-site-forms-forget = Formulare dieser Website vergessen
+browser-site-form-untitled = Formular
+browser-site-form-questions = { $count ->
+    [one] { $count } Frage
+   *[other] { $count } Fragen
+}
+browser-site-form-forget = Vergessen
+browser-site-form-forget-name = { $form } vergessen
 browser-site-protection-off-settings = Der Schutz ist in den Einstellungen aus
 browser-site-protection-off = Der Schutz ist für diese Website aus
 browser-site-protection-on = Der Schutz ist für diese Website an

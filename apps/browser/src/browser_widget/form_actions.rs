@@ -73,9 +73,13 @@ impl BrowserWidget {
     /// The actions the page publishes for its forms: for each form an
     /// action named after it with its questions as typed parameters, and
     /// one that sends it. From a read of this page, or before any read from
-    /// what was remembered of its site.
+    /// what was remembered of its site. After them, the action that lists
+    /// what is remembered of the site.
     pub(super) fn form_actions(&self) -> Vec<ui::tilo_actions::ActionSpec> {
-        Place::of(&self.current_uri).map_or_else(Vec::new, |place| self.forms.actions(&place))
+        let mut actions =
+            Place::of(&self.current_uri).map_or_else(Vec::new, |place| self.forms.actions(&place));
+        actions.push(self.remembered_forms_action());
+        actions
     }
 
     /// Follow the document's site memory. A private window follows none: it

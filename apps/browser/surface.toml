@@ -51,6 +51,25 @@ params = [
   { name = "at", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
 ]
 
+[[resources.verbs]]
+id = "forget-form"
+kind = "undoable"
+params = [
+  { name = "origin", type = "text", required = true, schema = { type = "string" } },
+  { name = "signature", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "forget-site-forms"
+kind = "undoable"
+params = [
+  { name = "origin", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "forget-all-forms"
+kind = "undoable"
+
 [[resources.types]]
 name = "Bookmark"
 fields = [

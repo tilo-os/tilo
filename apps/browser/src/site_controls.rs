@@ -50,6 +50,9 @@ pub struct SiteControls {
     /// Protection changes the engine accepted for an origin, which the
     /// browser records in its document.
     decisions: Vec<(String, bool)>,
+    /// The origins whose stored data the engine cleared: what the browser's
+    /// document remembers of them goes too.
+    cleared: Vec<String>,
 }
 impl Default for SiteControls {
     fn default() -> Self {
@@ -68,6 +71,7 @@ impl Default for SiteControls {
             filters: crate::native_blocker::status(),
             exceptions: BTreeSet::new(),
             decisions: Vec::new(),
+            cleared: Vec::new(),
         }
     }
 }
@@ -105,6 +109,20 @@ impl SiteControls {
     /// enabled)`, for the document.
     pub fn take_decisions(&mut self) -> Vec<(String, bool)> {
         std::mem::take(&mut self.decisions)
+    }
+
+    /// The origins whose stored data was cleared since the last call.
+    pub fn take_cleared(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.cleared)
+    }
+
+    /// Screenshot hook: the panel open on the connection and data of the
+    /// site `status` is of, as the engine answered it.
+    pub fn stage_information(&mut self, status: SiteStatus) {
+        self.committed = Some(status.origin.clone());
+        self.open = true;
+        self.information = true;
+        self.status = Some(status);
     }
 
     pub fn navigation(&mut self, url: &str) {
@@ -170,6 +188,9 @@ impl SiteControls {
                 self.action = None;
                 if action != "reload" || !success {
                     self.notice = message;
+                }
+                if success && action == "clear" {
+                    self.cleared.push(origin.clone());
                 }
                 if success && matches!(action.as_str(), "enable" | "disable") {
                     let enabled = action == "enable";
@@ -284,6 +305,10 @@ impl SiteControls {
         }
         dirty
     }
+    /// [`Self::panel_with`] with nothing the browser keeps of the site.
+    pub fn panel(&self, width: f32, max_height: f32) -> Box<dyn Widget> {
+        self.panel_with(width, max_height, Vec::new())
+    }
     fn button(&self, id: &str, label: &str, pending: Pending) -> Button {
         Button::new(id, label).on_effect(self.command(pending))
     }
@@ -325,8 +350,15 @@ impl SiteControls {
         reason = "the two bounded site-panel pages share their action context"
     )]
     /// The panel's content, `width` wide. It is as tall as it needs to be up
-    /// to `max_height`, then scrolls.
-    pub fn panel(&self, width: f32, max_height: f32) -> Box<dyn Widget> {
+    /// to `max_height`, then scrolls. `kept` stands under the site's stored
+    /// data on the connection and data page: what the browser itself keeps
+    /// of the site.
+    pub fn panel_with(
+        &self,
+        width: f32,
+        max_height: f32,
+        kept: Vec<Box<dyn Widget>>,
+    ) -> Box<dyn Widget> {
         let line =
             |text: &str| Box::new(Text::new(text).with_role(TextRole::Body)) as Box<dyn Widget>;
         let note = |text: &str| {
@@ -469,6 +501,9 @@ impl SiteControls {
                         .with_enabled(self.action.is_none()),
                     ))
                     .push(note(&crate::CATALOG.t("browser-site-clear-note")));
+                for element in kept {
+                    column = column.push(element);
+                }
             } else {
                 let state = crate::CATALOG.t(if !status.global_enabled {
                     "browser-site-protection-off-settings"

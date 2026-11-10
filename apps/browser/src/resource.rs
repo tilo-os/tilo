@@ -42,8 +42,9 @@ pub struct Browser {
     #[model(readonly)]
     pub site_exceptions: Set<String>,
     /// Forms remembered of the sites that asked them, by site and
-    /// signature: their shape, never what a field held. Only reading or
-    /// answering a page's forms changes them.
+    /// signature: their shape, never what a field held. Reading or
+    /// answering a page's forms remembers them, and forgetting a form, a
+    /// site's forms or all of them forgets them; nothing else changes them.
     #[model(readonly)]
     pub site_forms: std::collections::BTreeMap<String, crate::site_memory::RememberedForm>,
 }
@@ -130,6 +131,44 @@ impl Browser {
     ) -> Result<(), Refusal> {
         crate::site_memory::remember(&mut self.site_forms, &origin, &page, forms, whole, at)
     }
+
+    /// Forget a remembered form.
+    #[action(keywords = "remembered form, site memory")]
+    pub fn forget_form(
+        &mut self,
+        #[param("The site's address or exact origin, such as https://example.org")] origin: String,
+        #[param("The form's signature, as read-remembered-forms gives it")] signature: String,
+    ) -> Result<(), Refusal> {
+        let origin = site_named(&origin)?;
+        if crate::site_memory::forget_form(&mut self.site_forms, &origin, &signature) == 0 {
+            return Err(Refusal::new("no such form is remembered of this site"));
+        }
+        Ok(())
+    }
+
+    /// Forget a site's remembered forms.
+    #[action(keywords = "remembered forms, site memory, forget site")]
+    pub fn forget_site_forms(
+        &mut self,
+        #[param("The site's address or exact origin, such as https://example.org")] origin: String,
+    ) -> Result<(), Refusal> {
+        let origin = site_named(&origin)?;
+        crate::site_memory::forget_site(&mut self.site_forms, &origin);
+        Ok(())
+    }
+
+    /// Forget all remembered forms.
+    #[action(keywords = "remembered forms, site memory, clear forms")]
+    pub fn forget_all_forms(&mut self) -> Result<(), Refusal> {
+        self.site_forms.clear();
+        Ok(())
+    }
+}
+
+/// The site `named` by its address or its exact origin.
+fn site_named(named: &str) -> Result<String, Refusal> {
+    crate::site_controls::origin(named.trim())
+        .ok_or_else(|| Refusal::new("a site is named by one http(s) origin"))
 }
 
 /// The resource id of the bookmark `id`: its item of the document.
@@ -192,6 +231,18 @@ impl Browser {
             )
     }
 
+    /// Forgetting the forms remembered of the site `origin`, as the row of a
+    /// page on that site offers it.
+    pub(crate) fn forget_site(origin: &str) -> Option<ActionDecl<Self>> {
+        let params = browser::ForgetSiteForms::paths();
+        Self::FORGET_SITE_FORMS
+            .bind(params.origin, origin.to_owned())
+            .declaration(
+                "forget-this-site-forms",
+                "Forget this site’s remembered forms",
+            )
+    }
+
     /// The origins tracker protection is off for.
     pub fn exceptions(&self) -> std::collections::BTreeSet<String> {
         self.site_exceptions.iter().cloned().collect()
@@ -212,6 +263,7 @@ const SCENARIOS: &[&str] = &[
     "permission",
     "page-dialog",
     "review",
+    "site-forms",
     "suggestions",
     "library-history",
     "library-bookmarks",
@@ -302,6 +354,7 @@ impl ResourceApp for BrowserShell {
             Some("settings" | "history-paused") => (900, 700),
             Some("loading" | "error" | "permission" | "page-dialog") => (900, 620),
             Some("review") => (1000, 1340),
+            Some("site-forms") => (900, 1120),
             Some(name) if name.starts_with("library-") || name.starts_with("downloads-") => {
                 (1000, 700)
             }
@@ -310,6 +363,15 @@ impl ResourceApp for BrowserShell {
     }
 
     fn scenario(name: Option<&str>) -> Vec<Invoke<Browser>> {
+        if name == Some("site-forms") {
+            return vec![Browser::REMEMBER_FORMS.with(browser::RememberForms {
+                origin: crate::site_memory::SHOT_SITE.into(),
+                page: crate::site_memory::SHOT_PAGE.into(),
+                forms: crate::site_memory::shot_forms(),
+                whole: true,
+                at: tilo_clock::unix_now(),
+            })];
+        }
         if name != Some("library-bookmarks") {
             return Vec::new();
         }

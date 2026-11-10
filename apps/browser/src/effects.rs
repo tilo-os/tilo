@@ -299,9 +299,35 @@ pub enum BrowserEffect {
     ClearHistory,
     /// Clear site data
     ///
-    /// Cookies and site storage on this device will be cleared. You may be signed out of websites.
+    /// Cookies and site storage on this device will be cleared, and the forms remembered of sites forgotten. You may be signed out of websites.
     #[effect(row, returns, destructive)]
     RequestSiteDataClear,
+    /// Read this site's remembered forms
+    ///
+    /// Lists the forms remembered of the site in front: each form's name and
+    /// signature, the pages it was read on, what it asks and when it was
+    /// last read. Only what a form asks is remembered, never an answer.
+    #[effect(
+        row,
+        returns,
+        kind = "read",
+        untrusted,
+        keywords = "remembered form, site memory"
+    )]
+    ReadRememberedForms,
+    /// Read all remembered forms
+    ///
+    /// Lists the forms remembered of every site, by site: each form's name
+    /// and signature, the pages it was read on, what it asks and when it was
+    /// last read. Only what a form asks is remembered, never an answer.
+    #[effect(
+        row,
+        returns,
+        kind = "read",
+        untrusted,
+        keywords = "remembered form, site memory"
+    )]
+    ReadAllRememberedForms,
     /// Pause history in this window
     #[effect(row, returns)]
     TogglePause,
@@ -1134,6 +1160,8 @@ impl BrowserEffect {
             Self::ForgetVisit { url } => BrowserOperation::ForgetVisit { url },
             Self::ClearHistory => BrowserOperation::ClearHistory,
             Self::RequestSiteDataClear => BrowserOperation::RequestWebsiteDataClear,
+            Self::ReadRememberedForms => BrowserOperation::RememberedForms { all: false },
+            Self::ReadAllRememberedForms => BrowserOperation::RememberedForms { all: true },
             Self::TogglePause => BrowserOperation::ToggleHistoryPause,
             Self::PictureInPicture => BrowserOperation::TogglePictureInPicture,
             Self::ReaderView => BrowserOperation::ToggleReaderView,
@@ -1479,6 +1507,10 @@ pub enum BrowserOperation {
     },
     ClearHistory,
     RequestWebsiteDataClear,
+    /// Read the forms remembered of the site in front, or of every site.
+    RememberedForms {
+        all: bool,
+    },
     TogglePictureInPicture,
     /// Show the page's article in reader view, or the page again.
     ToggleReaderView,
