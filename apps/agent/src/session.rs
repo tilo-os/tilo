@@ -104,7 +104,10 @@ struct Following {
     reask: native_task::Reask,
     /// The latest state the host reported.
     update: tilo_actions::InvocationUpdate,
-    deadline: Instant,
+    /// When the step gives up, where it has a time: a step that asks the
+    /// person first has none of its own but the run's budget — the person
+    /// decides in their own time, and nothing else cuts it short.
+    deadline: Option<Instant>,
     /// Its outcome, once settled.
     outcome: Option<Result<StepOutcome, TaskActionStop>>,
 }
@@ -736,6 +739,12 @@ impl Session {
             .map_or(ordinary, |task| ordinary.min(task))
     }
 
+    /// The run's own budget deadline, where it has one: what a step that
+    /// waits on the person is bounded by, and nothing else.
+    fn task_budget_deadline(&self) -> Option<Instant> {
+        self.task_deadline
+    }
+
     fn task_budget_expired(&self) -> bool {
         self.task_deadline
             .is_some_and(|deadline| ui::time::now() >= deadline)
@@ -821,14 +830,17 @@ impl Session {
             arguments: arguments.clone(),
             wait: None,
         })?;
+        let mut asks_person = false;
         let update = match self.wait_for_task_action_result(request_id)? {
             Ok((_, update)) => update,
             Err(error) if confirmation::is_awaiting(&error) => {
-                // A step that asks first belongs to the record's app, which
-                // shows the question; a conversation has nowhere to show it,
-                // so the step fails with the reason and the model plans
-                // around it.
-                return Ok(Err(confirmation::cannot_ask(action)));
+                // The step asks the person before it runs: the host put the
+                // question on the system's sheet and holds the child until
+                // they answer there. Nothing ran yet, so the child is taken
+                // as accepted and followed; its follow waits on the person
+                // (`confirmation.rs`), not on a clock.
+                asks_person = true;
+                tilo_actions::InvocationUpdate::Accepted { invocation }
             }
             Err(error) => {
                 return Ok(Err(TaskActionStop::Failed(confirmation::step_failure(
@@ -836,13 +848,21 @@ impl Session {
                 ))));
             }
         };
+        // A child that asks the person waits on their answer, in their own
+        // time: only the run's own budget can cut the wait short, never the
+        // step's ordinary wait.
+        let deadline = if asks_person {
+            self.task_budget_deadline()
+        } else {
+            Some(self.task_wait_deadline(TASK_ACTION_WAIT))
+        };
         Ok(Ok(Following {
             action: action.clone(),
             arguments: arguments.clone(),
             invocation,
             reask: native_task::Reask::default(),
             update,
-            deadline: self.task_wait_deadline(TASK_ACTION_WAIT),
+            deadline,
             outcome: None,
         }))
     }

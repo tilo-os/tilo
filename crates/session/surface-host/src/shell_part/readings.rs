@@ -208,7 +208,10 @@ pub fn app_of(ty: &str) -> Option<&str> {
 /// that calls another app's `fn` (`discussion.said_about(t)`) runs that app's code, so its
 /// package has to stand loaded here as the placed app's does. An app `module` answers nothing
 /// for is left out, and the place waits for it as it waits for any package the session has not
-/// served.
+/// served. So is an app this shell's runtime already holds as a package of its own
+/// (`held_here`): every module lists `tilo.std` among the apps it uses (`PackageMeta::uses`),
+/// and the session serves its module, but it is no app of the workspace and loading it as one
+/// puts a package on the shell no place shows.
 #[must_use]
 pub fn with_uses(
     packages: impl IntoIterator<Item = (String, std::sync::Arc<[u8]>)>,
@@ -229,7 +232,7 @@ pub fn with_uses(
             continue;
         };
         for used in meta.uses {
-            if used == app || out.contains_key(&used) {
+            if used == app || out.contains_key(&used) || held_here(&used) {
                 continue;
             }
             if let Some(module) = module(&used)
@@ -240,6 +243,29 @@ pub fn with_uses(
         }
     }
     out
+}
+
+/// Whether the shell's runtime already holds what `app` is as a package, so a place's apps must
+/// not bring it in again as another app's code:
+///
+/// * the platform's packages (`tilolang_tilo::platform_apps::platform_packages`: the device,
+///   Settings and the session), which the runtime loads for itself as descriptions the session's
+///   door answers (`ShellPlatform::load`), so a used one stands here already and loading it
+///   again would redeclare its ids;
+/// * the standard library (`tilo.std`), which every module lists among its uses but which shows
+///   nothing itself: its views are templates the compiler expands into their callers, so no
+///   call runs its code and the runtime holds no package of it and needs none.
+fn held_here(app: &str) -> bool {
+    if app == tilolang_tilo::tilolang::stdlib::APP {
+        return true;
+    }
+    match tilolang_tilo::platform_apps::platform_packages() {
+        Ok(packages) => packages.iter().any(|meta| meta.app == app),
+        Err(why) => {
+            tracing::error!(%why, "the platform's packages do not read");
+            false
+        }
+    }
 }
 
 #[cfg(test)]
@@ -306,6 +332,57 @@ mod with_uses_tests {
         let top = package("me.top", &["me.mid"], std::slice::from_ref(&mid.meta));
         let loaded = with_uses([("me.top".to_owned(), wasm(&top))], |_| None);
         assert_eq!(loaded.len(), 1, "only the app the place shows stands");
+    }
+
+    /// Every module lists the standard library among the apps it uses, and the session serves its
+    /// module, but the runtime needs no package of it: its views are templates the compiler
+    /// expands into their callers, so no call into it runs (its test proves it declares nothing
+    /// else). Loaded as one, it stands on the shell as an app of the workspace no place shows.
+    #[test]
+    fn the_standard_library_an_app_uses_is_not_loaded_as_an_app() {
+        let top = package("me.top", &[], &[]);
+        assert!(
+            top.meta.uses.iter().any(|used| used == "tilo.std"),
+            "every module lists the library among its uses: {:?}",
+            top.meta.uses
+        );
+        let library = tilolang_tilo::tilolang::stdlib::compiled();
+        let loaded = with_uses([("me.top".to_owned(), wasm(&top))], |app| {
+            (app == "tilo.std").then(|| wasm(library))
+        });
+        assert_eq!(
+            loaded.keys().cloned().collect::<Vec<_>>(),
+            ["me.top"],
+            "the library is no app of the workspace, though the session serves its module"
+        );
+    }
+
+    /// A platform package the shell's runtime already holds as a description is no app a place
+    /// brings in either: the platform loads it for itself, and loading it again as another app's
+    /// code would declare its ids twice. The session is asked for no module of it.
+    #[test]
+    fn a_platform_package_an_app_uses_is_not_loaded_again() {
+        let device = tilolang_tilo::platform_apps::platform_packages()
+            .expect("the platform's packages read")
+            .into_iter()
+            .find(|meta| meta.app == tilolang_tilo::platform_apps::DEVICE_APP)
+            .expect("the device is one of the platform's packages");
+        let top = package("me.top", &["so.tilo.device"], std::slice::from_ref(&device));
+        let asked = std::cell::RefCell::new(Vec::new());
+        let loaded = with_uses([("me.top".to_owned(), wasm(&top))], |app| {
+            asked.borrow_mut().push(app.to_owned());
+            None
+        });
+        assert_eq!(
+            loaded.keys().cloned().collect::<Vec<_>>(),
+            ["me.top"],
+            "the device's package stands on the runtime already"
+        );
+        assert_eq!(
+            *asked.borrow(),
+            Vec::<String>::new(),
+            "the device's package is not even looked up: the runtime holds it"
+        );
     }
 }
 
