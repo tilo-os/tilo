@@ -255,9 +255,16 @@ fn an_agents_doing_line_is_never_cut_short() {
         let place = overlay.rows[0].clone();
         if place.said.area() > 0.0 {
             assert!(
-                place.said.y0 >= place.rect.y1 && needs <= place.said.width(),
-                "under the row, the words whole at {width}: {needs} in {:?}",
+                needs <= place.said.width(),
+                "under the name, the words whole at {width}: {needs} in {:?}",
                 place.said
+            );
+            // A second line of the row: close under the name, never a control's height away.
+            assert!(
+                place.said.y0 >= place.rect.center().y && place.said.y0 <= place.rect.y1,
+                "right under the name at {width}: {:?} in {:?}",
+                place.said,
+                place.rect
             );
             assert_ne!(
                 overlay.hit_test(place.said.center()),

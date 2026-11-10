@@ -448,8 +448,11 @@ fn under_height(
         // doing: in the row, under its name, where that holds the words whole (`in_row`), else on
         // a line of its own under the row rather than cut to "Reading Launch notes in…".
         let doing = doing_line(row).is_some_and(|now| !now.trim().is_empty());
-        return if row.working_in.is_some() || (doing && !in_row) {
+        return if row.working_in.is_some() {
             line
+        } else if doing && !in_row {
+            // One caption line, which stands right under the name (`place_rows`).
+            f64::from(theme.text(TextRole::Caption).line_height_px())
         } else {
             0.0
         };
@@ -783,12 +786,20 @@ impl CollaboratorsOverlay {
                     } else if row.is_agent && row.working_in.is_some() {
                         place.working_in = strip;
                     } else {
-                        // The line stands in the column their name does, under it.
+                        // The line stands in the column their name does, under it. Software's
+                        // line says what it is doing: a second line of its row, risen into the
+                        // row's own room under the name rather than floating a control's height
+                        // below it.
+                        let lift = if row.is_agent {
+                            gap + f64::from(spacing.s3)
+                        } else {
+                            0.0
+                        };
                         place.said = Rect::new(
                             self.body.x0 + FACE + f64::from(spacing.s3),
-                            strip.y0,
+                            strip.y0 - lift,
                             strip.x1,
-                            strip.y1,
+                            strip.y1 - lift,
                         );
                     }
                     y += gap + under_h;
