@@ -355,9 +355,8 @@ impl Engine {
         )
     }
 
-    /// What `workspace` holds of `app`'s `record` now, for the reader this device is: the whole
-    /// document with the heads it stands at, a record that still stands where `known` left it, or
-    /// nothing yet. At most `maximum` bytes are handed out.
+    /// What `workspace` holds of `app`'s `record` now, for the reader this device is: at most
+    /// `maximum` bytes of it, and the heads it stands at.
     ///
     /// # Errors
     /// The workspace is not held here, this device may not read the record, the record is sealed

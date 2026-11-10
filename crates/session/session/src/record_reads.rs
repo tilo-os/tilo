@@ -1,14 +1,10 @@
-//! The records this device reads outside their apps: the workspace's own copy of a record, opened
-//! with the record channel's keys, answered as the broker's `NativeDocumentReads`. An app's Open of
-//! a record it keeps on its own channel asks here once the workspace holds it, and so does an
-//! agent's task reading its workspace's records.
+//! The records this device reads outside their apps, as the broker's `NativeDocumentReads`: an
+//! app's Open of a record the workspace holds, and an agent's task reading its workspace's records.
 //!
-//! The read is the engine's ([`Engine::read_record`]), which is also what the desk, search and a
-//! branch read a record with: one path from the workspace to a document, whether the workspace
-//! commits its records or seals them under the record channel's keys. A record this device holds
-//! nothing of is not read at all: it is one the app opens on its own channel, or one the
-//! workspace's host retains and replays, which an Open waits for
-//! ([`NativeDocumentReads::await_sealed_history`]).
+//! The read is the engine's ([`Engine::read_record`]), the one path the desk, search and a branch
+//! also read a record with, for a workspace that commits its records and one that seals them. A
+//! record this device holds nothing of is the app's own channel: an Open only waits for the
+//! workspace's host to replay one it retains ([`NativeDocumentReads::await_sealed_history`]).
 
 use std::sync::Arc;
 
@@ -34,8 +30,8 @@ impl Records {
 }
 
 impl NativeDocumentReads for Records {
-    /// A workspace this device's owner commits in the clear answers every read; one whose records
-    /// are its members' sealed channels answers the records it holds.
+    /// A workspace this device's owner commits answers every read; one whose records are its
+    /// members' sealed channels answers the records it holds.
     fn requires_workspace(&self, workspace: &str) -> bool {
         WorkspaceId::parse(workspace)
             .is_some_and(|workspace| self.engine.commits_documents(workspace))
@@ -62,9 +58,9 @@ impl NativeDocumentReads for Records {
     }
 
     /// A record of a sealed workspace this device holds nothing of may have been written on
-    /// another device, or before this session: the workspace's host retains it, and replays it to
-    /// this device once asked. The Open decides the record is new only after that replay landed,
-    /// which wakes this wait as it arrives: deciding earlier would have the app make a second one.
+    /// another device, or before this session: the workspace's host retains it and replays it once
+    /// asked. The Open decides the record is new only after that landed — deciding earlier would
+    /// have the app make a second one.
     fn await_sealed_history(&self, context: &NativeDocumentReadContext) -> Option<AwaitingHistory> {
         let route = context.route();
         if !self.seals_records(&route.cluster_id)
@@ -85,8 +81,8 @@ impl NativeDocumentReads for Records {
         engine.request_record(&workspace, &app, &record);
         Some(Box::pin(async move {
             while !engine.holds_record(&workspace, &app, &record) {
-                // A write landing in this device's workspaces may be the record's: the host's
-                // replay reaches this device as the writes of the records it keeps.
+                // A write landing here may be the record's: the host's replay reaches this device
+                // as the writes of the records it keeps.
                 if landed.changed().await.is_err() {
                     // The session's own event is gone: decide on what this device holds.
                     return;
@@ -211,38 +207,54 @@ mod tests {
         )
     }
 
-    /// A workspace this device holds nothing of is the app's own channel: it opens the record
-    /// there, and reads nothing of it here.
+    /// A record this device holds nothing of is the app's own channel, in a workspace it holds and
+    /// one it does not. A session with no collaboration plane reaches no host, so it decides on
+    /// what it holds.
     #[test]
-    fn a_workspace_this_device_does_not_hold_is_the_apps_own_channel() {
+    fn a_record_this_device_holds_nothing_of_is_the_apps_own_channel() {
         let state = tempfile::tempdir().expect("a state directory");
-        let (engine, cert, _) = device(state.path(), 0x51);
-        let records = Records::new(engine);
-        let workspace = WorkspaceId::new().to_string();
+        let (engine, cert, key) = device(state.path(), 0x51);
+        let records = Records::new(Arc::clone(&engine));
+        let elsewhere = WorkspaceId::new().to_string();
         assert_eq!(
-            records.record_read(&workspace, APP, RECORD),
+            records.record_read(&elsewhere, APP, RECORD),
             RecordRead::Own
         );
-        assert!(!records.seals_records(&workspace));
-        assert!(!records.requires_workspace(&workspace));
-        let context =
-            NativeDocumentReadContext::for_reader(CrdtRoute::record(APP, workspace, RECORD), cert);
+        assert!(!records.seals_records(&elsewhere));
+        assert!(!records.requires_workspace(&elsewhere));
+        let elsewhere_read = NativeDocumentReadContext::for_reader(
+            CrdtRoute::record(APP, elsewhere, RECORD),
+            cert.clone(),
+        );
         assert!(
-            records.authorize(&context).is_err(),
+            records.authorize(&elsewhere_read).is_err(),
             "a read of a workspace this device does not hold is refused"
+        );
+
+        // A workspace this device holds, of a record it holds nothing of: the app's channel too.
+        let workspace = workspace_with_record(&engine, &key);
+        assert_eq!(
+            records.record_read(&workspace.to_string(), APP, "another-note"),
+            RecordRead::Own
+        );
+        assert!(!engine.reaches_host());
+        assert!(
+            records
+                .await_sealed_history(&context(workspace, "another-note", cert))
+                .is_none(),
+            "nothing is waited for where no host is reached"
         );
     }
 
-    /// A record the workspace holds is read from this device's own copy, and a device the
-    /// workspace does not certify reads nothing of it.
+    /// A record the workspace holds reads from this device's own copy; a device the workspace does
+    /// not certify reads nothing.
     #[test]
     fn a_record_the_workspace_holds_reads_from_this_devices_copy() {
         let state = tempfile::tempdir().expect("a state directory");
         let (engine, cert, key) = device(state.path(), 0x52);
         let workspace = workspace_with_record(&engine, &key);
         let records = Records::new(Arc::clone(&engine));
-        // A workspace whose host takes part in its channels seals its records, and what this
-        // device took in of them is its own copy.
+        // A workspace whose host takes part in its channels seals its records.
         assert!(records.seals_records(&workspace.to_string()));
         assert!(!records.requires_workspace(&workspace.to_string()));
         assert_eq!(
@@ -263,7 +275,7 @@ mod tests {
         else {
             panic!("the workspace holds the record whole");
         };
-        // The record was founded empty: it has no heads yet, and its document still reads back.
+        // The record was founded empty: no heads yet, and its document still reads back.
         assert!(heads.is_empty(), "an empty record has no heads");
         assert!(!body.bytes().is_empty(), "the record reads back");
         assert!(
@@ -286,28 +298,6 @@ mod tests {
                 .authorize(&context(workspace, RECORD, stranger))
                 .is_err(),
             "a device the workspace does not certify reads nothing"
-        );
-    }
-
-    /// A record the workspace holds nothing of is the app's own channel too, unless its host
-    /// retains it, which an Open waits for. A session with no collaboration plane reaches no host,
-    /// so it decides on what it holds.
-    #[test]
-    fn a_record_the_workspace_holds_nothing_of_is_the_apps_own_channel() {
-        let state = tempfile::tempdir().expect("a state directory");
-        let (engine, cert, key) = device(state.path(), 0x54);
-        let workspace = workspace_with_record(&engine, &key);
-        let records = Records::new(Arc::clone(&engine));
-        assert_eq!(
-            records.record_read(&workspace.to_string(), APP, "another-note"),
-            RecordRead::Own
-        );
-        assert!(!engine.reaches_host());
-        assert!(
-            records
-                .await_sealed_history(&context(workspace, "another-note", cert))
-                .is_none(),
-            "nothing is waited for where no host is reached"
         );
     }
 }

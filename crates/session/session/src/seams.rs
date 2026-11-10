@@ -151,8 +151,7 @@ seams! {
     personal: tilo_peer_state::PersonalSync,
 }
 
-/// The records this session reads outside their apps, from the engine that holds its workspaces: a
-/// session that holds none reads a record only on the app's own channel.
+/// The records this session reads outside their apps, from the engine that holds its workspaces.
 pub(crate) fn document_reads(
     engine: Option<&Arc<crate::engine::Engine>>,
 ) -> Seam<Arc<dyn tilo_action_broker::services::NativeDocumentReads>> {

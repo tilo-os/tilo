@@ -104,7 +104,6 @@ mod workspace_record_custody {
                     Some(vec![emoji().kind.to_owned()]),
                     "the record's kind is the platform's, not the launching package's"
                 );
-
                 for (route, why) in [
                     (
                         CrdtRoute::record(emoji().app, &cluster, "tab:0000000000000001"),

@@ -1,5 +1,5 @@
-//! What reaches this device's workspaces from their other devices, as a read that waits on it
-//! hears of it: no timer, and nothing to do while nothing arrives.
+//! What reaches this device's workspaces from their other devices: an event a read waits on, with
+//! nothing to do while nothing arrives.
 
 /// Ticks whenever one of this device's workspaces took in a write another device made.
 #[derive(Debug, Default)]

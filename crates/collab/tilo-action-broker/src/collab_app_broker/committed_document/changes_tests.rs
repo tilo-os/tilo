@@ -134,10 +134,10 @@ fn context(custody: &Arc<AtomicBool>) -> NativeDocumentReadContext {
     tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
     let custody = Arc::clone(custody);
     NativeDocumentReadContext {
-        route: crate::collab_broker::CrdtRoute::record("so.tilo.notes", WORKSPACE, ""),
-        certificate,
         record_kind: None,
         creation: None,
+        route: crate::collab_broker::CrdtRoute::record("so.tilo.notes", WORKSPACE, ""),
+        certificate,
         revalidate: Arc::new(move || {
             if custody.load(Ordering::Acquire) {
                 Ok(())
