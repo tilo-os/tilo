@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    write_manifest()?;
     let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
     let tool = repository.join("tools/font-catalog.py");
     let source = repository.join("crates/sdk/ui-core/assets/fonts");
@@ -80,6 +81,85 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "cargo::rustc-env=TILO_CHECKOUT_FONT_ROOT={}",
         named.display()
     );
+    Ok(())
+}
+
+/// The manifest as Rust (`OUT_DIR/manifest.rs`, which `manifest()` builds), so
+/// no program parses TOML for it: a browser's start module carried a TOML
+/// parser for this alone. A manifest of another schema, or missing a field,
+/// fails the build.
+fn write_manifest() -> Result<(), Box<dyn std::error::Error>> {
+    use std::fmt::Write as _;
+    use toml::Value;
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("manifest.toml");
+    println!("cargo::rerun-if-changed={}", path.display());
+    let table: toml::Table = std::fs::read_to_string(&path)?.parse()?;
+    if table.get("schema").and_then(Value::as_integer) != Some(1) {
+        return Err("manifest.toml: unsupported catalog schema".into());
+    }
+    // A string as a Rust literal, a number as itself.
+    let field = |of: &Value, key: &str| -> Result<String, String> {
+        match of.get(key) {
+            Some(Value::String(text)) => Ok(format!("{text:?}.to_owned()")),
+            Some(Value::Integer(number)) => Ok(number.to_string()),
+            _ => Err(format!("manifest.toml: a font has no `{key}`")),
+        }
+    };
+    let names = |of: &Value, key: &str| -> String {
+        let names = of
+            .get(key)
+            .and_then(Value::as_array)
+            .map_or(&[][..], Vec::as_slice);
+        let names: Vec<String> = names
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|name| format!("{name:?}.to_owned()"))
+            .collect();
+        format!("vec![{}]", names.join(", "))
+    };
+    let mut out = String::from("Manifest { schema: 1, font: vec![\n");
+    for font in table
+        .get("font")
+        .and_then(Value::as_array)
+        .ok_or("manifest.toml: no fonts")?
+    {
+        let scope = match font.get("scope").and_then(Value::as_str) {
+            Some("product") => "Product",
+            Some("os") => "Os",
+            Some("fixture") => "Fixture",
+            other => return Err(format!("manifest.toml: unknown scope {other:?}").into()),
+        };
+        let mut faces = Vec::new();
+        for face in font
+            .get("faces")
+            .and_then(Value::as_array)
+            .ok_or("manifest.toml: no faces")?
+        {
+            faces.push(format!(
+                "Face {{ index: {}, family: {}, post_script_name: {}, style: {}, tilo_families: {} }}",
+                field(face, "index")?,
+                field(face, "family")?,
+                field(face, "post_script_name")?,
+                field(face, "style")?,
+                names(face, "tilo_families"),
+            ));
+        }
+        writeln!(
+            out,
+            "Asset {{ scope: Scope::{scope}, browser_startup: {}, file: {}, bytes: {}, sha256: {}, reserved_aliases: {}, faces: vec![{}] }},",
+            font.get("browser_startup")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            field(font, "file")?,
+            field(font, "bytes")?,
+            field(font, "sha256")?,
+            names(font, "reserved_aliases"),
+            faces.join(", "),
+        )?;
+    }
+    out += "] }\n";
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").ok_or("cargo sets OUT_DIR")?);
+    std::fs::write(out_dir.join("manifest.rs"), out)?;
     Ok(())
 }
 

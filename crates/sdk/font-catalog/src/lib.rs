@@ -17,7 +17,6 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 #[cfg(feature = "faces")]
@@ -143,8 +142,7 @@ impl Error {
 /// licence, such as New Computer Modern's GPL-licensed Regular cut, is
 /// `Os`. A catalog directory without its `Os` files is a standalone
 /// catalog, and the toolkit sets text in the faces it has.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
     Product,
     Os,
@@ -166,18 +164,17 @@ impl Scope {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct Manifest {
     pub schema: u32,
     pub font: Vec<Asset>,
 }
 
 /// One pinned font file.
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct Asset {
     pub scope: Scope,
     /// Whether a browser host must deliver this file before first paint.
-    #[serde(default)]
     pub browser_startup: bool,
     /// Path relative to the catalog root.
     pub file: String,
@@ -189,7 +186,7 @@ pub struct Asset {
 }
 
 /// One face of a pinned file (a collection has several).
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct Face {
     pub index: u32,
     /// The family the file itself names.
@@ -201,24 +198,17 @@ pub struct Face {
     /// New Computer Modern file says `NewComputerModern` at weight 400,
     /// whether it is the Book, Regular or 8 pt cut. Empty keeps the file's
     /// own family. The file's bytes are never changed.
-    #[serde(default)]
     pub tilo_families: Vec<String>,
 }
 
-/// The compiled-in manifest, parsed once.
+/// The compiled-in manifest, built once (the build reads `manifest.toml`).
+#[allow(
+    clippy::unreadable_literal,
+    reason = "the sizes are written by the build as manifest.toml states them"
+)]
 pub fn manifest() -> Result<&'static Manifest, Error> {
-    static PARSED: OnceLock<Result<Manifest, String>> = OnceLock::new();
-    PARSED
-        .get_or_init(|| {
-            let manifest: Manifest = toml::from_str(MANIFEST).map_err(|e| e.to_string())?;
-            if manifest.schema == 1 {
-                Ok(manifest)
-            } else {
-                Err("unsupported catalog schema".to_string())
-            }
-        })
-        .as_ref()
-        .map_err(|problem| Error::at("manifest.toml", problem))
+    static BUILT: OnceLock<Manifest> = OnceLock::new();
+    Ok(BUILT.get_or_init(|| include!(concat!(env!("OUT_DIR"), "/manifest.rs"))))
 }
 
 /// SHA-256 of the compiled-in manifest, which identifies the catalog.
