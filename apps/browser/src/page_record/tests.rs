@@ -983,33 +983,30 @@ fn nobody_at_the_door_adds_to_the_record() {
         "action": "input", "ok": true, "url": PAGE,
         "target": {"role": "textbox", "name": "Passport number"}, "text": "P1234567"});
     for (claimant, claimed) in [(Some(&ada_agent), form_sent(2)), (None, typed)] {
-        let named = json!({"tab": tab, "device": "laptop", "entry": claimed});
-        let named = named.as_object().expect("the verb's arguments");
+        let named = setting_down(&tab, claimed);
         let unknown = refusal(invoke(
             &mut app,
             claimant,
-            ActionAddress::new(RESOURCE, "set-down"),
-            named,
+            named.address_on(RESOURCE),
+            &named.arguments,
         ));
         assert!(unknown.contains("no action addressed by"), "{unknown}");
 
-        let value = setting_down(&tab, claimed.clone())
-            .build(0)
-            .expect("Browser builds its own writing");
+        let value = named.build(0).expect("Browser builds its own writing");
         let value = Invoke::<PageRecord>::apply(&value).expect("the writing as a value");
         refusal(invoke(
             &mut app,
             claimant,
-            ActionAddress::new(RESOURCE, "apply"),
+            value.address_on(RESOURCE),
             &value.arguments,
         ));
 
-        let grouped = json!({"actions": [{"action": "set-down", "args": named}]});
+        let grouped = Invoke::group([named]);
         refusal(invoke(
             &mut app,
             claimant,
-            ActionAddress::new(RESOURCE, "group"),
-            grouped.as_object().expect("the group's arguments"),
+            grouped.address_on(RESOURCE),
+            &grouped.arguments,
         ));
     }
     app.settle();
