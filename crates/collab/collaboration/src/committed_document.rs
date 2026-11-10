@@ -125,7 +125,7 @@ impl Reads {
     }
     /// A wait for the next [`Self::progressed`] or refresh request. Enable it
     /// before checking the state it guards, so a change in between is kept.
-    fn reader_wake(&self) -> tokio::sync::futures::Notified<'_> {
+    pub(super) fn reader_wake(&self) -> tokio::sync::futures::Notified<'_> {
         self.5.reader.notified()
     }
     /// Whether the owner asked for a fresh read, without consuming the ask.
@@ -175,6 +175,7 @@ impl Reads {
                 generation,
             });
         }
+        self.progressed();
     }
     pub(super) fn document_owner_routes(&self, original: &str) -> Vec<String> {
         self.4
@@ -213,6 +214,13 @@ impl Reads {
     )]
     pub fn close_for_test(&self, key: &str) -> Arc<AtomicBool> {
         self.pending(key).unwrap()
+    }
+    /// Open a route [`Self::close_for_test`] closed, as its applied read does:
+    /// whatever waits for it hears it.
+    #[cfg(test)]
+    pub(crate) fn open_for_test(&self, ready: &AtomicBool) {
+        ready.store(true, Ordering::Release);
+        self.progressed();
     }
     #[cfg(test)]
     pub(crate) fn legacy_for_test(&self, key: &str) {

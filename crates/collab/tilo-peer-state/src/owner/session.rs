@@ -282,9 +282,9 @@ impl Scope {
             std::time::SystemTime::now(),
         )
     }
-    /// Reconcile the owner's outgoing custody and send, once per link, every
-    /// entry it may send now. Sealed writes that expired in custody are not
-    /// renewed: see [`Self::publish_renewing`].
+    /// Send, once per link, every entry of the owner's outgoing custody it may
+    /// send now, writing nothing ([`Self::retire`] does). Sealed writes that
+    /// expired in custody are not renewed: see [`Self::publish_renewing`].
     pub fn publish(&self, link: &DirectSync, identity: &HostIdentity) -> Result<(), String> {
         self.send(link, identity, None)
     }
@@ -301,6 +301,13 @@ impl Scope {
         reseal: &mut Reseal<'_>,
     ) -> Result<(), String> {
         self.send(link, identity, Some(reseal))
+    }
+    /// Retire what the workspace refused or receipted, committed to disk.
+    ///
+    /// # Errors
+    /// The workspace is not held here, or the retirement was not committed.
+    pub fn retire(&self) -> Result<(), String> {
+        self.connect.owner.retire_outgoing(self.connect.workspace)
     }
     #[allow(
         clippy::significant_drop_tightening,
@@ -322,12 +329,6 @@ impl Scope {
         let (hint, device, continuity) = self.connect.material(identity)?;
         if !self.pinned_to(&hint, &device, continuity) {
             return Err("native publication session changed".into());
-        }
-        // Retiring what the workspace refused or receipted persists a new
-        // record generation. Its failure must not prevent sending what is
-        // still in custody.
-        if let Err(error) = self.connect.owner.retire_outgoing(self.connect.workspace) {
-            tracing::warn!(workspace = %self.connect.workspace, %error, "native publication retirement not committed");
         }
         if let Some(reseal) = reseal
             && let Err(error) = identity.signing_key().and_then(|key| {

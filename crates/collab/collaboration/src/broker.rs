@@ -4762,6 +4762,8 @@ async fn native_invocation_delivery_turn(
     };
     let deadline = crate::time::now() + Duration::from_secs(3);
     loop {
+        // Enabled before the checks: a change between them still wakes it.
+        let changed = state.document_reads.reader_wake();
         if !state.is_healthy() || !state.document_reads.current(key, &generation) {
             return Err("original invocation document custody was retired".into());
         }
@@ -4796,10 +4798,11 @@ async fn native_invocation_delivery_turn(
             }));
         }
         drop(turns);
-        if crate::time::now() >= deadline {
+        let remaining = deadline.saturating_duration_since(crate::time::now());
+        if remaining.is_zero() {
             return Err("original invocation capture did not become current".into());
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        let _ = tokio::time::timeout(remaining, changed).await;
     }
 }
 
@@ -5352,6 +5355,8 @@ async fn wait_for_document_publication(
     let deadline = tilo_rt::timer_now() + Duration::from_secs(3);
     let key = route.spec.channel_id();
     loop {
+        // Enabled before the checks: a change between them still wakes it.
+        let changed = state.document_reads.reader_wake();
         if !state.is_healthy() {
             return Err(state.publication_failed(
                 "queued document publication",
@@ -5372,7 +5377,7 @@ async fn wait_for_document_publication(
         }
         #[cfg(test)]
         state.publication_gate_waits.fetch_add(1, Ordering::AcqRel);
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        let _ = tokio::time::timeout_at(deadline, changed).await;
     }
 }
 
@@ -6861,13 +6866,14 @@ mod tests {
     }
 
     /// Wait until the shovel has seen a queued document mutation find its
-    /// route not publishable twice: the mutation is held at the gate.
+    /// route not publishable: the mutation is held at the gate until the
+    /// route changes.
     #[cfg(test)]
     fn wait_held_at_publication_gate(state: &BridgeState) {
         let before = state.publication_gate_waits.load(Ordering::Acquire);
         tilo_test_env::wait_until(
             "the queued mutation to wait at the publication gate",
-            || state.publication_gate_waits.load(Ordering::Acquire) >= before + 2,
+            || state.publication_gate_waits.load(Ordering::Acquire) > before,
         );
     }
 
@@ -10082,7 +10088,7 @@ mod tests {
             "certified publication must still await exact route readiness"
         );
         assert!(captures.lock().unwrap().signed_ops.is_empty());
-        ready.store(true, Ordering::Release);
+        broker_state(&manager).document_reads.open_for_test(&ready);
         // Signing may fail before the marker enqueue; either path must carry the cause.
         let error = match manager.begin_document_publication_barrier() {
             Ok(receipt) => receipt
@@ -10146,7 +10152,7 @@ mod tests {
         assert!(
             state.document_command_bytes.0.load(Ordering::Acquire) >= b"retained original".len()
         );
-        ready.store(true, Ordering::Release);
+        state.document_reads.open_for_test(&ready);
         assert_eq!(receipt.wait(Some(tilo_test_env::hang_deadline())), Ok(()));
         let captured = captures.lock().unwrap().signed_ops.clone();
         assert_eq!(captured.len(), 2);
@@ -10580,7 +10586,7 @@ mod tests {
         let primary = state.document_reads.close_for_test("original-route");
         let owner = state.document_reads.close_for_test("live-owner");
         state.document_reads.close_for_test("unowned-retained");
-        primary.store(true, Ordering::Release);
+        state.document_reads.open_for_test(&primary);
         state
             .document_reads
             .set_document_owner_routes(vec!["original-route".into(), "live-owner".into()], 0);
@@ -10601,7 +10607,7 @@ mod tests {
             )
             .is_pending()
         );
-        owner.store(true, Ordering::Release);
+        state.document_reads.open_for_test(&owner);
         drop(held);
         let turn = wait.await.unwrap().unwrap();
         assert_eq!(turn.permits.len(), 2);

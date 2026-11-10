@@ -642,6 +642,11 @@ impl Joined {
     /// Send `workspace`'s own writes, and what its sealed records lack, to its
     /// host: the link carries them to every member.
     fn publish(&self, scope: &Scope, link: &DirectSync) {
+        // What the workspace answered for leaves custody before what it still
+        // holds is renewed and sent.
+        if let Err(error) = scope.retire() {
+            tracing::warn!(%error, "joined workspace publication retirement not committed");
+        }
         let Some(keys) = self.keys.get() else {
             if let Err(error) = scope.publish(link, &self.custody) {
                 tracing::debug!(%error, "joined workspace publication remains in durable custody");

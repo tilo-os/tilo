@@ -435,11 +435,18 @@ impl ActorState {
 
     /// Publish what the workspace `ws`'s owner holds for its other devices over
     /// the link it holds now.
+    /// Retirement commits to disk, so it runs off this actor.
     pub(super) fn drive_native_publication(&self, ws: u64) {
-        if let (Some(link), Some(identity)) = (self.native_links.get(&ws), &self.host_identity)
-            && let Err(error) = link.scope.publish(&link.link, identity)
-        {
-            tracing::debug!(%error,"native publication remains in durable custody");
+        if let (Some(link), Some(identity)) = (self.native_links.get(&ws), &self.host_identity) {
+            if let Err(error) = link.scope.publish(&link.link, identity) {
+                tracing::debug!(%error, "native publication remains in durable custody");
+            }
+            let scope = Arc::clone(&link.scope);
+            tokio::task::spawn_blocking(move || {
+                if let Err(error) = scope.retire() {
+                    tracing::warn!(%error, "native publication retirement not committed");
+                }
+            });
         }
         self.tell_unsynced(ws);
     }
