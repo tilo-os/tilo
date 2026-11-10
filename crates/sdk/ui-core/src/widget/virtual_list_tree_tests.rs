@@ -12,10 +12,12 @@ use crate::testing::Dispatch;
 use crate::theme::Theme;
 
 /// A model whose rows name the row they stand under, as a list of subtasks does: the rows keep
-/// the model's order, and a parent need not be the row above.
+/// the model's order, and a parent need not be the row above. `groups` are the headings its rows
+/// stand under, as a list of tasks grouped by the day each is due is.
 struct Nested {
     keys: Vec<u64>,
     parents: HashMap<u64, u64>,
+    groups: HashMap<u64, String>,
 }
 
 impl ListModel for Nested {
@@ -31,6 +33,13 @@ impl ListModel for Nested {
 
     fn index_of(&self, key: &u64) -> Option<usize> {
         self.keys.iter().position(|candidate| candidate == key)
+    }
+
+    fn group_at(&self, index: usize) -> Option<RowGroup> {
+        let key = self.key_at(index)?;
+        self.groups
+            .get(&key)
+            .map(|heading| RowGroup::heading(heading.clone()))
     }
 
     fn tree_at(&self, index: usize) -> Option<TreeRow<u64>> {
@@ -53,6 +62,7 @@ fn nested() -> VirtualList<Nested> {
         keys: vec![0, 1, 2, 3, 4],
         // 1 and 2 nest under 0, one under the other; 4 names 0 from away from it.
         parents: HashMap::from([(1, 0), (2, 1), (4, 0)]),
+        groups: HashMap::new(),
     };
     VirtualList::new(model, 20.0, |_, _, key| {
         Box::new(super::tests::ProbeRow::new(
@@ -150,6 +160,50 @@ fn a_list_indents_a_row_under_the_row_it_names_and_folds_it_away() {
         "the press read the row it stands on"
     );
     assert!((list.viewport.content_extent() - 4.0 * row).abs() < 0.5);
+}
+
+/// A row that starts a group stands at the group's own first level: its parent is a row of the
+/// group above, under another heading, so indenting it would put it under a row that is not
+/// there. It says what it is in instead, and the rows that stay in their parent's group keep
+/// their nesting.
+#[test]
+fn a_row_whose_parent_stands_in_another_group_stands_on_the_groups_first_level() {
+    let marks = Rc::new(TreeMarks::default());
+    let model = Nested {
+        keys: vec![0, 1, 2, 3],
+        // 1 is a step of 0; 2 and 3 are steps of 0 too, and the sort put them under another
+        // day than the task they belong to.
+        parents: HashMap::from([(1, 0), (2, 0), (3, 2)]),
+        groups: HashMap::from([
+            (0, "Monday".to_owned()),
+            (1, "Monday".to_owned()),
+            (2, "Thursday".to_owned()),
+            (3, "Thursday".to_owned()),
+        ]),
+    };
+    let mut list = VirtualList::new(model, 20.0, |_, _, key| {
+        Box::new(super::tests::ProbeRow::new(
+            key.to_string(),
+            20.0,
+            false,
+            Rc::new(Cell::new(0)),
+        ))
+    })
+    .with_viewport_height(200.0)
+    .with_tree(Rc::clone(&marks));
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    assert_eq!(
+        shape(&list, &marks),
+        vec![
+            (0, 0, true, false),
+            (1, 1, false, true),
+            // The group's first row stands on its own level, naming the task it is a step of.
+            (2, 0, true, false),
+            // A row whose parent stands in its own group keeps its place under it.
+            (3, 1, false, true),
+        ],
+        "what stands under what"
+    );
 }
 
 /// A row standing open into its item folds its branch: the rows under it are what the item's
@@ -255,6 +309,7 @@ fn a_tree_with_nothing_to_fold_keeps_no_chevrons_column() {
         Nested {
             keys: vec![0, 1],
             parents: HashMap::from([(1, 0)]),
+            groups: HashMap::new(),
         },
         20.0,
         |_, _, key| {

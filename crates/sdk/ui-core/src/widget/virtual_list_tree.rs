@@ -10,7 +10,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use winit::keyboard::{Key, NamedKey};
 
-use super::{ListModel, VirtualList};
+use super::{ListModel, RowGroup, VirtualList};
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::theme::Theme;
 
@@ -183,8 +183,9 @@ impl<K: Clone + Eq + Hash> TreeMarks<K> {
     }
 
     /// Whether the row stands under the row it follows, rather than away from the parent it
-    /// names: a list keeps the order its filter gave it, and a subtask the sort put elsewhere
-    /// says whose it is instead of standing indented under nothing.
+    /// names: a list keeps the order its filter gave it, and a subtask the sort put elsewhere —
+    /// in another group, under another heading — says whose it is instead of standing indented
+    /// under nothing.
     pub fn is_nested(&self, key: &K) -> bool {
         self.nested.borrow().contains(key)
     }
@@ -379,7 +380,11 @@ impl<M: ListModel> VirtualList<M> {
     /// What the tree's rows are in `range`: what stands under what, how deep each row stands,
     /// and which rows a folded one hides. A tree's rows come in order: a row stands under the
     /// row it follows when it names it, so the walk reads each row of the range once, and only
-    /// the rows in view.
+    /// the rows in view. A group's heading comes between the rows it holds and the ones above
+    /// it, and the rows under a heading belong together: a subtask whose task the sort put in
+    /// another group stands on the group's own first level, and names what it is in
+    /// ([`TreeMarks::is_nested`] saying it stands under nothing), rather than indented under a
+    /// row that stands under another heading.
     pub(super) fn shape_tree(&mut self, range: &Range<usize>) {
         if self.tree.is_none() {
             return;
@@ -389,9 +394,9 @@ impl<M: ListModel> VirtualList<M> {
         for key in rebuilt {
             self.tree_rows.remove(&key);
         }
-        let keys: Vec<M::Key> = range
+        let rows: Vec<(usize, M::Key)> = range
             .clone()
-            .filter_map(|index| self.model.key_at(index))
+            .filter_map(|index| Some((index, self.model.key_at(index)?)))
             .collect();
         // The rows over the row being read, outermost first, each with how deep it stands and
         // whether a row over it hides it.
@@ -400,7 +405,15 @@ impl<M: ListModel> VirtualList<M> {
         let mut hidden: HashSet<M::Key> = HashSet::new();
         let mut branches: Vec<M::Key> = Vec::new();
         let mut nested: Vec<M::Key> = Vec::new();
-        for key in &keys {
+        // The group the row above stands in, as the model names it: a row that starts a group
+        // stands under no row of the one before it.
+        let mut heading: Option<RowGroup> = None;
+        for (index, key) in &rows {
+            let group = self.model.group_at(*index);
+            if group.is_some() && group != heading {
+                over.clear();
+            }
+            heading = group;
             let facts = self.tree_facts(key);
             let parent = facts.as_ref().and_then(|facts| facts.parent.clone());
             let stated = facts.as_ref().and_then(|facts| facts.depth);
@@ -453,8 +466,9 @@ impl<M: ListModel> VirtualList<M> {
         // Whether a row of the first level holds any: a tree whose first level folds nothing
         // keeps no column for a chevron, so its rows line up with the words over them. Only
         // the first level in view says it; a range that holds none leaves the last word.
-        let first_level = keys
+        let first_level = rows
             .iter()
+            .map(|(_, key)| key)
             .filter(|key| depth.get(*key) == Some(&0))
             .fold(None, |found: Option<bool>, key| {
                 Some(found.unwrap_or(false) || branches.contains(key))

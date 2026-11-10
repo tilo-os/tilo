@@ -98,6 +98,7 @@ pub fn inspect(
     let mut out = Vec::new();
     columns(root, &mut out);
     first_level(root, None, step, &mut Vec::new(), &mut out);
+    group_first_rows(root, &mut Vec::new(), &mut out);
     selections(root, &mut Vec::new(), false, &mut out);
     chosen(root, &[], &mut Vec::new(), &mut out);
     adds(root, &mut Vec::new(), false, &mut out);
@@ -396,6 +397,62 @@ fn level_of_box(
             heading.x
         ),
     );
+}
+
+// --- a group opens on the level its list starts at ---------------------------------------------
+
+/// The target a group's heading is named by: the list's own disclosure of it
+/// ([`ui::widget::VirtualList`]).
+const GROUP_TARGET: &str = "group:";
+
+/// A heading heads a run of rows, and the depth a row says it stands at is which row it stands
+/// under: the first row under a heading stands on the level its list starts at, never one step in
+/// from it, because a row indented stands under the row over it and no row of its group stands
+/// there. An item whose row the grouping put elsewhere — a step of a task due another day — stands
+/// on the group's first level too, naming the item it belongs to in its own words.
+fn group_first_rows(node: &InspectionNode, keys: &mut Vec<String>, out: &mut Vec<Problem>) {
+    if let Some(semantics) = &node.semantics {
+        let rows = &semantics.children;
+        // The level the box's rows start at: the least any of its rows stands at.
+        let base = rows.iter().filter_map(|row| row.level).min();
+        if let Some(base) = base {
+            for (at, heading) in rows.iter().enumerate() {
+                let heads = heading
+                    .action_target
+                    .as_deref()
+                    .is_some_and(|target| target.starts_with(GROUP_TARGET));
+                if !heads {
+                    continue;
+                }
+                // A closed group's heading heads no row here: the next heading stands after it.
+                let Some(level) = rows.get(at + 1).and_then(|row| row.level) else {
+                    continue;
+                };
+                if level > base {
+                    push(
+                        out,
+                        Kind::OrphanedRow,
+                        node,
+                        keys,
+                        format!(
+                            "the first row under {:?} stands {} nesting steps in from the level \
+                             its list starts at: a row indented stands under the row over it, and \
+                             no row of its group stands there",
+                            heading.name.as_deref().unwrap_or_default(),
+                            level - base
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    let pushed = node.test_id.clone().map(|id| keys.push(id)).is_some();
+    for child in &node.children {
+        group_first_rows(child, keys, out);
+    }
+    if pushed {
+        keys.pop();
+    }
 }
 
 // --- one choice, filled once -------------------------------------------------------------------
@@ -1215,6 +1272,82 @@ mod tests {
         let mut beside = section(68.0, 90.0);
         beside.children[1].rect = [200.0, 0.0, 400.0, 300.0];
         assert!(found(Kind::FirstLevelIndent, &beside, (390, 844)).is_empty());
+    }
+
+    /// A group's first row stands on the level its list starts at: a row indented there stands
+    /// under no row of its group, so it says what it belongs to in its own words instead.
+    #[test]
+    fn a_group_does_not_open_on_an_indented_row() {
+        /// One child of a list, as the check reads it: the heading over a group, or a row and
+        /// how deep it says it stands.
+        enum Line {
+            Heading(&'static str),
+            Row(usize),
+        }
+        let grouped = |lines: Vec<Line>| {
+            let mut list = node(
+                "DescribedList",
+                "list",
+                [0.0, 0.0, 400.0, 600.0],
+                Some(Role::Tree),
+            );
+            let mut semantics = AccessNode::new(Role::Tree);
+            let mut top = 0.0;
+            for line in lines {
+                match line {
+                    Line::Heading(name) => semantics.children.push(
+                        AccessNode::new(Role::Button)
+                            .with_name(name)
+                            .with_action_target(format!("group:{name}"))
+                            .with_bounds(Rect::new(0.0, top, 400.0, top + 24.0)),
+                    ),
+                    Line::Row(level) => {
+                        semantics.children.push(
+                            AccessNode::new(Role::TreeItem)
+                                .with_name("A task")
+                                .with_level(level)
+                                .with_bounds(Rect::new(0.0, top, 400.0, top + 36.0)),
+                        );
+                        top += 36.0;
+                    }
+                }
+            }
+            list.semantics = Some(semantics);
+            list
+        };
+
+        // A step of a task due the same day stands under it, and one due another day opens its
+        // group on the list's own level.
+        let nested = grouped(vec![
+            Line::Heading("Monday"),
+            Line::Row(1),
+            Line::Row(2),
+            Line::Heading("Thursday"),
+            Line::Row(1),
+        ]);
+        assert!(found(Kind::OrphanedRow, &nested, (390, 844)).is_empty());
+
+        // The day's first row stands a step in, under a row of the group above it.
+        let orphaned = grouped(vec![
+            Line::Heading("Monday"),
+            Line::Row(1),
+            Line::Row(2),
+            Line::Heading("Thursday"),
+            Line::Row(2),
+        ]);
+        let problems = found(Kind::OrphanedRow, &orphaned, (390, 844));
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].detail.contains("Thursday"), "{problems:?}");
+
+        // A list whose rows all stand the same depth starts there: the level it starts at is the
+        // one its rows share, and no group of it opens a step in.
+        let even = grouped(vec![
+            Line::Heading("Monday"),
+            Line::Row(2),
+            Line::Heading("Thursday"),
+            Line::Row(2),
+        ]);
+        assert!(found(Kind::OrphanedRow, &even, (390, 844)).is_empty());
     }
 
     /// A column keeps its titles to itself: the heading deep in the page behind a drawer names

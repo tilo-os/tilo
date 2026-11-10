@@ -989,8 +989,9 @@ fn bare_row(
             progress,
             ..
         } = item;
-        // Where the row belongs, while the item it is under is no row of this list: the row
-        // says it, rather than standing indented under nothing.
+        // Where the row belongs, while the item it is under is no row of this list — or no row of
+        // its group, the list grouping what it holds: the row says it, rather than standing
+        // indented under nothing.
         let breadcrumb =
             parent_title.filter(|_| !tree.is_some_and(|marks| marks.is_nested(&key.to_owned())));
         let shortcuts = declared_shortcuts(&menu, &attached.menu);
@@ -1005,10 +1006,13 @@ fn bare_row(
         // own view their face alone.
         let row = match row {
             ItemRow::Row(mut props) => {
-                if props.secondary.is_none()
-                    && let Some(title) = &breadcrumb
-                {
-                    props.secondary = Some(format!("in {title}"));
+                // What the row is in comes before what it says of itself: a narrow row elides
+                // the fact its neighbours repeat, and keeps the one nothing above it says.
+                if let Some(title) = &breadcrumb {
+                    props.secondary = Some(match props.secondary.take() {
+                        Some(own) if !own.is_empty() => format!("in {title} · {own}"),
+                        _ => format!("in {title}"),
+                    });
                 }
                 // The list paces the rows it builds unless a row says its own, so one option on
                 // the list covers its content.

@@ -143,10 +143,15 @@ pub enum Kind {
     /// target where the window is held in the hand: the room a heading needs stands over its
     /// line, so what it names stands as close to it at every width.
     HeadingRoom,
+    /// A row indented under nothing: the first row a group's heading heads stands a nesting step
+    /// in from the level its list starts at, so the row it stands under is no row of its group.
+    /// An item the grouping put in another group stands at the group's first level and names the
+    /// item it belongs to instead.
+    OrphanedRow,
 }
 
 impl Kind {
-    pub const ALL: [Self; 44] = [
+    pub const ALL: [Self; 45] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -191,6 +196,7 @@ impl Kind {
         Self::ContentBesideSidebar,
         Self::ItemShownTwice,
         Self::HeadingRoom,
+        Self::OrphanedRow,
     ];
 
     pub fn name(self) -> &'static str {
@@ -239,6 +245,7 @@ impl Kind {
             Self::ContentBesideSidebar => "content-beside-sidebar",
             Self::ItemShownTwice => "item-shown-twice",
             Self::HeadingRoom => "heading-room",
+            Self::OrphanedRow => "orphaned-row",
         }
     }
 }
