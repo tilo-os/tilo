@@ -2,7 +2,7 @@
 
 crates.io `iroh` 1.0.3, verbatim (archive SHA-256
 `460de6bc52163b41b1646931f2897e5ab986f0966ade444467fec25024751a72`, upstream
-commit `f2eb930dda3779c6d852b72f3712aacd6e573ab1`) but for the five changes
+commit `f2eb930dda3779c6d852b72f3712aacd6e573ab1`) but for the six changes
 below, each marked `TILO PATCH` in the source, and its `[lib]` building an
 `rlib` only (last section). iroh 1.3.0, the newest release
 when this was written, has the same code in every place patched. Pinned by
@@ -87,6 +87,18 @@ write the same `target/debug/deps/libiroh.rlib` and `.so` ("output filename
 collision"), and dependents then fail with E0460/E0463. Nothing in Tilo loads
 the cdylib, so the `[lib]` builds `rlib` only.
 
+## A browser keeps its relay across a network change (`src/socket/transports/relay/actor.rs`)
+
+After a major network change the relay actor checks each relay connection's
+local address against the machine's IPs. A browser's WebSocket has no local
+address, and upstream closed such a connection ("No local address"). In a
+browser every `online` event or wall-clock jump (a throttled background tab,
+a resume) is a major change, so a page lost its healthy home relay and the
+datagrams in flight while it dialed again. A connection without a local
+address is now pinged instead; a dead one still ends through the ping
+timeout. Native connections always have a local address and keep the check.
+`test_check_connection_without_local_addr_pings` pins it.
+
 ## Upstream
 
 Prepared for an upstream issue/PR against `n0-computer/iroh` (not opened):
@@ -116,3 +128,8 @@ Prepared for an upstream issue/PR against `n0-computer/iroh` (not opened):
 > longer values (keeping a relay path's idle timeout at least the configured
 > default), so applications that hold idle connections can trade failover
 > speed for fewer wakeups.
+>
+> **A browser drops its relay connection on every network change.**
+> `ActiveRelayActor` answers `CheckConnection` for a stream without a local
+> address with `LocalAddrMissing`, and a `wasm_browser` stream never has one.
+> Proposed: ping such a connection like one whose address is still local.
