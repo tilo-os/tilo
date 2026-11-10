@@ -502,7 +502,7 @@ const callOn = async tab => JSON.parse(await tab.evaluate('JSON.stringify(global
 // screen (set up with an agent, or skip to one's own desktop), which these
 // people have been past already, so their page opens the Lounge itself.
 const returning = tab => tab.send('Page.addScriptToEvaluateOnNewDocument',
-  {source: "try { localStorage.setItem('tilo-first-run', '1'); } catch {}"});
+  {source: "try { localStorage.setItem('tilo-setup', JSON.stringify({step: 'done'})); } catch {}"});
 const anotherBrowser = async () => {
   const launched = await launch({args: browserArgs});
   browsers.push(launched);

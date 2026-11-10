@@ -118,14 +118,33 @@ for (const [width, height, mobile] of [[390, 844, true], [1280, 800, false]]) {
     await sleep(300);
     if (shots) writeFileSync(`${shots}/first-screen-${name}-waiting.png`, await tab.screenshot());
 
+    // The agent fails partway: the step it stopped at, not under way, and its reason, with a new prompt to try again.
+    await tab.evaluate(`globalThis.polled = {resolved: true, expired: false, agent: 'Claude Code', steps: ['resolved', 'logged-in', 'tools-added', 'restart', 'failed'],
+      detail: 'Logged in, but entering the workspace failed: the host did not answer.'}`);
+    await tab.waitFor(`document.getElementById('first-run').dataset.agentFailed === 'true'`, {timeout: 5000});
+    const failedShown = await tab.evaluate(`({step: document.querySelector('#first-run-steps li:last-child')?.className + ': ' + document.querySelector('#first-run-steps li:last-child')?.textContent,
+      problem: document.getElementById('first-run-problem').textContent, retry: getComputedStyle(document.getElementById('first-run-retry')).display !== 'none',
+      spinning: !!document.querySelector('#first-run-steps li.now')})`);
+    check(failedShown.step === 'failed: Claude Code could not enter your workspace', `${name}: a failure shows the step the agent stopped at (${failedShown.step})`);
+    check(failedShown.problem.startsWith('Logged in, but entering'), `${name}: and the agent's reason (${failedShown.problem})`);
+    check(failedShown.retry && !failedShown.spinning, `${name}: with a new prompt to try again, and nothing claimed under way`);
+    await sleep(300);
+    if (shots) writeFileSync(`${shots}/first-screen-${name}-agent-failed.png`, await tab.screenshot());
+
     await tab.evaluate(`globalThis.polled = {resolved: true, expired: false, agent: 'Claude Code', steps: ['resolved', 'logged-in', 'tools-added', 'entered']}`);
     await tab.waitFor(`document.documentElement.dataset.firstRun === 'connected'`, {timeout: 5000});
     await sleep(500);
     check(await tab.evaluate(`document.getElementById('first-run-connected').textContent === 'Claude Code is in your workspace'`),
       `${name}: the screen says the agent is in the workspace`);
     if (shots) writeFileSync(`${shots}/first-screen-${name}-connected.png`, await tab.screenshot());
+    // It stays, saying it opens the person's workspace, until the page can
+    // (no runtime here: the page is let in nowhere), then leaves.
+    await tab.waitFor(`JSON.parse(localStorage.getItem('tilo-setup')).step === 'opening'`, {timeout: 5000});
+    check(await tab.evaluate(`!!document.getElementById('first-run') && document.getElementById('first-run-done-lead').textContent === 'Opening your workspace…'`),
+      `${name}: the screen says it opens the workspace until it can`);
+    await tab.evaluate(`import('./first-run.mjs').then(({firstRun}) => firstRun.whenDone(() => {}))`);
     await tab.waitFor(`!document.getElementById('first-run')`, {timeout: 5000});
-    check(await tab.evaluate(`localStorage.getItem('tilo-first-run') === '1'`), `${name}: the screen is not shown again`);
+    check(await tab.evaluate(`JSON.parse(localStorage.getItem('tilo-setup')).step === 'done'`), `${name}: the screen is not shown again`);
     await tab.close();
 
     // Returning: sign in with your agent, on a fresh profile.

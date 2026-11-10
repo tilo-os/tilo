@@ -78,7 +78,12 @@ export function startRouter({
     }
   }
 
+  // While the first screen of a setup covers the page (first-run.mjs), what
+  // is behind it is not in front of the person: the address stays the one
+  // they opened, so Back from where the setup takes them never lands on it.
+  const covered = () => window.document?.documentElement?.dataset?.firstRun !== undefined;
   function write(route, how) {
+    if (covered()) { current = route; return; }
     const url = link.format(route);
     if (how === 'push' && url !== location.href) history.pushState({tilo: generation}, '', url);
     else if (url !== location.href) history.replaceState({tilo: generation}, '', url);

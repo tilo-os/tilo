@@ -27,7 +27,7 @@ import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspac
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {CustodyError, idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, SIGN_IN, syncProfile} from './identity-actions.mjs';
-import {firstRun, MCP_URL, SEEN} from './first-run.mjs';
+import {firstRun, MCP_URL, setupDone} from './first-run.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
 import {deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
@@ -1257,10 +1257,18 @@ export async function startEntryPage({mode}) {
     if (firstRun && !embed && here.kind !== 'own') {
       firstRun.whenDone(async () => {
         if (!hostedOwn) await hostedOwnMade;
-        if (hostedOwn) return void openWorkspace({choice: ownChoice(hostedOwn), page, status});
-        void ownDesktopAllowed(page.entry?.home).then(open => {
-          if (open) void openWorkspace({choice: {id: `${OPEN_WORKSPACE}own`, name: 'Your desktop', own: true}, page, status});
-        });
+        if (hostedOwn) {
+          // Chosen before the setup is over, so no load in between opens the
+          // site's home workspace: from now on a bare entry opens this one.
+          const choice = ownChoice(hostedOwn);
+          remembering(() => chooseWorkspace(choice));
+          setupDone();
+          return openWorkspace({choice, page, status});
+        }
+        setupDone();
+        if (await ownDesktopAllowed(page.entry?.home)) {
+          await openWorkspace({choice: {id: `${OPEN_WORKSPACE}own`, name: 'Your desktop', own: true}, page, status});
+        }
       });
     }
     // A tab an agent just signed in as a device of the person: it paired
@@ -1974,28 +1982,46 @@ function offerFirstRunCodes({origin, identity, runtime, link}) {
       passkeys: () => false});
     return actions;
   };
+  // What the setup keeps of a code names whose it is: a code kept for
+  // another person or host is not this tab's to follow.
+  const ours = saved => saved?.person === identity.userPublicKey && saved?.host === host;
   firstRun.offerSetup(async () => {
     const agents = await agentActions();
-    const {link: pairingLink} = await agents.connectAgent({workspace: setUpIn ?? namedOwnWorkspace(host, identity.userPublicKey)});
-    const made = await codes.create(pairingLink);
+    const pairing = await agents.connectAgent({workspace: setUpIn ?? namedOwnWorkspace(host, identity.userPublicKey)});
+    const made = await codes.create(pairing.link);
     // While the person's root is in this tab alone, a stand-in on the
     // host keeps them from being lost with it.
     void agents.keepStandIn().catch(error => console.warn('first run: stand-in', error));
-    return made;
+    return {...made, saved: {...made.saved, person: identity.userPublicKey, host,
+      invite: pairing.invite, inviteExpiresAt: pairing.expiresAt}};
+  }, saved => {
+    if (!ours(saved)) return null;
+    // The link in the code names an invite this tab made before it was
+    // loaded again: the agent's device answering it is approved here, as
+    // it would have been.
+    if (saved.invite) {
+      void agentActions().then(agents => agents.connectAgent({adopt: {id: saved.invite, expiresAt: saved.inviteExpiresAt}}))
+        .catch(error => console.warn('first run: approving your agent', error));
+    }
+    return codes.resume(saved);
   });
   // Claimed by a device of the person: this tab asks to be certified as a
   // device of theirs with the invite the claim named, as a pairing link
   // does, and their stand-in on the host approves exactly that request.
   // The link opens the workspace this tab is let into, so it waits for that.
-  firstRun.offerAgentSignIn(async () => ({...await codes.create(null), signIn: async ({user, invite}) => {
+  const signIn = async ({user, invite}) => {
     const peer = await Promise.race([pageLetIn, new Promise(resolve => setTimeout(resolve, LET_IN_MS, null))]);
     if (!peer?.workspace) throw Object.assign(new Error('this tab is not in its workspace yet'), {code: 'not-let-in'});
     const url = (await link).format({mode: 'desktop', target: {scope: {kind: 'room', host: peer.origin, room: peer.workspace}}});
-    try { globalThis.localStorage?.setItem(SEEN, '1'); } catch { /* The pairing link skips the first screen anyway. */ }
+    setupDone();
     try { globalThis.sessionStorage?.setItem(OPEN_OWN, '1'); } catch { /* Then the home workspace stays in front. */ }
     globalThis.location.assign(`${url}${new URL(url).hash.includes('?') ? '&' : '?'}pair=${pairSecret(user, invite)}`);
     globalThis.location.reload();
-  }}));
+  };
+  firstRun.offerAgentSignIn(async () => {
+    const made = await codes.create(null);
+    return {...made, saved: {...made.saved, person: identity.userPublicKey, host}, signIn};
+  }, saved => (ours(saved) ? {...codes.resume(saved), signIn} : null));
 }
 
 /** Where this browser keeps the person's own workspace it named before it existed. */
@@ -2085,7 +2111,14 @@ function loginCodes(runtime, origin) {
   return {
     async create(link = null) {
       const made = JSON.parse(await runtime.createLoginCode(post, link));
-      return {code: made.code, expiresAt: made.expires_at_ms, follow: async () => JSON.parse(await runtime.followLoginCode(post, made.follow))};
+      return this.resume({code: made.code, expiresAt: made.expires_at_ms, follow: made.follow});
+    },
+    /** A code made before, from what was kept of it (`{code, expiresAt,
+     * follow}`, `follow` the secret only this browser holds, and whatever
+     * else the page kept with it), followed again: kept again whole. */
+    resume(saved) {
+      return {code: saved.code, expiresAt: saved.expiresAt, saved: {...saved},
+        follow: async () => JSON.parse(await runtime.followLoginCode(post, saved.follow))};
     },
   };
 }

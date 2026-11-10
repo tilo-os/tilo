@@ -344,9 +344,19 @@ export function createIdentityActions({
       try { standInStore?.setItem(standInKey, key); } catch { /* Made again next time: the host names the same key. */ }
       return key;
     },
-    /** A pairing link for an agent set up from this tab: `{link, expiresAt}`,
-     * opening `workspace` (on the same host) when named, else this one. */
-    async connectAgent({workspace} = {}) {
+    /** A pairing link for an agent set up from this tab: `{link, invite,
+     * expiresAt}`, opening `workspace` (on the same host) when named, else
+     * this one. `adopt` (`{id, expiresAt}`) is an invite this tab made before
+     * it was loaded again, approved the same way while it is open: its link
+     * is already in the agent's hands. */
+    async connectAgent({workspace, adopt = null} = {}) {
+      if (adopt) {
+        const invite = invites.adopt(adopt);
+        if (!invite) return null;
+        agents.add(invite.id);
+        stopPairing ??= every(() => { void askPending(); }, PAIR_POLL_MS);
+        return {link: null, invite: invite.id, expiresAt: invite.expiresAt};
+      }
       const invite = invites.open();
       const link = workspace ? pairing?.link(invite.id, workspace) : pairing?.link(invite.id);
       if (!link) {
@@ -355,7 +365,7 @@ export function createIdentityActions({
       }
       agents.add(invite.id);
       stopPairing ??= every(() => { void askPending(); }, PAIR_POLL_MS);
-      return {link, expiresAt: invite.expiresAt};
+      return {link, invite: invite.id, expiresAt: invite.expiresAt};
     },
     /** Show the actions in `mount`'s desktop. */
     async attach(target) {

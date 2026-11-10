@@ -32,7 +32,7 @@ export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
  * so a test that opens the site in a fresh profile gets the desktop it drives,
  * as a returning person does. A test of the first screen opts out
  * (`tab({firstRun: true})`). */
-export const FIRST_RUN_SEEN = "try { localStorage.setItem('tilo-first-run', '1'); } catch {}";
+export const FIRST_RUN_SEEN = "try { localStorage.setItem('tilo-setup', JSON.stringify({step: 'done'})); } catch {}";
 
 /** Compressed copies by path, kept until the file they were made from changes:
  * a bundle's start module is tens of megabytes and a page load asks for it

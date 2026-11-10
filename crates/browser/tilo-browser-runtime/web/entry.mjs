@@ -368,9 +368,14 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   if (damaged) window.history.replaceState(window.history.state, '', link.format(route));
   if (peer && route.target.scope.kind === 'room' && (sealedAdmitted || !route.target.scope.room)) {
     // The workspace is known now: show its canonical link, in place of the
-    // address the link reached the page at.
+    // address the link reached the page at. Not while the first screen of a
+    // setup covers it (first-run.mjs): this workspace is not in front of
+    // the person then, and a reload or Back must not take its link for one
+    // they opened.
     route = {...route, target: {...route.target, scope: {...route.target.scope, room: peer.workspace}}};
-    window.history.replaceState(window.history.state, '', link.format(route));
+    if (window.document?.documentElement?.dataset?.firstRun === undefined) {
+      window.history.replaceState(window.history.state, '', link.format(route));
+    }
   }
   // A listed workspace is shown under its listed name, not its workspace id.
   const scope = route.target.scope;
