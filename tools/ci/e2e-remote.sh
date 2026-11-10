@@ -5,7 +5,8 @@
 #
 # Box A is set up once (its person made by onboarding) and branched into box B with
 # `tilo-vm vm branch`, so the two are two certified devices of one person; box C is another
-# person's. The three share one local network and nothing else: a bridge here, each guest on
+# person's, and box D is A branched once more, a third device of the first person. They share
+# one local network and nothing else: a bridge here, each guest on
 # it through a tap device of its own, with no DHCP, no DNS and no route out, so the boxes find
 # each other the way two devices on a home network without the internet do.
 #
@@ -26,7 +27,7 @@ gate=/target/publish/os-dev-disk/$arch/disk
 tilo_vm=/target/tilo-vm-bin/tilo-vm
 run_user=acceptance
 bridge=tiloe2e0
-taps=(tilo-e2e-a tilo-e2e-b tilo-e2e-c)
+taps=(tilo-e2e-a tilo-e2e-b tilo-e2e-c tilo-e2e-d)
 phase() { echo "e2e-remote: $1 at ${SECONDS}s"; }
 
 bash tools/ci/install-packages.sh tools/ci/packages/vm-acceptance.txt tools/ci/packages/e2e-remote.txt
@@ -111,7 +112,8 @@ if [[ -e scripts/e2e-remote/DEBUG ]]; then
     [[ -f $f ]] && { echo "=== $(basename "$f")"; head -c 3000 "$f"; echo; }
   done
   for f in "$out"/session-log-*.txt; do
-    [[ -f $f ]] && { echo "=== $(basename "$f")"; grep -iE "setup|onboard|identity|first|ceremony|error|warn" "$f" | tail -n 120 | cut -c1-400; }
+    # A log with none of these words is no failure of the run.
+    [[ -f $f ]] && { echo "=== $(basename "$f")"; { grep -iE "setup|onboard|identity|first|ceremony|error|warn" "$f" || true; } | tail -n 120 | cut -c1-400; }
   done
   status=0
 fi

@@ -19,6 +19,11 @@ Scenarios:
               `notes#open`, a note titled E2E_TITLE made with `notes#new-note` once
               E2E_GO exists, found again with `tilo_find`
   refused     initialize, then what follows the answer
+  browser     initialize, tools/list, `tilo_ls`; with E2E_NAVIGATE=1 the Browser that is open
+              sent to E2E_URL; the page's form read with `browser/page#read-page-forms`; then
+              E2E_READY is written and, once E2E_GO exists, the answers in E2E_ANSWERS (a JSON
+              object) placed with `browser/page#fill-page-form`; last the page's fields and
+              record read. What it was answered so far is kept in E2E_PROGRESS
 """
 from __future__ import annotations
 
@@ -159,6 +164,33 @@ def touch(path: str) -> None:
         marker.write(str(time.time()))
 
 
+def do(client: Client, path: str, args: dict | None, patience: float):
+    """Run an action and wait for how it went: the door answers one that takes longer than a
+    few seconds as pending, and `tilo_status` says how it ended."""
+    call = {"path": path}
+    if args is not None:
+        call["args"] = args
+    reply = client.tool("tilo_do", call, timeout=patience)
+    deadline = time.monotonic() + patience
+    while text_of(reply).startswith("pending ") and time.monotonic() < deadline:
+        invocation = text_of(reply).split()[1].rstrip(":")
+        time.sleep(2.0)
+        reply = client.tool("tilo_status", {"invocation_id": invocation}, timeout=patience)
+    return reply
+
+
+def keep(out: dict) -> None:
+    """Write what was answered so far where E2E_PROGRESS says, for a run stopped before its end."""
+    path = os.environ.get("E2E_PROGRESS")
+    if not path:
+        return
+    path = os.path.expandvars(path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".part", "w", encoding="utf-8") as kept:
+        json.dump(out, kept)
+    os.replace(path + ".part", path)
+
+
 def introduce(client: Client, out: dict) -> bool:
     out["initialize"] = client.initialize()
     out["initialize_at"] = client.since()
@@ -228,6 +260,59 @@ def work(client: Client, out: dict) -> None:
                               lambda text: title in text, 30)
 
 
+def page_of(client: Client, out: dict, patience: float = 60.0) -> str | None:
+    """The Browser's page as this door names it: by what it is, else by its key. A Browser that
+    was only now opened takes a moment to publish it. None when the door names no page."""
+    out["page_listings"] = {}
+    deadline = time.monotonic() + patience
+    while True:
+        for path in ("browser/page", "browser/browser.page"):
+            reply = client.tool("tilo_ls", {"path": path})
+            out["page_listings"][path] = reply
+            # A Browser that is not running is answered with a note, not a refusal.
+            if ok(reply) and "is installed but not running" not in text_of(reply):
+                return path
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(1.0)
+
+
+def browser(client: Client, out: dict) -> None:
+    keep(out)
+    admitted = introduce(client, out)
+    keep(out)
+    if not admitted:
+        return
+    # A step that acts on a page is put to the person at the desktop first: it answers once
+    # they have, so it is waited for as long as the door waits for them.
+    asked_s = float(os.environ.get("E2E_ASKED_S", "240"))
+    page = page_of(client, out)
+    out["page"] = page
+    keep(out)
+    if page is None:
+        return
+    if os.environ.get("E2E_NAVIGATE") == "1":
+        out["navigate"] = do(client, f"{page}#navigate", {"url": os.environ["E2E_URL"]}, asked_s)
+        keep(out)
+    out["forms"] = until(client, "tilo_do", {"path": f"{page}#read-page-forms"},
+                         lambda text: "form1" in text and "Given names" in text, asked_s)
+    keep(out)
+    go = os.path.expandvars(os.environ["E2E_GO"])
+    touch(os.path.expandvars(os.environ["E2E_READY"]))
+    out["ready_at"] = client.since()
+    deadline = time.monotonic() + WAIT_S
+    while not os.path.exists(go) and time.monotonic() < deadline:
+        time.sleep(0.2)
+    out["go"] = os.path.exists(go)
+    out["fill_from"] = client.since()
+    out["fill"] = do(client, f"{page}#fill-page-form",
+                     {"form": "form1", "answers": json.loads(os.environ["E2E_ANSWERS"])}, asked_s)
+    out["fill_until"] = client.since()
+    keep(out)
+    out["fields"] = do(client, f"{page}#read-page-fields", None, asked_s)
+    out["record"] = do(client, f"{page}#read-page-record", None, asked_s)
+
+
 def refused(client: Client, out: dict) -> None:
     out["initialize"] = client.initialize(WAIT_S)
     out["initialize_at"] = client.since()
@@ -242,7 +327,7 @@ def main() -> int:
     try:
         client = Client(command)
         {"devices": devices, "unanswered": unanswered, "stop": stop, "work": work,
-         "refused": refused}[scenario](client, out)
+         "refused": refused, "browser": browser}[scenario](client, out)
     except Exception as exc:  # noqa: BLE001 - the harness reads what went wrong
         out["client_error"] = f"{type(exc).__name__}: {exc}"
     finally:

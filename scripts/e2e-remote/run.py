@@ -18,7 +18,18 @@ What a person does, on real booted boxes (tools/ci/e2e-remote.sh makes the host)
 5. With the setting on (turned on through its own action), the agent works on B without a
    question: it lists B's apps, opens Notes and makes a note there, attributed on B to
    `claude-code@<A>-<id>`.
-6. C, another person's device, is refused at B's door.
+6. Two agents on two machines work in one Browser tab on B at once: B's person opens the
+   Browser from the desk's apps, the agent on A, through B's door, sends its tab to a form B
+   serves on its loopback, and an agent on B itself joins it. Each answers its part of the
+   form with `fill-page-form` in the same moment; B's person allows each agent on B's sheet.
+   B's person then reads, through the desktop's own actions, who set each field
+   (`read-page-fields`) and what was done in the tab, in order (`read-page-record`): both
+   agents, each under its own name.
+7. Three machines work in that one tab: A is branched once more into D, a third device of the
+   person, and the agents on A and on D, both through B's door, and the agent on B each answer
+   a part of the form in the same moment. B's person reads three names in the tab's record and
+   which of them set each field.
+8. C, another person's device, is refused at B's door.
 
 Every step is a result in report.json / report.md under --out; any failure fails the run.
 """
@@ -47,7 +58,7 @@ GUEST_DIR = ".cache/e2e-remote"
 MARK = "E2E-MCP "
 SLOT = "me"
 # Each box: guest memory and CPUs. Three fit beside each other in the micro-VM.
-# A and B run side by side; C runs beside B once A has stopped. A box takes 3 GiB: with less its
+# A, B and D run side by side; C runs beside B once A and D have stopped. A box takes 3 GiB: with less its
 # first login's onboarding does not come up (1.6 GiB boxes never showed it). A micro-VM t booked
 # too small for two runs out of memory, and t runs it again with twice the room.
 MEMORY_MB = 3072
@@ -69,8 +80,41 @@ FIND_S = 180
 # The agent door sheet's choice and button, as the person reads them (en-US).
 ALLOW_ONCE = "Allow once"
 ALLOW = "Allow"
+DENY = "Deny"
+# The Browser, as the desk names the app.
+BROWSER = "so.tilo.browser"
 # How long the person is not there to answer B's sheet.
 UNANSWERED_S = 45
+# The sheet's choice that lets an agent go on unasked while it works here, as its label starts.
+ALWAYS_ALLOW = "Always allow"
+# The form box B serves on its own loopback for the agents to answer, and where.
+SITE_PORT = 8765
+SITE_URL = f"http://127.0.0.1:{SITE_PORT}/"
+SITE = """<!doctype html><title>Apply</title><h1>Apply for a visitor visa</h1>
+<form action="/sent" method="get">
+<label>Given names <input name="given"></label>
+<label>Family name <input name="family"></label>
+<label>Nationality <select name="nationality" id="nat"><option value="">Select a country</option>
+<option>Kenya</option><option>Other</option></select></label>
+<div id="other" hidden><label>Which country? <input name="other" required></label></div>
+<label>Passport number <input name="passport"></label>
+<fieldset><legend>Refused before?</legend>
+<label><input type="radio" name="refused" value="yes"> Yes</label>
+<label><input type="radio" name="refused" value="no"> No</label></fieldset>
+<label>Arrival <input type="date" name="arrival"></label>
+<button>Send application</button></form>
+<script>document.getElementById('nat').addEventListener('change', e =>
+document.getElementById('other').hidden = e.target.value !== 'Other');</script>
+"""
+# What each of the two agents answers: the one from A the person, the one on B the journey.
+ANSWERS_A = {"Given names": "Maria Elena", "Family name": "Okonkwo-Reyes",
+             "Nationality": "Other", "Which country?": "Portugal"}
+ANSWERS_B = {"Passport number": "P7K290XB4", "Refused before?": "No", "Arrival": "2027-02-03"}
+# The same form answered anew by three: the agents on A and on D, and the one on B.
+THREE_URL = SITE_URL + "?three"
+THREE_A = {"Given names": "Joao Pedro", "Family name": "Almeida-Santos"}
+THREE_D = {"Nationality": "Other", "Which country?": "Brazil"}
+THREE_B = {"Passport number": "FX4410972", "Refused before?": "No", "Arrival": "2027-05-19"}
 
 
 class Failed(Exception):
@@ -101,6 +145,20 @@ class Box:
         return self.vm.vm
 
 
+@dataclass
+class Party:
+    """An agent working in the tab: the box it runs on, the door it comes through, what it
+    answers, a value only it writes, the questions reviewed as set by it, whether it is the
+    one that sends the tab to the form, and whether it comes from another device."""
+    box: Box
+    command: list[str]
+    answers: dict
+    mark: str
+    reviewed: tuple
+    leads: bool = False
+    remote: bool = True
+
+
 class Run:
     def __init__(self, args):
         self.args = args
@@ -113,7 +171,7 @@ class Run:
         self.boxes = {
             letter: Box(letter, TiloVm(args.tilo_vm, f"e2e-{letter}", SLOT, self.log), tap,
                         f"52:54:00:e2:e0:0{n}", LAN.format(n))
-            for n, (letter, tap) in enumerate(zip("abc", taps), start=1)
+            for n, (letter, tap) in enumerate(zip("abcd", taps), start=1)
         }
 
     # -- bookkeeping ---------------------------------------------------------
@@ -181,6 +239,8 @@ class Run:
 
     def plug_lan(self, box: Box) -> None:
         """Put `box` on the boxes' network: its tap, as a second NIC of the stopped domain."""
+        if box.tap in self.virsh("dumpxml", box.name, "--inactive", check=False):
+            return
         nic = self.args.work / f"lan-{box.letter}.xml"
         nic.write_text(f"<interface type='ethernet'><mac address='{box.mac}'/>"
                        f"<target dev='{box.tap}' managed='no'/><model type='virtio'/></interface>\n")
@@ -299,7 +359,7 @@ ip -o addr show dev "$dev"
         """Run the scripted agent on `box` and read its transcript."""
         envs = {"E2E_CMD": base64.b64encode(json.dumps(command).encode()).decode(), **env}
         line = " ".join(f"{k}={shlex.quote(v)}" for k, v in envs.items())
-        out = box.vm.exec(f'{line} python3 "$HOME/{GUEST_DIR}/agent.py" {scenario}', timeout=timeout)
+        out = self.exec_for(box, f'{line} python3 "$HOME/{GUEST_DIR}/agent.py" {scenario}', timeout)
         for text in reversed(out.splitlines()):
             if text.startswith(MARK):
                 transcript = json.loads(text[len(MARK):])
@@ -309,13 +369,21 @@ ip -o addr show dev "$dev"
                 return transcript
         raise Failed(f"the scripted agent printed no transcript: {out[-600:]!r}")
 
-    def agent_beside(self, box: Box, scenario: str, command: list[str], **env: str):
+    @staticmethod
+    def exec_for(box: Box, script: str, seconds: float, check: bool = True) -> str:
+        """Run `script` in `box` as its person for up to `seconds`: a command there is stopped
+        after a minute unless it is given longer."""
+        return box.vm.run("slot", "exec", "--timeout", str(int(seconds)), "--", "sh", "-c", script,
+                          timeout=seconds + 30, check=check)
+
+    def agent_beside(self, box: Box, scenario: str, command: list[str], timeout: float = 600,
+                     **env: str):
         """Run the agent on `box` in a thread; the box keeps what it said in `box_`."""
         holder: dict = {}
 
         def run():
             try:
-                holder["transcript"] = self.agent(box, scenario, command, **env)
+                holder["transcript"] = self.agent(box, scenario, command, timeout, **env)
             except (Failed, VmError) as exc:
                 holder["error"] = str(exc)
 
@@ -376,7 +444,7 @@ ip -o addr show dev "$dev"
     # -- the run ----------------------------------------------------------------------
 
     def main(self) -> int:
-        a, b, c = self.boxes["a"], self.boxes["b"], self.boxes["c"]
+        a, b, c, d = (self.boxes[letter] for letter in "abcd")
         facts: dict = {}
         print(f"boxes of {MEMORY_MB} MiB and {CPUS} CPUs each, in {_TOTAL_MB} MiB and {_NPROC} CPUs",
               flush=True)
@@ -407,18 +475,24 @@ ip -o addr show dev "$dev"
                       lambda res: self.approve_and_stop(a, b, res, facts), "E05")
             self.step("E08", "With B's setting on, the agent works on B unasked, attributed to A",
                       lambda res: self.work(a, b, res, facts), "E05")
+            self.step("E10", "Two agents on two machines answer one form in one Browser tab on B, "
+                             "and B's person reads who set each field",
+                      lambda res: self.two_machines(a, b, res, facts), "E08")
+            self.step("E11", "Three machines answer one form in that tab: A, a third device D of "
+                             "the person, and B itself",
+                      lambda res: self.three_machines(a, b, d, res, facts), "E10")
             self.step("E09", "A device of another person is refused at B's door",
                       lambda res: self.stranger(b, c, res), "E03")
         finally:
             ok = self.report()
             if not ok:
-                for box in (a, b, c):
+                for box in (a, b, c, d):
                     self.keep_logs(box)
             if self.args.hold:
                 print(f"holding the boxes for {self.args.hold}s: t vm ssh, then as {Path.home().name}: "
                       f"tilo-vm vm list", flush=True)
                 time.sleep(self.args.hold)
-            for box in (a, b, c):
+            for box in (a, b, c, d):
                 try:
                     box.vm.vm_cmd("stop", box.name, timeout=300, check=False)
                 except VmError:
@@ -647,10 +721,303 @@ ip -o addr show dev "$dev"
         if title not in text_of(t.get("found_note")):
             raise Failed(f"the note the agent made is not found on B: {t.get('new_note')} / {t.get('found_note')}")
 
-    def stranger(self, b: Box, c: Box, res: Result) -> None:
-        # C runs beside B in A's place.
+    # -- one Browser tab, several machines ---------------------------------------------
+
+    def person_allows(self, box: Box, done: threading.Event, allowed: list) -> None:
+        """The person at `box` for as long as the agents work: every sheet that asks about an
+        agent is answered as their clicks would answer it, letting the agent go on unasked
+        where the sheet offers that."""
+        while not done.is_set():
+            try:
+                names = [str(t.get("name")) for t in self.targets(box)]
+                for name in names:
+                    if ("llow" in name or name == DENY) and f"shown: {name}" not in allowed:
+                        allowed.append(f"shown: {name}")
+                clicks: list[str] = []
+                if ALLOW_ONCE in names:
+                    clicks = [next((n for n in names if n.startswith(ALWAYS_ALLOW)), ALLOW_ONCE), ALLOW]
+                elif ALLOW in names:
+                    clicks = [ALLOW]
+                for name in clicks:
+                    box.vm.raw({"op": "click_named", "name": name})
+                    time.sleep(0.5)
+                if clicks and f"chose: {clicks[0]}" not in allowed:
+                    allowed.append(f"chose: {clicks[0]}")
+            except VmError:
+                pass
+            done.wait(1.0)
+
+    def progress(self, box: Box) -> dict:
+        """What the agent on `box` had been answered so far, each answer in short."""
+        try:
+            kept = json.loads(box.vm.exec(f'cat "$HOME/{GUEST_DIR}/tab-progress-{box.letter}.json"',
+                                          timeout=60, check=False) or "{}")
+        except (VmError, ValueError) as exc:
+            return {"unread": str(exc)[:200]}
+        return {key: (text_of(value) or json.dumps(value, ensure_ascii=False))[:420]
+                for key, value in kept.items() if key not in ("tools_list", "command", "scenario")}
+
+    def person_reads(self, box: Box, action: str) -> dict:
+        """What `box`'s person is answered by one of the desktop's own actions on the page, as
+        the desktop lists it for scripts. A read of a page is a job: its answer is the one its
+        status ends on."""
+        row = None
+        for query in ("page", ""):
+            row = next((r for r in box.vm.actions(query, programmatic=True)
+                        if str(r.get("id", "")).split("\x1f")[-1] == action), None)
+            if row is not None:
+                break
+        if row is None:
+            raise Failed(f"{box.name} lists no {action} action")
+        reply = box.vm.invoke(row["provider"], row["id"], {})
+        job = (reply.get("receipt") or {}).get("broker_invocation_id")
+
+        def state(of: dict) -> str:
+            return str(((of.get("receipt") or {}).get("update") or {}).get("state"))
+
+        def ended():
+            now = box.vm.control_json("actions", "status", str(job))
+            return now if state(now) in ("succeeded", "failed", "cancelled") else None
+
+        if job is not None and state(reply) in ("accepted", "running"):
+            reply = wait_until(ended, 90, 1.0) or reply
+        if state(reply) != "succeeded":
+            raise Failed(f"{action} did not answer {box.name}'s person: "
+                         f"{json.dumps(reply, ensure_ascii=False)[:1200]}")
+        return reply
+
+    def serve_form(self, b: Box) -> None:
+        """The form, on B's own loopback: the boxes' network has no way out. A command run in a
+        box returns once everything it started has ended, so the server is one that runs for as
+        long as the box does, beside the run."""
+        asks = ('python3 -c "import urllib.request as u; '
+                f"print('served', u.urlopen('{SITE_URL}', timeout=5).status)\"")
+
+        def served() -> bool:
+            try:
+                return "served 200" in b.vm.exec(asks, timeout=60, check=False)
+            except VmError:
+                return False
+
+        if served():
+            return
+        b.vm.write_home_file(f"{GUEST_DIR}/site/index.html", SITE.encode())
+
+        def serve():
+            try:
+                self.exec_for(b, f'cd "$HOME/{GUEST_DIR}/site" && exec python3 -m http.server '
+                                 f'{SITE_PORT} --bind 127.0.0.1 </dev/null >/dev/null 2>&1',
+                              7200, check=False)
+            except VmError:
+                pass
+
+        threading.Thread(target=serve, daemon=True).start()
+        if not wait_until(served, 60, 2.0):
+            raise Failed("B does not serve the form on its loopback")
+
+    def in_one_tab(self, b: Box, parties: list[Party], url: str, res: Result) -> None:
+        """Every party's agent answers its part of the form in B's one tab in the same moment,
+        B's person allowing each on B's sheet. B's person then reads, through the desktop's own
+        actions, who set each field and what was done in the tab."""
+        try:
+            self.serve_form(b)
+            self.person_opens_browser(b, res)
+            self.answered_in_one_tab(b, parties, url, res)
+        except (Failed, VmError):
+            # How far each agent got and what B showed and said, for the log of a failed run.
+            for party in parties:
+                for key, value in self.progress(party.box).items():
+                    res.facts[f"so_far_{party.box.letter}_{key}"] = value
+            try:
+                res.facts["shown_on_b"] = [str(t.get("name")) for t in self.targets(b)][:80]
+                res.facts["windows_on_b"] = b.vm.raw({"op": "windows"})
+            except VmError as exc:
+                res.facts["shown_on_b"] = str(exc)[:300]
+            try:
+                said = b.vm.exec('grep -iE "browser|chromium|cef|engine" '
+                                 '"$HOME/.local/state/tilo/session-logs/latest.log" | tail -n 40 | cut -c1-400',
+                                 timeout=60, check=False)
+                print(f"      B's session on the Browser:\n{said}", flush=True)
+            except VmError as exc:
+                print(f"      B's session log could not be read: {exc}", flush=True)
+            raise
+
+    def answered_in_one_tab(self, b: Box, parties: list[Party], url: str, res: Result) -> None:
+        self.serve_form(b)
+        res.facts["setting"] = self.set_accept(b, True)
+        done, allowed = threading.Event(), []
+        person = threading.Thread(target=self.person_allows, args=(b, done, allowed), daemon=True)
+        person.start()
+        runs = []
+        try:
+            for party in parties:
+                box = party.box
+                self.put_agent(box)
+                ready = f"$HOME/{GUEST_DIR}/tab-ready-{box.letter}"
+                go = f"$HOME/{GUEST_DIR}/tab-go-{box.letter}"
+                box.vm.exec(f'rm -f "{ready}" "{go}"')
+                env = {"E2E_URL": url, "E2E_ANSWERS": json.dumps(party.answers), "E2E_READY": ready,
+                       "E2E_GO": go, "E2E_WAIT_S": "300",
+                       "E2E_PROGRESS": f"$HOME/{GUEST_DIR}/tab-progress-{box.letter}.json"}
+                if party.leads:
+                    env["E2E_NAVIGATE"] = "1"
+                thread, held = self.agent_beside(box, "browser", party.command, timeout=900, **env)
+                runs.append((party, thread, held, go))
+
+                def reads(box=box, ready=ready) -> bool:
+                    return "yes" in box.vm.exec(f'test -e "{ready}" && echo yes || echo no')
+
+                # The first brings the form up; each of the others joins once the one before it
+                # has read it.
+                wait_until(lambda: not thread.is_alive() or reads(), 420, 2.0)
+                if not reads():
+                    raise Failed(f"the agent on {box.letter.upper()} never read the form in B's tab: "
+                                 f"{json.dumps(held, ensure_ascii=False)[:600]}")
+            res.facts["seated"] = [s.get("key") for s in self.seated(b) if s.get("seat")]
+            # All of them answer in the same moment.
+            starters = [threading.Thread(target=lambda box=party.box, go=go: box.vm.exec(f'touch "{go}"'))
+                        for party, _, _, go in runs]
+            for starter in starters:
+                starter.start()
+            for starter in starters:
+                starter.join(60)
+            said = [(party, self.finish(thread, held, 900)) for party, thread, held, _ in runs]
+        finally:
+            done.set()
+            person.join(10)
+            res.facts["allowed"] = allowed
+        for party, t in said:
+            who = party.box.letter
+            res.facts[f"page_{who}"] = t.get("page")
+            for key in ("navigate", "forms", "fill", "fields", "record"):
+                if key in t:
+                    res.facts[f"{key}_{who}"] = text_of(t.get(key)) or t.get(key)
+            res.facts[f"fill_window_{who}"] = [t.get("fill_from"), t.get("fill_until")]
+            if "Answered" not in text_of(t.get("fill")):
+                raise Failed(f"the agent on {who.upper()} did not answer its part: {t.get('fill')}")
+        fields = self.person_reads(b, "read-page-fields")
+        record = self.person_reads(b, "read-page-record")
+        self.write(f"tab-fields-{len(parties)}.json", fields)
+        self.write(f"tab-record-{len(parties)}.json", record)
+        said_fields = json.dumps(fields, ensure_ascii=False)
+        said_record = json.dumps(record, ensure_ascii=False)
+        res.facts["fields_read"], res.facts["record_read"] = said_fields, said_record
+        who_set = {str(f.get("question")): (f.get("set") or {}).get("by") for f in _fields(fields)}
+        res.facts["who_set"] = who_set
+        fills = [e for e in _entries(record) if e.get("action") == "fill_form" and e.get("ok")]
+        actors: dict[str, str] = {}
+        res.facts["actors"] = actors
+        for party in parties:
+            who = party.box.letter.upper()
+            for value in party.answers.values():
+                if len(value) > 3 and value not in said_fields:
+                    raise Failed(f"the page on B does not hold {value!r}, which the agent on {who} "
+                                 f"answered: {said_fields[:1500]}")
+            mine = [e for e in fills if party.mark in json.dumps(e, ensure_ascii=False)]
+            if len(mine) != 1:
+                raise Failed(f"B's tab does not record once what the agent on {who} answered "
+                             f"({party.mark!r}): {said_record[:1500]}")
+            actor = str(mine[0].get("actor") or "")
+            actors[who] = actor
+            if not actor:
+                raise Failed(f"B's tab records what the agent on {who} answered under no name: {mine[0]}")
+            device = (party.box.identity.get("this_device") or {}).get("device", "")[:8]
+            if party.remote and (not device or device not in actor):
+                raise Failed(f"B's tab records the agent on {who} as {actor!r}, which does not name "
+                             f"its device {device}")
+            for question in party.reviewed:
+                if who_set.get(question) != actor:
+                    raise Failed(f"{question!r} is not reviewed as set by the agent on {who} ({actor}): "
+                                 f"{who_set}")
+        if len(set(actors.values())) != len(parties):
+            raise Failed(f"B's tab does not tell the {len(parties)} agents apart: {actors}")
+
+    def person_opens_browser(self, b: Box, res: Result) -> None:
+        """B's person opens the Browser from their desk's list of apps, and it is there once
+        its window stands on the desk and stays: a Browser that ends as it starts shows its
+        window for a moment."""
+        def open_windows() -> bool:
+            return BROWSER in json.dumps(b.vm.raw({"op": "windows"}))
+
+        if open_windows():
+            return
+        # A session publishes its list of apps a few seconds after it starts: the invocation is
+        # the probe, as it is for the person who presses the app's row.
+        deadline = time.monotonic() + 45
+        while True:
+            try:
+                res.facts["person_opened"] = b.vm.invoke("applications", BROWSER)
+                break
+            except VmError as exc:
+                if "unknown_action" not in str(exc) or time.monotonic() >= deadline:
+                    raise Failed(f"{b.name}'s person cannot open the Browser from the desk's apps: "
+                                 f"{str(exc)[:600]}") from exc
+                time.sleep(0.5)
+        if not wait_until(open_windows, 90, 2.0):
+            raise Failed("the Browser B's person opened never stood on B's desk")
+        time.sleep(6.0)
+        if not open_windows():
+            raise Failed("the Browser B's person opened did not stay on B's desk")
+
+    def two_machines(self, a: Box, b: Box, res: Result, facts: dict) -> None:
+        # B's person has the Browser open; the agent on A sends its tab to the form, and the
+        # agent on B joins the tab.
+        self.in_one_tab(b, [
+            Party(a, facts["command"], ANSWERS_A, "Maria Elena",
+                  ("Given names", "Family name", "Nationality", "Which country?"), leads=True),
+            Party(b, self.door(b), ANSWERS_B, "P7K290XB4", ("Passport number", "Arrival"),
+                  remote=False),
+        ], SITE_URL, res)
+
+    def third_device(self, a: Box, d: Box, res: Result) -> None:
+        """D: A branched once more, so a third device of the person, on the boxes' network."""
+        out = a.vm.vm_cmd("branch", a.name, d.name, "--stop", timeout=900)
+        res.facts["branch"] = out[-1200:]
         self.running.discard("a")
-        self.boxes["a"].vm.vm_cmd("stop", self.boxes["a"].name, timeout=300, check=False)
+        for box in (a, d):
+            self.plug_lan(box)
+        # D wakes holding the address A was given by hand, so it is up and given its own before
+        # A is started again.
+        d.vm.vm_cmd("start", d.name, timeout=900)
+        self.running.add("d")
+        self.wait_session(d, 600)
+        res.facts["lan_d"] = self.address_lan(d)
+        a.vm.vm_cmd("start", a.name, timeout=900)
+        self.running.add("a")
+        self.wait_session(a, 600)
+        res.facts["lan_a"] = self.address_lan(a)
+        for box in (a, d):
+            box.vm.run("slot", "restart", SLOT, timeout=300, slot=False)
+            self.ready(box, 300)
+        sa, sd = self.identity(a), self.identity(d)
+        res.facts["a"], res.facts["d"] = sa, sd
+        key = lambda status: (status.get("this_device") or {}).get("device")  # noqa: E731
+        if not key(sd) or key(sd) in (key(sa), key(self.boxes["b"].identity)):
+            raise Failed(f"D is not a device of its own after its first boot: {sd}")
+        ia, i_d = (sa.get("identity") or {}).get("id"), (sd.get("identity") or {}).get("id")
+        if not ia or ia != i_d:
+            raise Failed(f"A and D are not one person: {ia} and {i_d}")
+
+    def three_machines(self, a: Box, b: Box, d: Box, res: Result, facts: dict) -> None:
+        self.third_device(a, d, res)
+        # Each of the person's two other devices finds B again on their network.
+        for box in (a, d):
+            self.reachable(box, b, res)
+        # The agent on A sends the tab B has open to the form anew; the agents on D and on B
+        # join it.
+        self.in_one_tab(b, [
+            Party(a, facts["command"], THREE_A, "Joao Pedro", ("Given names", "Family name"),
+                  leads=True),
+            Party(d, facts["command"], THREE_D, "Brazil", ("Nationality", "Which country?")),
+            Party(b, self.door(b), THREE_B, "FX4410972", ("Passport number", "Arrival"),
+                  remote=False),
+        ], THREE_URL, res)
+
+    def stranger(self, b: Box, c: Box, res: Result) -> None:
+        # C runs beside B in the place of the person's other devices.
+        for letter in ("a", "d"):
+            self.running.discard(letter)
+            self.boxes[letter].vm.vm_cmd("stop", self.boxes[letter].name, timeout=300, check=False)
         c.vm.vm_cmd("create", c.name, "--image", str(self.args.work / "box-c.qcow2"), "--heads", "1",
                     "--resolution", OUTPUT, "--memory-mb", str(MEMORY_MB), "--cpus", str(CPUS),
                     timeout=900)
@@ -679,6 +1046,34 @@ ip -o addr show dev "$dev"
             raise Failed("B seats C's agent")
 
 
+def _found(value, key: str) -> list:
+    """Every list held under `key` anywhere in `value`: what an action answered is wrapped
+    differently by each door that carries it."""
+    found = []
+    if isinstance(value, dict):
+        for name, inner in value.items():
+            if name == key and isinstance(inner, list):
+                found.append(inner)
+            found += _found(inner, key)
+    elif isinstance(value, list):
+        for inner in value:
+            found += _found(inner, key)
+    elif isinstance(value, str) and value[:1] in ("{", "["):
+        try:
+            found += _found(json.loads(value), key)
+        except ValueError:
+            pass
+    return found
+
+
+def _entries(record) -> list[dict]:
+    return [e for entries in _found(record, "entries") for e in entries if isinstance(e, dict)]
+
+
+def _fields(review) -> list[dict]:
+    return [f for fields in _found(review, "fields") for f in fields if isinstance(f, dict)]
+
+
 def text_of(reply) -> str:
     try:
         return "\n".join(block.get("text", "") for block in reply["result"]["content"])
@@ -692,7 +1087,7 @@ def main() -> int:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--commit", default="unknown")
     ap.add_argument("--tilo-vm", default="tilo-vm")
-    ap.add_argument("--taps", required=True, help="the tap devices of boxes a, b and c")
+    ap.add_argument("--taps", required=True, help="the tap devices of boxes a, b, c and d")
     ap.add_argument("--hold", type=int, default=0, help="keep the boxes up this long after the run")
     return Run(ap.parse_args()).main()
 
