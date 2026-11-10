@@ -624,8 +624,9 @@ async fn vouch(reporter: &Reporter<'_>, host: &dyn HttpClient) -> Result<ExitCod
              not; on a new account, choose \"Set up with your agent\" in Tilo instead"
         );
     };
+    // The host tells the tab it approved, as it approves: that step is
+    // never this computer's to report.
     claim(host, &reporter.report, &key, &device).await?;
-    reporter.step(Step::Approved).await;
     println!("Approved: your tab is signing in as you.");
     Ok(ExitCode::SUCCESS)
 }
