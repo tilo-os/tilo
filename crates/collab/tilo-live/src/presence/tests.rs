@@ -86,7 +86,7 @@ fn only_a_change_draws_and_only_this_workspace_counts() {
 }
 
 #[test]
-fn a_pointer_is_placed_on_the_tile_it_is_over_and_a_rest_draws_nothing() {
+fn a_pointer_is_said_in_the_pixels_of_its_tile_and_a_rest_draws_nothing() {
     let mut board = board();
     board.hear([1; 32], &pointed(WORKSPACE, 3, 12.0, 34.0), 1_000.0);
     let member = board.member([1; 32]).expect("a pointer says they are here");
@@ -96,10 +96,14 @@ fn a_pointer_is_placed_on_the_tile_it_is_over_and_a_rest_draws_nothing() {
     assert_eq!(
         board.pointers(3, 1_000.0),
         vec![([1; 32], 12.0, 34.0)],
-        "the pointer is said in the pixels of the tile it is over"
+        "the pointer is said in the pixels of the tile it is over, for the surface to place \
+         where that tile stands"
     );
     assert_eq!(over.point((12.0, 34.0)), (112.0, 84.0));
-    assert!(board.pointers(4, 1_000.0).is_empty());
+    assert!(
+        board.pointers(4, 1_000.0).is_empty(),
+        "a pointer is only over the tab it is over"
+    );
     let drawn = board.revision();
     board.hear([1; 32], &pointed(WORKSPACE, 3, 12.0, 34.0), 1_000.5);
     assert_eq!(board.revision(), drawn, "a resting pointer draws nothing");
