@@ -390,6 +390,10 @@ first, on a busy page as on an idle one. The button then comes up where the
 pointer is, with no move of no length before it. A page that says of two
 points in a row that it did not hear them is sent the rest a frame apart.
 
+A key named by a letter reaches the page as that letter on every system: an
+upper-case one carries Shift for its own events on Linux, where the engine
+reads a key from its key code and Shift alone.
+
 ```sh
 python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromium-host
 ```

@@ -1542,6 +1542,13 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     e.unmodified_character=mapping.mac_character;
 #elif defined(OS_LINUX)
     e.native_key_code=mapping.x11;
+    // On Linux the engine reads a key from its key code and Shift alone, so
+    // an upper-case letter is that letter only with Shift held: one that
+    // arrives without it (Caps Lock, or a press that names `A`) would reach
+    // the page as the key `a` while writing the letter `A`. Such a key
+    // carries Shift for its own events; a shortcut is left as it was named.
+    if(tilo::UpperCaseLetter(key) && !(e.modifiers&(EVENTFLAG_SHIFT_DOWN|EVENTFLAG_CONTROL_DOWN|EVENTFLAG_ALT_DOWN|EVENTFLAG_COMMAND_DOWN)))
+      e.modifiers|=EVENTFLAG_SHIFT_DOWN;
 #endif
     CefString text(key);auto utf16=text.ToString16();
     if(utf16.size()==1) e.character=e.unmodified_character=utf16[0];
