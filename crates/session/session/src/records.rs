@@ -43,6 +43,8 @@ use ui::record::RecordCheckout;
 struct Held {
     id: String,
     kind: String,
+    /// What the index that named it first says it is called.
+    name: Option<String>,
     /// The app whose index named it first: the app that opens it, and whose index the reference
     /// goes into when the record is brought here.
     package: String,
@@ -134,6 +136,7 @@ impl Records {
             .map(|record| HeldRecord {
                 id: record.id.clone(),
                 kind: record.kind.clone(),
+                name: record.name.clone(),
                 package: record.package.clone(),
                 here: record.workspaces.iter().any(|held_in| held_in == workspace),
                 workspace: record
@@ -249,15 +252,19 @@ fn read_indexes(store: &dyn DurableStore) -> Vec<Held> {
     };
     let mut held: BTreeMap<String, Held> = BTreeMap::new();
     for (package, workspace) in indexes {
-        for record in named_in(store, &package, &workspace) {
+        for (record, name) in named_in(store, &package, &workspace) {
             let entry = held
                 .entry(record.id.as_str().to_owned())
                 .or_insert_with(|| Held {
                     id: record.id.as_str().to_owned(),
                     kind: record.kind.as_str().to_owned(),
+                    name: None,
                     package: package.clone(),
                     workspaces: Vec::new(),
                 });
+            if entry.name.is_none() {
+                entry.name = name;
+            }
             if !entry.workspaces.contains(&workspace) {
                 entry.workspaces.push(workspace.clone());
             }
@@ -266,10 +273,14 @@ fn read_indexes(store: &dyn DurableStore) -> Vec<Held> {
     held.into_values().collect()
 }
 
-/// The records `package` 's index for `workspace` names, as the store holds it: read without taking
-/// a writer, since an app of the workspace owns the index.
-fn named_in(store: &dyn DurableStore, package: &str, workspace: &str) -> Vec<RecordCheckout> {
-    crate::platform::records::checkouts(store, package, workspace).unwrap_or_default()
+/// The records `package` 's index for `workspace` names, each with what it is called there, as the
+/// store holds it: read without taking a writer, since an app of the workspace owns the index.
+fn named_in(
+    store: &dyn DurableStore,
+    package: &str,
+    workspace: &str,
+) -> Vec<(RecordCheckout, Option<String>)> {
+    crate::platform::records::named_checkouts(store, package, workspace).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -302,6 +313,11 @@ mod tests {
         );
         let mut index = AutoCommit::new();
         assert!(ui::record::index::reference(&mut index, &id, &kind));
+        assert!(ui::record::index::set_name(
+            &mut index,
+            &id,
+            Some("Groceries")
+        ));
         index.commit();
         write(
             &store,
@@ -323,6 +339,11 @@ mod tests {
         assert_eq!(row.id, NOTE, "{found:?}");
         assert_eq!(row.kind, "notes.notebook");
         assert_eq!(row.package, NOTES);
+        assert_eq!(
+            row.name.as_deref(),
+            Some("Groceries"),
+            "named as its index names it"
+        );
         assert!(row.here, "the workspace in front holds it: {found:?}");
     }
 

@@ -189,6 +189,8 @@ tilo-reference = { path = "../../collab/reference" }
 # Writes the Word files an agent uploads, and reads Writer's documents.
 tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs" }
 tilo-doc = { path = "../../doc/tilo-doc" }
+# The desktop's search over a workspace's record index, as a person finds a record.
+tilo-desktop-search = { path = "../../session/desktop-search" }
 # The campaign benchmark's `TILO_BENCH_TRACE`.
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 

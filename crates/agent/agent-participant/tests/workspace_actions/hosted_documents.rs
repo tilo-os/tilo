@@ -21,6 +21,7 @@
 
 use super::*;
 use serde_json::{Value, json};
+use tilo_desktop_search::Source as _;
 use tilo_runtime::mcp::{McpServer, Surface};
 use tilo_session_host::session_actions::SessionActions;
 
@@ -260,6 +261,54 @@ fn writer_text(page: &mut Browser, route: &DocumentRoute) -> String {
                 .join("\n")
         })
         .unwrap()
+}
+
+/// The records the workspace's index of `route`'s app names, as the page
+/// has received it, once it names `route`'s record as `name`.
+async fn indexed(
+    page: &mut Browser,
+    route: &DocumentRoute,
+    name: &str,
+) -> Vec<tilo_desktop_search::providers::records::HeldRecord> {
+    let index_route = DocumentRoute {
+        record: String::new(),
+        ..route.clone()
+    };
+    let record = ui::record::RecordId::from_route(&route.record).expect("a record route");
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        page.pump();
+        let mut index = automerge::AutoCommit::new();
+        for (_, bytes) in page.documents.get(&index_route).into_iter().flatten() {
+            let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut index, bytes);
+        }
+        let held: Vec<_> = ui::record::index::discoverable_references(&index)
+            .into_iter()
+            .map(
+                |checkout| tilo_desktop_search::providers::records::HeldRecord {
+                    id: checkout.id.as_str().to_owned(),
+                    kind: checkout.kind.as_str().to_owned(),
+                    name: ui::record::index::name_of(&index, &checkout.id),
+                    package: route.app_id.clone(),
+                    here: true,
+                    workspace: None,
+                },
+            )
+            .collect();
+        if held
+            .iter()
+            .any(|each| each.id == record.as_str() && each.name.as_deref() == Some(name))
+        {
+            return held;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the workspace's {} index never named {} as {name}: {held:?}",
+            route.app_id,
+            route.record
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// Undo `run` in the record `route` names, through the history `undo` the
@@ -516,6 +565,22 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
         run = id;
     }
     let run = run.expect("the agent's run");
+
+    // The reviewer finds the form by its name: the workspace's PDF index
+    // names the record the agent made, under what PDF Viewer calls it, and
+    // the desktop's search over the index finds it there.
+    let form = indexed(&mut page, &pdf, "application.pdf").await;
+    let found =
+        tilo_desktop_search::providers::records::Records::new(WORKSPACE, form).query("application");
+    let hit = found.first().expect("search finds the form by its name");
+    assert_eq!(hit.title, "application.pdf", "{found:?}");
+    assert_eq!(
+        Some(hit.id.as_str()),
+        ui::record::RecordId::from_route(&pdf.record)
+            .as_ref()
+            .map(ui::record::RecordId::as_str),
+        "the row is the agent's form"
+    );
 
     // Undoing the run takes the agent's edits back.
     undo_run(&mut page, &pdf, &run).await;

@@ -17174,6 +17174,7 @@ dependencies = [
  "tilo-content",
  "tilo-crypto",
  "tilo-desktop-model",
+ "tilo-desktop-search",
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-feedback-transport",

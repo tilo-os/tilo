@@ -43,6 +43,9 @@ pub struct HeldRecord {
     pub id: String,
     /// What kind of record it is; empty when the index does not say.
     pub kind: String,
+    /// What the index says people call it (a PDF's file name), when its app
+    /// names it: a minted id names nothing a person would type.
+    pub name: Option<String>,
     /// The app whose record index names it: what the reference is written
     /// into when the record is brought here.
     pub package: String,
@@ -63,11 +66,17 @@ impl HeldRecord {
         ))
     }
 
-    /// What people call the record. Its identity names a file when it is
-    /// one: a file record's leaf is its name, and a minted id (`uuid:…`)
-    /// has none, so its kind stands for it.
+    /// What people call the record: the name its index gives it, else what
+    /// its identity says. That names a file when it is one: a file record's
+    /// leaf is its name, and a minted id (`uuid:…`) has none, so its kind
+    /// stands for it.
     #[must_use]
     pub fn title(&self) -> String {
+        if let Some(name) = self.name.as_deref().map(str::trim)
+            && !name.is_empty()
+        {
+            return name.to_owned();
+        }
         let Some(id) = RecordId::parse(&self.id) else {
             return self.id.clone();
         };
@@ -243,10 +252,29 @@ mod tests {
         HeldRecord {
             id: id.into(),
             kind: kind.into(),
+            name: None,
             package: "so.tilo.notes".into(),
             here,
             workspace: workspace.map(str::to_owned),
         }
+    }
+
+    /// A record with a minted id is found by the name its index gives it,
+    /// which is its row's title: an id names nothing a person types.
+    #[test]
+    fn a_minted_record_is_found_by_the_name_its_index_gives_it() {
+        let mut form = held(
+            "uuid:6d1c1f36-0000-4000-8000-0000000000aa",
+            "pdf.document",
+            true,
+            None,
+        );
+        form.name = Some("application.pdf".into());
+        let records = Records::new("here", vec![form]);
+        let hits = records.query("application");
+        let hit = hits.first().expect("the form is found by its name");
+        assert_eq!(hit.title, "application.pdf");
+        assert!(records.query("passport").is_empty());
     }
 
     #[test]

@@ -311,6 +311,25 @@ pub fn checkouts(
         .map(|index| ui::record::index::discoverable_references(&index))
 }
 
+/// [`checkouts`], each with what the index says it is called.
+#[must_use]
+pub fn named_checkouts(
+    store: &dyn DurableStore,
+    app: &str,
+    workspace: &str,
+) -> Option<Vec<(RecordCheckout, Option<String>)>> {
+    let index = index_document(store, app, workspace)?;
+    Some(
+        ui::record::index::discoverable_references(&index)
+            .into_iter()
+            .map(|checkout| {
+                let name = ui::record::index::name_of(&index, &checkout.id);
+                (checkout, name)
+            })
+            .collect(),
+    )
+}
+
 /// `app`'s workspace document in `workspace` read once: the checkouts its index names, and the
 /// document itself as the record `app` keeps as itself (Notes' notebook, Chat's chat) once an
 /// action was done in it. Keeping the index alone is no one's work.

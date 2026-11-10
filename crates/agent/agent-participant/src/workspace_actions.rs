@@ -51,6 +51,7 @@
 mod bounded;
 mod content;
 mod feedback;
+mod publish;
 mod reads;
 mod run_voice;
 mod terminal;
@@ -1216,6 +1217,9 @@ struct Worker {
     clock: u64,
     /// What the host says for the runs it executes ([`run_voice`]).
     voices: run_voice::RunVoices,
+    /// What the apps call the records the host changes, read in a confined
+    /// worker kept for the next ([`publish`]).
+    titles: crate::worker::ConfinedTitles,
 }
 
 /// How a run's action ended, as it is narrated.
@@ -1353,6 +1357,7 @@ impl Worker {
             bounded: BTreeMap::new(),
             beside: HashMap::new(),
             voices: run_voice::RunVoices::default(),
+            titles: crate::worker::ConfinedTitles::default(),
             joining: HashMap::new(),
             clock: 0,
         }
@@ -2662,59 +2667,6 @@ impl Worker {
             })),
             resources: Vec::new(),
         })
-    }
-
-    /// Publish `mutation` as the member: sealed with the record's channel
-    /// keys, or held until a participant admits the member to it.
-    fn commit(
-        &mut self,
-        workspace_id: u64,
-        route: &DocumentRoute,
-        mutation: &DocumentMutation,
-    ) -> Result<(), String> {
-        let workspace = self
-            .workspaces
-            .get_mut(&workspace_id)
-            .ok_or("the workspace was not joined")?;
-        workspace.peer.publish(route.clone(), mutation)?;
-        let bytes = bytes_of(mutation);
-        let digest = change_digest(&self.member.endpoint.host_cert.device_public_key, &bytes);
-        workspace.log.push((route.clone(), (digest, bytes)));
-        if let Some(mounted) = self.mounted.get_mut(route) {
-            mounted.seen.insert(digest);
-        } else if let Some(holder) = self.beside.get(route)
-            && let Some(mounted) = self.mounted.get_mut(holder)
-        {
-            mounted
-                .parts
-                .entry(route.clone())
-                .or_default()
-                .insert(digest);
-        }
-        Ok(())
-    }
-
-    /// [`Self::commit`], done only once the host holds the change durably
-    /// (the session's barrier): handing it to the session, possibly to wait
-    /// for keys, is not a save.
-    fn commit_durably(
-        &mut self,
-        workspace_id: u64,
-        route: &DocumentRoute,
-        mutation: &DocumentMutation,
-    ) -> Result<(), String> {
-        self.commit(workspace_id, route, mutation)?;
-        let saved = self
-            .workspaces
-            .get(&workspace_id)
-            .ok_or("the workspace was not joined")?
-            .peer
-            .barrier()?;
-        match saved.recv_timeout(COMMIT_WAIT) {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(reason)) => Err(format!("the host did not save the change: {reason}")),
-            Err(_) => Err("the host has not acknowledged saving the change".into()),
-        }
     }
 }
 
