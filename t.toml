@@ -4587,6 +4587,22 @@ outputs = ["/target/agent-setup/**"]
 timeout_secs = 1800
 default = false
 
+# The web page boots for real, on every change that reaches it: the built bundle in headless
+# Chromium against the Lounge's relay run directly, arriving, joining the workspace and opening
+# Notes, failing on any exception the page throws or panic it reports. A page's unit tests run
+# against a fake runtime, so what only a real page meets (a runtime export the page calls by
+# another name, storage read before it is loaded, std's clock reached in wasm) passes them all.
+# Like agent-setup it builds nothing itself: the bundle and the relay are the cached outputs the
+# gate shares, rebuilt only when what they are built from moved.
+[[check]]
+name = "page-boot"
+run = "bash os/containers/tilo-lounge/test-page-boot.sh /target/publish/web-desktop/bundle /target/page-boot"
+needs = ["lounge-binaries", "image-lounge-context", "lounge-gate-tools", "web-desktop-bundle"]
+env = { TILO_RELAY_BIN = "/target/publish/lounge/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/context/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto" }
+requires = ["arch=x86_64"]
+outputs = ["/target/page-boot/**"]
+timeout_secs = 1200
+
 # Releasing the image the gate passed: this chain does not build a second one. carry-lounge
 # pulls the published `dev-<commit>` anonymously and pins it by digest, sign-lounge signs that
 # digest, and publish-lounge tags it `sha-<commit>` for cloud-deploy. A commit whose Lounge
