@@ -1395,6 +1395,38 @@ mod locus_tests {
         );
     }
 
+    /// A follower whose view shows an agent's caret in text settles: frame
+    /// after frame of it goes to the words once, and says nothing of the
+    /// follower's own presence.
+    #[test]
+    fn following_an_agents_caret_in_text_settles() {
+        let root = crate::widget::Scrollable::new(crate::widget::ScrollAxis::Vertical)
+            .with_child(Box::new(long_note()));
+        let mut frame = FrameHarness::new(State::new(), Box::new(root), (400, 240));
+        frame.relayout();
+        let event = agent_acting(&mut frame, "notes.document:root");
+        frame.update_presence(|presence| {
+            let block = crate::widget::block_editor::block_presence_key("p-33");
+            presence.set_remote_caret("scribe".into(), block, 13);
+            true
+        });
+        let said = crate::presence::capability::subtree_presence(frame.root.as_ref());
+        let mut followed = FollowedView::default();
+        let mut moved = 0;
+        for _ in 0..60 {
+            moved += usize::from(frame.follow_view("scribe", &mut followed));
+            frame.relayout();
+        }
+        assert_eq!(moved, 1, "the view goes to the words once");
+        assert!(frame.semantic_locus(&event).is_some());
+        assert_eq!(frame.focus_presence(), None, "the follower says nothing");
+        assert_eq!(
+            crate::presence::capability::subtree_presence(frame.root.as_ref()),
+            said,
+            "showing someone's caret says nothing of the follower's own"
+        );
+    }
+
     #[test]
     fn semantic_locus_refuses_a_control_whose_resource_is_no_longer_published() {
         let resource = resource_actions::resource("stale", "Same label", "edit", "Edit");
