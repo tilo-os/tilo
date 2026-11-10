@@ -4,6 +4,7 @@ import base64
 import html
 import http.server
 import json
+import math
 import os
 import re
 import tempfile
@@ -1885,14 +1886,23 @@ class PageActions(unittest.TestCase):
         pressed = self.main_world('(frame => frame && frame.contentDocument'
                                   '.getElementById("pressed").textContent)'
                                   '(document.querySelector("iframe"))')
-        # The canvas's own box starts 8 by 29 into the frame's document, which
-        # starts at the frame's own client origin, so a point 5 by 5 into the
-        # canvas is 13 by 34 of the view, as the frame's own element reads it.
-        self.assertEqual(pressed, 'pressed 13,34', 'the press reached the frame\'s own element')
+        # The canvas's own box starts where the frame's document lays it out,
+        # in the frame's own viewport, which starts at the frame's client
+        # origin: 8 across, and as far down as the form above it is tall,
+        # which is one line of fields in one system's fonts and two in
+        # another's. A point 5 by 5 into the canvas is that far into its box,
+        # as the frame's own element reads it. (This asserted 13 by 34, the
+        # layout of macOS's fonts, which is no part of where a step lands.)
+        left, top = json.loads(self.main_world(
+            '(box => JSON.stringify([box.left, box.top]))(document.querySelector("iframe").contentDocument'
+            '.getElementById("pad").getBoundingClientRect())'))
+        self.assertEqual(left, 8, 'the canvas starts at the frame document\'s own margin')
+        at = lambda x, y: f'pressed {math.floor(left + x + 0.5)},{math.floor(top + y + 0.5)}'
+        self.assertEqual(pressed, at(5, 5), 'the press reached the frame\'s own element')
         # The ref says which frame it was read in, so a step need not name it.
         self.pointer([dict(kind='down', element=pad, x=7, y=9), dict(kind='up', element=pad, x=7, y=9)])
         self.assertEqual(self.main_world('document.querySelector("iframe").contentDocument'
-                                         '.getElementById("pressed").textContent'), 'pressed 15,38')
+                                         '.getElementById("pressed").textContent'), at(7, 9))
         wrong = self.page('pointer', button='left', steps=[dict(kind='down', element=pad, frame='2', x=5, y=5)])
         self.assertEqual((wrong['ok'], wrong['code']), (False, 'no_frame'), wrong)
 
