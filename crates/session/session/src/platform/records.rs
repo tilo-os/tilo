@@ -173,6 +173,37 @@ pub fn checkouts(
     app: &str,
     workspace: &str,
 ) -> Option<Vec<RecordCheckout>> {
+    index_document(store, app, workspace)
+        .map(|index| ui::record::index::discoverable_references(&index))
+}
+
+/// `app`'s workspace document in `workspace` read once: the checkouts its index names, and the
+/// document itself as the record `app` keeps as itself (Notes' notebook, Chat's chat) once an
+/// action was done in it. Keeping the index alone is no one's work.
+#[must_use]
+pub fn workspace_records(
+    store: &dyn DurableStore,
+    app: &str,
+    workspace: &str,
+) -> Option<(Vec<RecordCheckout>, Option<AutoCommit>)> {
+    let document = index_document(store, app, workspace)?;
+    let checkouts = ui::record::index::discoverable_references(&document);
+    // Only the changes' messages are read: rebuilding every change would cost the whole log.
+    let acted = document
+        .committed_document()
+        .get_changes_meta(&[])
+        .iter()
+        .any(|change| {
+            change.message.as_deref().is_some_and(|message| {
+                message.starts_with(tilo_actions::CHANGE_MESSAGE_PREFIX)
+                    || message.starts_with(tilo_actions::CONTINUATION_PREFIX)
+            })
+        });
+    Some((checkouts, acted.then_some(document)))
+}
+
+/// `app`'s workspace document in `workspace`, as its app last wrote it.
+fn index_document(store: &dyn DurableStore, app: &str, workspace: &str) -> Option<AutoCommit> {
     let stored = match store.read(&StorageKey::workspace_index(app, workspace)) {
         Ok(stored) => stored?,
         Err(error) => {
@@ -197,7 +228,6 @@ pub fn checkouts(
         |error| tracing::warn!(%error, %app, %workspace, "a workspace's index does not load"),
     )
     .ok()
-    .map(|index| ui::record::index::discoverable_references(&index))
 }
 
 /// The document `app` keeps for `record` in `workspace`, as its app last committed it.

@@ -40,6 +40,7 @@ use crate::platform::pane::Pane;
 #[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
 use tilo_actions::remote::workspace_activity as wire;
+use ui::record::{RecordCheckout, RecordId, RecordKind};
 
 #[cfg(target_os = "linux")]
 use crate::platform::fabric::SharedLink;
@@ -793,10 +794,26 @@ fn read_workspace_records(
     let mut read = Vec::new();
     let mut seen = BTreeSet::new();
     for (package, index_room) in workspace_packages(store, workspace) {
-        let Some(checkouts) = crate::platform::records::checkouts(store, &package, &index_room)
+        let Some((checkouts, primary)) =
+            crate::platform::records::workspace_records(store, &package, &index_room)
         else {
             continue;
         };
+        // The app's own record (Notes' notebook, Chat's chat) is the workspace's document itself,
+        // which also keeps the index: read as a record of its own once anything was done in it.
+        if let Some(document) = primary
+            && seen.insert((
+                package.clone(),
+                RecordId::package_primary().as_str().to_owned(),
+            ))
+        {
+            noted(document.get_actor());
+            read.push(DetachedRecordHistory {
+                app: package.clone(),
+                checkout: RecordCheckout::package_primary(RecordKind::new(package.as_str())),
+                document: Some(document),
+            });
+        }
         for checkout in checkouts {
             let id = checkout.id.as_str().to_owned();
             if !seen.insert((package.clone(), id.clone())) {
@@ -1508,6 +1525,161 @@ mod tests {
                     .unwrap_or_default()
             })
         }
+    }
+
+    /// Lines an agent appends to `body` of `notebook` as one run, each a change of its own a second
+    /// after the last.
+    #[cfg(target_os = "linux")]
+    fn agent_appends(
+        notebook: &mut ui::automerge::AutoCommit,
+        body: &ui::automerge::ObjId,
+        time: &mut i64,
+        lines: usize,
+    ) {
+        use ui::automerge::ReadDoc as _;
+        use ui::automerge::transaction::Transactable as _;
+        for line in 0..lines {
+            *time = time.saturating_add(1);
+            let wrote = tilo_actions::ActionContext {
+                invoker: Some(
+                    tilo_actions::ActionInvoker::actor("agent:Claude Code".to_owned())
+                        .with_kind(tilo_actions::ActorKind::Agent)
+                        .acting_for("ada".to_owned()),
+                ),
+                what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall::new(
+                    tilo_actions::ActionKey::new(
+                        "so.tilo.notes",
+                        "notes.notebook",
+                        "append-paragraph",
+                    ),
+                    std::iter::empty(),
+                ))),
+                ..tilo_actions::ActionContext::default()
+            }
+            .with_group("run-7", "Claude Code", "agent-run");
+            let end = notebook.length(body);
+            notebook
+                .splice_text(body, end, 0, &format!("Launch notes, line {line}.\n"))
+                .unwrap();
+            notebook.commit_with(
+                ui::automerge::transaction::CommitOptions::default()
+                    .with_message(wrote.change_message().expect("a message"))
+                    .with_time(*time),
+            );
+        }
+    }
+
+    /// An agent's work in an app's own record (Notes' notebook is the workspace's Notes document,
+    /// which also keeps its index) is one of its runs, with what it did: the record a host opens
+    /// for an agent is that one. Its card lists the run, and the notice that it finished counts
+    /// the record it changed. Each time it writes again, the history reads what it added and
+    /// lists that too.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_agents_run_in_an_apps_own_record_is_listed_with_its_changes() {
+        use ui::automerge::transaction::Transactable as _;
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(app_state::FsStore::new(dir.path())) as Store;
+        let mut desk = Desk::new();
+        let workspace = desk
+            .handle
+            .read(|tree| tree.active_workspace().map(Workspace::id))
+            .expect("a workspace")
+            .to_string();
+        // The notebook as a host keeps it: what the agent wrote, for the person, in its run.
+        let mut notebook = ui::automerge::AutoCommit::new();
+        let body = notebook
+            .put_object(ui::automerge::ROOT, "body", ui::automerge::ObjType::Text)
+            .unwrap();
+        notebook.commit();
+        let key = StorageKey::workspace_index("so.tilo.notes", &workspace);
+        let _lease = store.lease(&key).unwrap();
+        // Each write is noted on the one stream of record changes, as the store's writers note it.
+        let changes = crate::platform::records::Changes::default();
+        let mut time = 0;
+        let mut write = |notebook: &mut ui::automerge::AutoCommit, lines: usize| {
+            agent_appends(notebook, &body, &mut time, lines);
+            store
+                .write(&key, WriteOp::Replace(notebook.save()), None)
+                .unwrap();
+            changes.note(&workspace, "so.tilo.notes", "", false);
+        };
+        write(&mut notebook, 2);
+
+        desk.activity = Activity::over(Given {
+            desk: DeskDoc::load(None, None, "ada"),
+            person: "ada".into(),
+            store: Some(Arc::clone(&store)),
+            state: None,
+            apps: None,
+            people: crate::platform::authors::unnamed(),
+            writers: Writers::untracked(),
+            pane: Rc::new(crate::platform::pane::Linked),
+            models: None,
+            changes: changes.clone(),
+            wake: None,
+        });
+        desk.surface
+            .set_history_source(Box::new(desk.activity.clone()));
+        desk.surface.serve_activity(desk.activity.requests());
+        desk.open_history();
+        let invocation = InvocationId::new();
+        let InvokeArgument::Json(query) = wire::argument(&wire::RunsQuery::default()) else {
+            panic!("the runs take a query");
+        };
+        desk.activity
+            .requests()
+            .follow(&person(), invocation, wire::RUNS, query)
+            .expect("the runs are followed");
+        // The records are read again on a worker once the stream says they moved: a pass lists
+        // what that read found once it landed.
+        let mut runs_until = |landed: &dyn Fn(&wire::AgentRun) -> bool| -> wire::Runs {
+            for _ in 0..300 {
+                desk.frame();
+                let runs: wire::Runs = serde_json::from_value(
+                    desk.activity
+                        .requests()
+                        .served(&invocation)
+                        .expect("the runs are served")
+                        .expect("runs"),
+                )
+                .expect("runs");
+                if runs.runs.iter().any(landed) {
+                    return runs;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("the agent's run is never listed");
+        };
+        let first = runs_until(&|run| run.last_ms == 2_000);
+        let [run] = first.runs.as_slice() else {
+            panic!("the agent's one run: {first:?}");
+        };
+        assert_eq!(run.agent.name, "Claude Code", "{run:?}");
+        let [action] = run.actions.as_slice() else {
+            panic!("one action, in the notebook: {run:?}");
+        };
+        assert_eq!(action.app_id, "so.tilo.notes", "{action:?}");
+        assert_eq!(
+            action.record,
+            ui::record::RecordId::package_primary().as_str(),
+            "{action:?}"
+        );
+        let finished = tilo_desktop::here::AgentFinished {
+            publisher: String::new(),
+            label: "Claude Code".into(),
+            last: None,
+        };
+        assert_eq!(
+            finished.summary(&first).map(|summary| summary.changes),
+            Some(1),
+            "the finished notice counts the notebook it changed"
+        );
+
+        // It writes again: the run ends at what it added, its fifth change.
+        write(&mut notebook, 3);
+        let again = runs_until(&|run| run.last_ms == 5_000);
+        assert_eq!(again.runs.len(), 1, "still the agent's one run: {again:?}");
     }
 
     /// The activity opens from its command and lists the workspace's real changes.

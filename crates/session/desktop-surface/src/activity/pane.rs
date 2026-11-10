@@ -1741,7 +1741,7 @@ impl WorkspaceActivityPane {
     pub fn refresh_detached_records(
         &mut self,
         tree: &mut impl ActivityTree,
-        records: Vec<super::index::DetachedRecordHistory>,
+        mut records: Vec<super::index::DetachedRecordHistory>,
     ) {
         if tree.document().pending_ops() > 0 {
             self.defer_pending_tree(tree);
@@ -1755,7 +1755,7 @@ impl WorkspaceActivityPane {
             .unwrap_or_default();
         let changed =
             self.history_index
-                .refresh_detached(tree, query, &self.scoped_tree_rows, &records);
+                .refresh_detached(tree, query, &self.scoped_tree_rows, &mut records);
         self.detached_records = records;
         self.feed_coverage = self.history_index.coverage().clone();
         self.refresh_detached_agent_runs(tree);
