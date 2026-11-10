@@ -51,12 +51,7 @@ pub fn open(seat: Option<&DirectorySeat>, store: &Store, host: &dyn Host) {
 /// Choosing Join (or Open) closes the sheet as soon as the choice has started: what became of it
 /// — the workspace opening, or joining it, or a refusal — is shown where the person now is, a
 /// banner, rather than a sheet left behind.
-pub fn follow(
-    seat: Option<&DirectorySeat>,
-    store: &Store,
-    notices: &dyn Notices,
-    host: &dyn Host,
-) {
+pub fn follow(seat: Option<&DirectorySeat>, store: &Store, notices: &dyn Notices, host: &dyn Host) {
     // A host set up to join one workspace joins it with nobody at the directory: what was granted
     // is taken and added whether or not the sheet is open.
     let answered = store.answered();
