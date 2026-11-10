@@ -79,6 +79,13 @@ pub enum Error {
     #[error("peer state belongs to another device")]
     OtherDevice,
 
+    /// The kept state was written by a build that kept it in another form.
+    /// It is this device's own and authentic, but cannot be read: the caller
+    /// drops it and the device joins again, as a new device of its member
+    /// does, and is handed the channel's keys anew.
+    #[error("peer state was kept in another format")]
+    OtherFormat,
+
     /// AEAD authentication failed, or sealing could not be performed.
     #[error("MLS state cryptography error: {0}")]
     StateCrypto(&'static str),

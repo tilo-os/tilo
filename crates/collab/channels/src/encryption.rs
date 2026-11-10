@@ -1813,6 +1813,18 @@ impl ChannelEncryption {
                 store.state.peers(workspace).forget(channel)?;
                 return Ok(false);
             }
+            // State an earlier build kept in another form: authentic, this
+            // device's own, and unreadable here. It is dropped, and the device
+            // asks to join again and is handed the channel's keys anew, so an
+            // upgrade never leaves a channel this device cannot open.
+            Err(channel_crypto::Error::OtherFormat) => {
+                tracing::info!(
+                    %workspace,
+                    "channel state was kept in another format by an earlier build; joining again"
+                );
+                store.state.peers(workspace).forget(channel)?;
+                return Ok(false);
+            }
             opened => opened?,
         };
         let Some(peer) = opened else {

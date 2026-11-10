@@ -536,9 +536,7 @@ impl ChannelPeer {
         )
         .map_err(|_| Error::StateCrypto("state authentication failed"))?;
         if plaintext.first() != Some(&PEER_VERSION) {
-            return Err(Error::InvalidState(
-                "peer state is of another version".into(),
-            ));
+            return Err(Error::OtherFormat);
         }
         let file: PeerFile = postcard::from_bytes(&plaintext)
             .map_err(|error| Error::Serialization(error.to_string()))?;
@@ -1601,5 +1599,34 @@ impl std::fmt::Debug for ChannelPeer {
             .field("requests", &self.requests.len())
             .field("outbox", &self.outbox.len())
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+
+    /// State an earlier build kept in another form is told apart from state
+    /// that is corrupt or another device's: the caller drops it and joins
+    /// again rather than being left with a channel it cannot open.
+    #[test]
+    fn state_kept_in_another_format_is_told_apart() {
+        let vault = VaultKey::new([7; 32]);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let channel = ChannelId::new();
+        let peer = ChannelPeer::waiting(None, channel, Box::new(key.clone()), &vault).unwrap();
+        let exported = peer.export_sealed(&vault).unwrap();
+        let context = || Context::new(Label::ChannelMlsState, PEER_RECORD);
+        let mut plaintext = tilo_seal::envelope::open(&vault.0, context(), &exported).unwrap();
+        plaintext[0] = PEER_VERSION - 1;
+        let earlier = tilo_seal::envelope::seal(&vault.0, context(), &plaintext).unwrap();
+        assert!(matches!(
+            ChannelPeer::restore(channel, Box::new(key.clone()), &earlier, &vault),
+            Err(Error::OtherFormat)
+        ));
+        assert!(
+            ChannelPeer::restore(channel, Box::new(key), &exported, &vault).is_ok(),
+            "state of this build reads as before"
+        );
     }
 }
