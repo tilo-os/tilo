@@ -274,6 +274,9 @@ pub struct AppWindow {
     /// The field of the page the window draws for the item a press showed, until the keyboard
     /// is in it: the page is built again when the item changes, and the keyboard goes with it.
     page_focus: Option<String>,
+    /// How many times the window asked for it, so a field that never takes the keyboard does
+    /// not have the page built again on every frame.
+    page_focus_tries: u8,
     /// What the app last said each bound control holds, by key: what the window shows again
     /// when the person's typing goes elsewhere.
     app_bound: HashMap<String, Value>,
@@ -396,6 +399,7 @@ impl AppWindow {
             landing: None,
             shown_in_place: None,
             page_focus: None,
+            page_focus_tries: 0,
             app_bound: HashMap::new(),
             shows_by_press: BTreeMap::new(),
             opened: None,
@@ -565,6 +569,7 @@ impl AppWindow {
                             // that opened again.
                             self.shown_in_place = None;
                             self.page_focus = None;
+                            self.page_focus_tries = 0;
                         }
                         Lane::Detail => self.detail = Some(view),
                     }
@@ -601,9 +606,9 @@ impl AppWindow {
                         }
                         self.shown_in_place = Some(shows);
                     }
-                    if self.detail.is_none()
-                        && matches!(brought, wire::Front::Input | wire::Front::Action)
-                    {
+                    // A person's press takes the keyboard into the page it shows; what a
+                    // scenario or a search opened leaves the keyboard where the person had it.
+                    if self.detail.is_none() && brought == wire::Front::Input {
                         opened_for_input = true;
                         self.opened = Some(self.fired);
                     }
@@ -661,9 +666,11 @@ impl AppWindow {
         // The page the person's press showed is built again with the item: the keyboard goes
         // into it once it stands.
         if let Some(field) = self.page_focus.clone() {
-            if self.focused_field().as_deref() == Some(field.as_str()) {
+            if self.focused_field().as_deref() == Some(field.as_str()) || self.page_focus_tries >= 2
+            {
                 self.page_focus = None;
             } else {
+                self.page_focus_tries = self.page_focus_tries.saturating_add(1);
                 self.focus_request = Some(field);
                 self.structure_dirty = true;
             }
@@ -1580,6 +1587,7 @@ impl AppWindow {
         }
         if lane == Lane::Root && self.detail.is_none() {
             self.page_focus = Some(field.clone());
+            self.page_focus_tries = 0;
         }
         self.ask_focus(field);
     }

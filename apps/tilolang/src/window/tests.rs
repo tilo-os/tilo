@@ -800,11 +800,16 @@ fn choosing_a_note_in_the_tree_shows_it_beside_the_tree() {
         Some(&Value::text("Standups")),
         "the bar names the note the page shows, for when the page's heading scrolls away"
     );
-    // Editing the title on the page renames the note, and the tree's row says so.
-    let input = first_input(&workspace.composed())
+    // Editing the title on the page renames the note, and the tree's row says so. The page is
+    // what the window draws beside the tree, not the sidebar's own search field.
+    let composed = workspace.composed();
+    let input = slot_of(&composed, "content")
+        .into_iter()
+        .find_map(first_input)
         .expect("the composed editor")
         .key
         .clone();
+    drop(composed);
     workspace
         .window
         .act(UiEvent::Edit(input, "Plans for the week".to_owned()));

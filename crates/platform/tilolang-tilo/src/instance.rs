@@ -192,6 +192,39 @@ impl crate::runtime::ShownHost for PlatformShown {
     }
 }
 
+/// Where an edit the window made applies: the lane's own view showing the item, the lane's view
+/// showing another item of the same list, or a view of the item opened for the edit.
+enum Place {
+    /// The lane's own view, showing the item.
+    Here(Rc<RefCell<ViewInstance>>),
+    /// The lane's own view, drawing another item of its page: `before` is the item it shows.
+    Beside {
+        view: Rc<RefCell<ViewInstance>>,
+        before: ResourceRef,
+    },
+    /// A view of the item, opened for the edit.
+    Fresh(Rc<RefCell<ViewInstance>>),
+}
+
+impl Place {
+    /// Whether the lane shows the item the edit was made in.
+    fn shown(&self) -> bool {
+        matches!(self, Self::Here(_) | Self::Beside { .. })
+    }
+
+    fn view(&self) -> &Rc<RefCell<ViewInstance>> {
+        match self {
+            Self::Here(view) | Self::Beside { view, .. } | Self::Fresh(view) => view,
+        }
+    }
+
+    fn into_view(self) -> Rc<RefCell<ViewInstance>> {
+        match self {
+            Self::Here(view) | Self::Beside { view, .. } | Self::Fresh(view) => view,
+        }
+    }
+}
+
 /// One of the window's two views: a resource shown through a view.
 struct Shown {
     target: ResourceRef,
@@ -1871,46 +1904,35 @@ impl Instance {
         }
     }
 
-    /// The view an edit the window made in the view of `lane` showing `target` applies to, and
-    /// whether the lane still shows it: the lane's own view while it shows `target`; otherwise
-    /// (the lane moved on to another resource before the edit arrived, as a press opening the
-    /// next note does) a view of `target` opened for the edit, so that what was typed into a
-    /// note lands in that note.
-    fn edited(
-        &self,
-        lane: Lane,
-        target: &ui::ResourceRef,
-    ) -> Result<(Rc<RefCell<ViewInstance>>, bool), Words> {
-        if let Some(shown) = self.lane(lane)
-            && wire::resource(&shown.target) == *target
-        {
-            return Ok((Rc::clone(&shown.view), true));
+    /// Where an edit the window made in the view of `lane` showing `target` applies.
+    fn edited(&self, lane: Lane, target: &ui::ResourceRef) -> Result<Place, Words> {
+        if let Some(shown) = self.lane(lane) {
+            // The lane's own view, showing the item the edit was made in.
+            if wire::resource(&shown.target) == *target {
+                return Ok(Place::Here(Rc::clone(&shown.view)));
+            }
+            // The window draws its page beside its list for the item it shows: the edit is the
+            // item's, and the page shows it again once the edit landed.
+            if let Some(before) = &shown.in_place
+                && wire::resource(before) != *target
+            {
+                return Ok(Place::Beside {
+                    view: Rc::clone(&shown.view),
+                    before: before.clone(),
+                });
+            }
+            if shown.in_place.is_some() {
+                return Ok(Place::Here(Rc::clone(&shown.view)));
+            }
         }
         let open_failed = || Words::phrase("tilolang-open-failed");
         let host = self.host().ok_or_else(open_failed)?;
-        // The window's own view draws the item in place (a tree beside what it shows): a view
-        // of the window's resource opened on the item the edit was made in, so the edit lands
-        // there while the window still shows the item it shows.
-        if let Some(shown) = self.lane(lane)
-            && shown.in_place.is_some()
-            && let Some(resource) = wire::runtime_resource(&wire::resource(&shown.target))
-            && let Some(item) = wire::runtime_resource(target)
-            && let Ok(mut view) = host.open_resource(&resource, None)
-            && let Ok(true) = view.show(&item)
-        {
-            // Drawn once, so the field the edit names is in the tree it shows.
-            if let Err(error) = view.poll_patches() {
-                tracing::warn!(%error, "the view an edit was made in did not run");
-                return Err(open_failed());
-            }
-            return Ok((Rc::new(RefCell::new(view)), true));
-        }
         let resource = wire::runtime_resource(target).ok_or_else(open_failed)?;
         let view = host.open_resource(&resource, None).map_err(|error| {
             tracing::warn!(%error, "the resource an edit was made in did not open");
             open_failed()
         })?;
-        Ok((Rc::new(RefCell::new(view)), false))
+        Ok(Place::Fresh(Rc::new(RefCell::new(view))))
     }
 
     /// Apply a splice of the bound text control `key` of the view of `target` in `lane`:
@@ -1924,17 +1946,19 @@ impl Instance {
         (at, delete): (u32, u32),
         insert: &str,
     ) -> Result<(), Words> {
-        let (view, shown) = self.edited(lane, target)?;
-        if shown && let Some(lane) = self.lane_mut(lane) {
+        let place = self.edited(lane, target)?;
+        if place.shown()
+            && let Some(lane) = self.lane_mut(lane)
+        {
             let acked = lane.acked.entry(key.to_owned()).or_default();
             *acked = (*acked).max(seq);
         }
-        let current = match view.borrow().bound_value(key) {
+        let current = match place.view().borrow().bound_value(key) {
             Some(Value::Text(text)) => text,
             _ => String::new(),
         };
         let text = spliced(&current, at as usize, delete as usize, insert);
-        self.edit_in(lane, &view, shown, key, Value::Text(text))
+        self.edit_at(lane, target, place, key, Value::Text(text))
     }
 
     /// Apply an edit of the bound control `key` of the view of `target` in `lane`.
@@ -1945,20 +1969,62 @@ impl Instance {
         key: &str,
         value: Value,
     ) -> Result<(), Words> {
-        let (view, shown) = self.edited(lane, target)?;
-        self.edit_in(lane, &view, shown, key, value)
+        let place = self.edited(lane, target)?;
+        self.edit_at(lane, target, place, key, value)
     }
 
-    /// Apply an edit of the bound control `key` of `view`; while `lane` shows it (`shown`),
-    /// the window shows what it sent.
-    fn edit_in(
+    /// Apply the edit of the bound control `key` made in the view of `target` in `lane`, where
+    /// the window's page draws `target` or another item: the page shows the item while the edit
+    /// lands, and the window shows again the item it showed, with what the edit made.
+    fn edit_at(
         &mut self,
         lane: Lane,
-        view: &Rc<RefCell<ViewInstance>>,
-        shown: bool,
+        target: &ui::ResourceRef,
+        place: Place,
         key: &str,
         value: Value,
     ) -> Result<(), Words> {
+        let shown = place.shown();
+        let beside = match &place {
+            Place::Beside { before, .. } => Some(before.clone()),
+            _ => None,
+        };
+        if beside.is_some()
+            && let Some(item) = wire::runtime_resource(target)
+        {
+            let view = place.view();
+            let showed = view.borrow().show(&item);
+            match showed {
+                Ok(true) => {}
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "the item an edit was made in did not show");
+                    return Err(Words::phrase("tilolang-open-failed"));
+                }
+            }
+            // Drawn, so the fields are the item's own: what the edit names is in its page.
+            if let Err(error) = view.borrow_mut().poll_patches() {
+                tracing::warn!(%error, "the view an edit was made in did not run");
+                return Err(Words::phrase("tilolang-open-failed"));
+            }
+            let view = place.into_view();
+            let outcome = Self::edit_view(&view.borrow(), key, value);
+            if let Some(before) = beside
+                && let Err(error) = view.borrow().show(&before)
+            {
+                tracing::warn!(%error, "the item the window showed did not show again");
+            }
+            // The page is what the window showed, drawn again whole: the frame that takes the
+            // item it showed and the one it showed the edit in is one.
+            if let Some(shown) = self.lane_mut(lane) {
+                shown.sent = None;
+                shown.bound.clear();
+            }
+            outcome?;
+            self.send_open(lane, None);
+            return Ok(());
+        }
+        let view = place.into_view();
         Self::edit_view(&view.borrow(), key, value)?;
         if shown {
             self.shown_by_window(lane, key);

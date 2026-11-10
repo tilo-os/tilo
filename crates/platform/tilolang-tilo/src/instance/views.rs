@@ -174,6 +174,17 @@ impl Instance {
         }
     }
 
+    /// The item the view of `lane` draws its own page for, when it lists the items it shows: the
+    /// row its tree says it selected.
+    pub(super) fn track_in_place(&mut self, lane: Lane) {
+        if let Some(view) = self.lane(lane) {
+            let item = in_place_of(view.view.borrow().tree());
+            if let Some(view) = self.lane_mut(lane) {
+                view.in_place = item;
+            }
+        }
+    }
+
     /// Send the window the view of `lane` as it is now: its tree, and the first rows of its
     /// virtual lists.
     pub(super) fn send_open(&mut self, lane: Lane, front: Option<ui::Front>) {
@@ -188,6 +199,8 @@ impl Instance {
         view.bound.clear();
         let tree = window_tree(&host, &*names, &view.view);
         view.sent = Some(tree.clone());
+        // The item the window draws its page for, when its view lists it there.
+        view.in_place = in_place_of(view.view.borrow().tree());
         let target = wire::resource(&view.target);
         self.out.push(ToUi::Open {
             lane,
@@ -277,6 +290,9 @@ impl Instance {
                     continue;
                 }
             };
+            // The item its page draws, when it lists the items it shows: a press that selects a
+            // row moves the page, and what is typed into it is that item's.
+            view.in_place = in_place_of(view.view.borrow().tree());
             if patches.is_empty() {
                 changed |= stale;
                 continue;
@@ -516,4 +532,29 @@ impl Instance {
             acked,
         });
     }
+}
+
+/// The item a tree of `node` says it selected, when a window draws its page for it beside the
+/// list: the resource of its selected row.
+fn in_place_of(node: &crate::runtime::UiNode) -> Option<ResourceRef> {
+    use crate::runtime::Value;
+    fn walk(node: &crate::runtime::UiNode, out: &mut Option<crate::runtime::Value>) -> bool {
+        if let Some(Value::List(items)) = node.props.get("selection")
+            && let Some(Value::Ref(chosen)) = items.first()
+        {
+            *out = Some(Value::Ref(chosen.clone()));
+            return true;
+        }
+        node.children.iter().any(|child| walk(child, out))
+    }
+    let mut chosen = None;
+    walk(node, &mut chosen);
+    let Some(Value::Ref(chosen)) = chosen else {
+        return None;
+    };
+    let resource = ui::ResourceRef {
+        id: chosen.target.id_string(),
+        ty: chosen.target.ty.clone(),
+    };
+    wire::runtime_resource(&resource)
 }
