@@ -632,11 +632,10 @@ impl GovernedWorkspace {
         Ok(generation)
     }
 
+    /// The people the workspace's governance admits, without the person whose
+    /// device governs it, which holds it by being its owner rather than by an
+    /// admission receipt: [`Workspaces::people`] is who the workspace has.
     fn summary(&self) -> WorkspaceSummary {
-        // The workspace's people are the ones its governance admits. The
-        // device that governs it — this host's, which holds it without an
-        // admission receipt — is not one of them: it runs the workspace for
-        // them and takes part in no list of its people.
         let members = self
             .peer()
             .governance()
@@ -1215,7 +1214,7 @@ impl Workspaces {
             )?,
         };
         self.bind(&workspace).await?;
-        let summary = workspace.summary();
+        let summary = self.people(workspace.workspace(), &workspace);
         let workspace = Arc::new(AsyncMutex::new(workspace));
         self.inner
             .workspaces
@@ -1330,7 +1329,8 @@ impl Workspaces {
             .collect::<Vec<_>>();
         let mut summaries = Vec::with_capacity(workspaces.len());
         for workspace in workspaces {
-            summaries.push(workspace.lock().await.summary());
+            let workspace = workspace.lock().await;
+            summaries.push(self.people(workspace.workspace(), &workspace));
         }
         summaries
     }
@@ -1556,7 +1556,45 @@ impl Workspaces {
     ///
     /// The workspace is not governed here.
     pub async fn summary(&self, workspace: &str) -> Result<WorkspaceSummary, CollaborationError> {
-        Ok(self.workspace(workspace).await?.lock().await.summary())
+        let governed = self.workspace(workspace).await?;
+        let governed = governed.lock().await;
+        Ok(self.people(workspace, &governed))
+    }
+
+    /// `governed`'s people as everything that lists or counts them reads them:
+    /// the ones its governance admits, and its structural owner — the person
+    /// whose device runs the workspace, which holds it by being its owner
+    /// rather than by an admission receipt that would list it.
+    ///
+    /// A workspace this host keeps for somebody as their own takes nobody
+    /// that way: it is theirs by the door's invitation, and the device
+    /// governing it is this host's, which runs it without being one of its
+    /// people.
+    fn people(&self, workspace: &str, governed: &GovernedWorkspace) -> WorkspaceSummary {
+        let mut summary = governed.summary();
+        let kept_for_someone = self
+            .own()
+            .is_some_and(|own| own.owner_of(workspace).is_some());
+        let owner = governed.peer().owner();
+        if !kept_for_someone
+            && !summary
+                .members
+                .iter()
+                .any(|member| member.user_public_key == owner)
+        {
+            summary.members.insert(
+                0,
+                tilo_peer_state::GovernedMember {
+                    user_public_key: owner,
+                    role: tilo_peer_state::join::MemberRole::Editor,
+                    display_name: None,
+                    active_device_keys: Vec::new(),
+                    removed: false,
+                    administrator: true,
+                },
+            );
+        }
+        summary
     }
 
     /// `workspace` as a listing names it: its name and generation, read
@@ -2181,8 +2219,8 @@ impl Workspaces {
             .collect();
         // The person `author` writes for, when `author` is one of them: who
         // left the workspace themselves is not kept out of it.
-        let author_person = workspace
-            .summary()
+        let author_person = self
+            .people(workspace.workspace(), &workspace)
             .members
             .iter()
             .find(|member| member.active_device_keys.contains(&author))

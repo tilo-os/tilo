@@ -403,7 +403,7 @@ impl Workspaces {
         workspace: &str,
         online: &BTreeSet<[u8; 32]>,
     ) -> Result<(Vec<Face>, u32, u32), CollaborationError> {
-        let summary = self.workspace(workspace).await?.lock().await.summary();
+        let summary = self.summary(workspace).await?;
         let (here, here_count) = faces(&summary.members, online);
         let members = summary
             .members
@@ -418,10 +418,9 @@ impl Workspaces {
     pub async fn directory(&self, online: &BTreeSet<[u8; 32]>) -> Vec<DirectoryEntry> {
         let mut entries = Vec::new();
         for (workspace, listing) in self.inner.listings.listed() {
-            let Ok(governed) = self.workspace(&workspace).await else {
+            let Ok(summary) = self.summary(&workspace).await else {
                 continue;
             };
-            let summary = governed.lock().await.summary();
             let (here, here_count) = faces(&summary.members, online);
             let members = summary
                 .members

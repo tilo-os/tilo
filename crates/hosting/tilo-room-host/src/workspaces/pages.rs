@@ -24,7 +24,8 @@ use tilo_user_identity::DeviceCert;
 use super::authority::WorkspaceOp;
 use super::{
     CancelInvitationRequest, CollaborationError, GovernedWorkspace, IssueInvitationRequest,
-    IssuedInvitation, RemoveMemberRequest, SetMemberRoleRequest, Workspaces, system_time,
+    IssuedInvitation, RemoveMemberRequest, SetMemberRoleRequest, WorkspaceSummary, Workspaces,
+    system_time,
 };
 use crate::host_authority::HostOperation;
 use tilo_lock::MutexRecover as _;
@@ -71,9 +72,9 @@ const fn room_role(role: MemberRole) -> WorkspaceRole {
     }
 }
 
-/// `workspace` as a page sees it.
-fn page_room(workspace: &GovernedWorkspace) -> Workspace {
-    let summary = workspace.summary();
+/// `workspace` as a page sees it, with `summary` its people as
+/// [`Workspaces::people`] names them.
+fn page_room(workspace: &GovernedWorkspace, summary: WorkspaceSummary) -> Workspace {
     let certificates = workspace.peer().certificates();
     let owner = workspace.peer().owner();
     let members: Vec<_> = summary
@@ -602,7 +603,8 @@ impl Workspaces {
         for workspace in workspaces {
             let workspace = workspace.lock().await;
             if self.lists_to(device, workspace.workspace()) {
-                listed.push(page_room(&workspace));
+                let summary = self.people(workspace.workspace(), &workspace);
+                listed.push(page_room(&workspace, summary));
             }
         }
         Ok(WorkspacesReply::Workspaces(listed))
@@ -610,9 +612,9 @@ impl Workspaces {
 
     async fn page_room(&self, workspace: &str) -> Result<WorkspacesReply, CollaborationError> {
         let workspace = self.workspace(workspace).await?;
-        Ok(WorkspacesReply::Workspace(page_room(
-            &*workspace.lock().await,
-        )))
+        let workspace = workspace.lock().await;
+        let summary = self.people(workspace.workspace(), &workspace);
+        Ok(WorkspacesReply::Workspace(page_room(&workspace, summary)))
     }
 
     async fn page_pending(
@@ -667,7 +669,7 @@ impl Workspaces {
                         user_public_key: inviter.user_public_key,
                         name: inviter.name.clone(),
                     }),
-                    members: workspace.summary().people(),
+                    members: self.people(workspace.workspace(), &workspace).people(),
                 })
             }
             JoinStep::Ask {
