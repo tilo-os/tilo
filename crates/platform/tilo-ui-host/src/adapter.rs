@@ -956,6 +956,52 @@ mod tests {
         );
     }
 
+    /// An event's parts reach the runtime as the types the component describes: a move names the
+    /// row that moved and the row it lands at, and a row an option takes is handed over as an
+    /// option of that row, which is what the parameter it lands in takes.
+    #[test]
+    fn an_events_parts_are_handed_over_as_the_types_it_describes() {
+        let mut reconciler = reconciler();
+        let moved = ResourceRef {
+            id: "doc/a".to_owned(),
+            ty: "note".to_owned(),
+        };
+        let at = ResourceRef {
+            id: "doc/b".to_owned(),
+            ty: "note".to_owned(),
+        };
+        let row = |key: &str, item: &ResourceRef| {
+            let mut row = node("TreeViewNode", key, &[("label", Value::text(key))]);
+            row.props
+                .insert("item".to_owned(), Value::Ref(item.clone()));
+            row
+        };
+        let mut tree = node("TreeView", "tree", &[]);
+        tree.children.push(row("a", &moved));
+        tree.children.push(row("b", &at));
+        tree.events.insert("into".to_owned(), Event::default());
+        let description = description_of(&tree).expect("described");
+        // The rows the tree holds give the resources the move names.
+        let _ = reconciler.build(&tree);
+        let event = NodeSource::new(&tree, description, &mut reconciler).event("into");
+        event.fire(Some(ui::component::Value::List(vec![
+            ui::component::Value::Resource("doc/a".to_owned()),
+            ui::component::Value::Resource("doc/b".to_owned()),
+        ])));
+        assert_eq!(
+            reconciler.adapter().take_events(),
+            vec![UiEvent::Fire(
+                "tree".to_owned(),
+                "into".to_owned(),
+                Some(Value::List(vec![
+                    Value::Ref(moved),
+                    Value::Opt(Some(Box::new(Value::Ref(at)))),
+                ])),
+            )],
+            "the row that moved, and the row it lands inside as an option of it"
+        );
+    }
+
     #[test]
     fn rich_text_builds_and_an_activated_reference_opens_what_it_refers_to() {
         let mut reconciler = reconciler();
