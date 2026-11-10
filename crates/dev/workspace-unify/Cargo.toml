@@ -686,7 +686,7 @@ doc = false
 "nonzero_ext-0_3_0" = { package = "nonzero_ext", version = "^0.3.0", default-features = false, features = ["default", "std"] }
 "noq-1_1_0" = { package = "noq", version = "^1.1.0", default-features = false, features = ["fast-apple-datapath", "platform-verifier", "ring", "runtime-tokio", "rustls"] }
 "noq-proto-1_1_0" = { package = "noq-proto", version = "^1.1.0", default-features = false, features = ["platform-verifier", "ring", "rustls"] }
-"noq-udp-1_1_0" = { package = "noq-udp", version = "^1.1.0", default-features = false, features = ["default", "fast-apple-datapath", "tracing", "tracing-log"] }
+"noq-udp-1_1_0" = { package = "noq-udp", path = "../../../vendor/noq-udp", default-features = false, features = ["default", "fast-apple-datapath", "tracing", "tracing-log"] }
 "notes" = { path = "../../../apps/notes", default-features = false, features = ["samples"] }
 "nu-ansi-term-0_50_3" = { package = "nu-ansi-term", version = "^0.50.3", default-features = false, features = ["default", "std"] }
 "num-bigint-0_4_6" = { package = "num-bigint", version = "^0.4.6", default-features = false, features = ["default", "std"] }
@@ -1131,7 +1131,6 @@ doc = false
 "tilo-bot-directory" = { path = "../../../crates/packaging/bot-directory", default-features = false, features = [] }
 "tilo-broker-core" = { path = "../../../crates/collab/broker-core", default-features = false, features = [] }
 "tilo-browser-compute" = { path = "../../../crates/browser/tilo-browser-compute", default-features = false, features = [] }
-"tilo-session-host" = { path = "../../../crates/session/host", default-features = false, features = ["default", "toolkit"] }
 "tilo-browser-runtime" = { path = "../../../crates/browser/tilo-browser-runtime", default-features = false, features = ["default"] }
 "tilo-browser-sessions" = { path = "../../../crates/platform/tilo-browser-sessions", default-features = false, features = [] }
 "tilo-callstream" = { path = "../../../crates/collab/tilo-callstream", default-features = false, features = ["recording", "surface-decoder", "unit-chain"] }
@@ -1139,6 +1138,7 @@ doc = false
 "tilo-caps" = { path = "../../../crates/sdk/tilo-caps", default-features = false, features = [] }
 "tilo-capture" = { path = "../../../crates/platform/tilo-capture", default-features = false, features = ["avfoundation", "camera", "default", "scanner", "test-support"] }
 "tilo-capture-studio" = { path = "../../../crates/session/capture-studio", default-features = false, features = [] }
+"tilo-channels" = { path = "../../../crates/collab/channels", default-features = false, features = ["test-support"] }
 "tilo-chromium-blocker" = { path = "../../../crates/browser/chromium-blocker", default-features = false, features = [] }
 "tilo-cli-kit" = { path = "../../../crates/runtime/cli", default-features = false, features = [] }
 "tilo-clipboard" = { path = "../../../crates/platform/tilo-clipboard", default-features = false, features = [] }
@@ -1185,6 +1185,7 @@ doc = false
 "tilo-environment" = { path = "../../../crates/runtime/environment", default-features = false, features = [] }
 "tilo-esp-write" = { path = "../../../crates/system/esp-write", default-features = false, features = [] }
 "tilo-extension" = { path = "../../../crates/system/extension-helper", default-features = false, features = [] }
+"tilo-fabric-core" = { path = "../../../crates/collab/fabric-core", default-features = false, features = [] }
 "tilo-face" = { path = "../../../crates/platform/tilo-face", default-features = false, features = [] }
 "tilo-feedback" = { path = "../../../crates/collab/feedback", default-features = false, features = [] }
 "tilo-feedback-review" = { path = "../../../crates/collab/feedback-review", default-features = false, features = [] }
@@ -1296,7 +1297,9 @@ doc = false
 "tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }
 "tilo-service" = { path = "../../../crates/session/service", default-features = false, features = [] }
 "tilo-session" = { path = "../../../crates/session/session", default-features = false, features = [] }
+"tilo-session-client" = { path = "../../../crates/session/client", default-features = false, features = [] }
 "tilo-session-core" = { path = "../../../crates/session/core", default-features = false, features = [] }
+"tilo-session-host" = { path = "../../../crates/session/host", default-features = false, features = ["default", "toolkit"] }
 "tilo-session-logging" = { path = "../../../crates/session/session-logging", default-features = false, features = [] }
 "tilo-session-power" = { path = "../../../crates/session/power-service", default-features = false, features = [] }
 "tilo-session-record" = { path = "../../../crates/session/session-record", default-features = false, features = [] }
@@ -2053,7 +2056,7 @@ doc = false
 "nom-7_1_3" = { package = "nom", version = "^7.1.3", default-features = false, features = ["alloc", "default", "std"] }
 "noq-1_1_0" = { package = "noq", version = "^1.1.0", default-features = false, features = ["fast-apple-datapath", "ring", "runtime-tokio", "rustls"] }
 "noq-proto-1_1_0" = { package = "noq-proto", version = "^1.1.0", default-features = false, features = ["ring", "rustls"] }
-"noq-udp-1_1_0" = { package = "noq-udp", version = "^1.1.0", default-features = false, features = ["default", "fast-apple-datapath", "tracing", "tracing-log"] }
+"noq-udp-1_1_0" = { package = "noq-udp", path = "../../../vendor/noq-udp", default-features = false, features = ["default", "fast-apple-datapath", "tracing", "tracing-log"] }
 "nu-ansi-term-0_50_3" = { package = "nu-ansi-term", version = "^0.50.3", default-features = false, features = ["default", "std"] }
 "num-bigint-0_4_6" = { package = "num-bigint", version = "^0.4.6", default-features = false, features = ["default", "std"] }
 "num-bigint-0_5_1" = { package = "num-bigint", version = "^0.5.1", default-features = false, features = ["default", "rand_0_10", "rand_core_0_10", "std"] }
@@ -3274,7 +3277,7 @@ doc = false
 "nonzero_ext-0_3_0" = { package = "nonzero_ext", version = "^0.3.0", default-features = false, features = ["default", "std"] }
 "noq-1_1_0" = { package = "noq", version = "^1.1.0", default-features = false, features = ["fast-apple-datapath", "platform-verifier", "ring", "runtime-tokio", "rustls"] }
 "noq-proto-1_1_0" = { package = "noq-proto", version = "^1.1.0", default-features = false, features = ["platform-verifier", "ring", "rustls"] }
-"noq-udp-1_1_0" = { package = "noq-udp", version = "^1.1.0", default-features = false, features = ["default", "fast-apple-datapath", "tracing", "tracing-log"] }
+"noq-udp-1_1_0" = { package = "noq-udp", path = "../../../vendor/noq-udp", default-features = false, features = ["default", "fast-apple-datapath", "tracing", "tracing-log"] }
 "notes" = { path = "../../../apps/notes", default-features = false, features = ["samples"] }
 "nu-ansi-term-0_50_3" = { package = "nu-ansi-term", version = "^0.50.3", default-features = false, features = ["default", "std"] }
 "num-bigint-0_4_6" = { package = "num-bigint", version = "^0.4.6", default-features = false, features = ["default", "std"] }
@@ -4628,7 +4631,7 @@ doc = false
 "nom-7_1_3" = { package = "nom", version = "^7.1.3", default-features = false, features = ["alloc", "default", "std"] }
 "noq-1_1_0" = { package = "noq", version = "^1.1.0", default-features = false, features = ["fast-apple-datapath", "ring", "runtime-tokio", "rustls"] }
 "noq-proto-1_1_0" = { package = "noq-proto", version = "^1.1.0", default-features = false, features = ["ring", "rustls"] }
-"noq-udp-1_1_0" = { package = "noq-udp", version = "^1.1.0", default-features = false, features = ["default", "fast-apple-datapath", "tracing", "tracing-log"] }
+"noq-udp-1_1_0" = { package = "noq-udp", path = "../../../vendor/noq-udp", default-features = false, features = ["default", "fast-apple-datapath", "tracing", "tracing-log"] }
 "nu-ansi-term-0_50_3" = { package = "nu-ansi-term", version = "^0.50.3", default-features = false, features = ["default", "std"] }
 "num-bigint-0_4_6" = { package = "num-bigint", version = "^0.4.6", default-features = false, features = ["default", "std"] }
 "num-bigint-0_5_1" = { package = "num-bigint", version = "^0.5.1", default-features = false, features = ["default", "rand_0_10", "rand_core_0_10", "std"] }
