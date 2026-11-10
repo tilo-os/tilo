@@ -51,6 +51,7 @@ mod device_rejoin_tests;
 mod hard_stop_tests;
 pub(crate) use desktop_writes::writes_desktop;
 mod hosts;
+mod link_follow;
 mod listing;
 mod own;
 mod pages;
@@ -1434,72 +1435,6 @@ impl Workspaces {
         self.inner.direct.serve(link.clone())?;
         self.follow_link(workspace, &link);
         Ok(())
-    }
-
-    /// Take in what `workspace`'s link admits and answer what its members ask
-    /// there: a frame the link admitted is what a member's write through a
-    /// relay session was, so it is followed as one ([`Self::absorb`]), and each
-    /// ask for content is answered with what this host keeps of it, or word
-    /// that it keeps none, addressed to whoever asked. The link carries each
-    /// ask on to the workspace's other members itself.
-    fn follow_link(
-        &self,
-        workspace: &GovernedWorkspace,
-        link: &tilo_peer_state::direct::DirectSync,
-    ) {
-        let name = workspace.workspace().to_owned();
-        let workspaces = WeakWorkspaces(Arc::downgrade(&self.inner));
-        let link = link.clone();
-        let mut heard = link.heard();
-        tokio::spawn(async move {
-            while let Ok(frame) = heard.recv().await {
-                // The host this link served is gone: so is the answer.
-                let Some(workspaces) = workspaces.upgrade() else {
-                    return;
-                };
-                let asking = matches!(
-                    frame.message,
-                    neighbour_wire::NeighbourMsg::RecordContentWant { .. }
-                );
-                let answering = matches!(
-                    frame.message,
-                    neighbour_wire::NeighbourMsg::RecordContentPiece { .. }
-                        | neighbour_wire::NeighbourMsg::RecordContentLacks { .. }
-                );
-                let Ok(body) = postcard::to_allocvec(&frame.message) else {
-                    continue;
-                };
-                if let Err(error) = workspaces.absorb(&name, frame.author, &body).await {
-                    tracing::warn!(%name, %error, "the host did not keep what its link admitted");
-                }
-                // What a member answers the host with answers a request the
-                // host made, and is the host's to keep: a device that keeps
-                // its workspace's files reads the pieces here
-                // ([`Self::content_for_host`]).
-                if answering {
-                    let (workspaces, name, author) =
-                        (workspaces.clone(), name.clone(), frame.author);
-                    let body = body.clone();
-                    tokio::task::spawn_blocking(move || {
-                        workspaces.content_for_host(&name, author, &body);
-                    });
-                    continue;
-                }
-                if !asking {
-                    continue;
-                }
-                for answer in workspaces.content_answer(&name, &body) {
-                    match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&answer) {
-                        Ok(message) => {
-                            let _ = link.send(message);
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "a content answer did not encode");
-                        }
-                    }
-                }
-            }
-        });
     }
 
     /// Run the transform an offloadable action declares for the workspaces

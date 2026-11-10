@@ -238,6 +238,26 @@ impl DirectSync {
         )
     }
 
+    /// The same link onto the same replica and store, with room for `capacity`
+    /// frames heard and not read yet: what a test that makes a reader fall
+    /// behind the link builds, where the link otherwise keeps
+    /// [`OUTGOING`] frames.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn with_heard_capacity(&self, capacity: usize) -> Self {
+        Self(Arc::new(Inner {
+            replica: self.0.replica.clone(),
+            admission: self.0.admission.clone(),
+            key: self.0.key.clone(),
+            store: self.0.store.clone(),
+            outgoing: self.0.outgoing.clone(),
+            heard: broadcast::channel(capacity).0,
+            changed: self.0.changed.clone(),
+            caught_up: self.0.caught_up.clone(),
+            fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
+        }))
+    }
+
     /// Admit every frame this link brings into `owner`'s live replica of
     /// `workspace` and publish it, instead of into this device's copy alone:
     /// what a link brings is durable as it lands, and the device's own engine
@@ -403,20 +423,19 @@ impl DirectSync {
         let (own, theirs) = (member.device(), host.device());
         host.admits(own)?;
         member.admits(theirs)?;
-        let (own_cert, host_cert) = (member.certificate()?, host.certificate()?);
         let live_mine = member.0.outgoing.subscribe();
         let live_theirs = host.0.outgoing.subscribe();
         for authored in host.catch_up()? {
-            member.admit(authored.from, Some(&host_cert), authored.message, false)?;
+            member.admit(authored.from, authored.message, false)?;
         }
         for authored in member.catch_up()? {
-            host.admit(authored.from, Some(&own_cert), authored.message, false)?;
+            host.admit(authored.from, authored.message, false)?;
         }
         member.replay_from(host)?;
         member.0.caught_up.send_replace(true);
         host.0.caught_up.send_replace(true);
-        let to_host = forward(live_mine, theirs, host, &own_cert, false);
-        let to_member = forward(live_theirs, own, member, &host_cert, false);
+        let to_host = forward(live_mine, theirs, host, false);
+        let to_member = forward(live_theirs, own, member, false);
         tokio::try_join!(to_host, to_member)?;
         Ok(())
     }
@@ -430,7 +449,7 @@ impl DirectSync {
             for message in &frames {
                 let author = store::author_of(message)
                     .ok_or("the store replayed a message that is not a document frame")?;
-                self.admit(author, None, message.clone(), true)?;
+                self.admit(author, message.clone(), true)?;
             }
             store::advance(&mut cursors, &frames);
             if !more {
@@ -489,7 +508,6 @@ impl DirectSync {
         if !dialing && let Err(reason) = self.admits(remote) {
             return Err(refuse(connection, &reason));
         }
-        let certificate = self.certificate()?;
         // Taken after the catch-up, which the caller subscribed before: a
         // change published in between reaches the link after the history
         // rather than not at all.
@@ -499,7 +517,7 @@ impl DirectSync {
             .await
             .map_err(|error| error.to_string())?;
         let sending = send_authored(send, remote, self.device(), catch_up, live);
-        let receiving = self.receive_all(&certificate, connection);
+        let receiving = self.receive_all(connection);
         let history = async {
             let done = if dialing {
                 self.ask_store(control).await
@@ -537,7 +555,7 @@ impl DirectSync {
             for message in &frames {
                 let author = store::author_of(message)
                     .ok_or("the store replayed a message that is not a document frame")?;
-                self.admit(author, None, message.clone(), true)?;
+                self.admit(author, message.clone(), true)?;
             }
             store::advance(&mut cursors, &frames);
             if !more {
@@ -644,37 +662,30 @@ impl DirectSync {
     /// stays up for the frames after it, and the device files what it refused
     /// as its own verdict in the workspace document, so the write's author
     /// reads why it is not here.
-    async fn receive_all(
-        &self,
-        certificate: &tilo_user_identity::DeviceCert,
-        connection: &Connection,
-    ) -> Result<(), String> {
+    async fn receive_all(&self, connection: &Connection) -> Result<(), String> {
         let mut recv = connection
             .accept_uni()
             .await
             .map_err(|error| error.to_string())?;
         while let Some(authored) = read_authored(&mut recv).await? {
-            self.admit(authored.from, Some(certificate), authored.message, false)?;
+            self.admit(authored.from, authored.message, false)?;
         }
         Ok(())
     }
 
     /// Take `message` in as `claimed`'s frame, admitted into this device's
     /// workspace, kept at its store and handed to its engine. What the frame
-    /// itself signs names its author over what the link says; `certificate`
-    /// is the carrier's, which a store needs to file what the workspace
-    /// refuses.
+    /// itself signs names its author over what the link says.
     fn admit(
         &self,
         claimed: [u8; 32],
-        certificate: Option<&tilo_user_identity::DeviceCert>,
         message: NeighbourMsg,
         retained: bool,
     ) -> Result<(), String> {
         let author = store::author_of(&message).unwrap_or(claimed);
         let heard = match &self.0.admission {
             Some(admission) => self.admit_owned(admission, author, message, retained),
-            None => self.admit_local(author, certificate, message, retained)?,
+            None => self.admit_local(author, message, retained)?,
         };
         self.keep(&heard.message);
         if heard.landed {
@@ -736,7 +747,6 @@ impl DirectSync {
     fn admit_local(
         &self,
         author: [u8; 32],
-        certificate: Option<&tilo_user_identity::DeviceCert>,
         message: NeighbourMsg,
         retained: bool,
     ) -> Result<Heard, String> {
@@ -745,18 +755,24 @@ impl DirectSync {
         } else {
             TransportOrigin::RelayDelta(author)
         };
+        // The certificate the verdicts below are filed under is this device's
+        // own, read before the replica is locked: a replica locked already is
+        // not to be read again.
+        let own = matches!(message, NeighbourMsg::AppDocument { .. })
+            .then(|| self.certificate())
+            .transpose()?;
         let mut replica = self.0.replica.lock();
         let now = SystemTime::now();
         let mut landed = false;
         let report = match replica.receive_from_report(origin, message.clone(), now) {
             Ok(report) => {
                 landed = report.changed || report.metadata_changed;
-                // Filing what the workspace refused takes the author's
-                // certificate, which a replay of this device's own history
-                // does not carry.
-                if landed && let Some(certificate) = certificate {
+                // The verdicts cleared are this device's own, filed under its
+                // own certificate: the carrier's says who sent the frame, not
+                // whose verdicts a landed write clears.
+                if landed && let Some(own) = &own {
                     landed = replica.workspace_mut().clear_landed_write(
-                        certificate,
+                        own,
                         &message,
                         &self.0.key,
                         now,
@@ -766,14 +782,12 @@ impl DirectSync {
             }
             Err(reason) => {
                 // A document write the workspace refuses is its author's
-                // verdict, filed where it reads why its write is not here. Any
-                // other frame is the link's alone to drop.
-                if let (true, Some(certificate)) = (
-                    matches!(message, NeighbourMsg::AppDocument { .. }),
-                    certificate,
-                ) {
+                // verdict, filed by this device under its own certificate
+                // where the author reads why its write is not here. Any other
+                // frame is the link's alone to drop.
+                if let Some(own) = &own {
                     landed = replica.workspace_mut().refuse_write(
-                        certificate,
+                        own,
                         &message,
                         &reason.to_string(),
                         &self.0.key,
@@ -1028,14 +1042,13 @@ async fn forward(
     mut live: broadcast::Receiver<Authored>,
     remote: [u8; 32],
     device: &DirectSync,
-    certificate: &tilo_user_identity::DeviceCert,
     retained: bool,
 ) -> Result<(), String> {
     loop {
         match live.recv().await {
             Ok(authored) if already_theirs(&authored, remote, device.device()) => {}
             Ok(authored) => {
-                device.admit(authored.from, Some(certificate), authored.message, retained)?;
+                device.admit(authored.from, authored.message, retained)?;
             }
             Err(broadcast::error::RecvError::Lagged(_)) => {
                 return Err("the link fell behind the device's changes".into());

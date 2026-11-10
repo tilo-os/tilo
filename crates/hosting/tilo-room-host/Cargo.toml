@@ -76,6 +76,9 @@ tilo-content = { path = "../../system/content", features = ["dir"] }
 # A dispatcher that answers as an app's own host: what a device's plane asks
 # through, and what a workspace's host answers beside it.
 tilo-actions = { path = "../../collab/actions", features = ["test-support"] }
+# A direct link a test makes a reader fall behind, with the frames it hears
+# bounded by the test rather than by what a live link holds.
+tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }
 # The store's continuity tests count each thread's heap.
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 tokio = { workspace = true, features = ["test-util"] }
