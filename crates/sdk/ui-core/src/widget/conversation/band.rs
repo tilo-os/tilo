@@ -164,7 +164,7 @@ pub fn paint(
     }
 }
 
-/// The words a conversation's unread divider says, in the person reading it's language.
+/// The words a conversation's unread divider says, in the language of the person reading it.
 #[must_use]
 pub fn unread_label() -> String {
     super::t("conversation-new-messages")
@@ -197,13 +197,6 @@ impl<'a> SectionDividerFace<'a> {
             label,
             tone: DividerTone::Accent,
         }
-    }
-
-    /// The same divider inked as `tone`.
-    #[must_use]
-    pub fn with_tone(mut self, tone: DividerTone) -> Self {
-        self.tone = tone;
-        self
     }
 
     /// The height a divider takes: one list row, at every text scale.
