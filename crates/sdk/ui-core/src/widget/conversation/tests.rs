@@ -214,6 +214,22 @@ fn a_divider_names_the_day_the_way_a_person_says_it() {
 }
 
 #[test]
+fn only_the_band_that_says_a_day_names_one() {
+    assert!(
+        SectionDivider::new("Today").names_a_day(),
+        "a day's own band names the day it opens"
+    );
+    assert!(
+        SectionDivider::unread_day("Yesterday").names_a_day(),
+        "the band that opens a day where reading starts again names that day too"
+    );
+    assert!(
+        !SectionDivider::unread().names_a_day(),
+        "the band that only says where reading starts again names no day"
+    );
+}
+
+#[test]
 fn the_clock_reads_the_zone_it_was_given() {
     // The same instant, two zones: the clock and the day both follow the zone,
     // so a paint pass cannot straddle two offsets.

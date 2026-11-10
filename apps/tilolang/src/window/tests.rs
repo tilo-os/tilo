@@ -2277,15 +2277,17 @@ fn a_conversation_is_a_transcript_whose_messages_are_built_as_it_shows_them() {
 #[test]
 fn a_transcript_names_each_run_of_one_authors_messages_once_and_marks_where_the_day_changes() {
     /// The day dividers, the avatars shown and the avatars' workspaces kept empty under `widget`.
+    ///
+    /// A divider marks a day unless it only says where reading starts again: where a day turns
+    /// over at the reader's first unread line the two are one band that says both, and that band
+    /// still says the day it opens.
     fn marks(widget: &dyn ui::widget::Widget, found: &mut (usize, usize, usize)) {
         match widget.name() {
             "SectionDivider" => {
                 let day = widget
                     .as_any()
                     .and_then(|any| any.downcast_ref::<ui::widget::conversation::SectionDivider>())
-                    .is_some_and(|divider| {
-                        divider.tone() == ui::widget::conversation::DividerTone::Quiet
-                    });
+                    .is_some_and(ui::widget::conversation::SectionDivider::names_a_day);
                 if day {
                     found.0 += 1;
                 }
@@ -2322,7 +2324,7 @@ fn a_transcript_names_each_run_of_one_authors_messages_once_and_marks_where_the_
     assert_eq!(
         found,
         (2, 5, 1),
-        "a divider for each of the two days, an avatar for each of the five runs, and the workspace of one under the message that continues a run"
+        "a divider naming each of the two days — the first, where reading starts again, naming it with the line it stands over — an avatar for each of the five runs, and the workspace of one under the message that continues a run"
     );
 }
 

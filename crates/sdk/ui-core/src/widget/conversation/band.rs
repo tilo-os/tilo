@@ -320,6 +320,20 @@ impl SectionDivider {
     pub fn label(&self) -> &str {
         &self.label
     }
+
+    /// Whether it marks a day of the conversation: a day's own band, or the one band that opens a
+    /// day where reading starts again and so says both ([`Self::unread_day`]). The band that only
+    /// says where reading starts again marks no day.
+    #[must_use]
+    pub fn names_a_day(&self) -> bool {
+        match self.tone {
+            DividerTone::Quiet => true,
+            DividerTone::Accent => self
+                .label
+                .strip_suffix(&day_with_unread(""))
+                .is_some_and(|day| !day.trim().is_empty()),
+        }
+    }
 }
 
 impl Default for SectionDivider {
