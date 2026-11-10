@@ -14,20 +14,18 @@ pub use tilo_session_core::notice::{
 };
 
 /// A host's notifier as a role's notices: the notification platform the toolkit serves, which is
-/// the page's `ui::host::current().notifications`.
+/// the page's `ui::host::current().notifications`. What choosing one lands at comes back here;
+/// nothing on the page reads why one closed, so it reports none.
 pub struct Toolkit {
     notifier: Arc<dyn ui::notify::Notifier>,
     /// The places the person chose since this was last taken.
     chosen: Arc<Mutex<Vec<Place>>>,
-    /// The notices that closed since this was last taken, each with why.
-    closed: Arc<Mutex<Vec<(String, Closed)>>>,
 }
 
 impl Toolkit {
-    /// The notices `notifier` shows under tags starting `tags`, reporting every place the person
-    /// chooses from one and why every one of them closed.
+    /// The notices `notifier` shows, reporting every place the person chooses from one.
     #[must_use]
-    pub fn new(notifier: Arc<dyn ui::notify::Notifier>, tags: &str) -> Self {
+    pub fn new(notifier: Arc<dyn ui::notify::Notifier>, _tags: &str) -> Self {
         let chosen: Arc<Mutex<Vec<Place>>> = Arc::default();
         let reporting = Arc::clone(&chosen);
         ui::notify::set_activation_handler(SCHEME, move |uri| {
@@ -35,30 +33,7 @@ impl Toolkit {
                 reporting.lock_recover().push(place);
             }
         });
-        let closed: Arc<Mutex<Vec<(String, Closed)>>> = Arc::default();
-        let closing = Arc::clone(&closed);
-        let prefix = tags.to_owned();
-        ui::notify::set_close_handler(tags, move |tag, reason| {
-            if tag.starts_with(&prefix) {
-                closing
-                    .lock_recover()
-                    .push((tag.to_owned(), closed_as(reason)));
-            }
-        });
-        Self {
-            notifier,
-            chosen,
-            closed,
-        }
-    }
-}
-
-/// Why the platform closed a notification, as a role reads it.
-fn closed_as(reason: ui::notify::CloseReason) -> Closed {
-    match reason {
-        ui::notify::CloseReason::Expired => Closed::Expired,
-        ui::notify::CloseReason::Dismissed => Closed::Dismissed,
-        ui::notify::CloseReason::Closed => Closed::Withdrawn,
+        Self { notifier, chosen }
     }
 }
 
@@ -77,9 +52,5 @@ impl Notices for Toolkit {
 
     fn take_chosen(&self) -> Vec<Place> {
         std::mem::take(&mut *self.chosen.lock_recover())
-    }
-
-    fn take_closed(&self) -> Vec<(String, Closed)> {
-        std::mem::take(&mut *self.closed.lock_recover())
     }
 }

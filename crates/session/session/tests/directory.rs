@@ -207,6 +207,18 @@ fn capture(session: &mut Session, name: &str) {
     std::fs::write(directory.join(format!("{name}.png")), png).expect("the shot");
 }
 
+/// What the desk says to the person now, each notice's title and body, live or kept behind its
+/// banner.
+fn said(session: &Session) -> Vec<String> {
+    let desk = session.notifications();
+    let log = desk.log();
+    log.active()
+        .iter()
+        .chain(log.history())
+        .map(|notice| format!("{}: {}", notice.title, notice.body))
+        .collect()
+}
+
 fn page_of(entries: Vec<DirectoryEntry>) -> String {
     serde_json::to_string(&DirectoryPage {
         workspaces: entries,
@@ -756,6 +768,9 @@ fn a_door_that_refuses_says_why_where_the_person_now_is() {
         !sheet.presentation().is_drawn(),
         "the sheet left once the join started, leaving no sheet behind"
     );
+    // What the session tells the person reaches the desk through the notifications service: the
+    // pass after the door's answer shows it.
+    session.step(Duration::from_millis(1)).unwrap();
     assert!(
         session
             .notices()
@@ -802,25 +817,18 @@ fn a_members_only_lounge_says_ask_for_an_invite_and_lands_nowhere() {
     // Choosing Join closed the sheet when the join started: the refusal reaches the person as a
     // banner, in the door's own words.
     wait_until(&mut session, "the refusal is said as a banner", |session| {
-        session
-            .notifications()
-            .log()
-            .history()
+        said(session)
             .iter()
-            .any(|notice| notice.body.contains("by invitation only"))
+            .any(|notice| notice.contains("by invitation only"))
     });
-    let said: Vec<String> = session
-        .notifications()
-        .log()
-        .history()
-        .iter()
-        .map(|notice| format!("{}: {}", notice.title, notice.body))
-        .collect();
+    let shown = said(&session);
     assert!(
-        said.iter()
+        shown
+            .iter()
             .any(|notice| notice.contains("Book club") && notice.contains("by invitation only")),
-        "the host's own refusal, in its own words: {said:?}"
+        "the host's own refusal, in its own words: {shown:?}"
     );
+    capture(&mut session, "join-refused");
     assert!(
         !held(&session)
             .iter()
@@ -1008,12 +1016,9 @@ fn a_join_the_host_refuses_at_enrollment_lands_nowhere_and_says_why() {
     // The failure reaches the person as a banner, in the door's own words,
     // not as protocol text and not as an empty workspace they land in.
     let bannered = common::wait_maybe(&mut session, |session| {
-        session
-            .notifications()
-            .log()
-            .history()
+        said(session)
             .iter()
-            .any(|notice| notice.title.contains("join") || notice.body.contains("Lounge"))
+            .any(|notice| notice.contains("join") || notice.contains("Lounge"))
             .then_some(())
     });
     assert!(
@@ -1021,17 +1026,12 @@ fn a_join_the_host_refuses_at_enrollment_lands_nowhere_and_says_why() {
         "the refusal is said as a banner where the person is: the session says: {:?}",
         session.accessible_labels()
     );
-    let said: Vec<String> = session
-        .notifications()
-        .log()
-        .history()
-        .iter()
-        .map(|notice| format!("{}: {}", notice.title, notice.body))
-        .collect();
+    let shown = said(&session);
     assert!(
-        said.iter()
+        shown
+            .iter()
             .any(|notice| notice.contains("Lounge") && notice.contains("refused")),
-        "the refusal, in the host's own words: {said:?}"
+        "the refusal, in the host's own words: {shown:?}"
     );
 }
 

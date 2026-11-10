@@ -178,51 +178,38 @@ pub struct Notification {
     pub body: String,
     pub icon_kind: NotificationIconKind,
     pub severity: NotificationSeverity,
-    /// When it arrived: what the centre's relative time reads.
     pub created_at: Instant,
-    /// How long the banner stays up, counted only while it is on screen and nobody holds it
-    /// ([`Self::dwell`]).
+    /// How long the banner stays up on screen, unheld ([`Self::dwell`]).
     pub dismiss_after: Duration,
-    /// How long the banner has been up for the person to read. Only the banner stack advances it,
-    /// through [`super::NotificationLog::present`]: a banner that waited for a pause in typing, or
-    /// did not fit on screen, has spent none of [`Self::dismiss_after`].
+    /// How long it has been up for the person to read; only the banner stack advances it
+    /// ([`super::NotificationLog::present`]), so a banner held back has spent none of its time.
     pub dwell: Dwell,
-    /// Set when a local application raised this notification through the host's notification
-    /// protocol. `None` for the desktop's own notices.
+    /// The sending app's id under the host's notification protocol; `None` for the desktop's own.
     pub sender_id: Option<u32>,
-    /// Present only for a notification mirrored from another certified device. Mirrored records
-    /// never carry a local sender id.
+    /// Present only for one mirrored from another certified device.
     pub remote_route: Option<RemoteNotificationRoute>,
     /// Only the host's durable scheduler can attach this route.
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub scheduled_target: Option<ScheduledNotificationTarget>,
-    /// The person this notification is from, when it is from one (a message, a mention): the banner
-    /// leads with their avatar and keeps the app as its source line.
+    /// The person it is from (a message, a mention): the banner leads with their avatar.
     pub from: Option<NotificationPerson>,
-    /// Sending application's display name; rendered as a caption above the title when present.
+    /// The sending application's display name, above the title.
     pub app_name: Option<String>,
-    /// The sending application's own artwork, resolved from a launcher- verified app id (or a
-    /// lower-trust icon hint when there is none). The leading glyph is the fallback. Never
-    /// persisted.
+    /// The sending application's artwork, resolved from what proves it; the glyph is the fallback.
     pub app_image: Option<ui::icons::AppImage>,
-    /// Launcher-attributed id. Unlike a sender-supplied name, this is not controlled by the
-    /// notification sender and is the only key policy and grouping may use.
+    /// The launcher-attributed id: the only key policy and grouping may use.
     pub app_id: Option<String>,
-    /// Workspace the sending app belongs to, for attribution.
     pub source_workspace: Option<u64>,
-    /// `(action_key, action_label)` pairs; activating the banner invokes the default (or first)
-    /// action.
+    /// `(key, label)` pairs; activating the banner invokes the default, or the first.
     pub actions: Vec<(String, String)>,
-    /// Whether this notification contributes to the redacted lock-screen count. Content is never
-    /// rendered on the lock screen.
+    /// Whether it counts on the redacted lock screen; its content is never rendered there.
     pub show_on_lock_screen: bool,
     /// Hide body text in the live banner while retaining it in local history.
     pub show_preview: bool,
     /// Someone is calling the person now: the banner rings and holds them, and the stack keeps it
     /// up while it does.
     pub rings: bool,
-    /// About the whole machine rather than the work at hand (critical battery): shown on every
-    /// display, not only the one in use. Only the system sets it; an app's notification never does.
+    /// About the whole machine (critical battery): shown on every display. Only the system sets it.
     pub machine_wide: bool,
 }
 

@@ -163,6 +163,17 @@ impl Rig {
         self.desktop.log().active()[0].clone()
     }
 
+    /// The live banner saying `title` .
+    fn banner_titled(&self, title: &str) -> Notification {
+        self.desktop
+            .log()
+            .active()
+            .iter()
+            .find(|notification| notification.title == title)
+            .cloned()
+            .expect("it is up")
+    }
+
     fn history(&self) -> Vec<String> {
         self.desktop
             .log()
@@ -462,8 +473,13 @@ fn a_notice_is_told_as_its_producer_wrote_it_wherever_it_came_from() {
     rig.step();
     assert_eq!(
         role.take_chosen(),
-        vec![place],
+        vec![place.clone()],
         "the place the notice named"
+    );
+    assert_eq!(
+        role.take_chosen_actions(),
+        [(place.tag("u-bea"), OPEN_ACTION.to_owned())],
+        "the action it offered, by the notice's tag"
     );
     assert!(rig.feed().banners.is_empty(), "a chosen notice leaves");
 
@@ -474,6 +490,56 @@ fn a_notice_is_told_as_its_producer_wrote_it_wherever_it_came_from() {
     assert_eq!(news.app_name.as_deref(), Some("Power"));
     assert_eq!(news.severity, NotificationSeverity::Error);
     assert!(news.machine_wide, "the whole machine's news");
+
+    // A notice says what it is about, and the desk leads with that glyph.
+    role.show(
+        &Notice::new("", 1, "You joined Book club", "").about(NotificationIconKind::Workspace),
+    );
+    rig.step();
+    assert_eq!(
+        rig.banner_titled("You joined Book club").mark().icon,
+        Some(ui::icons::Icon::LayoutGrid),
+        "the workspace's own mark"
+    );
+
+    // An ask offers its answer and "Not now", under the part of the desktop that asks, and the
+    // answer comes back by the notice's tag: how a window's move is answered.
+    let action = tilo_desktop_surface::HostAction {
+        id: "keep-identity".into(),
+        title: "Keep with passkey".into(),
+        subtitle: None,
+        icon: None,
+        destructive: false,
+        unasked: false,
+        source: Some(tilo_desktop_surface::HostActionSource::Devices),
+    };
+    let ask = Notice::asks(&action, "Pair “Phone”?", "").tagged("ask");
+    role.show(&ask);
+    rig.step();
+    let banner = rig.banner_titled("Pair “Phone”?");
+    assert_eq!(banner.icon_kind, NotificationIconKind::Permission);
+    assert_eq!(
+        banner.dismiss_after, PERSISTENT_DISMISS,
+        "until the person answers"
+    );
+    rig.desktop.invoke_action(banner.id, "not-now");
+    rig.step();
+    assert!(
+        role.take_chosen_actions().is_empty(),
+        "put off, not answered"
+    );
+
+    role.show(&Notice::asks(&action, "Pair “Phone”?", "").tagged("pairing"));
+    rig.step();
+    let key = tilo_desktop_surface::host_action_key("keep-identity");
+    rig.desktop
+        .invoke_action(rig.banner_titled("Pair “Phone”?").id, &key);
+    rig.step();
+    assert_eq!(
+        role.take_chosen_actions(),
+        [("pairing".to_owned(), key)],
+        "the answer names the notice that asked"
+    );
 }
 
 #[test]
