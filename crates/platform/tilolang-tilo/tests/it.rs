@@ -43,6 +43,7 @@ mod links;
 mod make_from;
 mod marks;
 mod naming;
+mod note_import;
 mod notes;
 mod notices;
 mod outbox;

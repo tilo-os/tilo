@@ -9,6 +9,12 @@ type Note (untitled: "Untitled") {
     parent: Option<Note>
     pinned: Bool = false
     tags: Set<Text>
+    /// The file the note was imported from, by the address of its content: importing the same
+    /// file again opens this note rather than making a second one.
+    source: Text = ""
+    /// The name that file had, path inside its archive included: an import that keeps a
+    /// package's nesting finds the note a page stands under by it.
+    origin: Text = ""
 
     search {
         filter pinned (icon: .pin)
@@ -137,6 +143,123 @@ action insert_image(n: Note, image: File) (icon: .image, did: "added an image") 
     n.body = RichText(n.body, "\n![]({image.url})")
 }
 
+/// A note as Markdown: its title, then its body. What `file.save` writes as the file the
+/// person names. Its pictures stand as the address of their bytes, which every device of the
+/// workspace holds.
+action export_markdown(n: Note) -> Text (icon: .download) {
+    let title = n.title.trim()
+    let body = n.body.markdown.trim()
+    if body.starts_with("# {title}") or title == "" { body } else { "# {title}\n\n{body}" }
+}
+
+/// The notebook as one Markdown file, in the tree's order: each note's title a heading one level
+/// under the note it stands in.
+action export_notebook(nb: Notebook) -> Text (icon: .download) {
+    let out = ""
+    for n in nb.notes {
+        out = "{out}{heading_of(nb, n)} {n.title}\n\n{n.body.markdown.trim()}\n\n"
+    }
+    out.trim()
+}
+
+/// Imports a Markdown file as a note at the top of the tree, or opens the note that file already
+/// made: a note keeps the address of the file it came from, so importing the same file twice
+/// makes one note. Its title is the document's first heading, or the file's name; the heading it
+/// says the title with is not said again in its body.
+action import_markdown(nb: Notebook, file: File) -> Note (
+    icon: .file_plus,
+    did: "imported a note",
+) {
+    if let imported = nb.notes.find(n -> n.source == file.url) {
+        return imported
+    }
+    let named = title_words(file.name)
+    match file.text() {
+        .ok(text) => {
+            let title = first_heading(text) ?? named
+            nb.notes.insert(
+                Note(
+                    title: title,
+                    body: RichText.from_markdown(without_heading(text, title)),
+                    source: file.url,
+                    origin: file.name,
+                ),
+            )
+        }
+        // A file that is not text still makes a note, saying what became of it: the person sees
+        // the file they chose, and why it is not a note's words.
+        .err(why) => {
+            nb.notes.insert(
+                Note(title: named, body: RichText(why), source: file.url, origin: file.name),
+            )
+        }
+    }
+}
+
+/// Imports a Notion export — the zip of a page's Markdown and its pictures — as notes under the
+/// notebook, a page under the page that held it, in one change: undo takes the whole import
+/// back. Each page's title is its first heading, or its file's name; the pictures a page shows
+/// are the ones the export kept beside it, found among the archive's files. A page that is
+/// imported already keeps the note it made.
+action import_notion(nb: Notebook, file: File) (icon: .file_plus, did: "imported a notebook") {
+    match file.files() {
+        .ok(files) => {
+            let pictures = files.filter(f -> f.media.starts_with("image/"))
+            // A page under the page it stood under comes after it: its parent is a note then.
+            let pages = files
+                .filter(f -> f.media == "text/markdown")
+                .sort_by(p -> p.name.split("/").len())
+            for page in pages {
+                let named = title_words(page.name)
+                if nb.notes.find(n -> n.source == page.url) == .none {
+                    let parent = nb.notes.find(n -> n.origin == "{folder_of(page.name)}.md")
+                    let at = match page.text() {
+                        .ok(text) => {
+                            let title = first_heading(text) ?? named
+                            let shown = pictures_shown(without_heading(text, title), pictures)
+                            Note(
+                                title: title,
+                                body: RichText.from_markdown(shown),
+                                parent: parent,
+                                source: page.url,
+                                origin: page.name,
+                            )
+                        }
+                        .err(why) => {
+                            Note(
+                                title: named,
+                                body: RichText(why),
+                                parent: parent,
+                                source: page.url,
+                                origin: page.name,
+                            )
+                        }
+                    }
+                    let made = nb.notes.insert(at)
+                    if let p = parent {
+                        if let last = nb.notes.filter(x -> x.parent == p and x != made).last() {
+                            nb.notes.move(made, after: last)
+                        } else { nb.notes.move(made, after: p) }
+                    }
+                }
+            }
+        }
+        // An archive that does not read says why, in the note it would have filled.
+        .err(why) => {
+            if nb.notes.find(n -> n.source == file.url) == .none {
+                nb.notes.insert(
+                    Note(
+                        title: title_words(file.name),
+                        body: RichText(why),
+                        source: file.url,
+                        origin: file.name,
+                    ),
+                )
+            }
+        }
+    }
+}
+
 /// The notebook's window: the notes as a tree in the sidebar, the one chosen beside it.
 view notebook(nb: Notebook) {
     std.tree(
@@ -152,7 +275,26 @@ view notebook(nb: Notebook) {
     ) { n ->
         note_node(n)
         head: {
-            button(new_note(nb))
+            row(gap: .related) {
+                button(new_note(nb))
+                notebook_menu(nb)
+            }
+        }
+    }
+}
+
+/// The notebook's own file commands, beside the control that makes a note: a Markdown file or a
+/// Notion export in, the whole notebook out.
+view notebook_menu(nb: Notebook) {
+    ui.MenuButton("File", icon: .file_plus) {
+        ui.MenuItem("Import Markdown…", icon: .file_plus) {
+            on choose: file.choose(import_markdown(nb), accept: ["text/markdown"])
+        }
+        ui.MenuItem("Import a Notion export…", icon: .file_plus) {
+            on choose: file.choose(import_notion(nb), accept: ["application/zip"])
+        }
+        ui.MenuItem("Export the notebook…", icon: .download) {
+            on choose: file.save(export_notebook(nb), name: "Notes.md")
         }
     }
 }
@@ -196,10 +338,7 @@ view note_page(n: Note) {
         }
     }
     row(distribute: .end) {
-        button(
-            "Insert image",
-            on: file.choose(insert_image(n), accept: ["image/png", "image/jpeg", "image/webp"]),
-        )
+        note_menu(n)
     }
     ui.BlockEditor(bind: n.body, placeholder: "Write something", links: nb.notes)
     std.linked(n, compact: true)
@@ -207,7 +346,28 @@ view note_page(n: Note) {
     std.history(n)
 }
 
-/// Whether `place` is `top` or one of the notes over it.
+/// A note's own file commands: a picture in, the note out as a Markdown file.
+view note_menu(n: Note) {
+    ui.MenuButton("File", icon: .file_plus) {
+        ui.MenuItem("Insert an image…", icon: .image) {
+            on choose: file.choose(
+                insert_image(n),
+                accept: ["image/png", "image/jpeg", "image/webp"],
+            )
+        }
+        ui.MenuItem("Export as Markdown…", icon: .download) {
+            on choose: file.save(export_markdown(n), name: "{file_name(n)}.md")
+        }
+    }
+}
+
+/// The heading a note's title takes in the notebook's Markdown: one level under the note it
+/// stands in, at most six deep.
+fn heading_of(nb: Notebook, n: Note) -> Text {
+    let marks = if let p = n.parent { "{heading_of(nb, p)}#" } else { "#" }
+    if marks.len() > 6 { marks.slice(0, 6) } else { marks }
+}
+
 fn within(items: List<Note>, place: Option<Note>, top: Note) -> Bool {
     if let p = place {
         p == top or items.ancestors(p, .parent).any(a -> a == top)
@@ -217,6 +377,65 @@ fn within(items: List<Note>, place: Option<Note>, top: Note) -> Bool {
 /// `n` as a note of its own under `parent`: what a copy of it says, without the notes under it.
 fn copied(n: Note, parent: Option<Note>) -> Note {
     Note(title: n.title, body: n.body, parent: parent, pinned: n.pinned)
+}
+
+/// The name a note is offered to be saved as: its title, a dash for each character a file name
+/// cannot keep, and "Note" while it has no title.
+fn file_name(n: Note) -> Text {
+    let safe = n.title.trim().replace("/", "-")
+    if safe == "" { "Note" } else { safe }
+}
+
+/// The name at the end of a path: a file's own name, not the folders it stands in.
+fn base_name(path: Text) -> Text {
+    path.split("/").last() ?? path
+}
+
+/// The folder a path stands in (`Notes/Meeting.md` is `Notes`), and nothing at the top.
+fn folder_of(path: Text) -> Text {
+    let parts = path.split("/")
+    if parts.len() <= 1 { "" } else { parts.take(parts.len() - 1).join("/") }
+}
+
+/// The words a file's own name gives a note: the name at the end of its path, without the
+/// extension (`Notes/Meeting.md` is `Meeting`).
+fn title_words(name: Text) -> Text {
+    let base = base_name(name)
+    let dot = base.find(".") ?? base.len()
+    if dot == 0 { base } else { base.slice(0, dot) }
+}
+
+/// The words of a Markdown document's first heading, when it has one.
+fn first_heading(markdown: Text) -> Option<Text> {
+    for line in markdown.split("\n") {
+        let trimmed = line.trim()
+        if trimmed.starts_with("# ") {
+            let title = trimmed.slice(2, trimmed.len()).trim()
+            if not title.is_empty() { return title }
+        }
+    }
+    .none
+}
+
+/// `markdown` without the heading its title already says: a note's title is its own, never a
+/// first line of its body again.
+fn without_heading(markdown: Text, title: Text) -> Text {
+    let heading = "# {title}\n"
+    if markdown.starts_with(heading) {
+        return markdown.slice(heading.len(), markdown.len()).trim()
+    }
+    markdown.trim()
+}
+
+/// `markdown` with each picture it shows found among `pictures`, the files an export kept beside
+/// the page: a name the export wrote becomes the address of the file, which every device holds.
+fn pictures_shown(markdown: Text, pictures: List<File>) -> Text {
+    let shown = markdown
+    for picture in pictures {
+        shown = shown.replace("]({base_name(picture.name)})", "]({picture.url})")
+        shown = shown.replace("]({picture.name})", "]({picture.url})")
+    }
+    shown
 }
 
 /// The note that ends the run `t` begins: the last note under it, or `t` itself.
