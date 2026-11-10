@@ -678,111 +678,67 @@ pub trait SurfaceHost {
     fn drag_ended(&mut self, _dropped: bool) {}
 }
 
+/// Forwards a listed method of a shared surface to the surface, borrowing it for the call alone.
+macro_rules! forwards {
+    (read: $($name:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)?;)*) => {
+        $(fn $name(&self $(, $arg: $ty)*) $(-> $ret)? { self.borrow().$name($($arg),*) })*
+    };
+    (write: $($name:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)?;)*) => {
+        $(fn $name(&mut self $(, $arg: $ty)*) $(-> $ret)? { self.borrow_mut().$name($($arg),*) })*
+    };
+}
+
 /// A surface the session hands to its host while keeping a handle of its own: the host drives the
-/// same instance the role that placed it reads, so every method reaches what the role placed and
-/// the owner closes what it has open before the surface hears the press.
+/// same instance the role reads, and the owner closes what it has open before the surface hears the
+/// press.
 impl<T: SurfaceHost + ?Sized> SurfaceHost for Rc<RefCell<T>> {
-    fn layers(&self) -> Vec<HostLayer> {
-        self.borrow().layers()
+    forwards! {
+        read:
+        layers() -> Vec<HostLayer>;
+        below_windows() -> bool;
+        above_lock() -> bool;
+        drawn_over_lock() -> bool;
+        withholds_captures() -> bool;
+        accepts_pointer(x: f64, y: f64) -> bool;
+        wants_keyboard() -> bool;
+        text_input() -> Option<HostTextInput>;
+        window_pictures() -> Vec<WindowPicture>;
+        drawn_over_windows() -> Vec<(u64, (i32, i32, i32, i32))>;
+        backdrops() -> Vec<BackdropRequest>;
+        next_deadline() -> Option<std::time::Instant>;
+        cursor() -> CursorIcon;
+        press_elsewhere_closes() -> Option<Rc<dyn Fn()>>;
     }
-    fn below_windows(&self) -> bool {
-        self.borrow().below_windows()
+    forwards! {
+        write:
+        pointer_motion(x: f64, y: f64);
+        pointer_leave();
+        pointer_button(button: u32, pressed: bool);
+        press_ended(x: f64, y: f64);
+        pointer_axis(horizontal: f64, vertical: f64);
+        key(key: &HostKey);
+        ime(event: HostIme);
+        claim_key(key: &HostKey, locked: bool, inhibited: bool) -> KeyClaim;
+        set_backdrops(images: Vec<Option<BackdropImage>>);
+        prepare_frame() -> bool;
+        advance() -> bool;
+        set_frame_interval(interval: std::time::Duration);
+        outputs_changed(outputs: &[HostedOutput]);
+        drop_offered(mimes: &[String], x: f64, y: f64) -> Option<String>;
+        drop_left();
+        drop_data(mime: &str, data: Vec<u8>);
+        take_drag() -> Option<HostDrag>;
+        drag_ended(dropped: bool);
     }
-    fn above_lock(&self) -> bool {
-        self.borrow().above_lock()
-    }
-    fn drawn_over_lock(&self) -> bool {
-        self.borrow().drawn_over_lock()
-    }
-    fn withholds_captures(&self) -> bool {
-        self.borrow().withholds_captures()
-    }
-    fn accepts_pointer(&self, x: f64, y: f64) -> bool {
-        self.borrow().accepts_pointer(x, y)
-    }
-    fn pointer_motion(&mut self, x: f64, y: f64) {
-        self.borrow_mut().pointer_motion(x, y);
-    }
-    fn pointer_leave(&mut self) {
-        self.borrow_mut().pointer_leave();
-    }
-    fn pointer_button(&mut self, button: u32, pressed: bool) {
-        self.borrow_mut().pointer_button(button, pressed);
-    }
+
+    /// Before the surface hears the press, and with the surface let go of: what its owner closes
+    /// may ask it to draw again.
     fn pressed_elsewhere(&mut self, x: f64, y: f64) {
-        if let Some(closes) = self.borrow().press_elsewhere_closes() {
+        let closes = self.borrow().press_elsewhere_closes();
+        if let Some(closes) = closes {
             closes();
         }
         self.borrow_mut().pressed_elsewhere(x, y);
-    }
-    fn press_ended(&mut self, x: f64, y: f64) {
-        self.borrow_mut().press_ended(x, y);
-    }
-    fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {
-        self.borrow_mut().pointer_axis(horizontal, vertical);
-    }
-    fn wants_keyboard(&self) -> bool {
-        self.borrow().wants_keyboard()
-    }
-    fn key(&mut self, key: &HostKey) {
-        self.borrow_mut().key(key);
-    }
-    fn text_input(&self) -> Option<HostTextInput> {
-        self.borrow().text_input()
-    }
-    fn ime(&mut self, event: HostIme) {
-        self.borrow_mut().ime(event);
-    }
-    fn claim_key(&mut self, key: &HostKey, locked: bool, inhibited: bool) -> KeyClaim {
-        self.borrow_mut().claim_key(key, locked, inhibited)
-    }
-    fn window_pictures(&self) -> Vec<WindowPicture> {
-        self.borrow().window_pictures()
-    }
-    fn drawn_over_windows(&self) -> Vec<(u64, (i32, i32, i32, i32))> {
-        self.borrow().drawn_over_windows()
-    }
-    fn backdrops(&self) -> Vec<BackdropRequest> {
-        self.borrow().backdrops()
-    }
-    fn set_backdrops(&mut self, images: Vec<Option<BackdropImage>>) {
-        self.borrow_mut().set_backdrops(images);
-    }
-    fn prepare_frame(&mut self) -> bool {
-        self.borrow_mut().prepare_frame()
-    }
-    fn advance(&mut self) -> bool {
-        self.borrow_mut().advance()
-    }
-    fn next_deadline(&self) -> Option<std::time::Instant> {
-        self.borrow().next_deadline()
-    }
-    fn set_frame_interval(&mut self, interval: std::time::Duration) {
-        self.borrow_mut().set_frame_interval(interval);
-    }
-    fn outputs_changed(&mut self, outputs: &[HostedOutput]) {
-        self.borrow_mut().outputs_changed(outputs);
-    }
-    fn cursor(&self) -> CursorIcon {
-        self.borrow().cursor()
-    }
-    fn drop_offered(&mut self, mimes: &[String], x: f64, y: f64) -> Option<String> {
-        self.borrow_mut().drop_offered(mimes, x, y)
-    }
-    fn drop_left(&mut self) {
-        self.borrow_mut().drop_left();
-    }
-    fn drop_data(&mut self, mime: &str, data: Vec<u8>) {
-        self.borrow_mut().drop_data(mime, data);
-    }
-    fn take_drag(&mut self) -> Option<HostDrag> {
-        self.borrow_mut().take_drag()
-    }
-    fn drag_ended(&mut self, dropped: bool) {
-        self.borrow_mut().drag_ended(dropped);
-    }
-    fn press_elsewhere_closes(&self) -> Option<Rc<dyn Fn()>> {
-        self.borrow().press_elsewhere_closes()
     }
 }
 
@@ -806,6 +762,10 @@ mod tests {
     }
 
     /// `drawn` with a `width` by `height` block of `pixel` at `(x, y)`.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "a fixture's own pixel offsets, in whole numbers inside the frame it made"
+    )]
     fn painted(
         mut drawn: Vec<u8>,
         (x, y): (u32, u32),
@@ -979,5 +939,61 @@ mod tests {
             &[Region::new(8, 16, 1, 1)],
         );
         assert_eq!(frame.alpha(8, 16), Some(255));
+    }
+
+    /// A surface that records what it heard.
+    struct Pressed {
+        heard: Rc<RefCell<Vec<&'static str>>>,
+        closes: Option<Rc<dyn Fn()>>,
+    }
+
+    impl SurfaceHost for Pressed {
+        fn layers(&self) -> Vec<HostLayer> {
+            Vec::new()
+        }
+
+        fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
+            false
+        }
+
+        fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+
+        fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
+
+        fn pressed_elsewhere(&mut self, _x: f64, _y: f64) {
+            self.heard.borrow_mut().push("press");
+        }
+
+        fn press_elsewhere_closes(&self) -> Option<Rc<dyn Fn()>> {
+            self.closes.clone()
+        }
+    }
+
+    #[test]
+    fn a_shared_surface_closes_what_its_owner_has_open_before_it_hears_the_press() {
+        let heard: Rc<RefCell<Vec<&'static str>>> = Rc::default();
+        // What the owner closes reaches back into the surface it stands on, as drawing that surface
+        // again does: it must not find the surface held by whoever is delivering the press.
+        let mut shared: Rc<RefCell<Pressed>> =
+            Rc::new_cyclic(|placed: &std::rc::Weak<RefCell<Pressed>>| {
+                let placed = placed.clone();
+                let recorded = Rc::clone(&heard);
+                RefCell::new(Pressed {
+                    heard: Rc::clone(&heard),
+                    closes: Some(Rc::new(move || {
+                        placed
+                            .upgrade()
+                            .expect("the surface it was placed on")
+                            .borrow_mut();
+                        recorded.borrow_mut().push("closed");
+                    })),
+                })
+            });
+        SurfaceHost::pressed_elsewhere(&mut shared, 10.0, 20.0);
+        assert_eq!(
+            *heard.borrow(),
+            ["closed", "press"],
+            "what it has open closes before the press reaches it"
+        );
     }
 }

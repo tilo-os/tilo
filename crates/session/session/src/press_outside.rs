@@ -12,7 +12,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_session_core::surface::{CursorIcon, KeyClaim};
 use tilo_session_core::surface::{HostLayer, SurfaceHost};
 
 use tilo_desktop::overlays::Overlays;
@@ -60,21 +59,8 @@ impl SurfaceHost for SlotsHost {
         self.overlays.press_ended();
     }
 
-    fn claim_key(
-        &mut self,
-        _key: &tilo_session_core::surface::HostKey,
-        _locked: bool,
-        _inhibited: bool,
-    ) -> KeyClaim {
-        KeyClaim::Pass
-    }
-
     fn prepare_frame(&mut self) -> bool {
         false
-    }
-
-    fn cursor(&self) -> CursorIcon {
-        CursorIcon::Default
     }
 }
 

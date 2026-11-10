@@ -146,8 +146,8 @@ pub struct WidgetHost {
     /// following the hand until it lets go.
     hand_on_deck: bool,
     /// What the role that placed the tree closes when the pointer is pressed
-    /// elsewhere: it runs before the tree is borrowed, so the role may ask the
-    /// layer it holds to draw again.
+    /// elsewhere: the shared handle runs it before the tree is borrowed, so
+    /// the role may ask the layer it holds to draw again.
     dismissed: Option<Rc<dyn Fn()>>,
 }
 
@@ -275,9 +275,7 @@ impl WidgetHost {
         self
     }
 
-    /// Close what the role has open in the tree when the pointer is pressed
-    /// elsewhere: `dismissed` runs before the tree is borrowed, so the role may
-    /// ask the layer it holds to draw again.
+    /// Close what the role has open when the pointer is pressed elsewhere.
     #[must_use]
     pub fn with_dismissal(mut self, dismissed: Rc<dyn Fn()>) -> Self {
         self.dismissed = Some(dismissed);

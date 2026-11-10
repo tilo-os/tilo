@@ -10,7 +10,6 @@ use crate::platform::surfaces::{SessionLink, ShellPart, ShellWork};
 use serde_json::{Map, Value};
 use tilo_actions::ActionAddress;
 use tilo_compositor::Compositor;
-use tilo_session_core::surface::{CursorIcon, HostKey, KeyClaim};
 use tilo_session_core::surface::{HostLayer, SurfaceHost};
 
 use tilo_service::Services;
@@ -1319,18 +1318,8 @@ impl<T: SurfaceHost> SurfaceHost for Aside<T> {
 
     fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
 
-    fn claim_key(&mut self, _key: &HostKey, _locked: bool, _inhibited: bool) -> KeyClaim {
-        KeyClaim::Pass
-    }
-
-    fn key(&mut self, _key: &HostKey) {}
-
     fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
         self.0.outputs_changed(outputs);
-    }
-
-    fn cursor(&self) -> CursorIcon {
-        CursorIcon::Default
     }
 
     fn prepare_frame(&mut self) -> bool {

@@ -109,8 +109,6 @@ pub struct AppHost {
     damage: SurfaceDamage,
     /// The app asked for another frame when it drew the last.
     wants: bool,
-    /// Keys come here rather than to the focused window.
-    keyboard: bool,
     /// The modifiers the app last heard of.
     modifiers: ModifiersState,
     /// The app's actions for this device: what it publishes, and what the
@@ -150,7 +148,6 @@ impl AppHost {
             scene: vello::Scene::new(),
             damage: SurfaceDamage::default(),
             wants: true,
-            keyboard: false,
             modifiers: ModifiersState::empty(),
             door: SharedDoor::default(),
             backdrops: Vec::new(),
@@ -223,19 +220,6 @@ impl AppHost {
             self.full = true;
         }
         self.placement = placement;
-    }
-
-    /// Take keys from the focused window (`true`, an open launcher or
-    /// menu) or leave them to it.
-    pub fn set_wants_keyboard(&mut self, wants: bool) {
-        if self.keyboard && !wants && !self.modifiers.is_empty() {
-            // The app must not think a modifier is still held.
-            self.modifiers = ModifiersState::empty();
-            self.input(WindowEvent::ModifiersChanged(Modifiers::from(
-                self.modifiers,
-            )));
-        }
-        self.keyboard = wants;
     }
 
     /// A logical point of the desktop in the app's physical pixels.
@@ -428,10 +412,6 @@ impl SurfaceHost for AppHost {
             )),
             phase: TouchPhase::Moved,
         });
-    }
-
-    fn wants_keyboard(&self) -> bool {
-        self.keyboard
     }
 
     fn key(&mut self, key: &HostKey) {
