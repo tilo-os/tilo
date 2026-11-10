@@ -331,6 +331,12 @@ fn paints_surface(widget: &str) -> bool {
     )
 }
 
+/// Whether `widget` paints a surface with rounded corners: a card or a notice whose shape is a
+/// rounded well, so an edge of the column or window cutting it cuts the shape.
+fn rounds_its_corners(widget: &str) -> bool {
+    matches!(widget, "Banner" | "Card")
+}
+
 /// Whether a node is one control a person presses: its own role says so, or it is a box (a
 /// header action's frame) around exactly one.
 fn is_control(node: &InspectionNode) -> bool {
@@ -384,6 +390,9 @@ struct Walk<'a> {
     off_pixel: bool,
     /// The page the node stands in: the box that scrolls a window's content under its heading.
     page: Option<Rect>,
+    /// The column of the window's shell the node stands in: the box a shell gives one of its
+    /// parts, beside the others.
+    column: Option<Rect>,
     /// The counts the window's column headers draw.
     header_counts: Vec<Count>,
     /// The counts a window's places draw beside the place chosen in them.
@@ -449,6 +458,7 @@ pub fn inspect(
         display_scale,
         off_pixel: false,
         page: None,
+        column: None,
         header_counts: Vec::new(),
         place_counts: Vec::new(),
         header_titles: Vec::new(),
@@ -511,6 +521,7 @@ impl Walk<'_> {
         self.lone_door(node, keys, above);
         self.empty_heading(node, keys, own);
         self.empty_surface(node, keys, own);
+        self.rounded_on_edge(node, keys, own);
         if under_page.is_some() {
             self.nested_scroller(node, keys, own);
         }
@@ -624,6 +635,12 @@ impl Walk<'_> {
             }
             // A scroll view holds its content in a box of its own, which is the view's own
             // content rather than a frame around it.
+            // The box a shell gives one of its parts is a column: what stands in it keeps a
+            // gutter from its edges.
+            let was_column = self.column;
+            if node.widget == SHELL && has_area(rect(child.rect)) {
+                self.column = Some(rect(child.rect));
+            }
             self.node(
                 child,
                 keys,
@@ -633,6 +650,7 @@ impl Walk<'_> {
                 scrolling,
                 &node.widget,
             );
+            self.column = was_column;
         }
         self.beyond = was_beyond;
         self.across = was_across;
@@ -815,6 +833,52 @@ impl Walk<'_> {
             node,
             keys,
             format!("it paints {} and holds nothing", size(own)),
+        );
+    }
+
+    /// A surface with rounded corners standing on the edge of the column it is in, or of the
+    /// window where no column holds it: the edge cuts its curve, and the surface reads as part
+    /// of the frame rather than as a card inside it. A rounded surface keeps a gutter on every
+    /// side — the list's own, where it stands over rows.
+    fn rounded_on_edge(&mut self, node: &InspectionNode, keys: &[String], own: Rect) {
+        if !rounds_its_corners(&node.widget) {
+            return;
+        }
+        let inside = self.column.unwrap_or(self.viewport);
+        let edges = [
+            ("left", (own.x0 - inside.x0).abs()),
+            ("right", (own.x1 - inside.x1).abs()),
+            ("top", (own.y0 - inside.y0).abs()),
+            ("bottom", (own.y1 - inside.y1).abs()),
+        ];
+        let mut on: Vec<&str> = edges
+            .into_iter()
+            .filter(|(_, gap)| *gap <= EPSILON)
+            .map(|(side, _)| side)
+            .collect();
+        if on.is_empty() {
+            return;
+        }
+        let where_ = if self.column.is_some() {
+            "its column"
+        } else {
+            "the window"
+        };
+        on.sort_unstable();
+        self.push(
+            Kind::RoundedOnEdge,
+            node,
+            keys,
+            format!(
+                "its {} {} stand{} on {} {} at ({:.0}, {:.0}): a rounded surface keeps a gutter",
+                on.join(" and "),
+                if on.len() == 1 { "edge" } else { "edges" },
+                if on.len() == 1 { "s" } else { "" },
+                where_,
+                size(inside),
+                inside.x0,
+                inside.y0
+            ),
         );
     }
 

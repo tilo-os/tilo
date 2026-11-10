@@ -111,20 +111,32 @@ template view service_mark(name: Text, online: Bool, trouble: Text) {
 }
 
 /// What a window says over the items it holds while the service they come from does not stand
-/// well: one calm banner naming it and what it means — the items under it are what was last
-/// fetched, or what it fetched could not be saved — with `Try again` where `retry` asks it
-/// again, and nothing while it stands well. It stands over the items rather than in the bar, so
-/// it is read where they are, and it never takes the place of what a person came to read.
-template view service_banner(name: Text, online: Bool, trouble: Text, retry: Action) {
+/// well: one calm notice naming the service and what its trouble means, with `Try again` where
+/// `retry` asks it again, and nothing while it stands well.
+///
+/// It stands as a card in the container the app gives it, a gutter in from the column it stands
+/// in — the list's own, where it stands over rows — so its rounded corners are never cut by the
+/// edge it would touch, and it is read where the items are without taking their place. What it
+/// says is what the service cannot say of itself: the title is what the window cannot do (reach
+/// it, save what it fetched), and under it the service's own reason in its words, capitalised,
+/// and when the items under it were last read from it — `fetched`, as the clock a person reads
+/// ("10:41"), empty while the app knows no time to say.
+template view service_banner(
+    name: Text,
+    online: Bool,
+    trouble: Text,
+    retry: Action,
+    fetched: Text = "",
+) {
     if trouble != "" {
+        // The reason in a sentence of its own: "connection refused" is what the server said,
+        // and the line it leads starts with a capital as every sentence does.
+        let reason = trouble.slice(0, 1).upper() + trouble.slice(1, trouble.len())
         ui.Banner(
-            if online {
-                "{name} could not save what it fetched"
-            } else {
-                "Can't reach {name}. Showing what was last fetched."
-            },
-            message: trouble,
-            kind: .warning,
+            if online { "Can't save what {name} fetched" } else { "Can't reach {name}" },
+            message: if fetched == "" { reason } else { "{reason}. Last fetched {fetched}" },
+            kind: if online { .warning } else { .neutral },
+            icon: if online { .triangle_alert } else { .wifi_off },
             action: "Try again",
         ) {
             on act: retry

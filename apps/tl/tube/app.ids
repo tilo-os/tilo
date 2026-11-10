@@ -47,7 +47,6 @@ WatchEntry.watched = dmm6f63t
 YouTube = thwdswkk
 YouTube.channels = ihhzrm3f
 YouTube.feed_state = nnvco6w3
-YouTube.feed_trouble = hycswkws
 YouTube.history = hv25j74h
 YouTube.online = qv7t2mza
 YouTube.playlists = v5sh2bpr
@@ -82,6 +81,7 @@ progress = jxokfijg
 refresh_channel = wx26izlg
 refresh_feed = hpjdxg6k
 resume = s334bmn6
+scenario "YouTube cannot be reached" = qv36qkg3
 scenario "a channel" = d7hwbszi
 scenario "a subscriptions feed" = 5rjsvdvz
 scenario "a video playing" = 36msdsig
@@ -119,6 +119,7 @@ watched_page = yf5l4ysw
 watched_page#clear = icgdm57j
 
 # retired
+YouTube.feed_trouble = hycswkws
 channel_link = oxhzdjad
 clear_history = auitjgor
 feed.query = nln5fijb

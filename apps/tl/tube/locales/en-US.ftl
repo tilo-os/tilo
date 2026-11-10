@@ -168,9 +168,6 @@ d-zjw3anaz = Search trouble
 d-nnvco6w3 = Feed state
     .doc = How the subscriptions feed stands: `loading`, `done`, `failed` or empty.
 
-d-hycswkws = Feed trouble
-    .doc = Why the feed could not be fetched; empty while it went through.
-
 d-r3ksw6bn = Trouble
     .doc = Why the client is not in step now: YouTube cannot be reached, or what it said could not be saved; empty while it is.
 
@@ -252,7 +249,10 @@ d-mufcicuu = Feed
     .w-nothing-new-yet = Nothing new yet
     .w-ask-youtube-for-the-newest-videos = Ask YouTube for the newest videos of the channels you follow
     .w-refresh = Refresh
-    .w-youtube-could-not-be-reached = YouTube could not be reached
+    .w-can-t-save-what-fetched = Can't save what { $name } fetched
+    .w-can-t-reach = Can't reach { $name }
+    .w-last-fetched = { $reason }. Last fetched { $fetched }
+    .w-try-again = Try again
 
 d-dfz6u5sa = Video grid
 

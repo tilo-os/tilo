@@ -184,6 +184,9 @@ struct Geometry {
     action: Option<Rect>,
     secondary_action: Option<Rect>,
     dismiss: Option<Rect>,
+    /// The actions stand under the text rather than beside it: they are words of their own, with
+    /// no face, so a narrow banner does not put a filled block under what it says.
+    below: bool,
 }
 
 fn geometry(
@@ -270,24 +273,41 @@ fn geometry_with(
         body_x0 + leading,
         text_top + (text_h - (title_h + message_h)) / 2.0,
     );
-    // Actions are laid out from the trailing edge back: the main action
-    // last, so it sits at the edge.
     let actions_top = if beside {
         top + (line_h - control_h) / 2.0
     } else {
         top + actions_y
     };
-    let mut x = body_x1;
-    let mut rects = Vec::new();
-    for w in widths.iter().rev() {
-        rects.push(Rect::new(x - w, actions_top, x, actions_top + control_h));
-        x -= w + m.related;
-    }
-    let (action, secondary_action) = match (actions[1], actions[0]) {
-        (Some(_), Some(_)) => (rects.first().copied(), rects.get(1).copied()),
-        (Some(_), None) => (rects.first().copied(), None),
-        (None, Some(_)) => (None, rects.first().copied()),
-        (None, None) => (None, None),
+    let (action, secondary_action) = if beside {
+        // Beside the text the actions stand from the trailing edge back: the main action last,
+        // so it sits at the edge.
+        let mut x = body_x1;
+        let mut rects = Vec::new();
+        for w in widths.iter().rev() {
+            rects.push(Rect::new(x - w, actions_top, x, actions_top + control_h));
+            x -= w + m.related;
+        }
+        match (actions[1], actions[0]) {
+            (Some(_), Some(_)) => (rects.first().copied(), rects.get(1).copied()),
+            (Some(_), None) => (rects.first().copied(), None),
+            (None, Some(_)) => (None, rects.first().copied()),
+            (None, None) => (None, None),
+        }
+    } else {
+        // Under the text they start where the text does: a narrow banner keeps one column, and
+        // the words of an action stand in it rather than a block across the banner.
+        let mut x = body_x0 + leading;
+        let mut rects = Vec::new();
+        for w in &widths {
+            rects.push(Rect::new(x, actions_top, x + w, actions_top + control_h));
+            x += w + m.related;
+        }
+        match (actions[0], actions[1]) {
+            (Some(_), Some(_)) => (rects.get(1).copied(), rects.first().copied()),
+            (Some(_), None) => (None, rects.first().copied()),
+            (None, Some(_)) => (rects.first().copied(), None),
+            (None, None) => (None, None),
+        }
     };
     let dismiss = content.dismissible.then(|| {
         let x1 = width - m.pad_x;
@@ -313,6 +333,7 @@ fn geometry_with(
         action,
         secondary_action,
         dismiss,
+        below: !beside && !widths.is_empty(),
     }
 }
 
@@ -403,7 +424,10 @@ fn paint_banner(
     ] {
         if let (Some(label), Some(face_rect)) = (label, face_rect) {
             let face_rect = shift(face_rect);
-            let face = action_face(face_rect, label, primary);
+            let mut face = action_face(face_rect, label, primary);
+            if g.below {
+                face = face.role(ButtonRole::Plain);
+            }
             let hovered = face.contains(&on_well, hover);
             let face = face.hovered(hovered);
             crate::widget::Button::paint(ctx.scene, ctx.transform, ctx.text, &on_well, &face);
@@ -662,6 +686,9 @@ pub struct Banner {
     body: BannerBody,
     secondary: Option<Button>,
     action: Option<Button>,
+    /// The role the main action was built with: under the text it is drawn as words of its own
+    /// ([`ButtonRole::Plain`]), beside it as the control it was built as.
+    action_role: ButtonRole,
     dismiss: Option<Button>,
     id: Option<String>,
     /// Absent: the banner collapses, and with it its gap in the parent.
@@ -728,6 +755,7 @@ impl Banner {
             },
             secondary: None,
             action: None,
+            action_role: ButtonRole::Secondary,
             dismiss: None,
             id: None,
             shown,
@@ -798,9 +826,12 @@ impl Banner {
     }
 
     /// The banner's main action, inside its box at the trailing edge. The
-    /// banner sizes it; the button keeps its role.
+    /// banner sizes it, and keeps its role where the banner is wide enough for
+    /// the actions to stand beside what it says: under the text they are words
+    /// of their own, as an action in a sentence is.
     #[must_use]
     pub fn with_action(mut self, button: Button) -> Self {
+        self.action_role = button.role_of();
         self.action = Some(button.control_size(ControlSize::Small));
         self
     }
@@ -1037,6 +1068,12 @@ impl Banner {
         place(&mut self.secondary, g.secondary_action);
         place(&mut self.action, g.action);
         place(&mut self.dismiss, g.dismiss);
+        // Under the text the main action is the words it says, a control's face only where it
+        // stands beside what the banner says.
+        let built_as = self.action_role;
+        if let Some(button) = &mut self.action {
+            button.set_role(if g.below { ButtonRole::Plain } else { built_as });
+        }
     }
 
     /// The body and the buttons, where they were laid out.

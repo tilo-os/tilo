@@ -1733,3 +1733,78 @@ fn words_on_a_ground_of_their_own_stand_apart() {
         "the card's ground holds its words away from the page's"
     );
 }
+
+/// A rounded surface stands inside its column with a gutter on every side: one glued to the
+/// column's edges, cut by them, or one standing on the window's edge where no column holds it,
+/// is found — and the same surface a gutter in is no finding.
+#[test]
+fn a_rounded_surface_keeps_a_gutter_from_its_column_and_the_window() {
+    let shell_with = |banner: InspectionNode| {
+        let mut shell = node("NavShell", "shell", [0.0, 0.0, 900.0, 600.0], None);
+        let mut column = node("Stack", "column", [280.0, 0.0, 620.0, 600.0], None);
+        column.children.push(banner);
+        shell.children.push(column);
+        shell
+    };
+    let found = |root: &InspectionNode| -> Vec<Problem> {
+        inspect(root, (900, 600), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::RoundedOnEdge)
+            .collect()
+    };
+
+    let glued = found(&shell_with(node_of(
+        "Banner",
+        "banner",
+        [280.0, 0.0, 620.0, 65.0],
+    )));
+    assert_eq!(glued.len(), 1, "{glued:?}");
+    assert!(
+        glued[0].detail.contains("left") && glued[0].detail.contains("right"),
+        "both sides stand on the column's: {}",
+        glued[0].detail
+    );
+    assert!(
+        glued[0].detail.contains("its column"),
+        "the column is what it stands on: {}",
+        glued[0].detail
+    );
+
+    let inset = found(&shell_with(node_of(
+        "Banner",
+        "banner",
+        [304.0, 24.0, 572.0, 65.0],
+    )));
+    assert!(inset.is_empty(), "a gutter on every side: {inset:?}");
+
+    // A card is rounded too, and a surface without rounded corners is no finding.
+    assert_eq!(
+        found(&shell_with(node_of(
+            "Card",
+            "card",
+            [280.0, 0.0, 620.0, 65.0]
+        )))
+        .len(),
+        1
+    );
+    assert!(
+        found(&shell_with(node_of(
+            "Stack",
+            "box",
+            [280.0, 0.0, 620.0, 65.0]
+        )))
+        .is_empty()
+    );
+
+    // With no column around it, the window's edge is the one it must keep clear of.
+    let mut root = node("TilolangWindow", "window", [0.0, 0.0, 900.0, 600.0], None);
+    root.children
+        .push(node_of("Banner", "banner", [0.0, 0.0, 900.0, 65.0]));
+    let on_window = found(&root);
+    assert_eq!(on_window.len(), 1, "{on_window:?}");
+    assert!(
+        on_window[0].detail.contains("the window"),
+        "{}",
+        on_window[0].detail
+    );
+}

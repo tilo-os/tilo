@@ -20,6 +20,9 @@ d-b5k7mvka = Trouble
 
 d-33f3rqw2 = Online
 
+d-hzbwof46 = Fetched
+    .doc = When the account's mail was last taken in from its server, as the clock the person read it at: the epoch when it never was.
+
 d-jxc5rufs = Signature
     .doc = What the account's messages end with: the person's own, per account, as every mail client signs a message.
 
@@ -28,6 +31,8 @@ d-ehmoyzk2 = Mailboxes
 d-qybqg4dl = Threads
 
 d-weesm3yb-filter-online = Online
+
+d-weesm3yb-filter-fetched = Fetched
 
 d-ecbhcqdr = Mailbox
     .doc = A mailbox of an account.
@@ -350,6 +355,12 @@ d-4hds3dwy = Answer~present
 d-5wix2354 = Compose
     .w-to = To { $to }
 
+d-dhradxj7 = Account notice
+    .w-can-t-save-what-fetched = Can't save what { $name } fetched
+    .w-can-t-reach = Can't reach { $name }
+    .w-last-fetched = { $reason }. Last fetched { $fetched }
+    .w-try-again = Try again
+
 d-7rcrynvm = Mail
     .w-add-a-mail-account-in-settings = Add a mail account in Settings
 
@@ -358,21 +369,12 @@ d-4fjgzcq6 = Unified
     .w-all-inboxes = All inboxes
     .w-all-mail = All mail
     .w-labels = Labels
-    .w-could-not-save-what-it-fetched = { $name } could not save what it fetched
-    .w-can-t-reach-showing-what-was = Can't reach { $name }. Showing what was last fetched.
-    .w-try-again = Try again
 
 d-gka45our = Mailboxes
     .w-all-mail = All mail
     .w-labels = Labels
-    .w-could-not-save-what-it-fetched = { $name } could not save what it fetched
-    .w-can-t-reach-showing-what-was = Can't reach { $name }. Showing what was last fetched.
-    .w-try-again = Try again
 
 d-zp2cy2sc = Inbox
-    .w-could-not-save-what-it-fetched = { $name } could not save what it fetched
-    .w-can-t-reach-showing-what-was = Can't reach { $name }. Showing what was last fetched.
-    .w-try-again = Try again
     .w-nothing-here = Nothing here
 
 d-jgdzx3la = Thread list

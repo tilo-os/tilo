@@ -319,6 +319,10 @@ fn an_account_syncs_into_mailboxes_and_conversations() {
     let account = workspace.accounts().remove(0);
     assert_eq!(workspace.text(&account, "address"), ME);
     assert_eq!(workspace.text(&account, "name"), "Sam Rivera");
+    assert!(
+        !workspace.text(&account, "fetched").is_empty(),
+        "the account says when its mail was read from the server"
+    );
     let boxes: Vec<String> = workspace
         .refs(&account, "mailboxes")
         .iter()
@@ -520,11 +524,13 @@ fn a_troubled_account_says_so_in_its_window_and_clears_when_the_server_answers()
     let trouble = workspace.text(&account, "trouble");
     assert!(
         said.iter()
-            .any(|text| text.contains("Can't reach sam@rivera.example")),
-        "the banner names the account the person cannot reach: {said:#?}"
+            .any(|text| text == "Can't reach sam@rivera.example"),
+        "the banner names the account the person cannot reach, and says nothing the line under \
+         it says again: {said:#?}"
     );
     assert!(
-        said.iter().any(|text| text.contains(&trouble)),
+        said.iter()
+            .any(|text| text.to_lowercase().contains(&trouble.to_lowercase())),
         "the mark and the banner say why, in the server's own words: {said:#?}"
     );
     assert!(
@@ -615,6 +621,26 @@ fn a_sync_the_workspace_cannot_keep_leaves_nothing_behind_and_is_taken_in_again(
     assert!(
         workspace.flag(&account, "online"),
         "the server answered: it is the workspace that could not take what it said"
+    );
+    // The window says it over the mail the server did answer with, and how old that mail is:
+    // the notice adds what the account cannot say of itself.
+    let said = account_window(&workspace, &account);
+    assert!(
+        said.iter().any(|text| text.contains("Can't save what")),
+        "the notice says what the window cannot do: {said:#?}"
+    );
+    let when = said.iter().find_map(|text| {
+        text.split_once("Last fetched ")
+            .map(|(_, at)| at.to_owned())
+    });
+    let when = when.unwrap_or_else(|| panic!("the notice says when the mail was read: {said:#?}"));
+    let clock = when.as_bytes();
+    assert!(
+        clock.len() >= 5
+            && clock[0].is_ascii_digit()
+            && clock[1].is_ascii_digit()
+            && clock[2] == b':',
+        "the clock time a person reads: {when}"
     );
 
     // The workspace takes changes again: the next sync takes in what the server said before,
@@ -1107,9 +1133,17 @@ fn host_texts_in(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
 }
 
 /// Every text `node` says, its whole tree walked: what its `value`, `title`, `secondary` and
-/// `label` props show, and what its `description` says — the words a mark carries on hover.
+/// `label` props show, what its `description` says — the words a mark carries on hover — and
+/// what a notice says under its title.
 fn texts_in(node: &tilolang_tilo::runtime::UiNode, out: &mut Vec<String>) {
-    for prop in ["value", "title", "secondary", "label", "description"] {
+    for prop in [
+        "value",
+        "title",
+        "secondary",
+        "label",
+        "description",
+        "message",
+    ] {
         if let Some(tilolang_tilo::runtime::Value::Text(text)) = node.props.get(prop) {
             out.push(text.clone());
         }

@@ -748,3 +748,51 @@ fn a_banner_whose_dismiss_is_bound_runs_the_action_it_names_once() {
         "the press is taken once"
     );
 }
+
+/// A banner too narrow for its actions keeps one column: what it says, then the action under it
+/// as the words it is, starting where the text starts — no block across the banner, and the
+/// same control beside it again once the window is wide enough.
+#[test]
+fn a_narrow_banner_puts_its_action_under_its_text_in_the_text_column() {
+    let banner = || {
+        Banner::warning("Can't reach sam@rivera.example")
+            .with_message("Connection refused · Last fetched 10:41")
+            .with_id("trouble")
+            .with_action(Button::new("trouble.retry", "Try again"))
+    };
+    let mut narrow = FrameHarness::new(
+        State::new(),
+        Box::new(Column::new().push(Box::new(banner()))),
+        (360, 400),
+    );
+    narrow.relayout();
+    let targets = narrow.targets();
+    let box_ = targets["trouble"];
+    let retry = targets["trouble.retry"];
+    assert!(
+        !retry.is_zero_area(),
+        "the action is placed: {retry:?} in {box_:?}"
+    );
+    assert!(
+        retry.x0 - box_.x0 < 60.0,
+        "it starts where the text does, not at the trailing edge: {retry:?} in {box_:?}"
+    );
+    assert!(
+        retry.y0 >= box_.center().y,
+        "it stands under what the banner says: {retry:?} in {box_:?}"
+    );
+
+    let mut wide = FrameHarness::new(
+        State::new(),
+        Box::new(Column::new().push(Box::new(banner()))),
+        (900, 400),
+    );
+    wide.relayout();
+    let targets = wide.targets();
+    let box_ = targets["trouble"];
+    let retry = targets["trouble.retry"];
+    assert!(
+        box_.x1 - retry.x1 < 40.0,
+        "a wide banner keeps its action at the trailing edge: {retry:?} in {box_:?}"
+    );
+}

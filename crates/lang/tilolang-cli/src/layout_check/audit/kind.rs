@@ -123,10 +123,14 @@ pub enum Kind {
     /// A bar docked at the foot of a column standing wider than the column the content above it
     /// is read at: an entry that adds to a list spans the window beside the list it adds to.
     DockedColumn,
+    /// A surface with rounded corners standing against the edge of the column or window it is
+    /// in: the curve is cut by the edge, or the surface reads as part of the frame rather than
+    /// as a card inside it. A rounded surface keeps a gutter on every side.
+    RoundedOnEdge,
 }
 
 impl Kind {
-    pub const ALL: [Self; 39] = [
+    pub const ALL: [Self; 40] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -166,6 +170,7 @@ impl Kind {
         Self::UnmarkedBarPrimary,
         Self::TextOnText,
         Self::DockedColumn,
+        Self::RoundedOnEdge,
     ];
 
     pub fn name(self) -> &'static str {
@@ -209,6 +214,7 @@ impl Kind {
             Self::UnmarkedBarPrimary => "unmarked-bar-primary",
             Self::TextOnText => "text-on-text",
             Self::DockedColumn => "docked-column",
+            Self::RoundedOnEdge => "rounded-on-edge",
         }
     }
 }

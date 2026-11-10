@@ -9,6 +9,9 @@ type Account (origin: imap.account) {
     name: Text
     trouble: Text
     online: Bool
+    /// When the account's mail was last taken in from its server, as the clock the person read
+    /// it at: the epoch when it never was.
+    fetched: Time = Time("1970-01-01T00:00:00Z")
     /// What the account's messages end with: the person's own, per account, as every mail
     /// client signs a message. Empty for none.
     signature: Text
@@ -199,6 +202,25 @@ fn re(subject: Text) -> Text {
 /// what a reader sees should not depend on which.
 fn as_lines(body: Text) -> Text {
     body.replace("\r\n", "\n")
+}
+
+/// The clock time a moment falls at, as people read one: `10:41`, in the person's zone. What
+/// the window says when an account's mail was last read from its server; an account whose mail
+/// never came says nothing, its moment standing at the epoch.
+fn fetched_clock(a: Account) -> Text {
+    let never = Time("1970-01-01T00:00:00Z")
+    if a.fetched <= never {
+        return ""
+    }
+    let seconds = a.fetched.time_of_day().seconds()
+    let hour = seconds / 3600
+    let minute = seconds % 3600 / 60
+    "{two_digits(hour)}:{two_digits(minute)}"
+}
+
+/// `n` as two digits: the hour and the minute of a clock time.
+fn two_digits(n: Int) -> Text {
+    if n < 10 { "0{n}" } else { "{n}" }
 }
 
 /// Where the quotation in what a message says begins: the blank line above the line naming who
@@ -605,6 +627,23 @@ fn place_title(m: Mail, query: Text) -> Text {
     }
 }
 
+/// What the account's server says of itself, over the mail it holds: the notice in the list's
+/// own gutter, so its rounded card stands where the rows' boxes do. An account that stands well
+/// says nothing and takes no room, so the list stands at the column's edge.
+view account_notice(a: Account) {
+    if a.trouble != "" {
+        stack(padding: .group) {
+            std.service_banner(
+                a.address,
+                a.online,
+                a.trouble,
+                retry: check_now(a),
+                fetched: fetched_clock(a),
+            )
+        }
+    }
+}
+
 /// The mail window: every account's mail. The unified inbox is every account's inbox in one
 /// list, a conversation in any account opening beside it; one account's window is its
 /// mailboxes as its places.
@@ -677,9 +716,10 @@ view unified(m: Mail) {
             }
             overview: {
                 // The list shows `a`'s mail, so what the account's server says of itself is
-                // said over it, and `Try again` asks the server that account reads from.
-                stack(fill, gap: .section) {
-                    std.service_banner(a.address, a.online, a.trouble, retry: check_now(a))
+                // said over it, and `Try again` asks the server that account reads from. The
+                // notice keeps its own gutter, so the list stands under it with none between.
+                stack(fill, gap: .none) {
+                    account_notice(a)
                     thread_list(shown, fill)
                 }
             }
@@ -739,8 +779,8 @@ view mailboxes(a: Account) {
             }
         }
         overview: {
-            stack(fill, gap: .section) {
-                std.service_banner(a.address, a.online, a.trouble, retry: check_now(a))
+            stack(fill, gap: .none) {
+                account_notice(a)
                 thread_list(shown, fill)
             }
         }
@@ -753,8 +793,8 @@ view mailboxes(a: Account) {
 view inbox(b: Mailbox) {
     let m = root Mail
     if let a = m.accounts.find(x -> x.mailboxes.any(y -> y.id() == b.id())) {
-        stack(fill, gap: .section) {
-            std.service_banner(a.address, a.online, a.trouble, retry: check_now(a))
+        stack(fill, gap: .none) {
+            account_notice(a)
             thread_list(in_mailbox(a, b), fill)
         }
     } else {
@@ -1290,8 +1330,9 @@ scenario "an account that cannot be reached" -> Account {
             key: "sam@rivera.example",
             address: "sam@rivera.example",
             name: "Sam Rivera",
-            trouble: "The server could not be reached: connection refused",
+            trouble: "connection refused",
             online: false,
+            fetched: 2026-06-30T10:41,
         ),
     )
     a.mailboxes.insert(Mailbox(key: "inbox", name: "Inbox", role: "inbox", unread: 2, total: 3))

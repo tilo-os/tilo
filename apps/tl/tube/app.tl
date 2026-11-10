@@ -131,8 +131,6 @@ type YouTube {
     search_trouble: Text = ""
     /// How the subscriptions feed stands: `loading`, `done`, `failed` or empty.
     feed_state: Text = ""
-    /// Why the feed could not be fetched; empty while it went through.
-    feed_trouble: Text = ""
     /// Why the client is not in step now: YouTube cannot be reached, or what it said could not
     /// be saved; empty while it is.
     trouble: Text = ""
@@ -354,7 +352,6 @@ action refresh_feed(yt: YouTube) (icon: .refresh, label: "Refresh") {
         yt.title = "YouTube"
     }
     yt.feed_state = "loading"
-    yt.feed_trouble = ""
     outside("youtube.subscriptions", yt.subscriptions.map(s -> s.key))
 }
 
@@ -467,14 +464,17 @@ view feed(yt: YouTube) {
                             }
                         }
                     } else {
-                        stack(gap: .section) {
-                            if yt.feed_trouble != "" {
-                                ui.Banner(
-                                    "YouTube could not be reached",
-                                    message: yt.feed_trouble,
-                                    kind: .warning,
-                                )
-                            }
+                        // The videos under it are what was last fetched: the notice says why
+                        // YouTube does not stand well, in YouTube's own words, and `Try again`
+                        // reads the feed again. The page's gutter holds the notice and the grid
+                        // on one column.
+                        stack(gap: .none) {
+                            std.service_banner(
+                                "YouTube",
+                                yt.online,
+                                yt.trouble,
+                                retry: refresh_feed(yt),
+                            )
                             video_grid(subs, "", "")
                         }
                     }
@@ -1209,6 +1209,50 @@ scenario "search results" -> YouTube {
 scenario "no subscriptions yet" {
     let yt = root YouTube
     yt.title = "YouTube"
+}
+
+/// YouTube that cannot be reached: the feed under the notice is what was last fetched, and the
+/// notice says why in YouTube's words.
+scenario "YouTube cannot be reached" -> YouTube {
+    let yt = root YouTube
+    yt.title = "YouTube"
+    let c = yt.channels.insert(
+        Channel(
+            key: "UCmkbhd",
+            name: "MKBHD",
+            handle: "@mkbhd",
+            subscribers: 19800000,
+            verified: true,
+        ),
+    )
+    yt.subscriptions.insert(Subscription(key: c.key, name: c.name))
+    yt.videos.insert(
+        Video(
+            key: "v-phone",
+            title: "The phone that finally lasts a week",
+            channel_key: c.key,
+            channel_name: c.name,
+            views: 1840000,
+            published: 2026-10-28T14:00Z,
+            duration: 921,
+            likes: 96000,
+        ),
+    )
+    yt.videos.insert(
+        Video(
+            key: "v-camera",
+            title: "Three cameras, one question",
+            channel_key: c.key,
+            channel_name: c.name,
+            views: 963000,
+            published: 2026-10-25T14:00Z,
+            duration: 1148,
+            likes: 51000,
+        ),
+    )
+    yt.online = false
+    yt.trouble = "connection refused"
+    yt
 }
 
 /// The watch history on its own: three videos watched, two of them left part way, as a place on

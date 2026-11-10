@@ -171,6 +171,9 @@ pub struct ImapOrigin {
     trouble: HashMap<String, String>,
     /// Why each account's mail could not be written into the workspace, until it can be.
     unsaved: HashMap<String, String>,
+    /// When each account's mail was last taken in from its server: what the account says of
+    /// itself, so a window can say how old the mail it shows is.
+    fetched: HashMap<String, String>,
     /// The steps the workspace could not take, oldest first.
     unwritten: Unwritten<Step>,
     /// Accounts whose changes to take in, with the mailboxes to ask for.
@@ -193,6 +196,7 @@ impl ImapOrigin {
             sends: HashMap::new(),
             trouble: HashMap::new(),
             unsaved: HashMap::new(),
+            fetched: HashMap::new(),
             unwritten: Unwritten::new(),
             due: Vec::new(),
             reconnected: Arc::default(),
@@ -236,10 +240,14 @@ impl ImapOrigin {
         for event in self.connector.events() {
             match event {
                 Event::Changes(changes) => {
+                    // The server answered with its mail: this is when the account's mail was
+                    // last read from it, kept or not.
+                    self.fetched.insert(changes.account.clone(), now.to_owned());
                     self.trouble.remove(&changes.account);
                     polled.wrote |= self.take_changes(host, now, changes).wrote();
                 }
                 Event::Found { account, messages } => {
+                    self.fetched.insert(account.clone(), now.to_owned());
                     let changes = Changes {
                         account,
                         mailbox: String::new(),
@@ -842,7 +850,7 @@ impl ImapOrigin {
     }
 
     /// Each account says whether its server answers, what is wrong with it, and why not.
-    fn account_state(&self, host: &Host, now: &str) -> Vec<OriginWrite> {
+    fn account_state(&self, host: &Host) -> Vec<OriginWrite> {
         let Some(state) = self.state.as_ref() else {
             return Vec::new();
         };
@@ -858,19 +866,24 @@ impl ImapOrigin {
                 unreached
             };
             let online = unreached.is_empty();
+            let fetched = self.fetched.get(id).map_or("", String::as_str);
             if read_text(host, &acct.record, &t.account, "trouble") != trouble
                 || read_bool(host, &acct.record, &t.account, "online") != online
+                || (!fetched.is_empty()
+                    && read_text(host, &acct.record, &t.account, "fetched") != fetched)
             {
                 let mut fields = Vec::new();
                 put(&t.account, &mut fields, "trouble", text(trouble));
                 put(&t.account, &mut fields, "online", Value::Bool(online));
+                if !fetched.is_empty() {
+                    put(&t.account, &mut fields, "fetched", text(fetched));
+                }
                 writes.push(OriginWrite::Set {
                     target: acct.record.clone(),
                     fields,
                 });
             }
         }
-        let _ = now;
         writes
     }
 }
@@ -1241,7 +1254,7 @@ impl Origin for ImapOrigin {
             }
         }
         polled.wrote |= self.push(cx.host, &cx.now);
-        let states = self.account_state(cx.host, &cx.now);
+        let states = self.account_state(cx.host);
         if !states.is_empty() {
             // The next poll writes it again: what the account says of itself is read back from
             // it first.
