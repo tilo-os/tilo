@@ -24,7 +24,7 @@ pub enum WorkspaceNodeAsk {
 /// member actions. The broker answers it under the workspace's provider,
 /// `node:<node>` resources ([`tilo_actions::remote::node_target`]), only to
 /// the person at this device in that workspace.
-pub trait WorkspaceNodeActions: Send + Sync {
+pub trait WorkspaceNodeActions: collab_types::signer::MaybeSendSync {
     /// Ask workspace `workspace` `ask` of `node` (its text form), for the person at
     /// this device. The workspace's answer arrives on the returned answer.
     fn ask(

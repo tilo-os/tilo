@@ -38,6 +38,8 @@
 mod channels;
 mod clock;
 pub mod custody;
+/// A program's entry (CLI, agents, the front door); a page enters through its own runtime.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod device;
 pub mod document;
 pub mod health;

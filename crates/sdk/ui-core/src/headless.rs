@@ -501,7 +501,7 @@ pub struct FrameHarness {
     /// The agents' action marks the last drawn frame painted, as the native
     /// [`App`](crate::app::App) keeps them: where each one rests, and the pointer and nametag it
     /// floats beside it.
-    drawn_action_markers: Vec<crate::app::PaintedActionMarker>,
+    drawn_action_markers: Vec<crate::action_locus::PaintedActionMarker>,
     /// Other people's pointers its host placed over this surface
     /// ([`Self::set_placed_pointers`]), drawn above everything else.
     placed_pointers: Vec<crate::presence::PeerCursor>,
@@ -8022,7 +8022,7 @@ impl FrameHarness {
     /// The agents' action marks the last drawn frame painted: where each rests and the pointer and
     /// nametag it floats beside it, in surface coordinates.
     #[must_use]
-    pub fn drawn_action_markers(&self) -> &[crate::app::PaintedActionMarker] {
+    pub fn drawn_action_markers(&self) -> &[crate::action_locus::PaintedActionMarker] {
         &self.drawn_action_markers
     }
 

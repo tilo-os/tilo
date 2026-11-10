@@ -82,7 +82,7 @@ impl WorkspaceNodes {
             WorkspaceNodeAsk::Permits => {
                 let policy = self.policy(workspace)?;
                 let authority = Authority::person(policy.party(&self.person));
-                let now = Context::at_time(std::time::SystemTime::now());
+                let now = Context::at_time(tilo_clock::SystemTime::now());
                 let may = |kind| {
                     authority.decide(&node, kind, &now).answer == tilo_action_policy::Answer::Allow
                 };
