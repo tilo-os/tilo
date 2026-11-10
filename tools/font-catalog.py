@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
 """Verify and stage Tilo fonts. Requires Python 3.11+; no third-party modules."""
 import argparse
+import contextlib
 import errno
 import hashlib
 import json
 import os
+import random
+import sys
 import tempfile
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 import shutil
 import tomllib
+
+try:
+    import fcntl
+except ImportError:  # Windows: a cache there is no other machine's.
+    fcntl = None
 
 # Licences the catalog admits: SIL OFL 1.1; the GUST Font License, which is
 # LPPL 1.3c with a naming request; and GPL 3 or later with the font exception
@@ -181,6 +191,111 @@ def verify_artifact(path, entry):
 # fetching 56 MB from the release store, so it sends nothing over the network for them.
 IMAGE_SEED = Path("/usr/share/tilo/font-artifacts")
 
+# How a fetch answers a release store that is busy. Every job on a build node fetches from the
+# same host, so a burst of them can meet its rate limit (429) or a 5xx while it recovers; those
+# are waited out rather than failing a job whose fonts are perfectly available. A 404 is a pin
+# that is not there, which another attempt cannot fix.
+RETRYABLE = frozenset({408, 425, 429, 500, 502, 503, 504})
+ATTEMPTS = 5
+FIRST_WAIT_SECONDS = 1.0
+LONGEST_WAIT_SECONDS = 30.0
+
+
+class Redirected(Exception):
+    """The store answered with another address, which a pin forbids."""
+
+
+def wait_after(error, attempt):
+    """Seconds to wait before trying again, or None when another attempt cannot answer."""
+    if isinstance(error, urllib.error.HTTPError):
+        if error.code not in RETRYABLE:
+            return None
+        # The store's own answer for how long it is busy wins over the backoff, bounded so a
+        # mistyped header cannot hang a job.
+        header = (error.headers or {}).get("Retry-After", "")
+        if header.isdigit() and 0 < int(header) <= LONGEST_WAIT_SECONDS:
+            return float(header)
+    elif not isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError, ValueError)):
+        # A local failure (no room, a file that cannot be made) meets the same thing again.
+        return None
+    return min(FIRST_WAIT_SECONDS * 2 ** (attempt - 1), LONGEST_WAIT_SECONDS) \
+        * random.uniform(0.8, 1.2)
+
+
+def open_url(url):
+    """The release store's answer for one pinned font's URL."""
+    return urllib.request.urlopen(url, timeout=60)
+
+
+def fetch(entry, path):
+    """Fetch one pinned font into `path`, waiting out a store that is busy.
+
+    `path`'s directory must exist. The bytes land under a temporary name and are verified before
+    they take the pinned name, so a job that reads the file never reads a partial or altered one.
+    """
+    attempt = 1
+    while True:
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+                temporary = Path(stream.name)
+                with open_url(entry["url"]) as response:
+                    if response.geturl() != entry["url"]:
+                        raise Redirected("font artifact redirect is forbidden")
+                    left = entry["bytes"] + 1
+                    while left:
+                        block = response.read(min(left, 65536))
+                        if not block:
+                            break
+                        stream.write(block)
+                        left -= len(block)
+            verify_artifact(temporary, entry)
+            os.replace(temporary, path)
+            verify_artifact(path, entry)
+            return
+        except Redirected:
+            raise ValueError("font artifact redirect is forbidden")
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as error:
+            wait = wait_after(error, attempt)
+            if wait is None or attempt == ATTEMPTS:
+                raise ValueError(
+                    f"could not fetch {entry['file']} from {entry['url']} "
+                    f"in {attempt} attempt{'s' if attempt != 1 else ''}: {error}") from error
+            print(f"Tilo font catalog: fetching {entry['file']}: {error}; "
+                  f"attempt {attempt} of {ATTEMPTS}, again in {wait:.1f}s", file=sys.stderr)
+            time.sleep(wait)
+            attempt += 1
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+
+@contextlib.contextmanager
+def locked(cache):
+    """Hold the cache's lock, so one job fetches the pinned fonts and publishes the catalog while
+    the others wait for it and verify what it left.
+
+    Jobs sharing a build directory share the artifact cache in it (TILO_FONT_ASSET_CACHE). Without
+    the lock each of them fetches the whole 56 MB catalog at once, and the store rate-limits the
+    node for it. A cache on a file system whose locks fail, or a platform without flock, is used
+    unserialized, as it was before.
+    """
+    cache = Path(cache)
+    if fcntl is None:
+        yield
+        return
+    cache.mkdir(parents=True, exist_ok=True)
+    with open(cache / ".lock", "a+b") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        except OSError:
+            yield
+            return
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
 
 def cached_font(entry, cache, offline):
     seeded = IMAGE_SEED / entry["sha256"] / entry["file"]
@@ -200,50 +315,37 @@ def cached_font(entry, cache, offline):
     if offline:
         raise ValueError(f"font artifact unavailable offline: {entry['file']}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
-            temporary = Path(stream.name)
-            with urllib.request.urlopen(entry["url"], timeout=60) as response:
-                if response.geturl() != entry["url"]:
-                    raise ValueError("font artifact redirect is forbidden")
-                left = entry["bytes"] + 1
-                while left:
-                    block = response.read(min(left, 65536))
-                    if not block:
-                        break
-                    stream.write(block)
-                    left -= len(block)
-        verify_artifact(temporary, entry)
-        os.replace(temporary, path)
-        verify_artifact(path, entry)
-        return path
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+    fetch(entry, path)
+    return path
 
 
 def prepare(source, dest, scope, cache, offline):
-    """Materialize exact fonts and license notices into a new build directory."""
+    """Materialize exact fonts and license notices into a new build directory.
+
+    The jobs that share a cache take turns: the first fetches what is missing and publishes a
+    verified catalog, and the ones that waited find it there. Whoever comes second raises the
+    destination-exists error, and its caller verifies the catalog it found.
+    """
     source, dest = Path(source), Path(dest)
-    data, entries = artifact_entries(source)
-    if dest.exists() or dest.is_symlink():
-        raise ValueError(f"font destination already exists: {dest}")
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".tilo-fonts-", dir=dest.parent) as temporary:
-        root = Path(temporary) / "catalog"
-        root.mkdir()
-        for entry in selected(data, scope):
-            shutil.copyfile(cached_font(entries[entry["file"]], cache, offline), root / entry["file"])
-        notices = [row["file"] for row in data["license"]] + ["manifest.toml", "PROVENANCE.md"]
-        if (source / "LICENSES/UPSTREAM.md").is_file():
-            notices.append("LICENSES/UPSTREAM.md")
-        for name in notices:
-            target = root / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(checked_path(source, name), target)
-        verify(root, scope)
-        root.rename(dest)
+    with locked(cache):
+        data, entries = artifact_entries(source)
+        if dest.exists() or dest.is_symlink():
+            raise ValueError(f"font destination already exists: {dest}")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".tilo-fonts-", dir=dest.parent) as temporary:
+            root = Path(temporary) / "catalog"
+            root.mkdir()
+            for entry in selected(data, scope):
+                shutil.copyfile(cached_font(entries[entry["file"]], cache, offline), root / entry["file"])
+            notices = [row["file"] for row in data["license"]] + ["manifest.toml", "PROVENANCE.md"]
+            if (source / "LICENSES/UPSTREAM.md").is_file():
+                notices.append("LICENSES/UPSTREAM.md")
+            for name in notices:
+                target = root / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(checked_path(source, name), target)
+            verify(root, scope)
+            root.rename(dest)
 
 
 def seed(source, dest, offline):

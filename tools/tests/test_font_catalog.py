@@ -1,15 +1,231 @@
 import importlib.util
-import os
+import io
+import json
 import subprocess
 import sys
-from pathlib import Path
 import tempfile
+import threading
+import time
+import types
 import unittest
+import urllib.error
+from email.message import Message
+from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("font_catalog", ROOT / "tools/font-catalog.py")
 fc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fc)
+
+FONTS = ROOT / "crates/sdk/ui-core/assets/fonts"
+ONE_FONT = "NotoSansMath-Regular.ttf"
+
+
+def pinned():
+    """Every pinned font: its file name, size, digest and release-store URL."""
+    return json.loads((FONTS / "artifacts.json").read_text())["assets"]
+
+
+class Answer:
+    """One pinned font's response, streamed from a catalog already on this machine."""
+
+    def __init__(self, path, url):
+        self.stream = path.open("rb")
+        self.url = url
+
+    def geturl(self):
+        return self.url
+
+    def read(self, size):
+        return self.stream.read(size)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.stream.close()
+        return False
+
+
+def http_error(url, code, retry_after=None):
+    headers = Message()
+    if retry_after is not None:
+        headers["Retry-After"] = str(retry_after)
+    return urllib.error.HTTPError(url, code, f"{code} refused", headers, io.BytesIO())
+
+
+class Store:
+    """The release store as a job meets it: it records what was asked for, and answers as a busy
+    one does when asked to — a rate limit, a 5xx, a pin it does not have."""
+
+    def __init__(self, catalog, refuse=None, delay=0.0, redirect=None):
+        self.catalog = Path(catalog)
+        self.refuse = refuse or (lambda row, asked: None)
+        self.delay = delay
+        self.redirect = redirect
+        self.asked = {}
+
+    def open_url(self, url):
+        row = next(row for row in pinned() if row["url"] == url)
+        asked = self.asked[row["file"]] = self.asked.get(row["file"], 0) + 1
+        if self.delay:
+            time.sleep(self.delay)
+        refusal = self.refuse(row, asked)
+        if refusal is not None:
+            raise refusal
+        return Answer(self.catalog / row["file"], self.redirect or url)
+
+
+class StoreTest(unittest.TestCase):
+    """A store that is busy is waited out; one that has no such file is not."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.catalog = Path(fc.prepared_root(FONTS, "fixtures"))
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.cache = Path(directory.name) / "cache"
+        # The builder image's own copy would answer before the store this test wants to hear from.
+        self.patch(fc, "IMAGE_SEED", Path(directory.name) / "no-image-seed")
+        self.entry = next(row for row in pinned() if row["file"] == ONE_FONT)
+        self.waits = []
+        self.patch(fc, "time", types.SimpleNamespace(sleep=self.waits.append))
+
+    def patch(self, module, name, value):
+        patcher = mock.patch.object(module, name, value)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def store(self, **kwargs):
+        store = Store(self.catalog, **kwargs)
+        self.patch(fc, "open_url", store.open_url)
+        return store
+
+    def fetch(self):
+        path = self.cache / self.entry["sha256"] / self.entry["file"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fc.fetch(self.entry, path)
+        return path
+
+    def fetch_noticing(self):
+        """Fetch, and the notices the job was given about the store."""
+        stderr = io.StringIO()
+        with mock.patch.object(sys, "stderr", stderr):
+            path = self.fetch()
+        return path, stderr.getvalue()
+
+    def test_a_rate_limited_fetch_waits_and_brings_the_pinned_bytes(self):
+        store = self.store(refuse=lambda row, asked: http_error(row["url"], 429) if asked <= 2 else None)
+        path, notice = self.fetch_noticing()
+        self.assertEqual(store.asked[self.entry["file"]], 3)
+        fc.verify_artifact(path, self.entry)
+        self.assertEqual(len(self.waits), 2)
+        self.assertEqual(self.waits, sorted(self.waits), "the waits grow")
+        self.assertIn(f"fetching {self.entry['file']}: HTTP Error 429", notice)
+        self.assertIn("attempt 1 of 5", notice)
+        self.assertIn("again in", notice)
+
+    def test_a_store_that_stays_busy_names_the_font_the_url_and_the_attempts(self):
+        self.store(refuse=lambda row, asked: http_error(row["url"], 429))
+        stderr = io.StringIO()
+        with mock.patch.object(sys, "stderr", stderr), self.assertRaisesRegex(
+                ValueError,
+                r"could not fetch NotoSansMath-Regular\.ttf from https://\S+ in 5 attempts: "
+                r"HTTP Error 429"):
+            self.fetch()
+        self.assertEqual(len(self.waits), fc.ATTEMPTS - 1)
+        self.assertIn("attempt 4 of 5", stderr.getvalue())
+
+    def test_a_pin_the_store_does_not_have_is_not_asked_for_again(self):
+        store = self.store(refuse=lambda row, asked: http_error(row["url"], 404))
+        with self.assertRaisesRegex(ValueError, r"in 1 attempt: HTTP Error 404"):
+            self.fetch()
+        self.assertEqual(store.asked[self.entry["file"]], 1)
+        self.assertEqual(self.waits, [])
+
+    def test_the_store_says_how_long_it_is_busy(self):
+        self.store(refuse=lambda row, asked: http_error(row["url"], 429, retry_after=7)
+                   if asked == 1 else None)
+        stderr = io.StringIO()
+        with mock.patch.object(sys, "stderr", stderr):
+            self.fetch()
+        self.assertEqual(self.waits, [7.0])
+        self.assertIn("again in 7.0s", stderr.getvalue())
+
+    def test_bytes_from_another_address_are_refused(self):
+        self.store(redirect="https://elsewhere.invalid/font.ttf")
+        with self.assertRaisesRegex(ValueError, "redirect is forbidden"):
+            self.fetch()
+        self.assertEqual(self.waits, [])
+
+    def test_a_short_body_is_fetched_again_rather_than_kept(self):
+        real = self.catalog / ONE_FONT
+        with tempfile.TemporaryDirectory() as tmp:
+            short = Path(tmp) / "short"
+            short.write_bytes(real.read_bytes()[:-16])
+            answers = [short, real]
+
+            def open_url(url):
+                return Answer(answers.pop(0), url)
+            self.patch(fc, "open_url", open_url)
+            path = self.fetch()
+        self.assertEqual(answers, [])
+        fc.verify_artifact(path, self.entry)
+
+
+class CacheLockTest(unittest.TestCase):
+    """The jobs sharing a cache take turns: the first fetches the pinned fonts and publishes the
+    catalog, and the others verify what it left instead of each fetching 56 MB."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.catalog = Path(fc.prepared_root(FONTS, "fixtures"))
+
+    def test_concurrent_preparations_fetch_every_font_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "cache"
+            store = Store(self.catalog, delay=0.005)
+            patcher = mock.patch.object(fc, "open_url", store.open_url)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+            seed = tempfile.TemporaryDirectory()
+            self.addCleanup(seed.cleanup)
+            patcher = mock.patch.object(fc, "IMAGE_SEED", Path(seed.name) / "no-image-seed")
+            patcher.start()
+            self.addCleanup(patcher.stop)
+            roots, failures = [], []
+            barrier = threading.Barrier(2)
+
+            def prepare():
+                barrier.wait()
+                try:
+                    roots.append(fc.prepared_root(FONTS, "fixtures", cache=cache))
+                except Exception as error:  # the other thread's failure is the test's
+                    failures.append(error)
+
+            threads = [threading.Thread(target=prepare) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(120)
+            self.assertEqual(failures, [])
+            self.assertEqual(len(roots), 2)
+            self.assertEqual(roots[0], roots[1])
+            self.assertEqual(fc.verify(roots[0], "fixtures"), (37, 55771564))
+            self.assertEqual(set(store.asked), {row["file"] for row in pinned()},
+                             "every font came from the store")
+            self.assertEqual(max(store.asked.values()), 1, store.asked)
+
+    def test_a_cache_is_usable_again_once_its_lock_is_released(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "cache"
+            with fc.locked(cache):
+                self.assertTrue((cache / ".lock").exists())
+            with fc.locked(cache):
+                self.assertEqual([path.name for path in cache.iterdir()], [".lock"])
 
 
 class CatalogTest(unittest.TestCase):
