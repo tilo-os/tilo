@@ -446,6 +446,11 @@ pub struct FrameHarness {
     /// What the last complete frame's bookkeeping read. A frame that finds
     /// all of it unchanged is quiet: see [`FrameWitness`].
     frame_witness: Option<FrameWitness>,
+    /// The document the last sync read. A frame rests only on that one: what a
+    /// write moves after it — a record's writer committing, a tick opening a
+    /// record, an outbox entry settling — no frame has read, so the next frame
+    /// syncs and publishes it rather than resting on it.
+    synced_document: Option<(Vec<automerge::ChangeHash>, usize)>,
     /// Frames that skipped sync and publication as quiet, since construction.
     quiet_frames: u64,
     /// The last frame was quiet and nothing its witness reads moved, so the next one need not ask
@@ -1543,6 +1548,7 @@ impl FrameHarness {
             local_changes: 0,
             local_epoch: 0,
             frame_witness: None,
+            synced_document: None,
             quiet_frames: 0,
             history_settled: false,
             settled_history_frames: 0,
@@ -2248,6 +2254,7 @@ impl FrameHarness {
             let _tree = tilo_resource::profiling::Phase::start("ui.sync.tree");
             self.root.sync(&self.state.doc, &self.state.root);
         }
+        self.synced_document = Some(crate::doc::settle_mark(&self.state.doc));
     }
 
     /// A debug build's proof of a quiet frame, as the accessibility walk proves an unchanged tree:
@@ -3350,10 +3357,20 @@ impl FrameHarness {
         if updated || woken {
             self.local_changes = self.local_changes.wrapping_add(1);
         }
+        // The document this frame would read again is the one the last sync
+        // read. A write that landed since — a writer committing, a tick opening
+        // a record, a settlement applied — is a change no frame has shown, so
+        // this frame syncs and publishes instead of resting on it.
+        let synced = self
+            .synced_document
+            .as_ref()
+            .is_some_and(|read| *read == crate::doc::settle_mark(&self.state.doc));
+        let history_at_rest = history_at_rest.filter(|_| synced);
         // As the live App syncs only when something set `needs_sync`: a
         // frame whose widgets noticed nothing of their own, after nothing
         // the witness follows moved, has nothing new to sync or publish.
         let quiet = history_at_rest.is_some()
+            && synced
             && !updated
             && !structure_changed
             && !crate::widget::controls::has_pending_control_invocation(self.root.as_ref());
@@ -3375,6 +3392,8 @@ impl FrameHarness {
             drop(tilo_resource::profiling::Phase::start(
                 unwitnessed.unwrap_or(if woken {
                     "ui.loud.wake"
+                } else if !synced {
+                    "ui.loud.document"
                 } else if history_at_rest.is_none() {
                     "ui.loud.history"
                 } else if updated {
