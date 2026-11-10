@@ -397,6 +397,17 @@ const centreOfNode = async (tab, node) => {
   const corner = JSON.parse(await canvasTopLeft(tab));
   return {x: Math.round(corner.x + (x0 + x1) / 2), y: Math.round(corner.y + (y0 + y1) / 2)};
 };
+// Where Notes' New note button is drawn: in Notes' window, wherever on the
+// strip the search brought it.
+const notesPoint = async tab => {
+  for (let tries = 0; tries < 20; tries++) {
+    await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+    await sleep(200);
+    const node = JSON.parse(await find(tab, 'New note'));
+    if (node) return centreOfNode(tab, node);
+  }
+  return null;
+};
 // Where Sheets' cell B2 is drawn, once the desktop publishes it.
 const sheetCell = async tab => {
   for (let tries = 0; tries < 20; tries++) {
@@ -1018,6 +1029,10 @@ try {
   // frame, and the desk gives a gesture to its first event's answer, so the
   // events go in together and only the gesture's effect is waited for.
   const sidewaysSwipe = async (tab, x, y, forward = true, during = null) => {
+    // The pointer rests where the fingers are, as a person's does: a wheel
+    // says where it is, and the desk routes it to that place.
+    await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
+    await settle(tab, 1);
     const steps = [6, 12, 18, 24, 18, 12, 6];
     for (const [index, step] of steps.entries()) {
       await wheel(tab, x, y, {deltaX: forward ? step : -step});
@@ -1087,34 +1102,43 @@ try {
   }
 
   // Two fingers sideways over Notes, which does not scroll that way: the
-  // strip pans by the gesture and the windows stay as they were. The brief
-  // run leaves it to the gate: its few windows put a different one at each
-  // place on the desk.
+  // strip pans by the gesture and the windows stay as they were.
   const centre = await centreOf(a.tab);
-  let forward = true;
-  if (!brief) {
-    await search(a.tab, a.command, 'notes', 'Notes');
-    await settle(a.tab, 2);
-    const windowsBefore = (await snapshot(a.tab)).windows;
-    const panBefore = await panOf(a.tab);
-    if (!panBefore) failed('the strip does not overflow, so nothing can pan');
-    // The way the strip still has room: a gesture at its end pans nothing.
-    forward = panBefore.offset < panBefore.max / 2;
-    const frameBefore = await picture(a.tab);
-    await sidewaysSwipe(a.tab, centre.x, centre.y, forward, async () => {
-      const midScroll = await a.tab.screenshot();
-      if (midScroll) writeFileSync(`${out}/strip-mid-scroll.png`, midScroll);
-    });
-    const panAfter = await panOf(a.tab);
-    const moved = panAfter.offset - panBefore.offset;
-    report.sideways = {forward, before: panBefore, after: panAfter};
-    if (Math.abs(moved) < 1) {
-      failed(`two fingers sideways do not pan the strip over Notes: ${JSON.stringify(report.sideways)}`);
-    }
-    if ((await snapshot(a.tab)).windows.join() !== windowsBefore.join()) failed('a sideways pan changed the windows');
-    if (await picture(a.tab) === frameBefore) failed('the strip did not repaint as it panned');
-    console.log(`ok: two fingers sideways pan the strip over Notes (${panBefore.offset} to ${panAfter.offset})`);
+  await search(a.tab, a.command, 'notes', 'Notes');
+  await settle(a.tab, 2);
+  // Where Notes' own window is once the strip is at rest: with a few windows
+  // open the middle of the desk can be another window's, one whose content
+  // scrolls sideways itself.
+  const keptNotes = await restingPan(a.tab);
+  const notesButton = await notesPoint(a.tab);
+  if (!notesButton) failed('Notes shows no New note button to find its window by');
+  // In Notes' column, at the desk's middle height: its body, not the window's
+  // bar, whose row of tabs scrolls sideways itself.
+  const overNotes = {x: notesButton.x, y: centre.y};
+  const windowsBefore = (await snapshot(a.tab)).windows;
+  const panBefore = keptNotes ?? await panOf(a.tab);
+  if (!panBefore) failed('the strip does not overflow, so nothing can pan');
+  // The way the strip still has room: a gesture at its end pans nothing.
+  const forward = panBefore.offset < panBefore.max / 2;
+  const frameBefore = await picture(a.tab);
+  await sidewaysSwipe(a.tab, overNotes.x, overNotes.y, forward, async () => {
+    const midScroll = await a.tab.screenshot();
+    if (midScroll) writeFileSync(`${out}/strip-mid-scroll.png`, midScroll);
+  });
+  // Where the swipe left the strip, once it has come to rest: a reveal still
+  // sliding is no pan.
+  const panAfter = await restingPan(a.tab);
+  const moved = panAfter.offset - panBefore.offset;
+  report.sideways = {forward, before: panBefore, after: panAfter, at: overNotes, under: await namesAt(a.tab, overNotes.x, overNotes.y)};
+  if (Math.abs(moved) < 1) {
+    failed(`two fingers sideways do not pan the strip over Notes: ${JSON.stringify(report.sideways)}`);
   }
+  if (Math.sign(moved) !== (forward ? 1 : -1)) {
+    failed(`two fingers sideways panned the strip against the fingers: ${JSON.stringify(report.sideways)}`);
+  }
+  if ((await snapshot(a.tab)).windows.join() !== windowsBefore.join()) failed('a sideways pan changed the windows');
+  if (await picture(a.tab) === frameBefore) failed('the strip did not repaint as it panned');
+  console.log(`ok: two fingers sideways pan the strip over Notes (${panBefore.offset} to ${panAfter.offset})`);
 
   // The same gesture over Sheets, whose grid scrolls sideways itself: the app
   // takes it and the strip stays where it was.
