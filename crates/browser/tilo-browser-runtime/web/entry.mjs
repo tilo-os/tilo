@@ -314,6 +314,11 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
     say(error?.message ?? String(error));
     throw error;
   }
+  // A link whose workspace reads but whose document (or item, or view) is
+  // damaged names that workspace: it opens, and the page says what of the
+  // link it did not use.
+  const {damaged = null, ...named} = route;
+  route = named;
   const workspaces = listedWorkspaces({home: entry.home, stored: deps.storedWorkspaces?.() ?? []});
   // The page hears which workspace it is getting into, under which entry, before admission.
   deps.onScope?.({scope: route.target.scope, entry});
@@ -358,6 +363,8 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   say(loading);
   onStep('open');
   const link = await linked;
+  // The address names what opened, not the damaged part the page left out.
+  if (damaged) window.history.replaceState(window.history.state, '', link.format(route));
   if (peer && route.target.scope.kind === 'room' && (sealedAdmitted || !route.target.scope.room)) {
     // The workspace is known now: show its canonical link, in place of the
     // address the link reached the page at.
@@ -415,5 +422,6 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
         });
     },
     onError: error => say(error?.message ?? String(error))});
+  if (damaged) say(`${damaged}, so the workspace opened without it.`);
   return {peer, mount: shown.mount, navigation: shown.navigation, router, link, entry, ...(install ? {install} : {})};
 }

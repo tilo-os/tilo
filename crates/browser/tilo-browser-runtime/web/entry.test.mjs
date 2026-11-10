@@ -242,6 +242,41 @@ test('the home workspace opens through its host door under its listed name, and 
   page.router.stop?.();
 });
 
+test('a link whose document id is damaged opens its workspace and says what it did not use', async () => {
+  const scope = {kind: 'room', host: 'https://eu1.tilo.sh', room: 'WORKSPACE'};
+  const replaced = [];
+  const runtime = runtimeFake({
+    // The runtime's grammar names the workspace of a link whose document is damaged, and says so.
+    parseLink: () => JSON.stringify({mode: 'desktop', target: {scope}, damaged: 'The document id in this link is damaged'}),
+    formatLink: route => { assert.equal(JSON.parse(route).damaged, undefined); return 'https://tilo.sh/#/@eu1.tilo.sh/w/WORKSPACE'; },
+    ...entering('accounts', 'member'),
+  });
+  const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
+  const mounts = [];
+  const peer = {workspace: 'WORKSPACE', whenReady: async () => {}, mountDesktop: async (element, options) => {
+    mounts.push(options);
+    options.onNavigation?.(navigation);
+    return {navigation};
+  }};
+  const window = {
+    __tiloLinkSecrets: Object.freeze({}),
+    location: {href: 'https://tilo.sh/#/@eu1.tilo.sh/w/WORKSPACE/so.tilo.pdf-viewer/application.pdf', hash: '#/@eu1.tilo.sh/w/WORKSPACE/so.tilo.pdf-viewer/application.pdf'},
+    history: {state: null, replaceState: (state, title, url) => replaced.push(url), pushState() {}},
+    addEventListener() {}, removeEventListener() {},
+  };
+  const status = {textContent: 'Loading…'};
+  const page = await boot({mode: 'desktop', window, status, deps: {
+    loadRuntime: async () => runtime,
+    fetch: async () => ({ok: false}),
+    readAccounts: async () => [{userPublicKey: 'ab'}],
+    connectMember: async () => peer,
+  }});
+  assert.equal(mounts.length, 1, 'the workspace opens');
+  assert.equal(replaced[0], 'https://tilo.sh/#/@eu1.tilo.sh/w/WORKSPACE', 'the address names what opened');
+  assert.equal(status.textContent, 'The document id in this link is damaged, so the workspace opened without it.');
+  page.router.stop?.();
+});
+
 test('the page hears the peer the host let in before its desktop mounts, so a failed mount can name the workspace', async () => {
   const home = {name: 'Lounge', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
   const runtime = runtimeFake({
