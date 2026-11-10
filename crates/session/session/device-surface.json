@@ -1771,6 +1771,19 @@
           ]
         },
         {
+          "id": "show-invite",
+          "label": "Open the invite sheet on a workspace: where a link into it is made, the part it brings",
+          "description": "Open the invite sheet on a workspace: where a link into it is made, the part it brings someone in at picked and the links that still work taken back. An app shares what it shows by asking this, so it offers the one sheet the bar's invite button opens.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "workspace",
+              "required": false,
+              "type": "text"
+            }
+          ]
+        },
+        {
           "id": "cancel-invitation",
           "label": "Cancel the invitation `invite` of a workspace: its link admits nobody from now on",
           "description": "Cancel the invitation `invite` of a workspace: its link admits nobody from now on",
