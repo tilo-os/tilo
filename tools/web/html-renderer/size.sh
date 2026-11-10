@@ -3,7 +3,8 @@
 # the start module every page loads, which a change behind `dom` must not
 # grow. Writes the listing to $CARGO_TARGET_DIR/htmlrenderer/size.
 set -euo pipefail
-cargo build --locked -p tilo-app-cli --bin tilo-app
+cargo=${CARGO:-cargo}
+"$cargo" build --locked -p tilo-app-cli --bin tilo-app
 app=$CARGO_TARGET_DIR/debug/tilo-app
 export CARGO_TARGET_DIR=$CARGO_TARGET_DIR/release-web
 "$app" build --target web --bundle desktop --release apps/calculator

@@ -43,7 +43,9 @@
 # pages, locales and fonts from this tree, and build.json for this tree's
 # revision. A change to the pages alone then compiles nothing.
 # Needs the wasm32-unknown-unknown target and a wasm-bindgen CLI matching the
-# crate's pinned wasm-bindgen.
+# crate's pinned wasm-bindgen. Compiles with `cargo`, or with the cargo `$CARGO`
+# names: a cargo that compiles elsewhere brings the module back to this tree's
+# target directory, and the script reads it there as it always does.
 set -euo pipefail
 
 crate=$(cd "$(dirname "$0")/.." && pwd)
@@ -135,6 +137,7 @@ if [[ "${TILO_USE_ZIG:-0}" == 1 ]]; then
   export AR_wasm32_unknown_unknown="$repo/crates/hosting/tilo-relay/scripts/wasm-ar.sh"
 fi
 bindgen=${WASM_BINDGEN:-wasm-bindgen}
+cargo=${CARGO:-cargo}
 if [[ -z $wasm_from ]]; then
   pinned=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' "$crate/Cargo.toml")
   [[ "$("$bindgen" --version)" == "wasm-bindgen $pinned" ]] || {
@@ -158,9 +161,9 @@ build_wasm() {
 if [[ $bundle == desktop ]]; then
   python3 tools/web/generate_web_desktop.py --check
 fi
-cargo build --locked -p "$package" --lib --target wasm32-unknown-unknown --profile "$cargo_profile"
+"$cargo" build --locked -p "$package" --lib --target wasm32-unknown-unknown --profile "$cargo_profile"
 # Read Cargo's artifact location; never redirect it.
-target_dir=$(cargo metadata --format-version 1 --no-deps --offline |
+target_dir=$("$cargo" metadata --format-version 1 --no-deps --offline |
   python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
 mkdir -p "$out/pkg"
 linked="$target_dir/wasm32-unknown-unknown/$artifact/${package//-/_}.wasm"
