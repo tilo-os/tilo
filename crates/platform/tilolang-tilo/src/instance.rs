@@ -280,6 +280,9 @@ pub struct Instance {
     /// How the policy's people are the runtime's principals, as presence pairs them.
     people: crate::members::People,
     names_changed: bool,
+    /// The person's formats moved: what a view writes of a time or a day (`.clock()`, a date in a
+    /// sentence) is written again, and what it shows is shown in the new style.
+    formats_changed: bool,
     outgoing: Outgoing,
     in_flight: VecDeque<u64>,
     door_work: Rc<Cell<bool>>,
@@ -391,6 +394,7 @@ impl Instance {
             members_from: None,
             people,
             names_changed: false,
+            formats_changed: false,
             outgoing: Rc::default(),
             in_flight: VecDeque::new(),
             door_work: Rc::default(),
@@ -745,6 +749,12 @@ impl Instance {
     /// The names of the workspace changed: views showing names show them again.
     pub fn names_changed(&mut self) {
         self.names_changed = true;
+    }
+
+    /// The person's formats changed: every view that writes a time or a day writes it again in
+    /// the new style, and the window shows what it wrote.
+    pub fn formats_changed(&mut self) {
+        self.formats_changed = true;
     }
 
     /// Say whether this replica is the workspace's origin (the device that governs the workspace). Only
@@ -2187,7 +2197,8 @@ impl Instance {
         let opened = self.take_open_requests();
         let pulled = self.poll_origins();
         let settled = self.settle_outbox();
-        let renamed = std::mem::take(&mut self.names_changed);
+        let renamed =
+            std::mem::take(&mut self.names_changed) | std::mem::take(&mut self.formats_changed);
         if renamed {
             for view in [self.root.as_ref(), self.detail.as_ref()]
                 .into_iter()

@@ -24,6 +24,9 @@ runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal" }
 tilo-render-protocol = { version = "0.1.0", path = "../tilo-render-protocol" }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
+# Dates and clocks as the person set them, which the session hands over the door: the toolkit
+# writes them the same way, so a sentence here and a view there read alike.
+tilo-formats = { version = "0.1.0", path = "../../sdk/tilo-formats" }
 tilo-wake.workspace = true
 # The platform's phrases the standard library's frames say, without the toolkit.
 tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }

@@ -221,7 +221,8 @@ fn member(bus: &Rc<Bus>, workspace: uuid::Uuid, person: &str, bundle: &Arc<Bundl
         Arc::clone(bundle),
         &kept,
         Box::new(ChannelTransport::new(ours).unwrap()),
-        &Phrases::new("en-US"),
+        &Rc::new(Phrases::new("en-US")),
+        host.formats(),
         wake(),
     );
     host.add(hosted, Some(watched));

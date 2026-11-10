@@ -22,7 +22,7 @@
 //! - **The window:** the instance sends it patches and hears what the person did over the patch
 //!   connection.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -307,11 +307,19 @@ fn with_app_actions(
 
 type SurfaceSlot = Rc<RefCell<Option<Rc<Surface>>>>;
 
+/// The person's formats, as the session handed them over the host's door: shared by every
+/// instance the host runs, so a change in Settings reaches them together.
+pub type Formats = Rc<Cell<tilo_formats::RegionFormats>>;
+
 /// What the instance asks of the host: its package, the platform's phrases and clock, waking the
 /// host, and publishing on its connection.
 struct HostPlatform {
     bundle: Arc<Bundle>,
+    /// The words of the window's frames, in the language its package speaks: what its dates and
+    /// clocks read in, as the toolkit's own say them in a window.
     phrases: Rc<Phrases>,
+    /// The person's formats, which their clock and dates read by.
+    formats: Formats,
     wake: Waker,
     surface: SurfaceSlot,
 }
@@ -339,6 +347,36 @@ impl Platform for HostPlatform {
 
     fn now(&self) -> String {
         chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    }
+
+    /// The clock the person reads: the one they chose in Settings, which the session handed the
+    /// host, so a time an app writes (`a.fetched.clock()`) reads as the same clock its window shows.
+    fn clock(&self, hour: u32, minute: u32) -> String {
+        self.formats
+            .get()
+            .time
+            .format_hm(hour, minute, &*self.phrases)
+    }
+
+    /// A day or a time of day in a sentence, in the person's styles and their language: the zone
+    /// its times read in is the one this host's clock answers in, so a sentence and a view agree.
+    fn shown(&self, kind: &str, value: &str) -> String {
+        let zone = self.zone();
+        let now = chrono::DateTime::<chrono::Utc>::from_timestamp(
+            chrono::Utc::now().timestamp().saturating_add(zone),
+            0,
+        )
+        .map(|at| at.naive_utc())
+        .unwrap_or_default();
+        tilo_formats::shown(
+            kind,
+            value,
+            self.formats.get(),
+            now.date(),
+            now,
+            zone,
+            &*self.phrases,
+        )
     }
 
     fn web(
@@ -566,12 +604,13 @@ impl Hosted {
         bundle: Arc<Bundle>,
         kept: &Kept,
         window: Box<dyn Transport>,
-        phrases: &Phrases,
+        phrases: &Rc<Phrases>,
+        formats: &Formats,
         wake: Waker,
     ) -> Result<Self, RecordError> {
         let record = InstanceRecord::open(manager, &kept.documents, spec.person.clone())?;
         Ok(Self::with_record(
-            spec, record, bundle, kept, window, phrases, wake,
+            spec, record, bundle, kept, window, phrases, formats, wake,
         ))
     }
 
@@ -583,7 +622,8 @@ impl Hosted {
         bundle: Arc<Bundle>,
         kept: &Kept,
         window: Box<dyn Transport>,
-        phrases: &Phrases,
+        phrases: &Rc<Phrases>,
+        formats: &Formats,
         wake: Waker,
     ) -> Self {
         let surface: SurfaceSlot = Rc::default();
@@ -603,6 +643,7 @@ impl Hosted {
         let platform = HostPlatform {
             bundle: Arc::clone(&bundle),
             phrases,
+            formats: Rc::clone(formats),
             wake: Arc::clone(&wake),
             surface: Rc::clone(&surface),
         };
@@ -715,6 +756,12 @@ impl Hosted {
     /// Keep the package's types with an origin in step with `origin`'s service.
     pub fn add_origin(&mut self, origin: tilolang_tilo::origin::SharedOrigin) {
         self.instance.add_origin(origin);
+    }
+
+    /// The person's formats changed: what the instance wrote of a time or a day is written again
+    /// in the new style, and its window shows it.
+    pub fn formats_changed(&mut self) {
+        self.instance.formats_changed();
     }
 
     /// Run the package's scenario `scenario` in the instance on its next frame, as a capture

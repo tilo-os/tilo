@@ -330,7 +330,8 @@ fn instance_on(
         Arc::new(bundle),
         &kept,
         Box::new(ChannelTransport::new(ours).unwrap()),
-        &Phrases::new("en-US"),
+        &Rc::new(Phrases::new("en-US")),
+        host.formats(),
         wake(),
     );
     host.add(hosted, Some(watched));
@@ -421,7 +422,8 @@ fn opened_from_own_copy_in(
         Arc::new(counter()),
         &kept,
         Box::new(ChannelTransport::new(ours).unwrap()),
-        &Phrases::new("en-US"),
+        &Rc::new(Phrases::new("en-US")),
+        host.formats(),
         wake(),
     );
     host.add(hosted, Some(watched));
@@ -1997,7 +1999,7 @@ fn applier_of(
         },
         record,
         bundle,
-        &Phrases::new("en-US"),
+        &Rc::new(Phrases::new("en-US")),
         wake(),
         theirs.into(),
     )
@@ -2314,6 +2316,47 @@ fn a_record_whose_first_change_is_an_unnamed_stamp_is_handed_to_its_workspace_wh
     }
 }
 
+/// A package whose window writes when something was fetched, as Mail's does: the clock the
+/// person reads, from the moment the app keeps.
+const CLOCKED: &str = "so.tilo.lang.clocked";
+
+/// The text of the clocked package: a ledger whose one moment its window writes as a clock.
+const CLOCKED_SOURCE: &str = r#"app so.tilo.lang.clocked "Clocked" (icon: .hash, category: .utility)
+
+/// Something read at a moment.
+type Ledger {
+    key: Text merge register
+    /// When it was read, as the clock the person read it at.
+    at: Time = Time("1970-01-01T00:00:00Z")
+}
+
+root Ledger
+
+default view ledger for Ledger
+
+/// The window: when the ledger was read, as the person reads a clock.
+view ledger(l: Ledger) {
+    std.page(l) {
+        section("Fetched") {
+            ui.Text("{l.at.clock()}")
+        }
+    }
+}
+
+/// A ledger read at 10:41.
+scenario "fetched" {
+    let l = root Ledger
+    l.at = Time("2026-06-30T10:41:00Z")
+}
+"#;
+
+/// The clocked package, compiled from [`CLOCKED_SOURCE`].
+fn clocked() -> Bundle {
+    let compiled = tilolang::compile_package(CLOCKED_SOURCE, &tilolang::IdsLock::new(), &[])
+        .unwrap_or_else(|diagnostics| panic!("the clocked package compiles: {diagnostics:?}"));
+    Bundle::new(&compiled, [])
+}
+
 const MAIL: &str = "so.tilo.lang.mail";
 
 /// The shipped Mail package, built with the packages it uses.
@@ -2405,6 +2448,72 @@ fn a_mails_message_is_found_by_a_word_of_its_body_through_the_system_index() {
         in_app("widths", "so.tilo.lang.notes"),
         0,
         "scoped to another app: it is not"
+    );
+}
+
+/// The person's formats with the clock `time`.
+fn with_clock(time: tilo_formats::TimeStyle) -> tilo_formats::RegionFormats {
+    tilo_formats::RegionFormats {
+        time,
+        ..tilo_formats::RegionFormats::default()
+    }
+}
+
+#[test]
+fn a_hosted_window_writes_the_clock_the_person_reads() {
+    let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", CLOCKED, clocked());
+    assert!(host.set_formats(with_clock(tilo_formats::TimeStyle::H12)));
+    host.instances_mut()
+        .next()
+        .expect("the instance runs")
+        .stage("fetched");
+    settle(&mut host, &mut window);
+    let written = shown(&window);
+    assert!(
+        written.contains("10:41 AM"),
+        "a 12-hour clock reads the moment the app wrote: {written}"
+    );
+
+    let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", CLOCKED, clocked());
+    assert!(host.set_formats(with_clock(tilo_formats::TimeStyle::H24)));
+    host.instances_mut()
+        .next()
+        .expect("the instance runs")
+        .stage("fetched");
+    settle(&mut host, &mut window);
+    let written = shown(&window);
+    assert!(
+        written.contains("10:41") && !written.contains("10:41 AM"),
+        "a 24-hour clock reads it without the half of the day: {written}"
+    );
+}
+
+#[test]
+fn a_clock_the_person_changes_is_written_again_in_the_window() {
+    let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", CLOCKED, clocked());
+    assert!(host.set_formats(with_clock(tilo_formats::TimeStyle::H24)));
+    host.instances_mut()
+        .next()
+        .expect("the instance runs")
+        .stage("fetched");
+    settle(&mut host, &mut window);
+    let before = shown(&window);
+    assert!(
+        before.contains("10:41"),
+        "the 24-hour clock first: {before}"
+    );
+
+    // The person picks the 12-hour clock in Settings: the host hears it on its door, and what
+    // the instance already wrote reads in it.
+    assert!(
+        host.set_formats(with_clock(tilo_formats::TimeStyle::H12)),
+        "another clock is a change"
+    );
+    settle(&mut host, &mut window);
+    let after = shown(&window);
+    assert!(
+        after.contains("10:41 AM"),
+        "the notice is written again in the clock the person chose: {after}"
     );
 }
 

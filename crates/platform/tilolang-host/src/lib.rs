@@ -128,6 +128,8 @@ struct Opening {
     /// after: what an instance's launch spends in the host.
     received: std::time::Instant,
     reached: Vec<(&'static str, std::time::Duration)>,
+    /// The person's formats changed while it opened: its first frame writes its times again.
+    formats_changed: bool,
 }
 
 impl Opening {
@@ -173,7 +175,11 @@ enum Step {
 /// The host: its storage, what wakes it, and its instances.
 pub struct TilolangHost {
     storage: Option<PathBuf>,
+    /// The person's words, which dates and clocks read in.
     phrases: Rc<Phrases>,
+    /// The person's formats, which every instance's clock and dates read by: the session hands
+    /// them over the door, and says again when they change in Settings.
+    formats: hosted::Formats,
     wake: Waker,
     scope: tilo_wake::WakeScope,
     running: Vec<Running>,
@@ -199,6 +205,7 @@ impl TilolangHost {
         Self {
             storage,
             phrases: Rc::new(Phrases::from_env()),
+            formats: hosted::Formats::default(),
             wake,
             scope,
             running: Vec::new(),
@@ -267,6 +274,32 @@ impl TilolangHost {
         })
     }
 
+    /// The person's formats, as the session set them: what an instance opened here writes its
+    /// times and days by.
+    #[must_use]
+    pub fn formats(&self) -> &hosted::Formats {
+        &self.formats
+    }
+
+    /// The person's formats changed (they set another clock or date style in Settings): the
+    /// instances write their times again in it and show what they wrote. Whether it was a change:
+    /// the same formats said again are nothing to do.
+    pub fn set_formats(&mut self, formats: tilo_formats::RegionFormats) -> bool {
+        if self.formats.get() == formats {
+            return false;
+        }
+        self.formats.set(formats);
+        for running in &mut self.running {
+            running.hosted.formats_changed();
+        }
+        for opening in &mut self.opening {
+            // An instance still opening reads them when it runs: what it already wrote is
+            // written again on its first frame.
+            opening.formats_changed = true;
+        }
+        true
+    }
+
     /// The instances running.
     pub fn instances(&self) -> impl Iterator<Item = &Hosted> {
         self.running.iter().map(|running| &running.hosted)
@@ -305,6 +338,10 @@ impl TilolangHost {
                 None,
             )
         };
+        // The formats the session hands with any instance are the person's: the same for all of
+        // them, so the last one said holds for the host, and the instances already running
+        // write their times again if they changed.
+        self.set_formats(request.formats);
         let (sender, decoded) = std::sync::mpsc::channel();
         let (module, len, wake) = (fds.module, request.module_len, Arc::clone(&self.wake));
         let (app, instance) = (request.app.clone(), request.instance);
@@ -330,6 +367,7 @@ impl TilolangHost {
             origin: fds.origin,
             received: std::time::Instant::now(),
             reached: Vec::new(),
+            formats_changed: false,
         });
         Ok(())
     }
@@ -358,6 +396,7 @@ impl TilolangHost {
             origin: None,
             received: std::time::Instant::now(),
             reached: Vec::new(),
+            formats_changed: false,
         });
     }
 
@@ -575,15 +614,20 @@ impl TilolangHost {
             .try_clone_to_owned()
             .map_err(AdmitError::Window)?;
         let transport = ChannelTransport::new(window).map_err(AdmitError::Window)?;
-        let hosted = Hosted::with_record(
+        let mut hosted = Hosted::with_record(
             spec,
             record,
             bundle,
             &kept,
             Box::new(transport),
             &self.phrases,
+            &self.formats,
             Arc::clone(&self.wake),
         );
+        if opening.formats_changed {
+            hosted.formats_changed();
+            opening.formats_changed = false;
+        }
         let mut hosted = match opening.identity.take() {
             Some(identity) => hosted.holding_identity(identity),
             None => hosted,

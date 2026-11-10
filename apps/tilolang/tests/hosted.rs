@@ -649,7 +649,8 @@ impl Session {
             Arc::new(package(package_of(app))),
             &kept,
             Box::new(ChannelTransport::new(ours).unwrap()),
-            &Phrases::new("en-US"),
+            &Rc::new(Phrases::new("en-US")),
+            host.formats(),
             wake,
         );
         host.add(hosted, Some(watched));

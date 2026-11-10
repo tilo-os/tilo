@@ -61,6 +61,10 @@ locally.
 | 5 | Thin mode | later |
 
 Decisions made on the way:
+- The person's formats travel with the instance. A host without the toolkit writes the times and
+  dates an app puts in its own sentences (`t.clock()`, a change's before and after) through
+  `tilo-formats`, which the toolkit re-exports, and the session says again when they change in
+  Settings: what an instance wrote of a time is written again, and its window shows it.
 - The record store (`RecordStore`) stays with native apps. The tilolang host holds records
   through `InstanceRecord`, using the same history and save code.
 - One undo, one history: the history verbs every app publishes (Undo, Redo, History, Restore,

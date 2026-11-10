@@ -211,6 +211,9 @@ tilolang = { version = "0.1.0", path = "../../lang/tilolang" }
 tilo-ui-macros = { version = "0.1.0", path = "../ui-macros" }
 tilo-font-catalog = { version = "0.1.0", path = "../font-catalog", features = ["faces"] }
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }
+# Dates, clocks and numbers as the person set them, without the toolkit, so a host
+# that has no toolkit answers the same as a window (tilo-formats).
+tilo-formats = { version = "0.1.0", path = "../tilo-formats" }
 # `storage`: app files through tilo-files in tilo-paths' per-app locations.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", features = ["json"] }
 tilo-paths.workspace = true

@@ -10,6 +10,9 @@ description = "The UI host's half of a tilolang app's window: the generic adapte
 
 [dependencies]
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+# Dates and clocks as the person set them: how a day or a time reads in a sentence, said the
+# same way a window's toolkit says it and an app host without the toolkit does.
+tilo-formats = { version = "0.1.0", path = "../../sdk/tilo-formats" }
 tilo-render-protocol = { version = "0.1.0", path = "../tilo-render-protocol" }
 # The actions the window's app publishes for its command palette.
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }

@@ -30,6 +30,7 @@ use ui::widget::{DescribedList, NavShell, Widget as _};
 
 use super::*;
 
+mod clocks;
 mod mail;
 mod opening;
 mod personal;

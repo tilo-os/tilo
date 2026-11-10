@@ -186,6 +186,7 @@ members = [
     "crates/sdk/tilo-cpu-raster",
     "crates/sdk/ui-kms",
     "crates/sdk/tilo-host",
+    "crates/sdk/tilo-formats",
     "crates/sdk/tilo-resource",
     "crates/sdk/tilo-resource-macros",
     "crates/sdk/tilo-recurrence",

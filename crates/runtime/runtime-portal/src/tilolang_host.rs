@@ -32,6 +32,7 @@
 use std::io;
 
 use serde::{Deserialize, Serialize};
+use tilo_formats::RegionFormats;
 
 pub use crate::windows::Descriptor;
 
@@ -48,6 +49,11 @@ pub const STORAGE_ENV: &str = "TILO_TILOLANG_HOST_STORAGE";
 pub const HOSTED_ENV: &str = "TILO_TILOLANG_HOSTED";
 
 pub const INSTANCE_VERB: &[u8] = b"instance";
+
+/// The verb of the person's formats, as the session hands them to a host whose instances are
+/// already running: which clock their dates and times read by changed in Settings. The request is
+/// the [`RegionFormats`], JSON; the door carries no descriptor with it.
+pub const FORMATS_VERB: &[u8] = b"formats";
 
 /// The verb of a task handed to a task's host.
 pub const TASK_VERB: &[u8] = b"task";
@@ -105,6 +111,11 @@ pub struct InstanceRequest {
     /// then the change's own id, never a window's.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub applies_change: bool,
+    /// The person's formats (`locale` in their settings): the clock a time of day reads by and the
+    /// style a date does, for what the instance writes in a sentence (`t.clock()`, a change's
+    /// before and after) and its window shows. A host without them answers a 24-hour clock.
+    #[serde(default)]
+    pub formats: RegionFormats,
 }
 
 /// An action to run against a record at its origin, as the broker admitted it.
@@ -161,6 +172,8 @@ pub struct TaskFds {
 pub enum Handed {
     Instance(InstanceRequest, InstanceFds),
     Task(TaskRequest, TaskFds),
+    /// The person's formats, which their instance's clock and dates read by from now on.
+    Formats(RegionFormats),
 }
 
 const APPS_MAGIC: &[u8; 8] = b"tlappsl1";
@@ -455,6 +468,29 @@ pub fn send_instance(
     }
 }
 
+/// Say on the host behind `door` that the person's formats changed: the clock and the date style
+/// their instances write in a sentence, and their windows show, from now on.
+///
+/// # Errors
+/// The socket's error, a request that does not encode, or [`io::ErrorKind::Unsupported`] off
+/// Linux.
+pub fn send_formats(door: &Descriptor, formats: &RegionFormats) -> io::Result<()> {
+    let encoded = serde_json::to_vec(formats).map_err(io::Error::other)?;
+    if encoded.len() > MAX_MESSAGE {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsFd as _;
+        crate::door::send(door.as_fd(), &[FORMATS_VERB, &encoded], &[])
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = door;
+        Err(unsupported())
+    }
+}
+
 /// Hand the host behind `door` the task `request`: its program connection and the apps its
 /// programs are compiled against.
 ///
@@ -492,7 +528,7 @@ pub fn receive_instance(door: &Descriptor) -> io::Result<Option<(InstanceRequest
     match receive(door)? {
         None => Ok(None),
         Some(Handed::Instance(request, fds)) => Ok(Some((request, fds))),
-        Some(Handed::Task(..)) => Err(io::Error::new(
+        Some(Handed::Task(..) | Handed::Formats(..)) => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "the door carried something other than an instance",
         )),
@@ -533,6 +569,14 @@ pub fn receive(door: &Descriptor) -> io::Result<Option<Handed>> {
                 return Err(invalid("apps over the door's limit"));
             }
             return Ok(Some(Handed::Task(request, TaskFds { program, apps })));
+        }
+        if verb == FORMATS_VERB {
+            let formats: RegionFormats = serde_json::from_slice(request)
+                .map_err(|_| invalid("formats that do not decode"))?;
+            if !fds.is_empty() {
+                return Err(invalid("formats carrying a connection"));
+            }
+            return Ok(Some(Handed::Formats(formats)));
         }
         if verb != INSTANCE_VERB {
             return Err(invalid("the door carried something other than an instance"));
@@ -667,6 +711,10 @@ mod tests {
             module_len: 12,
             records_under: Some("so.tilo.lang.older-notes".into()),
             applies_change: true,
+            formats: RegionFormats {
+                time: tilo_formats::TimeStyle::H12,
+                ..RegionFormats::default()
+            },
         };
         let fds = InstanceFds {
             broker: connection(),
@@ -694,6 +742,31 @@ mod tests {
         assert!(
             receive_instance(&host).unwrap().is_none(),
             "closed door ends"
+        );
+    }
+
+    #[test]
+    fn the_persons_formats_cross_the_door_between_instances() {
+        let (shell, host) = pair().unwrap();
+        let formats = RegionFormats {
+            date: tilo_formats::DateStyle::Iso,
+            time: tilo_formats::TimeStyle::H12,
+            ..RegionFormats::default()
+        };
+        send_formats(&shell, &formats).unwrap();
+        assert_eq!(
+            receive(&host).unwrap().map(|handed| match handed {
+                Handed::Formats(formats) => formats,
+                other => panic!("a formats message arrives as formats: {other:?}"),
+            }),
+            Some(formats),
+            "the person's clock and date style reach the host as they set them"
+        );
+        // Said again while a host waits on an instance: it arrives as formats, never as one.
+        send_formats(&shell, &formats).unwrap();
+        assert!(
+            receive_instance(&host).is_err(),
+            "a host waiting on an instance does not take formats for one"
         );
     }
 

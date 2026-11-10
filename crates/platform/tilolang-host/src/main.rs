@@ -166,6 +166,13 @@ fn run(door: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
                         }
                     }
                 }
+                Ok(Some(Handed::Formats(formats))) => {
+                    // The person set another clock or date style: every instance writes its
+                    // times again, and its window shows what it wrote.
+                    if host.set_formats(formats) {
+                        tracing::info!("the person's formats changed");
+                    }
+                }
                 Ok(Some(Handed::Task(request, fds))) => {
                     if let Err(error) = host.begin_task(&request, fds) {
                         tracing::error!(task = request.task, %error, "a task did not start");

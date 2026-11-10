@@ -39,7 +39,6 @@
 //! [`Formats`] take explicit formats and an explicit `now`, for tests and for callers formatting
 //! many values at once.
 
-mod dates;
 pub mod region;
 
 use chrono::Timelike;
@@ -47,7 +46,35 @@ use chrono::Timelike;
 pub use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 pub use region::{DateStyle, FirstDayOfWeek, NumberStyle, RegionFormats};
 
-use crate::i18n::widget_format;
+use crate::i18n::{ArgValue, widget_format};
+
+/// The words dates and clocks are said in, as `tilo-formats` asks for them: the locale
+/// catalogues, in the language this thread speaks.
+pub struct I18nWords;
+
+impl tilo_formats::Words for I18nWords {
+    fn word(&self, key: &str, args: &[(&str, tilo_formats::Word)]) -> String {
+        let args: Vec<(&str, ArgValue)> = args
+            .iter()
+            .map(|(name, value)| {
+                let value = match value {
+                    tilo_formats::Word::Number(n) => ArgValue::Number(*n),
+                    tilo_formats::Word::Text(text) => ArgValue::Text(text.clone()),
+                };
+                (*name, value)
+            })
+            .collect();
+        widget_format(key, &args)
+    }
+}
+
+static WORDS: I18nWords = I18nWords;
+
+/// The words every date and clock is said in here.
+#[must_use]
+pub fn words() -> &'static dyn tilo_formats::Words {
+    &WORDS
+}
 
 /// One set of formats: the person's [`RegionFormats`]. Words (month names,
 /// "Yesterday", plurals) come from the language active on the calling thread.
@@ -220,24 +247,145 @@ impl Formats {
     /// `2 days 3 hr`).
     #[must_use]
     pub fn duration(&self, duration: std::time::Duration) -> String {
-        let secs = duration.as_secs();
-        let parts = [
-            ("format-duration-days", secs / 86_400),
-            ("format-duration-hours", secs % 86_400 / 3600),
-            ("format-duration-minutes", secs % 3600 / 60),
-            ("format-duration-seconds", secs % 60),
-        ];
-        let Some(first) = parts.iter().position(|&(_, n)| n > 0) else {
-            return widget_format("format-duration-seconds", &[("count", 0_u32.into())]);
-        };
-        parts
-            .iter()
-            .skip(first)
-            .take(2)
-            .filter(|&&(_, n)| n > 0)
-            .map(|&(key, n)| widget_format(key, &[("count", n.into())]))
-            .collect::<Vec<_>>()
-            .join(" ")
+        tilo_formats::duration(duration, words())
+    }
+}
+
+impl Formats {
+    /// The **day fact** style: a calendar day as a heading, a row's trailing fact or a card
+    /// reads it, by how far `day` is from `today`. See `tilo_formats::day_fact`.
+    #[must_use]
+    pub fn day_fact(&self, day: NaiveDate, time: Option<NaiveTime>, today: NaiveDate) -> DayFact {
+        let (text, overdue) = tilo_formats::day_fact(self.region, day, time, today, words());
+        DayFact {
+            text,
+            tone: if overdue {
+                crate::widget::Tone::Danger
+            } else {
+                crate::widget::Tone::Neutral
+            },
+        }
+    }
+
+    /// The **moment fact** style: a moment told beside words that already name its day, as a
+    /// choice's trailing fact reads it. See `tilo_formats::moment_fact`.
+    #[must_use]
+    pub fn moment_fact(&self, at: NaiveDateTime, today: NaiveDate) -> String {
+        tilo_formats::moment_fact(self.region, at, today, words())
+    }
+
+    /// The **day it happened** style. See `tilo_formats::day_done`.
+    #[must_use]
+    pub fn day_done(&self, day: NaiveDate, today: NaiveDate) -> String {
+        tilo_formats::day_done(day, today, words())
+    }
+
+    /// The **list** style. See `tilo_formats::list_date`.
+    #[must_use]
+    pub fn list_date(&self, at: NaiveDateTime, now: NaiveDateTime) -> String {
+        tilo_formats::list_date(self.region, at, now, words())
+    }
+
+    /// The **timestamp** style. See `tilo_formats::timestamp`.
+    #[must_use]
+    pub fn timestamp(&self, at: NaiveDateTime) -> String {
+        tilo_formats::timestamp(self.region, at, words())
+    }
+
+    /// The **date** style. See `tilo_formats::date`.
+    #[must_use]
+    pub fn date(&self, day: NaiveDate) -> String {
+        tilo_formats::date(self.region, day, words())
+    }
+
+    /// A calendar day in the language's own convention. See `tilo_formats::language_date`.
+    #[must_use]
+    pub fn language_date(&self, day: NaiveDate) -> String {
+        tilo_formats::language_date(day, words())
+    }
+
+    /// A time of day in the person's clock style: `14:05` or `2:05 PM`.
+    #[must_use]
+    pub fn time(&self, time: &impl Timelike) -> String {
+        tilo_formats::time(self.region, time, words())
+    }
+
+    /// The **day heading** style: `Tuesday, June 30`. See `tilo_formats::day_heading`.
+    #[must_use]
+    pub fn day_heading(&self, day: NaiveDate, with_year: bool) -> String {
+        tilo_formats::day_heading(day, with_year, words())
+    }
+
+    /// The short day heading: `Tue, Jun 30`.
+    #[must_use]
+    pub fn day_heading_short(&self, day: NaiveDate) -> String {
+        tilo_formats::day_heading_short(day, words())
+    }
+
+    /// A span of days: `Jun 23 – 29`. See `tilo_formats::day_range`.
+    #[must_use]
+    pub fn day_range(&self, start: NaiveDate, end: NaiveDate) -> String {
+        tilo_formats::day_range(start, end, words())
+    }
+
+    /// A month in a tight space: `Jun 2026`.
+    #[must_use]
+    pub fn month_heading_short(&self, day: NaiveDate) -> String {
+        tilo_formats::month_heading_short(day, words())
+    }
+
+    /// The **month heading** style: `June 2026`.
+    #[must_use]
+    pub fn month_heading(&self, day: NaiveDate) -> String {
+        tilo_formats::month_heading(day, words())
+    }
+
+    /// Month and day without the year: `Jun 30`.
+    #[must_use]
+    pub fn month_day(&self, day: NaiveDate) -> String {
+        tilo_formats::month_day(day, words())
+    }
+
+    /// Month, day and year with the month named: `Jun 30, 2025`.
+    #[must_use]
+    pub fn month_day_year(&self, day: NaiveDate) -> String {
+        tilo_formats::month_day_year(day, words())
+    }
+
+    /// A day without its year and a time of day: `Jun 30, 14:05`.
+    #[must_use]
+    pub fn month_day_time(&self, at: NaiveDateTime) -> String {
+        tilo_formats::month_day_time(self.region, at, words())
+    }
+
+    /// The abbreviated weekday: `Sun`.
+    #[must_use]
+    pub fn weekday_short(&self, day: chrono::Weekday) -> String {
+        tilo_formats::weekday_short(day, words())
+    }
+
+    /// The weekday's name: `Sunday`.
+    #[must_use]
+    pub fn weekday_name(&self, day: chrono::Weekday) -> String {
+        tilo_formats::weekday_name(day, words())
+    }
+
+    /// The abbreviated month (`1` = January): `Jun`.
+    #[must_use]
+    pub fn month_short(&self, month: u32) -> String {
+        tilo_formats::month_short(month, words())
+    }
+
+    /// The month's name (`1` = January): `June`.
+    #[must_use]
+    pub fn month_name(&self, month: u32) -> String {
+        tilo_formats::month_name(month, words())
+    }
+
+    /// The week as the person's calendars lay it out.
+    #[must_use]
+    pub fn week(&self) -> [chrono::Weekday; 7] {
+        tilo_formats::week(self.region)
     }
 }
 
@@ -760,13 +908,7 @@ pub fn relative_compact(secs_ago: i64) -> String {
 /// ```
 #[must_use]
 pub fn near_day(days_from_today: i64) -> Option<String> {
-    let key = match days_from_today {
-        -1 => "day-yesterday",
-        0 => "day-today",
-        1 => "day-tomorrow",
-        _ => return None,
-    };
-    Some(widget_format(key, &[]))
+    tilo_formats::near_day(days_from_today, words())
 }
 
 /// A day as a person reads it: the words, and the tone they are read in.

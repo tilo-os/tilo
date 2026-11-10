@@ -186,11 +186,11 @@ fn preview_card(loc: Locale) -> SettingsSection {
             preview_line(&t("settings-region-preview-amount"), &amount),
             preview_line(
                 &t("settings-region-preview-date"),
-                &loc.date_format.example(),
+                &loc.date_format.example(ui::format::words()),
             ),
             preview_line(
                 &t("settings-region-preview-time"),
-                &loc.time_format.example(),
+                &loc.time_format.example(ui::format::words()),
             ),
             preview_line(&t("settings-region-preview-temp"), &temp),
             preview_line(&t("settings-region-preview-week"), &week_starts),

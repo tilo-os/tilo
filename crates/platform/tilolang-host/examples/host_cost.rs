@@ -136,6 +136,7 @@ fn open(
         &kept,
         Box::new(ChannelTransport::new(ours).unwrap()),
         phrases,
+        host.formats(),
         Arc::new(|| {}),
     );
     host.add(hosted, None);

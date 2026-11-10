@@ -1961,7 +1961,9 @@ fn lazy_exports(original: &[u8]) -> Result<Vec<(String, String)>> {
 }
 
 /// The modules to split off: the Rust side's split points, and the modules
-/// `lazy` names exports of, merged by module name.
+/// `lazy` names exports of, merged by module name. A lazy export that the
+/// module does not have is an error: a page calling it would find it in the
+/// start module after all, or not at all.
 fn accumulate_split_points(module: &Module, lazy: &[(String, String)]) -> Result<Vec<SplitPoint>> {
     let mut points: BTreeMap<String, SplitPoint> = BTreeMap::new();
     fn point<'a>(points: &'a mut BTreeMap<String, SplitPoint>, name: &str) -> &'a mut SplitPoint {
@@ -2028,11 +2030,10 @@ fn accumulate_split_points(module: &Module, lazy: &[(String, String)]) -> Result
             })
             .sorted_by_key(|(_, func)| *func)
             .collect();
-        // An export the runtime no longer has is nothing to move: say so,
-        // so the list is kept, without failing the bundle.
-        if matches.is_empty() {
-            eprintln!("wasm-split: lazy export {pattern} of {module_name} is not exported");
-        }
+        anyhow::ensure!(
+            !matches.is_empty(),
+            "lazy export {pattern} of {module_name} is not exported"
+        );
         let split = point(&mut points, module_name);
         for (export, func) in matches {
             split.entries.push(Entry {

@@ -171,6 +171,12 @@ impl Platform for InProcess {
         tilo_ui_host::date::shown_text(kind, value)
     }
 
+    /// The clock the person reads: theirs, from Settings, so a time an app writes
+    /// (`a.fetched.clock()`) reads as the clock its window shows.
+    fn clock(&self, hour: u32, minute: u32) -> String {
+        ui::clock::hour_minute(hour, minute)
+    }
+
     fn waker(&self) -> tilolang_tilo::background::Waker {
         let wake = ui::wake::WakeHandle::new();
         Arc::new(move || wake.wake())

@@ -84,17 +84,16 @@ pub fn shown_case(node: &UiNode, value: &str) -> Option<String> {
 /// is not a day or an instant, stays as it is stored.
 #[must_use]
 pub fn shown_text(kind: &str, value: &str) -> String {
-    match kind {
-        "date" => day_of(value).map_or_else(
-            || value.to_owned(),
-            |day| ui::format::day_fact_today(day, None).text,
-        ),
-        "time" => {
-            moment_of(value).map_or_else(|| value.to_owned(), |at| ui::format::list_date(&at))
-        }
-        "duration" => duration_of(value).map_or_else(|| value.to_owned(), ui::format::duration),
-        _ => value.to_owned(),
-    }
+    let now = ui::clock::local_now();
+    tilo_formats::shown(
+        kind,
+        value,
+        ui::format::region::current(),
+        now.date_naive(),
+        now.naive_local(),
+        i64::from(now.offset().local_minus_utc()),
+        ui::format::words(),
+    )
 }
 
 /// The tone the prop `name` of `node` reads in, when it reads in one: a day gone by is overdue

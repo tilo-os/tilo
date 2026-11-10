@@ -13,6 +13,7 @@
     reason = "a test tool: a failure ends it, and its output is its stdout"
 )]
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use collaboration::{CollabEvent, CollabRequest, CollaborationManager, PeerTransport, RouteSpec};
@@ -111,7 +112,8 @@ fn main() {
         Arc::new(bundle),
         &kept,
         Box::new(ChannelTransport::new(ours).unwrap()),
-        &Phrases::new("en-US"),
+        &Rc::new(Phrases::new("en-US")),
+        host.formats(),
         wake,
     );
     host.add(hosted, None);

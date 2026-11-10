@@ -606,7 +606,7 @@ pub fn serial_to_time(serial: f64, style: TimeStyle) -> String {
     let h = (total_secs / 3600) % 24;
     let mi = (total_secs % 3600) / 60;
     // A cell that follows the language reads each person's own clock.
-    match style.resolved() {
+    match style.resolved(ui::format::words()) {
         // format: machine (a cell's own number format, the same for every
         // collaborator)
         TimeStyle::Language | TimeStyle::H24 => format!("{h:02}:{mi:02}"),

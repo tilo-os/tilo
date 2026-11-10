@@ -14223,6 +14223,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-files",
+ "tilo-formats",
  "tilo-lock",
  "tilo-paths",
  "tilo-test-env",
@@ -20915,6 +20916,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-formats"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "tilo-resource",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-resource"
 version = "0.1.0"
 dependencies = [
@@ -22173,6 +22185,7 @@ dependencies = [
  "tilo-doc",
  "tilo-engine-loader",
  "tilo-face",
+ "tilo-formats",
  "tilo-files",
  "tilo-font-catalog",
  "tilo-headless-schema",
@@ -22261,6 +22274,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-actions",
+ "tilo-formats",
  "tilo-render-protocol",
  "tilo-ui",
  "tracing",
@@ -22955,6 +22969,7 @@ dependencies = [
  "tilo-content-device",
  "tilo-desktop-search",
  "tilo-dialogs",
+ "tilo-formats",
  "tilo-history",
  "tilo-net",
  "tilo-render-protocol",

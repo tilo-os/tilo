@@ -1,6 +1,7 @@
 //! The platform's phrases the standard library's frames say (`phrase("tilolang-empty")`), in
-//! the person's language, without the toolkit: the UI host's own catalogue, read through the
-//! platform's toolkit-free Fluent catalogue (`tilo_history::Catalogue`).
+//! the person's language, without the toolkit: the UI host's own catalogue and the toolkit's
+//! locale catalogues — the words dates and clocks are written in — read through the platform's
+//! toolkit-free Fluent catalogue (`tilo_history::Catalogue`).
 
 use tilo_history::{Catalogue, FluentArgs, Messages as _};
 
@@ -13,6 +14,18 @@ const TRANSLATIONS: &[(&str, &str)] = &[(
     include_str!("../../tilo-ui-host/locales/de-DE.ftl"),
 )];
 
+/// The words the toolkit writes dates, clocks and numbers with (`ui::format`), which a host
+/// without the toolkit says too: the same catalogues the toolkit reads, so a date reads the same
+/// in a window and in what its host wrote beside it.
+const TOOLKIT: (&str, &str) = (
+    "en-US",
+    include_str!("../../../sdk/ui-core/locales/en-US.ftl"),
+);
+const TOOLKIT_TRANSLATIONS: &[(&str, &str)] = &[(
+    "de-DE",
+    include_str!("../../../sdk/ui-core/locales/de-DE.ftl"),
+)];
+
 /// `locale` as a tag this catalogue compares (`de_DE.UTF-8` is `de-DE`).
 fn normalized(locale: &str) -> String {
     let wanted = locale.replace('_', "-");
@@ -21,16 +34,25 @@ fn normalized(locale: &str) -> String {
 
 /// The phrases of `wanted`, in its own language when there are any, else the source's.
 fn choose(wanted: &str) -> &'static (&'static str, &'static str) {
+    choose_in(TRANSLATIONS, wanted, &SOURCE)
+}
+
+/// `translations`' phrases of `wanted`, in its own language when there are any, else `source`.
+fn choose_in(
+    translations: &'static [(&'static str, &'static str)],
+    wanted: &str,
+    source: &'static (&'static str, &'static str),
+) -> &'static (&'static str, &'static str) {
     let language = wanted.split('-').next().unwrap_or_default();
-    TRANSLATIONS
+    translations
         .iter()
         .find(|(candidate, _)| *candidate == wanted)
         .or_else(|| {
-            TRANSLATIONS
+            translations
                 .iter()
                 .find(|(candidate, _)| candidate.split('-').next() == Some(language))
         })
-        .unwrap_or(&SOURCE)
+        .unwrap_or(source)
 }
 
 /// The phrases of one language.
@@ -52,6 +74,12 @@ impl Phrases {
         let mut sources = vec![chosen.1];
         if chosen.0 != SOURCE.0 {
             sources.push(SOURCE.1);
+        }
+        // The toolkit's words stand beside the host's own: a key both hold reads as the host's.
+        let toolkit = choose_in(TOOLKIT_TRANSLATIONS, &wanted, &TOOLKIT);
+        sources.push(toolkit.1);
+        if toolkit.0 != TOOLKIT.0 {
+            sources.push(TOOLKIT.1);
         }
         Self {
             preference: wanted,
@@ -136,6 +164,23 @@ impl Phrases {
         if let Some((_, text)) = catalogues.iter().find(|(locale, _)| locale == SOURCE.0) {
             catalogue.add(text);
         }
+    }
+}
+
+impl tilo_formats::Words for Phrases {
+    fn word(&self, key: &str, args: &[(&str, tilo_formats::Word)]) -> String {
+        let args: Vec<(String, String)> = args
+            .iter()
+            .map(|(name, value)| {
+                let value = match value {
+                    // A number stays a number here: this catalogue selects a plural by it.
+                    tilo_formats::Word::Number(n) => n.to_string(),
+                    tilo_formats::Word::Text(text) => text.clone(),
+                };
+                ((*name).to_owned(), value)
+            })
+            .collect();
+        self.say(key, &args)
     }
 }
 

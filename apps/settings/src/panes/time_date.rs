@@ -431,7 +431,10 @@ impl Clock for SampleClock {
 /// 2023-03-15 14:05, the capture's time, in `formats`: the formats' own
 /// worked examples are that moment.
 fn sample_now(formats: ui::format::Formats) -> (String, String) {
-    (formats.region.time.example(), formats.region.date.example())
+    (
+        formats.region.time.example(ui::format::words()),
+        formats.region.date.example(ui::format::words()),
+    )
 }
 
 /// The time-zone picker's first choice: the zone follows where the device
@@ -1267,11 +1270,11 @@ mod tests {
         );
         let frame = app.harness().inspection_json().unwrap();
         assert!(
-            frame.contains(&ui::clock::TimeStyle::Language.example()),
+            frame.contains(&ui::clock::TimeStyle::Language.example(ui::format::words())),
             "{frame}"
         );
         assert!(
-            frame.contains(&ui::format::DateStyle::Language.example()),
+            frame.contains(&ui::format::DateStyle::Language.example(ui::format::words())),
             "{frame}"
         );
 
