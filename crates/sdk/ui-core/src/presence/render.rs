@@ -594,6 +594,17 @@ pub struct PillPlacement {
     pub tethered: bool,
 }
 
+/// `viewport` with its edges the right way round — an inverted one would
+/// otherwise clamp every pill to nothing.
+fn normalised(viewport: Rect) -> Rect {
+    Rect::new(
+        viewport.x0.min(viewport.x1),
+        viewport.y0.min(viewport.y1),
+        viewport.x0.max(viewport.x1),
+        viewport.y0.max(viewport.y1),
+    )
+}
+
 /// Place one name pill per peer so none overlap and none leaves `viewport`.
 /// Each pill tries the four corners around its pointer, taking the first
 /// clear of the viewport and every already-placed pill; only when all four
@@ -601,14 +612,7 @@ pub struct PillPlacement {
 /// Placement order is by position, not arrival, so a peer reconnecting
 /// doesn't reshuffle everyone else's names.
 pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlacement> {
-    // Normalise — an inverted `viewport` would otherwise clamp every pill
-    // to nothing.
-    let vp = Rect::new(
-        viewport.x0.min(viewport.x1),
-        viewport.y0.min(viewport.y1),
-        viewport.x0.max(viewport.x1),
-        viewport.y0.max(viewport.y1),
-    );
+    let vp = normalised(viewport);
 
     // Carries each request's original index alongside itself, so the sort
     // below never needs to index back into `pills`.
@@ -837,14 +841,17 @@ pub fn draw_peer_cursors(
 /// An agent's pointer at `tip` with its name tag, as every agent here is
 /// drawn: its mark in its colour, and beside it a pill with its face and
 /// `label`, kept inside `viewport`. What an agent's action marker paints, so
-/// an agent at work wears the same nametag as an agent pointing. Returns the
-/// bounds painted, in the scene's coordinates before `transform`.
+/// an agent at work wears the same nametag as an agent pointing. `locus` is
+/// the line the agent is acting on — the box its caret is in — whose text the
+/// tag must leave readable. Returns the bounds painted, in the scene's
+/// coordinates before `transform`.
 pub(super) fn draw_agent_nametag(
     scene: &mut Scene,
     transform: Affine,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
     (tip, viewport): (Point, Rect),
+    locus: Rect,
     label: &str,
     color: Color,
 ) -> Rect {
@@ -852,20 +859,62 @@ pub(super) fn draw_agent_nametag(
     draw_peer_pointer(scene, transform, theme, at, color, true);
     let size = peer_pill_size_for(text_renderer, theme, label, true);
     let mut bounds = pointer_bounds(at);
-    if let Some(place) = layout_peer_pills(viewport, &[PillRequest { at, size }]).first() {
-        draw_peer_pill_kind(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            place.rect,
-            label,
-            color,
-            true,
-        );
-        bounds = bounds.union(place.rect.inflate(FADE_EDGE, FADE_EDGE));
-    }
+    let place = agent_nametag_rect(viewport, at, locus, size);
+    draw_peer_pill_kind(
+        scene,
+        transform,
+        text_renderer,
+        theme,
+        place,
+        label,
+        color,
+        true,
+    );
+    bounds = bounds.union(place.inflate(FADE_EDGE, FADE_EDGE));
     bounds.intersect(viewport)
+}
+
+/// Where an agent's name tag goes for a pointer at `tip` acting on `locus`,
+/// within `viewport`: level with the pointer and clear *above* the line it
+/// stands on, so the tag never covers the words the agent just wrote; it
+/// hangs below only when rising would leave the frame. A tag on the line
+/// turned "Following me puts this window in front of you" into "Follo…ndow
+/// in front of you" mid-sentence — the name is worth less than what the
+/// agent is saying.
+fn agent_nametag_rect(viewport: Rect, tip: (f64, f64), locus: Rect, size: (f64, f64)) -> Rect {
+    let (w, h) = size;
+    let vp = normalised(viewport);
+    let (top, bottom) = nametag_clearance(tip, locus, h);
+    let above = top - PILL_GAP - h;
+    let below = bottom + PILL_GAP;
+    let y = if above >= vp.y0 { above } else { below };
+    // Beside the pointer, and on its other side when the frame is narrower
+    // than the tag plus the gap.
+    let x = if tip.0 + RING_R + PILL_GAP + w <= vp.x1 {
+        tip.0 + RING_R + PILL_GAP
+    } else {
+        tip.0 - RING_R - PILL_GAP - w
+    };
+    let x = x.clamp(vp.x0, (vp.x1 - w).max(vp.x0));
+    let y = y.clamp(vp.y0, (vp.y1 - h).max(vp.y0));
+    Rect::new(x, y, x + w, y + h)
+}
+
+/// The edges an agent's tag must stay clear of: the top of the line its
+/// caret is in, or else the top of its own pointer's ring, and the bottom of
+/// whichever of the two reaches lower. `locus` is only read as a line when
+/// it is short enough to be one — the bounds of a whole window the agent
+/// acts on are no line, and a tag hung from their far edge would fly off the
+/// pointer it belongs to.
+fn nametag_clearance(tip: (f64, f64), locus: Rect, height: f64) -> (f64, f64) {
+    let ring_top = tip.1 - RING_R;
+    let ring_bottom = tip.1 + RING_R;
+    let line = locus.height() > 0.0 && locus.height() <= 4.0 * height;
+    if line {
+        (ring_top.min(locus.y0), ring_bottom.max(locus.y1))
+    } else {
+        (ring_top, ring_bottom)
+    }
 }
 
 /// How far above the pointer's tip a reaction starts.
@@ -3250,5 +3299,59 @@ mod tests {
             "a square: {painted:?}"
         );
         assert!(!float(":missing:").0);
+    }
+    /// The pill an agent's name is painted in, at the size the shots show.
+    fn nametag(tip: (f64, f64), locus: Rect, viewport: Rect) -> Rect {
+        let mut text = TextRenderer::new();
+        let theme = Theme::default();
+        let size = peer_pill_size_for(&mut text, &theme, "Claude Code \u{b7} Agent", true);
+        agent_nametag_rect(viewport, tip, locus, size)
+    }
+
+    #[test]
+    fn an_agents_name_hangs_above_the_line_its_caret_is_in() {
+        // The mid-edit frame: the pointer stands on the line the agent is
+        // writing, and its name sat across that line's words.
+        let viewport = Rect::new(0.0, 40.0, 1280.0, 800.0);
+        let line = Rect::new(120.0, 300.0, 640.0, 324.0);
+        let tag = nametag((300.0, 312.0), line, viewport);
+        assert!(tag.intersect(line).is_zero_area(), "off the line: {tag:?}");
+        assert!(
+            (line.y0 - tag.y1 - PILL_GAP).abs() < 0.01,
+            "one gap above the line: {tag:?}"
+        );
+    }
+
+    #[test]
+    fn an_agents_name_hangs_below_only_when_there_is_no_room_above() {
+        let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        // A first line at the very top of the frame: rising would leave it.
+        let line = Rect::new(120.0, 8.0, 640.0, 32.0);
+        let tag = nametag((300.0, 20.0), line, viewport);
+        assert!(tag.y0 >= line.y1, "below the line: {tag:?}");
+        assert!((tag.y0 - line.y1 - PILL_GAP).abs() < 0.01, "{tag:?}");
+    }
+
+    #[test]
+    fn an_agents_name_stays_inside_the_frame_beside_a_pointer_at_its_edge() {
+        let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let line = Rect::new(120.0, 300.0, 1276.0, 324.0);
+        let tag = nametag((1270.0, 312.0), line, viewport);
+        assert!(tag.x0 >= viewport.x0 && tag.x1 <= viewport.x1, "{tag:?}");
+        assert!(tag.intersect(line).is_zero_area(), "{tag:?}");
+    }
+
+    #[test]
+    fn a_pointer_acting_on_a_whole_window_hangs_its_name_from_its_own_ring() {
+        // The bounds of a window are no line: a tag hung from their top edge
+        // would fly far above the pointer it belongs to.
+        let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let window = Rect::new(0.0, 0.0, 1280.0, 700.0);
+        let tag = nametag((300.0, 400.0), window, viewport);
+        assert!(tag.y1 < 400.0, "above the pointer: {tag:?}");
+        assert!(
+            400.0 - tag.y1 < 40.0,
+            "beside it, not across the frame: {tag:?}"
+        );
     }
 }

@@ -503,6 +503,7 @@ impl PresenceCtx {
             paint.text,
             paint.theme,
             (tip, viewport),
+            visible_locus,
             &name,
             actor_color,
         );
