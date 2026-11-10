@@ -2143,12 +2143,15 @@ impl ShellPart {
     /// or while a surface of the desk's is (the overview, the switcher, the launcher, the
     /// notifications, the workspaces, the composer).
     fn follow_cover(&mut self) {
+        // A menu node a view lays out closed is hidden, and a place's frame carries one: counting
+        // it would stand the part over every window for as long as a frame is drawn, so no press
+        // or key would ever reach the window in one.
         let menu = self
             .widgets
             .host_mut()
             .a11y_nodes()
             .iter()
-            .any(|(_, node)| node.role() == ui::accesskit::Role::Menu);
+            .any(|(_, node)| node.role() == ui::accesskit::Role::Menu && !node.is_hidden());
         let surface = !matches!(
             self.origin.borrow().link.surface().as_str(),
             "" | "none" | "desk"
