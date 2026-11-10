@@ -26,14 +26,13 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+#[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::platform::Store;
 use crate::platform::records::{Reading, Watch};
-use app_state::DocStore;
-use durable_store::{DurableStore, StorageKey};
+use durable_store::DurableStore;
 use tilo_desktop_search::providers::records::HeldRecord;
 use ui::record::RecordCheckout;
 
@@ -55,7 +54,9 @@ struct Held {
 /// The device's record indexes, as search offers them.
 pub struct Records {
     /// Where the indexes are, and where this session's own references are written; `None` for a
-    /// host whose records reach it from one workspace (a page), which brings none of another here.
+    /// host whose records reach it from one workspace, which brings none of another here. A page
+    /// is such a host.
+    #[cfg(target_os = "linux")]
     root: Option<PathBuf>,
     /// The store the records are in, noting every write of one in the change stream: the session's
     /// one store for the workspaces' records, read by the activity and the person's mentions.
@@ -82,15 +83,16 @@ impl Records {
 
     /// [`Self::of_device`] over the store rooted at `root` , for a session whose device keeps its
     /// state somewhere else.
+    #[cfg(target_os = "linux")]
     #[must_use]
     pub fn of(root: PathBuf) -> Self {
         let changes = crate::platform::records::Changes::default();
-        #[cfg(target_os = "linux")]
-        let plain: Store = std::sync::Arc::new(app_state::FsStore::new(&root));
-        #[cfg(not(target_os = "linux"))]
-        let plain: Store = std::rc::Rc::new(app_state::FsStore::new(&root));
+        let plain: Store = Arc::new(app_state::FsStore::new(&root));
         let store = crate::platform::records::noting(plain, changes.clone());
-        Self::read(Some(root), store, changes)
+        Self {
+            root: Some(root),
+            ..Self::read(store, changes)
+        }
     }
 
     /// The records of the workspace whose records `store` keeps as they reach this host, read
@@ -99,19 +101,16 @@ impl Records {
     /// is brought here.
     #[must_use]
     pub fn over(store: Store, changes: crate::platform::records::Changes) -> Self {
-        Self::read(None, store, changes)
+        Self::read(store, changes)
     }
 
-    fn read(
-        root: Option<PathBuf>,
-        store: Store,
-        changes: crate::platform::records::Changes,
-    ) -> Self {
+    fn read(store: Store, changes: crate::platform::records::Changes) -> Self {
         // What the indexes name is read again whenever a record of this device moves: an app of a
         // workspace naming one writes the store this stream hears, and so does this session.
         let reading = reading(store.clone(), &changes);
         Self {
-            root,
+            #[cfg(target_os = "linux")]
+            root: None,
             store,
             changes,
             reading,
@@ -179,13 +178,9 @@ impl Records {
     /// loop, through the one store the records are in, whose write notes the change in the stream
     /// the activity and the mentions follow. Whether this host brings records here at all.
     pub fn bring_here(&self, workspace: &str, package: &str, record: RecordCheckout) -> bool {
-        let Some(root) = &self.root else {
-            return false;
-        };
-        let (workspace, package) = (workspace.to_owned(), package.to_owned());
         #[cfg(target_os = "linux")]
-        {
-            let root = root.clone();
+        if let Some(root) = self.root.clone() {
+            let (workspace, package) = (workspace.to_owned(), package.to_owned());
             let changes = self.changes.clone();
             let (keeping, held) = (workspace.clone(), package.clone());
             let named = std::thread::Builder::new()
@@ -198,12 +193,10 @@ impl Records {
             if let Err(error) = named {
                 tracing::warn!(%error, "a record is not brought here");
             }
+            return true;
         }
-        #[cfg(not(target_os = "linux"))]
-        if name_in(root, &workspace, &package, record) {
-            self.changes.note(&workspace, &package, "", false);
-        }
-        true
+        let _ = (workspace, package, record);
+        false
     }
 
     /// The indexes as last read.
@@ -213,11 +206,13 @@ impl Records {
 }
 
 /// Name `record` in the index of `package` in `workspace` , as its app would. Whether it is named.
+#[cfg(target_os = "linux")]
 fn name_in(root: &Path, workspace: &str, package: &str, record: RecordCheckout) -> bool {
     let RecordCheckout { id, kind, .. } = record;
-    let store: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(root.to_path_buf()));
-    let key = StorageKey::workspace_index(package, workspace);
-    let mut index = match DocStore::shared(store, key) {
+    let store: std::rc::Rc<dyn DurableStore> =
+        std::rc::Rc::new(app_state::FsStore::new(root.to_path_buf()));
+    let key = durable_store::StorageKey::workspace_index(package, workspace);
+    let mut index = match app_state::DocStore::shared(store, key) {
         Ok(index) => index,
         Err(error) => {
             tracing::warn!(%error, package, %workspace, "a record is not brought here");
@@ -303,7 +298,7 @@ fn named_in(
 mod tests {
     use super::*;
     use automerge::AutoCommit;
-    use durable_store::WriteOp;
+    use durable_store::{StorageKey, WriteOp};
     use ui::record::{RecordId, RecordKind};
 
     const NOTES: &str = "so.tilo.notes";
