@@ -44,7 +44,7 @@ BRANCHES = ("Question A", "Question B")
 CLI_BRANCH = "Question C"
 ENVIRONMENT = "Lab"
 # What the person keeps in the workspace's files, under its tree (the environments' `~`).
-QUESTION = "research/question.md"
+QUESTION = "research/question.txt"
 TOOL = ".local/bin/e2e-tool"
 CHECKOUT = "src/notes-tools"
 DATA_DIR = "research/data"
@@ -203,7 +203,16 @@ def desk_baseline(ctx, n: int = 10) -> list[float]:
 
 
 def app_rows(ctx, app: str) -> list[dict]:
-    return [r for r in ctx.vm.actions(programmatic=True) if r.get("application") == app]
+    """What `app` offers, from the whole listing: a listing that changes while it is paged (apps
+    opening again after a restart) is read again a little later."""
+    for attempt in range(6):
+        try:
+            return [r for r in ctx.vm.actions(programmatic=True) if r.get("application") == app]
+        except VmError as exc:
+            if "changed on each" not in str(exc) or attempt == 5:
+                raise
+            time.sleep(5)
+    return []
 
 
 def offered(ctx, app: str) -> str:
@@ -221,9 +230,17 @@ def ensure_notes(ctx, ws: dict) -> None:
     ae.select_workspace(ctx, ws)
     if wait_until(lambda: len(note_rows(ctx, "new-note")) == 1 or None, 10, interval=1.0):
         return
-    ctx.open_app(ae.NOTES)
-    if not wait_until(lambda: len(note_rows(ctx, "new-note")) == 1 or None, 30, interval=1.0):
-        raise Unobservable(f"{ws.get('name')}: Notes in front offers no single new-note")
+    ctx.open_app(ae.NOTES, timeout=TERMINAL_S)
+    # A Notes started on the busy, software-drawn box publishes its actions once it has drawn.
+    if not wait_until(lambda: len(note_rows(ctx, "new-note")) == 1 or None, TERMINAL_S, interval=1.0):
+        everything = ctx.vm.root_exec(
+            "journalctl --no-pager -o cat | sed 's/\\x1b\\[[0-9;]*m//g' | grep -a 'notes' "
+            "| grep -avE 'FRAME-LIFECYCLE|paint-stats|andlock|DBUS_SESSION|optional service' "
+            "| tail -n 80 | cut -c1-500", timeout=180, check=False)
+        names = sorted({str(t.get("name")) for t in ctx.vm.targets() if "/" not in str(t.get("name"))})
+        raise Unobservable(f"{ws.get('name')}: Notes in front offers no single new-note; it offers "
+                           f"{offered(ctx, ae.NOTES)}; the desk names {names[:60]}; what was said of Notes: "
+                           f"{everything[-9000:]}")
 
 
 def note_titles(ctx, ws: dict) -> list[str]:
@@ -252,8 +269,16 @@ def new_note(ctx, ws: dict, title: str) -> None:
         # What the job ended with (action_jobs.PendingJob keeps it), and what Notes said.
         status = ctx.out / "data" / f"{ws.get('name')}-person-note-status.json"
         ended = status.read_text()[-1500:] if status.exists() else "no status kept"
+        everything = ctx.vm.root_exec(
+            "journalctl --no-pager -o cat | sed 's/\\x1b\\[[0-9;]*m//g' | grep -a 'so.tilo.notes' "
+            "| grep -avE 'FRAME-LIFECYCLE|paint-stats|andlock|DBUS_SESSION|optional service' "
+            "| tail -n 120 | cut -c1-600", timeout=180, check=False)
+        kept = ctx.vm.exec(f'cd "$HOME/{APP_ROOMS}/{ws.get("room")}/{ae.NOTES}" 2>/dev/null && '
+                           "find . -type f -printf '%s %p\\n' | sort -k2 | head -n 80", check=False)
+        ctx.write(f"{ws.get('name')}-notes-said.txt", everything + "\n---\n" + kept)
         raise CheckFailed(f"{ws.get('name')}: Notes' new-note {title!r} did not succeed: {exc.reason()}; "
-                          f"it ended {ended}; {app_evidence(ctx, ae.NOTES)}") from exc
+                          f"it ended {ended}; Notes keeps here {kept.split(chr(10))[:80]}; "
+                          f"Notes said: {everything[-9000:]}") from exc
 
 
 # -- the trees ---------------------------------------------------------------------------------
@@ -377,6 +402,21 @@ def terminal_in(ctx, ws: dict, label: str) -> ae.Terminal:
     return terminal
 
 
+SCRIPTS = ".e2e-scripts"
+
+
+def in_shell(ctx, terminal: ae.Terminal, tree: str, name: str, script: str) -> None:
+    """Run `script` in `terminal`'s shell, as a script the person keeps in the workspace's files
+    and runs there: the shell types one short line, never the script, so nothing of it is lost to
+    the typing on a busy box. Returns once the script has run."""
+    done = f"{SCRIPTS}/{name}.done"
+    ae.slot_write(ctx, f"{tree}/{SCRIPTS}/{name}.sh", (script.strip() + f"\necho ok > ~/{done}\n").encode())
+    terminal.bash(f"bash ~/{SCRIPTS}/{name}.sh")
+    if wait_until(lambda: tree_read(ctx, tree, done), ae.SHELL_S, interval=1.0) is None:
+        ctx.write(f"{name}-screen.txt", terminal.screen())
+        raise CheckFailed(f"{terminal.name}: ~/{SCRIPTS}/{name}.sh did not finish in its shell")
+
+
 # What a shell in an environment says about itself and its tree, a field a line.
 SAY = ("for v in TILO_WORKSPACE TILO_ENVIRONMENT HOME; do printf '%s %s %s\\n' {M}-ENV \"$v\" \"${!v:-none}\"; "
        "done; printf '%s %s\\n' {M}-TOOL \"$(bash ~/" + TOOL + " 2>&1 | head -1 | tr ' ' _)\"; "
@@ -467,28 +507,29 @@ def set_up(ctx, res):
     res.metrics["chat_closed"] = close_app_windows(ctx, CHAT)
     terminal = ae.open_terminal(ctx, "terminal-source", ws)
     entered = ae.enter_environment(terminal, ENVIRONMENT)
-    # The person's files and their environment's tool, written from the environment's shell as
-    # they would: a question, a tool on PATH, a git checkout where the environment has git.
-    terminal.bash(
-        # A line each, with no escapes for the typing to carry.
-        f"mkdir -p ~/{DATA_DIR} ~/.local/bin && echo 'Question {run}' > ~/{QUESTION} "
-        f"&& echo 'first line of thought' >> ~/{QUESTION} && echo '#!/bin/bash' > ~/{TOOL} "
-        f"&& echo 'echo e2e-tool {run} source' >> ~/{TOOL} "
-        f"&& chmod +x ~/{TOOL}")
-    terminal.bash(
-        f"if command -v git >/dev/null; then mkdir -p ~/{CHECKOUT} && cd ~/{CHECKOUT} && git init -q "
-        f"&& git config user.email p@e2e.example && git config user.name Person && echo tools > README "
-        f"&& git add README && git commit -qm 'checkout {run}'; fi")
+    probe = f".e2e-probe-{run}"
+    terminal.bash(f"echo source > ~/{probe}")
+    tree = ae.find_tree(ctx, probe)
+    # The person's files and their environment's tool, made from the environment's shell as they
+    # would: a question, a tool on PATH, a git checkout where the environment has git.
+    in_shell(ctx, terminal, tree, "set-up", f"""
+mkdir -p ~/{DATA_DIR} ~/.local/bin
+printf '%s\\n' 'Question {run}' 'first line of thought' > ~/{QUESTION}
+printf '%s\\n' '#!/bin/bash' 'echo e2e-tool {run} source' > ~/{TOOL}
+chmod +x ~/{TOOL}
+if command -v git >/dev/null; then
+  mkdir -p ~/{CHECKOUT} && cd ~/{CHECKOUT} && git init -q && git config user.email p@e2e.example
+  git config user.name Person && echo tools > README && git add README && git commit -qm 'checkout {run}'
+fi
+""")
     lines = terminal.ask(SAY, ae.SHELL_S)
     facts = said(lines)
     res.metrics["source_shell"] = facts
     problems.want(facts.get("tool") == f"e2e-tool {run} source",
                   f"the tool the person wrote does not run in {ENVIRONMENT}: {facts.get('tool')!r}")
-    problems.want(facts.get("question") == f"Question {run}",
-                  f"the question the person wrote does not read back: {facts.get('question')!r}")
-    probe = f".e2e-probe-{run}"
-    terminal.bash(f"echo source > ~/{probe}")
-    tree = ae.find_tree(ctx, probe)
+    written = tree_read(ctx, tree, QUESTION)
+    problems.want(written == f"Question {run}\nfirst line of thought\n",
+                  f"the question the person wrote reads {written!r} in the workspace's files")
     # The data, written into the workspace's tree by a program of the login as Files does.
     started = time.monotonic()
     wrote = long_exec(
@@ -866,8 +907,11 @@ def edit(ctx, scene: dict, ws: dict, who: str) -> dict:
     new_note(ctx, ws, f"Only in {mark}")
     terminal = ws.get("terminal") or shell_in(ctx, ws, f"terminal-{who}-edit", ENVIRONMENT, scene["source"]["record"])[0]
     ws["terminal"] = terminal
-    terminal.bash(f"echo 'finding of {mark}' >> ~/{QUESTION} && echo {mark} > ~/{who}-{run}.txt "
-                  f"&& echo '#!/bin/bash' > ~/{TOOL} && echo 'echo e2e-tool {run} {who}' >> ~/{TOOL}")
+    in_shell(ctx, terminal, ws["tree"], f"edit-{who}", f"""
+echo 'finding of {mark}' >> ~/{QUESTION}
+echo {mark} > ~/{who}-{run}.txt
+printf '%s\\n' '#!/bin/bash' 'echo e2e-tool {run} {who}' > ~/{TOOL}
+""")
     terminal.call("create-environment", {"name": f"Env {mark}", "confirm": True})
     return {"note": f"Only in {mark}", "line": f"finding of {mark}", "file": f"{who}-{run}.txt",
             "tool": f"e2e-tool {run} {who}", "environment": f"Env {mark}"}
@@ -941,23 +985,33 @@ def independent(ctx, res):
 def after_restart(ctx, res):
     scene = _scene(ctx)
     _need(scene, "edits", "WB04")
+    # The person closes their windows and restarts the session: what each workspace holds comes back
+    # from its own records and files, not from windows that stayed open.
+    ctx.reset()
     ctx.vm.restart_session(timeout=180)
     started = time.monotonic()
     ctx.facts.pop("awake_at", None)
 
-    def catalogue():
+    ctx.vm.wait_answering(180)
+    # The person opens Notes again, as the launcher does, by its id: a session that has just started
+    # offers its apps a little later, and a busy one later still.
+    deadline = time.monotonic() + 300
+    asked = None
+    while not note_rows(ctx, "new-note"):
         awake(ctx)
-        try:
-            return any(a["provider"] == "applications" and a["id"] == ae.TERMINAL for a in ctx.vm.actions("Terminal"))
-        except VmError:
-            return False
-
-    # The desk opens every workspace's windows again, front workspace first.
-    if not wait_until(catalogue, 300, interval=2.0):
-        chrome = (ctx.state().get("chrome") or {})
-        raise CheckFailed(f"the session listed no applications within 300 s of its restart (locked: "
-                          f"{chrome.get('session_locked')}); {app_evidence(ctx, 'tilo-launcher')}")
-    res.metrics["catalogue_after_restart_s"] = round(time.monotonic() - started, 1)
+        if time.monotonic() > deadline:
+            raise CheckFailed(f"Notes did not open after the restart ({asked or 'never offered'}): it offers "
+                              f"{offered(ctx, ae.NOTES)}; {app_evidence(ctx, ae.NOTES)}")
+        if asked is None:
+            try:
+                ctx.vm.invoke("applications", ae.NOTES)
+                asked = "asked for"
+            except VmError as exc:
+                if "unknown_action" not in str(exc):
+                    raise
+        time.sleep(2)
+    res.metrics["notes_after_restart_s"] = round(time.monotonic() - started, 1)
+    res.metrics["answering_after_restart_s"] = round(time.monotonic() - started, 1)
     problems = Problems()
     state = ctx.state()
     for ws in [scene["source"]] + scene["branches"]:
