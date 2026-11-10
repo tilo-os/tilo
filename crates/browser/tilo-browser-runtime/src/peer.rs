@@ -2472,9 +2472,10 @@ impl WasmPeer {
 
     /// Have this page's device in the person's own workspace on the host, asked from inside
     /// `workspace` (a UUID) through the session it holds there: made the first time, answered again
-    /// after, another for each `name` ([`Device::enter_own_workspace`]). This very device redeems
-    /// the invitation (at the host `post` reaches), shown to the workspace's people as `shownAs`,
-    /// unless `entered(workspace)` says it is in already. Resolves to the workspace's listing,
+    /// after, another for each `name`, the one called `room` (a UUID) when it is named
+    /// ([`Device::enter_own_workspace`]). This very device redeems the invitation (at the host
+    /// `post` reaches), shown to the workspace's people as `shownAs`, unless `entered(workspace)`
+    /// says it is in already. Resolves to the workspace's listing,
     /// `{workspace, workspace_id, name, generation}` JSON.
     ///
     /// # Errors
@@ -2488,17 +2489,25 @@ impl WasmPeer {
         workspace: String,
         post: Function,
         name: Option<String>,
+        room: Option<String>,
         shown_as: String,
         entered: Function,
     ) -> Result<String, JsValue> {
         let number = workspace_number(&workspace)?;
         let listing = self
             .device
-            .enter_own_workspace(&PageHttp(post), number, name.as_deref(), &shown_as, |id| {
-                entered
-                    .call1(&JsValue::NULL, &JsValue::from_str(id))
-                    .is_ok_and(|answer| answer.is_truthy())
-            })
+            .enter_own_workspace(
+                &PageHttp(post),
+                number,
+                name.as_deref(),
+                room.as_deref(),
+                &shown_as,
+                |id| {
+                    entered
+                        .call1(&JsValue::NULL, &JsValue::from_str(id))
+                        .is_ok_and(|answer| answer.is_truthy())
+                },
+            )
             .await
             .map_err(|refusal| refusal_error(&refusal))?;
         serde_json::to_string(&listing).map_err(|error| js_error(error).into())

@@ -151,9 +151,21 @@ impl Device {
                      to it.",
                 )
             })?;
-            let (_, invitation) = device
-                .own_workspace(lobby_id, Map::new(), "tilo login")
-                .await?;
+            // The link names the workspace: the person's own, which the tab that wrote the link
+            // may not have made yet (it names one before it is let in anywhere), so this device
+            // asks for that one, and the host makes it under that name for a person who has
+            // none. A host that answers otherwise is asked for the person's own as before.
+            let mut named = Map::new();
+            named.insert("room".to_owned(), Value::String(workspace.clone()));
+            let invitation = match device.own_workspace(lobby_id, named, "tilo login").await {
+                Ok((_, invitation)) => invitation,
+                Err(_) => {
+                    device
+                        .own_workspace(lobby_id, Map::new(), "tilo login")
+                        .await?
+                        .1
+                }
+            };
             device.redeem(client, &invitation, &sign_in.label).await?;
         }
         let entered = device.join(&workspace).await.map_err(|error| {
@@ -301,8 +313,9 @@ impl Device {
 
     /// Have this device in the person's own workspace on the host, asked from inside
     /// `workspace_id`: the host makes it the first time, or answers the one the person has (another
-    /// for each `name` they give), and this very device redeems the invitation into it, so the key
-    /// this session holds is the one that opens it next. A workspace `entered` says this device is
+    /// for each `name` they give; the one called `room`, a UUID, when it says, made under that name
+    /// for a person who has none yet), and this very device redeems the invitation into it, so the
+    /// key this session holds is the one that opens it next. A workspace `entered` says this device is
     /// in already is not redeemed again. `shown_as` is the name its members see.
     ///
     /// # Errors
@@ -313,12 +326,16 @@ impl Device {
         client: &dyn HttpClient,
         workspace_id: u64,
         name: Option<&str>,
+        room: Option<&str>,
         shown_as: &str,
         entered: impl FnOnce(&str) -> bool,
     ) -> Result<WorkspaceListing, HostRefusal> {
         let mut arguments = Map::new();
         if let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) {
             arguments.insert("name".to_owned(), Value::String(name.to_owned()));
+        }
+        if let Some(room) = room {
+            arguments.insert("room".to_owned(), Value::String(room.to_owned()));
         }
         let (listing, invitation) = self
             .own_workspace(workspace_id, arguments, &self.label)

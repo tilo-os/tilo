@@ -83,7 +83,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     // A host that keeps no workspaces of people's own says so in a code the page reads, not in
     // words it would have to match.
     let none = device
-        .enter_own_workspace(&*https, lounge.workspace_id, None, "Bob", |_| false)
+        .enter_own_workspace(&*https, lounge.workspace_id, None, None, "Bob", |_| false)
         .await
         .unwrap_err();
     assert_eq!(none.code, "unknown_action", "{none:?}");
@@ -96,17 +96,27 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     );
 
     // The first time, the host makes it, and this device redeems the invitation: the workspace
-    // admits this very key, and it is Bob's, not the Lounge.
+    // admits this very key, and it is Bob's, not the Lounge. It is the one the tab named: a tab
+    // names the person's own workspace in the link it hands an agent before it exists, so either
+    // of them may be the one to make it.
+    let named = "5c1f2e7a-8b3d-4e6f-9a0b-1c2d3e4f5a6b";
     let asked = Cell::new(0);
     let own = device
-        .enter_own_workspace(&*https, lounge.workspace_id, None, "Bob", |_| {
-            asked.set(asked.get() + 1);
-            false
-        })
+        .enter_own_workspace(
+            &*https,
+            lounge.workspace_id,
+            None,
+            Some(named),
+            "Bob",
+            |_| {
+                asked.set(asked.get() + 1);
+                false
+            },
+        )
         .await
         .unwrap();
     assert_eq!(asked.get(), 1);
-    assert_ne!(own.workspace, lounge.workspace);
+    assert_eq!(own.workspace, named);
     assert_ne!(
         own.name, "Lounge",
         "the person's own workspace is not titled after the site's"
@@ -120,7 +130,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     // Asked again, it answers the same workspace; one this device is in already is not redeemed
     // again.
     let again = device
-        .enter_own_workspace(&*https, lounge.workspace_id, None, "Bob", |id| {
+        .enter_own_workspace(&*https, lounge.workspace_id, None, None, "Bob", |id| {
             id == own.workspace
         })
         .await
@@ -163,7 +173,14 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         "Laptop",
     );
     let theirs = laptop
-        .enter_own_workspace(&*https, lounge.workspace_id, None, "Bob", |_| false)
+        .enter_own_workspace(
+            &*https,
+            lounge.workspace_id,
+            None,
+            Some(named),
+            "Bob",
+            |_| false,
+        )
         .await
         .unwrap();
     assert_eq!(theirs.workspace, own.workspace);
