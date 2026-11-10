@@ -100,10 +100,10 @@ impl Task {
     pub(crate) fn is_finished(&self) -> bool {
         self.0
             .as_ref()
-            .is_none_or(tokio::task::JoinHandle::is_finished)
+            .is_none_or(n0_future::task::JoinHandle::is_finished)
     }
     /// Finish owned work without detaching it if this wait is cancelled.
-    pub(crate) async fn wait(&mut self) -> Result<(), tokio::task::JoinError> {
+    pub(crate) async fn wait(&mut self) -> Result<(), n0_future::task::JoinError> {
         let result = if let Some(task) = self.0.as_mut() {
             task.await
         } else {
