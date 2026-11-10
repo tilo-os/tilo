@@ -933,7 +933,14 @@ fn doing_phrase(label: &str) -> String {
     let Some(first) = words.next() else {
         return crate::i18n::widget_format("interaction-working", &[]);
     };
-    words.fold(participle(first), |mut phrase, word| {
+    // "New note" names what the action makes, not a verb: the actor is creating it, never
+    // "newing" it.
+    let start = participle(if first.eq_ignore_ascii_case("new") {
+        "create"
+    } else {
+        first
+    });
+    words.fold(start, |mut phrase, word| {
         phrase.push(' ');
         phrase.push_str(word);
         phrase
@@ -1640,6 +1647,8 @@ mod tests {
             ("Apply", "applying"),
             ("Tag", "tagging"),
             ("Rename the note", "renaming the note"),
+            ("New note", "creating note"),
+            ("New sub-note", "creating sub-note"),
         ] {
             assert_eq!(doing_phrase(label), doing, "{label}");
         }
