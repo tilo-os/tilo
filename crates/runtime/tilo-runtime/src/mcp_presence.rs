@@ -575,8 +575,34 @@ fn path_place(path: &str) -> (String, String) {
                 .unwrap_or_default()
         })
         .unwrap_or_default();
-    let record = parts.next_back().unwrap_or_default().to_owned();
+    let record = record_title(parts.collect());
     (app, record)
+}
+
+/// The record a path's segments name: its last one, except for the parts of
+/// a record — a write into a note's body is addressed
+/// `…/Launch notes/Body of Launch notes`, and "Body" is a field of the note,
+/// not something a person has a name for. A field is named for its record,
+/// so it keeps the record's name as the title and its own only when it
+/// names a different one.
+fn record_title(parts: Vec<&str>) -> String {
+    let mut title = "";
+    for part in parts {
+        if !names_part_of(part, title) {
+            title = part;
+        }
+    }
+    title.to_owned()
+}
+
+/// Whether `part` addresses a field inside `record` rather than a record of
+/// its own: a note titled "Best of 2025" keeps its own name, while "Body of
+/// Launch notes" is only ever the body of "Launch notes".
+fn names_part_of(part: &str, record: &str) -> bool {
+    !record.is_empty()
+        && part
+            .rsplit_once(" of ")
+            .is_some_and(|(_, owner)| owner.trim() == record)
 }
 
 /// `<verb> <record> in <app>` as one line: an app with no record of its own is
@@ -690,6 +716,16 @@ mod tests {
             .as_deref(),
             Some("Editing Welcome in Notes and 1 more")
         );
+        // A write lands in a named part of the record, and the part's name is
+        // a field of it: what the agent is editing is the note.
+        assert_eq!(
+            line(
+                "tilo_do",
+                json!({"path": "notes/Notebook/Launch notes/Body of Launch notes#append-paragraph"})
+            )
+            .as_deref(),
+            Some("Editing Launch notes in Notes")
+        );
         assert_eq!(
             line("tilo", json!({"program": "notes.notebook.notes"})).as_deref(),
             Some("Running a program")
@@ -717,6 +753,29 @@ mod tests {
         assert!(long.chars().count() <= SHOWN_CHARS, "{long}");
         assert!(long.len() <= MAX_ACTIVITY_BYTES, "{long}");
         assert!(long.ends_with('…'), "{long}");
+    }
+
+    /// Field names never reach people: a part addressed inside a record is
+    /// the record, while a record whose own title happens to read as one
+    /// keeps its name.
+    #[test]
+    fn a_path_names_the_record_and_never_the_field_written_into() {
+        assert_eq!(
+            path_place("notes/Notebook/Launch notes/Body of Launch notes#append-paragraph"),
+            ("Notes".to_owned(), "Launch notes".to_owned())
+        );
+        assert_eq!(
+            path_place("notes/Notebook/Best of 2025"),
+            ("Notes".to_owned(), "Best of 2025".to_owned())
+        );
+        assert_eq!(
+            path_place("notes/Notebook/Launch notes"),
+            ("Notes".to_owned(), "Launch notes".to_owned())
+        );
+        assert_eq!(
+            path_place("terminal#run"),
+            ("Terminal".to_owned(), String::new())
+        );
     }
 
     /// The frame says the agent is an agent, by its device's name, with its
