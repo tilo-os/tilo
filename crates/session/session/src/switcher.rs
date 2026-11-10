@@ -6,6 +6,9 @@
 
 use crate::Shared;
 
+/// A window of the desk: its id, and the logical rectangle `(x, y, w, h)` it stands in.
+type PlacedWindow = (u64, (i32, i32, i32, i32));
+
 impl crate::Session {
     /// Alt+Tab's panel: what it shows and where its cards stand, as the chrome last drew it.
     #[must_use]
@@ -20,7 +23,7 @@ impl Shared {
     /// switches windows without a panel flashing, and the window it reached is still where Alt's
     /// release goes.
     /// A locked session takes the walk down with everything else it shows over its windows.
-    pub(crate) fn follow_switcher(&self, locked: bool, windows: &[(u64, (i32, i32, i32, i32))]) {
+    pub(crate) fn follow_switcher(&self, locked: bool, windows: &[PlacedWindow]) {
         if locked {
             self.desk_overlays
                 .close(crate::overlays::Overlay::Switcher.name());
@@ -49,9 +52,7 @@ impl Shared {
 
 /// Each window's size in logical pixels, as the desk lays it out: the shape a card of the panel
 /// takes, so the window's picture fills it.
-fn window_sizes(
-    windows: &[(u64, (i32, i32, i32, i32))],
-) -> std::collections::HashMap<u64, (u32, u32)> {
+fn window_sizes(windows: &[PlacedWindow]) -> std::collections::HashMap<u64, (u32, u32)> {
     windows
         .iter()
         .filter_map(|(id, (_, _, width, height))| {

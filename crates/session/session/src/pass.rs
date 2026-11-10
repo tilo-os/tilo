@@ -157,31 +157,13 @@ impl Session {
         self.surfaces.serve(&mut self.shared.doors);
         // The windows shared with the workspaces: what the person asked,
         // what the plane brought, and the frames of the ones on screen.
-        {
-            let sync = self.shared.sync.clone();
-            let displays = &self.displays_service;
-            self.shared.window_shares.borrow_mut().step(
-                &mut self.compositor,
-                &self.shared.handle,
-                displays,
-                sync.as_deref(),
-                std::time::Instant::now(),
-            );
-        }
+        self.follow_window_shares();
         self.follow_text_inputs();
         self.follow_notifications();
         self.shared.open_notifications();
         self.settle()?;
         self.follow_bars();
-        let switcher = (
-            self.compositor.locked(),
-            self.compositor
-                .windows()
-                .into_iter()
-                .map(|(window, rect)| (window.id, rect))
-                .collect::<Vec<_>>(),
-        );
-        self.shared.follow_switcher(switcher.0, &switcher.1);
+        self.follow_switcher();
         self.follow_shell()?;
         self.follow_slot_views()?;
         // The toolkit's clock, which a capture pins the frame's instant on.
@@ -235,6 +217,33 @@ impl Session {
         self.follow_desk_over_frame()?;
         self.compositor.end_tick();
         Ok(())
+    }
+
+    /// The windows shared with the workspaces: what the person asked, what the plane brought, and
+    /// the frames of the ones on screen.
+    fn follow_window_shares(&mut self) {
+        let sync = self.shared.sync.clone();
+        let displays = &self.displays_service;
+        self.shared.window_shares.borrow_mut().step(
+            &mut self.compositor,
+            &self.shared.handle,
+            displays,
+            sync.as_deref(),
+            Instant::now(),
+        );
+    }
+
+    /// What the desk's walk reached this pass, handed to the panel that shows it: whether the
+    /// session is locked, and where each of the desk's windows stands.
+    fn follow_switcher(&self) {
+        let windows: Vec<_> = self
+            .compositor
+            .windows()
+            .into_iter()
+            .map(|(window, rect)| (window.id, rect))
+            .collect();
+        self.shared
+            .follow_switcher(self.compositor.locked(), &windows);
     }
 
     /// The desk's input a tool handed the loop since the last pass, served where a device's input

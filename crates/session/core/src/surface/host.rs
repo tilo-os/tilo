@@ -361,6 +361,7 @@ impl HostFrame {
         if let Some(coverage) = coverage.as_mut() {
             coverage.record(drawn, size, regions);
         }
+        drop(held);
     }
 
     /// What changed since a host last took it, with the pixels it changed: `None` where nothing
@@ -695,8 +696,11 @@ mod tests {
     ) -> Vec<u8> {
         for row in y..y.saturating_add(height) {
             for column in x..x.saturating_add(width) {
-                let start = ((row * SIZE.0 + column) * 4) as usize;
-                drawn[start..start + 4].copy_from_slice(&pixel);
+                let start = (row as usize)
+                    .saturating_mul(SIZE.0 as usize)
+                    .saturating_add(column as usize)
+                    .saturating_mul(4);
+                drawn[start..start.saturating_add(4)].copy_from_slice(&pixel);
             }
         }
         drawn
@@ -731,6 +735,7 @@ mod tests {
             Some(vec![bar]),
             "what it drew over is opaque"
         );
+        drop(changed);
     }
 
     #[test]
@@ -817,6 +822,7 @@ mod tests {
         let changed = frame.take_changed().expect("it changed first");
         assert_eq!(changed.regions(), &[Region::new(0, 0, SIZE.0, SIZE.1)]);
         assert_eq!(changed.opaque(), None, "what it shows through is not known");
+        drop(changed);
     }
 
     #[test]
