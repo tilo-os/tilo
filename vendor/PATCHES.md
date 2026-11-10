@@ -82,6 +82,13 @@ upstream `cdylib` dropped the hash from the library filenames, so two builds
 in one Cargo run overwrote each other's outputs (E0460/E0463).
 Remove a copy once its upstream release carries the change.
 
+## Control messages on musl
+
+`vendor/noq-udp` reads a received control message's payload unaligned. musl's
+`cmsghdr` is 4-byte aligned, so the receive timestamp Linux sockets carry is
+not 8-byte aligned, and the upstream alignment assertion panicked the static
+`tilo` command on its first packet. See `vendor/noq-udp/TILO-PATCH.md`.
+
 ## Tables without relocations
 
 `pulldown-cmark` 0.12.2 is the checksum-verified MIT registry release with one

@@ -37,6 +37,7 @@ exclude = [
     "vendor/twilight-http-ratelimiting",
     "vendor/iroh",
     "vendor/netwatch",
+    "vendor/noq-udp",
     "vendor/accesskit_unix",
     "vendor/atspi",
     "vendor/atspi-common",
@@ -1445,6 +1446,9 @@ serde_json = { path = "vendor/serde_json" }
 # TILO-PATCH.md.
 iroh = { path = "vendor/iroh" }
 netwatch = { path = "vendor/netwatch" }
+# A static musl build reads every packet's timestamp without panicking. See
+# vendor/noq-udp/TILO-PATCH.md.
+noq-udp = { path = "vendor/noq-udp" }
 # Members depend on `workspace-hack = "0.1"`; this workspace builds the local
 # crate, while workspaces outside it get crates.io's empty stub (.config/hakari.toml).
 workspace-hack = { path = "crates/workspace-hack" }
