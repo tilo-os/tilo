@@ -4696,6 +4696,9 @@ run = "bash tools/ci/publish/lounge-binaries.sh /target/publish/lounge-gate/bina
 env = { CARGO_BUILD_JOBS = "8" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/lounge-gate/binaries/**"]
+# A node's first run of this builds the whole graph from nothing through the compiler cache; after
+# that t books it from what it measured, and a change to one crate relinks.
+timeout_secs = 7200
 default = false
 
 # The product font catalog, which the image's context and every check that runs the Lounge's
