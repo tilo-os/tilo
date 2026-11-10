@@ -4,7 +4,7 @@
 
 use tilo_actions::ActionAddress;
 
-use crate::{Session, mount, surfaces};
+use crate::{Session, mount, slots, surfaces};
 use tilo_compositor::Error;
 
 impl Session {
@@ -25,7 +25,7 @@ impl Session {
     /// Rebinding the slot starts the view bound to it now, on the next pass,
     /// hidden or over the reading it already drew.
     pub(crate) fn follow_window_menu(&mut self) {
-        use mount::slots::{Mount, View};
+        use slots::{Mount, View};
 
         /// The view's surface name, whatever view draws it.
         const VIEW: &str = mount::shell::WINDOW_MENU_SLOT;
@@ -57,7 +57,7 @@ impl Session {
         // every pass of a menu that is down: an app that will not stay up then costs one start an
         // opening, and not the session.
         if up || !self.slots.stood(VIEW) {
-            let settings = self.read(mount::slots::BINDINGS);
+            let settings = self.read(slots::BINDINGS);
             match self.slots.follow(VIEW, SHIPPED, settings.as_ref()) {
                 Mount::Nothing => {}
                 Mount::Stop => self.stop_slot_view(VIEW),
@@ -137,7 +137,7 @@ impl Session {
         view: String,
         reading: Option<&serde_json::Value>,
     ) {
-        let (Some(state), Some(reading)) = (mount::slots::surface(slot), reading) else {
+        let (Some(state), Some(reading)) = (slots::surface(slot), reading) else {
             tracing::warn!(slot, "the slot has no state for a view of it to read");
             return;
         };
@@ -184,7 +184,7 @@ impl Session {
     pub(crate) fn follow_slot_views(&mut self) -> Result<(), Error> {
         /// The one slot a person can bind a view to today.
         const VIEW: &str = mount::shell::WINDOW_MENU_SLOT;
-        let Some(state) = mount::slots::surface(VIEW) else {
+        let Some(state) = slots::surface(VIEW) else {
             return Ok(());
         };
         if self.slot_views.take_pressed_outside(VIEW) {

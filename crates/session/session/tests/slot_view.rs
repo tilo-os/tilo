@@ -33,7 +33,7 @@ use tilo_desktop_model::{
     WorkspaceSlot,
 };
 use tilo_session::mount::shell::WINDOW_MENU;
-use tilo_session::mount::slots::BINDINGS;
+use tilo_session::slots::BINDINGS;
 use tilo_session::{ActionPlane, Options, Session};
 use tilo_settings_service::SettingsService;
 use tilo_test_env::{ScopedEnv, TestHome};
@@ -221,7 +221,7 @@ fn bind(session: &mut Session, app: &str, view: &str) {
 
 /// The program the probe is pointed at, under the name the app `app` 's view runs as:
 /// `so.tilo.window-menu` runs as `tilo-window-menu`
-/// ([`Binding::program`](tilo_session::mount::slots::Binding::program)).
+/// ([`Binding::program`](tilo_session::slots::Binding::program)).
 fn installed(environment: &mut ScopedEnv, app: &str, probe: &Path) {
     let program = format!(
         "tilo-{}",
@@ -287,8 +287,7 @@ fn press(session: &mut Session, name: &str) {
 /// `app.wasm` , as an installed app's has.
 #[track_caller]
 fn package(dir: &Path, slot: &str, source: &str) -> PathBuf {
-    let surface =
-        tilo_session::mount::slots::surface(slot).expect("the slot's state has a surface");
+    let surface = tilo_session::slots::surface(slot).expect("the slot's state has a surface");
     let surfaces = tilolang_tilo::catalogue::parse_surfaces(&surface.text)
         .expect("the surface the session publishes for the slot");
     let meta = tilolang_tilo::catalogue::package_of(&surface.app, &surface.title, &surfaces);

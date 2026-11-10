@@ -353,8 +353,8 @@ pub(crate) fn desk_style_failed_notice(style: &str, reason: &str) -> Notice {
 /// What a paste of files has to tell the person, or `None` when it went through: the files it could
 /// not paste and why, what stopped it before it began, or that a paste the last session was in the
 /// middle of was taken back.
-pub(crate) fn paste_notice(outcome: &crate::mount::clipboard_files::Outcome) -> Option<Notice> {
-    use crate::mount::clipboard_files::Refused;
+pub(crate) fn paste_notice(outcome: &crate::clipboard::paste::Outcome) -> Option<Notice> {
+    use crate::clipboard::paste::Refused;
     // A paste a stopped session was in the middle of is answered for on its own: what it kept is
     // right, and what it could not put back is said plainly, because the next session tries again.
     if outcome.undone {

@@ -1,6 +1,8 @@
 //! The session's surface apps on their layers above the windows: where each goes on the outputs,
 //! and when it shows.
 
+pub(crate) mod mount;
+
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 

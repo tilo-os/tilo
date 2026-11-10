@@ -325,7 +325,7 @@ pub struct Shell {
     overlays: Overlays,
     /// The desktop's one shortcut table, so a menu row shows the chord a press doing the same thing
     /// would be, as the person binds it now.
-    shortcuts: crate::mount::panels::Shortcuts,
+    shortcuts: crate::panels::mount::Shortcuts,
 }
 
 impl Shell {
@@ -334,7 +334,7 @@ impl Shell {
     pub(crate) fn new(
         handle: DesktopHandle,
         overlays: Overlays,
-        shortcuts: crate::mount::panels::Shortcuts,
+        shortcuts: crate::panels::mount::Shortcuts,
     ) -> Self {
         Self {
             handle,
@@ -349,7 +349,7 @@ impl Shell {
         services: &Rc<std::cell::RefCell<tilo_service::Services>>,
         handle: &DesktopHandle,
         overlays: Overlays,
-        shortcuts: crate::mount::panels::Shortcuts,
+        shortcuts: crate::panels::mount::Shortcuts,
     ) {
         services
             .borrow_mut()

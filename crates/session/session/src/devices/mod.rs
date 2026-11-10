@@ -18,7 +18,7 @@
 //! What a press on a row does needs the fabric, the wakes and the search, so
 //! it is the session's own: the resource publishes the press
 //! ([`DevicesAction::Press`]) and the loop carries it out
-//! ([`crate::mount::devices::press`]), as it carries out every other verb
+//! ([`press::press`]), as it carries out every other verb
 //! published here.
 
 use std::cell::RefCell;
@@ -37,6 +37,8 @@ use tilo_service::{Service, Started, decode, offer, reading};
 use tilo_speaker_service::remote_audio::{self, RemoteAudioPhase};
 
 use crate::i18n::t;
+
+pub(crate) mod press;
 
 /// The resource the person's devices are published under.
 pub const RESOURCE: &str = "session:devices";

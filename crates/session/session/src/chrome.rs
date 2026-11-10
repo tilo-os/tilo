@@ -386,7 +386,7 @@ pub(crate) struct ChromeWiring {
     pub(crate) asks: Rc<RefCell<Vec<DesktopAsk>>>,
     /// The desktop's one shortcut table, shared with the session: what the chrome matches a press
     /// against and what it shows beside its rows.
-    pub(crate) shortcuts: crate::mount::panels::Shortcuts,
+    pub(crate) shortcuts: crate::panels::mount::Shortcuts,
     pub(crate) feeds: BarFeeds,
     /// This device's workspaces, as their records hold them.
     pub(crate) engine: Option<Arc<crate::engine::Engine>>,

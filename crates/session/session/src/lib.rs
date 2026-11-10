@@ -106,6 +106,8 @@ mod channels;
 #[cfg(target_os = "linux")]
 mod chrome;
 #[cfg(target_os = "linux")]
+mod clipboard;
+#[cfg(target_os = "linux")]
 mod clock_wait;
 #[cfg(target_os = "linux")]
 mod collaboration;
@@ -307,6 +309,8 @@ mod shortcut_guide;
 mod slot_binding;
 #[cfg(target_os = "linux")]
 mod slot_views;
+#[cfg(target_os = "linux")]
+pub mod slots;
 #[cfg(target_os = "linux")]
 mod sockets;
 #[cfg(target_os = "linux")]

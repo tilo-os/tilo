@@ -47,10 +47,10 @@ pub use crate::search::{AppActions, SearchOptions};
 pub use crate::setup::BeforeDesk;
 pub use tilo_service::{Service, Services};
 
-use crate::mount::panels::mount_activities;
-use crate::mount::panels::{KeyContext, mount_controls, mount_setup};
 use crate::mount::services::{mount_services, start_action_plane};
 use crate::notifications::mount_banners;
+use crate::panels::mount::mount_activities;
+use crate::panels::mount::{KeyContext, mount_controls, mount_setup};
 use crate::plane::Plane;
 use crate::platform::surfaces::Held;
 use crate::search::SessionSearch;
@@ -793,7 +793,7 @@ impl Session {
         );
 
         // The sheets, over the desktop and its panels.
-        let crate::mount::sheets::Sheets {
+        let crate::sheets::mount::Sheets {
             power,
             workspace_settings,
             portal,
@@ -807,7 +807,7 @@ impl Session {
             add_app,
             uninstall,
             lock_view,
-        } = crate::mount::sheets::mount_sheets(&mut compositor, &mut doors, &options);
+        } = crate::sheets::mount::mount_sheets(&mut compositor, &mut doors, &options);
         // Where a report about Tilo itself goes, as this computer is told:
         // the box a report is written in opens to it.
         let feedback = crate::feedback::Destination::configured();
@@ -815,7 +815,7 @@ impl Session {
         // surface that shows it: the workspace menu, the Tilo menu, search.
         crate::host_actions::publish(
             &handle,
-            crate::mount::sheets::power_offers(&options),
+            crate::sheets::mount::power_offers(&options),
             directory.is_some(),
             feedback.is_some(),
         );
@@ -1243,7 +1243,7 @@ impl Session {
             hosted: !options.machine.is_owned(),
             fabric: fabric.clone(),
             vpn,
-            devices: crate::mount::devices::Devices::default(),
+            devices: crate::devices::press::Devices::default(),
             bluetooth: crate::bluetooth_handoff::Handoffs::default(),
             handoff: Rc::new(std::cell::RefCell::new(None)),
             waking: crate::mount::wake::Wake::new(&options.wake_seams),
@@ -1316,9 +1316,7 @@ impl Session {
             membership_fed: Cell::new(None),
             _channels: channels,
             personal,
-            clipboard: Rc::new(crate::mount::clipboard::Clipboard::new(
-                options.wake.handle(),
-            )),
+            clipboard: Rc::new(crate::clipboard::Clipboard::new(options.wake.handle())),
             arrangement,
             underway: busy,
             settings: crate::settings_sync::SettingsSync::new(),
@@ -1366,7 +1364,7 @@ impl Session {
         shared
             .services
             .borrow_mut()
-            .add(Box::new(crate::mount::clipboard::Served::new(Rc::clone(
+            .add(Box::new(crate::clipboard::Served::new(Rc::clone(
                 &shared.clipboard,
             ))));
         // What people said to this person is personal too: the centre
@@ -1494,7 +1492,7 @@ impl Session {
             _settings_watch: settings_watch,
             surfaces,
             surface_apps,
-            slots: crate::mount::slots::Slots::default(),
+            slots: crate::slots::Slots::default(),
             slot_views,
             displays: crate::display_settings::Displays::default(),
             displays_service,
@@ -2350,7 +2348,7 @@ impl Session {
     pub(crate) fn paste_files(&self, destination: &str) {
         self.shared.clipboard.paste_files(
             std::path::Path::new(destination),
-            crate::mount::clipboard_files::Conflict::KeepBoth,
+            crate::clipboard::paste::Conflict::KeepBoth,
         );
     }
 

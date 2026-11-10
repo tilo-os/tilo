@@ -37,7 +37,7 @@ use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
 use ui::dnd::CopiedFiles;
 
-use super::clipboard_files;
+pub(crate) mod paste;
 use crate::controls::CLIPBOARD_RESOURCE;
 use crate::i18n::t;
 
@@ -63,7 +63,7 @@ pub(crate) struct Clipboard {
     files: RefCell<Option<CopiedFiles>>,
     /// The paste of files in flight, on its own thread, or the paste a session that stopped left
     /// behind to be undone.
-    paste: RefCell<Option<clipboard_files::Paste>>,
+    paste: RefCell<Option<paste::Paste>>,
     /// Whether what was copied here since the last share still has to be offered to the person's
     /// other devices.
     unshared: Cell<bool>,
@@ -112,7 +112,7 @@ impl Clipboard {
             generation: Cell::new(0),
             files: RefCell::new(None),
             // A paste the last session was in the middle of is undone here.
-            paste: RefCell::new(clipboard_files::Paste::unfinished(&wake)),
+            paste: RefCell::new(paste::Paste::unfinished(&wake)),
             unshared: Cell::new(true),
             synced_at: Cell::new(None),
             wake,
@@ -253,7 +253,7 @@ impl Clipboard {
     /// Paste the copied files into `destination` on a thread of its own, as `conflict` says when a
     /// name is taken: the staging, the syncing and the receipt are [`clipboard_files`]', and the
     /// loop only asks whether it is over ([`Self::step_files`]).
-    pub(crate) fn paste_files(&self, destination: &Path, conflict: clipboard_files::Conflict) {
+    pub(crate) fn paste_files(&self, destination: &Path, conflict: paste::Conflict) {
         if self.paste.borrow().is_some() {
             tracing::debug!("a paste of files is still going on");
             return;
@@ -262,7 +262,7 @@ impl Clipboard {
             tracing::debug!("the clipboard holds no files to paste");
             return;
         };
-        let paste = clipboard_files::Paste::start(
+        let paste = paste::Paste::start(
             &files,
             destination,
             conflict,
@@ -277,7 +277,7 @@ impl Clipboard {
     /// What the paste that just ended has to tell the person, if anything.
     pub(crate) fn step_files(&self) -> Vec<crate::notices::Notice> {
         let mut paste = self.paste.borrow_mut();
-        if !paste.as_ref().is_some_and(clipboard_files::Paste::finished) {
+        if !paste.as_ref().is_some_and(paste::Paste::finished) {
             return Vec::new();
         }
         let Some(mut done) = paste.take() else {
@@ -582,7 +582,7 @@ impl Service for Served {
                 destination,
                 conflict,
             } => {
-                let Some(chosen) = clipboard_files::Conflict::parse(conflict.as_deref()) else {
+                let Some(chosen) = paste::Conflict::parse(conflict.as_deref()) else {
                     return Err(DoorError::InvalidArguments(format!(
                         "{:?} is not a paste conflict policy: keep-both, skip or replace",
                         conflict.as_deref().unwrap_or_default()

@@ -5,6 +5,8 @@
 //! are published through its door while it is up. Which display each sheet covers is placed here
 //! too, from the one the person is working on.
 
+pub(crate) mod mount;
+
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::{HostKey, HostLayer, KeyClaim, SurfaceHost};
 use tilo_sheets::Seat;

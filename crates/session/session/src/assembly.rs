@@ -154,7 +154,7 @@ pub(crate) struct Shared {
     pub(crate) vpn: Option<crate::mount::vpn::Routes>,
     /// The person's devices as the panel was last fed them.
     #[cfg(target_os = "linux")]
-    pub(crate) devices: crate::mount::devices::Devices,
+    pub(crate) devices: crate::devices::press::Devices,
     /// Moving a Bluetooth accessory between the person's devices: what the
     /// panel asked for, what their other devices said, and the Bluetooth
     /// work the move needs.
@@ -307,7 +307,7 @@ pub(crate) struct Shared {
     pub(crate) personal: Option<RefCell<crate::workspaces::Personal>>,
     /// The copies the person can paste again.
     #[cfg(target_os = "linux")]
-    pub(crate) clipboard: Rc<crate::mount::clipboard::Clipboard>,
+    pub(crate) clipboard: Rc<crate::clipboard::Clipboard>,
     /// The person's arrangement: the desk this session holds, with history and
     /// undo (shell.md §2), and the app places its windows from it.
     pub(crate) arrangement: Rc<RefCell<crate::arrangement::Arrangement>>,
@@ -584,7 +584,7 @@ pub struct Session {
     /// The views the person bound to the shell's slots, and the one running
     /// each slot now.
     #[cfg(target_os = "linux")]
-    pub(crate) slots: crate::mount::slots::Slots,
+    pub(crate) slots: crate::slots::Slots,
     /// The slots whose view is a tilolang package, which the session runs
     /// itself.
     #[cfg(target_os = "linux")]

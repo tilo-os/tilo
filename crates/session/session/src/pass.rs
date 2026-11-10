@@ -559,7 +559,7 @@ impl Session {
         // person pastes it into any app.
         if let Some(plane) = &self.action_plane {
             for files in plane.file_clipboard.take_published() {
-                crate::mount::clipboard::offer_files(&mut self.compositor, &files);
+                crate::clipboard::offer_files(&mut self.compositor, &files);
             }
         }
         // What the apps copied since the last pass joins the history; a copy chosen in it is pasted

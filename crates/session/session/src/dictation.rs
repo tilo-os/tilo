@@ -29,7 +29,7 @@ use tilo_sheets::Seat as _;
 use tilo_sheets::dictation::{Answer, DictationSeat, Failure, Prompt, RecoveryReason, Stage};
 
 use crate::Options;
-use crate::mount::clipboard::Clipboard;
+use crate::clipboard::Clipboard;
 use crate::platform::surfaces::Held;
 use crate::sheets::Sheet;
 

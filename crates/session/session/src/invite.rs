@@ -17,7 +17,7 @@ use tilo_sheets::{word, words};
 use tilo_surface_host::shell_part::DESK_RESOURCE;
 
 use crate::Shared;
-use crate::mount::clipboard::Ask;
+use crate::clipboard::Ask;
 
 /// How long a link the sheet copied stays on the clipboard: long enough to paste it into a message
 /// to whoever it is for, and no longer, because the link is what admits them.
