@@ -1269,6 +1269,12 @@ fn present_desktop(
                     .map_or_else(tilo_desktop::here::guest_label, |(name, _)| name)
             })
         },
+        {
+            let woken = std::sync::Arc::clone(&shared.woken);
+            std::sync::Arc::new(move || {
+                woken.store(true, std::sync::atomic::Ordering::Release);
+            })
+        },
     );
     let search_wake = proxy()?;
     let search = crate::page_search::mount(

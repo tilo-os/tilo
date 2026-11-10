@@ -284,7 +284,7 @@ impl Mentions {
         };
         let (replayed, changed) = records.take_changed();
         for record in changed {
-            *self.0.pending.borrow_mut().entry(record).or_insert(true) &= !replayed;
+            *self.0.pending.borrow_mut().entry(record).or_insert(true) &= replayed;
         }
         if self.0.pending.borrow().is_empty() {
             return;

@@ -117,6 +117,11 @@ fn role(records: &Rc<Recorder>, shown: &Rc<Shown>, store: Store) -> Mentions {
     })
 }
 
+/// Look again, past the pause the role keeps between two looks.
+fn look_again(mentions: &Mentions) {
+    mentions.step_at(ui::time::now() + ui::time::Duration::from_secs(1));
+}
+
 /// A device's store to keep what was told in.
 fn kept_store() -> (tempfile::TempDir, Store) {
     let dir = tempfile::tempdir().unwrap();
@@ -236,7 +241,7 @@ fn nobody_else_in_the_workspace_is_told() {
 fn reopening_or_reloading_tells_nothing_again() {
     let (records, shown, mentions, store, _dir) = beas_notebook();
     records.reached(NOTES, NOTE, false);
-    mentions.step();
+    look_again(&mentions);
     assert_eq!(shown.up.borrow().len(), 1, "nothing is told twice");
 
     // The device restarted: what it told is kept in its store.
@@ -268,7 +273,7 @@ fn a_mention_edited_away_is_withdrawn() {
     written.commit();
     records.holds(NOTES, NOTE, &written);
     records.reached(NOTES, NOTE, false);
-    mentions.step();
+    look_again(&mentions);
     assert!(
         shown.up.borrow().is_empty(),
         "the notice went with the mention"
@@ -289,11 +294,11 @@ fn a_mention_the_workspace_held_before_this_device_followed_it_is_not_news() {
     // The record changes again: the same mention is not told twice.
     let mut changed = written;
     let block = notebook_block(&changed);
-    changed.put(&block, "title", "Launch plan v2").unwrap();
+    changed.splice_text(&block, 0, 0, "Please ").unwrap();
     changed.commit();
     records.holds(NOTES, NOTE, &changed);
     records.reached(NOTES, NOTE, false);
-    mentions.step();
+    look_again(&mentions);
     assert!(shown.up.borrow().is_empty());
 }
 
@@ -327,7 +332,7 @@ fn changes_arriving_in_a_burst_are_looked_at_together() {
 
     let mut changed = written;
     let block = notebook_block(&changed);
-    changed.put(&block, "title", "Launch plan v2").unwrap();
+    changed.splice_text(&block, 0, 0, "Please ").unwrap();
     changed.commit();
     records.holds(NOTES, NOTE, &changed);
     records.reached(NOTES, NOTE, false);
@@ -364,7 +369,7 @@ fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
     part.put(&span, "name", MARK).unwrap();
     write_value(&mut part, &span);
 
-    let records = Recorder::holding(&[(CHAT, &part_route, &part)]);
+    let records = Recorder::holding(&[(CHAT, &part_route, &part), (CHAT, "", &chat)]);
     records
         .kinds
         .borrow_mut()

@@ -22,8 +22,9 @@ pub struct Changed {
 
 /// What a host reads of its records.
 pub trait Records {
-    /// The records a change reached since this was last taken, and whether the host had replayed
-    /// what its workspaces held by then: what predates this device following a record is no news.
+    /// The records a change reached since this was last taken, and whether what reached them is
+    /// what the host already held (its workspaces replayed before any role looked): that is no
+    /// news, where a live change is.
     fn take_changed(&self) -> (bool, Vec<Changed>);
     /// The document of `app`'s `record` in `workspace`, as this host holds it now.
     fn document(&self, app: &str, workspace: &str, record: &str) -> Option<AutoCommit>;

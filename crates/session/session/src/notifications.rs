@@ -377,6 +377,9 @@ type Chosen = Rc<RefCell<Vec<(u32, Option<String>)>>>;
 /// The action a role's notice offers: choosing it goes where the notice names.
 const OPEN_NOTICE_ACTION: &str = "open";
 
+/// How long a role's notice stays on screen: what the person was told, not a demand.
+const NOTICE_SECONDS: u64 = 8;
+
 /// The place each of a role's notices opens, by the desk's notification.
 type Places = Rc<RefCell<BTreeMap<u64, (String, crate::platform::notice::Place)>>>;
 
@@ -860,6 +863,8 @@ impl SessionNotifications {
         machine
             .actions
             .push((OPEN_NOTICE_ACTION.to_owned(), t("mention-notice-open")));
+        // News, not a demand: it leaves the banner by itself and the centre keeps it.
+        machine.expires_after = Some(Duration::from_secs(NOTICE_SECONDS));
         let place = (notice.tag.clone(), notice.place.clone());
         let showing = match &self.daemon {
             Some(daemon) => {
@@ -1036,7 +1041,9 @@ impl SessionNotifications {
                 }
             }
             Arrival::Close(sender) => {
+                self.awaited.borrow_mut().remove(&sender);
                 if let Some(id) = self.by_sender.remove(&sender) {
+                    self.places.borrow_mut().remove(&id);
                     self.desktop.withdraw(id);
                     self.transient.remove(&id);
                 }

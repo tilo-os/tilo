@@ -29,7 +29,9 @@ impl Records for Taken {
     fn take_changed(&self) -> (bool, Vec<Changed>) {
         let (ready, touched) = crate::replication::take_touched(self.peer);
         (
-            ready,
+            // What reached the record before the workspace finished replaying what it held is
+            // what the device already had.
+            !ready,
             touched
                 .into_iter()
                 .map(|(app, record)| Changed {
@@ -50,12 +52,14 @@ impl Records for Taken {
     }
 }
 
-/// This page's mentions of `person` in the workspace `peer` replicated into `store`.
+/// This page's mentions of `person` in the workspace `peer` replicated into `store`, drawn by the
+/// frame `wake` asks for.
 pub(super) fn role(
     store: tilo_session::platform::Store,
     peer: u32,
     person: &str,
     name: Rc<dyn Fn(&str) -> String>,
+    wake: std::sync::Arc<dyn Fn() + Send + Sync>,
 ) -> Mentions {
     Mentions::over(tilo_session::mentions::Given {
         person: vec![person.to_owned()],
@@ -70,7 +74,7 @@ pub(super) fn role(
         })),
         notices: Some(Rc::new(Toolkit::new(ui::host::current().notifications))),
         name,
-        wake: None,
+        wake: Some(wake),
     })
 }
 
