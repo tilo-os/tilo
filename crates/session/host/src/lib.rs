@@ -69,8 +69,8 @@ pub use tilo_peer_state::document_frame::DocumentRoute;
 /// and its peers.
 pub use tilo_relay_client::https::{HttpClient, HttpFuture, host_info};
 pub use tilo_relay_client::{
-    CertifyError, DeviceSigner, Host, IssuedRole, LinkError, SignError, SignFuture, answer_pairing,
-    certify, certify_with_root, decide_pairing, invite, issue_agent_grant, issue_device_cert,
-    issue_stand_in, pending_pairings, revoke_device,
+    Carrier, CertifyError, DeviceSigner, Host, IssuedRole, LinkError, SignError, SignFuture,
+    answer_pairing, certify, certify_with_root, decide_pairing, invite, issue_agent_grant,
+    issue_device_cert, issue_stand_in, pending_pairings, revoke_device,
 };
 pub use voice::VoiceEvent;

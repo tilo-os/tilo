@@ -20,7 +20,7 @@ use tilo_user_identity::{
     DeviceCert, RevocationList, verify_device_cert_at, verify_issued_cert,
 };
 
-use crate::error::{CertifyError, LinkError};
+use crate::error::CertifyError;
 use crate::frame::{read_frame, write_frame};
 use crate::host::Host;
 use crate::signer::DeviceSigner;
@@ -99,17 +99,8 @@ pub async fn certify(
     on_pending: impl FnOnce(&str),
 ) -> Result<(DeviceCert, DeviceCert), CertifyError> {
     let request = signed_request(user_public_key, label, invite, signer).await?;
-    let mut addr = host.addr.clone();
-    let mut builder = Endpoint::builder(iroh::endpoint::presets::Minimal);
-    if let Some(url) = &host.relay_url {
-        builder = builder.relay_mode(iroh::RelayMode::Custom(url.clone().into()));
-        addr = addr.with_relay_url(url.clone());
-    }
-    let endpoint = builder
-        .bind()
-        .await
-        .map_err(|error| LinkError::Unavailable(error.to_string()))?;
-    let outcome = request_certification(&endpoint, addr, request, on_pending).await;
+    let endpoint = host.bind(None).await?;
+    let outcome = request_certification(&endpoint, host.addr(), request, on_pending).await;
     endpoint.close().await;
     match outcome? {
         CertificationOutcome::Issued { cert, host_cert } => Ok((cert, host_cert)),

@@ -3,7 +3,7 @@
 //! own device, and joining a workspace.
 //!
 //! Everything after that is the session, over iroh
-//! (`tilo_relay_session::RelayClient`).
+//! (`tilo_relay_session::RelayClient`), dialled where [`crate::Host`] says.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -141,22 +141,6 @@ pub async fn host_info(
     client: &dyn HttpClient,
 ) -> Result<tilo_relay_protocol::web::HostInfo, LinkError> {
     call(client, "/host", Vec::new()).await
-}
-
-/// Where the host `info` describes published it is reachable, as a session dials it: its endpoint,
-/// with the relay it names when it names one. `None` when it takes no device connections.
-#[must_use]
-pub fn host_endpoint(info: &tilo_relay_protocol::web::HostInfo) -> Option<iroh_base::EndpointAddr> {
-    let address = info.address.as_ref()?;
-    let endpoint = match address
-        .relay_url
-        .as_deref()
-        .and_then(|url| url.parse::<iroh_base::RelayUrl>().ok())
-    {
-        Some(relay) => address.endpoint_addr.clone().with_relay_url(relay),
-        None => address.endpoint_addr.clone(),
-    };
-    Some(endpoint)
 }
 
 /// Send a member's root-signed approver command (their pending device

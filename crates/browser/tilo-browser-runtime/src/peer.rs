@@ -367,11 +367,10 @@ struct JsHostAddress {
 impl JsHostAddress {
     /// The host as the peer dials it.
     fn host(&self) -> Host {
-        let addr = match self.relay_url.as_deref().and_then(|url| url.parse().ok()) {
-            Some(relay) => self.endpoint_addr.clone().with_relay_url(relay),
-            None => self.endpoint_addr.clone(),
-        };
-        Host::at(addr)
+        Host::published(&tilo_relay_protocol::web::HostAddress {
+            endpoint_addr: self.endpoint_addr.clone(),
+            relay_url: self.relay_url.clone(),
+        })
     }
 }
 

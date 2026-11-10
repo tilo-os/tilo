@@ -267,10 +267,7 @@ impl Replicas {
     /// workspace's own governance keeps for it: the address a peer dials the
     /// host at, and the relay it is reached through. `None` until the host's
     /// bootstrap or a governance message named it.
-    pub(crate) fn host_endpoint(
-        &self,
-        workspace_id: u64,
-    ) -> Option<(iroh_base::EndpointAddr, Option<iroh_base::RelayUrl>)> {
+    pub(crate) fn host(&self, workspace_id: u64) -> Option<tilo_relay_client::Host> {
         let hint = self
             .with_workspace(workspace_id, |view| {
                 let host = view.workspace_host().device_public_key;
@@ -291,7 +288,10 @@ impl Replicas {
             "iroh:direct" => None,
             url => Some(url.parse().ok()?),
         };
-        Some((payload.endpoint_addr, relay))
+        Some(tilo_relay_client::Host::through(
+            payload.endpoint_addr,
+            relay,
+        ))
     }
 
     /// The devices that may sign and be added to `route`'s group: those

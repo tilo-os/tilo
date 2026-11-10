@@ -488,17 +488,14 @@ impl Task {
             // The workspace's own governance names where its host listens; a
             // host that has not named itself yet is dialled where the session
             // reached it.
-            let (addr, relay_url) = match self.replicas.host_endpoint(workspace_id) {
-                Some(named) => named,
-                None => (
-                    self.config.host.addr.clone(),
-                    self.config.host.relay_url.clone(),
-                ),
-            };
-            let host = match relay_url {
-                Some(url) => addr.with_relay_url(url),
-                None => addr,
-            };
+            let host = self
+                .replicas
+                .host(workspace_id)
+                .map_or_else(
+                    || self.config.host.clone(),
+                    |named| named.over(self.config.host.carrier()),
+                )
+                .addr();
             join_native(NativeJoin {
                 endpoint: endpoint.clone(),
                 host,

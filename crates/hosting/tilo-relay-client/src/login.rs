@@ -278,8 +278,8 @@ pub async fn sign_in(
     on_pending: impl FnOnce(&str),
 ) -> Result<SignIn, CertifyError> {
     let info = https::host_info(client).await?;
-    let host = match https::host_endpoint(&info) {
-        Some(endpoint) => Host::at(endpoint),
+    let host = match &info.address {
+        Some(address) => Host::published(address),
         None => {
             return Err(CertifyError::Denied(
                 "This workspace's host takes no device connections, so no computer can sign in to it."

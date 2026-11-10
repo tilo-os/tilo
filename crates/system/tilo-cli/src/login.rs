@@ -240,14 +240,17 @@ pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<Entered
     .map_err(|error| anyhow!(error))?;
     let host_web = Origin::new(&http(), &device.host_origin);
     let info = https::host_info(&host_web).await?;
-    let endpoint = tilo_relay_client::https::host_endpoint(&info)
+    let host = info
+        .address
+        .as_ref()
+        .map(tilo_relay_client::Host::published)
         .context("the workspace's host takes no device connections")?;
     let (cert, host_cert) = device.certs()?;
     let signed = SignIn {
         link,
         agent: device.agent.clone(),
         label: device.label.clone(),
-        host: tilo_relay_client::Host::at(endpoint),
+        host,
         cert,
         host_cert,
     };

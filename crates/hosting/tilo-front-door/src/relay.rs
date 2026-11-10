@@ -124,12 +124,16 @@ impl Relay {
         let info = https::host_info(&self.host)
             .await
             .map_err(|error| RelayError::Unavailable(error.to_string()))?;
-        let endpoint = tilo_relay_client::https::host_endpoint(&info).ok_or_else(|| {
-            RelayError::Unavailable("the relay takes no device sessions".to_owned())
-        })?;
+        let host = info
+            .address
+            .as_ref()
+            .map(tilo_relay_client::Host::published)
+            .ok_or_else(|| {
+                RelayError::Unavailable("the relay takes no device sessions".to_owned())
+            })?;
         let device = Device::over(
             PeerConfig {
-                host: tilo_relay_client::Host::at(endpoint),
+                host,
                 cert: key.cert().clone(),
                 host_cert: info.host_cert,
                 revocations: tilo_user_identity::RevocationList::new(),

@@ -74,16 +74,16 @@ pub(super) async fn connect(
     dial: &mut Dial,
 ) -> Result<RelayClient, LinkError> {
     let host = &config.host;
-    let relay = host
-        .relay_url
-        .clone()
-        .or_else(|| host.addr.relay_urls().next().cloned());
-    let endpoint = bind_endpoint(
-        &mut dial.endpoint,
-        signer.device_signing_key().unwrap_or(dial.key),
-        relay.clone(),
-    )
-    .await?;
+    let endpoint = match &dial.endpoint {
+        Some(endpoint) => endpoint.clone(),
+        None => {
+            let endpoint = host
+                .bind(Some(signer.device_signing_key().unwrap_or(dial.key)))
+                .await?;
+            dial.endpoint = Some(endpoint.clone());
+            endpoint
+        }
+    };
     sign_delegation(
         signer,
         config.cert.device_public_key,
@@ -91,13 +91,9 @@ pub(super) async fn connect(
         &mut dial.delegation,
     )
     .await?;
-    let host = match relay {
-        Some(url) => host.addr.clone().with_relay_url(url),
-        None => host.addr.clone(),
-    };
     RelayClient::connect_with_signer(
         endpoint,
-        host,
+        host.addr(),
         Some(config.host_cert.user_public_key),
         Some(config.host_cert.device_public_key),
         config.cert.clone(),
@@ -106,40 +102,6 @@ pub(super) async fn connect(
     )
     .await
     .map_err(iroh_link_error)
-}
-
-/// The endpoint `slot` holds, bound from `key` on the first call and reused
-/// after: a page's key is derived from its store's channel vault, so a reload —
-/// and the planes beside the session — dial as the same endpoint.
-async fn bind_endpoint(
-    slot: &mut Option<iroh::Endpoint>,
-    key: [u8; 32],
-    relay: Option<iroh_base::RelayUrl>,
-) -> Result<iroh::Endpoint, LinkError> {
-    if let Some(endpoint) = slot {
-        return Ok(endpoint.clone());
-    }
-    // A page has no direct transport — every packet it sends goes through a
-    // relay — so an endpoint bound without one can never reach the host, and
-    // iroh shuts it down as soon as it is polled. A host that names no relay
-    // is unreachable from here, and says so.
-    #[cfg(target_arch = "wasm32")]
-    if relay.is_none() {
-        return Err(LinkError::Unavailable(
-            "the host named no relay a page can reach it through".into(),
-        ));
-    }
-    let mut builder = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .secret_key(iroh::SecretKey::from_bytes(&key));
-    if let Some(url) = relay {
-        builder = builder.relay_mode(iroh::RelayMode::Custom(url.into()));
-    }
-    let endpoint = builder
-        .bind()
-        .await
-        .map_err(|error| LinkError::Unavailable(error.to_string()))?;
-    *slot = Some(endpoint.clone());
-    Ok(endpoint)
 }
 
 /// This device's statement that `endpoint` speaks for `device`, for as long

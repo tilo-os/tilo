@@ -459,7 +459,7 @@ async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::te
         .await
         .unwrap();
     let (code_sent, code) = tokio::sync::oneshot::channel::<String>();
-    let address = host.iroh().addr;
+    let address = host.iroh().addr();
     let asking = tokio::spawn(async move {
         tilo_relay_client::request_certification(&endpoint, address, request, |code| {
             let _ = code_sent.send(code.to_owned());

@@ -51,13 +51,13 @@ use collab_types::presence::Presence;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_automerge::ApplyIncoming as _;
-use tilo_session_host::invite::{ask_to_join, guest_certificate};
-use tilo_session_host::{Host, PeerEvent, PeerHandle};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent};
 use tilo_relay_protocol::workspaces::{
     JoinReply, WorkspaceRole, WorkspacesReply, WorkspacesRequest,
 };
+use tilo_session_host::invite::{ask_to_join, guest_certificate};
+use tilo_session_host::{Host, PeerEvent, PeerHandle};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
@@ -369,25 +369,12 @@ impl Lounge {
         // device dials them, a page cannot — so the page is given the
         // endpoint's key and the relay, and nothing else: exactly what a
         // browser in the Lounge has.
-        let by_relay = iroh::EndpointAddr::new(self.address.endpoint_addr.id);
-        let by_relay = match self
-            .address
-            .relay_url
-            .as_deref()
-            .and_then(|url| url.parse().ok())
-        {
-            Some(relay) => by_relay.with_relay_url(relay),
-            None => self.address.endpoint_addr.clone(),
-        };
+        let host = Host::published(&tilo_relay_protocol::web::HostAddress {
+            endpoint_addr: iroh::EndpointAddr::new(self.address.endpoint_addr.id),
+            relay_url: self.address.relay_url.clone(),
+        });
         support::start_peer(
-            Host {
-                addr: by_relay,
-                relay_url: self
-                    .address
-                    .relay_url
-                    .as_deref()
-                    .and_then(|url| url.parse().ok()),
-            },
+            host,
             who.cert.clone(),
             self.host_cert.clone(),
             who.key.clone(),
