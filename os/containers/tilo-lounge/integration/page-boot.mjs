@@ -211,9 +211,15 @@ const settled = async (by = 2) => {
 };
 const panOf = async () => JSON.parse(await tab.evaluate(
   'JSON.stringify(globalThis.tiloMount?.navigation?.getSnapshot?.()?.desktopPan ?? null)').catch(() => 'null'));
-for (const [name, app] of [['Calculator', 'so.tilo.calculator'], ['Clocks', 'so.tilo.clocks'], ['Weather', 'so.tilo.weather']]) {
+// Sheets opens first and the others after it, so the search brings Sheets
+// back from the far end of the strip, as it does for a person (and in the
+// gate) once more windows opened since: the strip travels to it, and the
+// swipe comes two frames later.
+for (const [name, app] of [['Sheets', 'so.tilo.sheets'], ['Calculator', 'so.tilo.calculator'], ['Clocks', 'so.tilo.clocks'],
+  ['Weather', 'so.tilo.weather'], ['Tasks', 'so.tilo.tasks'], ['Contacts', 'so.tilo.contacts']]) {
   await open(name, app);
 }
+const away = await panOf();
 await open('Sheets', 'so.tilo.sheets');
 await settled(2);
 const centre = JSON.parse(await tab.evaluate(`JSON.stringify((() => {
@@ -233,7 +239,7 @@ const after = await panOf();
 // Sheets' opening moves here too, and that is no wheel's doing.
 await sleep(1500);
 const resting = await panOf();
-report.sheets = {before, swipe, after, resting};
+report.sheets = {away, before, swipe, after, resting};
 if (after?.offset !== before.offset) {
   await fail(`a sideways swipe over Sheets panned the strip from ${before.offset} to ${after?.offset} (each event: ${swipe.join(', ')}; at rest: ${resting?.offset})`);
 }
