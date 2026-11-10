@@ -219,10 +219,9 @@ async fn a_key_works_through_the_door_on_the_relay_and_ends_when_revoked() {
     let relay = hosted.web.plain_origin.clone().unwrap();
     let workspaces = hosted.relay.workspaces().unwrap();
     workspaces
-        .offer_own_workspaces(tilo_relay::workspaces::OwnWorkspaceOffer {
-            max_workspaces: 1,
-            ..tilo_relay::workspaces::OwnWorkspaceOffer::free("relay.tilo.test")
-        })
+        .offer_own_workspaces(tilo_relay::workspaces::OwnWorkspaceOffer::free(
+            "relay.tilo.test",
+        ))
         .unwrap();
     // The site's home workspace, whose door lets anyone in.
     let lobby = workspaces.create("Lounge").await.unwrap().workspace;
@@ -281,14 +280,20 @@ async fn a_key_works_through_the_door_on_the_relay_and_ends_when_revoked() {
         .as_str()
         .unwrap_or_else(|| panic!("a workspace is made: {created}"))
         .to_owned();
-    // The person keeps one of their own there: a second is refused, typed.
+    // A person has as many workspaces of their own there as they ask for: a
+    // second, named, is another one.
     let second = account
         .tilo_do(json!({"path": "account/workspaces#create", "args": {"name": "Another"}}))
         .await;
     assert_eq!(
-        second["result"]["structuredContent"]["status"], "failed",
+        second["result"]["structuredContent"]["status"], "ok",
         "{second}"
     );
+    let another = second["result"]["structuredContent"]["result"]["workspace"]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("another workspace is made: {second}"))
+        .to_owned();
+    assert_ne!(another, workspace);
     let listed = account
         .tilo_do(json!({"path": "account/workspaces#list"}))
         .await;
@@ -296,8 +301,12 @@ async fn a_key_works_through_the_door_on_the_relay_and_ends_when_revoked() {
         .as_array()
         .cloned()
         .unwrap_or_default();
-    assert_eq!(rows.len(), 1, "{listed}");
-    assert_eq!(rows[0]["id"], workspace.as_str());
+    assert_eq!(rows.len(), 2, "{listed}");
+    let ids: Vec<&str> = rows.iter().filter_map(|row| row["id"].as_str()).collect();
+    assert!(
+        ids.contains(&workspace.as_str()) && ids.contains(&another.as_str()),
+        "{listed}"
+    );
 
     // The relay's app workers answer it there, with no tab of anyone's
     // open.

@@ -51,8 +51,7 @@ Optional, with these defaults:
 | `TILO_ROOMS_AUTHOR_APPS` | every first-party app | comma-separated apps members write through; `none` makes the workspace read-only |
 | `TILO_ROOMS_BOTS` | none | `;`-separated bot specs (`<program or directory entry> key=value …`) |
 | `TILO_ROOMS_INACTIVE_AFTER_DAYS` | `30` | days without a session before a member stops being one |
-| `TILO_ROOMS_OWN_WORKSPACES` | none | gigabytes each person may keep in the workspaces of their own the host gives anyone who asks; unset gives none |
-| `TILO_ROOMS_OWN_WORKSPACE_COUNT` | `10` | workspaces of their own each person may keep, sharing those gigabytes |
+| `TILO_ROOMS_PERSON_STORAGE_GB` | `10` | gigabytes per person, shared by the workspaces of their own the host gives anyone who asks |
 | `TILO_ROOMS_STATE` | `/run/tilo-rooms` | the volume the workspace lives on |
 | `TILO_ROOMS_SITE_ORIGINS` | none | comma-separated origins besides the relay's that may join |
 | `TILO_ROOMS_RELAY_PLAIN` | `0.0.0.0:9780` | the listener the ingress forwards the workspace to |

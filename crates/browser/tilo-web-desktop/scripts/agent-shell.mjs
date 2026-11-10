@@ -316,10 +316,6 @@ for (let attempt = 1; started === null; attempt += 1) {
     '--packet-relay', `127.0.0.1:${relayPort}`,
     '--allowed-origin', siteOrigin, '--listing-description', 'A workspace for a person and their agent',
     '--default-role', 'editor', '--room-records',
-    // A host of people's own workspaces, as the site it stands in for is: the
-    // first screen sets the person up in one, and a host that keeps none
-    // refuses that outright.
-    '--own-workspaces',
     // The apps the workspace opens with: the ones the agent drives, which the
     // person's desktop shows too. The Terminal's sessions run on the host,
     // beside the workspace's records.

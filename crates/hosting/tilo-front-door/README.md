@@ -72,8 +72,9 @@ What it reaches:
   packet relay `/peer/v1/host` names: one session per MCP session, as the
   grant's key.
 
-The relay must offer workspaces of people's own (`TILO_ROOMS_OWN_WORKSPACES`)
-and run its workspaces' records (its agents, or `--room-records`).
+The relay must be a persistent host, which keeps workspaces of people's own
+for anyone who asks, and run its workspaces' records (its agents, or
+`--room-records`).
 
 - **Sign-in.** `TILO_DOOR_WEB_ENTRY` must serve `/sign-in`: given
   `audience`, `challenge`, `return`, `pending`, `client`, `grant_key`,

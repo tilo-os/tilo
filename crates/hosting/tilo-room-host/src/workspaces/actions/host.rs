@@ -260,7 +260,7 @@ fn create_own_params() -> Vec<ActionParam> {
         ActionParam::optional(
             "name",
             ParamType::Text,
-            "The new workspace's name, 1 to 80 printable characters: \"My workspace\" when omitted. Naming one makes another, while your plan keeps another for you; omitting it answers the first you made.",
+            "The new workspace's name, 1 to 80 printable characters: \"My workspace\" when omitted. Naming one makes another; omitting it answers the first you made.",
         ),
         ActionParam::optional(
             "room",
@@ -379,14 +379,7 @@ impl Workspaces {
             HostOperation::ListWorkspaces => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
-                let workspaces = self.list().await;
-                answer(
-                    &workspaces
-                        .iter()
-                        .filter(|summary| self.lists_to(device, &summary.workspace))
-                        .map(listing)
-                        .collect::<Vec<_>>(),
-                )
+                answer(&self.listed(device).await)
             }
             HostOperation::ListRevocations => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
@@ -476,6 +469,34 @@ impl Workspaces {
         })
     }
 
+    /// The workspaces `device` lists on this host: the host's person every
+    /// one, anyone else only the ones of their own, found by their ids so a
+    /// host with many workspaces answers a person with a few of them in the
+    /// time those few take.
+    async fn listed(&self, device: &DeviceCert) -> Vec<WorkspaceListing> {
+        if device.user_public_key != self.inner.host.cert.user_public_key {
+            let Some(own) = self.own() else {
+                return Vec::new();
+            };
+            let mut listed = Vec::new();
+            for workspace in own.of(&device.user_public_key) {
+                if !self.lists_to(device, &workspace) {
+                    continue;
+                }
+                if let Ok(one) = self.listing_of(&workspace).await {
+                    listed.push(one);
+                }
+            }
+            return listed;
+        }
+        self.list()
+            .await
+            .iter()
+            .filter(|summary| self.lists_to(device, &summary.workspace))
+            .map(listing)
+            .collect()
+    }
+
     /// Make another workspace of `device`'s person's own, already permitted
     /// to, and invite the person into it: the one they have when the ask
     /// names none, the one `room` names when it is one of theirs.
@@ -495,21 +516,13 @@ impl Workspaces {
             .unwrap_or(OWN_INVITATION_SECONDS);
         let making = own.making.lock().await;
         let mine = own.of(&person);
-        let listed = |workspace: &str| {
-            let workspace = workspace.to_owned();
-            async move {
-                self.list()
-                    .await
-                    .into_iter()
-                    .find(|summary| summary.workspace == workspace)
-                    .ok_or_else(|| refused(&"your workspace here is gone"))
-            }
-        };
         let theirs = moving.filter(|moving| mine.iter().any(|own| own == moving));
         let summary = if let Some(moving) = theirs {
             // One of theirs: a device of theirs entering it, or a grant's
             // parent asking for the invitation into it.
-            listed(moving).await?
+            self.summary(moving)
+                .await
+                .map_err(|error| refused(&error))?
         } else if name.is_none() && moving.is_some() && !mine.is_empty() {
             // A workspace this host does not keep for them, asked for as one
             // of theirs.
@@ -519,15 +532,9 @@ impl Workspaces {
             && let Some(first) = mine.first()
         {
             // A plain ask for "my workspace" answers the first they made.
-            listed(first).await?
+            self.summary(first).await.map_err(|error| refused(&error))?
         } else {
-            // Another one, while they may keep it.
-            let limit = own.max_workspaces(&person);
-            if mine.len() >= usize::try_from(limit).unwrap_or(usize::MAX) {
-                return Err(ActionHostError::Refused {
-                    reason: Self::too_many_own_refusal(limit, &mine).to_reason(),
-                });
-            }
+            // Another one: there is no bound on how many a person keeps.
             let name = name.unwrap_or(OWN_WORKSPACE_NAME);
             let summary = self
                 .create_workspace(name, moving)

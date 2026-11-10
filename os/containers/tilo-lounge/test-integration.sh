@@ -177,7 +177,7 @@ start_image() {
     TILO_ROOMS_ROLES_FILE=/run/tilo-rooms/roles.json \
     TILO_ROOMS_FETCH_PROXY=0 \
     TILO_ROOMS_CHAT_CHANNELS=general \
-    TILO_ROOMS_OWN_WORKSPACES=10 \
+    TILO_ROOMS_PERSON_STORAGE_GB=10 \
     /usr/local/bin/tilo-lounge >> "$log" 2>&1 &
   image_pid=$!
 }

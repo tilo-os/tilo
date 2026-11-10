@@ -117,7 +117,7 @@ no `workspace` and whose path is under `account` is answered by the door:
 | Path | What it is |
 |---|---|
 | `account/workspaces#list` | the relay's `room.list` as the grant: the workspaces of the person's own there |
-| `account/workspaces#create {name, host?}` | the relay's `room.create-own` as the grant, which then joins it; the relay keeps as many workspaces of each person's own as their plan does, sharing their storage, and refuses one more, typed |
+| `account/workspaces#create {name, host?}` | the relay's `room.create-own` as the grant, which then joins it; a person may have any number of workspaces of their own, sharing what the host keeps for them |
 | `account/workspaces#delete {workspace}` | refused for now: hosts have no operation that deletes a workspace |
 | `account/keys#list` | this key and the keys it minted, each with `expires_at_ms` (`null` until revoked), `last_used_at_ms` and `created_by` |
 | `account/keys#create {name, workspace?, expires_in?}` | asks the person; the run is `pending` until they approve, and `tilo_status` then answers the key |

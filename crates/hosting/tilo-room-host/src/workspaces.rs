@@ -702,6 +702,18 @@ impl GovernedWorkspace {
             members,
         }
     }
+
+    /// This workspace as a listing names it: what it is called and which
+    /// generation it stands at, without the people a summary answers, which
+    /// a listing does not.
+    fn listing(&self) -> WorkspaceListing {
+        WorkspaceListing {
+            workspace: self.record.workspace.clone(),
+            workspace_id: self.record.workspace_id,
+            name: self.record.name.clone(),
+            generation: self.record.generation,
+        }
+    }
 }
 
 use tilo_peer_state::workspace_membership::valid_workspace_name as valid_name;
@@ -1611,6 +1623,19 @@ impl Workspaces {
     /// The workspace is not governed here.
     pub async fn summary(&self, workspace: &str) -> Result<WorkspaceSummary, CollaborationError> {
         Ok(self.workspace(workspace).await?.lock().await.summary())
+    }
+
+    /// `workspace` as a listing names it: its name and generation, read
+    /// without its people.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not governed here.
+    pub async fn listing_of(
+        &self,
+        workspace: &str,
+    ) -> Result<WorkspaceListing, CollaborationError> {
+        Ok(self.workspace(workspace).await?.lock().await.listing())
     }
 
     /// Every person governance records in `workspace` other than its owner, by

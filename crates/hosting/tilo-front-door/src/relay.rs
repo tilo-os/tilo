@@ -291,9 +291,8 @@ impl Relay {
     }
 
     /// Make the person's workspace called `name` as `connection`, and enter
-    /// it. The relay keeps as many workspaces of each person's own as their
-    /// plan does, sharing their storage: asking for one more is refused,
-    /// typed.
+    /// it. A person has any number of workspaces of their own, sharing what
+    /// the host keeps for them.
     ///
     /// # Errors
     /// The relay was not reached or refused.

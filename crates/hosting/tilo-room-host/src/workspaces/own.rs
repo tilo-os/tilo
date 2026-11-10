@@ -1,26 +1,24 @@
-//! Workspaces of a person's own on this host: made when they first ask
-//! ([`HostOperation::CreateOwnWorkspace`]) and as many as their plan allows,
-//! governed here like every workspace this relay governs, with the person as
-//! each one's administrator.
+//! Workspaces of a person's own on this host: made whenever they ask
+//! ([`HostOperation::CreateOwnWorkspace`]), any number of them, governed here
+//! like every workspace this relay governs, with the person as each one's
+//! administrator.
 //!
-//! A host keeps them only when its operator offers them
-//! ([`Workspaces::offer_own_workspaces`]), with what each person may keep:
-//! how many they have ([`OwnWorkspaceOffer::max_workspaces`], or the count
-//! their plan sets when the host knows their plan,
-//! [`Workspaces::set_own_plan`]) and the bytes all of them take on this host
-//! together, their history and state ([`OwnWorkspaceOffer::storage_bytes`]).
-//! A write to a full workspace is refused ([`Workspaces::storage_refusal`]),
-//! typed as the host's account refusals are
-//! ([`host_account::Reason::StorageFull`]); the person's account read answers
-//! how many they have, how much they keep and how much they may keep
-//! ([`Workspaces::own_account`]).
+//! Every host that serves persistently keeps them, with what each person may
+//! keep: the bytes all of them take on this host together, their history and
+//! state ([`OwnWorkspaceOffer::storage_bytes`], or what their plan sets when
+//! the host knows their plan, [`Workspaces::set_own_plan`]). There is no bound
+//! on how many they have. A write to a full workspace is refused
+//! ([`Workspaces::storage_refusal`]), typed as the host's account refusals
+//! are ([`host_account::Reason::StorageFull`]); the person's account read
+//! answers how much they keep and may keep ([`Workspaces::own_account`]).
 //!
 //! The files members post are kept apart, bounded on their own (oldest go
 //! first), and not counted here.
 //!
 //! Which workspaces are whose is kept beside the workspaces' records, in
 //! `own-workspaces.json`, so asking again after a restart answers the same
-//! ones.
+//! ones, and a person's listing is found by their ids rather than by reading
+//! every workspace this host governs.
 //!
 //! [`HostOperation::CreateOwnWorkspace`]: crate::host_authority::HostOperation::CreateOwnWorkspace
 
@@ -29,8 +27,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use tilo_actions::remote::host_account::{
-    self, HostAccount, HostKind, Limits, NextStep, NextStepKind, PlanOffer, Reason, Refusal,
-    Standing, Usage, WorkspaceUsage,
+    HostAccount, HostKind, Limits, NextStep, NextStepKind, PlanOffer, Reason, Refusal, Standing,
+    Usage, WorkspaceUsage,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -55,26 +53,18 @@ pub struct OwnWorkspaceOffer {
     /// Bytes all the person's workspaces of their own may take on this host
     /// together.
     pub storage_bytes: u64,
-    /// Workspaces of their own each person may keep here, while their plan
-    /// sets no count.
-    pub max_workspaces: u32,
 }
 
 impl OwnWorkspaceOffer {
     /// Ten gigabytes: what a person's own workspaces keep here.
     pub const DEFAULT_STORAGE_BYTES: u64 = 10_000_000_000;
-    /// Ten workspaces of their own: what a host gives each person while its
-    /// operator names no count.
-    pub const DEFAULT_MAX_WORKSPACES: u32 = 10;
 
-    /// The host `host` giving each person [`Self::DEFAULT_STORAGE_BYTES`] and
-    /// [`Self::DEFAULT_MAX_WORKSPACES`].
+    /// The host `host` giving each person [`Self::DEFAULT_STORAGE_BYTES`].
     #[must_use]
     pub fn free(host: impl Into<String>) -> Self {
         Self {
             host: host.into(),
             storage_bytes: Self::DEFAULT_STORAGE_BYTES,
-            max_workspaces: Self::DEFAULT_MAX_WORKSPACES,
         }
     }
 }
@@ -92,8 +82,8 @@ pub(super) struct OwnWorkspaces {
     plans: std::sync::Mutex<BTreeMap<String, PlanOffer>>,
     /// Each own workspace's measured size, and when it was measured.
     measured: std::sync::Mutex<HashMap<String, (u64, Instant)>>,
-    /// Held while a person's workspace is made: two of their devices asking
-    /// at once get the same one, and never one more than they may keep.
+    /// Held while a person's workspace is made, so two of their devices
+    /// asking at once are answered in the order they were recorded.
     pub(super) making: tokio::sync::Mutex<()>,
 }
 
@@ -166,7 +156,7 @@ impl OwnWorkspaces {
             return Ok(());
         }
         mine.push(workspace.to_owned());
-        let bytes = serde_json::to_vec_pretty(&next).map_err(|error| error.to_string())?;
+        let bytes = serde_json::to_vec(&next).map_err(|error| error.to_string())?;
         // Written before it is answered, under the lock, so two records
         // never race to the file.
         tilo_files::native::atomic::write(&self.path, &bytes).map_err(|error| error.to_string())?;
@@ -182,30 +172,26 @@ impl OwnWorkspaces {
     }
 
     /// The plan `person` is on here: theirs when the host's account knows it,
-    /// else the free plan with what the offer gives everyone.
+    /// else the free plan with what the offer gives everyone. What this host
+    /// keeps of it is how much their own workspaces may keep: how many they
+    /// have is not bounded here, so the count it may name is not answered.
     fn plan_of(&self, person: &[u8; 32]) -> PlanOffer {
-        self.plans
-            .lock_recover()
-            .get(&hex::encode(person))
-            .cloned()
-            .unwrap_or_else(|| PlanOffer {
-                id: FREE_PLAN.to_owned(),
-                name: "Free".to_owned(),
-                price: None,
-                limits: Limits {
-                    storage_bytes: Some(self.offer.storage_bytes),
-                    max_workspaces: Some(self.offer.max_workspaces),
-                    ..Limits::default()
-                },
-            })
-    }
-
-    /// How many workspaces of their own `person` may keep here.
-    pub(super) fn max_workspaces(&self, person: &[u8; 32]) -> u32 {
-        self.plan_of(person)
-            .limits
-            .max_workspaces
-            .unwrap_or(self.offer.max_workspaces)
+        let held = self.plans.lock_recover().get(&hex::encode(person)).cloned();
+        let mut plan = held.unwrap_or_else(|| PlanOffer {
+            id: FREE_PLAN.to_owned(),
+            name: "Free".to_owned(),
+            price: None,
+            limits: Limits::default(),
+        });
+        plan.limits = Limits {
+            storage_bytes: Some(
+                plan.limits
+                    .storage_bytes
+                    .unwrap_or(self.offer.storage_bytes),
+            ),
+            ..Limits::default()
+        };
+        plan
     }
 
     /// The bytes all the workspaces of `person`'s own may take here together.
@@ -216,61 +202,92 @@ impl OwnWorkspaces {
             .unwrap_or(self.offer.storage_bytes)
     }
 
-    /// The bytes `workspace`, carried as `workspace_id`, takes on the host
-    /// whose workspaces' records are in `dir`: measured again when the last
-    /// measure is older than [`MEASURED_FOR`], or `fresh`.
-    pub(super) fn stored(
-        &self,
-        dir: &Path,
-        workspace: &str,
-        workspace_id: u64,
-        fresh: bool,
-    ) -> u64 {
+    /// The bytes each of `workspaces` (their UUIDs) takes on the host whose
+    /// workspaces' records are in `dir`, in the same order: measured again
+    /// for the ones last measured longer ago than [`MEASURED_FOR`], or for
+    /// all of them when `fresh`. The records are read once for all of them,
+    /// so a person's hundredth workspace costs no more than their first.
+    fn sizes(&self, dir: &Path, workspaces: &[String], fresh: bool) -> Vec<u64> {
         let now = Instant::now();
-        if !fresh
-            && let Some((bytes, at)) = self.measured.lock_recover().get(workspace)
-            && now.saturating_duration_since(*at) < MEASURED_FOR
-        {
-            return *bytes;
+        let cached: Vec<Option<u64>> = {
+            let measured = self.measured.lock_recover();
+            workspaces
+                .iter()
+                .map(|workspace| {
+                    measured
+                        .get(workspace)
+                        .filter(|_| !fresh)
+                        .filter(|(_, at)| now.saturating_duration_since(*at) < MEASURED_FOR)
+                        .map(|(bytes, _)| *bytes)
+                })
+                .collect()
+        };
+        let stale: Vec<&String> = workspaces
+            .iter()
+            .zip(&cached)
+            .filter_map(|(workspace, cached)| cached.is_none().then_some(workspace))
+            .collect();
+        if !stale.is_empty() {
+            let beside = beside_bytes(dir);
+            let host_state = dir.parent();
+            let measured_now: Vec<u64> = stale
+                .iter()
+                .map(|workspace| {
+                    beside
+                        .get(workspace.as_str())
+                        .copied()
+                        .unwrap_or_default()
+                        .saturating_add(
+                            host_state.map_or(0, |state| stored_state(state, workspace)),
+                        )
+                })
+                .collect();
+            let mut measured = self.measured.lock_recover();
+            for (workspace, bytes) in stale.iter().zip(&measured_now) {
+                measured.insert((*workspace).clone(), (*bytes, now));
+            }
         }
-        let bytes = stored_bytes(dir, workspace, workspace_id);
-        self.measured
-            .lock_recover()
-            .insert(workspace.to_owned(), (bytes, now));
-        bytes
+        let measured = self.measured.lock_recover();
+        workspaces
+            .iter()
+            .map(|workspace| measured.get(workspace).map_or(0, |(bytes, _)| *bytes))
+            .collect()
     }
 
     /// The bytes every workspace of `person`'s own takes on the host whose
     /// workspaces' records are in `dir` together: what they share.
     fn used(&self, dir: &Path, person: &[u8; 32], fresh: bool) -> u64 {
-        self.of(person)
+        self.sizes(dir, &self.of(person), fresh)
             .iter()
-            .filter_map(|workspace| {
-                let workspace_id = tilo_relay_protocol::room_workspace_id(workspace).ok()?;
-                Some(self.stored(dir, workspace, workspace_id, fresh))
-            })
+            .copied()
             .fold(0_u64, u64::saturating_add)
     }
 }
 
-/// What `workspace` (carried as `workspace_id`) keeps on a host whose
-/// workspaces' records are in `dir`: its record and the files beside it, the
-/// relay's retained state of it, and its sealed history.
-fn stored_bytes(dir: &Path, workspace: &str, workspace_id: u64) -> u64 {
-    let beside = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| name.starts_with(workspace))
-        })
-        .map(|entry| tree_bytes(&entry.path()))
-        .fold(0_u64, u64::saturating_add);
-    let Some(state) = dir.parent() else {
-        return beside;
+/// Every file beside the workspaces' records in `dir`, by the workspace whose
+/// record it belongs to (`<workspace>.<what>`): read once, however many
+/// workspaces are measured.
+fn beside_bytes(dir: &Path) -> HashMap<String, u64> {
+    let mut beside: HashMap<String, u64> = HashMap::new();
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let workspace = name
+            .split_once('.')
+            .map_or(name.as_str(), |(workspace, _)| workspace);
+        let bytes = tree_bytes(&entry.path());
+        let total = beside.entry(workspace.to_owned()).or_default();
+        *total = total.saturating_add(bytes);
+    }
+    beside
+}
+
+/// What `workspace` keeps in the host's retained state and sealed history,
+/// under its `state` directory.
+fn stored_state(state: &Path, workspace: &str) -> u64 {
+    let Ok(workspace_id) = tilo_relay_protocol::room_workspace_id(workspace) else {
+        return 0;
     };
     [
         state.join("workspaces").join(workspace_id.to_string()),
@@ -281,7 +298,7 @@ fn stored_bytes(dir: &Path, workspace: &str, workspace_id: u64) -> u64 {
     ]
     .iter()
     .map(|path| tree_bytes(path))
-    .fold(beside, u64::saturating_add)
+    .fold(0_u64, u64::saturating_add)
 }
 
 /// The bytes of the file at `path`, or of every file under it.
@@ -327,10 +344,10 @@ impl Workspaces {
         self.inner.own.get()
     }
 
-    /// Put `person` on `plan` here: how many workspaces of their own they may
-    /// keep and how much those take, as the host's account for them says
-    /// rather than what [`OwnWorkspaceOffer`] gives everyone. `false` when
-    /// this host keeps no workspaces of people's own.
+    /// Put `person` on `plan` here: how much the workspaces of their own may
+    /// keep, as the host's account for them says rather than what
+    /// [`OwnWorkspaceOffer`] gives everyone. How many they have stays
+    /// unbounded. `false` when this host keeps no workspaces of people's own.
     ///
     /// A plan is not kept across a restart: whoever knows a person's plan
     /// sets it again, as it sets the offer.
@@ -408,22 +425,22 @@ impl Workspaces {
     }
 
     /// `person`'s account with this host, when it keeps workspaces of
-    /// people's own: the plan they are on, how many workspaces of their own
-    /// they have, what those keep and may keep.
+    /// people's own: the plan they are on, the workspaces of their own they
+    /// have, what those keep and may keep, and no bound on how many there
+    /// are.
     #[must_use]
     pub fn own_account(&self, person: &[u8; 32]) -> Option<HostAccount> {
         let own = self.own()?;
         let plan = own.plan_of(person);
-        let workspaces: Vec<WorkspaceUsage> = own
-            .of(person)
-            .iter()
-            .filter_map(|workspace| {
-                let workspace_id = tilo_relay_protocol::room_workspace_id(workspace).ok()?;
-                Some(WorkspaceUsage {
-                    workspace: workspace.clone(),
-                    stored_bytes: own.stored(&self.inner.dir, workspace, workspace_id, false),
-                    ..WorkspaceUsage::default()
-                })
+        let mine = own.of(person);
+        let sizes = own.sizes(&self.inner.dir, &mine, false);
+        let workspaces: Vec<WorkspaceUsage> = mine
+            .into_iter()
+            .zip(sizes)
+            .map(|(workspace, stored_bytes)| WorkspaceUsage {
+                workspace,
+                stored_bytes,
+                ..WorkspaceUsage::default()
             })
             .collect();
         Some(HostAccount {
@@ -443,32 +460,14 @@ impl Workspaces {
             manage_billing: None,
         })
     }
-
-    /// The refusal of another workspace of `person`'s own, who has `existing`
-    /// and may keep `limit` of them.
-    pub(super) fn too_many_own_refusal(limit: u32, existing: &[String]) -> Refusal {
-        let keeps = if limit == 1 {
-            "one workspace of your own".to_owned()
-        } else {
-            format!("{limit} workspaces of your own")
-        };
-        Refusal {
-            reason: host_account::Reason::TooManyWorkspaces {
-                limit,
-                existing: existing.to_vec(),
-            },
-            message: format!("You have all the {keeps} this host keeps for you; use one of those."),
-            next: vec![NextStep {
-                kind: NextStepKind::UseExisting,
-                url: None,
-            }],
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A workspace of a person's own to measure.
+    const MINE: &str = "0f0e0d0c-0b0a-4908-8706-050403020100";
 
     #[test]
     fn whose_workspace_is_whose_survives_a_restart() {
@@ -487,14 +486,10 @@ mod tests {
     }
 
     #[test]
-    fn a_person_on_a_plan_keeps_what_it_says_rather_than_what_the_offer_gives() {
+    fn a_plan_sets_what_a_persons_workspaces_keep_and_never_how_many_they_have() {
         let dir = tempfile::tempdir().unwrap();
         let own = OwnWorkspaces::open(dir.path(), OwnWorkspaceOffer::free("tilo.test")).unwrap();
         let person = [3; 32];
-        assert_eq!(
-            own.max_workspaces(&person),
-            OwnWorkspaceOffer::DEFAULT_MAX_WORKSPACES
-        );
         assert_eq!(
             own.storage_bytes(&person),
             OwnWorkspaceOffer::DEFAULT_STORAGE_BYTES
@@ -512,11 +507,15 @@ mod tests {
                 },
             },
         );
-        assert_eq!(own.max_workspaces(&person), 3);
         assert_eq!(own.storage_bytes(&person), 50);
         assert_eq!(
-            own.max_workspaces(&[4; 32]),
-            OwnWorkspaceOffer::DEFAULT_MAX_WORKSPACES,
+            own.plan_of(&person).limits.max_workspaces,
+            None,
+            "how many workspaces a person has is not bounded here"
+        );
+        assert_eq!(
+            own.storage_bytes(&[4; 32]),
+            OwnWorkspaceOffer::DEFAULT_STORAGE_BYTES,
             "a plan is one person's"
         );
     }
@@ -526,28 +525,28 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let dir = state.path().join("rooms");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("w.room"), [0; 10]).unwrap();
-        std::fs::write(dir.join("w.admissions"), [0; 5]).unwrap();
+        std::fs::write(dir.join(format!("{MINE}.room")), [0; 10]).unwrap();
+        std::fs::write(dir.join(format!("{MINE}.admissions")), [0; 5]).unwrap();
         std::fs::write(dir.join("other.room"), [0; 1000]).unwrap();
-        let retained = state.path().join("workspaces/7/retained");
+        let workspace_id = tilo_relay_protocol::room_workspace_id(MINE).unwrap();
+        let retained = state
+            .path()
+            .join("workspaces")
+            .join(workspace_id.to_string());
         std::fs::create_dir_all(&retained).unwrap();
-        std::fs::write(retained.join("a"), [0; 100]).unwrap();
-        let history = state.path().join("store/workspaces/0000000000000007/x");
+        std::fs::write(retained.join("retained"), [0; 100]).unwrap();
+        let history = state
+            .path()
+            .join("store/workspaces")
+            .join(format!("{workspace_id:016x}"));
         std::fs::create_dir_all(&history).unwrap();
-        std::fs::write(history.join("b"), [0; 1000 - 115 + 1]).unwrap();
-        std::fs::create_dir_all(state.path().join("workspaces/8")).unwrap();
-        std::fs::write(state.path().join("workspaces/8/c"), [0; 50]).unwrap();
-        assert_eq!(stored_bytes(&dir, "w", 7), 1001);
-        let offer = OwnWorkspaceOffer {
-            host: "tilo.test".into(),
-            storage_bytes: 1000,
-            max_workspaces: 1,
-        };
-        let own = OwnWorkspaces::open(&dir, offer).unwrap();
-        assert_eq!(own.stored(&dir, "w", 7, false), 1001);
-        std::fs::remove_file(history.join("b")).unwrap();
+        std::fs::write(history.join("x"), [0; 1000]).unwrap();
+        let own = OwnWorkspaces::open(&dir, OwnWorkspaceOffer::free("tilo.test")).unwrap();
+        let both = [MINE.to_owned(), "other".to_owned()];
+        assert_eq!(own.sizes(&dir, &both, false), [1115, 1000]);
+        std::fs::remove_file(history.join("x")).unwrap();
         // Trusted until measured afresh.
-        assert_eq!(own.stored(&dir, "w", 7, false), 1001);
-        assert_eq!(own.stored(&dir, "w", 7, true), 115);
+        assert_eq!(own.sizes(&dir, &both, false), [1115, 1000]);
+        assert_eq!(own.sizes(&dir, &both, true), [115, 1000]);
     }
 }

@@ -73,7 +73,7 @@ env -i HOME="$work" PATH="$work/bin:/usr/bin:/bin" \
   TILO_ROOMS_ROOT_FILE="$volume/secrets/room-root" \
   TILO_ROOMS_FETCH_PROXY=0 \
   TILO_ROOMS_CHAT_CHANNELS=general \
-  TILO_ROOMS_OWN_WORKSPACES=10 \
+  TILO_ROOMS_PERSON_STORAGE_GB=10 \
   sh "$here/entrypoint.sh" >> "$log" 2>&1 &
 pids+=($!)
 for _ in $(seq 1200); do

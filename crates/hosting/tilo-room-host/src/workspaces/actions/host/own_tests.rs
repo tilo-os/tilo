@@ -1,8 +1,8 @@
 //! Workspaces of people's own on a host that keeps them: anyone's device
-//! asks, the ones they have answer every time, as many as their plan keeps
-//! are made and one more is refused typed, the person administers each from
-//! their first device on, and their workspaces share what the host gives them
-//! and keep no more of their writes when it is full.
+//! asks, the ones they have answer every time, another is made for each name
+//! with no bound on how many, the person administers each from their first
+//! device on, and their workspaces share what the host gives them and keep no
+//! more of their writes when it is full.
 
 #![expect(
     clippy::significant_drop_tightening,
@@ -11,7 +11,7 @@
 
 use ed25519_dalek::{Signer as _, SigningKey};
 use serde_json::{Value, json};
-use tilo_actions::remote::host_account::{self, HostAccount, Reason, Refusal};
+use tilo_actions::remote::host_account::{self, HostAccount, Reason};
 use tilo_actions::remote::{
     ActionHost as _, ActionHostError, Caller, CatalogueQuery, InvokeRequest, ReceiptStatus,
 };
@@ -239,104 +239,95 @@ async fn anyone_gets_one_workspace_of_their_own_and_administers_it() {
     relay.shutdown().await;
 }
 
-#[tokio::test]
-async fn a_person_keeps_as_many_workspaces_of_their_own_as_they_may() {
-    let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces().clone();
-    let offer = OwnWorkspaceOffer {
-        max_workspaces: 2,
-        ..OwnWorkspaceOffer::free("tilo.test")
-    };
-    workspaces.offer_own_workspaces(offer.clone()).unwrap();
-    let host = HostWorkspaceActions::new();
-    host.attach(workspaces.clone());
-    let (_, guest) = guest_device();
-    let first = create_own(&host, &guest, json!({"name": "Work"}))
-        .await
-        .unwrap();
-    let second = create_own(&host, &guest, json!({"name": "Side project"}))
-        .await
-        .unwrap();
-    assert_ne!(first.workspace.workspace, second.workspace.workspace);
-    assert_eq!(
-        workspaces.own_workspaces_of(&guest.user_public_key),
-        [
-            first.workspace.workspace.clone(),
-            second.workspace.workspace.clone()
-        ]
-    );
-    // One more than the host keeps for them is refused, typed, naming both
-    // of theirs and the count.
-    let refused = create_own(&host, &guest, json!({"name": "Another"}))
-        .await
-        .unwrap_err();
-    let ActionHostError::Refused { reason } = refused else {
-        panic!("{refused:?}");
-    };
-    assert_eq!(
-        Refusal::from_reason(&reason).unwrap().reason,
-        Reason::TooManyWorkspaces {
-            limit: 2,
-            existing: vec![
-                first.workspace.workspace.clone(),
-                second.workspace.workspace.clone()
-            ],
-        }
-    );
-    // A plain ask still answers the first they made.
-    let again = create_own(&host, &guest, json!({})).await.unwrap();
-    assert_eq!(again.workspace.workspace, first.workspace.workspace);
-
-    // After a restart the host answers the same ones, and the same count.
-    drop(host);
-    drop(workspaces);
-    relay.shutdown().await;
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces().clone();
-    workspaces.offer_own_workspaces(offer).unwrap();
-    let host = HostWorkspaceActions::new();
-    host.attach(workspaces.clone());
-    assert_eq!(
-        workspaces.own_workspaces_of(&guest.user_public_key),
-        [
-            first.workspace.workspace.clone(),
-            second.workspace.workspace.clone()
-        ]
-    );
-    let again = create_own(&host, &guest, json!({})).await.unwrap();
-    assert_eq!(again.workspace.workspace, first.workspace.workspace);
-    let refused = create_own(&host, &guest, json!({"name": "Another"}))
-        .await
-        .unwrap_err();
-    let ActionHostError::Refused { reason } = refused else {
-        panic!("{refused:?}");
-    };
-    assert_eq!(
-        Refusal::from_reason(&reason).unwrap().reason,
-        Reason::TooManyWorkspaces {
-            limit: 2,
-            existing: vec![
-                first.workspace.workspace.clone(),
-                second.workspace.workspace.clone()
-            ],
-        }
-    );
-    relay.shutdown().await;
-}
+/// How many workspaces of their own one person is given in one test.
+const HUNDREDS: usize = 300;
+/// How long answering one more workspace of a person's own, listing the ones
+/// they have, or reading their account may take once they have hundreds.
+const QUICK: std::time::Duration = std::time::Duration::from_millis(200);
 
 #[tokio::test]
-async fn the_account_read_lists_every_workspace_of_their_own_and_how_many_they_may_keep() {
+async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_quick() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
     let workspaces = relay.workspaces().clone();
     workspaces
-        .offer_own_workspaces(OwnWorkspaceOffer {
-            max_workspaces: 2,
-            ..OwnWorkspaceOffer::free("tilo.test")
-        })
+        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
+        .unwrap();
+    let host = HostWorkspaceActions::new();
+    host.attach(workspaces.clone());
+    let (_, guest) = guest_device();
+    let mut made = Vec::new();
+    let mut last = std::time::Duration::ZERO;
+    for number in 0..HUNDREDS {
+        let started = std::time::Instant::now();
+        let created = create_own(
+            &host,
+            &guest,
+            json!({"name": format!("Workspace {number}")}),
+        )
+        .await
+        .unwrap();
+        last = started.elapsed();
+        made.push(created.workspace.workspace);
+    }
+    assert_eq!(
+        workspaces.own_workspaces_of(&guest.user_public_key),
+        made,
+        "there is no bound on how many workspaces of their own a person keeps"
+    );
+    assert!(last < QUICK, "the {HUNDREDS}th workspace took {last:?}");
+    // Their listing names every one, in the time their own take.
+    let mut ask = own_request(json!({}));
+    ask.target.address.action = tilo_relay_session::workspaces::LIST_ROOMS.into();
+    let started = std::time::Instant::now();
+    let listed: Vec<tilo_relay_session::workspaces::WorkspaceListing> =
+        serde_json::from_value(invoke(&host, &guest, ask).await.unwrap()).unwrap();
+    let listing = started.elapsed();
+    assert_eq!(listed.len(), HUNDREDS, "{listed:?}");
+    assert!(
+        listed.iter().all(|one| made.contains(&one.workspace)),
+        "a listing names the workspaces of their own"
+    );
+    assert!(listing < QUICK, "listing {HUNDREDS} took {listing:?}");
+    // Their account read lists every one, measuring what they keep once for
+    // all of them.
+    let started = std::time::Instant::now();
+    let account = workspaces.own_account(&guest.user_public_key).unwrap();
+    let read = started.elapsed();
+    let standing = account.standing.unwrap();
+    assert_eq!(standing.usage.workspaces.len(), HUNDREDS);
+    assert_eq!(
+        standing.limits.unwrap().max_workspaces,
+        None,
+        "how many of their own a person may keep is unbounded"
+    );
+    assert!(read < QUICK, "their account read took {read:?}");
+    // The file that says whose each of them is holds every one, one rewrite
+    // per workspace made.
+    let index = dir.path().join("rooms/own-workspaces.json");
+    let kept: serde_json::Value = serde_json::from_slice(&std::fs::read(&index).unwrap()).unwrap();
+    assert_eq!(
+        kept[&hex::encode(guest.user_public_key)]
+            .as_array()
+            .map(Vec::len),
+        Some(HUNDREDS)
+    );
+    eprintln!(
+        "{HUNDREDS} workspaces of their own: the last made in {last:?}, listed in {listing:?}, read in {read:?}, whose-names file {} bytes",
+        std::fs::metadata(&index).unwrap().len()
+    );
+    relay.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_account_read_lists_every_workspace_of_their_own_with_no_bound_on_how_many() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces().clone();
+    workspaces
+        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
         .unwrap();
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
@@ -354,8 +345,12 @@ async fn the_account_read_lists_every_workspace_of_their_own_and_how_many_they_m
     let standing = account.standing.unwrap();
     assert_eq!(account.host, "tilo.test");
     assert_eq!(standing.account, hex::encode(guest.user_public_key));
-    assert_eq!(standing.limits.unwrap().max_workspaces, Some(2));
-    assert_eq!(account.plans[0].limits.max_workspaces, Some(2));
+    assert_eq!(
+        standing.limits.unwrap().max_workspaces,
+        None,
+        "no bound on how many workspaces of their own a person keeps"
+    );
+    assert_eq!(account.plans[0].limits.max_workspaces, None);
     let listed: Vec<&str> = standing
         .usage
         .workspaces
@@ -383,7 +378,7 @@ async fn the_account_read_lists_every_workspace_of_their_own_and_how_many_they_m
 }
 
 #[tokio::test]
-async fn a_plan_sets_how_many_workspaces_of_their_own_a_person_keeps() {
+async fn a_plan_sets_the_storage_a_persons_own_workspaces_keep() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
@@ -391,54 +386,37 @@ async fn a_plan_sets_how_many_workspaces_of_their_own_a_person_keeps() {
     workspaces
         .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
         .unwrap();
-    let host = HostWorkspaceActions::new();
-    host.attach(workspaces.clone());
     let (_, guest) = guest_device();
     let plan = tilo_actions::remote::host_account::PlanOffer {
         id: "pro".into(),
         name: "Pro".into(),
         price: None,
         limits: tilo_actions::remote::host_account::Limits {
-            max_workspaces: Some(1),
+            storage_bytes: Some(2_000_000_000),
             ..tilo_actions::remote::host_account::Limits::default()
         },
     };
-    assert!(workspaces.set_own_plan(&guest.user_public_key, plan.clone()));
-    assert!(
-        create_own(&host, &guest, json!({"name": "Solo"}))
-            .await
-            .is_ok()
-    );
-    // Their plan keeps one, not the ten the host gives everyone.
-    let refused = create_own(&host, &guest, json!({"name": "One more"}))
-        .await
-        .unwrap_err();
-    let ActionHostError::Refused { reason } = refused else {
-        panic!("{refused:?}");
-    };
+    assert!(workspaces.set_own_plan(&guest.user_public_key, plan));
+    let account = workspaces.own_account(&guest.user_public_key).unwrap();
+    assert_eq!(account.plans[0].id, "pro");
     assert_eq!(
-        Refusal::from_reason(&reason).unwrap().reason,
-        Reason::TooManyWorkspaces {
-            limit: 1,
-            existing: vec![workspaces.own_workspaces_of(&guest.user_public_key)[0].clone()],
-        }
+        account.plans[0].limits.storage_bytes,
+        Some(2_000_000_000),
+        "their plan's storage, not the host's ten gigabytes"
     );
-    // The account read is the plan they are on, and a stranger is on the
-    // free one.
-    let mut read = super::super::tests::request("", host_account::ACCOUNT, json!({}));
-    read.target = host_account::target(host_account::ACCOUNT);
-    let account: HostAccount =
-        serde_json::from_value(invoke(&host, &guest, read).await.unwrap()).unwrap();
-    assert_eq!(account.plans, [plan]);
-    assert_eq!(
-        account.standing.unwrap().limits.unwrap().max_workspaces,
-        Some(1)
-    );
+    let limits = account.standing.unwrap().limits.unwrap();
+    assert_eq!(limits.storage_bytes, Some(2_000_000_000));
+    assert_eq!(limits.max_workspaces, None);
+    // A stranger is on the host's own storage.
     let (_, stranger) = guest_device();
-    let account = workspaces.own_account(&stranger.user_public_key).unwrap();
     assert_eq!(
-        account.standing.unwrap().limits.unwrap().max_workspaces,
-        Some(OwnWorkspaceOffer::DEFAULT_MAX_WORKSPACES)
+        workspaces
+            .own_account(&stranger.user_public_key)
+            .unwrap()
+            .plans[0]
+            .limits
+            .storage_bytes,
+        Some(OwnWorkspaceOffer::DEFAULT_STORAGE_BYTES)
     );
     relay.shutdown().await;
 }
@@ -624,7 +602,6 @@ async fn a_full_workspace_of_ones_own_is_refused_and_the_account_says_so() {
         .offer_own_workspaces(OwnWorkspaceOffer {
             host: "tilo.test".into(),
             storage_bytes: 1,
-            max_workspaces: 1,
         })
         .unwrap();
     let host = HostWorkspaceActions::new();
