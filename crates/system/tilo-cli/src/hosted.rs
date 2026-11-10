@@ -359,7 +359,7 @@ pub fn arguments(args: &[String]) -> Result<Value> {
 }
 
 /// Run `future` on a fresh runtime, printing an error as the command's.
-fn run(future: impl std::future::Future<Output = Result<ExitCode>>) -> ExitCode {
+pub(crate) fn run(future: impl std::future::Future<Output = Result<ExitCode>>) -> ExitCode {
     match runtime().and_then(|runtime| runtime.block_on(future)) {
         Ok(code) => code,
         Err(error) => {
@@ -403,6 +403,65 @@ pub fn program(door: Option<&str>, json: bool, workspace: &str, file: &Path) -> 
         session.close().await;
         Ok(client.show(&result?))
     })
+}
+
+/// The surfaces of the apps installed in `workspace`: each app's `surface.toml`, as the
+/// workspace's own read of the app answers it (`tilo sdk gen -w`).
+pub fn surfaces(door: Option<&str>, workspace: &str) -> Result<Vec<crate::sdk::App>> {
+    runtime()?.block_on(read_surfaces(door, workspace))
+}
+
+/// [`surfaces`], over the workspace's MCP endpoint.
+async fn read_surfaces(door: Option<&str>, workspace: &str) -> Result<Vec<crate::sdk::App>> {
+    let client = Client::from_env(door, false)?;
+    let workspace = client.workspace(workspace).await?;
+    let session = client.session(&format!("/w/{workspace}/mcp")).await?;
+    let apps = installed(&session).await;
+    session.close().await;
+    apps
+}
+
+/// The apps `session`'s workspace lists, each with the surface its read of the app answers.
+/// An app whose surface the workspace does not hold (one that has not run there) is left out,
+/// and said so.
+async fn installed(session: &Session<'_>) -> Result<Vec<crate::sdk::App>> {
+    let listing = session.call("tilo_ls", json!({})).await?;
+    let rows = listing
+        .pointer("/structuredContent/rows")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut apps = Vec::new();
+    for row in rows {
+        if row.get("kind").and_then(Value::as_str) != Some("app") {
+            continue;
+        }
+        let Some(path) = row.get("path").and_then(Value::as_str) else {
+            continue;
+        };
+        let read = session.call("tilo_read", json!({"path": path})).await?;
+        let typed = read.get("structuredContent").unwrap_or(&Value::Null);
+        let Some(surface) = typed.get("surface").and_then(Value::as_str) else {
+            eprintln!(
+                "tilo: {path} publishes no surface in that workspace: no app of it has run there"
+            );
+            continue;
+        };
+        apps.push(crate::sdk::App {
+            id: typed
+                .get("app")
+                .and_then(Value::as_str)
+                .unwrap_or(path)
+                .to_owned(),
+            title: row
+                .get("label")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            surface: surface.to_owned(),
+        });
+    }
+    Ok(apps)
 }
 
 /// `tilo account …`.

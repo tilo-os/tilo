@@ -1,7 +1,14 @@
-"""Types for the apps a workspace has, written by `tilo sdk gen`.
+"""Types for the apps this workspace has, written by `tilo sdk gen`.
 
-`tilo sdk gen --lang python -w <workspace>` writes a `.pyi` per app's
-resource kinds here, each class a `tilo.Resource` with typed properties and
-one method per action. Until then every resource still works through
-`ws.resource(path)` and `ws.do(path, **args)`.
+`tilo sdk gen --lang python -w <workspace>` writes them from the apps installed
+there; without `-w`, from the apps of the checkout it runs in. Each app has a module
+of its own, holding a class per resource kind: a `tilo.Resource` named by the
+resource's path, whose fields are the app's fields and whose methods are its actions.
+
+```python
+from tilo.types.pdf_viewer import Document
+
+form = await Document(ws, "pdf-viewer/application.pdf").load()
+fields = await form.read_form_fields()
+```
 """

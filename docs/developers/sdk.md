@@ -30,22 +30,32 @@ catalogue, using the loader `tilolang check` uses. The SDK generates its types f
 catalogue:
 
 ```sh
-tilo sdk gen --lang python -w jane-doe    # writes tilo_types/ (.pyi)
-tilo sdk gen --lang ts -w jane-doe        # writes tilo-types.d.ts
+tilo sdk gen --lang python -w jane-doe    # writes tilo_types/<app>.py
+tilo sdk gen --lang ts -w jane-doe        # writes tilo-types/<app>.ts
+tilo sdk gen --lang python --check        # says whether the checked-in types are current
 ```
 
-- One class per resource kind. Fields are typed properties, and read-only fields have no
-  setter. Actions are methods with keyword arguments. Action ids map to `snake_case` in
-  Python and `camelCase` in TypeScript (`read-form-fields` → `read_form_fields` /
-  `readFormFields`).
+- One module per app, and one class per resource kind in it. Fields are typed properties,
+  and a read-only field has no setter (a property in Python, `readonly` in TypeScript).
+  Actions are methods. Action ids map to `snake_case` in Python and `camelCase` in
+  TypeScript (`read-form-fields` → `read_form_fields` / `readFormFields`); the arguments
+  keep the names the wire takes them under, so a call reads like the surface does.
 - Surface types map directly: `String` → `str`, `Option<T>` → `T | None`, `Collection<T>`
-  → an iterable collection, `BTreeMap<String, T>` → a mapping, enums → literal unions,
-  unions → tagged unions.
+  → a list, `BTreeMap<String, T>` → a mapping, enums → literal unions, and an enum whose
+  cases carry fields → an object tagged by the case, as the app's schema encodes it.
 - An assignment is a field edit: `form.form_values["surname"] = "Doe"`. A method call is the
   action, the same one a click or an agent runs.
-- The package ships types for the built-in apps. `gen` adds the apps installed in that
-  workspace, including ones added later. Without generated types, everything still works
-  through `ws.do(path, **args)`.
+- A class is the SDK's own resource, so a name it already answers to (a field called `path`,
+  an action called `refresh`) is reached through `fields[…]` and `action("…")` instead; the
+  generated file says so where it is.
+- The package ships the built-in apps' types, and `tilo sdk gen --check` is what the
+  `sdk-types` check runs, so a surface change writes them again. `gen -w` writes the apps
+  installed in that workspace, including ones added later: each app's `surface.toml` is what
+  the workspace's own read of the app answers, so an app that never ran there is not among
+  them. Without generated types, everything still works through `ws.do(path, **args)`.
+- Python imports an app's module directly (`from tilo.types.pdf_viewer import Document`);
+  TypeScript exports the modules as namespaces (`pdfViewer.Document`), because two apps may
+  both call a type `Person`. Without `-w`, `gen` writes the apps of the checkout it runs in.
 
 A surface publishes every action of its app that a caller of another language reads: its
 record's verbs, and its read effects and conversions (`read-form-fields`, Writer's

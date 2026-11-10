@@ -49,6 +49,7 @@ mod mcp;
 mod mcp_presence;
 mod nouns;
 mod os;
+mod sdk;
 mod settings;
 mod status;
 
@@ -225,6 +226,11 @@ enum Cmd {
         /// The answer as JSON, typed as the SDK gets it.
         #[arg(long)]
         json: bool,
+    },
+    /// Write the SDK's types for a workspace's apps, from their surfaces.
+    Sdk {
+        #[command(subcommand)]
+        cmd: sdk::SdkCmd,
     },
     /// List what this desktop can do.
     #[command(hide = true)]
@@ -845,6 +851,7 @@ fn run_hosted(
         Cmd::Run { file, json } => workspace
             .ok_or_else(needs_workspace)
             .map(|workspace| hosted::program(door, json, &workspace, &file)),
+        Cmd::Sdk { cmd } => Ok(sdk::generate(door, workspace.as_deref(), cmd)),
         other => return Err(other),
     })
 }
@@ -860,7 +867,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
         | Cmd::Keys { .. }
         | Cmd::Account { .. }
         | Cmd::Files { .. }
-        | Cmd::Run { .. } => bail!("run_hosted answers the hosted commands"),
+        | Cmd::Run { .. }
+        | Cmd::Sdk { .. } => bail!("run_hosted answers the hosted commands"),
         Cmd::Open { app, items } => Ok(desktop::run_open(&app, &items, &spelling)),
         Cmd::Action { cmd } => Ok(desktop::run_action(cmd, &spelling)),
         Cmd::Actions { filter } => Ok(desktop::run_action(
@@ -1902,6 +1910,7 @@ mod tests {
                 "account",
                 "files",
                 "run",
+                "sdk",
                 "device",
                 "agent",
                 "package"
@@ -1923,6 +1932,7 @@ mod tests {
                 "  account    Your hosted account: its workspaces\n",
                 "  files      Files into a hosted workspace\n",
                 "  run        Run a tilolang program in a hosted workspace, as one undoable step\n",
+                "  sdk        Write the SDK's types for a workspace's apps, from their surfaces\n",
                 "  device     Your devices: update them, go back, repair them, develop on them\n",
                 "  agent      Connect agents to this desktop, and choose their models\n",
                 "  package    Make and sign packages\n",
@@ -1964,7 +1974,7 @@ mod tests {
         };
         assert_eq!(
             listed(elsewhere),
-            ["app", "keys", "account", "files", "run", "login"]
+            ["app", "keys", "account", "files", "run", "sdk", "login"]
         );
         let help = command_here(elsewhere).render_help().to_string();
         for absent in [
@@ -1986,7 +1996,7 @@ mod tests {
         // workspace, and reaches hosted workspaces with a key.
         assert_eq!(
             listed(nothing),
-            ["keys", "account", "files", "run", "login"]
+            ["keys", "account", "files", "run", "sdk", "login"]
         );
         let bare = command_here(nothing).render_help().to_string();
         assert!(bare.contains("tilo keys create"), "{bare}");

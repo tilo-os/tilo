@@ -112,7 +112,7 @@ fn tools() -> Vec<Value> {
         ),
         (
             "tilo_read",
-            "Read a resource as compact text. `notes/Todo` answers the note as markdown, each block ending in its id (`^c01e`; a document's `{#c01e}`); block actions take the id alone: `c01e`. A long read ends with a cursor line; pass it back as cursor for the rest.",
+            "Read a resource as compact text. `notes/Todo` answers the note as markdown, each block ending in its id (`^c01e`; a document's `{#c01e}`); block actions take the id alone: `c01e`. A long read ends with a cursor line; pass it back as cursor for the rest. A typed read of an app alone (`notes`) answers what the app publishes: its surface.",
             json!({"path":string,"cursor":string,"max_chars":integer}),
             json!(["path"]),
             read.clone(),
@@ -2195,6 +2195,22 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             (Err(note), _) => return Ok(Reply::ok(note)),
         };
         self.acted_in(&resolved);
+        // A typed read of an app, with no resource named, answers what the app publishes: the
+        // surface its resources and actions are declared in, which a generated SDK's types are
+        // read from (`tilo sdk gen -w`).
+        if structured
+            && resolved.node.is_none()
+            && let Some(surface) = ui::app_surface::bytes_of(&resolved.app_id)
+        {
+            let mut reply = Reply::ok(String::new());
+            reply.structured = Some(json!({
+                "path": resolved.path,
+                "kind": "app",
+                "app": resolved.app_id,
+                "surface": String::from_utf8_lossy(surface),
+            }));
+            return Ok(reply);
+        }
         let provider = resolved.provider.clone();
         let mut levels = std::mem::take(&mut resolved.levels);
         let Some((owner, reader)) = self.reader(&resolved, &mut levels).await? else {

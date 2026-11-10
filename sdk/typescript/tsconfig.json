@@ -10,7 +10,11 @@
     "exactOptionalPropertyTypes": false,
     "skipLibCheck": true,
     "types": ["bun"],
-    "noEmit": true
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@tilo/sdk": ["./src/index.ts"]
+    }
   },
   "include": ["src", "test"]
 }
