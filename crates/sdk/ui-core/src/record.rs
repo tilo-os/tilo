@@ -53,6 +53,9 @@ const FORMERLY: &str = "formerly";
 /// replicated input, not a request to allocate one local document per entry.
 pub const MAX_DISCOVERED_RECORDS: usize = 64;
 const MAX_INDEX_KEYS_SCANNED: usize = MAX_DISCOVERED_RECORDS * 4;
+/// The longest workspace index this store reads: automerge reads a document whole, and an index is
+/// a list of names rather than the records' own content.
+const MAX_INDEX_BYTES: usize = 16 * 1024 * 1024;
 
 /// Select the document's metadata map, or create it only when it is absent.
 fn meta_obj(doc: &mut AutoCommit) -> Option<ObjId> {
@@ -2430,6 +2433,26 @@ impl Drop for RecordReservation {
     }
 }
 
+/// The document of `id`, a record of `kind` the workspace `home` keeps in `store`, as last made
+/// durable; `None` and a log when it cannot be read here — it has not reached this device, or its
+/// bytes do not read as a record.
+fn read_record(
+    store: &Rc<dyn DurableStore>,
+    package: &str,
+    home: &str,
+    id: &RecordId,
+    kind: &RecordKind,
+) -> Option<AutoCommit> {
+    let origin = transfer::Origin::Record(RecordCheckout::new(id.clone(), kind.clone()));
+    match transfer::read(store, package, home, &origin) {
+        Ok(doc) => Some(doc),
+        Err(error) => {
+            tracing::warn!(record = %id, workspace = %home, %error, "a workspace record is not readable; left out");
+            None
+        }
+    }
+}
+
 impl RecordStore {
     /// Checked custody-to-wire mapping. Primary stays `record=None` on every host.
     pub fn route(
@@ -2720,20 +2743,99 @@ impl RecordStore {
             .collect::<Vec<_>>();
         let mut found = ids
             .iter()
-            .filter_map(|id| {
-                let origin = transfer::Origin::Record(RecordCheckout::new(id.clone(), kind.clone()));
-                match transfer::read(&store, &package, &home, &origin) {
-                    Ok(doc) => Some((id.clone(), doc)),
-                    Err(error) => {
-                        tracing::warn!(record = %id, workspace = %home, %error, "window record not readable; left out");
-                        None
-                    }
-                }
-            })
+            .filter_map(|id| Some((id.clone(), read_record(&store, &package, &home, id, kind)?)))
             .collect::<Vec<_>>();
         found.extend(self.0.borrow().retired_window_records(&store, kind, &ids));
         found.compact_sort_by(|a, b| a.0.cmp(&b.0));
         found
+    }
+
+    /// Every record of `kind` this workspace holds, sorted by id, as last made durable, each with
+    /// the name the workspace's index gives it: the window default records this device's windows
+    /// started ([`Self::window_records`]) and the records the index names, so a document a window
+    /// on another device made, or an agent made in a hosted workspace, is listed too. Read without
+    /// taking a writer; a record whose document is not here is left out and logged, and one the
+    /// index does not name has no name.
+    pub fn workspace_records(
+        &self,
+        kind: &RecordKind,
+    ) -> Vec<(RecordId, AutoCommit, Option<String>)> {
+        let Some(store) = self.backend() else {
+            return Vec::new();
+        };
+        let (package, home) = self.package_and_home();
+        if home.is_empty() {
+            return Vec::new();
+        }
+        let mut found: Vec<(RecordId, AutoCommit, Option<String>)> = self
+            .window_records(kind)
+            .into_iter()
+            .map(|(id, doc)| (id, doc, None))
+            .collect();
+        for (id, name) in self.indexed_records(kind) {
+            match found.binary_search_by(|(held, _, _)| held.cmp(&id)) {
+                // A window here started it and the index names it: the name is the index's.
+                Ok(at) => found[at].2 = name,
+                Err(at) => {
+                    if let Some(doc) = read_record(&store, &package, &home, &id, kind) {
+                        found.insert(at, (id, doc, name));
+                    }
+                }
+            }
+        }
+        found
+    }
+
+    /// The records of `kind` the workspace's index names, each with the name it gives it, sorted by
+    /// id: what an app's windows and a hosted workspace's agent published here, whether or not a
+    /// window of this device started them.
+    fn indexed_records(&self, kind: &RecordKind) -> Vec<(RecordId, Option<String>)> {
+        let Some(index) = self.workspace_index() else {
+            return Vec::new();
+        };
+        let mut named: Vec<(RecordId, Option<String>)> = index::discoverable_references(&index)
+            .into_iter()
+            .filter(|checkout| &checkout.kind == kind)
+            .map(|checkout| {
+                let name = index::name_of(&index, &checkout.id);
+                (checkout.id, name)
+            })
+            .collect();
+        named.compact_sort_by(|a, b| a.0.cmp(&b.0));
+        named
+    }
+
+    /// The workspace's index document — the names of the records this package keeps here — as this
+    /// device last wrote it, read without taking a writer since an app of the workspace owns it.
+    fn workspace_index(&self) -> Option<AutoCommit> {
+        let store = self.backend()?;
+        let (package, home) = self.package_and_home();
+        if home.is_empty() {
+            return None;
+        }
+        let stored = match store.read(&StorageKey::workspace_index(&package, &home)) {
+            Ok(stored) => stored?,
+            Err(error) => {
+                tracing::warn!(%package, workspace = %home, %error, "a workspace's index is not read");
+                return None;
+            }
+        };
+        // Automerge reads a document whole, and an index is a list of names rather than the
+        // records' own content: a file past this is not one a workspace wrote.
+        if stored.bytes.is_empty() || stored.bytes.len() > MAX_INDEX_BYTES {
+            return None;
+        }
+        // An app keeping the index appends to it, and this read may land on a tail it has not
+        // finished writing: the changes before it are the index as of the last write that completed.
+        AutoCommit::load_with_options(
+            &stored.bytes,
+            automerge::LoadOptions::new()
+                .on_partial_load(automerge::OnPartialLoad::Ignore),
+        )
+        .inspect_err(|error| {
+            tracing::warn!(%error, %package, workspace = %home, "a workspace's index does not load");
+        })
+        .ok()
     }
     /// Explicit immutable identity only: the store namespace, package and
     /// workspace. Legacy and memory sets have no canonical namespace.

@@ -704,6 +704,12 @@ pub struct PdfApp {
     /// The empty state's "Open a PDF…" pill as last painted (see
     /// `empty_open_button_rect`).
     empty_open_button: std::cell::Cell<Rect>,
+    /// The workspace's documents the empty state lists, in the order it
+    /// shows them: each opens in this window by its `target`.
+    workspace_documents: Vec<WorkspaceDocument>,
+    /// The rows those documents took in the last draw pass, so the press and
+    /// the accessibility tree hit the painted rows (`workspace_document_at`).
+    empty_document_rows: std::cell::RefCell<Vec<Rect>>,
     /// File drops on the window, and the empty state they light.
     file_open: ui::widget::FileOpenSurface,
 
@@ -723,6 +729,9 @@ pub struct PdfApp {
     /// The document asked to open in this window's place, until the host
     /// answers.
     pending_reopen: Option<(std::path::PathBuf, ui::application::ReplacementOutcome)>,
+    /// A document of the workspace asked to open in this window's place, by
+    /// the `target` a row of the empty state names, until the host answers.
+    pending_document_open: Option<(String, ui::application::ReplacementOutcome)>,
 
     /// When the window is too narrow to reserve space for the side panels,
     /// the rail + sidebar become closed-by-default overlays drawn over the
@@ -1207,11 +1216,14 @@ impl PdfApp {
             layout_theme: Theme::dark(),
             tab_widths: None,
             empty_open_button: std::cell::Cell::new(Rect::ZERO),
+            workspace_documents: Vec::new(),
+            empty_document_rows: std::cell::RefCell::new(Vec::new()),
             file_open: ui::widget::FileOpenSurface::default(),
             portal_rx: None,
             portal_contents_rx: None,
             open_here: None,
             pending_reopen: None,
+            pending_document_open: None,
             overlay_mode: false,
             prev_overlay: None,
             rail_rect: Rect::ZERO,
@@ -2741,6 +2753,9 @@ impl PdfApp {
         self.save_write_rx = None;
         // A document asked to open in this window's place is not opened.
         if let Some((_, outcome)) = self.pending_reopen.take() {
+            outcome.withdraw();
+        }
+        if let Some((_, outcome)) = self.pending_document_open.take() {
             outcome.withdraw();
         }
         self.cancel_pending_open();
@@ -4771,6 +4786,7 @@ impl Widget for PdfApp {
             || self.region_waiting.is_some()
             || self.pending_open.is_some()
             || self.pending_reopen.is_some()
+            || self.pending_document_open.is_some()
             || self.pending_save.is_some()
             || self.save_write_rx.is_some();
         if self.status_note.keep_while(working) | self.status_note.expire() {
@@ -4806,6 +4822,7 @@ impl Widget for PdfApp {
         self.autoscroll_selection(ui::time::now());
         self.advance_glide(ui::time::now());
         self.follow_reopen();
+        self.follow_document_open();
         self.follow_signature();
         self.reopen_pinned_source();
         // Pull in any file the host portal picker returned since the last
@@ -5007,6 +5024,21 @@ impl Widget for PdfApp {
                 } else {
                     self.canvas_rect
                 };
+                for (index, document) in self.workspace_documents.iter().enumerate() {
+                    let bounds = self
+                        .workspace_document_rows()
+                        .get(index)
+                        .copied()
+                        .unwrap_or(self.canvas_rect);
+                    children.push(
+                        button(
+                            &document.name,
+                            &format!("pdf.empty.document:{}", document.target),
+                            bounds,
+                        )
+                        .with_description(document.caption.clone()),
+                    );
+                }
                 children.push(button("Open PDF", "pdf.open", bounds));
             }
             if let Some(error) = &self.load_error {
@@ -5440,6 +5472,10 @@ impl Widget for PdfApp {
             return true;
         }
 
+        if let Some(record) = target.strip_prefix("pdf.empty.document:") {
+            return activates && self.open_workspace_document(record);
+        }
+
         let effect = match target {
             "pdf.open" => PdfEffect::OpenPdf { path: None },
             "pdf.signature.use" => PdfEffect::UseTool { tool: Tool::Sign },
@@ -5513,6 +5549,7 @@ impl Widget for PdfApp {
         // settles to zero frames instead of redrawing forever.
         let owner_busy = self.portal_contents_rx.is_some()
             || self.pending_reopen.is_some()
+            || self.pending_document_open.is_some()
             || self
                 .raster_handle
                 .as_ref()
@@ -5716,6 +5753,7 @@ impl PdfApp {
         if self.portal_action.is_some()
             || self.pending_open.is_some()
             || self.pending_reopen.is_some()
+            || self.pending_document_open.is_some()
         {
             return Err("another PDF open is already in progress".into());
         }
@@ -5937,8 +5975,10 @@ mod scroll_damage;
 mod selection;
 mod shared;
 mod window_bar;
+mod workspace_documents;
 use scroll_damage::CanvasShown;
 use selection::{PendingPress, PendingSelectionEffect, SelectionStart, TextPos, TextSelection};
+pub use workspace_documents::WorkspaceDocument;
 
 impl ui::widget::controls::ActionControls for PdfApp {
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {

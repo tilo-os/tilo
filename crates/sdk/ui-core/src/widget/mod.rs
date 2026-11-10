@@ -3114,8 +3114,10 @@ pub mod controls;
 pub mod decorator;
 mod defaults;
 pub mod document_effects;
+pub mod document_offers;
 pub use crate::pen::PenSample;
 pub use decorator::Decorator;
+pub use document_offers::{DocumentOffer, PaintedOffers};
 
 pub(crate) mod layout;
 pub mod remount;
@@ -3735,7 +3737,9 @@ pub use window_preview::{Previews, WindowPreview, WindowPreviewProps};
 pub mod window_frame;
 pub use window_frame::{WindowFrame, WindowFrameProps};
 pub mod empty_state;
-pub use empty_state::{EmptyState, EmptyStateContent, EmptyStateLayout, EmptyStateProps};
+pub use empty_state::{
+    EmptyState, EmptyStateContent, EmptyStateLayout, EmptyStateProps, PaintedStack,
+};
 pub mod find_bar;
 pub use find_bar::{
     FindAbilities, FindBar, FindMatch, FindMode, FindOptions, FindScope, FindSession, Findable,

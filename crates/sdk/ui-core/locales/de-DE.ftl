@@ -741,6 +741,7 @@ framework-unreadable-hint = Diese Version der App kann nicht lesen, was hier ges
 empty-state-details = Details
 file-open-drop-hint = Oder eine Datei hier ablegen
 file-open-release = Zum Öffnen loslassen
+widget-documents-in-workspace = In diesem Arbeitsbereich
 # Shown instead of a window's document while it cannot be opened.
 record-unavailable-title = Dieses Dokument kann nicht geöffnet werden
 record-unavailable-hint = Es ist auf diesem Gerät gerade nicht verfügbar. Vielleicht ist es noch unterwegs, oder es wurde verschoben oder gelöscht.

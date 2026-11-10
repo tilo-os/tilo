@@ -951,6 +951,7 @@ fn panels(theme: &Theme, out: &Path) {
         illustration: None,
         title: "No projects yet",
         message: None,
+        documents: &[],
         action_label: Some("New project"),
         error: false,
     };

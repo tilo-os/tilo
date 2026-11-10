@@ -615,6 +615,67 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )
     }
 
+    /// A new window of the app on a fresh profile whose workspace already
+    /// holds `documents`, each stamped with the identity beside it and named
+    /// in the app's workspace index by its name: records this device was
+    /// given from elsewhere — a window on another device, an agent in a
+    /// hosted workspace — rather than started here. What a relay publishes
+    /// reaches a reader this way.
+    pub fn with_named_records(
+        documents: &mut [(&str, ui_core::record::RecordId, tilo_resource::Doc)],
+    ) -> Result<Self, LaunchError> {
+        let profile = Rc::new(profile_directory().map_err(operation)?);
+        {
+            let native =
+                ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
+            let app = super::app::hooks::<A>().id();
+            let kind = super::app::definition::<A>().record_kind.clone();
+            let mut index = automerge::AutoCommit::new();
+            for (name, id, document) in documents.iter_mut() {
+                if !ui_core::record::init_scoped(
+                    document,
+                    id,
+                    &kind,
+                    TEST_WORKSPACE,
+                    Some(TEST_WORKSPACE),
+                ) {
+                    return Err(operation("a record could not be stamped for the workspace"));
+                }
+                let (checkout, _landing) = ui_core::record::transfer::install(
+                    native.store(),
+                    app,
+                    TEST_WORKSPACE,
+                    document,
+                )
+                .map_err(operation)?;
+                ui_core::record::index::reference(&mut index, &checkout.id, &checkout.kind);
+                ui_core::record::index::set_name(&mut index, &checkout.id, Some(name));
+            }
+            let _landing = ui_core::record::transfer::install_workspace_document(
+                native.store(),
+                app,
+                TEST_WORKSPACE,
+                &mut index,
+            )
+            .map_err(operation)?;
+        }
+        Self::open(
+            Profile::Window(
+                profile,
+                TEST_WORKSPACE.to_owned(),
+                TEST_DEVICE.to_owned(),
+                INSTANCE + 2,
+            ),
+            Role::Owner,
+            AUTHOR,
+            &[],
+            None,
+            None,
+            None,
+            |_| {},
+        )
+    }
+
     /// A new window of an app that [keeps one record per workspace](ResourceApp::WORKSPACE_RECORD)
     /// on a fresh profile whose workspace record is already `document`: how a
     /// workspace an earlier version of the app wrote opens.

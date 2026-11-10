@@ -284,10 +284,16 @@ impl PdfApp {
         if !self.canvas_rect.contains(p) {
             return false;
         }
-        // Empty state: the only affordance is the centred "Open a PDF…" button.
+        // Empty state: a document the workspace holds opens on its row, and
+        // the centred "Open PDF" button opens a file.
         if !self.has_document {
-            if !self.opening() && self.empty_open_button_rect().contains(p) {
-                self.request_open_via_portal();
+            if !self.opening() {
+                if let Some(document) = self.workspace_document_at(p) {
+                    let target = document.target.clone();
+                    self.open_workspace_document(&target);
+                } else if self.empty_open_button_rect().contains(p) {
+                    self.request_open_via_portal();
+                }
             }
             return true;
         }

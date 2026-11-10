@@ -68,8 +68,9 @@ impl FileOpenSurface {
 
     /// Paint `content`, an empty state whose action opens a file, saying a
     /// file can also be dropped; while one hovers, the lit drop zone instead.
-    /// Returns the action's rectangle, as [`EmptyState::paint_focused`]
-    /// does. A state without an action (loading) is painted as it is.
+    /// Returns the action's rectangle and the documents' rows, as
+    /// [`EmptyState::paint_focused_with_documents`] does. A state without an
+    /// action (loading) is painted as it is.
     pub fn paint(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -77,9 +78,11 @@ impl FileOpenSurface {
         content: &EmptyStateContent<'_>,
         cursor: Point,
         focused: bool,
-    ) -> Option<Rect> {
+    ) -> crate::widget::PaintedStack {
         if content.action_label.is_none() {
-            return EmptyState::paint_focused(ctx, bounds, content, cursor, focused);
+            let (action, documents) =
+                EmptyState::paint_focused_with_documents(ctx, bounds, content, cursor, focused);
+            return crate::widget::PaintedStack { action, documents };
         }
         let hint = crate::i18n!("file-open-drop-hint");
         if self.hovering {
@@ -88,12 +91,12 @@ impl FileOpenSurface {
                 .icon(content.icon.unwrap_or(crate::icons::Icon::Download))
                 .drag_over(true)
                 .paint(ctx, bounds, 0.0);
-            return None;
+            return crate::widget::PaintedStack::default();
         }
         let message = content
             .message
             .map_or_else(|| hint.clone(), |message| format!("{message}\n{hint}"));
-        EmptyState::paint_focused(
+        let (action, documents) = EmptyState::paint_focused_with_documents(
             ctx,
             bounds,
             &EmptyStateContent {
@@ -102,7 +105,8 @@ impl FileOpenSurface {
             },
             cursor,
             focused,
-        )
+        );
+        crate::widget::PaintedStack { action, documents }
     }
 }
 
@@ -167,6 +171,7 @@ mod tests {
             .expect("the action");
         let hinted = FileOpenSurface::default()
             .paint(&mut ctx, bounds, &content, Point::ZERO, false)
+            .action
             .expect("the action");
         // The stack is centred, so a line added above the action moves it
         // down by half a line.
@@ -191,6 +196,7 @@ mod tests {
             };
             let button = surface
                 .paint(&mut ctx, bounds, &content, Point::ZERO, true)
+                .action
                 .expect("the open action");
             assert_eq!(button.intersect(bounds), button);
             assert!(button.width() > 0.0 && button.height() > 0.0);
@@ -198,11 +204,14 @@ mod tests {
             assert!(
                 surface
                     .paint(&mut ctx, bounds, &content, Point::ZERO, false)
+                    .action
                     .is_none()
             );
             surface.handle_event(&WindowEvent::HoveredFileCancelled);
             assert_eq!(
-                surface.paint(&mut ctx, bounds, &content, Point::ZERO, false),
+                surface
+                    .paint(&mut ctx, bounds, &content, Point::ZERO, false)
+                    .action,
                 Some(button)
             );
         }

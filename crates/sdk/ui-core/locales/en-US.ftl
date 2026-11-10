@@ -746,6 +746,9 @@ empty-state-details = Details
 file-open-drop-hint = Or drop a file here
 # The empty state while a file is dragged over the window.
 file-open-release = Release to open
+# Above the documents an open-a-file empty state lists: the ones the
+# workspace already holds, whatever made them.
+widget-documents-in-workspace = In this workspace
 # Shown instead of a window's document while it cannot be opened.
 record-unavailable-title = Can't open this document
 record-unavailable-hint = It isn't available on this device right now. It may still be on its way, or it was moved or deleted.

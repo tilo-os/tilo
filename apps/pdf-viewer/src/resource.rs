@@ -895,6 +895,34 @@ impl ResourceApp for PdfViewerShell {
 /// The role of a document's markup record beside the document's own.
 const MARKUP_ROLE: &str = "annotations";
 
+/// The most papers the empty state offers: the ones changed last, so the paper
+/// someone just filled in is on top rather than buried in a long list.
+const MOST_OFFERED: usize = 4;
+
+/// A document the workspace holds, as the reader's empty state offers it:
+/// what the index calls it, how long it is, and the identity that opens it.
+fn workspace_document(
+    document: ui::framework::WindowDocument<PdfMarkup>,
+) -> crate::app::WorkspaceDocument {
+    let name = if !document.state.source_name.is_empty() {
+        document.state.source_name.clone()
+    } else if let Some(name) = &document.name {
+        name.clone()
+    } else {
+        "PDF document".to_owned()
+    };
+    let pages = document.state.pages.len();
+    crate::app::WorkspaceDocument {
+        target: document.uri(),
+        name,
+        caption: match pages {
+            0 => "No pages yet".to_owned(),
+            1 => "1 page".to_owned(),
+            count => format!("{count} pages"),
+        },
+    }
+}
+
 /// The reader window `app` as a view of the markup: it follows the record
 /// and the participant's permission to edit it, answers the reader's
 /// effects, and publishes the open document's rows and what it says.
@@ -902,6 +930,18 @@ fn reader_view(cx: &ViewCx<PdfMarkup>, mut app: PdfApp) -> Element {
     app.attach_framework(cx.dispatcher());
     app.attach_people(cx.people());
     app.attach_open_here(cx.opener());
+    // A window opened on no document offers the workspace's: a paper an agent
+    // filled in is one click away, never a file chooser away. A window that
+    // shows one lists nothing, so the records are not read for it.
+    if cx.launch_arguments().is_empty() {
+        app.attach_workspace_documents(
+            cx.window_documents()
+                .into_iter()
+                .take(MOST_OFFERED)
+                .map(workspace_document)
+                .collect(),
+        );
+    }
     // A capture shows the scenario's signature, never the person's.
     if cx.mode().is_live()
         && let Some(signature) = cx.person::<crate::signature::SignatureProfile>()

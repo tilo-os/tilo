@@ -7021,6 +7021,7 @@ impl BooksApp {
         if let Some(action) = self
             .file_open
             .paint(ctx, body, &content, self.cursor, false)
+            .action
         {
             self.push_hit(action, Action::OpenViaPortal);
         }

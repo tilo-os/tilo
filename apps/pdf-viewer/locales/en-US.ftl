@@ -50,6 +50,7 @@ pdf-viewer-delete-signature = Removed a signature
 
 pdf-note-opening = Opening the PDF…
 pdf-note-open-failed = { $name } couldn't be opened. Check that it is a PDF and try again.
+pdf-note-document-not-opened = { $name } in this workspace didn't open. It may not be on this device yet; it opens once a device that has it is online.
 pdf-note-open-in-new-window = This window shows { $shown } and its markup. Open { $name } in a new PDF Viewer window.
 pdf-note-open-in-new-window-unnamed = This window keeps its document's markup. Open { $name } in a new PDF Viewer window.
 pdf-note-source-changed = This file changed after it was marked up. Check that your markup still sits where you left it.

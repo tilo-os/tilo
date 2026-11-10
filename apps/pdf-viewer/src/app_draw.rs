@@ -778,6 +778,17 @@ impl PdfApp {
     ) {
         let detail;
         let waiting;
+        // What the workspace holds, as the rows the empty state offers: the
+        // document a window elsewhere or an agent made is opened from here.
+        let offers: Vec<ui::widget::DocumentOffer<'_>> = self
+            .workspace_documents
+            .iter()
+            .map(|document| ui::widget::DocumentOffer {
+                target: &document.target,
+                name: &document.name,
+                caption: Some(&document.caption),
+            })
+            .collect();
         let content = if self.pending_open.is_some() {
             EmptyStateContent {
                 icon: Some(Icon::FileText),
@@ -816,20 +827,26 @@ impl PdfApp {
         } else {
             EmptyStateContent {
                 icon: Some(Icon::FileText),
+                // The workspace's own documents first: one click opens the
+                // paper someone filled in, wherever it was made.
+                documents: &offers,
                 action_label: Some("Open PDF"),
                 ..EmptyStateContent::new("No document open")
             }
         };
-        let action = self.file_open.paint(
+        let painted = self.file_open.paint(
             &mut PaintCtx::new(scene, base, tr, theme),
             canvas,
             &content,
             self.last_mouse,
             false,
         );
-        // The click handler reads this exact rect back
-        // (`empty_open_button_rect`); nothing to click while opening.
-        self.empty_open_button.set(action.unwrap_or(Rect::ZERO));
+        // The click handler reads these exact rects back
+        // (`empty_open_button_rect`, `workspace_document_at`); nothing to
+        // click while opening.
+        self.empty_open_button
+            .set(painted.action.unwrap_or(Rect::ZERO));
+        *self.empty_document_rows.borrow_mut() = painted.documents;
     }
 
     fn draw_canvas(
@@ -1798,9 +1815,9 @@ impl PdfApp {
         let theme = ctx.theme;
         AvatarFace::new(&cm.comment.author, &cm.comment.author).paint(ctx, hdr.avatar);
         let style = theme.text(TextRole::Label).strong();
-        let name = ctx
-            .text
-            .elide_to_width_style(&cm.comment.author, hdr.name.width() as f32, &style);
+        let name =
+            ctx.text
+                .elide_to_width_style(&cm.comment.author, hdr.name.width() as f32, &style);
         let (_, h) = ctx.text.measure_style(&name, None, &style);
         ctx.text(
             &name,
@@ -1810,10 +1827,17 @@ impl PdfApp {
             None,
         );
 
-        let resolve = ButtonFace::new(hdr.resolve, if cm.comment.resolved { "Reopen" } else { "Resolve" })
-            .role(ButtonRole::Plain)
-            .control_size(ControlSize::Small)
-            .hovered(hdr.resolve.contains(self.last_mouse));
+        let resolve = ButtonFace::new(
+            hdr.resolve,
+            if cm.comment.resolved {
+                "Reopen"
+            } else {
+                "Resolve"
+            },
+        )
+        .role(ButtonRole::Plain)
+        .control_size(ControlSize::Small)
+        .hovered(hdr.resolve.contains(self.last_mouse));
         Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &resolve);
         out.hits
             .push((SidebarHit::Resolve(cm.id.clone()), hdr.resolve));
