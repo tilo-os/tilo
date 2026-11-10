@@ -98,7 +98,10 @@ impl PlaybackSource for Source {
             *sample = f32::from(value) / 32768.0 * gain;
             rendered = rendered.saturating_add(1);
         }
-        pcm.rendered = pcm.rendered.saturating_add(rendered / u64::from(CHANNELS));
+        let frames = rendered
+            .checked_div(u64::from(CHANNELS))
+            .unwrap_or_default();
+        pcm.rendered = pcm.rendered.saturating_add(frames);
     }
 }
 
@@ -126,8 +129,13 @@ impl Entry {
             generation: self.generation,
             accepted_sequence: pcm.sequence,
             rendered_frames: pcm.rendered,
-            queued_frames: u32::try_from(pcm.queue.len() / usize::from(CHANNELS))
-                .unwrap_or(u32::MAX),
+            queued_frames: u32::try_from(
+                pcm.queue
+                    .len()
+                    .checked_div(usize::from(CHANNELS))
+                    .unwrap_or_default(),
+            )
+            .unwrap_or(u32::MAX),
             paused: pcm.paused,
             ready: alive
                 && self
@@ -271,7 +279,9 @@ impl Shared {
         }
         (entry.revalidate)()?;
         entry.stream = Some(opened?);
-        entry.snapshot()
+        let snapshot = entry.snapshot();
+        drop(outputs);
+        snapshot
     }
 
     /// Take the output `key` opened as `generation` out of the registry.
@@ -363,7 +373,9 @@ impl Shared {
                 return Err("an output opens and closes as it is told".into());
             }
         }
-        entry.snapshot()
+        let snapshot = entry.snapshot();
+        drop(outputs);
+        snapshot
     }
 
     /// The admission of the output `key` opened as `generation`.
@@ -401,7 +413,7 @@ impl Shared {
 
 /// Take one packet the app wrote: a repeat of the last one is taken once, a gap or an out-of-order
 /// packet is refused, and a full queue drops the packet rather than holding the app's decoder.
-fn write(entry: &mut Entry, sequence: u64, samples: Vec<i16>) -> Result<(), String> {
+fn write(entry: &Entry, sequence: u64, samples: Vec<i16>) -> Result<(), String> {
     let bytes: Vec<u8> = samples
         .iter()
         .flat_map(|sample| sample.to_le_bytes())
@@ -423,6 +435,7 @@ fn write(entry: &mut Entry, sequence: u64, samples: Vec<i16>) -> Result<(), Stri
     pcm.queue.extend(samples);
     pcm.sequence = sequence;
     pcm.last = Some(digest);
+    drop(pcm);
     Ok(())
 }
 
@@ -491,7 +504,6 @@ mod tests {
     struct Opened {
         description: String,
         source: Arc<Mutex<Box<dyn PlaybackSource>>>,
-        running: Arc<AtomicBool>,
     }
 
     impl Device {
@@ -519,7 +531,6 @@ mod tests {
             self.chart.lock().unwrap().push(Opened {
                 description: config.description.clone(),
                 source: Arc::new(Mutex::new(source)),
-                running: Arc::clone(&running),
             });
             Ok(Box::new(Output { running, stopped }))
         }
@@ -585,7 +596,12 @@ mod tests {
 
     /// What the device plays of `output`, one 20 ms quantum at a time.
     fn rendered(device: &Device, at: usize, frames: usize) -> Vec<f32> {
-        let mut out = vec![0.0_f32; frames * usize::from(CHANNELS)];
+        let mut out = vec![
+            0.0_f32;
+            frames
+                .checked_mul(usize::from(CHANNELS))
+                .expect("a bounded buffer")
+        ];
         let chart = device.last();
         let mut source = chart[at].source.lock().unwrap();
         source.render(0, &mut out);
