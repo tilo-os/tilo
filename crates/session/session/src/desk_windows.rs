@@ -254,7 +254,7 @@ pub(crate) fn reaching(
 }
 
 /// Each window's client, by the tab it is: what the compositor pictures where a card shows it.
-fn window_surfaces(tree: &DesktopTree) -> std::collections::HashMap<u64, u64> {
+pub(crate) fn window_surfaces(tree: &DesktopTree) -> std::collections::HashMap<u64, u64> {
     use tilo_desktop_model::TileContent;
     tree.workspaces
         .iter()

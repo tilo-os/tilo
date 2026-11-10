@@ -17,7 +17,7 @@ use std::rc::Rc;
 use tilo_clock::Instant;
 
 use tilo_desktop::window_flight::{WindowFlight, WindowPicture as Flying};
-use tilo_desktop_model::{TabId, TileContent};
+use tilo_desktop_model::TabId;
 use tilo_session_core::surface::WindowPicture;
 use ui::kurbo::Rect;
 use ui::motion::{Presence, Zoom, input_source, unit_opacity};
@@ -107,7 +107,11 @@ impl Overview {
         let progress = inner.zoom.borrow().progress(now);
         let shown = desk.shown();
         let origin = desk.origin();
-        let windows = handle.read(window_tabs);
+        let windows: HashMap<u64, TabId> = handle
+            .read(crate::desk_windows::window_surfaces)
+            .into_iter()
+            .map(|(tab, window)| (window, tab))
+            .collect();
         let (ox, oy) = origin;
         let mut pictured = HashMap::new();
         let mut sources = HashMap::new();
@@ -173,20 +177,6 @@ impl Overview {
             })
             .collect()
     }
-}
-
-/// Every window the tree holds a tab of, by the window's id.
-fn window_tabs(tree: &tilo_desktop_model::DesktopTree) -> HashMap<u64, TabId> {
-    tree.workspaces
-        .iter()
-        .flat_map(|workspace| &workspace.strips)
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
-        .filter_map(|tab| match &tab.tile {
-            TileContent::Foreign { surface_id, .. } => Some((*surface_id, tab.id)),
-            _ => None,
-        })
-        .collect()
 }
 
 impl crate::Shared {
