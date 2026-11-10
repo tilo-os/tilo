@@ -136,6 +136,37 @@ impl<'a> Membership<'a> {
         })
     }
 
+    /// Share `node` — one record of the workspace, or one item of it — with its members as `access`
+    /// gives, under the share id `share`, as this device: the grants of it that the workspace
+    /// admits, bounded by what this person holds at the node.
+    ///
+    /// # Errors
+    /// The workspace refused the share — this device's person does not hold what it would give —
+    /// or this device could not publish it.
+    pub(crate) fn share(
+        &self,
+        share: &str,
+        node: tilo_action_policy::TreePath,
+        access: tilo_action_policy::share::ShareAccess,
+    ) -> Result<(), String> {
+        self.command(WorkspaceMembershipCommand::Share {
+            share: share.to_owned(),
+            node,
+            access,
+        })
+    }
+
+    /// End the share `share` in the workspace: the grants of it this device's person gave, or all of
+    /// them when they may revoke in the workspace.
+    ///
+    /// # Errors
+    /// The workspace refused it, or this device could not publish it.
+    pub(crate) fn unshare(&self, share: &str) -> Result<(), String> {
+        self.command(WorkspaceMembershipCommand::Unshare {
+            share: share.to_owned(),
+        })
+    }
+
     /// Write `command` into the workspace's governance as this device, signed with its own key,
     /// saying why when the workspace refuses it or cannot publish it.
     fn command(&self, command: WorkspaceMembershipCommand) -> Result<(), String> {
@@ -2055,6 +2086,85 @@ mod tests {
         assert!(
             listed_invitations(&mut session, &workspace).is_empty(),
             "the cancelled link is not listed"
+        );
+    }
+
+    /// An app's ask about one node of the workspace — Chat sharing what a window shows with the
+    /// members, or asking what they may do at one — is the workspace's own governance: the share's
+    /// grants are written there, its end takes them back, and what the asker may do is read from
+    /// the same policy every device of the workspace admits.
+    #[test]
+    fn an_apps_share_of_a_node_is_the_workspaces_own_grants() {
+        use crate::workspace_nodes::WorkspaceNodes;
+        use std::sync::Arc;
+        use tilo_action_policy::share::is_of_share;
+        use tilo_action_policy::{ActionKind, Answer, Authority, Context, TreePath};
+        use tilo_actions::remote::{Pending, PendingPoll};
+        use tilo_broker_core::services::WorkspaceNodeAsk;
+
+        fn answered<T: std::fmt::Debug>(mut pending: Pending<T>) -> T {
+            match pending.poll_ready() {
+                PendingPoll::Ready(value) => value,
+                other => panic!("the workspace answers at once here: {other:?}"),
+            }
+        }
+
+        let (engine, _, joiner, _state) = workspace_here("ada");
+        let engine = Arc::new(engine);
+        let asks = WorkspaceNodes::service(Some(&engine)).expect("this session holds a workspace");
+        let node = TreePath::workspace(WORKSPACE)
+            .app("so.tilo.notes")
+            .kind("notes.notebook")
+            .resource("plan");
+        let text = node.to_string();
+        let ask = |ask: WorkspaceNodeAsk| {
+            asks.ask(WORKSPACE, &text, ask)
+                .expect("a node of this workspace")
+        };
+        let share = answered(ask(WorkspaceNodeAsk::Share {
+            share: "m1".into(),
+            access: "view".into(),
+        }))
+        .expect("the workspace's owner shares what they hold");
+        assert_eq!(share["grants"], 4, "one grant per role below the owner");
+        let grants = engine
+            .policy(WORKSPACE)
+            .expect("the workspace's policy")
+            .grants;
+        assert_eq!(
+            grants
+                .iter()
+                .filter(|grant| is_of_share(grant, "m1"))
+                .count(),
+            4,
+            "the share is the workspace's own grants"
+        );
+        let permits = answered(ask(WorkspaceNodeAsk::Permits)).expect("what they may do there");
+        assert_eq!(permits["read"], true);
+        assert_eq!(permits["undoable"], true, "the owner holds the workspace");
+        let member = Authority::person(
+            engine
+                .policy(WORKSPACE)
+                .expect("the workspace's policy")
+                .party(&joiner),
+        )
+        .decide(&node, ActionKind::Read, &Context::at_secs(0))
+        .answer;
+        assert_eq!(member, Answer::Allow, "a member reads what is shared");
+        let unshared = answered(ask(WorkspaceNodeAsk::Unshare { share: "m1".into() }))
+            .expect("the share ends");
+        assert_eq!(
+            unshared["revoked"], 4,
+            "every grant of the share is taken back"
+        );
+        assert!(
+            engine
+                .policy(WORKSPACE)
+                .expect("the workspace's policy")
+                .grants
+                .iter()
+                .all(|grant| !is_of_share(grant, "m1")),
+            "nothing of the share is left in the workspace"
         );
     }
 }

@@ -983,9 +983,11 @@ fn seams(
         // An app's action on another of the person's own devices is carried
         // there by the collaboration plane.
         own_device: Seam::when(own_device),
-        workspace_nodes: Seam::unserved(
-            "a node's workspace is reached through the desk's own sharing, not by an app",
-        ),
+        // A node of a workspace's tree, as an app asks about it: a share, its end, or what the
+        // person may do there, decided by the workspace's own governance.
+        workspace_nodes: Seam::when(crate::workspace_nodes::WorkspaceNodes::service(
+            engine.as_ref(),
+        )),
         // The person's own records, kept in their store as well as in this
         // desktop: what an app writes of its own scope reaches their other
         // devices, and what those wrote reaches the app here.
