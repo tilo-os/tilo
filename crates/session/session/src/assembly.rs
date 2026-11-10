@@ -326,7 +326,6 @@ pub(crate) struct Shared {
     pub(crate) fleet_renewal: Option<std::sync::Arc<crate::renewal::FleetRenewal>>,
     /// The overview's pictures and the clock they fly on, which its panel
     /// in the chrome draws with.
-    #[cfg(target_os = "linux")]
     pub(crate) overview: crate::overview::Overview,
     /// Dictation: the speech the person allows once per dictation, and the
     /// sheet they answer on.

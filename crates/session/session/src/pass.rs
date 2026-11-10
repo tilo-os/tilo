@@ -171,7 +171,9 @@ impl Session {
         self.windows.step(&mut self.compositor, now);
         // The overview's windows fly between the desk and the overview: its panel names them, the
         // desk says where each stands, and the compositor draws their own pixels.
-        self.shared.overview.step(&self.shared, now);
+        self.shared
+            .overview
+            .step(&self.shared.handle, &self.shared.desktop, now);
         // The desk this pass laid out is published before it is drawn: whoever reads the session's
         // state reads the desk the frame about to be presented shows, not the one before it.
         crate::test_control::publish(
@@ -243,7 +245,7 @@ impl Session {
             .map(|(window, rect)| (window.id, rect))
             .collect();
         self.shared
-            .follow_switcher(self.compositor.locked(), &windows);
+            .follow_switcher(&self.shared.desktop, self.compositor.locked(), &windows);
     }
 
     /// The desk's input a tool handed the loop since the last pass, served where a device's input

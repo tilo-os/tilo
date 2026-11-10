@@ -6,10 +6,15 @@
 //! overview opens and closes, tells the panel, and hands the compositor each window's live picture
 //! at the rect the panel would draw it in.
 
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(dead_code, reason = "the page mounts this with the chrome")
+)]
+
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::Instant;
+use tilo_clock::Instant;
 
 use tilo_desktop::window_flight::{WindowFlight, WindowPicture as Flying};
 use tilo_desktop_model::{TabId, TileContent};
@@ -79,7 +84,12 @@ impl Overview {
     /// windows it pictures stand on the desk now.
     /// The desk says where they stand, in its own coordinates, and where those begin on the
     /// desktop, which the chrome shares.
-    pub(crate) fn step(&self, shared: &crate::Shared, now: Instant) {
+    pub(crate) fn step(
+        &self,
+        handle: &tilo_desktop_surface::DesktopHandle,
+        desk: &dyn crate::platform::surfaces::Desk,
+        now: Instant,
+    ) {
         let inner = &*self.inner;
         let open = inner.open.get();
         {
@@ -95,9 +105,9 @@ impl Overview {
             }
         }
         let progress = inner.zoom.borrow().progress(now);
-        let shown = shared.desktop.with_policy(|policy| policy.layout().shown);
-        let origin = shared.desktop.with_widgets(|host| host.placement().origin);
-        let windows = shared.handle.read(window_tabs);
+        let shown = desk.shown();
+        let origin = desk.origin();
+        let windows = handle.read(window_tabs);
         let (ox, oy) = origin;
         let mut pictured = HashMap::new();
         let mut sources = HashMap::new();

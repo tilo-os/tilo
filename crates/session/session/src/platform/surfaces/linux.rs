@@ -7,10 +7,10 @@ use std::rc::Rc;
 use tilo_compositor::Compositor;
 
 use tilo_session_core::door::{Doors, Published};
-use tilo_surface_host::WidgetHost;
+use tilo_surface_host::{DesktopHost, WidgetHost};
 use ui::widget::Widget;
 
-use super::{Heard, Layer, Placement, Surfaces};
+use super::{Desk, Heard, Layer, Placement, Surfaces};
 
 /// What a Linux session places layers on: its compositor, and the door its surfaces publish
 /// through.
@@ -86,5 +86,19 @@ impl Layer for RefCell<WidgetHost> {
 
     fn press(&self, name: &str) -> Result<(), String> {
         Published::press(&mut *self.borrow_mut(), name)
+    }
+}
+
+impl Desk for DesktopHost {
+    fn shown(&self) -> Vec<(u64, ui::kurbo::Rect)> {
+        self.with_policy(|policy| policy.layout().shown)
+    }
+
+    fn origin(&self) -> (i32, i32) {
+        self.with_widgets(|host| host.placement().origin)
+    }
+
+    fn relayout(&self) {
+        self.with_widgets(WidgetHost::relayout);
     }
 }

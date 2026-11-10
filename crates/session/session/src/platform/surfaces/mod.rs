@@ -54,6 +54,18 @@ pub trait Surfaces {
     fn publish(&mut self, published: Rc<RefCell<dyn Published>>);
 }
 
+/// The desk under the windows, as the roles standing over it read it.
+pub trait Desk {
+    /// The windows the desk shows, each at its logical rectangle on the desktop.
+    fn shown(&self) -> Vec<(u64, ui::kurbo::Rect)>;
+
+    /// Where the desk's layer begins on the desktop: the chrome over it draws from there too.
+    fn origin(&self) -> (i32, i32);
+
+    /// Lay the desk's layer out again: a panel standing over it went up or down.
+    fn relayout(&self);
+}
+
 /// What a layered role hears from the host, beside the input its widget tree is given.
 #[derive(Clone)]
 pub struct Heard {

@@ -4,6 +4,11 @@
 //! says which window it reached. This reads that once a pass, as the panel shows it, so the chrome
 //! draws what the desk decided and nothing of its own.
 
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(dead_code, reason = "the page mounts this with the chrome")
+)]
+
 use crate::Shared;
 
 /// A window of the desk: its id, and the logical rectangle `(x, y, w, h)` it stands in.
@@ -23,18 +28,23 @@ impl Shared {
     /// switches windows without a panel flashing, and the window it reached is still where Alt's
     /// release goes.
     /// A locked session takes the walk down with everything else it shows over its windows.
-    pub(crate) fn follow_switcher(&self, locked: bool, windows: &[PlacedWindow]) {
+    pub(crate) fn follow_switcher(
+        &self,
+        desk: &dyn crate::platform::surfaces::Desk,
+        locked: bool,
+        windows: &[PlacedWindow],
+    ) {
         if locked {
             self.desk_overlays
                 .close(crate::overlays::Overlay::Switcher.name());
             self.desk_overlays.forget_walk();
         }
-        let now = std::time::Instant::now();
+        let now = tilo_clock::Instant::now();
         // A flick shorter than the panel's reveal delay shows nothing, and costs no reading of the
         // desk's windows.
         let view = (!locked && self.desk_overlays.revealed(now))
             .then(|| {
-                crate::desk_resource::switcher_view(
+                crate::desk_windows::switcher_view(
                     &self.handle,
                     &self.desk_overlays,
                     &window_sizes(windows),
@@ -44,8 +54,7 @@ impl Shared {
         if self.switcher.set(view) {
             // The panel stands over the desk's windows: the chrome lays itself out again for what
             // it now shows, as it does for any surface of the desk's going up or down.
-            self.desktop
-                .with_widgets(crate::platform::surfaces::WidgetHost::relayout);
+            desk.relayout();
         }
     }
 }

@@ -148,6 +148,7 @@ mod desk_resource;
 mod desk_restore;
 #[cfg(target_os = "linux")]
 pub mod desk_styles;
+mod desk_windows;
 #[cfg(target_os = "linux")]
 pub mod desktop_services;
 #[cfg(target_os = "linux")]
@@ -252,7 +253,6 @@ pub mod notices;
 mod notifications;
 #[cfg(target_os = "linux")]
 mod options;
-#[cfg(target_os = "linux")]
 mod overview;
 #[cfg(target_os = "linux")]
 mod owner_session;
@@ -338,7 +338,6 @@ pub mod startup;
 mod status;
 #[cfg(target_os = "linux")]
 pub mod surfaces;
-#[cfg(target_os = "linux")]
 mod switcher;
 pub mod sync;
 #[cfg(target_os = "linux")]
