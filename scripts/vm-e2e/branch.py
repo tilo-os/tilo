@@ -350,8 +350,8 @@ def lists_terminal(vm: TiloVm) -> bool:
     keep_awake(vm)
     try:
         vm.state()
-        listed = vm.control_json("actions", "list", "Terminal", "--kind", "application", "--json",
-                                 "--limit", "200")
+        # The app's row is ranked among every window's own actions that name Terminal.
+        listed = vm.control_json("actions", "list", "Terminal", "--json", "--limit", "2000")
     except VmError:
         return False
     return any(row.get("provider") == "applications"
