@@ -27,17 +27,21 @@ user=$(inspect_image '{{.OCIv1.Config.User}}')
 [[ $user == 10001 ]] || fail "the image runs as $user, not uid 10001"
 entrypoint=$(inspect_image '{{json .OCIv1.Config.Entrypoint}}')
 [[ $entrypoint == '["/usr/local/bin/tilo-lounge"]' ]] || fail "the entrypoint is $entrypoint"
+# Each answer is read whole before it is searched: under pipefail, `grep -q`
+# leaving at its first match can cut off buildah mid-write and fail the check
+# on a value that was there.
+ports=$(inspect_image '{{json .OCIv1.Config.ExposedPorts}}')
 for port in 8790/tcp 9780/tcp 9781/udp; do
-  inspect_image '{{json .OCIv1.Config.ExposedPorts}}' | grep -Fq "\"$port\"" \
-    || fail "port $port is not exposed"
+  grep -Fq "\"$port\"" <<<"$ports" || fail "port $port is not exposed"
 done
 revision=$(inspect_image '{{index .OCIv1.Config.Labels "org.opencontainers.image.revision"}}')
 [[ $revision =~ ^[0-9a-f]{40}$ ]] || fail "the image's revision label is $revision"
 # The label and the environment name the same build: /mode, and every log
 # line, report the environment's.
-inspect_image '{{range .OCIv1.Config.Env}}{{println .}}{{end}}' | grep -Fqx "TILO_SOURCE_REVISION=$revision" \
+environment=$(inspect_image '{{range .OCIv1.Config.Env}}{{println .}}{{end}}')
+grep -Fqx "TILO_SOURCE_REVISION=$revision" <<<"$environment" \
   || fail "TILO_SOURCE_REVISION is not the image's revision"
-inspect_image '{{range .OCIv1.Config.Env}}{{println .}}{{end}}' | grep -Fqx 'TILO_SECRETS_DIR=/run/tilo-rooms/secrets' \
+grep -Fqx 'TILO_SECRETS_DIR=/run/tilo-rooms/secrets' <<<"$environment" \
   || fail "the host is not told where its sealed secrets live"
 
 container=$(b from --pull=never --quiet "$image")
