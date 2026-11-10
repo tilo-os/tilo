@@ -238,6 +238,11 @@ impl Ty {
         match self {
             Self::Enum(k) if k.app == own_app => format!("enum {}", k.name),
             Self::Enum(k) => format!("enum {}.{}", k.app, k.name),
+            // A type named as one the language provides is written with its app: the bare name
+            // reads as the language's one wherever a package's declaration shadows it.
+            Self::Record(k) if k.app == own_app && language_type(&k.name).is_some() => {
+                format!("{}.{}", k.app, k.name)
+            }
             Self::List(t) => format!("List<{}>", t.meta_text(own_app)),
             Self::Set(t) => format!("Set<{}>", t.meta_text(own_app)),
             Self::Map(t) => format!("Map<{}>", t.meta_text(own_app)),
@@ -372,14 +377,57 @@ impl Ty {
     }
 }
 
+/// The type the language provides under the bare name `name`, by the names source writes it.
+/// A package's own type, enum or alias of one of these names shadows it within the package
+/// (README, "Type names"); `std.` names the language's one there.
+#[must_use]
+pub fn language_type(name: &str) -> Option<Ty> {
+    Some(match name {
+        "Int" => Ty::Int,
+        "Float" => Ty::Float,
+        "Bool" => Ty::Bool,
+        "Text" => Ty::Text,
+        "Principal" => Ty::Principal,
+        "Date" => Ty::Date,
+        "Time" => Ty::Time,
+        "Duration" => Ty::Duration,
+        "RichText" => Ty::RichText,
+        "Bytes" => Ty::Bytes,
+        "Response" => Ty::Response,
+        "File" => Ty::File,
+        "Action" => Ty::Action,
+        "View" => Ty::View,
+        _ => return None,
+    })
+}
+
+/// The names [`language_type`] takes, in the order source lists them.
+pub const LANGUAGE_TYPE_NAMES: &[&str] = &[
+    "Int",
+    "Float",
+    "Bool",
+    "Text",
+    "RichText",
+    "Bytes",
+    "Principal",
+    "Date",
+    "Time",
+    "Duration",
+    "File",
+    "Response",
+    "Action",
+    "View",
+];
+
 /// The type a path names that the language itself declares, with no package behind it: `std`'s
-/// text-held types, `std.RichText`, and a `json.Value` as `json.parse` reads one.
+/// text-held types, `std.RichText`, and a `json.Value` as `json.parse` reads one. `std.` names
+/// the language's own type wherever a package's declaration shadows its bare name.
 #[must_use]
 pub fn named(dotted: &[&str]) -> Option<Ty> {
     match dotted {
         ["std", "Identifier"] => Some(Ty::Identifier),
-        ["std", "RichText"] => Some(Ty::RichText),
         ["json", "Value"] => Some(Ty::Json),
+        ["std", name] => language_type(name),
         _ => None,
     }
 }
@@ -665,6 +713,27 @@ impl MetaTy<'_> {
 #[cfg(test)]
 mod tests {
     use super::Ty;
+
+    /// A package's own type named as one the language provides is written with its app, so
+    /// metadata reads back as that type and not as the language's one; each language type is
+    /// written and read bare, and `std.` names it.
+    #[test]
+    fn a_type_named_as_a_language_type_reads_back_as_itself() {
+        for name in super::LANGUAGE_TYPE_NAMES {
+            let record = Ty::Record(super::TypeKey {
+                app: "t.x".into(),
+                name: (*name).into(),
+            });
+            let text = record.meta_text("t.x");
+            assert_eq!(text, format!("t.x.{name}"));
+            assert_eq!(Ty::parse_meta(&text, "t.x"), Some(record), "{name}");
+
+            let builtin = super::language_type(name).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(builtin.meta_text("t.x"), *name);
+            assert_eq!(Ty::parse_meta(name, "t.x"), Some(builtin.clone()), "{name}");
+            assert_eq!(super::named(&["std", name]), Some(builtin), "std.{name}");
+        }
+    }
 
     /// Every type a form has a control for is asked by it; the rest are reached only by an
     /// argument given where the action runs or by a default.

@@ -193,6 +193,19 @@ a resource of its own that code uses as that container (`notes.insert(n)`, `for 
 root names one such resource per room: `root notes: Notes` is `notes` in the package and
 `alias.notes` in a package that uses it.
 
+**A package's own name wins.** The language provides types of its own — `Int`, `Float`, `Bool`,
+`Text`, `RichText`, `Bytes`, `Principal`, `Date`, `Time`, `Duration`, `File`, `Response`,
+`Action` and `View` — and a package that declares a type, enum or alias with one of those names
+takes the name for its own: in that package, everywhere and every time it is written, the bare
+name is the package's declaration, and what the language provides of that name is written
+`std.`'s (`std.File`, `std.Text`, `std.Date`). A `type File { title: Text }` beside a
+`picture: Option<File>` is a `File` of the package's own, and `file.choose`'s answer is a
+`std.File`; the declaration shadows the language's type throughout the package, so a language
+type a later version adds can never break a package that already declares that name. What a
+package cannot take is a name that writes a type rather than naming one — `List`, `Set`, `Map`,
+`Collection`, `Option`, `Result`, `Filter`, `Sort` — because `List<T>` would still mean what the
+language's means; declaring one is refused where it is written (`type List` is an error).
+
 **`if` and blocks.** There is one `if`: `if cond { ... } else { ... }`. Used as a value its branches
 agree on a type and the value is each block's last expression; with no `else` it is the Option of
 that value, `.none` where the condition does not hold, which is what `else { .none }` gives it.

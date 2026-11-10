@@ -870,6 +870,7 @@ impl Lower<'_> {
             ExprKind::Call { callee, args, .. } => {
                 if let ExprKind::Ident(kind) = &callee.kind
                     && matches!(kind.as_str(), "Date" | "Time")
+                    && self.env.own_type(kind).is_none()
                 {
                     let (ty, text) =
                         crate::resolve::date_value(kind, args).map_err(|why| (e.span, why))?;
