@@ -58,7 +58,7 @@ pub struct SidebarDrawer {
     /// Authored at 1× (HIG §9.6, [`AuthoredExtent`]); resolved through the
     /// factors [`Self::scale_for`] caches.
     breakpoint: AuthoredExtent,
-    content_min_width: Option<AuthoredExtent>,
+    content_min: Option<ContentMinimum>,
     docked_width: AuthoredExtent,
     overlay_width: AuthoredExtent,
     /// Width left behind when collapsed while docked. `0.0` ⇒ fully hidden.
@@ -126,6 +126,15 @@ pub struct SidebarDrawer {
     sheet_grip: f64,
 }
 
+/// The minimum the content beside the panel keeps, and the width class it is in there: an authored
+/// minimum is a column's ([`crate::widget::arrange::column_min_width`]), and a content kind states
+/// its own ([`crate::widget::ContentKind::beside_sidebar_class`]).
+#[derive(Clone, Copy, Debug)]
+struct ContentMinimum {
+    extent: AuthoredExtent,
+    class: crate::widget::arrange::WidthClass,
+}
+
 /// The drawer's show/hide button in a painted header row: its rect, hover
 /// and press, and the platform the shortcut is spelled for.
 #[derive(Clone, Debug, Default)]
@@ -149,7 +158,7 @@ impl SidebarDrawer {
         Self {
             side: SidebarSide::Left,
             breakpoint: AuthoredExtent::text(DEFAULT_DRAWER_BREAKPOINT),
-            content_min_width: None,
+            content_min: None,
             docked_width: AuthoredExtent::text(DEFAULT_DRAWER_DOCKED_WIDTH),
             overlay_width: AuthoredExtent::text(DEFAULT_DRAWER_WIDTH),
             rail_width: AuthoredExtent::icon(0.0),
@@ -205,7 +214,7 @@ impl SidebarDrawer {
     #[must_use]
     pub fn breakpoint(mut self, px: f64) -> Self {
         self.breakpoint = AuthoredExtent::text(px);
-        self.content_min_width = None;
+        self.content_min = None;
         self
     }
     /// Dock only while the content column keeps this authored minimum, and
@@ -217,7 +226,10 @@ impl SidebarDrawer {
     /// independently scaled.
     #[must_use]
     pub fn content_min_width(mut self, px: f64) -> Self {
-        self.content_min_width = Some(AuthoredExtent::text(px));
+        self.content_min = Some(ContentMinimum {
+            extent: AuthoredExtent::text(px),
+            class: crate::widget::arrange::WidthClass::Medium,
+        });
         self
     }
     /// Dock while the content keeps the minimum its kind needs
@@ -230,7 +242,11 @@ impl SidebarDrawer {
     #[must_use]
     pub fn content_kind(mut self, kind: crate::widget::ContentKind) -> Self {
         self.push = kind == crate::widget::ContentKind::List;
-        self.content_min_width(f64::from(kind.min_width(&Metrics::BASE)))
+        self.content_min = Some(ContentMinimum {
+            extent: AuthoredExtent::text(f64::from(kind.min_width(&Metrics::BASE))),
+            class: kind.beside_sidebar_class(),
+        });
+        self
     }
     /// The content is a column in its own right — a page or a cheatsheet a
     /// person keeps in view beside the panel — so the panel docks while it
@@ -323,7 +339,7 @@ impl SidebarDrawer {
     }
     pub fn set_breakpoint(&mut self, px: f64) {
         self.breakpoint = self.breakpoint.with_px(px);
-        self.content_min_width = None;
+        self.content_min = None;
     }
 
     /// Adopt the theme's scale so the authored breakpoint and the
@@ -384,11 +400,10 @@ impl SidebarDrawer {
     /// ([`crate::widget::arrange::column_min_width`]). A pane below a column's width is a
     /// phone's screen, so the panel folds behind the bar's toggle instead of standing beside it.
     fn resolved_content_min(&self) -> Option<f64> {
-        self.content_min_width.map(|minimum| {
-            self.resolve_extent(minimum)
-                .max(f64::from(crate::widget::arrange::column_min_width(
-                    self.rem,
-                )))
+        self.content_min.map(|minimum| {
+            self.resolve_extent(minimum.extent).max(f64::from(
+                crate::widget::arrange::class_min_width(minimum.class, self.rem),
+            ))
         })
     }
     /// The narrowest the docked panel shrinks to before it stops docking:
