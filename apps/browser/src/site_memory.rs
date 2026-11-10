@@ -15,9 +15,15 @@
 //! offers are left out when the page that asks holds a sign-in, where they
 //! may be the person's own (their saved addresses).
 //!
-//! Memory is written by [`remember`] alone, the body of the document's
-//! `remember-forms` action, when a page's forms are read or answered: never
-//! by visiting a page.
+//! Memory is written by [`remember`], the body of the document's
+//! `remember-forms` action, when a page's forms are read or answered. The
+//! window reads its page's forms itself once the page has loaded, so a visit
+//! to a page that asks a form remembers that form's shape. A private window
+//! and one whose history is paused remember nothing.
+//!
+//! What is remembered is the person's to see and to forget: [`sites`] lists
+//! it, and [`forget_form`] and [`forget_site`] are the bodies of the
+//! document's `forget-form` and `forget-site-forms` actions.
 
 use std::collections::BTreeMap;
 
@@ -177,7 +183,7 @@ pub fn get<'a>(
 }
 
 /// The forms of the site `origin`, by signature.
-fn of_site<'a>(
+pub fn of_site<'a>(
     memory: &'a BTreeMap<String, RememberedForm>,
     origin: &str,
 ) -> impl Iterator<Item = (&'a String, &'a RememberedForm)> {
@@ -210,6 +216,97 @@ pub fn followers<'a>(
         .map(|(_, form)| form)
         .filter(|form| form.follows == signature)
         .collect()
+}
+
+/// The site a key of memory is of.
+fn site_of(key: &str) -> &str {
+    key.split_once(' ').map_or(key, |(origin, _)| origin)
+}
+
+/// Every site forms are remembered of, each with its forms, by origin and
+/// then by signature.
+pub fn sites(memory: &BTreeMap<String, RememberedForm>) -> Vec<(&str, Vec<&RememberedForm>)> {
+    let mut sites: Vec<(&str, Vec<&RememberedForm>)> = Vec::new();
+    for (key, form) in memory {
+        let origin = site_of(key);
+        match sites.last_mut() {
+            Some((last, forms)) if *last == origin => forms.push(form),
+            _ => sites.push((origin, vec![form])),
+        }
+    }
+    sites
+}
+
+/// The forms of the site `origin` as a person counts them: one for each
+/// form, whatever shapes it is remembered in. A shape a form only takes once
+/// an answer made it ask more stands for no form of its own while the shape
+/// it grew from is remembered.
+pub fn forms_of<'a>(
+    memory: &'a BTreeMap<String, RememberedForm>,
+    origin: &str,
+) -> Vec<&'a RememberedForm> {
+    of_site(memory, origin)
+        .map(|(_, form)| form)
+        .filter(|form| form.grew_from.is_empty() || get(memory, origin, &form.grew_from).is_none())
+        .collect()
+}
+
+/// Forget the form `signature` of the site `origin` in every shape it is
+/// remembered in: the one its page opens with and the ones it grew into.
+/// A form that followed it follows nothing any more. Answers how many
+/// shapes went: none when no such form is remembered.
+pub fn forget_form(
+    memory: &mut BTreeMap<String, RememberedForm>,
+    origin: &str,
+    signature: &str,
+) -> usize {
+    if get(memory, origin, signature).is_none() {
+        return 0;
+    }
+    // The shapes of one form name each other by what each grew from.
+    let shapes: Vec<(String, String)> = of_site(memory, origin)
+        .map(|(_, form)| (form.signature.clone(), form.grew_from.clone()))
+        .collect();
+    let mut gone = vec![signature.to_owned()];
+    loop {
+        let before = gone.len();
+        for (shape, grew_from) in &shapes {
+            let known = gone.contains(shape);
+            if !known && gone.contains(grew_from) {
+                gone.push(shape.clone());
+            } else if known && !grew_from.is_empty() && !gone.contains(grew_from) {
+                gone.push(grew_from.clone());
+            }
+        }
+        if gone.len() == before {
+            break;
+        }
+    }
+    let mut forgotten = 0;
+    for shape in &gone {
+        forgotten += usize::from(memory.remove(&key(origin, shape)).is_some());
+    }
+    let followed: Vec<String> = of_site(memory, origin)
+        .filter(|(_, form)| gone.contains(&form.follows))
+        .map(|(key, _)| key.clone())
+        .collect();
+    for key in followed {
+        if let Some(form) = memory.get_mut(&key) {
+            form.follows.clear();
+        }
+    }
+    forgotten
+}
+
+/// Forget every form of the site `origin`. Answers how many went.
+pub fn forget_site(memory: &mut BTreeMap<String, RememberedForm>, origin: &str) -> usize {
+    let keys: Vec<String> = of_site(memory, origin)
+        .map(|(key, _)| key.clone())
+        .collect();
+    for key in &keys {
+        memory.remove(key);
+    }
+    keys.len()
 }
 
 /// `incoming` as it is kept beside what was remembered of the same form:
@@ -362,6 +459,55 @@ pub fn remember(
         memory.remove(&oldest);
     }
     Ok(())
+}
+
+/// The site a screenshot shows remembered forms of, and the page they were
+/// read on.
+pub const SHOT_SITE: &str = "https://visas.example.org";
+pub const SHOT_PAGE: &str = "/apply";
+
+/// Screenshot fixture: the forms of a visa application site, as reading its
+/// page found them.
+pub fn shot_forms() -> Vec<RememberedForm> {
+    let question = |name: &str, kind: &str, required: bool| RememberedQuestion {
+        name: name.to_owned(),
+        kind: kind.to_owned(),
+        required,
+        ..RememberedQuestion::default()
+    };
+    vec![
+        RememberedForm {
+            signature: "5d0c7a1e".into(),
+            label: "Apply for a visitor visa".into(),
+            questions: vec![
+                question("Full name", "text", true),
+                question("Date of birth", "date", true),
+                question("Nationality", "choice", true),
+                question("Arrival", "date", true),
+                question("Passport number", "text", true),
+                question("I agree", "flag", true),
+            ],
+            submit: vec!["Send application".into()],
+            ..RememberedForm::default()
+        },
+        RememberedForm {
+            signature: "0a11ce00".into(),
+            label: "Search this site".into(),
+            questions: vec![question("Words", "text", false)],
+            submit: vec!["Search".into()],
+            ..RememberedForm::default()
+        },
+        RememberedForm {
+            signature: "7e57ab1e".into(),
+            label: "Sign up for updates".into(),
+            questions: vec![
+                question("Email", "email", true),
+                question("Weekly summary", "flag", false),
+            ],
+            submit: vec!["Sign up".into()],
+            ..RememberedForm::default()
+        },
+    ]
 }
 
 #[cfg(test)]
@@ -580,6 +726,106 @@ mod tests {
         );
         remember(&mut memory, SITE, "/apply", vec![ok()], true, 1).unwrap();
         assert_eq!(memory.len(), 1);
+    }
+
+    /// What is remembered is listed by site, and counted as a person counts
+    /// forms: the shape a form grows into is the same form.
+    #[test]
+    fn memory_is_listed_by_site_with_one_entry_for_each_form() {
+        let mut memory = BTreeMap::new();
+        let first = form("aaaa1111", "Apply", vec![question("Nationality", "choice")]);
+        let mut grown = form(
+            "bbbb2222",
+            "Apply",
+            vec![question("Which country?", "text")],
+        );
+        grown.grew_from = "aaaa1111".into();
+        remember(&mut memory, SITE, "/apply", vec![first], true, 10).unwrap();
+        remember(&mut memory, SITE, "/apply", vec![grown], true, 20).unwrap();
+        // A site whose origin starts with the other's is another site.
+        let other = "https://visa.test.example";
+        remember(
+            &mut memory,
+            other,
+            "/",
+            vec![form("cccc3333", "Search", vec![])],
+            true,
+            30,
+        )
+        .unwrap();
+        let listed: Vec<(&str, Vec<&str>)> = sites(&memory)
+            .into_iter()
+            .map(|(site, forms)| {
+                let signatures = forms.iter().map(|form| form.signature.as_str()).collect();
+                (site, signatures)
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                (SITE, vec!["aaaa1111", "bbbb2222"]),
+                (other, vec!["cccc3333"])
+            ]
+        );
+        let counted: Vec<&str> = forms_of(&memory, SITE)
+            .into_iter()
+            .map(|form| form.signature.as_str())
+            .collect();
+        assert_eq!(counted, ["aaaa1111"]);
+        // The shape a form grew into stands for it once the first is gone.
+        memory.remove(&key(SITE, "aaaa1111"));
+        assert_eq!(forms_of(&memory, SITE)[0].signature, "bbbb2222");
+    }
+
+    /// Forgetting a form forgets every shape of it and nothing else: the
+    /// form that followed it stays, following nothing; forgetting a site
+    /// leaves the other sites.
+    #[test]
+    fn a_form_is_forgotten_in_every_shape_and_a_site_with_all_its_forms() {
+        let mut memory = BTreeMap::new();
+        let first = form("aaaa1111", "Apply", vec![question("Nationality", "choice")]);
+        let mut grown = form(
+            "bbbb2222",
+            "Apply",
+            vec![question("Which country?", "text")],
+        );
+        grown.grew_from = "aaaa1111".into();
+        let mut payment = form("cccc3333", "Payment", vec![question("Card", "secret")]);
+        payment.follows = "aaaa1111".into();
+        let other = "https://shop.test";
+        remember(&mut memory, SITE, "/apply", vec![first], true, 10).unwrap();
+        remember(&mut memory, SITE, "/apply", vec![grown], true, 20).unwrap();
+        remember(&mut memory, SITE, "/pay", vec![payment], true, 30).unwrap();
+        remember(
+            &mut memory,
+            other,
+            "/",
+            vec![form("dddd4444", "Search", vec![])],
+            true,
+            40,
+        )
+        .unwrap();
+
+        assert_eq!(forget_form(&mut memory, SITE, "ffff0000"), 0);
+        assert_eq!(forget_form(&mut memory, other, "aaaa1111"), 0);
+        assert_eq!(memory.len(), 4, "a form nobody remembers forgets nothing");
+        // Named by the shape it grew into, the form goes in both.
+        assert_eq!(forget_form(&mut memory, SITE, "bbbb2222"), 2);
+        assert!(get(&memory, SITE, "aaaa1111").is_none());
+        assert!(get(&memory, SITE, "bbbb2222").is_none());
+        assert_eq!(
+            get(&memory, SITE, "cccc3333").map(|form| form.follows.as_str()),
+            Some(""),
+            "the form that followed it follows nothing any more"
+        );
+        assert!(signatures(&memory, "/apply").is_empty());
+
+        assert_eq!(forget_site(&mut memory, SITE), 1);
+        assert_eq!(forget_site(&mut memory, SITE), 0);
+        assert_eq!(
+            memory.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["https://shop.test dddd4444"]
+        );
     }
 
     /// Memory is bounded: the forms read longest ago go first.
