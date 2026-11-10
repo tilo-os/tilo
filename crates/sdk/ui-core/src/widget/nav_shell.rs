@@ -400,11 +400,6 @@ impl Metrics {
             )))
     }
 
-    /// The width class content of `kind` is in at the least beside a sidebar.
-    fn beside_sidebar_class(&self, kind: ContentKind) -> crate::widget::arrange::WidthClass {
-        kind.beside_sidebar_class()
-    }
-
     fn resolve(theme: &Theme) -> Self {
         let m = theme.tokens.metrics;
         let s = theme.tokens.spacing;
@@ -662,12 +657,13 @@ impl Inputs {
         self.metrics.beside_sidebar_min(self.kind)
     }
 
-    /// The width class the content beside a sidebar is in at the least ([`Metrics::content_min`]).
+    /// The width class the content beside a sidebar is in at the least
+    /// ([`ContentKind::beside_sidebar_class`]).
     fn content_beside_sidebar_class(&self) -> crate::widget::arrange::WidthClass {
         if !self.has_content {
             return crate::widget::arrange::WidthClass::Compact;
         }
-        self.metrics.beside_sidebar_class(self.kind)
+        self.kind.beside_sidebar_class()
     }
 
     /// The narrowest window the compact layout works at: one column at a time (or the content under
