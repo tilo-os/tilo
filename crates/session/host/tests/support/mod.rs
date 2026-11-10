@@ -22,7 +22,7 @@ use tilo_relay::certify::{ApproverDecision, ApproverReply};
 use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
 use tilo_relay::workspaces::PreAdmitRequest;
-use tilo_relay_client::Approver;
+use tilo_relay_client::{Approver, Carrier};
 use tilo_relay_protocol::workspaces::{JoinReply, PreAdmission, WorkspaceRole};
 use tilo_session_host::invite::ask_to_join_pre_admitted;
 use tilo_session_host::{Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle, PeerSnapshot};
@@ -213,6 +213,9 @@ pub struct HostSettings<'a> {
     pub limits: Option<tilo_relay::member_limits::MemberLimitsConfig>,
     /// The fetch proxy it serves its pages.
     pub fetch_proxy: Option<tilo_relay::web::FetchProxySetup>,
+    /// Run its own packet relay, as a host serving pages does: a page holds
+    /// no UDP socket and reaches it only through one.
+    pub packet_relay: bool,
 }
 
 /// A host serving what `settings` names.
@@ -229,6 +232,7 @@ pub async fn start_host_serving(
         guests,
         limits,
         fetch_proxy,
+        packet_relay,
     } = settings;
     let user = root.verifying_key().to_bytes();
     let mut cfg = tilo_relay::RelayConfig {
@@ -247,6 +251,9 @@ pub async fn start_host_serving(
             .await;
         }
         cfg.iroh_listen = iroh_listen;
+    }
+    if packet_relay {
+        cfg.packet_relay = Some((std::net::Ipv4Addr::LOCALHOST, 0).into());
     }
     if !guests.is_empty() {
         cfg.trust_policy = tilo_relay::TrustPolicy::AllowList {
@@ -278,8 +285,25 @@ pub async fn start_host_serving(
         })
         .await
         .unwrap();
+    if packet_relay {
+        relayed(&relay).await;
+    }
     HOSTS.lock().unwrap().insert(host.cert.device_public_key);
     TestHost { relay, web }
+}
+
+/// Wait until `relay`'s endpoint is reached through its own packet relay,
+/// which its address names from then on.
+async fn relayed(relay: &Relay) {
+    tilo_test_env::within(
+        "the host's packet relay to be online",
+        relay.endpoint.online(),
+    )
+    .await;
+    assert!(
+        relay.node_addr().relay_urls().next().is_some(),
+        "the host names its packet relay"
+    );
 }
 
 /// A host that governs workspaces rather than one pinned workspace, serving
@@ -292,9 +316,22 @@ pub async fn start_workspace_host(
     state: &Path,
     keep_web_identity: bool,
 ) -> TestHost {
+    start_workspace_host_relaying(root, host, state, keep_web_identity, false).await
+}
+
+/// [`start_workspace_host`], running its own packet relay when
+/// `packet_relay` says so.
+pub async fn start_workspace_host_relaying(
+    root: &SigningKey,
+    host: &Device,
+    state: &Path,
+    keep_web_identity: bool,
+    packet_relay: bool,
+) -> TestHost {
     let relay = Relay::start(
         tilo_relay::RelayConfig {
             state_root: state.to_path_buf(),
+            packet_relay: packet_relay.then(|| (std::net::Ipv4Addr::LOCALHOST, 0).into()),
             ..Default::default()
         },
         RelayIdentity {
@@ -320,6 +357,9 @@ pub async fn start_workspace_host(
         })
         .await
         .unwrap();
+    if packet_relay {
+        relayed(&relay).await;
+    }
     HOSTS.lock().unwrap().insert(host.cert.device_public_key);
     TestHost { relay, web }
 }
@@ -334,6 +374,11 @@ impl TestHost {
         Host::at(self.relay.node_addr())
     }
 
+    /// The host as a device reaches it over `carrier`.
+    pub fn over(&self, carrier: Carrier) -> Host {
+        self.iroh().over(carrier)
+    }
+
     /// The address its iroh endpoint listens on, for a restart that keeps
     /// it: a page dials the address it was given, so a host restarted
     /// elsewhere is one it never finds again.
@@ -345,13 +390,15 @@ impl TestHost {
 /// Approve the one pending certification request as `laptop` (a root
 /// holder), over the host's iroh certification ALPN.
 pub async fn approve_one(host: &TestHost, root: &SigningKey, laptop: &Device) -> String {
-    let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .bind()
-        .await
-        .unwrap();
+    approve_one_over(&host.iroh(), root, laptop).await
+}
+
+/// [`approve_one`], with `laptop` reaching the host as `host` says.
+pub async fn approve_one_over(host: &Host, root: &SigningKey, laptop: &Device) -> String {
+    let endpoint = host.bind(None).await.unwrap();
     let mut approver = Approver::connect(
         &endpoint,
-        host.relay.node_addr(),
+        host.addr(),
         laptop.cert.clone(),
         &laptop.key,
         &RevocationList::new(),

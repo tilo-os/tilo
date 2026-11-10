@@ -26,7 +26,7 @@ use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, CallState, Directions, VoiceGrant};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 
-use crate::support::{Device, TestHost, enrol, start_workspace_host, wait_for};
+use crate::support::{Device, TestHost, enrol, start_workspace_host_relaying, wait_for};
 
 pub const CHAT: &str = "so.tilo.chat";
 pub const BOTH: Directions = Directions {
@@ -270,12 +270,18 @@ impl GovernedCall {
     /// Alice's governed workspace with an active call on its chat's voice
     /// channel, which nobody has joined yet.
     pub async fn start() -> Self {
+        Self::start_relaying(false).await
+    }
+
+    /// [`Self::start`], its host running its own packet relay when
+    /// `packet_relay` says so, as a host serving pages does.
+    pub async fn start_relaying(packet_relay: bool) -> Self {
         let alice = SigningKey::generate(&mut UnwrapErr(SysRng));
         let host = enrol(&alice, "alice-home", DeviceCapabilities::host());
         let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
         let state = tempfile::tempdir().unwrap();
         let TestHost { relay, web } =
-            start_workspace_host(&alice, &host, state.path(), false).await;
+            start_workspace_host_relaying(&alice, &host, state.path(), false, packet_relay).await;
         let address = relay.node_addr();
         let workspace = relay.workspaces().unwrap().create("Standup").await.unwrap();
         enter(&relay, &laptop.cert, &workspace.workspace).await;
