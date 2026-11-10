@@ -382,8 +382,29 @@ const speaks = (node, pattern) => pattern instanceof RegExp
   : node.name === pattern || node.description === pattern;
 const matching = (nodes, pattern, role = null) => nodes.find(node => speaks(node, pattern) && (!role || role.test(node.role)));
 const names = nodes => nodes.map(node => node.name || node.description).filter(Boolean).slice(0, 48).join(' | ');
+/** Where a control the page publishes for assistive technology stands, read
+ * from the page's semantic mirror: the elements it lays over what it draws,
+ * which carry the bounds of the node they speak for. A role's own rows and
+ * buttons (who is here) are published that way, with no widget of their own
+ * to read a rect from. `null` when the page lays out nothing by that name. */
+const mirrorRect = async (tab, pattern) => tab.evaluate(`(() => {
+  const wanted = new RegExp(${JSON.stringify(pattern.source)}, ${JSON.stringify(pattern.flags)});
+  for (const element of document.querySelectorAll('[aria-label], [aria-description]')) {
+    const name = element.getAttribute('aria-label') ?? '';
+    const description = element.getAttribute('aria-description') ?? '';
+    if (!wanted.test(name) && !wanted.test(description)) continue;
+    const rect = element.getBoundingClientRect();
+    if (!(rect.width >= 1 && rect.height >= 1)) continue;
+    return {name, description, rect: {x0: rect.x, y0: rect.y, x1: rect.right, y1: rect.bottom}};
+  }
+  return null;
+})()`).catch(() => null);
+/** Press the control `pattern` calls: by the place the page draws it, or, for a
+ * control only the assistive tree carries, by where the page's own semantic
+ * mirror lays it over that drawing. */
 async function press(tab, pattern, {what = null} = {}) {
-  const node = matching(await semantics(tab), pattern);
+  let node = matching(await semantics(tab), pattern);
+  if (node && !node.rect) node = await mirrorRect(tab, pattern) ?? node;
   if (!node?.rect) return null;
   const {x0, y0, x1, y1} = node.rect;
   const x = (x0 + x1) / 2, y = (y0 + y1) / 2;
@@ -392,6 +413,24 @@ async function press(tab, pattern, {what = null} = {}) {
   await tab.send('Input.dispatchMouseEvent', {type: 'mouseReleased', x, y, button: 'left', clickCount: 1});
   if (what) log(`pressed ${what}: ${node.name || node.description}`);
   return node;
+}
+/** The pointer moves by a pixel and back over the middle of the page: an input
+ * the page never ignores, for the frame a press's own wake should have drawn.
+ * Nothing is pressed, so nothing on the desk changes. */
+async function nudge(tab) {
+  const middle = await tab.evaluate(`[Math.round(innerWidth / 2), Math.round(innerHeight / 2)]`)
+    .catch(() => [100, 100]);
+  for (const [x, y] of [[middle[0], middle[1]], [middle[0] + 1, middle[1]]]) {
+    await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
+  }
+}
+
+/** A click at a point on the page, where no control is named: what the desk
+ * or a window under it takes, as a person's finger lands there. */
+async function clickAt(tab, x, y) {
+  await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
+  await tab.send('Input.dispatchMouseEvent', {type: 'mousePressed', x, y, button: 'left', clickCount: 1});
+  await tab.send('Input.dispatchMouseEvent', {type: 'mouseReleased', x, y, button: 'left', clickCount: 1});
 }
 async function key(tab, name, code, keyCode, modifiers = 0) {
   await tab.send('Input.dispatchKeyEvent', {type: 'rawKeyDown', key: name, code, windowsVirtualKeyCode: keyCode, modifiers});
@@ -689,18 +728,37 @@ async function planActions(agent, apps) {
 // opens the panel on them, where following is one step; the panel also pins
 // out into the overlay that stays on screen.
 
+/** The roster's own node: the list the panel draws who is here in. The bar's
+ * faces carry the panel's description ("Who is here, where they are …"), so
+ * the panel is found by a node the panel itself draws, never by words the
+ * button shares with it. */
+const rosterOf = nodes => nodes.find(node => /people here now/i.test(node.name));
+
+/** Wait for the roster's own node, saying how long the panel took: a press
+ * that opened nothing shows in the run's log with what the bar drew instead. */
+async function rosterOpens(tab, wait) {
+  const began = Date.now();
+  const panel = await until(async () => rosterOf(await semantics(tab)), wait, 150);
+  return {panel, took: Date.now() - began};
+}
+
 /** The roster, open: the top bar's people button ("Everyone here"), else the
- * palette's people search. A press lands on the panel the button opens; one
- * that lands before the bar has settled is pressed again. */
+ * Console's People/Agents, else the palette's people search. The panel is what
+ * is waited for, not the button: a press that opened nothing is pressed once
+ * more, as a person does when the bar ate it. */
 async function openPeople(tab, label) {
-  const roster = /people here now|who is here/i;
-  const shown = () => until(async () => (await semantics(tab)).some(node => roster.test(node.name) || roster.test(node.description)), 2500);
+  if (rosterOf(await semantics(tab))) return null;
   // Who is here, as this desktop offers it: the bar's button beside the faces
   // of everyone here, or the Console's Agents where the workspace opens one.
   for (const pattern of [/^everyone here$/i, /^people$/i, /^agents$/i]) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       if (!await press(tab, pattern, {what: 'the roster'})) break;
-      if (await shown()) return null;
+      const {panel, took} = await rosterOpens(tab, 1500);
+      if (panel) {
+        log(`the roster opened ${took} ms after the press`);
+        return null;
+      }
+      log(`pressing ${pattern} opened no roster after ${took} ms: ${names(await semantics(tab))}`);
     }
   }
   const mac = await tab.evaluate('/Mac|iPhone|iPad/.test(navigator.platform ?? navigator.userAgent ?? "")');
@@ -711,20 +769,42 @@ async function openPeople(tab, label) {
   const hit = await until(async () => matching(await semantics(tab), new RegExp(label, 'i')), 10000);
   if (!hit) return `typing ${label} in search found nothing: ${names(await semantics(tab))}`;
   await key(tab, 'Enter', 'Enter', 13);
-  await sleep(1500);
+  const {panel} = await rosterOpens(tab, 10000);
+  if (!panel) return `searching for ${label} opened no roster: ${names(await semantics(tab))}`;
   return null;
 }
 
 async function followAgent(tab, label) {
   const opened = await openPeople(tab, label);
   if (opened) return opened;
-  const panel = await until(async () => {
-    const nodes = await semantics(tab);
-    return nodes.some(node => /people here now|who is here/i.test(node.name)) ? nodes : undefined;
-  }, 10000);
-  if (!panel) return `the roster did not open: ${names(await semantics(tab))}`;
   const follow = new RegExp(`^follow ${label}`, 'i');
-  if (!matching(panel, follow) && !matching(panel, /^follow$/i)) return `no Follow for ${label}: ${names(panel)}`;
+  /** The panel with a row to follow in it: what the press that opened it owes. */
+  const filled = async (wait) => {
+    const began = Date.now();
+    const nodes = await until(async () => {
+      const seen = await semantics(tab);
+      return rosterOf(seen) && (matching(seen, follow) ?? matching(seen, /^follow$/i)) ? seen : undefined;
+    }, wait, 150);
+    return {nodes, took: Date.now() - began};
+  };
+  const first = await filled(3000);
+  let panel = first.nodes;
+  if (panel) {
+    log(`the roster had its rows ${first.took} ms after the press`);
+  } else {
+    // The panel stands but its rows have not been drawn: a move of the pointer asks for the
+    // frame that draws them, which is what the person's next touch would do.
+    log(`the roster opened with no rows to follow: ${names(await semantics(tab))}`);
+    await nudge(tab);
+    const {nodes, took} = await filled(5000);
+    log(`after the pointer moved, the roster's rows came ${took} ms later`);
+    panel = nodes;
+  }
+  if (!panel) {
+    const seen = await semantics(tab);
+    if (!rosterOf(seen)) return `the roster did not open: ${names(seen)}`;
+    return `no Follow for ${label}: ${names(seen)}`;
+  }
   for (let attempt = 0; attempt < 3; attempt += 1) {
     // Following is the banner's business: the control says so once it took.
     if (await press(tab, follow, {what: `following ${label}`}) ?? await press(tab, /^follow$/i, {what: `following ${label}`})) {
@@ -739,16 +819,24 @@ async function followAgent(tab, label) {
 
 async function pinOverlay(tab) {
   // The pin is announced as "Keep on screen"; its description is the longer
-  // "Keep who is here on screen" a reader hears beside it.
+  // "Keep who is here on screen" a reader hears beside it. Kept, the same
+  // control reads "Put back in the bar", which is what says the press took.
   const pin = /^(keep on screen|keep who is here on screen)$/i;
-  let pinned = await press(tab, pin, {what: 'pinning who is here'});
-  if (!pinned) {
+  const kept = /^put back in the bar$/i;
+  const pinned = async () => {
+    const nodes = await semantics(tab);
+    return nodes.some(node => speaks(node, kept)) ? nodes : undefined;
+  };
+  let pressed = await press(tab, pin, {what: 'pinning who is here'});
+  if (!pressed) {
     // The roster closed in the meantime: open it again, then pin.
     await openPeople(tab, 'Claude Code');
-    pinned = await press(tab, pin, {what: 'pinning who is here'});
+    pressed = await press(tab, pin, {what: 'pinning who is here'});
   }
-  if (!pinned) return `no "Keep on screen" control: ${names(await semantics(tab))}`;
-  await sleep(1500);
+  if (!pressed) return `no "Keep on screen" control: ${names(await semantics(tab))}`;
+  if (!await until(pinned, 4000, 150)) {
+    return `"Keep on screen" did not keep it: ${names(await semantics(tab))}`;
+  }
   return null;
 }
 
@@ -926,6 +1014,89 @@ const note = (id, pass, detail = '') => {
   log(`${pass ? 'NOTE ok' : 'NOTE'} ${id}${detail ? ` - ${String(detail).slice(0, 300)}` : ''}`);
 };
 
+// ---------------------------------------------------------------------------
+// The page's memory, sampled across the run. A page that allocates without
+// bound runs out long after the frame that started it — the tab traps with
+// `rust_oom`, then never draws again — so a run keeps the number and says
+// what it grew to, at every width, rather than hearing about it as a trap.
+//
+// The wasm module's own memory is what an allocator runs out of; the glue
+// creates it while instantiating, so the instantiate calls are wrapped before
+// the page's scripts run. The canvas is read beside it: a backing store that
+// changes every frame is one way that memory grows.
+
+/** The most wasm memory a run may hold, in bytes. Opening the workspace, the
+ * apps and the notes it writes in settles at 79 MB on a 390-wide phone and
+ * 115 MB on a 1280 desk, both at twice the pixel density; a whole desktop with
+ * its records and pictures is under a third of this. */
+const WASM_BUDGET = 384 * 1024 * 1024;
+/** How much the heap may grow from the workspace to the end of the flow: the
+ * warm-up above is 22 MB on the phone and 48 MB on the desk, so a page that
+ * asks for megabytes a second — what allocating without bound looks like — is
+ * past it long before the run ends. */
+const WASM_GROWTH_ALLOWED = 128 * 1024 * 1024;
+
+const MEMORY_SHIM = `(() => {
+  const seen = globalThis.__tiloWasmMemory = {memories: []};
+  for (const name of ['instantiate', 'instantiateStreaming']) {
+    const original = WebAssembly[name];
+    WebAssembly[name] = async function (...args) {
+      const result = await original.apply(this, args);
+      const memory = (result.instance ?? result).exports?.memory;
+      if (memory instanceof WebAssembly.Memory) seen.memories.push(memory);
+      return result;
+    };
+  }
+})()`;
+const MEMORY = `(() => {
+  const canvas = globalThis.tiloMount?.canvas ?? document.querySelector('canvas');
+  const state = globalThis.tiloMount?.state?.() ?? null;
+  return {
+    wasmBytes: (globalThis.__tiloWasmMemory?.memories ?? []).reduce((sum, memory) => sum + memory.buffer.byteLength, 0),
+    jsHeap: performance.memory?.usedJSHeapSize ?? null,
+    canvas: canvas ? {width: canvas.width, height: canvas.height,
+      cssWidth: canvas.clientWidth, cssHeight: canvas.clientHeight, dpr: devicePixelRatio} : null,
+    frames: state?.frames ?? null,
+    logical: state?.logicalSize ?? null,
+  };
+})()`;
+const megabyte = bytes => (bytes / (1024 * 1024)).toFixed(1);
+
+/** Samples `tab`'s memory every second until the returned function stops it:
+ * the shape of a growth matters as much as its peak. */
+function watchMemory(tab) {
+  const samples = [];
+  let stopped = false;
+  const sample = async reason => {
+    const taken = await tab.evaluate(MEMORY).catch(() => null);
+    if (taken) samples.push({at: Math.round((Date.now() - t0) / 1000), reason, ...taken});
+    return taken;
+  };
+  const ticking = (async () => {
+    while (!stopped) {
+      await sample('tick');
+      await sleep(1000);
+    }
+  })();
+  return {
+    samples,
+    sample,
+    /** The largest wasm and canvas numbers seen, and how many distinct canvas
+     * sizes: a backing store that keeps changing is named in the detail. */
+    async stop() {
+      stopped = true;
+      await ticking;
+      await sample('end');
+      const wasm = samples.map(entry => entry.wasmBytes ?? 0);
+      const canvases = new Set(samples.map(entry => entry.canvas && `${entry.canvas.width}x${entry.canvas.height}`));
+      const frames = samples.map(entry => entry.frames ?? 0);
+      return {peak: Math.max(0, ...wasm), first: wasm[0] ?? 0, last: wasm.at(-1) ?? 0,
+        presented: [frames[0] ?? 0, frames.at(-1) ?? 0],
+        canvases: [...canvases].filter(Boolean), samples};
+    },
+  };
+}
+
 const browser = await launch({args: ['--ignore-certificate-errors',
   // A build container runs as root, where Chromium refuses its own sandbox.
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
@@ -948,6 +1119,8 @@ try {
       const context = await browser.context();
       const tab = await browser.tab({context, firstRun: true});
       let agent = null;
+      let memory = null;
+      await tab.send('Page.addScriptToEvaluateOnNewDocument', {source: MEMORY_SHIM});
       await tab.send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 2, mobile});
       await tab.send('Emulation.setEmulatedMedia', {features: [{name: 'prefers-color-scheme', value: theme}]});
       await tab.send('Browser.grantPermissions', {origin: siteOrigin, browserContextId: context,
@@ -1081,6 +1254,10 @@ try {
         }
         await sleep(2000);
         log(`${combo}: in the workspace`, await tab.evaluate(`(globalThis.tiloMount?.state()?.workspaceName ?? "") + " " + location.hash`));
+        // From the workspace on, the page's memory is sampled: what it grows
+        // to over the run is the number the check below is about.
+        memory = watchMemory(tab);
+        await memory.sample('landed');
 
         // 3. The agent's MCP connection: present in the workspace from now on.
         agent = mcpClient();
@@ -1157,11 +1334,16 @@ try {
         }
         if (video) log(`${combo}: recording`, JSON.stringify(video));
 
-        // 6. Who is here, pinned on screen, with the agent in it.
+        // 6. Who is here, kept on screen, with the agent in it.
         const pinProblem = await pinOverlay(tab);
-        note(`${combo}: who is here pins out over the windows`, !pinProblem, pinProblem ?? '');
+        check(`${combo}: who is here is kept on screen`, !pinProblem, pinProblem ?? '');
         await shot(tab, combo, 'presence-with-agent', {expect: [/^everyone here$/i, /claude code/i]});
-
+        // Kept on screen, it stays while the person works elsewhere: a press on the desk is the
+        // desk's, and the list is still there after it.
+        await clickAt(tab, Math.round(width / 2), Math.round(height * 0.6));
+        await sleep(400);
+        check(`${combo}: who is here stays while the desk is pressed`, Boolean(rosterOf(await semantics(tab))),
+          names(await semantics(tab)));
         // A window filling the desk: the bar's own controls and the reading it shows stand apart at
         // every width, the phone's included.
         if (await press(tab, /^maximize$/i, {what: 'maximizing the window'})) {
@@ -1172,8 +1354,29 @@ try {
         }
         const overlay = await semantics(tab);
         note(`${combo}: the overlay lists the agent`, overlay.some(node => /claude code/i.test(node.name)), names(overlay));
+        // Back in the bar: the person's own control, and the list goes with it.
+        const back = await press(tab, /^put back in the bar$/i, {what: 'putting who is here back in the bar'});
+        const closed = back ? await until(async () => !rosterOf(await semantics(tab)), 4000, 150) : null;
+        check(`${combo}: who is here goes back in the bar`, Boolean(closed),
+          back ? names(await semantics(tab)) : 'no "Put back in the bar" control');
         const exceptions = tab.log.filter(line => line.startsWith('EXC') || /panic/i.test(line));
         check(`${combo}: no exceptions in the page`, exceptions.length === 0, exceptions.join(' | '));
+
+        const used = await memory.stop();
+        writeFileSync(join(browserDir, `${combo}-memory.json`), JSON.stringify(used, null, 1));
+        check(`${combo}: the page's memory stays under ${megabyte(WASM_BUDGET)} MB`, used.peak < WASM_BUDGET,
+          `wasm ${megabyte(used.first)} MB at the workspace, ${megabyte(used.peak)} MB at its peak, ` +
+            `${megabyte(used.last)} MB at the end; canvases ${used.canvases.join(', ') || 'none'}`);
+        check(`${combo}: the page's memory grows by no more than ${megabyte(WASM_GROWTH_ALLOWED)} MB`,
+          used.peak - used.first < WASM_GROWTH_ALLOWED,
+          `wasm ${megabyte(used.first)} MB at the workspace, ${megabyte(used.peak)} MB at its peak ` +
+            `over ${used.samples.length} samples`);
+        // A page that trapped still answers its input, and stops presenting: the frames it
+        // counts are how a wedged page reads from here, whatever trap wedged it.
+        check(`${combo}: the page keeps presenting`, used.presented[1] > used.presented[0] + 10,
+          `${used.presented[0]} frames at the workspace, ${used.presented[1]} at the end`);
+        log(`${combo}: memory`,
+          `wasm peak ${megabyte(used.peak)} MB, ${used.presented[1] - used.presented[0]} frames, canvases ${used.canvases.join(', ')}`);
 
         writeFileSync(join(browserDir, `${combo}-semantics.json`), JSON.stringify(overlay, null, 1));
         writeFileSync(join(browserDir, `${combo}-state.json`),
@@ -1188,6 +1391,7 @@ try {
         writeFileSync(join(browserDir, `${combo}-mcp.log`), agent?.said() ?? '');
         log(`${combo}: stopped`, String(error?.message ?? error));
       } finally {
+        await memory?.stop().catch(() => {});
         await agent?.close().catch(() => {});
         await tab.close().catch(() => {});
       }
