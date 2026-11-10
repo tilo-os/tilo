@@ -17,10 +17,6 @@ fn registered_person_effect_ids_match_the_native_broker_protocol() {
         ChatEffect::OPEN_DIRECT_CONVERSATION.id,
         "open-direct-conversation"
     );
-    assert_eq!(
-        ChatEffect::READ_DIRECT_CONVERSATION.id,
-        "read-direct-conversation"
-    );
     assert_eq!(ChatEffect::SEND_DIRECT_MESSAGE.id, "send-direct-message");
 }
 
@@ -82,33 +78,19 @@ fn a_pair_of_windows(workspace: &str, ada: &str, bob: &str) -> (Window, Window) 
     (ada_window, bob_window)
 }
 
-/// What `window` reads of its conversation with `peer`: each message's text
-/// and the person it names as its author.
+/// What `window`'s record holds of its conversation with `peer`: each
+/// message's text and the person it names as its author.
 fn read_conversation(window: &mut Window, peer: &str) -> Vec<(String, String)> {
-    use crate::effects::ChatEffect;
-
-    let read = window
-        .effect(&ChatEffect::ReadDirectConversation {
-            public_key: peer.into(),
-        })
-        .expect("the window reads the conversation");
-    let read = read.value.expect("the conversation as a value");
-    read["messages"]
-        .as_array()
-        .expect("the messages")
-        .iter()
-        .map(|message| {
-            (
-                message["text"]
-                    .as_str()
-                    .expect("a message's text")
-                    .to_owned(),
-                message["author"]
-                    .as_str()
-                    .expect("a message's author")
-                    .to_owned(),
-            )
-        })
+    let me = window
+        .with_chat(|chat| chat.me.id.clone())
+        .expect("a window");
+    let id = Chat::direct_id([
+        Participant::person(me),
+        Participant::person(peer.to_owned()),
+    ]);
+    crate::testing::mounted_rows(window, id.as_str())
+        .into_iter()
+        .map(|message| (message.text, message.author.as_str().to_owned()))
         .collect()
 }
 
@@ -187,6 +169,25 @@ fn two_peoples_chat_is_the_workspaces_own_messages() {
         ["hello from Ada", "hello from Bob"],
         "both people's messages are in the one conversation"
     );
+
+    // An agent reads it as any conversation: `read-messages` on its id.
+    let id = Chat::direct_id([Participant::person(ada), Participant::person(bob)]);
+    let page = ada_window
+        .effect(&crate::effects::ChatEffect::ReadMessages {
+            channel: id.to_string(),
+            page_size: None,
+            cursor: None,
+        })
+        .expect("the conversation reads as a channel does")
+        .value
+        .expect("a page");
+    let read: Vec<&str> = page["messages"]
+        .as_array()
+        .expect("its messages")
+        .iter()
+        .filter_map(|message| message["text"].as_str())
+        .collect();
+    assert_eq!(read, said, "the same messages, in the same order");
 }
 
 /// What a window's box sends goes to the conversation Chat already keeps with
@@ -394,18 +395,21 @@ fn a_persons_card_opens_the_conversation_chat_keeps() {
             .expect("Chat lists the conversation with Ada");
         let resource = row.into_resource();
         assert_eq!(resource.kind, "chat.conversation", "{:?}", resource.id);
-        assert!(
-            resource
-                .actions
-                .iter()
-                .any(|action| action.id == ChatEffect::OPEN_DIRECT_CONVERSATION.id),
-            "the row offers the operations on the conversation: {:?}",
-            resource
-                .actions
-                .iter()
-                .map(|action| &action.id)
-                .collect::<Vec<_>>()
-        );
+        let offered: Vec<&str> = resource
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        for operation in [
+            ChatEffect::OPEN_DIRECT_CONVERSATION.id,
+            ChatEffect::SEND_DIRECT_MESSAGE.id,
+            ChatEffect::READ_MESSAGES.id,
+        ] {
+            assert!(
+                offered.contains(&operation),
+                "the row offers {operation} on the conversation: {offered:?}"
+            );
+        }
     });
 }
 

@@ -1,7 +1,7 @@
 //! Chat's direct conversations: the conversation two of the workspace's
-//! people have, opened, read and sent to by the app's operations
-//! (`open-direct-conversation`, `read-direct-conversation`,
-//! `send-direct-message`).
+//! people have, opened and sent to by the app's operations
+//! (`open-direct-conversation`, `send-direct-message`); its messages are read
+//! from the record, as every conversation's are.
 //!
 //! A direct conversation is not created: its id names its participants
 //! ([`Chat::direct_id`]), so every device that opens the same conversation
@@ -82,10 +82,10 @@ impl ChatApp {
         self.request_relayout();
     }
 
-    /// The conversation with `peer` as the app answers a read of it: its
-    /// messages in the order the window shows them, and how many of them this
-    /// person has not seen.
-    pub(crate) fn read_direct_answer(&mut self, peer: &str, id: &Id, chat: &Chat) -> Effected {
+    /// The conversation with `peer` as opening it answers: its messages in
+    /// the order the window shows them, and how many of them this person has
+    /// not seen.
+    pub(crate) fn opened_direct_answer(&mut self, peer: &str, id: &Id, chat: &Chat) -> Effected {
         let channel = id.to_string();
         let held = self.held_messages();
         let rows = chat.message_rows(&held, &channel);
@@ -258,7 +258,8 @@ impl ChatApp {
     /// people, so a caller finds them by the operation it wants rather than
     /// by a written address. Every person has one, not only those the
     /// conversation with whom holds a message yet: a caller asks for the
-    /// row before it can write the first message.
+    /// row before it can write the first message. Its messages are read as
+    /// any conversation's, by `read-messages` on its id.
     pub(crate) fn direct_conversation_rows(&self) -> Vec<LiveRow> {
         self.channels
             .iter()
@@ -273,15 +274,20 @@ impl ChatApp {
                     .effect(&ChatEffect::OpenDirectConversation {
                         public_key: public_key.clone(),
                     })
-                    .effect(&ChatEffect::ReadDirectConversation {
-                        public_key: public_key.clone(),
-                    })
                     .operation(
                         ChatEffect::SendDirectMessage {
                             public_key,
                             text: String::new(),
                         }
                         .bound_asking(&["text"]),
+                    )
+                    .operation(
+                        ChatEffect::ReadMessages {
+                            channel: channel.id.clone(),
+                            page_size: None,
+                            cursor: None,
+                        }
+                        .bound_asking(&["pageSize", "cursor"]),
                     ),
                 )
             })

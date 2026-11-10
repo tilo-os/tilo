@@ -697,8 +697,8 @@ pub(crate) fn agent_work(summons: &Id) -> Invoke<ChatPart> {
 fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> EffectAnswer {
     match &effect {
         // A direct conversation is one of the chat's own: its id names the
-        // two people it is between, so opening, reading and sending all read
-        // and write the same record and the same parts as a channel's.
+        // two people it is between, so opening and sending read and write the
+        // same record and the same parts as a channel's.
         ChatEffect::OpenDirectConversation { public_key } => {
             let (_, id) = chat
                 .borrow()
@@ -706,7 +706,7 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
             let state = cx.live().get();
             let mut chat = chat.borrow_mut();
             chat.open_conversation(&id, &state);
-            return Ok(chat.read_direct_answer(public_key, &id, &state));
+            return Ok(chat.opened_direct_answer(public_key, &id, &state));
         }
         ChatEffect::OpenAgent { agent } => {
             let state = cx.live().get();
@@ -737,13 +737,6 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
             return chat
                 .borrow()
                 .send_from_box(to, attached.clone(), text, &state);
-        }
-        ChatEffect::ReadDirectConversation { public_key } => {
-            let state = cx.live().get();
-            let (_, id) = chat.borrow().direct_conversation(public_key, &state)?;
-            return Ok(chat
-                .borrow_mut()
-                .read_direct_answer(public_key, &id, &state));
         }
         _ => {}
     }

@@ -102,9 +102,6 @@ pub enum ChatEffect {
     /// Send to the direct conversation with a certified person public key.
     #[effect(job, returns, audience = "agents")]
     SendDirectMessage { public_key: String, text: String },
-    /// Read the direct conversation with a certified person public key.
-    #[effect(job, returns, audience = "agents")]
-    ReadDirectConversation { public_key: String },
     /// Send a message
     ///
     /// Sends the words and everything they carry to the conversation with
@@ -316,7 +313,6 @@ impl ChatApp {
             ChatEffect::OpenDirectConversation { .. }
             | ChatEffect::OpenAgent { .. }
             | ChatEffect::SendDirectMessage { .. }
-            | ChatEffect::ReadDirectConversation { .. }
             | ChatEffect::Send { .. } => {
                 return Err("a direct conversation answers where the chat is held".into());
             }
