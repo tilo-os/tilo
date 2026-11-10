@@ -19,7 +19,7 @@
 
 # The image every check runs in unless it says otherwise: pinned by digest, so a moving tag can't
 # change what a check runs in without a commit saying so. Move it by changing this line.
-image = "registry.tilo.so/tilo/tilo-builder@sha256:5a72b2a985be655cb2cd95ca9b3c7af30faaf8bd589258790ce8594b01a7eacc"
+image = "registry.tilo.so/tilo/tilo-builder@sha256:a6f389d770ee5acb65b7a03d67c0d619c7acb147b64ce6511337ac5548e9dce5"
 
 [env]
 XDG_RUNTIME_DIR = "/tmp/tilo-xdg-runtime"
