@@ -2039,15 +2039,19 @@ impl AppCheck<'_> {
             self.note_shown_row(row);
             declared.read(row);
         }
-        let mut problems = audit::inspect(
+        let min_target = layout
+            .size
+            .touch
+            .then(|| f64::from(layout.input().minimum_target()));
+        let mut problems =
+            audit::inspect(&inspection.root, viewport, min_target, layout.display_scale);
+        // A heading keeps one rhythm to the rows it names: the room a finger's target takes
+        // stands over its line, never between the heading and its first row.
+        problems.extend(audit::heading_rooms(
             &inspection.root,
-            viewport,
-            layout
-                .size
-                .touch
-                .then(|| f64::from(layout.input().minimum_target())),
-            layout.display_scale,
-        );
+            &layout.theme(),
+            min_target,
+        ));
         problems.extend(audit::clipped_text(
             staged.harness_mut().root_widget_mut(),
             self.text,

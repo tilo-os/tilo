@@ -131,7 +131,9 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             | Kind::RoundedOnEdge
             | Kind::CrampedCard
             // No window in this fixture docks a sidebar beside content it squeezes.
-            | Kind::ContentBesideSidebar => "(no view)",
+            | Kind::ContentBesideSidebar
+            // Its lists group no rows under headings of their own.
+            | Kind::HeadingRoom => "(no view)",
         };
         assert_eq!(
             finding.view,

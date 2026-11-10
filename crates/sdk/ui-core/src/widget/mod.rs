@@ -3778,7 +3778,7 @@ pub use tone::Tone;
 mod section;
 pub use section::{
     ObjectHeader, ObjectHeaderProps, Section, SectionHeader, SectionHeaderFace, SectionProps,
-    StatusLine, StatusLineProps,
+    StatusLine, StatusLineProps, band_height,
 };
 pub mod capture_studio;
 pub use capture_studio::{

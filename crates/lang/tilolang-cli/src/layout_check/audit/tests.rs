@@ -2125,3 +2125,47 @@ fn an_item_shown_in_an_open_rows_document_and_again_in_the_list_is_caught() {
         "an expanded branch is a row of its list, and its document holds no row"
     );
 }
+
+/// A group heading takes one band over its first row, and a finger's target where the window is
+/// held in the hand — never a slot or padding of its own between the heading and the row.
+#[test]
+fn a_group_heading_takes_one_band_and_stands_on_the_row_it_heads() {
+    let theme = ui::Theme::dark();
+    let band = band_height(&theme);
+    let with = |band: f64, row_top: f64| {
+        let mut list = node_of("DescribedList", "list", [0.0, 0.0, 400.0, 600.0]);
+        let mut access = AccessNode::new(Role::Tree);
+        access.children = vec![
+            AccessNode::new(Role::Button)
+                .with_name("Monday")
+                .with_action_target("group:Monday")
+                .with_bounds(Rect::new(0.0, 0.0, 400.0, band)),
+            AccessNode::new(Role::TreeItem)
+                .with_name("a task")
+                .with_bounds(Rect::new(0.0, row_top, 400.0, row_top + 48.0)),
+        ];
+        list.semantics = Some(access);
+        list
+    };
+    assert!(
+        heading_rooms(&with(band, band), &theme, None).is_empty(),
+        "one band, the row at its end"
+    );
+    let loose = heading_rooms(&with(band + 12.0, band + 12.0), &theme, None);
+    assert!(
+        loose
+            .iter()
+            .any(|p| p.kind == Kind::HeadingRoom && p.detail.contains("takes")),
+        "a band taller than a heading band: {loose:?}"
+    );
+    let slot = heading_rooms(&with(band, band + 12.0), &theme, None);
+    assert!(
+        slot.iter()
+            .any(|p| p.kind == Kind::HeadingRoom && p.detail.contains("heads stands")),
+        "a slot between the heading and its row: {slot:?}"
+    );
+    assert!(
+        heading_rooms(&with(48.0, 48.0), &theme, Some(48.0)).is_empty(),
+        "a finger's target is the one room a band grows by"
+    );
+}

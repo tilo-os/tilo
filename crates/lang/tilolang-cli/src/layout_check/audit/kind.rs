@@ -139,10 +139,14 @@ pub enum Kind {
     /// the list again. An item stands in one place — a row of its list, or in the document of
     /// the row it is under, never both.
     ItemShownTwice,
+    /// A group heading taking more room over its first row than one heading band, and a finger's
+    /// target where the window is held in the hand: the room a heading needs stands over its
+    /// line, so what it names stands as close to it at every width.
+    HeadingRoom,
 }
 
 impl Kind {
-    pub const ALL: [Self; 43] = [
+    pub const ALL: [Self; 44] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -186,6 +190,7 @@ impl Kind {
         Self::CrampedCard,
         Self::ContentBesideSidebar,
         Self::ItemShownTwice,
+        Self::HeadingRoom,
     ];
 
     pub fn name(self) -> &'static str {
@@ -233,6 +238,7 @@ impl Kind {
             Self::CrampedCard => "cramped-card",
             Self::ContentBesideSidebar => "content-beside-sidebar",
             Self::ItemShownTwice => "item-shown-twice",
+            Self::HeadingRoom => "heading-room",
         }
     }
 }

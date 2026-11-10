@@ -21,6 +21,7 @@ mod tests;
 
 use ui::headless::InspectionNode;
 use ui::kurbo::Rect;
+use ui::widget::band_height;
 
 /// One problem in one frame, at the widget it is about.
 #[derive(Clone, Debug)]
@@ -516,6 +517,87 @@ pub fn inspect(
     walk.double_navigation();
     walk.placeholder_panes(root, &mut Vec::new());
     out
+}
+
+/// The room every group heading takes over its first row: one heading band, grown only to a
+/// finger's target where the window is held in the hand, and nothing else. A heading names the
+/// rows under it, so no empty slot, padding or hidden row may stand between its band and the
+/// first of them, and a finger's taller band keeps the heading's line where the width does.
+pub fn heading_rooms(
+    root: &InspectionNode,
+    theme: &ui::Theme,
+    min_target: Option<f64>,
+) -> Vec<Problem> {
+    let band = band_height(theme).max(min_target.unwrap_or(0.0));
+    let mut out = Vec::new();
+    heading_rooms_in(root, &mut Vec::new(), band, &mut out);
+    out
+}
+
+fn heading_rooms_in(
+    node: &InspectionNode,
+    keys: &mut Vec<String>,
+    band: f64,
+    out: &mut Vec<Problem>,
+) {
+    let pushed = node.test_id.clone().map(|id| keys.push(id)).is_some();
+    let headings = node
+        .semantics
+        .as_ref()
+        .map_or(&[][..], |access| access.children.as_slice());
+    for (at, heading) in headings.iter().enumerate() {
+        // A group's heading is the list's disclosure of it: the one target it names a group by.
+        let names_group = heading
+            .action_target
+            .as_deref()
+            .is_some_and(|target| target.starts_with("group:"));
+        let Some(bounds) = heading.bounds.filter(|_| names_group) else {
+            continue;
+        };
+        let name = heading.name.clone().unwrap_or_default();
+        let taken = bounds.y1 - bounds.y0;
+        if (taken - band).abs() > 0.5 {
+            out.push(Problem {
+                kind: Kind::HeadingRoom,
+                keys: keys.iter().rev().cloned().collect(),
+                widget: node.widget.clone(),
+                id: node.test_id.clone(),
+                detail: format!(
+                    "the heading {name:?} takes {taken:.0} px over its first row, where a \
+                     heading band is {band:.0}"
+                ),
+            });
+        }
+        let Some(row) = at.checked_add(1).and_then(|next| headings.get(next)) else {
+            continue;
+        };
+        // A folded group heads no row: what follows is the next heading.
+        let heads_another = row
+            .action_target
+            .as_deref()
+            .is_some_and(|target| target.starts_with("group:"));
+        let Some(row) = row.bounds.filter(|_| !heads_another) else {
+            continue;
+        };
+        let gap = row.y0 - bounds.y1;
+        if gap.abs() > 0.5 {
+            out.push(Problem {
+                kind: Kind::HeadingRoom,
+                keys: keys.iter().rev().cloned().collect(),
+                widget: node.widget.clone(),
+                id: node.test_id.clone(),
+                detail: format!(
+                    "the row the heading {name:?} heads stands {gap:.0} px from its band's end"
+                ),
+            });
+        }
+    }
+    for child in &node.children {
+        heading_rooms_in(child, keys, band, out);
+    }
+    if pushed {
+        keys.pop();
+    }
 }
 
 impl Walk<'_> {
