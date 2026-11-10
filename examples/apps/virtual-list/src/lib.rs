@@ -123,7 +123,9 @@ impl ListModel for ActivityModel {
         self.requested = 0..0;
     }
 
-    fn request_range(&mut self, range: Range<usize>) {
+    // Every window is asked for whole: the row that stands open is the list's
+    // business, and this model reads the same rows either way.
+    fn request_range(&mut self, range: Range<usize>, _open: Option<&Self::Key>) {
         let resident = range.clone().all(|index| self.cache.contains_key(&index));
         if range == self.requested
             && (self.request.is_pending() || resident || self.error.is_some())
