@@ -183,7 +183,7 @@ fn wrong_in(staged: &stage::Staged, viewport: (u32, u32)) -> Vec<String> {
         .collect();
     // And what only the frame says: a divider a person reads as a band sits in pixels, whatever
     // the widgets that built it say they drew.
-    wrong.extend(unruled_dividers(
+    wrong.extend(divider_rules(
         staged,
         (viewport.0 as usize, viewport.1 as usize),
     ));
@@ -337,6 +337,12 @@ fn frame(staged: &stage::Staged, viewport: (usize, usize)) -> (Vec<u8>, usize) {
 /// the conversation's ground — is a pixel the ground's own colour, so nothing but the frame
 /// tells it from a divider drawn as bare text; a step's geometry, or a scene the tests built,
 /// says everything is there.
+///
+/// And how far each rule moves the ground it lands on: a day's rule is a neutral hairline that
+/// divides two of a kind and says nothing by itself, while the band where reading starts again
+/// says where, so its rule in the accent is read at a glance — it moves the ground by
+/// [`ui::surface::COLOURED_RULE_MIN_DELTA`] at least, and clearly more than any day's rule in
+/// the same frame, never the same weight as one.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
@@ -344,12 +350,17 @@ fn frame(staged: &stage::Staged, viewport: (usize, usize)) -> (Vec<u8>, usize) {
     clippy::arithmetic_side_effects,
     reason = "frame and band sizes are small counts, far inside usize and f64"
 )]
-fn unruled_dividers(staged: &stage::Staged, viewport: (usize, usize)) -> Vec<String> {
+fn divider_rules(staged: &stage::Staged, viewport: (usize, usize)) -> Vec<String> {
     let (wide, _) = viewport;
     let (rgba, scale) = frame(staged, viewport);
     let pixel = |x: usize, y: usize| {
         let at = (y * wide * scale + x) * 4;
         [rgba[at], rgba[at + 1], rgba[at + 2]]
+    };
+    let luminance = |painted: [u8; 3]| {
+        ui::a11y::relative_luminance(ui::peniko::Color::from_rgb8(
+            painted[0], painted[1], painted[2],
+        ))
     };
     let moved = |painted: [u8; 3], beneath: [u8; 3]| {
         painted
@@ -358,6 +369,10 @@ fn unruled_dividers(staged: &stage::Staged, viewport: (usize, usize)) -> Vec<Str
             .any(|(painted, beneath)| painted.abs_diff(beneath) > 12)
     };
     let mut wrong = Vec::new();
+    // How far the strongest rule of a day moves its ground, against which the band where reading
+    // starts again is held; and that band's own rule, when the frame shows one.
+    let mut quiet_rule = 0.0f64;
+    let mut accent_rule: Option<(String, f64)> = None;
     for (words, divider) in dividers_of(staged) {
         // A band too narrow to rule moves no column a person reads, and its label may take the
         // whole of it: only a band with room on either side of its words is held to its rules.
@@ -374,20 +389,55 @@ fn unruled_dividers(staged: &stage::Staged, viewport: (usize, usize)) -> Vec<Str
         );
         // The ground the band is painted on: the column beside it, outside the band itself.
         let ground = pixel((divider.x0.round() as usize).saturating_sub(2) * scale, row);
+        let beneath = luminance(ground);
         // The rule runs from the column's edge in to its words: the first 16 points on either
         // side stand clear of any label a band this wide centres.
         let span = 16 * scale;
+        let mut strength = 0.0f64;
         for (side, from, to) in [
             ("leading", left, left + span),
             ("trailing", right - span, right),
         ] {
-            let ruled = (from..to.min(wide * scale)).any(|x| moved(pixel(x, row), ground));
+            let mut ruled = false;
+            for x in from..to.min(wide * scale) {
+                let painted = pixel(x, row);
+                if moved(painted, ground) {
+                    ruled = true;
+                    strength = strength.max((luminance(painted) - beneath).abs());
+                }
+            }
             if !ruled {
                 wrong.push(format!(
                     "the divider {words:?} at {divider:?} has no {side} rule: bare text, not a \
                      band ruled out to the column's edges"
                 ));
             }
+        }
+        // The band saying where reading starts again is the one in the accent, and what tells the
+        // two kinds apart is the ink: its rule is read at a glance.
+        if ui::widget::conversation::band::says_where_reading_starts(&words) {
+            accent_rule = Some((
+                words,
+                accent_rule.map_or(strength, |(_, s)| s.max(strength)),
+            ));
+        } else {
+            quiet_rule = quiet_rule.max(strength);
+        }
+    }
+    if let Some((words, strength)) = accent_rule {
+        if strength < ui::surface::COLOURED_RULE_MIN_DELTA {
+            wrong.push(format!(
+                "the divider {words:?} rules at {strength:.3}, under the \
+                 {:.3} a rule that says where reading starts again moves its ground: a day's \
+                 rule at another weight, not a mark",
+                ui::surface::COLOURED_RULE_MIN_DELTA
+            ));
+        }
+        if strength < quiet_rule * 2.0 {
+            wrong.push(format!(
+                "the divider {words:?} rules at {strength:.3}, no more than a day's \
+                 {quiet_rule:.3}: one weight for a division and for where reading starts again"
+            ));
         }
     }
     wrong
@@ -1696,6 +1746,24 @@ fn a_channels_header_says_what_the_person_has_not_seen_of_it_by_whom() {
         mark.props.get("added"),
         Some(&tilo_render_protocol::patch::Value::Bool(true)),
         "every one of them is new: {mark:?}"
+    );
+    // And the channel's row in the sidebar says the same number: one count of what is new in a
+    // conversation, never two numbers a person has to tell apart.
+    let place = nodes_of(&tree, "ui.NavItem")
+        .into_iter()
+        .find(|place| {
+            matches!(
+                place.props.get("item"),
+                Some(tilo_render_protocol::patch::Value::Ref(item))
+                    if matches!(mark.props.get("of"),
+                        Some(tilo_render_protocol::patch::Value::Ref(of)) if item.id == of.id)
+            )
+        })
+        .unwrap_or_else(|| panic!("the sidebar holds the channel's row: {tree:?}"));
+    assert_eq!(
+        place.props.get("live"),
+        mark.props.get("count"),
+        "the row counts what the header counts: {place:?} against {mark:?}"
     );
 }
 

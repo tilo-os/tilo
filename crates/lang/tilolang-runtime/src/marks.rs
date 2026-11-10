@@ -466,9 +466,14 @@ impl Core {
         if unseen.is_empty() {
             return Ok(());
         }
+        // The place counts the items of what it opens the person has not read, which is the
+        // number the window of it says in its header ([`Self::mark_window`]): one count, read
+        // from one place. A resource holding no items of its own counts its unseen changes.
+        let count = self
+            .unread_count_of(&viewer.0, &r.target)?
+            .unwrap_or_else(|| i64::try_from(unseen.len()).unwrap_or(i64::MAX));
         // A `live` the view set itself (a count of what it knows) is the view's; the host
         // fills only what the view left for it, as with a row's change mark.
-        let count = i64::try_from(unseen.len()).unwrap_or(i64::MAX);
         node.props
             .entry("live".to_owned())
             .or_insert(Value::Int(count));
@@ -583,18 +588,9 @@ impl Core {
             mark.props.insert("more".to_owned(), Value::Bool(true));
         }
         self.fill_mark(&mut mark, &at, &unseen, viewer, acc);
-        let counted = Self::counted_in(&at, &unseen, acc);
-        // A window counts the items the changes were made over rather than the versions that
-        // made them: what the person catches up on.
-        let count = counted.iter().fold(0i64, |sum, version| {
-            sum.saturating_add(i64::from(version.count.max(1)))
-        });
+        let (count, added) = self.window_count(&at, &unseen, viewer, acc)?;
         mark.props.insert("count".to_owned(), Value::Int(count));
-        // Every change only put items in: what is new is said as new, not as changed.
-        if counted
-            .iter()
-            .all(|version| self.puts_items_in(version, &at))
-        {
+        if added {
             mark.props.insert("added".to_owned(), Value::Bool(true));
         }
         // Activating the chip opens the catch-up, so what the chip does is show its list, not
@@ -618,6 +614,37 @@ impl Core {
             None => node.children.push(slot(name, &node.key, mark)),
         }
         Ok(())
+    }
+
+    /// How many of what a window of `at` shows are new to `viewer`, and whether every change it
+    /// counts only put items in — so what it says is new rather than changed.
+    ///
+    /// A window counts the items the changes were made over rather than the versions that made
+    /// them: what the person catches up on. The window of one resource that holds items of its
+    /// own ([`Self::unread_count_of`]) counts the items it shows the person has not read, which
+    /// is the number the place that opens it shows on its badge ([`Self::mark_nav_item`]): one
+    /// count for one thing, read from one place.
+    fn window_count(
+        &self,
+        at: &ResourceRef,
+        unseen: &[Version],
+        viewer: &Principal,
+        acc: &Acc,
+    ) -> Result<(i64, bool), RuntimeError> {
+        let counted = Self::counted_in(at, unseen, acc);
+        // Every change only put items in: what is new is said as new, not as changed.
+        let added = counted
+            .iter()
+            .all(|version| self.puts_items_in(version, at));
+        if at.item.is_some()
+            && let Some(unread) = self.unread_count_of(&viewer.0, at)?
+        {
+            return Ok((unread, added));
+        }
+        let count = counted.iter().fold(0i64, |sum, version| {
+            sum.saturating_add(i64::from(version.count.max(1)))
+        });
+        Ok((count, added))
     }
 
     /// The versions a window's mark counts: the changes of what the window *lists*, which is

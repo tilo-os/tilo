@@ -783,6 +783,91 @@ fn a_channels_new_messages_are_unseen_in_the_sidebar_until_the_person_opens_it()
     );
 }
 
+/// The number a place in the sidebar shows, on the row `key` names.
+fn badge_of(view: &mut ViewInstance, key: &str) -> Option<i64> {
+    view.poll_patches().unwrap();
+    let mut places = Vec::new();
+    find_all(view.tree(), "ui.NavItem", &mut places);
+    let place = places
+        .into_iter()
+        .find(|item| item.props.get("key") == Some(&Value::text(key)))
+        .unwrap_or_else(|| panic!("no place {key}"));
+    match place.props.get("live") {
+        Some(Value::Int(count)) => Some(*count),
+        _ => None,
+    }
+}
+
+/// The number a window's header says is new of what it shows, if it marks anything.
+fn header_count(view: &mut ViewInstance) -> Option<i64> {
+    view.poll_patches().unwrap();
+    let mut marks = Vec::new();
+    find_all(view.tree(), "ui.ChangeMark", &mut marks);
+    let mark = marks
+        .into_iter()
+        .find(|mark| mark.props.get("window") == Some(&Value::Bool(true)))?;
+    match mark.props.get("count") {
+        Some(Value::Int(count)) => Some(*count),
+        other => panic!("a window's mark counts what is new: {other:?}"),
+    }
+}
+
+/// A channel's row in the sidebar and the header of its window count one thing: the messages of
+/// it the person has not read. A thread branched off a message is not a message the transcript
+/// shows and is not counted beside them, and reading the channel clears the row and the header
+/// alike — one number, read from one place.
+#[test]
+fn a_channels_row_and_its_header_count_the_same_messages() {
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+    let mut ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
+    ben.host.sync_from(&ben.doc);
+    let first = call(
+        &ben,
+        "send",
+        vec![design.clone(), rich("The build is up."), Value::none()],
+    );
+    call(
+        &ben,
+        "start_thread",
+        vec![design.clone(), first, Value::text("Which machines")],
+    );
+    call(
+        &ben,
+        "send",
+        vec![design.clone(), rich("On all three."), Value::none()],
+    );
+    call(
+        &ben,
+        "send",
+        vec![design.clone(), rich("And the old one."), Value::none()],
+    );
+    ben.commit();
+    ben.host.sync_from(&ben.doc);
+    ada.sync_with(&mut ben);
+
+    // Three messages are new: the thread started from the first is not one of them, and both
+    // places say the same number.
+    let badge = badge_of(&mut ada.view(APP), "/design");
+    let mut channel = ada.host.open_resource(&target(&design), None).unwrap();
+    let header = header_count(&mut channel);
+    assert_eq!(badge, Some(3), "three messages wait in design");
+    assert_eq!(header, badge, "the row and the header say one number");
+
+    // Ada reads to the end: the row says nothing new and the header marks nothing.
+    ada.host
+        .runtime()
+        .mark_seen("ada", &target(&design))
+        .unwrap();
+    ada.commit();
+    assert_eq!(badge_of(&mut ada.view(APP), "/design"), None, "read");
+    let mut read = ada.host.open_resource(&target(&design), None).unwrap();
+    assert_eq!(header_count(&mut read), None, "and the header agrees");
+}
+
 /// Every text the window of the Chat before channels shows, in order: that Chat's messages were
 /// plain text parts, not rich text, so its rows carry them among the row's other texts.
 fn sent(view: &mut ViewInstance) -> Vec<String> {

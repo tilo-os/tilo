@@ -266,9 +266,10 @@ impl Source {
     }
 }
 
-/// The longest run of a conversation's unread messages a mention count reads: one page of
-/// them, so a workspace nobody has read is not read message by message for a badge.
-const MENTION_SCAN: usize = 64;
+/// The longest run of a conversation's unread messages a count reads: one page of them, so a
+/// workspace nobody has read is not read message by message for a badge. A conversation holding
+/// more unread than this says the page it read, its mentions and its unread count alike.
+const UNREAD_SCAN: usize = 64;
 
 /// A suggestion's opening words when the host has no locale string for them.
 const SAYS_FALLBACK: &str = "{name} suggests:";
@@ -1175,13 +1176,8 @@ impl Core {
     }
 
     /// The first item of `at`'s collection `field` that `person` has not seen, oldest first (a
-    /// conversation's first unread message), as a transcript shows it.
-    ///
-    /// Read item by item from the collection's end, a page at most: an item is unseen when a
-    /// version of it is newer than what the person has seen of `at` (its mark), and an item they
-    /// wrote is one they saw. The first one found, oldest first, is the answer, and a channel
-    /// the person is caught up with costs the page it looks through. Writing a message reads
-    /// nothing above it: a reply counts as neither a mark nor a reading of what came before it.
+    /// conversation's first unread message), as a transcript shows it: the first of
+    /// [`Self::unread_items`], which is where its "New messages" divider stands.
     pub(crate) fn first_unseen_of(
         &self,
         person: &str,
@@ -1189,16 +1185,40 @@ impl Core {
         field: &str,
         item: &str,
     ) -> Result<Option<String>, crate::store::StoreError> {
+        Ok(self
+            .unread_items(person, at, field, item, 1)?
+            .into_iter()
+            .next())
+    }
+
+    /// The items of `at`'s collection `field` (of `item`) `person` has not seen, oldest first,
+    /// `most` of them at most: what the divider of a transcript stands before and so what the
+    /// place that opens it and the window of it count. One count, read here, however many
+    /// numbers a person is shown.
+    ///
+    /// Read item by item from where the person read to, a page at most: an item is unseen when
+    /// a version of it is newer than what the person has seen of `at` (its mark), and an item
+    /// they wrote is one they saw. A channel the person is caught up with costs the page it
+    /// looks through. Writing a message reads nothing above it: a reply counts as neither a
+    /// mark nor a reading of what came before it.
+    pub(crate) fn unread_items(
+        &self,
+        person: &str,
+        at: &ResourceRef,
+        field: &str,
+        item: &str,
+        most: usize,
+    ) -> Result<Vec<String>, crate::store::StoreError> {
         // How many items from the end are looked through for the first unread one: one index
         // page, which is what a listing reads to place an item.
         const TAIL: usize = 64;
+        let mut unread = Vec::new();
         let store = self.store.borrow();
         let storage = self
-            .type_of_ref(&at.ty)
-            .ok()
-            .and_then(|(_, info)| info.field_by_id_or_name(field).map(|f| f.id.clone()));
+            .record_type_of(at)
+            .and_then(|info| info.field_by_id_or_name(field).map(|f| f.id.clone()));
         let Some(storage) = storage else {
-            return Ok(None);
+            return Ok(unread);
         };
         // A record the store does not hold yet (one just made, or empty) has nothing unseen.
         let Ok(items) = store.listing(
@@ -1208,11 +1228,11 @@ impl Core {
                 kind: crate::meta::FieldKind::Collection,
             },
         ) else {
-            return Ok(None);
+            return Ok(unread);
         };
         let len = items.len();
         if len == 0 {
-            return Ok(None);
+            return Ok(unread);
         }
         let runs = self.seen_runs(person);
         let mark = self.seen_mark(person, &at.id_string());
@@ -1258,10 +1278,52 @@ impl Core {
             let seen = self.seen_mark(person, &candidate.id_string());
             let un = crate::seen::unseen(&versions, person, seen.as_ref(), &runs);
             if !un.is_empty() {
-                return Ok(Some(id.to_string()));
+                unread.push(id.to_string());
+                if unread.len() >= most {
+                    break;
+                }
             }
         }
-        Ok(None)
+        Ok(unread)
+    }
+
+    /// The type `at` is of: the one its ref names, or — for a ref that names none, as a window's
+    /// does — the one the store holds the record under.
+    fn record_type_of(&self, at: &ResourceRef) -> Option<Rc<crate::registry::TypeInfo>> {
+        self.type_of_ref(&at.ty)
+            .ok()
+            .or_else(|| {
+                let ty = self.store.borrow().type_of(at).ok()?;
+                self.type_of_ref(&ty).ok()
+            })
+            .map(|(_, info)| info)
+    }
+
+    /// The collection of records `at` holds, and the type of its items: what a fact about the
+    /// items of a resource reads (`first_unseen`, `mentions`), which is the list a window of it
+    /// shows and a place that opens it counts. A resource holding none has no items of its own.
+    pub(crate) fn item_collection_of(&self, at: &ResourceRef) -> Option<(String, String)> {
+        let info = self.record_type_of(at)?;
+        let field = info.fields.iter().find(|field| {
+            field.kind == crate::meta::FieldKind::Collection && self.item_type(&field.ty).is_ok()
+        })?;
+        let item = self.item_type(&field.ty).ok()?;
+        Some((field.id.clone(), item.id.clone()))
+    }
+
+    /// How many of the items `at` holds `person` has not seen, oldest first: the number a place
+    /// that opens it shows on its badge and a window of it in its header, both read here. `None`
+    /// for a resource that holds no collection of records: nothing of it is an item.
+    pub(crate) fn unread_count_of(
+        &self,
+        person: &str,
+        at: &ResourceRef,
+    ) -> Result<Option<i64>, crate::store::StoreError> {
+        let Some((field, item)) = self.item_collection_of(at) else {
+            return Ok(None);
+        };
+        let unread = self.unread_items(person, at, &field, &item, UNREAD_SCAN)?;
+        Ok(Some(i64::try_from(unread.len()).unwrap_or(i64::MAX)))
     }
 
     /// The members, the person looking aside, whose reading of `coll` ends at `at`: their seen
@@ -1365,7 +1427,7 @@ impl Core {
             .collect();
         // The longest run of unread messages read for a count: a workspace nobody has read counts
         // mentions in its first page of new messages, not in every one.
-        let upto = from.saturating_add(MENTION_SCAN).min(len);
+        let upto = from.saturating_add(UNREAD_SCAN).min(len);
         let mut found: usize = 0;
         for index in from..upto {
             let Some(id) = items.get(index) else {

@@ -134,6 +134,24 @@ fn both_dividers_of_a_conversation_rule_the_column_on_each_side_of_their_label()
                  {ground:?}"
             );
         }
+        // The day's rule divides two of a kind and says nothing by itself; the band where
+        // reading starts again says where, so its rule in the accent is read at a glance: it
+        // moves the ground by what a rule that carries a colour must, clearly more than the
+        // day's hairline beside it, never the same weight as one.
+        let day_rule = DividerTone::Quiet.ink_on(&theme, ground).rule;
+        let accent_rule = DividerTone::Accent.ink_on(&theme, ground).rule;
+        assert!(
+            crate::surface::edge_delta(accent_rule, ground)
+                >= crate::surface::COLOURED_RULE_MIN_DELTA,
+            "the accent divider's rule is a mark on the ground it lands on: {accent_rule:?} on \
+             {ground:?}"
+        );
+        assert!(
+            crate::surface::edge_delta(accent_rule, ground)
+                >= crate::surface::edge_delta(day_rule, ground) * 2.0,
+            "the accent divider's rule is clearly stronger than a day's: {accent_rule:?} against \
+             {day_rule:?} on {ground:?}"
+        );
         // And the unread one carries the person's colour itself, not a wash of black or white
         // over it.
         let accent = colors.intent.accent_ink;

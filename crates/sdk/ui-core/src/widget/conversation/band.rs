@@ -40,7 +40,8 @@ pub enum DividerTone {
 impl DividerTone {
     /// The ink a divider of this tone is drawn in over `ground`, the surface it lands on: a day
     /// is dimmed text over the ground's own hairline, the place reading starts again is the
-    /// accent over a rule in that accent.
+    /// accent over a rule in that accent, at a weight a person reads at a glance — a day's rule
+    /// divides two of one kind and says nothing by itself, this one says where reading starts.
     ///
     /// The rule is derived against `ground` and not against the ink: a rule in the accent
     /// derived as an edge of the accent is black or white at a wash, and painted on the
@@ -56,7 +57,7 @@ impl DividerTone {
                 let accent = theme.tokens.colors.intent.accent_ink;
                 DividerInk {
                     label: accent,
-                    rule: crate::surface::hairline_of(accent, ground),
+                    rule: crate::surface::rule_of(accent, ground),
                 }
             }
         }
@@ -194,6 +195,14 @@ pub fn unread_label() -> String {
 #[must_use]
 pub fn day_with_unread(day: &str) -> String {
     crate::i18n::widget_format("conversation-day-new", &[("day", day.into())])
+}
+
+/// Whether what a divider says is where reading starts again — the band drawn in the accent —
+/// told by its words in the language the person reads: the label alone, or the day it opens
+/// saying both ([`day_with_unread`]).
+#[must_use]
+pub fn says_where_reading_starts(words: &str) -> bool {
+    words.ends_with(&unread_label()) || words.ends_with(&day_with_unread(""))
 }
 
 /// A divider drawn where a canvas painter places it: the day a run of lines turns over, or the
