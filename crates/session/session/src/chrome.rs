@@ -846,7 +846,7 @@ pub(crate) fn host(
                     picture.rect.width(),
                     picture.rect.height(),
                 );
-                tilo_compositor::WindowPicture {
+                tilo_session_core::surface::WindowPicture {
                     window: picture.window,
                     rect: (x, y, width, height),
                     opacity: 1.0,

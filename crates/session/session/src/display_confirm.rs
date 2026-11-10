@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use settings_store::display_tools::{DisplayTool, TrustedDisplayTools};
 use tilo_compositor::{Compositor, DisplayEvent};
+
 use tilo_desktop_surface::DesktopNotifications;
 use tilo_desktop_surface::notifications::Notification;
 use tilo_sheets::Seat as _;

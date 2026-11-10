@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use tilo_compositor::capture::Target;
 use tilo_compositor::{Compositor, InputEvent, ObservedInput, Selection};
+
 use tilo_desktop_model::capability::Capability;
 use tilo_desktop_model::layout::TileContent;
 use tilo_desktop_surface::DesktopHandle;

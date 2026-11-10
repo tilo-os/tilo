@@ -22,9 +22,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::rc::Rc;
 
 use serde_json::Value as Json;
-use tilo_compositor::{
-    CursorIcon, HostIme, HostKey, HostLayer, HostTextInput, KeyClaim, SurfaceHost,
-};
+use tilo_compositor::{HostIme, HostLayer, HostTextInput, SurfaceHost};
+use tilo_session_core::surface::{CursorIcon, HostKey, KeyClaim};
+
 use tilo_render_protocol::patch::local::pair;
 use tilo_ui_host::AppWindow;
 use tilolang_tilo::background::Waker;

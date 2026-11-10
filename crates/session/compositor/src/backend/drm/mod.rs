@@ -74,6 +74,7 @@ use crate::render::{BACKGROUND, OutputRenderElement, output_elements};
 use crate::state::State;
 use crate::{Error, LoopData};
 use devices::{ModeInfo, select_mode};
+use tilo_session_core::surface::{BackdropImage, BackdropRequest};
 use wake_check::{LitState, WakeCheck, WakeStage, WakeVerdict};
 
 pub use crate::config::DisplayConfig;
@@ -474,8 +475,8 @@ impl Backend for DrmBackend {
         &mut self,
         state: &mut State,
         region: (usize, usize),
-        request: &crate::BackdropRequest,
-    ) -> Result<Option<crate::BackdropImage>, BackendError> {
+        request: &BackdropRequest,
+    ) -> Result<Option<BackdropImage>, BackendError> {
         let mut inner = self.inner.borrow_mut();
         if !inner.active {
             return Ok(None);

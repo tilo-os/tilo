@@ -14,9 +14,11 @@ use tilo_compositor::gestures::{
     GestureAction, GestureConfig, GestureTracker, SWIPE_THRESHOLD, claims,
 };
 use tilo_compositor::{
-    Arrangement, GestureEvent, HostIme, HostKey, HostLayer, HostTextInput, LayoutPoint, LayoutRect,
+    Arrangement, GestureEvent, HostIme, HostLayer, HostTextInput, LayoutPoint, LayoutRect,
     SurfaceHost, TouchSample, WindowInfo, WindowPolicy, WindowRequest,
 };
+use tilo_session_core::surface::HostKey;
+
 use tilo_desktop_policy::displays::Output;
 use tilo_desktop_policy::floating::centred;
 use tilo_desktop_policy::{DesktopPolicy, Window};
@@ -811,7 +813,7 @@ impl SurfaceHost for DesktopHost {
         self.desk.borrow_mut().host.set_frame_interval(interval);
     }
 
-    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
         // The desk draws at the scale of the first display there is, the one
         // it covers: its strips and the windows' bars paint the pixels that
         // display shows, rather than one scale's worth stretched over a
@@ -826,15 +828,15 @@ impl SurfaceHost for DesktopHost {
         }
     }
 
-    fn window_pictures(&self) -> Vec<tilo_compositor::WindowPicture> {
+    fn window_pictures(&self) -> Vec<tilo_session_core::surface::WindowPicture> {
         self.desk.borrow().host.window_pictures()
     }
 
-    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
+    fn backdrops(&self) -> Vec<tilo_session_core::surface::BackdropRequest> {
         self.desk.borrow().host.backdrops()
     }
 
-    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_session_core::surface::BackdropImage>>) {
         self.desk.borrow_mut().host.set_backdrops(images);
     }
 }
@@ -1264,7 +1266,7 @@ mod tests {
         let (mut desk, mut policy) = desktop(7, 1.0);
         SurfaceHost::outputs_changed(
             &mut desk,
-            &[tilo_compositor::HostedOutput {
+            &[tilo_session_core::surface::HostedOutput {
                 rect: (0, 0, 1280, 800),
                 scale: 1.0,
             }],
@@ -1326,7 +1328,7 @@ mod hidpi {
         let (mut desk, _policy) = desktop(7, 1.0);
         SurfaceHost::outputs_changed(
             &mut desk,
-            &[tilo_compositor::HostedOutput {
+            &[tilo_session_core::surface::HostedOutput {
                 rect: (0, 0, 1472, 920),
                 scale: 2.0,
             }],

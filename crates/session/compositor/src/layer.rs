@@ -41,6 +41,7 @@ use smithay::wayland::shell::wlr_layer::{
 
 use crate::render::OutputRenderElement;
 use crate::state::{ClientState, State};
+use tilo_session_core::surface::LayerPose;
 
 /// The layer surfaces, in the order their clients made them: of two on one layer, the later one is
 /// above.
@@ -54,44 +55,6 @@ pub(crate) struct Layers {
     /// How the session draws a surface it is moving, by the same name: one coming or going is posed
     /// here frame by frame until it rests. A name the session never posed is drawn as it stands.
     poses: std::collections::BTreeMap<String, LayerPose>,
-}
-
-/// How a layer surface is drawn this frame instead of as it stands: the panel of another process
-/// coming and going, which only the session, who places it, can pose.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LayerPose {
-    /// Scaled by this much about its [`Self::anchor`] (1: as it is).
-    pub scale: f64,
-    /// Its opacity, 0 (invisible) to 1.
-    pub opacity: f32,
-    /// The point it grows from and shrinks back into, as a fraction of its own rectangle:
-    /// `(0.0, 0.0)` its top-left corner, `(1.0, 0.0)` its top-right, `(0.5, 0.5)` its middle. The
-    /// corner its slot anchors it by.
-    pub anchor: (f64, f64),
-    /// Where it is drawn instead of where it stands, in logical pixels: how far it is still toward
-    /// the anchor it comes from or goes back to.
-    pub offset: (f64, f64),
-}
-
-impl LayerPose {
-    /// Drawn as it stands.
-    pub const SETTLED: Self = Self {
-        scale: 1.0,
-        opacity: 1.0,
-        anchor: (0.0, 0.0),
-        offset: (0.0, 0.0),
-    };
-
-    /// Whether it is drawn as it stands: nothing of a pose is applied.
-    fn settled(&self) -> bool {
-        self.scale >= 1.0 && self.opacity >= 1.0 && self.offset == (0.0, 0.0)
-    }
-}
-
-impl Default for LayerPose {
-    fn default() -> Self {
-        Self::SETTLED
-    }
 }
 
 /// One layer surface and where it is on its output.

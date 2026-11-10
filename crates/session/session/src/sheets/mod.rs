@@ -9,7 +9,9 @@ pub(crate) mod mount;
 
 use crate::platform::surfaces::{AppHost, Placement};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
-use tilo_compositor::{HostKey, HostLayer, KeyClaim, SurfaceHost};
+use tilo_compositor::{HostLayer, SurfaceHost};
+use tilo_session_core::surface::{HostKey, KeyClaim};
+
 use tilo_session_core::door::Published;
 use tilo_sheets::Seat;
 use ui::application::{ApplicationDefinition, ComponentRunnerInputs, prepare_private_surface};
@@ -43,7 +45,7 @@ pub(crate) struct Sheet<S: Seat> {
     host: AppHost,
     seat: S,
     /// The displays as the compositor last said they are.
-    outputs: Vec<tilo_compositor::HostedOutput>,
+    outputs: Vec<tilo_session_core::surface::HostedOutput>,
     role: Role,
 }
 
@@ -161,7 +163,7 @@ impl<S: Seat> Sheet<S> {
 /// covers the rectangle all of them make.
 fn covering(
     named: Option<Place>,
-    outputs: &[tilo_compositor::HostedOutput],
+    outputs: &[tilo_session_core::surface::HostedOutput],
     every: bool,
 ) -> Option<(i32, i32, i32, i32)> {
     let shown = || {
@@ -386,19 +388,19 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
         self.host.set_frame_interval(interval);
     }
 
-    fn cursor(&self) -> tilo_compositor::CursorIcon {
+    fn cursor(&self) -> tilo_session_core::surface::CursorIcon {
         self.host.cursor()
     }
 
-    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
+    fn backdrops(&self) -> Vec<tilo_session_core::surface::BackdropRequest> {
         self.host.backdrops()
     }
 
-    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_session_core::surface::BackdropImage>>) {
         self.host.set_backdrops(images);
     }
 
-    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
         self.outputs = outputs.to_vec();
         self.follow_place();
     }
@@ -479,14 +481,16 @@ mod tests {
     use super::{Place, covering};
 
     const RIGHT: Place = (1000, 0, 1000, 700);
-    const LEFT_SHOWN: tilo_compositor::HostedOutput = tilo_compositor::HostedOutput {
-        rect: (0, 0, 1000, 700),
-        scale: 1.0,
-    };
-    const RIGHT_SHOWN: tilo_compositor::HostedOutput = tilo_compositor::HostedOutput {
-        rect: (1000, 0, 1000, 700),
-        scale: 1.0,
-    };
+    const LEFT_SHOWN: tilo_session_core::surface::HostedOutput =
+        tilo_session_core::surface::HostedOutput {
+            rect: (0, 0, 1000, 700),
+            scale: 1.0,
+        };
+    const RIGHT_SHOWN: tilo_session_core::surface::HostedOutput =
+        tilo_session_core::surface::HostedOutput {
+            rect: (1000, 0, 1000, 700),
+            scale: 1.0,
+        };
     const LEFT: (i32, i32, i32, i32) = (0, 0, 1000, 700);
     const RIGHT_RECT: (i32, i32, i32, i32) = (1000, 0, 1000, 700);
 
@@ -526,11 +530,11 @@ mod tests {
             Some((0, 0, 2000, 700))
         );
         // One display above the other, and one that shows nothing at all.
-        let above = tilo_compositor::HostedOutput {
+        let above = tilo_session_core::surface::HostedOutput {
             rect: (0, -800, 1000, 800),
             scale: 2.0,
         };
-        let blank = tilo_compositor::HostedOutput {
+        let blank = tilo_session_core::surface::HostedOutput {
             rect: (0, 0, 0, 0),
             scale: 1.0,
         };

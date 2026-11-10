@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use tilo_compositor::{Compositor, IdleConfig, WindowInfo};
+
 use tilo_power_mgmt::PowerSignal;
 use tilo_session_power::PowerLink;
 

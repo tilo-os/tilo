@@ -4,7 +4,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_compositor::{Compositor, HostKey, HostLayer, KeyClaim, SurfaceHost};
+use tilo_compositor::{Compositor, HostLayer, SurfaceHost};
+use tilo_session_core::surface::{HostKey, KeyClaim};
+
 use tilo_session_core::door::{Doors, Published};
 use tilo_surface_host::WidgetHost;
 use ui::widget::Widget;
@@ -182,23 +184,23 @@ impl<T: SurfaceHost> SurfaceHost for Held<T> {
         self.0.borrow_mut().set_frame_interval(interval);
     }
 
-    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
         self.0.borrow_mut().outputs_changed(outputs);
     }
 
-    fn window_pictures(&self) -> Vec<tilo_compositor::WindowPicture> {
+    fn window_pictures(&self) -> Vec<tilo_session_core::surface::WindowPicture> {
         self.0.borrow().window_pictures()
     }
 
-    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
+    fn backdrops(&self) -> Vec<tilo_session_core::surface::BackdropRequest> {
         self.0.borrow().backdrops()
     }
 
-    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_session_core::surface::BackdropImage>>) {
         self.0.borrow_mut().set_backdrops(images);
     }
 
-    fn cursor(&self) -> tilo_compositor::CursorIcon {
+    fn cursor(&self) -> tilo_session_core::surface::CursorIcon {
         self.0.borrow().cursor()
     }
 

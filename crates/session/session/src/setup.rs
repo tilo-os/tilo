@@ -12,7 +12,9 @@ use std::task::Waker;
 
 use crate::platform::surfaces::{Placement, WidgetHost};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
-use tilo_compositor::{HostKey, HostLayer, SurfaceHost};
+use tilo_compositor::{HostLayer, SurfaceHost};
+use tilo_session_core::surface::HostKey;
+
 use tilo_onboarding_host::view::OnboardingView;
 use tilo_session_core::door::{Published, through_door};
 use ui::device_local_door::SharedDoor;
@@ -105,7 +107,7 @@ pub(crate) struct Setup {
     surface: Surface,
     /// The outputs this layer covers, as the compositor last told a view: replayed to a view that
     /// replaces another, which is only told when the outputs themselves change.
-    outputs: Vec<tilo_compositor::HostedOutput>,
+    outputs: Vec<tilo_session_core::surface::HostedOutput>,
 }
 
 impl Setup {
@@ -349,19 +351,19 @@ impl SurfaceHost for Setup {
         self.widgets_mut().set_frame_interval(interval);
     }
 
-    fn cursor(&self) -> tilo_compositor::CursorIcon {
+    fn cursor(&self) -> tilo_session_core::surface::CursorIcon {
         self.widgets().cursor()
     }
 
-    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
+    fn backdrops(&self) -> Vec<tilo_session_core::surface::BackdropRequest> {
         self.widgets().backdrops()
     }
 
-    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_session_core::surface::BackdropImage>>) {
         self.widgets_mut().set_backdrops(images);
     }
 
-    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
         self.outputs = outputs.to_vec();
         self.widgets_mut().outputs_changed(outputs);
     }

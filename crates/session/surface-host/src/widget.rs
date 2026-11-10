@@ -3,7 +3,9 @@
 //! window bars). The toolkit's portable host runs it (input in, frames out)
 //! and the frame is drawn as an app's is.
 
-use tilo_compositor::{HostIme, HostLayer, HostTextInput, SurfaceHost, WindowPicture};
+use tilo_compositor::{HostIme, HostLayer, HostTextInput, SurfaceHost};
+use tilo_session_core::surface::WindowPicture;
+
 use ui::headless::FrameHarness;
 use ui::retained_raster::{Repaint, RetainedFrames, TargetKey};
 use vello::kurbo::Affine;
@@ -14,7 +16,7 @@ use winit::event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use tilo_compositor::HostKey;
+use tilo_session_core::surface::HostKey;
 use winit::event::Modifiers;
 use winit::keyboard::ModifiersState;
 
@@ -643,13 +645,13 @@ impl SurfaceHost for WidgetHost {
             .map_or_else(Vec::new, |pictures| pictures())
     }
 
-    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
+    fn backdrops(&self) -> Vec<tilo_session_core::surface::BackdropRequest> {
         let (ox, oy) = self.placement.origin;
         let scale = self.placement.scale;
         self.backdrops
             .iter()
             .map(
-                |(bounds, blur_px, texels)| tilo_compositor::BackdropRequest {
+                |(bounds, blur_px, texels)| tilo_session_core::surface::BackdropRequest {
                     rect: (
                         f64::from(ox) + bounds.x0 / scale,
                         f64::from(oy) + bounds.y0 / scale,
@@ -663,7 +665,7 @@ impl SurfaceHost for WidgetHost {
             .collect()
     }
 
-    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_session_core::surface::BackdropImage>>) {
         self.provided.resize(images.len(), None);
         self.provided.truncate(images.len());
         for (slot, image) in images.into_iter().enumerate() {
@@ -729,7 +731,7 @@ impl SurfaceHost for WidgetHost {
         });
     }
 
-    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
         if !self.covers {
             return;
         }
@@ -752,7 +754,7 @@ impl SurfaceHost for WidgetHost {
         // The scale of the output the surface stands on, so what it paints
         // has the pixels that output shows rather than being stretched over
         // them: a bar on a 2 display is drawn at 2.
-        let scale = tilo_compositor::HostedOutput::scale_at(
+        let scale = tilo_session_core::surface::HostedOutput::scale_at(
             outputs,
             (
                 f64::from(x0) + f64::from(width) / 2.0,

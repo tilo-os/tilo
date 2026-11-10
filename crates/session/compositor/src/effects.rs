@@ -40,6 +40,7 @@ use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size};
 
 use crate::render::OutputRenderElement;
 use crate::window_frame::{self, FrameImages, WindowFrame};
+use tilo_session_core::surface::WindowPicture;
 
 /// How one window is drawn this frame instead of as it stands.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -60,20 +61,6 @@ impl Default for WindowEffect {
             opacity: 1.0,
         }
     }
-}
-
-/// A window a hosted surface pictures: its live buffer, scaled to fit `rect` (centred, its aspect
-/// kept), clipped to `clip` .
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct WindowPicture {
-    /// The window, by [`crate::WindowInfo::id`].
-    pub window: u64,
-    /// Where the picture rests, logical `(x, y, width, height)` .
-    pub rect: (f64, f64, f64, f64),
-    /// Its opacity, 0 to 1.
-    pub opacity: f32,
-    /// What it may cover, logical `(x, y, width, height)` ; all of the output when `None` .
-    pub clip: Option<(f64, f64, f64, f64)>,
 }
 
 /// How the desktop frames windows, and the shadows and edges drawn so far.

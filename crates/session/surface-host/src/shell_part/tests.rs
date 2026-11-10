@@ -68,7 +68,7 @@ fn click(part: &mut ShellPart, name: &str) {
 fn type_into(part: &mut ShellPart, text: &str) {
     for letter in text.chars() {
         for pressed in [true, false] {
-            let key = tilo_compositor::HostKey {
+            let key = tilo_session_core::surface::HostKey {
                 keycode: 0,
                 pressed,
                 repeat: false,
@@ -76,7 +76,7 @@ fn type_into(part: &mut ShellPart, text: &str) {
                 unmodified_keysym: u32::from(letter),
                 latin_keysym: u32::from(letter),
                 text: pressed.then(|| letter.to_string()),
-                modifiers: tilo_compositor::KeyModifiers::default(),
+                modifiers: tilo_session_core::surface::KeyModifiers::default(),
             };
             tilo_compositor::SurfaceHost::key(part, &key);
             part.prepare_frame();
@@ -672,7 +672,7 @@ fn a_part_whose_display_went_stands_nowhere_until_it_comes_back() {
         "the door reaches the bars still standing, not this one"
     );
     // The compositor tells it of the outputs left: it does not stretch over them.
-    part.outputs_changed(&[tilo_compositor::HostedOutput {
+    part.outputs_changed(&[tilo_session_core::surface::HostedOutput {
         rect: (1280, 0, 1280, 800),
         scale: 1.0,
     }]);
@@ -999,7 +999,7 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
     click(&mut part, LAUNCHER_SEARCH);
     for letter in "quarterly".chars() {
         for pressed in [true, false] {
-            let key = tilo_compositor::HostKey {
+            let key = tilo_session_core::surface::HostKey {
                 keycode: 0,
                 pressed,
                 repeat: false,
@@ -1007,7 +1007,7 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
                 unmodified_keysym: u32::from(letter),
                 latin_keysym: u32::from(letter),
                 text: pressed.then(|| letter.to_string()),
-                modifiers: tilo_compositor::KeyModifiers::default(),
+                modifiers: tilo_session_core::surface::KeyModifiers::default(),
             };
             tilo_compositor::SurfaceHost::key(&mut part, &key);
             part.prepare_frame();
@@ -1057,7 +1057,7 @@ fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
         part.prepare_frame();
     }
     assert!(!part.due(), "the part settled");
-    part.outputs_changed(&[tilo_compositor::HostedOutput {
+    part.outputs_changed(&[tilo_session_core::surface::HostedOutput {
         rect: (0, 0, 1280, 800),
         scale: 1.0,
     }]);
@@ -1339,7 +1339,7 @@ fn the_overview_pictures_every_window_of_a_strip_at_its_share() {
 #[test]
 fn a_part_on_a_scaled_output_paints_at_that_scale() {
     let (mut plain, _link) = part_on(reading(), (1280, 800));
-    plain.outputs_changed(&[tilo_compositor::HostedOutput {
+    plain.outputs_changed(&[tilo_session_core::surface::HostedOutput {
         rect: (0, 0, 1280, 800),
         scale: 1.0,
     }]);
@@ -1348,7 +1348,7 @@ fn a_part_on_a_scaled_output_paints_at_that_scale() {
     let one = plain.widgets_mut().placement();
 
     let (mut twice, _link) = part_on(reading(), (1280, 800));
-    twice.outputs_changed(&[tilo_compositor::HostedOutput {
+    twice.outputs_changed(&[tilo_session_core::surface::HostedOutput {
         rect: (0, 0, 1280, 800),
         scale: 2.0,
     }]);

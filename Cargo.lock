@@ -18086,6 +18086,7 @@ dependencies = [
  "tilo-frame-metrics",
  "tilo-liveness",
  "tilo-paths",
+ "tilo-session-core",
  "tilo-startup-metrics",
  "tilo-wayland-ext",
  "tilo-window-share",
@@ -21544,6 +21545,7 @@ name = "tilo-session-core"
 version = "0.1.0"
 dependencies = [
  "collab-types",
+ "cursor-icon",
  "n0-future",
  "serde",
  "serde_json",

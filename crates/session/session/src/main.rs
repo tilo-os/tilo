@@ -787,6 +787,7 @@ fn start_session(
     outputs: &[NamedOutput],
 ) -> Result<tilo_session::Session, tilo_compositor::Error> {
     use tilo_compositor::{DisplayConfig, NestedConfig, OutputConfig};
+
     use tilo_session::Session;
     match backend {
         Backend::Headless => {

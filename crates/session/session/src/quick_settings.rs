@@ -11,9 +11,9 @@
 
 use std::path::PathBuf;
 
-use tilo_compositor::LayerPose;
 use tilo_desktop::overlays::Slot;
 use tilo_desktop_surface::navigation::ChromeEffect;
+use tilo_session_core::surface::LayerPose;
 use ui::kurbo::Rect;
 use ui::motion::{Appear, Appearing};
 use ui::tokens::EffectiveMotion;

@@ -22,21 +22,8 @@ use smithay::wayland::keyboard_shortcuts_inhibit::{
     KeyboardShortcutsInhibitor, KeyboardShortcutsInhibitorSeat,
 };
 
-use crate::input::HostKey;
 use crate::state::State;
-
-/// What a hosted surface answers to a press it is offered.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum KeyClaim {
-    /// Not this surface's: the press goes on to whoever has the keyboard.
-    #[default]
-    Pass,
-    /// The surface takes the press and its release.
-    Take,
-    /// The surface takes the press, repeats while it is held, and its release (volume up held down
-    /// ramps the volume).
-    TakeRepeating,
-}
+use tilo_session_core::surface::HostKey;
 
 /// How held keys repeat: after `delay` , `rate` times a second.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -224,7 +211,7 @@ impl State {
 )]
 mod tests {
     use super::*;
-    use crate::input::KeyModifiers;
+    use tilo_session_core::surface::KeyModifiers;
 
     fn key(keycode: u32) -> HostKey {
         HostKey {

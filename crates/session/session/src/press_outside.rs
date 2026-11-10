@@ -9,7 +9,9 @@
 //! popover under the bar closes on a press anywhere else, and that press is
 //! the compositor's to deliver.
 
-use tilo_compositor::{CursorIcon, HostLayer, KeyClaim, SurfaceHost};
+use tilo_compositor::{HostLayer, SurfaceHost};
+use tilo_session_core::surface::{CursorIcon, KeyClaim};
+
 use tilo_desktop::overlays::Overlays;
 
 /// The session's reader of presses outside the overlays.
@@ -57,7 +59,7 @@ impl SurfaceHost for SlotsHost {
 
     fn claim_key(
         &mut self,
-        _key: &tilo_compositor::HostKey,
+        _key: &tilo_session_core::surface::HostKey,
         _locked: bool,
         _inhibited: bool,
     ) -> KeyClaim {

@@ -8,6 +8,9 @@ license.workspace = true
 
 [dependencies]
 automerge.workspace = true
+# The pointer shapes a surface asks for: the same type the toolkit and the compositor name, so one
+# shape crosses the seam unconverted.
+cursor-icon = "1"
 serde.workspace = true
 serde_json.workspace = true
 tilo-actions = { path = "../../collab/actions" }

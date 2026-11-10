@@ -10,7 +10,9 @@ use crate::platform::surfaces::{SessionLink, ShellPart, ShellWork};
 use serde_json::{Map, Value};
 use tilo_actions::ActionAddress;
 use tilo_compositor::Compositor;
-use tilo_compositor::{CursorIcon, HostKey, HostLayer, KeyClaim, SurfaceHost};
+use tilo_compositor::{HostLayer, SurfaceHost};
+use tilo_session_core::surface::{CursorIcon, HostKey, KeyClaim};
+
 use tilo_service::Services;
 use tilo_session_core::door::Doors;
 use tilo_session_core::shell::{ArrangementReading, Ask};
@@ -1324,7 +1326,7 @@ impl<T: SurfaceHost> SurfaceHost for Aside<T> {
 
     fn key(&mut self, _key: &HostKey) {}
 
-    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
         self.0.outputs_changed(outputs);
     }
 
@@ -1718,19 +1720,19 @@ mod tests {
 
         fn claim_key(
             &mut self,
-            _key: &tilo_compositor::HostKey,
+            _key: &tilo_session_core::surface::HostKey,
             _locked: bool,
             _inhibited: bool,
-        ) -> tilo_compositor::KeyClaim {
+        ) -> tilo_session_core::surface::KeyClaim {
             self.keys = self.keys.saturating_add(1);
-            tilo_compositor::KeyClaim::Take
+            tilo_session_core::surface::KeyClaim::Take
         }
 
-        fn key(&mut self, _key: &tilo_compositor::HostKey) {
+        fn key(&mut self, _key: &tilo_session_core::surface::HostKey) {
             self.keys = self.keys.saturating_add(1);
         }
 
-        fn outputs_changed(&mut self, _outputs: &[tilo_compositor::HostedOutput]) {
+        fn outputs_changed(&mut self, _outputs: &[tilo_session_core::surface::HostedOutput]) {
             self.outputs = self.outputs.saturating_add(1);
         }
 
@@ -1745,7 +1747,7 @@ mod tests {
     #[test]
     fn the_desktop_aside_prepares_draws_and_takes_nothing() {
         use tilo_compositor::SurfaceHost as _;
-        let key = tilo_compositor::HostKey {
+        let key = tilo_session_core::surface::HostKey {
             keycode: 0,
             pressed: true,
             repeat: false,
@@ -1753,21 +1755,21 @@ mod tests {
             unmodified_keysym: 0xff1b,
             latin_keysym: 0xff1b,
             text: None,
-            modifiers: tilo_compositor::KeyModifiers::default(),
+            modifiers: tilo_session_core::surface::KeyModifiers::default(),
         };
         let mut aside = super::Aside(Asked::default());
         assert!(!aside.prepare_frame(), "nothing to draw");
         assert_eq!(aside.0.frames, 0, "the desk behind it never prepared");
         assert_eq!(
             aside.claim_key(&key, false, false),
-            tilo_compositor::KeyClaim::Pass,
+            tilo_session_core::surface::KeyClaim::Pass,
             "the shell answers the keys"
         );
         aside.key(&key);
         assert_eq!(aside.0.keys, 0, "no key reached the desk behind it");
         assert!(aside.layers().is_empty(), "it draws nothing");
         assert!(!aside.accepts_pointer(1.0, 1.0), "it takes no pointer");
-        aside.outputs_changed(&[tilo_compositor::HostedOutput {
+        aside.outputs_changed(&[tilo_session_core::surface::HostedOutput {
             rect: (0, 0, 1280, 800),
             scale: 1.0,
         }]);

@@ -28,6 +28,7 @@ use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
 use tilo_color_pipeline::hdr_display::DisplayCapabilities;
 use tilo_compositor::{Compositor, OutputChange, OutputInfo};
+
 use tilo_desktop_surface::DesktopHandle;
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};

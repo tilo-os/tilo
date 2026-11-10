@@ -98,7 +98,6 @@ use crate::output_management::Pending;
 use smithay::wayland::socket::ListeningSocketSource;
 
 pub use a11y::{A11y, CursorA11y, Magnifier, MagnifierView};
-pub use backdrop::{BackdropImage, BackdropRequest};
 pub use backend::drm::access_keys::Assists;
 pub use backend::drm::devices::RequestedMode;
 pub use backend::{
@@ -109,22 +108,19 @@ pub use color_filter::ColorFilter;
 pub use config::{Hdr, KeyboardLayout, Settings};
 pub use dim::Backlight;
 pub use display_change::{CONFIRM_FOR, DisplayEvent};
-pub use effects::{WindowEffect, WindowPicture};
-pub use host::{
-    CursorIcon, HostDrag, HostFrame, HostIme, HostLayer, HostTextInput, Region, SurfaceHost,
-};
+pub use effects::WindowEffect;
+pub use host::{HostDrag, HostFrame, HostIme, HostLayer, HostTextInput, SurfaceHost};
 pub use idle::{IdleConfig, LockedBy, SessionTransition};
 pub use input::{
-    GestureEvent, HostKey, InputEvent, KeyModifiers, ObservedInput, PadAction, Switch, TabletEvent,
-    TabletPadEvent, TabletPhase,
+    GestureEvent, InputEvent, ObservedInput, PadAction, Switch, TabletEvent, TabletPadEvent,
+    TabletPhase,
 };
-pub use keys::{KeyClaim, KeyRepeat};
-pub use layer::LayerPose;
+pub use keys::KeyRepeat;
 
 /// How close to the whole timeout a park must be to have ended on the deadline rather than on
 /// arriving work.
 const WAKE_MARGIN: Duration = Duration::from_millis(1);
-pub use output::{HostedOutput, ModeRequest, OutputChange, OutputConfig, OutputInfo};
+pub use output::{ModeRequest, OutputChange, OutputConfig, OutputInfo};
 
 /// What the person is in the middle of, as the compositor sees it: an arranging change moves
 /// nothing under a gesture or while they type (shell.md §1).
@@ -152,8 +148,10 @@ pub use share_stream::ShareStream;
 /// The quarter turns an output is shown at.
 pub use smithay::utils::Transform;
 pub use state::State;
+
 pub use switch_scan::{Scan, SwitchConfig, SwitchPair};
 pub use text_input::{TextCaret, TextEntry, TextField, TextFieldRefusal, TextInsertion};
+use tilo_session_core::surface::LayerPose;
 pub use toplevel_icon::{IconArtwork, IconImage, WindowIcon};
 pub use window_frame::{Edge, Shadow, WindowFrame};
 pub use x11::X11Displays;

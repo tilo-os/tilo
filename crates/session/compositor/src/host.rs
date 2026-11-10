@@ -12,36 +12,10 @@ use std::sync::Arc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::{Buffer, Rectangle};
 
-pub use smithay::input::pointer::CursorIcon;
-
-use crate::input::HostKey;
-use crate::keys::KeyClaim;
-
-/// A whole-pixel rectangle of a surface: what one draw changed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Region {
-    /// Its left edge, in pixels.
-    pub x: u32,
-    /// Its top edge, in pixels.
-    pub y: u32,
-    /// How wide it is, in pixels.
-    pub width: u32,
-    /// How tall it is, in pixels.
-    pub height: u32,
-}
-
-impl Region {
-    /// The rectangle at `(x, y)` of `width` by `height` pixels.
-    #[must_use]
-    pub const fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
-        Self {
-            x,
-            y,
-            width,
-            height,
-        }
-    }
-}
+use tilo_session_core::surface::{
+    BackdropImage, BackdropRequest, CursorIcon, HostKey, HostedOutput, KeyClaim, Region,
+    WindowPicture,
+};
 
 /// How many pixels a side of one coverage cell is: the granularity at which a frame says what it
 /// shows.
@@ -564,7 +538,7 @@ pub trait SurfaceHost {
     /// ([`crate::capture::protect`]) is drawn as the placeholder a capture
     /// of it shows instead, since the desk a picture stands on is what a
     /// screenshot, a recording and a share show.
-    fn window_pictures(&self) -> Vec<crate::WindowPicture> {
+    fn window_pictures(&self) -> Vec<WindowPicture> {
         Vec::new()
     }
 
@@ -578,13 +552,13 @@ pub trait SurfaceHost {
 
     /// The regions this surface draws translucent material in, which take a blur of what lies below
     /// them ([`crate::backdrop`]).
-    fn backdrops(&self) -> Vec<crate::BackdropRequest> {
+    fn backdrops(&self) -> Vec<BackdropRequest> {
         Vec::new()
     }
 
     /// Blurred images of what lies below [`SurfaceHost::backdrops`]' regions, in their order;
     /// `None` where nothing changed since the last.
-    fn set_backdrops(&mut self, _images: Vec<Option<crate::BackdropImage>>) {}
+    fn set_backdrops(&mut self, _images: Vec<Option<BackdropImage>>) {}
 
     /// A frame is about to be drawn: bring the layers up to date, and say whether this surface drew
     /// or changed what it shows. A host that did not leaves the frame to whoever else has something
@@ -620,7 +594,7 @@ pub trait SurfaceHost {
     /// at. A surface covering the desktop (the top bar, the chrome above the
     /// windows) follows them, and draws at the scale of the output it is on
     /// so what it paints is as crisp as the display allows.
-    fn outputs_changed(&mut self, _outputs: &[crate::output::HostedOutput]) {}
+    fn outputs_changed(&mut self, _outputs: &[HostedOutput]) {}
 
     /// The pointer shape while the pointer is over the surface (a text beam over a field, a hand
     /// over a link).

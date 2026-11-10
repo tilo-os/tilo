@@ -52,6 +52,7 @@ use crate::output::{OutputChange, OutputConfig, apply_placement, refresh_interva
 use crate::pacing::Pacing;
 use crate::render::{BACKGROUND, output_elements};
 use crate::state::State;
+use tilo_session_core::surface::{BackdropImage, BackdropRequest};
 
 struct HeadlessOutput {
     output: Output,
@@ -636,8 +637,8 @@ impl Backend for HeadlessBackend {
         &mut self,
         state: &mut State,
         region: (usize, usize),
-        request: &crate::BackdropRequest,
-    ) -> Result<Option<crate::BackdropImage>, BackendError> {
+        request: &BackdropRequest,
+    ) -> Result<Option<BackdropImage>, BackendError> {
         crate::backdrop::draw(&mut self.renderer, state, region, request)
     }
 

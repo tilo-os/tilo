@@ -1,7 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test fixtures")]
 
 use super::tests_support::{alt, grave, key, part_with, reading_with_windows, tab};
-use tilo_compositor::{KeyClaim, SurfaceHost as _};
+use tilo_compositor::SurfaceHost as _;
+use tilo_session_core::surface::KeyClaim;
 
 #[test]
 fn alt_tab_asks_for_the_switcher_from_rest() {
@@ -108,6 +109,6 @@ fn a_surface_up_makes_the_part_cover_the_outputs() {
     );
 }
 
-fn escape() -> tilo_compositor::HostKey {
+fn escape() -> tilo_session_core::surface::HostKey {
     key(0xff1b, true)
 }

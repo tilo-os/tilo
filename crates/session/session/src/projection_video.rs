@@ -284,6 +284,7 @@ mod tests {
     use super::*;
 
     use tilo_compositor::{OutputConfig, StackPolicy};
+
     use tilo_projector::{DisplayResolutionLimit, VideoPacket};
 
     /// What the sheet's 720p choice on a 30 Hz television resolves to.

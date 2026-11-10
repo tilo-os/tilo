@@ -32,6 +32,7 @@ use settings_store::paste_shortcut::{self, PasteShortcut};
 use tilo_actions::{ActionOutput, DoorError, ResourceSpec};
 use tilo_compositor::clipboard_history::{Copy, History, Pull, Pulled, TEXT_MIME, kept_mime};
 use tilo_compositor::{Compositor, InputEvent, Selection};
+
 use tilo_quick_settings::hosted::ClipboardCopy;
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};

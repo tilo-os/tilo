@@ -7,7 +7,9 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
-use tilo_compositor::{HostKey, HostLayer, OutputInfo, SurfaceHost};
+use tilo_compositor::{HostLayer, OutputInfo, SurfaceHost};
+use tilo_session_core::surface::HostKey;
+
 use tilo_desktop::topbar::TOPBAR_HEIGHT_PX;
 use tilo_session_core::door::Published;
 
@@ -110,7 +112,7 @@ pub(crate) struct Banners {
     desk: tilo_desktop_surface::DesktopHandle,
     /// The outputs the compositor last said it has: the first is the one in use, the rest repeat
     /// what is about the whole machine.
-    outputs: Vec<tilo_compositor::HostedOutput>,
+    outputs: Vec<tilo_session_core::surface::HostedOutput>,
     /// The rect the stack covers, which the floating layer keeps clear of while a banner shows.
     stack: Reserved,
 }
@@ -290,19 +292,19 @@ impl SurfaceHost for Banners {
         self.host.set_frame_interval(interval);
     }
 
-    fn cursor(&self) -> tilo_compositor::CursorIcon {
+    fn cursor(&self) -> tilo_session_core::surface::CursorIcon {
         self.host.cursor()
     }
 
-    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
+    fn backdrops(&self) -> Vec<tilo_session_core::surface::BackdropRequest> {
         self.host.backdrops()
     }
 
-    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_session_core::surface::BackdropImage>>) {
         self.host.set_backdrops(images);
     }
 
-    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
         outputs.clone_into(&mut self.outputs);
         self.place();
     }
@@ -321,7 +323,7 @@ pub(crate) struct ActivityLayer {
     /// The corner docked cards gather in, on this device.
     corner: ui::floating_layer::Corner,
     /// The outputs the compositor last said it has: the cards stand on the first.
-    outputs: Vec<tilo_compositor::HostedOutput>,
+    outputs: Vec<tilo_session_core::surface::HostedOutput>,
     /// What the cards keep clear of: the banners' stack, the readout's band.
     banners: Reserved,
     readout: Reserved,
@@ -551,19 +553,19 @@ impl SurfaceHost for ActivityLayer {
         self.host.set_frame_interval(interval);
     }
 
-    fn cursor(&self) -> tilo_compositor::CursorIcon {
+    fn cursor(&self) -> tilo_session_core::surface::CursorIcon {
         self.host.cursor()
     }
 
-    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
+    fn backdrops(&self) -> Vec<tilo_session_core::surface::BackdropRequest> {
         self.host.backdrops()
     }
 
-    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_session_core::surface::BackdropImage>>) {
         self.host.set_backdrops(images);
     }
 
-    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
         outputs.clone_into(&mut self.outputs);
         self.place();
     }
@@ -760,19 +762,19 @@ impl SurfaceHost for Readout {
         self.host.set_frame_interval(interval);
     }
 
-    fn cursor(&self) -> tilo_compositor::CursorIcon {
+    fn cursor(&self) -> tilo_session_core::surface::CursorIcon {
         self.host.cursor()
     }
 
-    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
+    fn backdrops(&self) -> Vec<tilo_session_core::surface::BackdropRequest> {
         self.host.backdrops()
     }
 
-    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_session_core::surface::BackdropImage>>) {
         self.host.set_backdrops(images);
     }
 
-    fn outputs_changed(&mut self, _outputs: &[tilo_compositor::HostedOutput]) {
+    fn outputs_changed(&mut self, _outputs: &[tilo_session_core::surface::HostedOutput]) {
         // Where the displays stand comes with the session's own reading of them (connectors, not
         // just rectangles): the readout stands on the display it answers for again.
         let display = self.display.clone();

@@ -38,6 +38,7 @@ use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Size, Transfor
 use crate::backend::BackendError;
 use crate::render::{BACKGROUND, below_host};
 use crate::state::State;
+use tilo_session_core::surface::{BackdropImage, BackdropRequest};
 
 /// The shader each of the blur's two passes runs.
 const SHADER: &str = include_str!("blur.glsl");
@@ -51,25 +52,6 @@ const MAX_SIGMA: f64 = 4.0;
 
 /// Upper bound on halvings.
 const MAX_HALVINGS: u32 = 6;
-
-/// A region a hosted surface draws its material in.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BackdropRequest {
-    /// The region, logical `(x, y, width, height)` .
-    pub rect: (f64, f64, f64, f64),
-    /// The size of the image it takes, in texels.
-    pub texels: (u32, u32),
-    /// The blur's standard deviation, in texels.
-    pub blur: f64,
-}
-
-/// What lies below a [`BackdropRequest`]'s region, blurred: rows of premultiplied R, G, B, A at its
-/// texel size.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BackdropImage {
-    pub rgba: Vec<u8>,
-    pub texels: (u32, u32),
-}
 
 /// Which GL context made a texture or a program: neither is usable in another.
 type Context = usize;

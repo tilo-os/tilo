@@ -24,38 +24,6 @@ pub(crate) fn refresh_interval(refresh_mhz: i32) -> Duration {
         .map_or(FALLBACK_INTERVAL, Duration::from_nanos)
 }
 
-/// An output as a hosted surface is told of it: its logical rectangle and the scale it draws at.
-/// The two travel together so a surface placing itself on an output cannot take the rectangle
-/// without the scale it is to draw at — which would leave it drawing at a scale the display does
-/// not show, stretched.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct HostedOutput {
-    /// Its logical rectangle `(x, y, w, h)` .
-    pub rect: (i32, i32, i32, i32),
-    /// Physical pixels per logical pixel it draws at.
-    pub scale: f64,
-}
-
-impl HostedOutput {
-    /// The scale of the output holding `point` in the logical layout, else of the first output
-    /// there is (and 1 when there is none): the scale a surface covering that point draws at.
-    #[must_use]
-    pub fn scale_at(outputs: &[Self], point: (f64, f64)) -> f64 {
-        let holds = |output: &&Self| {
-            let (x, y, w, h) = output.rect;
-            point.0 >= f64::from(x)
-                && point.1 >= f64::from(y)
-                && point.0 < f64::from(x.saturating_add(w))
-                && point.1 < f64::from(y.saturating_add(h))
-        };
-        outputs
-            .iter()
-            .find(holds)
-            .or_else(|| outputs.first())
-            .map_or(1.0, |output| output.scale)
-    }
-}
-
 /// A mode a configuration asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModeRequest {

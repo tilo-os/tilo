@@ -11,9 +11,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Instant;
 
-use tilo_compositor::WindowPicture;
 use tilo_desktop::window_flight::{WindowFlight, WindowPicture as Flying};
 use tilo_desktop_model::{TabId, TileContent};
+use tilo_session_core::surface::WindowPicture;
 use ui::kurbo::Rect;
 use ui::motion::{Presence, Zoom, input_source, unit_opacity};
 use ui::tokens::EffectiveMotion;

@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 
 use crate::platform::surfaces::DeskGesture;
 use tilo_actions::{ActionAddress, DoorError};
-use tilo_compositor::{HostKey, HostLayer, KeyClaim, SurfaceHost};
+use tilo_compositor::{HostLayer, SurfaceHost};
+use tilo_session_core::surface::{HostKey, KeyClaim};
+
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_desktop::desk_widgets::DeskFold;
 use tilo_desktop::osd::{Device, DeviceGlyph, Hint, Level, OSD_RESOURCE, Osd, OsdKind};
@@ -234,7 +236,7 @@ impl Hardware {
 /// What the Print key asks the capture studio for: the studio itself, the whole display at once
 /// with Shift, or the window in front at once with Alt. The studio's own action takes the window in
 /// front when nothing is named, and comes up to choose one when nothing is in front.
-fn print_invocation(modifiers: tilo_compositor::KeyModifiers) -> Invocation {
+fn print_invocation(modifiers: tilo_session_core::surface::KeyModifiers) -> Invocation {
     if modifiers.shift {
         return Invocation::new(CAPTURE_STUDIO, "screenshot").with("source", "display");
     }
@@ -1326,7 +1328,7 @@ impl Shared {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_compositor::KeyModifiers;
+    use tilo_session_core::surface::KeyModifiers;
 
     fn key(keysym: u32, text: Option<char>, modifiers: KeyModifiers) -> HostKey {
         HostKey {

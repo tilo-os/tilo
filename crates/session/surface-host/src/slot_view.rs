@@ -27,7 +27,9 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use serde_json::Value as Json;
-use tilo_compositor::{CursorIcon, HostIme, HostKey, HostLayer, HostTextInput, SurfaceHost};
+use tilo_compositor::{HostIme, HostLayer, HostTextInput, SurfaceHost};
+use tilo_session_core::surface::{CursorIcon, HostKey};
+
 use tilo_render_protocol::patch::local::pair;
 use tilo_ui_host::AppWindow;
 use tilolang_tilo::background::Waker;
@@ -702,7 +704,7 @@ impl SurfaceHost for SlotView {
         }
     }
 
-    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
         let Some((x0, y0, x1, y1)) = outputs
             .iter()
             .map(|output| {
@@ -720,7 +722,7 @@ impl SurfaceHost for SlotView {
             return;
         };
         self.outputs = Some((x0, y0, width, height));
-        self.scale = tilo_compositor::HostedOutput::scale_at(
+        self.scale = tilo_session_core::surface::HostedOutput::scale_at(
             outputs,
             (
                 f64::from(x0) + f64::from(width) / 2.0,

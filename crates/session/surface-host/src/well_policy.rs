@@ -27,6 +27,7 @@ use std::rc::Rc;
 use tilo_compositor::gestures::GestureConfig;
 use tilo_compositor::policy::{LayoutPoint, LayoutRect};
 use tilo_compositor::{Arrangement, GestureEvent, WindowInfo, WindowPolicy};
+
 use tilo_desktop_policy::DesktopPolicy;
 use ui::widget::Wells;
 use ui::widget::arrange::rem_of;

@@ -44,9 +44,10 @@ use smithay::wayland::xwayland_shell::XWaylandShellState;
 
 use crate::app_liveness;
 use crate::host::SurfaceHost;
-use crate::input::{HostKey, InputEvent, KeyModifiers};
-use crate::keys::{HostKeys, KeyClaim};
+use crate::input::InputEvent;
+use crate::keys::HostKeys;
 use crate::policy::{WindowInfo, WindowPolicy};
+use tilo_session_core::surface::{HostKey, HostedOutput, KeyClaim, KeyModifiers};
 
 /// Per-client data every Wayland client carries.
 #[derive(Default)]
@@ -181,7 +182,7 @@ pub struct State {
     pub(crate) policy: Box<dyn WindowPolicy>,
     pub(crate) hosts: Vec<Box<dyn SurfaceHost>>,
     /// The outputs the hosted surfaces were last told of.
-    told_outputs: Vec<crate::output::HostedOutput>,
+    told_outputs: Vec<HostedOutput>,
     /// The connector the person made primary, as the configuration names it, whether or not it is
     /// lit right now.
     primary_output: Option<String>,
@@ -486,12 +487,12 @@ impl State {
 
     /// The outputs as hosted surfaces are told them: each one's logical rectangle and the scale it
     /// draws at.
-    pub(crate) fn hosted_outputs(&self) -> Vec<crate::output::HostedOutput> {
+    pub(crate) fn hosted_outputs(&self) -> Vec<HostedOutput> {
         self.space
             .outputs()
             .filter_map(|output| {
                 let rect = self.space.output_geometry(output)?;
-                Some(crate::output::HostedOutput {
+                Some(HostedOutput {
                     rect: (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h),
                     scale: output.current_scale().fractional_scale(),
                 })

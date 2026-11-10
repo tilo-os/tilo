@@ -204,6 +204,7 @@ fn a_window_refused_the_keyboard_waits_on_its_tab_until_the_person_looks() {
 #[test]
 fn a_window_that_asks_to_cover_the_screen_fills_its_strip_and_gives_it_back() {
     use tilo_compositor::{ResizeEdges, WindowRequest};
+
     let _settled = ui::motion::testing::settled();
     let (host, mut policy) = desktop(7, 1.0);
     let outputs = output();

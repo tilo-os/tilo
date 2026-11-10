@@ -24,6 +24,7 @@ use serde::Deserialize;
 use tilo_app_launch::routing;
 use tilo_app_launch::{Connects, Launch, Open, WindowConnections};
 use tilo_compositor::{Compositor, ReadableWatch};
+
 use tilo_desktop::launchpad::LaunchpadAction;
 use tilo_desktop_policy::{DesktopPolicy, app_ids_match};
 use ui::Theme;

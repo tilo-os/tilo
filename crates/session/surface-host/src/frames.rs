@@ -9,7 +9,9 @@
 //! stopped. Only what changed is drawn, so a moved cursor, a new time or
 //! a resized panel costs what it changed rather than the whole surface.
 
-use tilo_compositor::{HostFrame, Region};
+use tilo_compositor::HostFrame;
+use tilo_session_core::surface::Region;
+
 use ui::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::Rect;
