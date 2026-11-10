@@ -100,7 +100,9 @@ impl Channels {
             Arc::clone(&link),
         ));
         let gates: Arc<dyn ChannelGates> = Arc::new(BrokerGates(broker));
-        let service = match MlsVault::open_for_session() {
+        let service = match MlsVault::open_for_session(
+            &engine.identity().device_cert.device_public_key,
+        ) {
             Ok(vault) => ChannelEncryption::open(
                 ChannelEncryptionConfig {
                     state: vault.channel_state(),
