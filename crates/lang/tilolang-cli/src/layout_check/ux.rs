@@ -319,17 +319,21 @@ fn first_level(
     // The heading a child stands under: the nearest one before it among its siblings, or the one
     // its box stood under.
     let mut running = above.cloned();
-    let mut last = heading_of(node);
+    let mut handed = heading_of(node);
+    // One thing holds one title: a header box (`Section` over its `SectionHeader`) hands the
+    // title it holds to the rows after it, and a page holding more than its title — a column of
+    // its own — keeps its titles to itself.
+    let one = node.children.len() == 1;
     for child in &node.children {
         if let Some(found) = first_level(child, running.as_ref(), step, keys, out) {
             running = Some(found.clone());
-            last = Some(found);
+            handed = one.then_some(found);
         }
     }
     if pushed {
         keys.pop();
     }
-    last
+    handed
 }
 
 /// The heading `node` says itself with, where it is one.
@@ -1211,6 +1215,69 @@ mod tests {
         let mut beside = section(68.0, 90.0);
         beside.children[1].rect = [200.0, 0.0, 400.0, 300.0];
         assert!(found(Kind::FirstLevelIndent, &beside, (390, 844)).is_empty());
+    }
+
+    /// A column keeps its titles to itself: the heading deep in the page behind a drawer names
+    /// no row of the drawer, whose box stands in a column of its own.
+    #[test]
+    fn a_column_hands_no_title_to_the_column_after_it() {
+        // The page in front of a narrow window: a section headed "History" over what it lists,
+        // under the page's stack, as a document's sections are.
+        let page = holding(
+            "Scrollable",
+            "page",
+            None,
+            vec![holding(
+                "Stack",
+                "sections",
+                None,
+                vec![holding(
+                    "Section",
+                    "history",
+                    None,
+                    vec![
+                        holding(
+                            "SectionHeader",
+                            "head",
+                            None,
+                            vec![named(
+                                "Text",
+                                "title",
+                                [24.0, 0.0, 200.0, 20.0],
+                                Role::Heading { level: 2 },
+                                "History",
+                            )],
+                        ),
+                        holding("Stack", "entries", None, vec![row("a", 0, 24.0, 400.0)]),
+                    ],
+                )],
+            )],
+        );
+        // The drawer over it: a tree whose rows stand one step in, as a tree's do.
+        let drawer = holding(
+            "DescribedTreeView",
+            "tree",
+            Some(Role::Tree),
+            vec![
+                holding(
+                    "HoverToolbar",
+                    "first",
+                    None,
+                    vec![row("b", 1, 52.0, 400.0)],
+                ),
+                holding(
+                    "HoverToolbar",
+                    "second",
+                    None,
+                    vec![row("c", 1, 52.0, 400.0)],
+                ),
+            ],
+        );
+        let both = holding("Stack", "columns", None, vec![page, drawer]);
+        assert!(
+            found(Kind::FirstLevelIndent, &both, (390, 844)).is_empty(),
+            "the page's title names no row of the drawer"
+        );
     }
 
     /// One choice is filled once: a selected row inside a selected box draws the same choice
