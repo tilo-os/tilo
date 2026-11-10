@@ -697,12 +697,14 @@ def settled(agent: Agent, reply: dict, within: float = 90.0) -> dict:
         reply = agent.tool("tilo_status", {"invocation_id": pending.group(1)})
 
 
-def closed_app(agent: Agent) -> str | None:
+def closed_app(agent: Agent, avoid=()) -> str | None:
     """An app installed in the agent's workspace that is not running, as its `tilo_ls` lists the
-    apps (`name  Label  installed`), the plainest first; None when every one runs."""
+    apps (`name  Label  installed`), the plainest first and none of `avoid` (what the other agent
+    opened: each workspace's launch is its own); None when every one runs."""
     listed = text_of(agent.tool("tilo_ls", {}))
     closed = [line.split()[0] for line in listed.splitlines()[1:]
-              if line.split() and line.rstrip().endswith("  installed")]
+              if line.split() and line.rstrip().endswith("  installed")
+              and line.split()[0] not in avoid]
     for plain in ("sheets", "calculator", "calendar", "contacts", "mail"):
         if plain in closed:
             return plain
@@ -722,7 +724,7 @@ def own_change(ctx, res):
         # Opening an app that is not running yet is a host action of the agent's run (the
         # workspace launching it): its answer is what the agent reads back, and it must say how
         # the open went, not only put up a window. A running app's `#open` is its own action.
-        closed = closed_app(agent)
+        closed = closed_app(agent, avoid=[o.get("opened_app") for o in envs if o is not e])
         if closed is None:
             raise Unobservable(f"{e['name']}: the agent's workspace lists no installed app that is "
                                "not running, to open")
