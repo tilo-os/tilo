@@ -4,10 +4,6 @@
 //! device's or another host's.
 
 #![allow(
-    clippy::significant_drop_tightening,
-    reason = "the test holds its host for the length of the test, and shuts it down at the end"
-)]
-#![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
