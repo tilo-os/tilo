@@ -101,6 +101,9 @@ globalThis.__tiloPage ||= (() => {
   // is taken as never made; and how many turns in a row may go unshown
   // before the box is taken as stopped.
   const MAX_WHEEL_TURN = 2000, SCROLL_OWED_LOOKS = 3, MAX_SCROLL_UNSHOWN = 1;
+  // The least a turn has to carry a box for that to be taken as how far one
+  // turn of this wheel carries it.
+  const MIN_WHEEL_REACH = 16;
   // How far the wheel is sent toward an end of the page: past any page.
   const WHEEL_TO_THE_END = 1e6;
   // The box an element's own overflow scrolls, found up its tree; the page's
@@ -193,8 +196,12 @@ globalThis.__tiloPage ||= (() => {
   // measured from where the box stands, so a turn the page shows late, or
   // one the wheel made twice, is put right by the next turn and never
   // carries the box past where it was asked to go for good.
-  const scrollAnswer = (left, wait) => wait ? {ok: true, x: scrolling.x, y: scrolling.y, left, wait: true}
-    : {ok: true, x: scrolling.x, y: scrolling.y, left};
+  // A turn goes out as wheel events of at most one page of the box each
+  // (see `ScrollTurn` in page_automation.h): `page` is how tall the box is.
+  const pageOf = box => Math.max(40, Math.floor(box === scrollRoot() ? innerHeight : box.clientHeight) || 40);
+  const scrollAnswer = (left, wait) => wait
+    ? {ok: true, x: scrolling.x, y: scrolling.y, left, page: pageOf(scrolling.box), wait: true}
+    : {ok: true, x: scrolling.x, y: scrolling.y, left, page: pageOf(scrolling.box)};
   // The next turn toward where the box was asked to go; none when it stands
   // there. The turn is owed by the box until the box has shown it.
   function scrollTurn() {
@@ -206,11 +213,16 @@ globalThis.__tiloPage ||= (() => {
     // turn that makes it, and the looks after it for what it loads to
     // arrive. A turn that brings nothing is one never shown.
     if (!left && scrolling.goal > held && now >= held - 1) left = Math.round(Math.min(scrolling.goal, WHEEL_TO_THE_END) - now);
-    scrolling.owed = Math.max(-MAX_WHEEL_TURN, Math.min(MAX_WHEEL_TURN, left));
+    // A wheel that carries this box only so far a turn is turned that far
+    // at a time, so each turn is shown in full (see `scrollLeft`).
+    const most = scrolling.reach || MAX_WHEEL_TURN;
+    scrolling.owed = Math.max(-most, Math.min(most, left));
+    scrolling.turned = 0;
     return scrollAnswer(scrolling.owed, false);
   }
   function beginScroll(box, point, goal) {
-    scrolling = {box, x: point.x, y: point.y, goal, start: scrollYOffset(box), still: 0, owed: 0, unshown: 0};
+    scrolling = {box, x: point.x, y: point.y, goal, start: scrollYOffset(box), still: 0, owed: 0, unshown: 0,
+      turned: 0, reach: 0};
     scrollMoved = 0;
     scrollAt = placeOf(box);
     return scrollTurn();
@@ -221,7 +233,10 @@ globalThis.__tiloPage ||= (() => {
   // it, and turning again meanwhile would make it twice. A turn never shown
   // was given nothing by the page (a frame still settling, a box whose
   // content arrives later) and is made once more; a second one never shown
-  // says the box has stopped.
+  // says the box has stopped. A turn that carried the box part of the way
+  // and no further, with room left to go, is neither: it is as far as one
+  // turn of this wheel carries this box. The box has not stopped, and the
+  // turns after it are that long.
   function scrollLeft() {
     if (!scrolling) return {ok: true, x: innerWidth / 2, y: innerHeight / 2, left: 0};
     const box = scrolling.box, now = scrollYOffset(box), gone = now - scrolling.start;
@@ -230,15 +245,19 @@ globalThis.__tiloPage ||= (() => {
     scrolling.start = now;
     if (scrolling.owed) {
       const owed = scrolling.owed - gone;
+      scrolling.turned += gone;
       scrolling.owed = Math.abs(owed) < 1 || owed * scrolling.owed < 0 ? 0 : owed;
       if (!scrolling.owed) { scrolling.still = 0; scrolling.unshown = 0; }
       else {
         scrolling.still = gone ? 0 : scrolling.still + 1;
         if (scrolling.still <= SCROLL_OWED_LOOKS)
           return scrollAnswer(Math.round(scrolling.owed) || Math.sign(scrolling.owed), true);
+        const carried = Math.abs(scrolling.turned);
+        const room = scrolling.owed > 0 ? scrollable(box) - now : now;
         scrolling.owed = 0;
         scrolling.still = 0;
-        if (++scrolling.unshown > MAX_SCROLL_UNSHOWN) return scrollAnswer(0, false);
+        if (carried >= MIN_WHEEL_REACH && room > 1) { scrolling.reach = carried; scrolling.unshown = 0; }
+        else if (++scrolling.unshown > MAX_SCROLL_UNSHOWN) return scrollAnswer(0, false);
       }
     }
     return scrollTurn();

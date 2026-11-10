@@ -381,6 +381,8 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // bounded work whatever the page says is left, and an answer inside the
   // time an action is waited for.
   static constexpr int kMaxScrollTurns=64;
+  // The most wheel events one turn goes out as.
+  static constexpr int kMaxWheelPieces=64;
   // The refusals still to be met by the tab's copy of the request.
   static constexpr size_t kMaxRefused=256;
   // A scroll answers inside the time an action is waited for, however much
@@ -1020,9 +1022,22 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     if(!wait) {
       const auto turn=std::max(-kMaxScrollTurn,std::min(kMaxScrollTurn,scroll_.left));
       scroll_.left-=turn;++scroll_.turns;
-      // The wheel turns at a point of the page: a point of a frame's document
-      // is moved by where the frame sits.
-      wheel_(scroll_.x+world_frame_.x,scroll_.y+world_frame_.y,-turn);
+      // A turn goes out as wheel events of at most one page of the box each,
+      // one behind the other. Where the engine's wheel is a mouse's (Linux),
+      // Chromium carries a box no further than a page of itself for the
+      // wheel event that begins a scroll, however far the event says, and
+      // carries the events behind it in full: a turn sent as one event
+      // moves a short list one page and stops.
+      const double said=Number(value,"page");
+      const double page=said>=1?said:kMaxScrollTurn;
+      double sent=0;
+      for(int pieces=0;(pieces==0 || std::abs(turn-sent)>=0.5) && pieces<kMaxWheelPieces;++pieces) {
+        const double piece=std::max(-page,std::min(page,turn-sent));
+        // The wheel turns at a point of the page: a point of a frame's
+        // document is moved by where the frame sits.
+        wheel_(scroll_.x+world_frame_.x,scroll_.y+world_frame_.y,-piece);
+        sent+=piece;
+      }
     }
     auto command=CefDictionaryValue::Create();
     command->SetString("action","scroll_left");command->SetInt("doc",document_);

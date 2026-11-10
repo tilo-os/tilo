@@ -2506,8 +2506,8 @@ class PageActions(unittest.TestCase):
         self.ok('scroll', to='bottom')
         scrolled = self.main_world('scrollY')
         # The wheel turns over the list until Invoice 60 comes into view.
-        self.ok('scroll', element=invoices, by=2300)
-        self.assertIn('Invoice 60 (overdue)', self.outline(), 'the rows the wheel reached are rendered')
+        turned = self.ok('scroll', element=invoices, by=2300)
+        self.assertIn('Invoice 60 (overdue)', self.outline(), f'the rows the wheel reached are rendered: {turned["message"]}')
         self.assertEqual(self.main_world('scrollY'), scrolled, 'the list scrolled, not the page')
 
     def test_an_element_that_cannot_hear_a_scroll_is_refused(self):

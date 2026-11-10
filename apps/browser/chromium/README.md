@@ -423,7 +423,13 @@ goes that distance from wherever the box stands. The wheel is turned toward
 the place asked for and what is left is measured from where the box stands
 after each turn, so a turn the page shows late, or drops, neither stops the
 scroll short nor carries it too far. A box asked to go further than it holds
-is turned once more at its end, for a page that loads more there. On a page
+is turned once more at its end, for a page that loads more there. A turn goes
+out as wheel events of at most one page of the box each: where the engine's
+wheel is a mouse's (Linux), Chromium carries a box no further than a page of
+itself for the wheel event that begins a scroll, and the events behind it in
+full. A turn that still carries a box only part of the way, with room left to
+go, is as far as a turn goes there, and the turns after it are that long. On a
+page
 its caller has not read, a scroll says so in place of the changes and does not
 answer with the page.
 
