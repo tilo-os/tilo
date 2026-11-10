@@ -356,6 +356,49 @@ pub fn read_allow(path: &Path) -> Result<BTreeSet<String>, String> {
 /// dates.
 pub fn check(options: &Options) -> Result<Report, String> {
     let started = std::time::Instant::now();
+    let (apps, allow) = open(options)?;
+    let scenes = scenes_of(&apps);
+    let mut planned = Vec::with_capacity(scenes.len().saturating_mul(3));
+    for scene in &scenes {
+        planned.extend(scene.units());
+    }
+    let mut phase = run(&apps, &planned, options)?;
+    // The views nothing showed yet, opened on the scenario whose resources they take, with
+    // what every scene before it showed: the scenes of one app decide in order, as the check
+    // ran them one after another, while the apps decide at the same time.
+    let (mut opened, shown) = run_opens(&apps, &scenes, &phase, options)?;
+    // A dump is read as a page of one layout after another: the units ran at the same time, and
+    // their pages are printed where the work stands, in the order the check would have done it
+    // alone.
+    for found in phase.iter().chain(opened.iter()) {
+        eprint!("{}", found.dump);
+    }
+    let (layouts, work, gathered) = gather(&scenes, &mut phase, &mut opened);
+    refuse_a_missing_press(&phase, &opened, options)?;
+    let mut findings: Vec<Finding> = gathered
+        .into_iter()
+        .flat_map(BTreeMap::into_values)
+        .collect();
+    let unreached = unreached_views(&apps, &shown);
+    let mut seen = BTreeSet::new();
+    for finding in &mut findings {
+        finding.id = finding.id();
+        finding.allowed = allow.contains(&finding.id);
+        seen.insert(finding.id.clone());
+    }
+    let stale = allow.difference(&seen).cloned().collect();
+    Ok(Report {
+        findings,
+        stale,
+        unreached,
+        layouts,
+        work,
+        elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+    })
+}
+
+/// Every app `options` names, and the findings the allow-list holds.
+fn open(options: &Options) -> Result<(Vec<App>, BTreeSet<String>), String> {
     // Without the product's catalog this process's text falls back to the host's faces, so
     // every judgement about how it lays out would be about a typeface the product does not
     // ship. That is the environment, not the app: refuse rather than report on it.
@@ -376,10 +419,13 @@ pub fn check(options: &Options) -> Result<Report, String> {
         .iter()
         .map(|dir| App::read(dir, &options.search, options.root.as_deref()))
         .collect::<Result<_, String>>()?;
-    // Every scenario of every app, on every layer it has: the units of work, each a window and
-    // a frame pipeline of its own, so they run at the same time.
-    let scenes: Vec<Scene> = apps
-        .iter()
+    Ok((apps, allow))
+}
+
+/// Every scenario of every app, on every layer it has: the units of work, each a window and
+/// a frame pipeline of its own, so they run at the same time.
+fn scenes_of(apps: &[App]) -> Vec<Scene> {
+    apps.iter()
         .enumerate()
         .flat_map(|(app, held)| {
             held.roots.iter().flat_map(move |root| {
@@ -390,26 +436,20 @@ pub fn check(options: &Options) -> Result<Report, String> {
                 })
             })
         })
-        .collect();
-    let mut planned = Vec::with_capacity(scenes.len().saturating_mul(3));
-    for scene in &scenes {
-        planned.extend(scene.units());
-    }
-    let mut phase = run(&apps, &planned, options)?;
-    // The views nothing showed yet, opened on the scenario whose resources they take, with
-    // what every scene before it showed: the scenes of one app decide in order, as the check
-    // ran them one after another, while the apps decide at the same time.
-    let (mut opened, shown) = run_opens(&apps, &scenes, &phase, options)?;
-    // A dump is read as a page of one layout after another: the units ran at the same time, and
-    // their pages are printed where the work stands, in the order the check would have done it
-    // alone.
-    for found in phase.iter().chain(opened.iter()) {
-        eprint!("{}", found.dump);
-    }
-    let mut layouts_run: usize = 0;
+        .collect()
+}
+
+/// What every scene's units found: the layouts they ran, the work they did, and each app's
+/// findings, one per node.
+fn gather(
+    scenes: &[Scene],
+    phase: &mut [Found],
+    opened: &mut [Found],
+) -> (usize, Work, Vec<BTreeMap<Identity, Finding>>) {
+    let mut layouts: usize = 0;
     let mut work = Work::default();
     let mut gathered: Vec<BTreeMap<Identity, Finding>> = Vec::new();
-    gathered.resize_with(apps.len(), BTreeMap::new);
+    gathered.resize_with(scenes.len(), BTreeMap::new);
     for ((scene, units), opened) in scenes
         .iter()
         .zip(phase.chunks_mut(3))
@@ -418,7 +458,7 @@ pub fn check(options: &Options) -> Result<Report, String> {
         let [scenario, press, push] = units else {
             continue;
         };
-        layouts_run = layouts_run
+        layouts = layouts
             .saturating_add(scenario.layouts)
             .saturating_add(press.layouts)
             .saturating_add(push.layouts)
@@ -434,9 +474,17 @@ pub fn check(options: &Options) -> Result<Report, String> {
         merge(held, std::mem::take(&mut press.gathered));
         merge(held, std::mem::take(&mut push.gathered));
     }
-    // A label no window carried anywhere is the one the run reports: a control a scenario
-    // shows and the next does not — a window's change mark — is pressed where it stands,
-    // rather than leaving every scenario without it unpressed.
+    (layouts, work, gathered)
+}
+
+/// Refuse a `--press` label no window carried anywhere: a control a scenario shows and the next
+/// does not — a window's change mark — is pressed where it stands, rather than leaving every
+/// scenario without it unpressed.
+fn refuse_a_missing_press(
+    phase: &[Found],
+    opened: &[Found],
+    options: &Options,
+) -> Result<(), String> {
     let mut pressed = BTreeSet::new();
     for found in phase.iter().chain(opened.iter()) {
         pressed.extend(found.pressed.iter().cloned());
@@ -448,26 +496,7 @@ pub fn check(options: &Options) -> Result<Report, String> {
     {
         return Err(format!("--press {missing:?}: no control carries it"));
     }
-    let mut findings: Vec<Finding> = gathered
-        .into_iter()
-        .flat_map(BTreeMap::into_values)
-        .collect();
-    let unreached = unreached_views(&apps, &shown);
-    let mut seen = BTreeSet::new();
-    for finding in &mut findings {
-        finding.id = finding.id();
-        finding.allowed = allow.contains(&finding.id);
-        seen.insert(finding.id.clone());
-    }
-    let stale = allow.difference(&seen).cloned().collect();
-    Ok(Report {
-        findings,
-        stale,
-        unreached,
-        layouts: layouts_run,
-        work,
-        elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-    })
+    Ok(())
 }
 
 /// The views no layout showed a node of: a view its window draws off a call or from the
