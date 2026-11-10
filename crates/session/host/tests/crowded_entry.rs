@@ -460,8 +460,8 @@ const ROUND_TRIP: Duration = Duration::from_millis(400);
 /// first request until its desktop shows: four HTTPS requests to enter, the
 /// session's handshake through the packet relay, and the replay of the
 /// workspace's governance and desktop, which a new connection's congestion
-/// window takes several round trips to carry.
-const MAX_ROUND_TRIPS: f64 = 16.0;
+/// window takes several round trips to carry. It waits about 11.
+const MAX_ROUND_TRIPS: f64 = 12.5;
 
 /// The HTTPS requests a fresh guest makes to enter: the host's certificate,
 /// the door, and the join's ask and proof. The session dials the host the
@@ -470,10 +470,11 @@ const MAX_REQUESTS: usize = 4;
 
 /// What a fresh guest may receive before its desktop shows. Its keys to the
 /// desktop come only after the workspace's eager records (3.5 MB here) and its
-/// governance (about 1.4 MB for 300 members), so this bounds the whole
-/// workspace once over: a frame per record, governance sent twice or records
-/// sent again cross it.
-const MAX_BYTES: u64 = 6_000_000;
+/// governance: a compressed base with the changes since, about 0.2 to 0.5 MB
+/// for 300 members, where the uncompressed history was 1.4 MB. So this bounds
+/// the whole workspace once over: a frame per record, governance sent twice or
+/// uncompressed, or records sent again cross it.
+const MAX_BYTES: u64 = 4_500_000;
 
 /// One guest's entry, as it went.
 struct Entry {
