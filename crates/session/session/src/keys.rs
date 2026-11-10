@@ -32,7 +32,8 @@ use crate::shell::state::{OVERLAYS, WINDOW_MENU};
 /// The key a press is, as the toolkit names it, with the modifiers held: what the shortcut
 /// tables and the desktop's chords match against.
 fn toolkit_key(key: &HostKey) -> (ui::winit::keyboard::Key, ui::winit::event::Modifiers) {
-    let under_chord = key.modifiers.ctrl || key.modifiers.alt || key.modifiers.logo;
+    let held = key.modifiers;
+    let under_chord = held.ctrl || held.alt || held.logo;
     (
         ui::keys::chord(
             key.keysym,
@@ -41,13 +42,7 @@ fn toolkit_key(key: &HostKey) -> (ui::winit::keyboard::Key, ui::winit::event::Mo
             under_chord,
         )
         .0,
-        ui::keys::modifiers(
-            key.modifiers.ctrl,
-            key.modifiers.alt,
-            key.modifiers.shift,
-            key.modifiers.logo,
-        )
-        .into(),
+        ui::keys::modifiers(held.ctrl, held.alt, held.shift, held.logo).into(),
     )
 }
 

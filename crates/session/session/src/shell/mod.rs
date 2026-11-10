@@ -392,6 +392,9 @@ impl Shell {
             return;
         }
         let mut fresh: Vec<(String, String)> = Vec::new();
+        // The apps whose views this process links as Rust apps, which draw their resources
+        // without a package of their own.
+        let rust_views = tilolang_tilo::views::declared_apps();
         if asked || self.followed.as_ref().map(|(_, was)| was) != Some(arrangement) {
             // Every app a place shows is published with this pass, however this pass was asked for:
             // a package a view asked for arrives beside them, and none of them goes with it.
@@ -416,7 +419,6 @@ impl Shell {
             // A resource of an app no package is published of any more is followed no more, and
             // neither is one of an app whose views draw it as a Rust app when none of its views is
             // linked here any more.
-            let rust_views = tilolang_tilo::views::declared_apps();
             self.reading.retain(|_, ty| {
                 app_of(ty)
                     .is_some_and(|app| packages.contains_key(app) || rust_views.contains(&app))
@@ -440,8 +442,7 @@ impl Shell {
         for (id, ty) in wanted {
             let app = tilolang_tilo::records_service::app_of(&ty);
             let shown = app.is_some_and(|app| {
-                self.link.package_apps().iter().any(|held| held == app)
-                    || tilolang_tilo::views::declared_apps().contains(&app)
+                self.link.package_apps().iter().any(|held| held == app) || rust_views.contains(&app)
             });
             if shown && !self.reading.contains_key(&id) {
                 self.reading.insert(id.clone(), ty.clone());

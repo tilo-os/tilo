@@ -163,12 +163,6 @@ fn session_verbs() -> BTreeMap<String, ui::tilo_actions::surface::VerbSurface> {
     })
 }
 
-/// The shell package's ids lock, as it ships.
-#[must_use]
-pub const fn shell_ids() -> &'static str {
-    SHELL_IDS
-}
-
 /// The desk the session writes its reading into: the `desk` view over the `Desk` root, the
 /// bar and the surface under it. The shell package has two roots (`Desk` and its `Arrangement`),
 /// so each names its own; the instance is never "the first root's default view".
@@ -2031,27 +2025,6 @@ impl ShellPart {
         self.output.as_ref().is_some_and(|(name, _)| {
             !self.cover && self.fullscreen.iter().any(|covered| covered == name)
         })
-    }
-
-    /// The shell's record as shared by every part of this shell: a part that commits a change
-    /// writes it here, and the rest read it on their next turn.
-    #[must_use]
-    pub fn record_handle(&self) -> Rc<RefCell<tilo_resource::Doc>> {
-        Rc::clone(&self.record)
-    }
-
-    /// The shell's own record (`root shell: Shell`) as it holds it now, when the package has
-    /// one and the record is made: what its edge settings are read from.
-    #[must_use]
-    pub fn shell_record(&self) -> Option<tilolang_tilo::record::DynRecord> {
-        let host = self.instance.host()?;
-        let package = host.package(self.instance.app())?;
-        let root = package
-            .meta
-            .named_roots
-            .iter()
-            .find(|root| root.name == SHELL_RECORD)?;
-        host.store().record(&format!("root-{}", root.ty)).ok()
     }
 
     /// The package the part shows, as it was compiled: its types and their fields.

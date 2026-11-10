@@ -29,7 +29,7 @@ use std::cell::Cell;
 
 use tilo_compositor::{
     BackdropImage, BackdropRequest, CursorIcon, HostDrag, HostIme, HostKey, HostLayer,
-    HostTextInput, KeyModifiers, SurfaceHost,
+    HostTextInput, SurfaceHost,
 };
 use ui::App;
 use ui::app::{AppSurface, SurfaceDamage};
@@ -435,7 +435,8 @@ impl SurfaceHost for AppHost {
     }
 
     fn key(&mut self, key: &HostKey) {
-        let modifiers = modifiers_of(key.modifiers);
+        let m = key.modifiers;
+        let modifiers = ui::keys::modifiers(m.ctrl, m.alt, m.shift, m.logo);
         if modifiers != self.modifiers {
             self.modifiers = modifiers;
             self.input(WindowEvent::ModifiersChanged(Modifiers::from(modifiers)));
@@ -625,16 +626,6 @@ pub(crate) fn mouse_input(button: u32, pressed: bool) -> WindowEvent {
         state,
         button,
     }
-}
-
-/// The modifiers a key the compositor resolved was pressed with.
-fn modifiers_of(modifiers: KeyModifiers) -> ModifiersState {
-    ui::keys::modifiers(
-        modifiers.ctrl,
-        modifiers.alt,
-        modifiers.shift,
-        modifiers.logo,
-    )
 }
 
 /// The toolkit's key event for a key the compositor's keymap resolved.
