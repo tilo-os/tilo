@@ -21,13 +21,16 @@
 //! - **Possessing a hash never grants access.** A device answers a peer's
 //!   request only when the host says the peer may read the record's route,
 //!   and only with content kept under that record's scope on this device.
+//!   What a peer may read is asked again when content it asked for earlier
+//!   is handed over later ([`ContentPeers::may_read`]).
 //! - **Bytes are verified, never trusted.** Content travels in bounded
 //!   pieces addressed by hash; the assembled bytes must hash to what was
 //!   asked for before they are kept or handed to an app.
 //! - **Nothing arrives unasked.** Pieces for content this device did not
 //!   ask for on that route are dropped.
 //! - **What was lacking follows.** A device asked for content it does not
-//!   keep yet says so, and hands it to the peers that asked once it keeps it:
+//!   keep yet says so, and hands it to the peers that asked, and may still
+//!   read the record, once it keeps it:
 //!   a record can name content a moment before its writer keeps the bytes
 //!   where peers are served from.
 //!
@@ -123,6 +126,14 @@ pub trait ContentPeers: Send + Sync {
     /// The devices connected now that could hand over `route`'s content,
     /// never this device.
     fn sources(&self, route: &CrdtRoute) -> ContentSources;
+
+    /// Whether `peer` may read `route` now. An ask is answered on the
+    /// admission the workspace gave the peer; content owed to it is handed
+    /// over later, when no message of its own arrives, so the route's
+    /// devices are asked again then.
+    fn may_read(&self, route: &CrdtRoute, peer: ContentPeer) -> bool {
+        self.sources(route).all().contains(&peer)
+    }
 }
 
 /// The devices connected now that could hand over a route's content.
@@ -513,7 +524,8 @@ impl RouteContent {
             .insert(peer);
     }
 
-    /// `hash` is kept under `scope` now: hand it to the peers it was owed.
+    /// `hash` is kept under `scope` now: hand it to the peers it was owed,
+    /// the ones that may still read its record.
     fn repay(&self, scope: &ContentScope, hash: &str, bytes: &[u8]) {
         let owed = {
             let Ok(mut wants) = self.wants.lock() else {
@@ -528,6 +540,18 @@ impl RouteContent {
             return;
         }
         for peer in owed.peers {
+            // What a peer may read can change while the content it asked
+            // for is on its way here: the workspace may have removed it, or
+            // taken the record from it. The bytes go only to a device that
+            // may read them now.
+            if !self.peers.may_read(&owed.route, peer) {
+                tracing::debug!(
+                    peer,
+                    %hash,
+                    "content is not handed to a device that may no longer read its record"
+                );
+                continue;
+            }
             self.send(&owed.route, peer, hash, bytes);
         }
     }
