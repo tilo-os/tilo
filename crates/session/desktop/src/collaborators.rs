@@ -2276,6 +2276,7 @@ impl ButtonWidths {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_desktop_model::{Collaborator, DesktopTree};
 
     fn row(id: &str, label: &str) -> RosterRow {
         RosterRow {
