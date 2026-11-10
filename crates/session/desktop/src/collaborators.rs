@@ -1951,7 +1951,6 @@ fn rows_of(
                 },
                 ui::presence::identity_rgb,
             );
-            let has_view = participant.active_tab.is_some();
             RosterRow {
                 id: participant.id.clone(),
                 initial: roster_initial(&participant.name),
@@ -1973,11 +1972,14 @@ fn rows_of(
                         crate::i18n::t_args("people-panel-viewing", &[("title", title.into())])
                     }),
                 status: None,
-                // A headless agent has no pointer/viewport to follow merely because its session is
-                // connected. Follow becomes available only when it has published a real view;
-                // semantic action targets remain visible through interaction presence.
+                // Everyone here can be followed, software included: following
+                // an agent that has published no view yet keeps its run in
+                // front as that arrives, and the row still says where it is.
+                // Offering it only to agents already seen working left people
+                // with no way to follow software from a desk that had not
+                // watched it work, and none at all on a phone.
                 recent: Vec::new(),
-                followable: !participant.invited && (!is_agent || has_view),
+                followable: !participant.invited,
                 // How available they are and the call they are in are presence's, said of them as
                 // they arrive (and of a known member again each frame); a row nothing said of is a
                 // person at their machine, in no call.
@@ -2202,6 +2204,15 @@ mod tests {
     }
 
     fn paint(overlay: &mut CollaboratorsOverlay, rows: &[RosterRow], expanded: Option<&str>) {
+        paint_in(overlay, rows, expanded, Rect::new(0.0, 0.0, 1400.0, 900.0));
+    }
+
+    fn paint_in(
+        overlay: &mut CollaboratorsOverlay,
+        rows: &[RosterRow],
+        expanded: Option<&str>,
+        host: Rect,
+    ) {
         let theme = Theme::dark();
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
@@ -2211,7 +2222,7 @@ mod tests {
             &mut text,
             &theme,
             &CollaboratorsModel {
-                host: Rect::new(0.0, 0.0, 1400.0, 900.0),
+                host,
                 workspace: "Lounge",
                 rows,
                 unavailable: None,
@@ -2227,6 +2238,85 @@ mod tests {
             },
             None,
         );
+    }
+
+    /// A phone's roster offers Follow on software's row: an agent is followed
+    /// to its run like anyone else, and the control stands inside the panel
+    /// the person can reach at a phone's width.
+    #[test]
+    fn a_phone_roster_offers_follow_on_the_agents_row() {
+        let mut agent = row("claude", "Claude Code");
+        agent.is_agent = true;
+        let rows = vec![row("ada", "Ada"), agent];
+        let mut overlay = CollaboratorsOverlay::default();
+        paint_in(&mut overlay, &rows, None, Rect::new(0.0, 0.0, 390.0, 844.0));
+        let place = overlay
+            .rows
+            .iter()
+            .find(|place| place.index == 1)
+            .expect("the agent's row is laid out");
+        assert!(place.follow.area() > 0.0, "the agent's row offers Follow");
+        assert!(
+            place.follow.x0 >= overlay.panel.x0 && place.follow.x1 <= overlay.panel.x1,
+            "Follow stands inside the panel: {:?} in {:?}",
+            place.follow,
+            overlay.panel
+        );
+        assert!(
+            place.follow.x0 >= 0.0 && place.follow.x1 <= 390.0,
+            "{:?} is on the phone's screen",
+            place.follow
+        );
+        assert_eq!(
+            overlay.hit_test(place.follow.center()),
+            CollaboratorsHit::ToggleFollow(1)
+        );
+        // A control with no bounds is one nobody can press: what the person
+        // sees, the pointer and assistive technology all read this place.
+        let reachable = overlay
+            .rect_for_hit(CollaboratorsHit::ToggleFollow(1))
+            .and_then(|rect| {
+                let clipped = overlay.view_rect(rect);
+                (clipped.area() > 0.0).then_some(clipped)
+            });
+        assert!(
+            reachable.is_some(),
+            "Follow is inside the panel's list on screen: {:?} in body {:?}",
+            place.follow,
+            overlay.body
+        );
+        let named = overlay
+            .accessibility_snapshot()
+            .children
+            .iter()
+            .filter_map(|node| node.name.clone())
+            .any(|name| name == t_args("a11y-shell-follow", &[("name", "Claude Code".into())]));
+        assert!(named, "the roster offers Follow Claude Code");
+    }
+
+    /// Software that has published no view yet is still followed: its row
+    /// offers Follow rather than hiding it until the agent is seen working.
+    #[test]
+    fn a_headless_agent_is_followable() {
+        use tilo_desktop_model::{Workspace, WorkspaceSlot};
+
+        let mut workspace = Workspace::new(WorkspaceSlot(73), "Lounge");
+        workspace
+            .collaborators
+            .push(Collaborator::new("claude", "Claude Code").with_role(AGENT_ROLE_MARKER));
+        assert!(
+            workspace.collaborators[0].active_tab.is_none(),
+            "a headless agent names no window"
+        );
+        let desktop = DesktopTree {
+            active: workspace.slot,
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        };
+        let rows = collaborator_roster_rows(&desktop, "local");
+        let agent = rows.iter().find(|row| row.id == "claude").unwrap();
+        assert!(agent.is_agent);
+        assert!(agent.followable, "the agent can be followed");
     }
 
     /// A wave just sent reads as sent on its row, to the pointer's eye and to assistive technology
