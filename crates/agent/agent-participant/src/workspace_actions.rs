@@ -1993,7 +1993,7 @@ impl Worker {
             drop(ledger);
             return receipt;
         }
-        if let Some(receipt) = self.stop_terminal_runs(&caller, &request) {
+        if let Some(receipt) = self.stop_terminal_runs(workspace_id, &caller, &request) {
             let mut ledger = self.ledger();
             ledger.running = None;
             if matches!(receipt.status, ReceiptStatus::Rejected { .. }) {

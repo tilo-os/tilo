@@ -13,6 +13,15 @@
 //! the invocation's context: History keeps it as the agent's run, with its
 //! command, directory, exit status and output.
 //!
+//! Whoever the workspace lets run the session's commands has them run here:
+//! the host's own person and their agents, and a member or a member's agent
+//! the workspace's policy admits for the session's `run`, decided as every
+//! action the host runs is ([`Worker::terminal_admitted`]). A command runs in
+//! the workspace's own environment, a VM when it needs one, billed to the
+//! workspace's account; where that account cannot pay yet, the run answers
+//! with the host's refusal and what would let it through. The run is
+//! recorded as the caller's, for the person they act for.
+//!
 //! A command may run for minutes (a build in the workspace's VM), so it runs
 //! on a thread of its own: the invocation is answered accepted at once, and
 //! succeeds with the run once it ended and was recorded. Its answer is what
@@ -193,11 +202,14 @@ impl Worker {
         request: &InvokeRequest,
     ) -> Option<InvocationReceipt> {
         let invocation = request.invocation;
-        if request.target.address.action != RUN || !self.acts_for_owner(caller) {
+        if request.target.address.action != RUN {
             return None;
         }
         let route =
             record_of(&request.target.provider, "").filter(|route| route.app_id == TERMINAL_APP)?;
+        if !self.acts_for_owner(caller) && self.bounded(caller).is_none() {
+            return None;
+        }
         let shell = self.shared.link.get()?.shell()?;
         let refused = |reason: String| {
             Some(InvocationReceipt {
@@ -232,13 +244,17 @@ impl Worker {
             Ok(state) => state,
             Err(error) => return refused(error.to_string()),
         };
-        let Some(workspace) = state.workspace else {
+        let Some(workspace) = state.workspace.clone() else {
             return refused("this host does not hold the workspace".into());
         };
         let route = DocumentRoute {
             cluster_id: workspace.clone(),
             ..route
         };
+        if let Err(receipt) = self.terminal_admitted(workspace_id, caller, request, &route, &state)
+        {
+            return Some(receipt);
+        }
         let run = caller.agent_run();
         let agent = run.is_some();
         let jobs = self.shared.jobs.lock_recover().clone()?;
@@ -282,6 +298,94 @@ impl Worker {
         Some(InvocationState::new(invocation, InvocationUpdate::Accepted { invocation }).receipt())
     }
 
+    /// Whether `caller` may take the Terminal action `request` names on the
+    /// session record at `route`, decided as every action the host runs for
+    /// someone within bounds is: the caller's standing bounded as
+    /// [`Caller::invoker`] reads them, the shared admission, and an ask put to
+    /// the person on their own devices. The host's own person and their
+    /// agents may. `Err` is the receipt that answers it instead: refused, or
+    /// waiting for the person.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the refusal is the receipt the invocation is answered with"
+    )]
+    fn terminal_admitted(
+        &mut self,
+        workspace_id: u64,
+        caller: &Caller,
+        request: &InvokeRequest,
+        route: &DocumentRoute,
+        state: &super::WorkspaceState,
+    ) -> Result<(), InvocationReceipt> {
+        use tilo_actions::remote::{ActionHostError, Confirmation, ReceiptStatus};
+        if self.acts_for_owner(caller) {
+            return Ok(());
+        }
+        let invocation = request.invocation;
+        let refused = |error| InvocationReceipt {
+            invocation,
+            status: ReceiptStatus::Rejected { error },
+        };
+        let who = self
+            .bounded(caller)
+            .ok_or_else(|| refused(ActionHostError::NotPermitted))?;
+        let policy = self
+            .policy_for(
+                workspace_id,
+                &who,
+                &route.cluster_id,
+                Some((&route.app_id, &route.record)),
+            )
+            .map_err(refused)?;
+        let permissions = super::bounded::bounded_permissions(&policy, &who)
+            .map_err(refused)?
+            .reaching_person();
+        let mounted = self
+            .mount(route, state)
+            .map_err(|_| refused(ActionHostError::UnknownAction))?;
+        let descriptor = super::live_actions(&mounted.app)
+            .into_iter()
+            .find(|descriptor| descriptor.address == request.target.address)
+            .ok_or_else(|| refused(ActionHostError::UnknownAction))?;
+        let need = descriptor.contract.need();
+        let node = tilo_actions::action_node(
+            &ui::permissions::policy::TreePath::root(),
+            &route.app_id,
+            &descriptor.resource_kind,
+            &descriptor.address.resource,
+            need.field.as_deref(),
+            &descriptor.address.action,
+        );
+        let admitted = ui::permissions::policy::admit(
+            ui::permissions::policy::Invoked {
+                answer: permissions.answer(&node, need.kind),
+                attended: descriptor.contract.is_attended(),
+                record: None,
+            },
+            permissions.asker(),
+        );
+        match admitted {
+            Err(_) => Err(refused(ActionHostError::NotPermitted)),
+            Ok(ui::permissions::policy::Admission::Runs) => Ok(()),
+            Ok(ui::permissions::policy::Admission::AsksFirst) => {
+                let witness = self
+                    .ledger()
+                    .entries
+                    .get(&invocation)
+                    .and_then(|entry| entry.witness.clone())
+                    .map(Confirmation::Witnessed);
+                let given = witness.as_ref().or(request.confirmation.as_ref());
+                let binding = super::bounded::WitnessBinding::of(workspace_id, caller, request);
+                if super::bounded::witnessed(&self.shared.witnesses, given, &binding) {
+                    return Ok(());
+                }
+                Err(self
+                    .ask_person(workspace_id, caller, request)
+                    .unwrap_or_else(|| refused(ActionHostError::ConfirmationRequired)))
+            }
+        }
+    }
+
     /// Record `ended` on its session record and settle its invocation with
     /// the run: cancelled, when it was stopped before it ended.
     pub(super) fn ran(&mut self, ended: &Ended) {
@@ -306,15 +410,48 @@ impl Worker {
     /// runs it, records its run, and answers that it was cancelled; `None`
     /// for any other request.
     pub(super) fn stop_terminal_runs(
-        &self,
+        &mut self,
+        workspace_id: u64,
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Option<InvocationReceipt> {
         let invocation = request.invocation;
-        if request.target.address.action != STOP || !self.acts_for_owner(caller) {
+        if request.target.address.action != STOP {
             return None;
         }
-        record_of(&request.target.provider, "").filter(|route| route.app_id == TERMINAL_APP)?;
+        let route =
+            record_of(&request.target.provider, "").filter(|route| route.app_id == TERMINAL_APP)?;
+        if !self.acts_for_owner(caller) {
+            self.bounded(caller)?;
+            let refused = |error| {
+                Some(InvocationReceipt {
+                    invocation,
+                    status: tilo_actions::remote::ReceiptStatus::Rejected { error },
+                })
+            };
+            let state = match self.refresh(
+                workspace_id,
+                Needs::Act {
+                    app_id: &route.app_id,
+                    record: &route.record,
+                },
+            ) {
+                Ok(state) => state,
+                Err(error) => return refused(error),
+            };
+            let Some(workspace) = state.workspace.clone() else {
+                return refused(tilo_actions::remote::ActionHostError::UnknownAction);
+            };
+            let route = DocumentRoute {
+                cluster_id: workspace,
+                ..route
+            };
+            if let Err(receipt) =
+                self.terminal_admitted(workspace_id, caller, request, &route, &state)
+            {
+                return Some(receipt);
+            }
+        }
         let stopped = {
             let ledger = self.ledger();
             let session = request.target.address.resource.clone();
@@ -398,12 +535,16 @@ impl Worker {
             )
             .map_err(|error| failed(error.to_string()))?;
         let context = caller_context(&ended.caller, &ended.request);
+        // The run is the caller's, for the person they act for: the host
+        // records it on their behalf.
+        let invoker = tilo_actions::ActionInvoker::admitted(&ended.caller.actor())
+            .named(ended.caller.agent_name().map(str::to_owned));
         let mounted = self.mount(&ended.route, &state).map_err(failed)?;
         mounted
             .app
-            .invoke_in(
+            .invoke_with(
+                Some(&invoker),
                 context.as_ref(),
-                None,
                 &ActionAddress::new(&ended.request.target.address.resource, RECORD_RUN),
                 &finished,
                 true,

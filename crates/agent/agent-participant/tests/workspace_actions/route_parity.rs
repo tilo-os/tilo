@@ -11,7 +11,8 @@
 //! on the host exactly what the broker offers them; and a set of actions
 //! (a note, the form's fields, a Word export, a paragraph, a command) runs,
 //! asks the person first, or is refused alike on both. Putting a file into
-//! the workspace is decided as an edit of the workspace on both.
+//! the workspace is decided as an edit of the workspace on both. A command
+//! the host runs for any of them runs in the workspace's shell.
 //!
 //! Each caller's actions are also the same caller's to both: the broker's
 //! actor and the host's replica name the same actor, for the same person.
@@ -41,6 +42,8 @@ struct Member {
     devices: Vec<[u8; 32]>,
     asked: AtomicUsize,
     content: tilo_content::ContentStore,
+    /// The workspace's shell, where the host runs its Terminal's commands.
+    shell: Arc<dyn tilo_agent_participant::workspace_actions::WorkspaceShell>,
 }
 
 impl Member {
@@ -94,6 +97,9 @@ impl WorkspaceRecordsLink for Member {
     }
     fn workspace_content(&self, _workspace: u64) -> Option<tilo_content::ContentStore> {
         Some(self.content.clone())
+    }
+    fn shell(&self) -> Option<Arc<dyn tilo_agent_participant::workspace_actions::WorkspaceShell>> {
+        Some(self.shell.clone())
     }
     fn ask_person(
         &self,
@@ -365,6 +371,10 @@ async fn both_routes_decide_every_callers_actions_alike() {
     let all_key = enrol(&guest, "visa-backend", DeviceCapabilities::member());
     let one_key = enrol(&guest, "applicant-7", DeviceCapabilities::member());
     let state = support::scratch_dir();
+    // A workspace's shell works in a directory an environment may be
+    // granted: not one below /dev, where the scratch state is.
+    let shell_state = tempfile::tempdir().unwrap();
+    let shells = shell_state.path().join("shells");
     let hosted = start(&root, &host, state.path()).await;
     let _participant = participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
@@ -392,6 +402,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
         ],
         asked: AtomicUsize::new(0),
         content: tilo_content::ContentStore::in_dir(state.path().join("member-content")),
+        shell: tilo_relay::agents::host_shells(shells.clone()).unwrap(),
     });
     let actions = tilo_agent_participant::WorkspaceActions::new(Arc::new(common::catalogue));
     actions.attach(member.clone()).unwrap();
@@ -522,8 +533,13 @@ async fn both_routes_decide_every_callers_actions_alike() {
             "export-content",
             serde_json::json!({"format": "docx"}),
         ),
-        (TERMINAL, "run", serde_json::json!({"command": "true"})),
+        (
+            TERMINAL,
+            "run",
+            serde_json::json!({"command": "echo ran here"}),
+        ),
     ];
+    let mut commands_ran = 0;
     for (app, action, arguments) in invocations {
         let (route, all) = &every[app];
         let descriptor = all
@@ -564,6 +580,19 @@ async fn both_routes_decide_every_callers_actions_alike() {
                     "{who} {app}#{action}: the host {by_host:?} ({status:?}), the broker {by_broker:?}"
                 ));
             }
+            // A command the host runs for anyone runs in the workspace's
+            // shell, and answers with how it ran: never left waiting.
+            if app == TERMINAL && by_host != Admitted::Refused {
+                let ran = match &status {
+                    ReceiptStatus::Completed { output } => format!("{output:?}"),
+                    other => format!("{other:?}"),
+                };
+                if ran.contains("ran here") {
+                    commands_ran += 1;
+                } else {
+                    differences.push(format!("{who}'s command did not run: {ran}"));
+                }
+            }
         }
     }
 
@@ -572,11 +601,11 @@ async fn both_routes_decide_every_callers_actions_alike() {
     // own changes are no run. The page sees what History, Activity and undo
     // read.
     let notes = &every[NOTES].0;
-    let names = ["Claude Code", "Visa backend", "Applicant 7"];
+    let agents = ["Claude Code", "Visa backend", "Applicant 7"];
     let deadline = tilo_test_env::hang_deadline();
     let runs = loop {
         let runs = runs_of(&mut browser, notes);
-        if names
+        if agents
             .iter()
             .all(|name| runs.iter().any(|run| run.label == *name))
             || Instant::now() >= deadline
@@ -585,7 +614,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    for name in names {
+    for name in agents {
         let named: BTreeSet<_> = runs
             .iter()
             .filter(|run| run.label == name)
@@ -650,6 +679,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
         }
     }
 
+    assert!(commands_ran > 0, "a member's command ran on the host");
     assert!(
         member.asked.load(Ordering::SeqCst) > 0,
         "an action asked the person first"
