@@ -861,9 +861,9 @@ impl Panel {
     }
 
     /// Read who is here, as the plane wrote them into the desk's collaborators this frame: the
-    /// roster, the workspace it is of, and each person's screen, its windows named by the records
-    /// this desk shows.
-    fn read_roster(&self) -> (Vec<RosterRow>, String, Vec<(String, Option<Screen>)>) {
+    /// roster, each person's screen with its windows named by the records this desk shows, and,
+    /// while the roster is open, the workspace it is of.
+    fn read_roster(&self, shown: &mut Shown, open: bool) {
         let own = self
             .sync
             .as_ref()
@@ -914,7 +914,11 @@ impl Panel {
                 .collect(),
             _ => Vec::new(),
         };
-        (rows, workspace, screens)
+        shown.rows = rows;
+        shown.screens = screens;
+        if open {
+            shown.workspace = workspace;
+        }
     }
 
     /// Act on what a press or a key on the roster meant.
@@ -1016,7 +1020,7 @@ impl Panel {
     /// tile of the tab it is on, in the colour and under the name the workspace knows them by,
     /// with what they say beside it. What each tab is called names where they are.
     fn draw_pointers(
-        &mut self,
+        &self,
         scene: &mut ui::vello::Scene,
         transform: Affine,
         text: &mut TextRenderer,
@@ -1070,12 +1074,7 @@ impl Panel {
         // roster's cards, and for the banner that names whose view this is.
         let following = self.sync.as_ref().and_then(|sync| sync.own().following);
         if open || shown.pinned.is_some() || !pointers.drawn.is_empty() || following.is_some() {
-            let (rows, workspace, screens) = self.read_roster();
-            shown.rows = rows;
-            shown.screens = screens;
-            if open {
-                shown.workspace = workspace;
-            }
+            self.read_roster(shown, open);
         }
         shown.pointers = pointers
             .drawn
@@ -1206,7 +1205,7 @@ impl Panel {
             let Some(pin) = shown.pinned.as_mut() else {
                 return;
             };
-            self.place_pinned(pin, area, theme, now);
+            Self::place_pinned(pin, area, theme, now);
             let anchor = match pin.edge {
                 DockEdge::Left | DockEdge::BottomLeft => {
                     Point::new(pin.panel.x0, pin.panel.center().y)
@@ -1317,14 +1316,7 @@ impl Panel {
 
     /// Where the pinned roster waits this frame: its slot at its edge, under a drag, or springing
     /// back from a drop.
-    fn place_pinned(
-        &mut self,
-        pin: &mut Pinned,
-        area: Rect,
-        theme: &Theme,
-        now: ui::time::Instant,
-    ) {
-        let spacing = &theme.tokens.spacing;
+    fn place_pinned(pin: &mut Pinned, area: Rect, theme: &Theme, now: ui::time::Instant) {
         let bar = f64::from(tilo_desktop::topbar::topbar_height(theme));
         let work = Rect::new(area.x0, area.y0 + bar, area.x1, area.y1);
         pin.work = work;
@@ -1354,9 +1346,12 @@ impl Panel {
             || Rect::from_origin_size(work.origin(), size),
             |slot| slot.glance,
         );
-        let mut panel = rest;
+        // The roster waits where its slot does, moved by the spring back from a drop and by a drag
+        // still in flight.
+        let mut at = rest.origin();
         if let Some(dropped) = pin.dropped.take() {
-            let from = dropped - rest.origin();
+            // Where it was let go, from where its slot waits: the spring starts there.
+            let from = Vec2::new(dropped.x - at.x, dropped.y - at.y);
             pin.settle.snap(Point::new(from.x, from.y));
             let timing = Snap::SPEC.timing(
                 Direction::Enter,
@@ -1365,18 +1360,17 @@ impl Panel {
             );
             pin.settle.set(Point::ZERO, timing, now);
         }
-        let offset = pin.settle.get(now);
-        panel = panel + Vec2::new(offset.x, offset.y);
+        let settle = pin.settle.get(now);
+        at = Point::new(at.x + settle.x, at.y + settle.y);
         if let Some(shift) = pin.drag.and_then(|drag| drag.shift(pin.pointer)) {
-            panel = panel + shift;
+            at = Point::new(at.x + shift.x, at.y + shift.y);
         }
-        let _ = spacing;
-        pin.panel = panel;
+        pin.panel = rest.with_origin(at);
     }
 
     /// What a drag of the pinned roster asks: the pointer moved, a press started on it, or it was
     /// let go at an edge.
-    fn handle_pinned(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
+    fn handle_pinned(&self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
         let roster = Rc::clone(&self.shown);
         let mut shown = roster.borrow_mut();
         let cursor = shown.cursor;

@@ -1087,19 +1087,15 @@ fn screen_of(
 
 /// The people panel as a screen reader reads it: its window and tree.
 fn people(session: &Session) -> ui::accesskit::TreeUpdate {
-    session
-        .a11y_windows()
-        .into_iter()
-        .find(|(_, window, _)| window == "People")
-        .map(|(_, _, tree)| tree)
-        .unwrap_or_else(|| {
-            let windows: Vec<String> = session
-                .a11y_windows()
-                .into_iter()
-                .map(|(_, window, _)| window)
-                .collect();
-            panic!("the session publishes the people panel it draws: {windows:?}");
-        })
+    let windows = session.a11y_windows();
+    let Some((_, _, tree)) = windows.iter().find(|(_, window, _)| window == "People") else {
+        let named: Vec<&str> = windows
+            .iter()
+            .map(|(_, window, _)| window.as_str())
+            .collect();
+        panic!("the session publishes the people panel it draws: {named:?}");
+    };
+    tree.clone()
 }
 
 /// Every name the panel says.
@@ -1112,17 +1108,16 @@ fn said_by(tree: &ui::accesskit::TreeUpdate) -> Vec<String> {
 
 /// Where the control `label` of `tree` stands.
 fn holding(tree: &ui::accesskit::TreeUpdate, label: &str) -> (f64, f64, f64, f64) {
-    let node = tree
+    let Some((_, node)) = tree
         .nodes
         .iter()
         .find(|(_, node)| node.label().is_some_and(|said| said.contains(label)))
-        .map(|(_, node)| node)
-        .unwrap_or_else(|| {
-            panic!(
-                "no control named {label:?}; the panel says {:?}",
-                said_by(tree)
-            )
-        });
+    else {
+        panic!(
+            "no control named {label:?}; the panel says {:?}",
+            said_by(tree)
+        );
+    };
     let bounds = node.bounds().expect("a control names where it stands");
     (
         bounds.x0,
