@@ -74,15 +74,16 @@ pub(super) async fn connect(
     dial: &mut Dial,
 ) -> Result<RelayClient, LinkError> {
     let host = &config.host;
-    let endpoint = match &dial.endpoint {
-        Some(endpoint) => endpoint.clone(),
-        None => {
-            let endpoint = host
-                .bind(Some(signer.device_signing_key().unwrap_or(dial.key)))
-                .await?;
-            dial.endpoint = Some(endpoint.clone());
-            endpoint
-        }
+    // Bound on the first connect and kept: a reload, and the planes beside the
+    // session, dial as the same endpoint.
+    let endpoint = if let Some(endpoint) = &dial.endpoint {
+        endpoint.clone()
+    } else {
+        let endpoint = host
+            .bind(Some(signer.device_signing_key().unwrap_or(dial.key)))
+            .await?;
+        dial.endpoint = Some(endpoint.clone());
+        endpoint
     };
     sign_delegation(
         signer,

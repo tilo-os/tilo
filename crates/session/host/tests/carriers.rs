@@ -205,9 +205,12 @@ async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) 
     // laptop's reply reaches the page.
     let snapshot = DocumentMutation::Snapshot(b"automerge snapshot".to_vec());
     page.publish(route(), &snapshot).unwrap();
-    let receipt = page.barrier().unwrap();
-    wait_for("the commit to be durable", || async {
-        receipt.try_recv().ok()
+    // Behind a lock: the receipt itself is not shared between threads, and
+    // the wait holds it across its sleeps.
+    let receipt = std::sync::Mutex::new(page.barrier().unwrap());
+    wait_for("the commit to be durable", || {
+        let durable = receipt.lock().unwrap().try_recv().ok();
+        async move { durable }
     })
     .await
     .unwrap();
@@ -363,8 +366,10 @@ async fn the_device_takes_part_in_a_call(carrier: Carrier) {
     })
     .await
     .unwrap();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].state, workspace.call);
+    let [listed] = calls.as_slice() else {
+        panic!("one call is listed: {calls:?}");
+    };
+    assert_eq!(listed.state, workspace.call);
 
     workspace
         .owner
