@@ -743,10 +743,11 @@ fn an_answer_for_a_question_that_is_no_longer_showing_never_answers_the_next() {
 }
 
 /// An agent's question as a reviewer reads it: who wants to do what as the
-/// title, the run it asks in, the record and the workspace, every argument
-/// in one line with its secret withheld, and what allowing it risks. Deny
-/// stands focused, and the card hugs what it says: the buttons sit one
-/// gutter under the last line, as the title sits one gutter under the top.
+/// title, the run it asks in, the record and the workspace, each argument a
+/// row of its own with its secret withheld, and what allowing it risks as
+/// the last line before the buttons. Deny stands focused, and the card hugs
+/// what it says: the buttons sit one gutter under the last line, as the
+/// title sits one gutter under the top.
 #[test]
 fn an_agents_question_says_who_wants_what_and_hugs_its_words() {
     use tilo_sheets::portal::AgentQuestion;
@@ -772,12 +773,21 @@ fn an_agents_question_says_who_wants_what_and_hugs_its_words() {
     );
     assert_eq!(dialog.heading, "Fill Jane Doe’s visa application");
     assert_eq!(
-        dialog.detail.lines().collect::<Vec<_>>(),
+        dialog.detail,
+        "On “Schengen visa: Jane Doe” in the workspace “Applicant: Jane Doe”."
+    );
+    assert_eq!(
+        dialog.facts,
         [
-            "On “Schengen visa: Jane Doe” in the workspace “Applicant: Jane Doe”.",
-            "Name:\u{a0}Jane\u{a0}Doe · Passport:\u{a0}X1234567 · Consulate\u{a0}login:\u{a0}•••",
-            "It acts outside Tilo and can’t be undone.",
-        ]
+            ("Name".to_owned(), "Jane Doe".to_owned()),
+            ("Passport".to_owned(), "X1234567".to_owned()),
+            ("Consulate login".to_owned(), "•••".to_owned()),
+        ],
+        "every argument is a row of its own, the secret withheld"
+    );
+    assert_eq!(
+        dialog.caution.as_deref(),
+        Some("It acts outside Tilo and can’t be undone.")
     );
     // A read of private data says so, and an undoable change risks nothing
     // worth a line.
@@ -787,11 +797,9 @@ fn an_agents_question_says_who_wants_what_and_hugs_its_words() {
         undoable: false,
         ..asked.clone()
     };
-    assert!(
-        reads
-            .dialog("r")
-            .detail
-            .ends_with("It can reveal private data.")
+    assert_eq!(
+        reads.dialog("r").caution.as_deref(),
+        Some("It can reveal private data.")
     );
     let edits = AgentQuestion {
         risk: "low".into(),
@@ -799,9 +807,9 @@ fn an_agents_question_says_who_wants_what_and_hugs_its_words() {
         undoable: true,
         ..asked
     };
-    assert_eq!(edits.dialog("r").detail.lines().count(), 2);
+    assert_eq!(edits.dialog("r").caution, None);
 
-    let (mut app, _seat) = seated(dialog);
+    let (mut app, _seat) = seated(dialog.clone());
     let focused = app.harness().a11y_focus().map(|(_, node)| node);
     assert_eq!(
         focused.as_ref().and_then(|node| node.label()),
@@ -817,11 +825,13 @@ fn an_agents_question_says_who_wants_what_and_hugs_its_words() {
             .collect::<Vec<_>>()
     };
     let card = bounds(ui::accesskit::Role::Dialog, &mut app)[0];
-    let words_end = bounds(ui::accesskit::Role::Label, &mut app)
-        .into_iter()
-        .filter(|text| text.y0 > card.y0 && text.y1 < card.y1)
-        .map(|text| text.y1)
-        .fold(f64::MIN, f64::max);
+    // Each argument is a row of its own, in the order the question carries
+    // them.
+    let listed = listed_facts(&mut app);
+    assert_eq!(
+        listed, dialog.facts,
+        "the arguments are rows in their own order"
+    );
     let buttons = bounds(ui::accesskit::Role::Button, &mut app);
     let buttons_top = buttons
         .iter()
@@ -831,11 +841,125 @@ fn an_agents_question_says_who_wants_what_and_hugs_its_words() {
         .iter()
         .map(|button| button.y1)
         .fold(f64::MIN, f64::max);
+    // The risk follows every argument and stands last before the buttons.
+    let after = last_row_end(&mut app).unwrap_or(card.y0);
+    risk_line_is_last(&mut app, dialog.caution.as_deref(), after);
+    let words_end = bounds(ui::accesskit::Role::Label, &mut app)
+        .into_iter()
+        .filter(|text| text.y0 > card.y0 && text.y1 < card.y1)
+        .map(|text| text.y1)
+        .fold(f64::MIN, f64::max);
     let under_words = buttons_top - words_end;
     let under_buttons = card.y1 - buttons_end;
     assert!(
         under_words > 0.0 && under_words <= under_buttons + 1.0,
         "the buttons sit one gutter under the words: {under_words} px there, {under_buttons} px \
          under the buttons"
+    );
+}
+
+/// The rows of the sheet's property list, top to bottom: each label, its
+/// value and the row's bounds.
+fn listed_rows(app: &mut HeadlessApp<PortalApp>) -> Vec<(f64, f64, String, String)> {
+    let nodes = app.harness().a11y_nodes();
+    let list = nodes
+        .iter()
+        .find(|(_, node)| node.role() == ui::accesskit::Role::List)
+        .and_then(|(_, node)| node.bounds())
+        .expect("the sheet lists its rows");
+    let mut rows = nodes
+        .iter()
+        .filter(|(_, node)| node.role() == ui::accesskit::Role::Label)
+        .filter_map(|(_, node)| {
+            let bounds = node.bounds()?;
+            let inside = bounds.y0 >= list.y0 - 1.0 && bounds.y1 <= list.y1 + 1.0;
+            inside.then(|| {
+                (
+                    bounds.y0,
+                    bounds.y1,
+                    node.label().unwrap_or_default().to_owned(),
+                    node.value().unwrap_or_default().to_owned(),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.0.total_cmp(&right.0));
+    rows
+}
+
+/// What the list says, label and value, in its own order.
+fn listed_facts(app: &mut HeadlessApp<PortalApp>) -> Vec<(String, String)> {
+    listed_rows(app)
+        .into_iter()
+        .map(|(_, _, label, value)| (label, value))
+        .collect()
+}
+
+/// An action with more arguments than a review lists: the first six rows,
+/// then how many more there are, the risk line still last.
+#[test]
+fn a_review_lists_six_arguments_and_counts_the_rest() {
+    use tilo_sheets::portal::AgentQuestion;
+    let asked = AgentQuestion {
+        agent: "Jane Doe’s agent".into(),
+        run: "Fill Jane Doe’s visa application".into(),
+        action: "Submit the application".into(),
+        resource: "Schengen visa: Jane Doe".into(),
+        arguments: (0..8)
+            .map(|at| (format!("Field {at}"), format!("Value {at}")))
+            .collect(),
+        risk: "destructive".into(),
+        kind: "outside".into(),
+        undoable: false,
+        workspace: "Applicant: Jane Doe".into(),
+    };
+    let dialog = asked.dialog("request-1");
+    assert_eq!(dialog.facts.len(), 8, "every argument is on the question");
+    let (mut app, _seat) = seated(dialog.clone());
+    assert_eq!(
+        listed_facts(&mut app),
+        dialog.facts[..6],
+        "the first six arguments are rows"
+    );
+    let nodes = app.harness().a11y_nodes();
+    let more = nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("and 2 more"))
+        .and_then(|(_, node)| node.bounds())
+        .expect("the rows left out are counted");
+    let last_row = last_row_end(&mut app).unwrap_or(f64::MIN);
+    assert!(more.y0 >= last_row, "the count follows the rows it counts");
+    risk_line_is_last(&mut app, dialog.caution.as_deref(), more.y1);
+}
+
+/// Where the sheet's last listed row ends, when it lists any.
+fn last_row_end(app: &mut HeadlessApp<PortalApp>) -> Option<f64> {
+    listed_rows(app).last().map(|(_, end, _, _)| *end)
+}
+
+/// The risk line `caution` sits under `after` and is the last line before
+/// the buttons.
+fn risk_line_is_last(app: &mut HeadlessApp<PortalApp>, caution: Option<&str>, after: f64) {
+    let nodes = app.harness().a11y_nodes();
+    let buttons_top = nodes
+        .iter()
+        .filter(|(_, node)| node.role() == ui::accesskit::Role::Button)
+        .filter_map(|(_, node)| node.bounds())
+        .map(|bounds| bounds.y0)
+        .fold(f64::MAX, f64::min);
+    let line = nodes
+        .iter()
+        .find(|(_, node)| caution.is_some() && node.label() == caution)
+        .and_then(|(_, node)| node.bounds())
+        .expect("the risk line is there");
+    assert!(
+        line.y0 >= after,
+        "the risk line follows what it is about: {} px below it",
+        line.y0 - after
+    );
+    assert!(
+        line.y1 <= buttons_top + 1.0,
+        "the risk line stands last before the buttons: {} px above them",
+        buttons_top - line.y1
     );
 }

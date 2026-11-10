@@ -8,9 +8,6 @@ use serde::{Deserialize, Serialize};
 use super::{Body, Dialog};
 use crate::{word, words};
 
-/// The longest argument, label and value, kept on one line.
-const UNBROKEN_CHARS: usize = 32;
-
 /// An agent's question, as the sheet shows it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct AgentQuestion {
@@ -44,29 +41,6 @@ impl AgentQuestion {
     /// and what it risks follow.
     #[must_use]
     pub fn dialog(&self, handle: &str) -> Dialog {
-        let mut lines = vec![words(
-            "network-agent-question-detail",
-            &[("resource", &self.resource), ("workspace", &self.workspace)],
-        )];
-        let arguments: Vec<String> = self
-            .arguments
-            .iter()
-            .map(|(label, value)| {
-                // A line breaks between arguments, never inside a label,
-                // between a label and its value, or inside a short value.
-                let label = label.replace(' ', "\u{a0}");
-                let field = words("run-question-field", &[("label", &label), ("value", value)]);
-                if field.chars().count() <= UNBROKEN_CHARS {
-                    field.replace(' ', "\u{a0}")
-                } else {
-                    field.replacen(": ", ":\u{a0}", 1)
-                }
-            })
-            .collect();
-        if !arguments.is_empty() {
-            lines.push(arguments.join(" · "));
-        }
-        lines.extend(self.consequence());
         Dialog {
             handle: handle.to_owned(),
             title: words(
@@ -78,7 +52,12 @@ impl AgentQuestion {
                 ],
             ),
             heading: self.run.clone(),
-            detail: lines.join("\n"),
+            detail: words(
+                "network-agent-question-detail",
+                &[("resource", &self.resource), ("workspace", &self.workspace)],
+            ),
+            facts: self.arguments.clone(),
+            caution: self.consequence(),
             body: Body::Review,
             confirm_label: word("network-agent-question-allow"),
             cancel_label: word("portal-deny"),

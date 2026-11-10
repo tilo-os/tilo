@@ -198,6 +198,13 @@ pub struct Dialog {
     pub heading: String,
     /// What the person reviews: this page of it, when it is paged.
     pub detail: String,
+    /// The rows the person weighs under the detail, each label beside its
+    /// value in one column (the arguments an action would run with).
+    pub facts: Vec<(String, String)>,
+    /// What allowing it risks, said last and quiet, in the caution ink: the
+    /// action acts outside Tilo, reveals something, or Undo cannot take it
+    /// back.
+    pub caution: Option<String>,
     /// A code to read out or compare, shown large above the detail: a
     /// pairing's passkey or PIN.
     pub code: Option<String>,
@@ -213,6 +220,22 @@ pub struct Dialog {
 }
 
 impl Dialog {
+    /// What the sheet says, as plain text, for a reader that shows it
+    /// without the sheet (a notification).
+    #[must_use]
+    pub fn words(&self) -> String {
+        let facts = self
+            .facts
+            .iter()
+            .map(|(label, value)| format!("{label}: {value}"));
+        std::iter::once(self.detail.clone())
+            .chain(facts)
+            .chain(self.caution.clone())
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// More of the review follows this page: Enter turns to it.
     pub fn reviewing_more(&self) -> bool {
         self.page

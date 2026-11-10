@@ -3,9 +3,11 @@
 //! one layout.
 
 use ui::prelude::*;
+use ui::tokens::Rhythm;
 use ui::widget::{
-    Button, ButtonRole, Column, Element, FieldRole, FieldSpec, ListRow, ModalDialog, SecretKind,
-    SecretPrompt, Text, TextInput, TextInputKind, Widget,
+    Button, ButtonRole, Column, Element, FieldRole, FieldSpec, IconSize, IconWidget, ListRow,
+    ModalDialog, Property, PropertyList, Row, SecretKind, SecretPrompt, Text, TextInput,
+    TextInputKind, Tone, Widget,
 };
 
 use super::{
@@ -13,12 +15,14 @@ use super::{
     Prompt, PromptKind, Shortcut, Shown,
 };
 use crate::presentation::presented;
-use crate::t;
+use crate::{t, words};
 
 /// The id of the sheet's dialog, which the shell finds it by.
 pub(super) const DIALOG_ID: &str = "portal-sheet";
 /// The id of the secret prompt.
 pub(super) const PROMPT_ID: &str = "portal-secret-prompt";
+/// How many facts a review lists before it counts the rest.
+const LISTED_FACTS: usize = 6;
 
 /// What every part of the view acts through.
 #[derive(Clone)]
@@ -168,6 +172,9 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
             Text::new(&dialog.detail).with_role(TextRole::Body),
         ));
     }
+    if !dialog.facts.is_empty() {
+        body = body.push(facts(dialog));
+    }
     if let Some(code) = &dialog.code {
         body = body.push(Box::new(
             Text::new(code)
@@ -179,6 +186,9 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
     // its buttons.
     if !matches!(dialog.body, Body::Review) {
         body = body.push(rows(dialog, shown.focus, parts));
+    }
+    if let Some(caution) = &dialog.caution {
+        body = body.push(caution_line(caution));
     }
     if let Some(error) = &dialog.error {
         body = body.push(Box::new(
@@ -213,6 +223,57 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
     // A press beside the sheet answers nothing: declining is Escape or
     // the button that says so.
     Box::new(presented(Some(&parts.seat.presentation), sheet))
+}
+
+/// The rows a review weighs: each label in one column, aligned to the
+/// longest, its value beside it in the primary ink; the first few, then
+/// how many more it leaves out.
+fn facts(dialog: &Dialog) -> Element {
+    let listed: Vec<Property> = dialog
+        .facts
+        .iter()
+        .take(LISTED_FACTS)
+        .map(|(label, value)| Property::new(label.clone(), value.clone()))
+        .collect();
+    let mut column = Column::new()
+        .with_intrinsic_height()
+        .with_no_padding()
+        .with_gap(ui::tokens::Spacing::BASE.s1)
+        .push(Box::new(
+            PropertyList::new(listed)
+                .compact()
+                .with_id("portal-sheet-facts"),
+        ));
+    let more = dialog.facts.len().saturating_sub(LISTED_FACTS);
+    if more > 0 {
+        column = column.push(Box::new(
+            Text::new(&words("portal-more-facts", &[("count", &more.to_string())]))
+                .with_role(TextRole::Caption)
+                .with_id("portal-sheet-facts-more"),
+        ));
+    }
+    Box::new(column)
+}
+
+/// What allowing it risks, apart from the words above it: the theme's
+/// caution ink and its warning mark, one quiet line.
+fn caution_line(line: &str) -> Element {
+    Box::new(
+        Row::new()
+            .with_id("portal-sheet-caution")
+            .with_rhythm(Rhythm::Related)
+            .with_align_items(ui::taffy::AlignItems::Start)
+            .push(Box::new(
+                IconWidget::new(ui::icons::Icon::TriangleAlert)
+                    .sized(IconSize::Small)
+                    .tone(Tone::Warning),
+            ))
+            .push(Box::new(
+                Text::new(line)
+                    .with_role(TextRole::Caption)
+                    .tone(Tone::Warning),
+            )),
+    )
 }
 
 /// What the person chooses or types, under the detail.

@@ -269,6 +269,7 @@ display-remote-out-of-layout = Nicht im Layout
 portal-sheet-description = Gefragt von Tilo, nicht von der App. Eingabe antwortet, Escape lehnt ab.
 portal-back = Zurück
 portal-continue = Weiter
+portal-more-facts = und { $count } weitere
 portal-shortcut-not-set = Nicht festgelegt
 portal-usb-row-read-write = Lesen und Schreiben
 portal-usb-row-read-only = Nur lesen

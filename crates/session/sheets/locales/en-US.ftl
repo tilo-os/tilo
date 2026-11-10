@@ -270,6 +270,7 @@ display-remote-out-of-layout = Not in layout
 portal-sheet-description = Asked by Tilo, not by the app. Enter answers, Escape declines.
 portal-back = Back
 portal-continue = Continue
+portal-more-facts = and { $count } more
 portal-shortcut-not-set = Not set
 portal-usb-row-read-write = Read and write
 portal-usb-row-read-only = Read only
