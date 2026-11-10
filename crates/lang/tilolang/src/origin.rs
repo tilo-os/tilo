@@ -75,6 +75,11 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
          subject, body, the Message-ID it answers, the References it continues).",
     ),
     (
+        "imap.check",
+        "Asks a mail account for its mail now: (the account's key). What its server holds comes \
+         in as it does when the server is heard from, and the account says how it stands.",
+    ),
+    (
         "youtube.search",
         "Searches YouTube's catalogue for the query, as typed: (the query). The channels, \
          playlists and videos it answers are written where the search's field says.",

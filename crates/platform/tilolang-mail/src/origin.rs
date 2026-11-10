@@ -1,6 +1,6 @@
 //! The IMAP origin: keeps a package's types of the `imap` kinds (`type Message (origin:
 //! imap.message)`) in step with the servers of the workspace's mail accounts, through the
-//! connector (`super::connector`), and carries out `smtp.send`.
+//! connector (`super::connector`), and carries out `smtp.send` and `imap.check`.
 //!
 //! - What a server holds is written into the package's records as changes of the origin: an
 //!   account's mailboxes, its conversations and their messages, keyed by the server's ids so
@@ -10,6 +10,8 @@
 //!   field back and says why on the account.
 //! - A send waits in the outbox until the server took it; while it has not, the outbox keeps it
 //!   with the reason.
+//! - A person asking for their mail again (`imap.check`) asks the account's server now, and the
+//!   account's own fields say how it answered.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -208,6 +210,23 @@ impl ImapOrigin {
         }
         host.runtime().retry_waiting();
         true
+    }
+
+    /// The account's server asked now what changed, as a person asking for their mail again
+    /// does: its inbox is read again, and the account says how the server stands once it
+    /// answers, as it does when the device comes online.
+    fn check_now(&mut self, account: &str) -> Delivery {
+        let known = self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.accounts.contains_key(account));
+        if !known {
+            return Delivery::Rejected(format!("no mail account {account} on this device"));
+        }
+        self.due.push((account.to_owned(), "inbox".to_owned()));
+        // The ask is taken: what the server says of itself arrives as its mail does, on the
+        // poll it wakes, and the account's own fields say how it stands.
+        Delivery::Delivered
     }
 
     /// What the connector reported since the last frame: what changed, what
@@ -1168,7 +1187,7 @@ impl Origin for ImapOrigin {
     }
 
     fn serves(&self, capability: &str) -> bool {
-        capability == "smtp.send"
+        matches!(capability, "smtp.send" | "imap.check")
     }
 
     fn due(&self) -> bool {
@@ -1241,6 +1260,9 @@ impl Origin for ImapOrigin {
     }
 
     fn deliver(&mut self, capability: &str, payload: &Json) -> Delivery {
+        if capability == "imap.check" {
+            return self.check_now(payload.as_str().unwrap_or_default());
+        }
         if capability != "smtp.send" {
             return Delivery::Rejected(format!(
                 "the mail connector does not carry out {capability}"

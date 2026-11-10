@@ -2243,7 +2243,7 @@
     },
     {
       "name": "Icon",
-      "doc": "One glyph from the icon set, in the theme's ink: a kind of thing beside its name, a status mark. It says nothing to assistive technology, so the words beside it carry the meaning.",
+      "doc": "One glyph from the icon set, in the theme's ink: a kind of thing beside its name, a status mark. One that stands on its own says what it means in `description`, read on hover; the words beside a glyph carry the meaning otherwise.",
       "props": [
         {
           "name": "icon",
@@ -2294,6 +2294,13 @@
                 ]
               }
             }
+          }
+        },
+        {
+          "name": "description",
+          "doc": "What the glyph means, where it stands on its own without words beside it: a mark saying why a service cannot be reached. Read on hover; the words a window says in full carry it to assistive technology.",
+          "type": {
+            "option": "text"
           }
         }
       ],

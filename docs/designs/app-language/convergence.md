@@ -108,7 +108,9 @@ action refresh(feed: Feed) uses web {
 - `upsert(key:)` keys resources by the service's id, so nothing appears twice.
 - The service's fields are written only by the service's actions, and people's fields (`read`,
   `starred`) only by people, so refreshing never undoes what someone did.
-- A failure is state (`trouble`), shown on that feed; it never blocks others.
+- A failure is state (`online`, `trouble`), shown where the person reads it: `std.service_mark`
+  beside the service's name and `std.service_banner` over the items it holds, with the way to ask
+  it again. It never blocks others.
 - When it runs is a trigger (a default shortcut such as "every 30 minutes"), not syntax.
 - For mail, YouTube and Drive: getting and searching are capabilities of the resource's origin,
   invoked by the system (any view, global or scoped search). What was fetched is cached and

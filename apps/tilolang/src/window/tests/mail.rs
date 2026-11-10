@@ -475,6 +475,91 @@ fn an_unreachable_server_is_said_on_the_account() {
     assert!(workspace.threads().is_empty());
 }
 
+/// Every text the account's own window says, the words its mark carries on hover among them.
+fn account_window(workspace: &Workspace, account: &ResourceRef) -> Vec<String> {
+    let view = workspace
+        .host()
+        .open_resource(account, None)
+        .expect("the account's window opens");
+    let mut texts = Vec::new();
+    texts_in(view.tree(), &mut texts);
+    texts
+}
+
+// USER REQUIREMENT: a person whose server cannot be reached sees why in their mail window, and
+// the window says nothing more once the server answers.
+#[test]
+fn a_troubled_account_says_so_in_its_window_and_clears_when_the_server_answers() {
+    let servers = servers();
+    let reachable = account(&servers);
+    // Nothing listens at the account's server yet.
+    let config = Arc::new(std::sync::Mutex::new(AccountConfig {
+        imap_port: 1,
+        ..reachable.clone()
+    }));
+    let accounts = Arc::clone(&config);
+    let mut workspace = workspace_over(
+        Box::new(move || vec![accounts.lock().unwrap().clone()]),
+        Arc::default(),
+    );
+    workspace.until("the account to be made", |workspace| {
+        !workspace.accounts().is_empty()
+    });
+    let account = workspace.accounts().remove(0);
+    // The window says so where the person reads their mail: over the list, and on the mark
+    // beside the account's name, which says why.
+    let said = workspace.wait_for(
+        "the window to say the server cannot be reached",
+        |workspace| {
+            let said = account_window(workspace, &account);
+            said.iter()
+                .any(|text| text.contains("Can't reach"))
+                .then_some(said)
+        },
+    );
+    let trouble = workspace.text(&account, "trouble");
+    assert!(
+        said.iter()
+            .any(|text| text.contains("Can't reach sam@rivera.example")),
+        "the banner names the account the person cannot reach: {said:#?}"
+    );
+    assert!(
+        said.iter().any(|text| text.contains(&trouble)),
+        "the mark and the banner say why, in the server's own words: {said:#?}"
+    );
+    assert!(
+        said.iter().any(|text| text == "Try again"),
+        "the window offers to ask the server again: {said:#?}"
+    );
+    // Nothing asks the server again on its own: the window keeps saying it.
+    for _ in 0..20 {
+        workspace.settle();
+    }
+    assert!(
+        account_window(&workspace, &account)
+            .iter()
+            .any(|text| text.contains("Can't reach")),
+        "the window still says it"
+    );
+
+    // The server answers, and the person asks for their mail again: it comes in, and the
+    // window says nothing more of it.
+    *config.lock().unwrap() = reachable;
+    workspace.press("check_now", vec![RtValue::resource(&account)]);
+    synced(&mut workspace);
+    workspace.until("the account to say nothing more", |workspace| {
+        workspace.text(&account, "trouble").is_empty() && workspace.flag(&account, "online")
+    });
+    let said = workspace.wait_for("the window to say nothing more", |workspace| {
+        let said = account_window(workspace, &account);
+        (!said.iter().any(|text| text.contains("Can't reach"))).then_some(said)
+    });
+    assert!(
+        !said.iter().any(|text| text.contains(&trouble)),
+        "the words the mark carried are gone with it: {said:#?}"
+    );
+}
+
 // USER REQUIREMENT: mail a workspace cannot keep is not half kept: no conversation stands
 // filed nowhere and no message is taken as known, the account says the mail could not be
 // saved, and the next sync takes the whole step in — once.
@@ -1021,10 +1106,10 @@ fn host_texts_in(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
     }
 }
 
-/// Every text `node` shows, its whole tree walked: what its `value`, `title`, `secondary` and
-/// `label` props say.
+/// Every text `node` says, its whole tree walked: what its `value`, `title`, `secondary` and
+/// `label` props show, and what its `description` says — the words a mark carries on hover.
 fn texts_in(node: &tilolang_tilo::runtime::UiNode, out: &mut Vec<String>) {
-    for prop in ["value", "title", "secondary", "label"] {
+    for prop in ["value", "title", "secondary", "label", "description"] {
         if let Some(tilolang_tilo::runtime::Value::Text(text)) = node.props.get(prop) {
             out.push(text.clone());
         }

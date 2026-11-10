@@ -217,6 +217,9 @@ d-su4h67i5-filter-hold = Hold
 d-ejo2352x = Signature
     .doc = Sets what the account signs its messages with, or clears it: the person's own, per account.
 
+d-arnkrvgw = Check now
+    .doc = Asks the account's server for its mail now: what a person presses when the window says the server could not be reached, or that what it fetched could not be saved.
+
 d-eon6gbrn = New message
     .doc = Starts a message from the account.
 
@@ -355,12 +358,21 @@ d-4fjgzcq6 = Unified
     .w-all-inboxes = All inboxes
     .w-all-mail = All mail
     .w-labels = Labels
+    .w-could-not-save-what-it-fetched = { $name } could not save what it fetched
+    .w-can-t-reach-showing-what-was = Can't reach { $name } — showing what was last fetched
+    .w-try-again = Try again
 
 d-gka45our = Mailboxes
     .w-all-mail = All mail
     .w-labels = Labels
+    .w-could-not-save-what-it-fetched = { $name } could not save what it fetched
+    .w-can-t-reach-showing-what-was = Can't reach { $name } — showing what was last fetched
+    .w-try-again = Try again
 
 d-zp2cy2sc = Inbox
+    .w-could-not-save-what-it-fetched = { $name } could not save what it fetched
+    .w-can-t-reach-showing-what-was = Can't reach { $name } — showing what was last fetched
+    .w-try-again = Try again
     .w-nothing-here = Nothing here
 
 d-jgdzx3la = Thread list

@@ -94,6 +94,44 @@ template view places<T>(
     }
 }
 
+/// The mark a window shows beside the name of a service it reads its items from while that
+/// service does not stand well: a quiet glyph while it cannot be reached, a warning one while it
+/// was reached and what it fetched could not be kept, each saying why on hover, and nothing
+/// while it stands well. `name` is what the person calls the service (their account's address, a
+/// site), `online` whether it answered when it was last asked, and `trouble` why not, in the
+/// service's own words.
+template view service_mark(name: Text, online: Bool, trouble: Text) {
+    if trouble != "" {
+        if online {
+            ui.Icon(.triangle_alert, size: .small, tone: .warning, description: "{name}: {trouble}")
+        } else {
+            ui.Icon(.wifi_off, size: .small, secondary: true, description: "{name}: {trouble}")
+        }
+    }
+}
+
+/// What a window says over the items it holds while the service they come from does not stand
+/// well: one calm banner naming it and what it means — the items under it are what was last
+/// fetched, or what it fetched could not be saved — with `Try again` where `retry` asks it
+/// again, and nothing while it stands well. It stands over the items rather than in the bar, so
+/// it is read where they are, and it never takes the place of what a person came to read.
+template view service_banner(name: Text, online: Bool, trouble: Text, retry: Action) {
+    if trouble != "" {
+        ui.Banner(
+            if online {
+                "{name} could not save what it fetched"
+            } else {
+                "Can't reach {name} — showing what was last fetched"
+            },
+            message: trouble,
+            kind: .warning,
+            action: "Try again",
+        ) {
+            on act: retry
+        }
+    }
+}
+
 /// The entry at a list's end: what is typed and Entered there — or left there with — makes an
 /// item of it, through `create`, an action whose one `Text` parameter takes the words nothing
 /// else does. What the words say of the action's other parameters ("Call the landlord fri 10am
