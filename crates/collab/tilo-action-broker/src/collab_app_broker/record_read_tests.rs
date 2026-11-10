@@ -326,7 +326,7 @@ fn a_grant_revoked_mid_task_cuts_the_reads_that_follow_and_one_under_way() {
 }
 
 #[test]
-fn only_an_agent_task_acting_for_its_person_reads_records_here() {
+fn a_person_or_an_agent_task_acting_for_them_reads_records_here() {
     let f = fixture();
     let refused = |caller: &Caller| {
         matches!(
@@ -334,11 +334,11 @@ fn only_an_agent_task_acting_for_its_person_reads_records_here() {
             Err(ActionHostError::Refused { reason }) if reason == tilo_actions::remote::RECORD_READS_FOR_TASKS
         )
     };
-    // The person reads through their own apps' custody, not this door.
+    // The person reads their own workspace's records, as their apps do.
     let person = Caller::local_person(f.person.clone())
         .in_workspace(f.workspace.clone())
         .in_new_execution();
-    assert!(refused(&person));
+    assert!(f.read(&person, NOTES, "").is_ok());
     // An agent the person's own device handed its session to carries that device's
     // delegation, which reads no record outside its app.
     let handed = person.delegated_to("scribe");
@@ -351,8 +351,39 @@ fn only_an_agent_task_acting_for_its_person_reads_records_here() {
     assert!(refused(
         &Caller::local_app(NOTES).in_workspace(f.workspace.clone())
     ));
-    assert_eq!(f.owner.captures.load(Ordering::Acquire), 0);
+    assert_eq!(f.owner.captures.load(Ordering::Acquire), 1);
     drop(f.state);
+}
+
+/// A reader watching a record is woken once by the next write that lands on it, and not by a
+/// write to another record.
+#[test]
+fn a_watched_record_wakes_its_reader_on_the_next_write() {
+    let f = fixture();
+    let person = Caller::local_person(f.person.clone())
+        .in_workspace(f.workspace.clone())
+        .in_new_execution();
+    let address = RecordAddress {
+        app: NOTES.to_owned(),
+        record: String::new(),
+    };
+    let (wake, woken) = tilo_actions::remote::RecordWake::new();
+    f.reads.watch(&person, &address, &wake).unwrap();
+    f.state.wake_record_reads(&f.workspace, MAIL, "");
+    assert!(
+        wake.waiting(),
+        "a write to another record wakes nobody here"
+    );
+    f.state.wake_record_reads(&f.workspace, NOTES, "");
+    assert!(matches!(
+        woken.wait_timeout(std::time::Duration::from_secs(5)),
+        Ok(Some(()))
+    ));
+    assert!(!wake.waiting());
+    let alone = Caller::local_agent("scribe")
+        .in_workspace(f.workspace.clone())
+        .in_new_execution();
+    assert!(f.reads.watch(&alone, &address, &wake).is_err());
 }
 
 fn change(app: &str) -> tilo_actions::remote::RecordChange {

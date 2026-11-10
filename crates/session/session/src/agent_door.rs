@@ -2316,6 +2316,25 @@ impl tilo_actions::remote::RecordReads for ServiceReads {
         };
         reads.read(caller, address)
     }
+
+    /// A workspace's records change through the broker, which wakes its readers; the records of
+    /// packages this session runs itself are read as they are.
+    fn watch(
+        &self,
+        caller: &Caller,
+        address: &tilo_actions::remote::RecordAddress,
+        wake: &tilo_actions::remote::RecordWake,
+    ) -> Result<(), ActionHostError> {
+        let reads = self
+            .state
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .and_then(|state| state.record_reads())
+            .ok_or_else(|| ActionHostError::Unavailable {
+                reason: tilo_actions::remote::RECORD_READS_UNAVAILABLE.to_owned(),
+            })?;
+        reads.watch(caller, address, wake)
+    }
 }
 
 /// The records the session's services keep for packages it runs itself, changed by a connection as

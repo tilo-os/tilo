@@ -1179,12 +1179,8 @@ impl super::AppBrokerState {
             return;
         };
         waits.retain(|channel, held| {
-            held.retain(|wake| wake.strong_count() > 0);
-            if route.delivers_to(&CrdtRoute::from_channel_key(channel)) {
-                for wake in held.iter().filter_map(Weak::upgrade) {
-                    wake.notify_one();
-                }
-            }
+            let delivers = route.delivers_to(&CrdtRoute::from_channel_key(channel));
+            held.retain(|wake| wake.landed(delivers));
             !held.is_empty()
         });
     }
@@ -1196,11 +1192,54 @@ impl super::AppBrokerState {
         channel_id: &str,
         wake: &Arc<tokio::sync::Notify>,
     ) {
+        self.follow_writes(channel_id, LandedWake::Held(Arc::downgrade(wake)));
+    }
+
+    /// Have the next write on `route` wake `wake`, a record reader's
+    /// ([`tilo_actions::remote::RecordReads::watch`]).
+    pub(super) fn follow_record_writes(
+        &self,
+        route: &CrdtRoute,
+        wake: &tilo_actions::remote::RecordWake,
+    ) {
+        self.follow_writes(&route.channel_key(), LandedWake::Once(wake.clone()));
+    }
+
+    fn follow_writes(&self, channel_id: &str, wake: LandedWake) {
         if let Ok(mut waits) = self.committed_waits.lock() {
-            waits
-                .entry(channel_id.to_owned())
-                .or_default()
-                .push(Arc::downgrade(wake));
+            waits.entry(channel_id.to_owned()).or_default().push(wake);
+        }
+    }
+}
+
+/// Who a write landing on a channel wakes.
+pub(super) enum LandedWake {
+    /// A held committed read, for as long as it holds its wait.
+    Held(Weak<tokio::sync::Notify>),
+    /// A record reader, once.
+    Once(tilo_actions::remote::RecordWake),
+}
+
+impl LandedWake {
+    /// A write landed, on this wake's channel when `delivers`: wake it then.
+    /// Whether it still waits for another.
+    fn landed(&self, delivers: bool) -> bool {
+        match self {
+            Self::Held(wake) => {
+                let Some(wake) = wake.upgrade() else {
+                    return false;
+                };
+                if delivers {
+                    wake.notify_one();
+                }
+                true
+            }
+            Self::Once(wake) => {
+                if delivers {
+                    wake.wake();
+                }
+                wake.waiting()
+            }
         }
     }
 }

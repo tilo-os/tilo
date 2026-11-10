@@ -20,7 +20,7 @@ use std::sync::{Arc, Weak};
 use tilo_action_policy::{ActionKind, Answer};
 use tilo_actions::remote::{
     ActionHostError, Caller, CallerPrincipal, RECORD_READS_FOR_TASKS, RecordAddress, RecordChange,
-    RecordChanges, RecordCopy, RecordReads,
+    RecordChanges, RecordCopy, RecordReads, RecordWake,
 };
 
 use runtime_collab::committed_document::MAX_DOCUMENT_BYTES;
@@ -221,6 +221,17 @@ fn task_person(caller: &Caller) -> Option<(&str, &str)> {
     Some((caller.acting_for_person()?, caller.workspace()?))
 }
 
+/// Whose device certificate reads for `caller`, and in which workspace: an agent task's person,
+/// or the person themself reading their own workspace's records (a view of them, a test).
+fn reader(caller: &Caller) -> Option<(&str, &str)> {
+    match caller.principal() {
+        CallerPrincipal::Person(person) if !caller.is_session_delegated() => {
+            Some((person.as_str(), caller.workspace()?))
+        }
+        _ => task_person(caller),
+    }
+}
+
 struct BrokerRecordReads {
     state: Weak<AppBrokerState>,
 }
@@ -236,7 +247,7 @@ impl RecordReads for BrokerRecordReads {
             .state
             .upgrade()
             .ok_or_else(|| unavailable("the broker stopped".into()))?;
-        let Some((person, workspace)) = task_person(caller) else {
+        let Some((person, workspace)) = reader(caller) else {
             return Err(ActionHostError::Refused {
                 reason: RECORD_READS_FOR_TASKS.into(),
             });
@@ -252,6 +263,31 @@ impl RecordReads for BrokerRecordReads {
                 .map_err(|_| "record read no longer allowed".to_owned())
         });
         read_record(state, (person, workspace), address, revalidate)
+    }
+
+    fn watch(
+        &self,
+        caller: &Caller,
+        address: &RecordAddress,
+        wake: &RecordWake,
+    ) -> Result<(), ActionHostError> {
+        let state = self
+            .state
+            .upgrade()
+            .ok_or_else(|| ActionHostError::Unavailable {
+                reason: "the broker stopped".into(),
+            })?;
+        let Some((_, workspace)) = reader(caller) else {
+            return Err(ActionHostError::Refused {
+                reason: RECORD_READS_FOR_TASKS.into(),
+            });
+        };
+        state.may_read_record(caller, workspace, address)?;
+        state.follow_record_writes(
+            &CrdtRoute::record(address.app.clone(), workspace, address.record.clone()),
+            wake,
+        );
+        Ok(())
     }
 }
 

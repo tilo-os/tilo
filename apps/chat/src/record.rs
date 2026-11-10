@@ -352,7 +352,7 @@ pub(crate) fn upgrade_part(doc: &mut ui::tilo_resource::Doc, from: u32) -> Resul
 /// its own id, by its own author, at its own time, oldest first. Version 1
 /// and 2 kept a [`Collection`] of messages with some values as JSON text;
 /// before the model, each channel kept a list of message maps.
-pub(crate) fn kept_messages(doc: &ui::tilo_resource::Doc) -> Collection<Message> {
+pub fn kept_messages(doc: &ui::tilo_resource::Doc) -> Collection<Message> {
     use ui::automerge::{ObjType, ROOT, ReadDoc as _, Value};
     use ui::tilo_resource::read_key;
     let Ok(Some(map)) = map_at(doc, &ROOT, "messages") else {

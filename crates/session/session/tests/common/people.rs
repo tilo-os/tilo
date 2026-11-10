@@ -1733,8 +1733,8 @@ pub struct Chat<'a> {
 
 impl Chat<'_> {
     /// The provider and id the session publishes for the app's `operation`,
-    /// once the app published it: the app names its own actions, so a caller
-    /// asks rather than writing them down.
+    /// once the running app published it: the app names its own actions, so a
+    /// caller asks rather than writing them down.
     fn action(&self, operation: &str) -> (String, String) {
         let mut named = None;
         tilo_test_env::wait_until(
@@ -1743,8 +1743,14 @@ impl Chat<'_> {
                 let answer = self.device.actions();
                 named = answer["answer"]["actions"].as_array().and_then(|rows| {
                     rows.iter()
+                        // The running app's own: a provider the session names by the app's
+                        // live connection, not the launcher that would start it again.
                         .find(|row| {
-                            row["application"] == "so.tilo.chat" && row["operation"] == operation
+                            row["application"] == "so.tilo.chat"
+                                && row["operation"] == operation
+                                && row["provider"]
+                                    .as_str()
+                                    .is_some_and(|provider| provider.parse::<u64>().is_ok())
                         })
                         .map(|row| {
                             (
@@ -1822,8 +1828,8 @@ impl Chat<'_> {
         );
     }
 
-    /// The conversation with `peer` as Chat reads it now: its messages in the order the app shows
-    /// them, and how many of them its person has not read.
+    /// The conversation with `peer` as Chat's record holds it here now: its messages in the order
+    /// the app shows them, and how many of them its person has not read.
     pub fn conversation(&self, peer: &str) -> Conversation {
         self.read(peer).unwrap_or_else(|refusal| {
             panic!(
@@ -1834,40 +1840,93 @@ impl Chat<'_> {
         })
     }
 
-    /// The conversation with `peer` as Chat answers a read of it, or why it refused: a person who
-    /// is in no workspace with this device's person has no conversation here, and until the
-    /// workspace's people are in its shared record nobody has one.
+    /// The conversation with `peer` as Chat's record on this device holds it, or why there is
+    /// none: a person who is in no workspace with this device's person has no conversation here,
+    /// and until the workspace's people are in its shared record nobody has one.
     fn read(&self, peer: &str) -> Result<Conversation, String> {
-        let answer = self.settled(
-            "read-direct-conversation",
-            &json!({"public_key": Self::conversation_key(peer)}),
-        );
-        if let Some(refusal) = answer.get("err") {
-            return Err(refusal["message"].as_str().unwrap_or_default().to_owned());
-        }
-        let update = &answer["answer"]["receipt"]["update"];
-        match update["state"].as_str() {
-            Some("succeeded") => {
-                let value = &update["output"]["value"];
-                Ok(Conversation {
-                    messages: value["messages"].as_array().cloned().unwrap_or_default(),
-                    unread: value["unread"].as_u64().unwrap_or_default(),
+        self.held(None).conversation(peer)
+    }
+
+    /// Chat's record and the parts of its messages, as this device holds them, once they differ
+    /// from the revision `after`: read through the record door, which wakes the read on the next
+    /// write to any of them.
+    fn held(&self, after: Option<&str>) -> HeldChat {
+        use tilo_resource::Resource as _;
+        // The record, and its messages' parts up to the one a post goes to.
+        let mut records = vec![String::new(), chat::parts::part(0).to_string()];
+        loop {
+            let deadline = tilo_test_env::hang_deadline();
+            let wait = deadline.saturating_duration_since(Instant::now());
+            let answer = self.device.ask(&json!({
+                "op": "record_read",
+                "app": "so.tilo.chat",
+                "records": records,
+                "after": after,
+                "wait_ms": u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
+            }));
+            assert!(
+                answer.get("err").is_none(),
+                "{} reads Chat's record: {answer}",
+                self.device.label
+            );
+            let answer = &answer["answer"];
+            let doc = |record: &str| {
+                let bytes = hex::decode(answer["records"][record].as_str()?).ok()?;
+                (!bytes.is_empty())
+                    .then(|| automerge::AutoCommit::load(&bytes).ok())
+                    .flatten()
+            };
+            let parts: Vec<_> = records[1..]
+                .iter()
+                .enumerate()
+                .filter_map(|(index, record)| {
+                    let part = chat::parts::ChatPart::read(&doc(record)?).ok()?;
+                    Some((index as u64, std::rc::Rc::new(part)))
                 })
+                .collect();
+            let messages = chat::messages::Messages::new(parts);
+            // A post goes to the next part only once the head is full: then that part is read too.
+            let next = records.len().saturating_sub(1) as u64;
+            if messages.post_part() >= next {
+                records.push(chat::parts::part(next).to_string());
+                continue;
             }
-            Some("failed") => Err(update["output"]["error"]
-                .as_str()
-                .map_or_else(|| update.to_string(), str::to_owned)),
-            other => Err(format!("the read ended as {other:?}: {answer}")),
+            let record = doc("").unwrap_or_default();
+            return HeldChat {
+                me: hex::encode(self.device.cert.user_public_key),
+                revision: answer["revision"].as_str().unwrap_or_default().to_owned(),
+                chat: chat::projection::read(&record),
+                messages: messages
+                    .with_kept(std::rc::Rc::new(chat::record::kept_messages(&record))),
+            };
+        }
+    }
+
+    /// Wait until Chat's record here holds what `wanted` names, woken by each write to it: `done`
+    /// says what it holds instead, `None` once it holds that.
+    fn wait_for(&self, wanted: &str, mut done: impl FnMut(&HeldChat) -> Option<String>) {
+        let deadline = tilo_test_env::hang_deadline();
+        let mut after = None;
+        loop {
+            let held = self.held(after.as_deref());
+            let Some(instead) = done(&held) else {
+                return;
+            };
+            assert!(
+                Instant::now() < deadline,
+                "{DIAG}{} {instead} instead of {wanted}\n\
+                 what the session warned and failed at:\n{}",
+                self.device.label,
+                self.device.warnings(),
+                DIAG = self.device.diagnostic()
+            );
+            after = Some(held.revision);
         }
     }
 
     /// The texts of the conversation with `peer` , in the order Chat shows them.
     pub fn texts(&self, peer: &str) -> Vec<String> {
-        self.conversation(peer)
-            .messages
-            .iter()
-            .filter_map(|message| message["text"].as_str().map(str::to_owned))
-            .collect()
+        self.conversation(peer).texts()
     }
 
     /// How many of the messages `peer` wrote this device's person has not read, as Chat counts
@@ -1876,8 +1935,7 @@ impl Chat<'_> {
         self.conversation(peer).unread
     }
 
-    /// What Chat answers when asked for the conversation with `peer` : `None` when it can read it,
-    /// and why not when it refuses.
+    /// Why Chat has no conversation with `peer` here: `None` when it has one.
     pub fn refusal(&self, peer: &str) -> Option<String> {
         self.read(peer).err()
     }
@@ -1885,18 +1943,9 @@ impl Chat<'_> {
     /// Wait until Chat offers `peer` as someone to talk to: until the workspace's people are in its
     /// shared record, a conversation with them reads as unavailable rather than as held.
     pub fn wait_for_contact(&self, peer: &str) {
-        let deadline = tilo_test_env::hang_deadline();
-        while let Some(refusal) = self.refusal(peer) {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "{DIAG}{} never had {peer} to talk to in Chat, and said why: {refusal}\n\
-                 what the session warned and failed at:\n{}",
-                self.device.label,
-                self.device.warnings(),
-                DIAG = self.device.diagnostic()
-            );
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
+        self.wait_for(&format!("{peer} to talk to"), |held| {
+            held.conversation(peer).err()
+        });
     }
 
     /// Wait until the conversation with `peer` shows `texts` in that order,
@@ -1917,56 +1966,75 @@ impl Chat<'_> {
         if !in_order {
             wanted.sort_unstable();
         }
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            let held = self.read(peer).ok().map(|conversation| {
-                let mut shown: Vec<String> = conversation
-                    .messages
-                    .iter()
-                    .filter_map(|message| message["text"].as_str().map(str::to_owned))
-                    .collect();
-                if !in_order {
-                    shown.sort_unstable();
-                }
-                shown
-            });
-            let matches = held.as_ref().is_some_and(|shown| {
-                shown.len() == wanted.len()
-                    && shown.iter().map(String::as_str).eq(wanted.iter().copied())
-            });
-            if matches {
-                return;
+        self.wait_for(&format!("{texts:?} from {peer}"), |held| {
+            let mut shown = held.conversation(peer).map(|held| held.texts());
+            if let (Ok(shown), false) = (&mut shown, in_order) {
+                shown.sort_unstable();
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "{DIAG}{} shows {held:?} from {peer} instead of {texts:?}\n\
-                 what the session warned and failed at:\n{}",
-                self.device.label,
-                self.device.warnings(),
-                DIAG = self.device.diagnostic()
-            );
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
+            match shown {
+                Ok(shown) if shown.iter().map(String::as_str).eq(wanted.iter().copied()) => None,
+                shown => Some(format!("shows {shown:?}")),
+            }
+        });
     }
 
     /// Wait until Chat counts `wanted` messages of `peer` as unread here.
     pub fn wait_for_unread(&self, peer: &str, wanted: u64) {
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            let count = self.unread(peer);
-            if count == wanted {
-                return;
+        self.wait_for(&format!("{wanted} unread from {peer}"), |held| {
+            match held.conversation(peer).map(|held| held.unread) {
+                Ok(count) if count == wanted => None,
+                count => Some(format!("counts {count:?}")),
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "{DIAG}{} counts {count} unread from {peer} instead of {wanted}\n\
-                 what the session warned and failed at:\n{}",
-                self.device.label,
-                self.device.warnings(),
-                DIAG = self.device.diagnostic()
-            );
-            std::thread::sleep(std::time::Duration::from_millis(50));
+        });
+    }
+}
+
+/// Chat's record and its messages as a device holds them, read at `revision`.
+struct HeldChat {
+    /// The device's person, as the workspace names them.
+    me: String,
+    revision: String,
+    chat: chat::record::Chat,
+    messages: chat::messages::Messages,
+}
+
+impl HeldChat {
+    /// The conversation with `peer`, as Chat shows it, or why there is none: Chat's own answers.
+    fn conversation(&self, peer: &str) -> Result<Conversation, String> {
+        use chat::record::{Chat, Participant};
+        if self.chat.people.is_empty() {
+            return Err("the workspace's people are not in Chat's record yet".into());
         }
+        if peer == self.me
+            || !self
+                .chat
+                .people
+                .iter()
+                .any(|person| person.id.0 == peer && !person.agent)
+        {
+            return Err(format!("Chat knows no person {peer}"));
+        }
+        let channel = Chat::direct_id([
+            Participant::person(self.me.clone()),
+            Participant::person(peer),
+        ])
+        .to_string();
+        Ok(Conversation {
+            messages: self
+                .chat
+                .message_rows(&self.messages, &channel)
+                .iter()
+                .map(|message| {
+                    json!({
+                        "id": message.id,
+                        "author": message.author,
+                        "text": message.text,
+                        "at": message.ts,
+                    })
+                })
+                .collect(),
+            unread: u64::from(self.chat.unread(&self.messages, &channel, &self.me)),
+        })
     }
 }
 
@@ -1977,6 +2045,16 @@ pub struct Conversation {
     pub messages: Vec<Value>,
     /// How many of the conversation's messages its person has not read.
     pub unread: u64,
+}
+
+impl Conversation {
+    /// The messages' texts, in the app's order.
+    fn texts(&self) -> Vec<String> {
+        self.messages
+            .iter()
+            .filter_map(|message| message["text"].as_str().map(str::to_owned))
+            .collect()
+    }
 }
 
 impl Drop for Device {

@@ -2647,7 +2647,7 @@ pub struct AppBrokerState {
     /// The held committed-read waits (`Await`) of each channel, by
     /// `channel_id`: a write fanned out on a channel's route changes what
     /// its read answers, and wakes them ([`Self::wake_committed_reads`]).
-    committed_waits: Mutex<HashMap<String, Vec<Weak<tokio::sync::Notify>>>>,
+    committed_waits: Mutex<HashMap<String, Vec<committed_document::LandedWake>>>,
     /// `Weak` so broker teardown isn't blocked by an outliving connection.
     fanout: Weak<FanoutState>,
     /// Durable validation, audit, redaction, and scrollback state.

@@ -15,9 +15,9 @@ use super::{ActionHostError, Caller};
 /// What a host without record reads answers.
 pub const RECORD_READS_UNAVAILABLE: &str = "this host reads no records outside their apps";
 
-/// What a caller that is not an agent task acting for its person is told.
-pub const RECORD_READS_FOR_TASKS: &str = "only an agent acting for the person who admitted it \
-     reads records outside their app; a person's device hands its agents nothing here";
+/// What a caller that is neither a person nor an agent task acting for its person is told.
+pub const RECORD_READS_FOR_TASKS: &str = "only a person, or an agent acting for the person who \
+     admitted it, reads records outside their app; a person's device hands its agents nothing here";
 
 /// One record of a workspace, by its app (the id whose records it is) and its id there (empty for
 /// the app's record of the workspace).
@@ -48,6 +48,57 @@ pub trait RecordReads: Send + Sync {
     /// arriving, or held nowhere on this device).
     fn read(&self, caller: &Caller, address: &RecordAddress)
     -> Result<RecordCopy, ActionHostError>;
+
+    /// Wake `wake` once the next write to `address` lands on this host, decided as a read is:
+    /// what a reader holding a copy waits on before it reads again. Watched before the read it
+    /// guards, so no write between the two is missed.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::read`]; a host that cannot tell when a record changes answers
+    /// [`ActionHostError::Unavailable`].
+    fn watch(
+        &self,
+        caller: &Caller,
+        address: &RecordAddress,
+        wake: &RecordWake,
+    ) -> Result<(), ActionHostError> {
+        let _ = (caller, address, wake);
+        Err(ActionHostError::Unavailable {
+            reason: RECORD_READS_UNAVAILABLE.into(),
+        })
+    }
+}
+
+/// Woken once, by the first write to any record it watches ([`RecordReads::watch`]).
+#[derive(Clone)]
+pub struct RecordWake(std::sync::Arc<std::sync::Mutex<Option<super::Completer<()>>>>);
+
+impl RecordWake {
+    /// A wake, and what its reader waits on.
+    #[must_use]
+    pub fn new() -> (Self, super::Pending<()>) {
+        let (woken, waiting) = super::pending();
+        (
+            Self(std::sync::Arc::new(std::sync::Mutex::new(Some(woken)))),
+            waiting,
+        )
+    }
+
+    /// A write landed: wake the reader, once.
+    pub fn wake(&self) {
+        if let Some(woken) = self.0.lock().ok().and_then(|mut woken| woken.take()) {
+            woken.complete(());
+        }
+    }
+
+    /// Whether this wake can still wake anyone: not woken yet, and its reader still waits.
+    #[must_use]
+    pub fn waiting(&self) -> bool {
+        self.0
+            .lock()
+            .is_ok_and(|woken| woken.as_ref().is_some_and(|woken| !woken.is_abandoned()))
+    }
 }
 
 /// An action to run on one record at the record's origin, as an agent task invokes it: the

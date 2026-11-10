@@ -320,6 +320,7 @@ enum Op {
     ProfileStop,
     ProvisionTestIdentity,
     ProcessMemory,
+    RecordRead,
     Scroll,
     SearchRows,
     Snapshot,
@@ -333,7 +334,7 @@ enum Op {
 
 impl Op {
     /// Every op the protocol answers, in the order the refusal names them.
-    const ALL: [Self; 29] = [
+    const ALL: [Self; 30] = [
         Self::ActionsCancel,
         Self::ActionsEnumerate,
         Self::ActionsInvoke,
@@ -354,6 +355,7 @@ impl Op {
         Self::ProfileStatus,
         Self::ProfileStop,
         Self::ProvisionTestIdentity,
+        Self::RecordRead,
         Self::Scroll,
         Self::SearchRows,
         Self::Snapshot,
@@ -388,6 +390,7 @@ impl Op {
             "profile_status" => Self::ProfileStatus,
             "profile_stop" => Self::ProfileStop,
             "provision_test_identity" => Self::ProvisionTestIdentity,
+            "record_read" => Self::RecordRead,
             "scroll" => Self::Scroll,
             "search_rows" => Self::SearchRows,
             "snapshot" => Self::Snapshot,
@@ -424,6 +427,7 @@ impl Op {
             Self::ProfileStatus => "profile_status",
             Self::ProfileStop => "profile_stop",
             Self::ProvisionTestIdentity => "provision_test_identity",
+            Self::RecordRead => "record_read",
             Self::Scroll => "scroll",
             Self::SearchRows => "search_rows",
             Self::Snapshot => "snapshot",
@@ -451,6 +455,7 @@ impl Op {
                 | Self::ProfileStart
                 | Self::ProfileStatus
                 | Self::ProfileStop
+                | Self::RecordRead
                 | Self::StateDump
                 | Self::Watch
                 | Self::Windows
@@ -958,8 +963,70 @@ fn asked_here(
         Op::ActionsStatus => actions_status(request, &door.actions, ctx),
         Op::ActionsCancel => actions_cancel(request, &door.actions, ctx),
         Op::Watch => watch(request, writer, watching, ctx, door),
+        Op::RecordRead => record_read(request, &door.actions, ctx),
         _ => return None,
     })
+}
+
+/// The answer to `record_read`: the records `records` of `app` in `workspace` (the one in front
+/// when unnamed), read through the record door as this person reads them, once they differ from
+/// `after` (the `revision` an earlier answer gave) or `wait_ms` passed: each as its hex, empty for
+/// one the workspace has none of, `null` for one still arriving. Each record is watched before
+/// it is read, so a reader holding a copy is woken by the next write to any of them.
+fn record_read(request: &Json, actions: &Actions, ctx: &Context) -> Json {
+    use tilo_actions::remote::{RecordAddress, RecordCopy, RecordWake};
+    let (Some(app), Some(records)) = (
+        request.get("app").and_then(Json::as_str),
+        request.get("records").and_then(Json::as_array),
+    ) else {
+        return refusal("parse_error", "`record_read` takes `app` and `records`");
+    };
+    let records: Vec<&str> = records.iter().filter_map(Json::as_str).collect();
+    let workspace = request
+        .get("workspace")
+        .and_then(Json::as_str)
+        .map_or_else(|| actions.workspace.lock_recover().clone(), str::to_owned);
+    let after = request.get("after").and_then(Json::as_str);
+    let deadline = wait_deadline(request.get("wait_ms").and_then(Json::as_u64));
+    let Some(reads) = actions.host.record_reads() else {
+        return refusal(
+            "unavailable",
+            tilo_actions::remote::RECORD_READS_UNAVAILABLE,
+        );
+    };
+    let caller = actions.caller(ctx).in_workspace(workspace);
+    loop {
+        let (wake, woken) = RecordWake::new();
+        let mut revision = blake3::Hasher::new();
+        let mut copies = serde_json::Map::new();
+        for record in &records {
+            let address = RecordAddress {
+                app: app.to_owned(),
+                record: (*record).to_owned(),
+            };
+            let read = reads
+                .watch(&caller, &address, &wake)
+                .and_then(|()| reads.read(&caller, &address));
+            // A record still arriving is not held yet: its write wakes the reader.
+            let copy = match read {
+                Ok(RecordCopy::Document(bytes)) => Some(bytes),
+                Ok(RecordCopy::Absent) => Some(Vec::new()),
+                Err(ActionHostError::Unavailable { .. }) => None,
+                Err(error) => return action_refusal(&error),
+            };
+            for part in [record.as_bytes(), copy.as_deref().unwrap_or(b"unavailable")] {
+                revision.update(&(part.len() as u64).to_le_bytes());
+                revision.update(part);
+            }
+            copies.insert((*record).to_owned(), json!(copy.map(hex::encode)));
+        }
+        let revision = revision.finalize().to_hex().to_string();
+        let now = Instant::now();
+        if after != Some(revision.as_str()) || now >= deadline {
+            return json!({"answer": {"revision": revision, "records": copies}});
+        }
+        let _ = woken.wait_timeout(deadline.saturating_duration_since(now));
+    }
 }
 
 /// Start or stop streaming the desk's state to a connection (`watch`).
@@ -2508,6 +2575,7 @@ mod tests {
             Op::ProfileStart,
             Op::ProfileStatus,
             Op::ProfileStop,
+            Op::RecordRead,
             Op::StateDump,
             Op::Watch,
             Op::Windows,
@@ -2529,7 +2597,7 @@ mod tests {
         }
         // Every op the protocol answers is in the list, each once.
         let mut names: Vec<&str> = Op::ALL.iter().map(|op| op.name()).collect();
-        assert_eq!(names.len(), 29, "the protocol's ops");
+        assert_eq!(names.len(), 30, "the protocol's ops");
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), Op::ALL.len(), "{names:?}");
