@@ -26,6 +26,7 @@ use tilo_relay_client::{Approver, Carrier};
 use tilo_relay_protocol::workspaces::{JoinReply, PreAdmission, WorkspaceRole};
 use tilo_session_host::invite::ask_to_join_pre_admitted;
 use tilo_session_host::{Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle, PeerSnapshot};
+use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, issue_device_cert,
     sign_device_cert,
@@ -52,6 +53,54 @@ pub fn scratch_dir() -> tempfile::TempDir {
         return directory;
     }
     tempfile::tempdir().unwrap()
+}
+
+/// The directory holding the runtime module (`pkg/`) a page test's driver
+/// serves beside the page's own sources.
+///
+/// nextest builds it once for a run and hands it over as `TILO_PAGE_BUNDLE`
+/// (`.config/nextest.toml`, `tools/build-page-bundle.sh`). A run that names
+/// none — a plain `cargo test` — builds it here, once, before any driver
+/// starts: built inside the driver, the wasm compile happened inside the
+/// time the test gives the page to create its identity, and waited on
+/// cargo's build lock behind the run's own compiles, so the page looked
+/// hung and the test failed on a phase the page had not reached.
+#[expect(
+    clippy::expect_used,
+    reason = "a fixture's module that cannot be built or handed over is the failure it reports"
+)]
+pub fn page_bundle() -> std::path::PathBuf {
+    static BUNDLE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    BUNDLE
+        .get_or_init(|| {
+            if let Some(named) = std::env::var_os("TILO_PAGE_BUNDLE") {
+                return std::path::PathBuf::from(named);
+            }
+            // The one build path, which hands the directory it built to a
+            // nextest run through NEXTEST_ENV: a test reads it the same way.
+            let handed = tempfile::NamedTempFile::new().unwrap();
+            let mut build = std::process::Command::new("bash");
+            build
+                .arg(
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../../../tools/build-page-bundle.sh"),
+                )
+                .env("NEXTEST_ENV", handed.path());
+            let exit = build
+                .status_locked()
+                .expect("the page's runtime module build starts");
+            assert!(
+                exit.success(),
+                "the page's runtime module did not build ({exit})"
+            );
+            let named = std::fs::read_to_string(handed.path()).unwrap();
+            let named = named
+                .trim()
+                .strip_prefix("TILO_PAGE_BUNDLE=")
+                .expect("the build hands over the module it built");
+            std::path::PathBuf::from(named)
+        })
+        .clone()
 }
 
 /// The test hosts' devices. A governed workspace's host writes the first state

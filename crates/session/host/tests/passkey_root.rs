@@ -61,9 +61,14 @@ impl DeviceSigner for PageRoot {
 async fn a_passkey_root_in_chrome_certifies_a_node_and_its_own_page() {
     let driver =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/support/page-driver.mjs");
+    // The runtime module the driver serves is resolved before it starts, so
+    // the time this test gives the page to create its identity is the page's
+    // own.
+    let bundle = support::page_bundle();
     let mut browser = tokio::process::Command::new("node")
         .arg(driver)
         .arg("passkey")
+        .env("TILO_PAGE_BUNDLE", &bundle)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .kill_on_drop(true)
