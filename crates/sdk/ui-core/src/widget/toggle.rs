@@ -51,11 +51,10 @@ pub struct Toggle {
 }
 
 /// What a switch leaves for the one a rebuild puts in its place: its knob,
-/// and the value it held, so a successor showing another switch's value
+/// and the value it shows, so a successor showing another switch's value
 /// (another page, a row that moved) does not slide.
 struct KeptSwitch {
     switch: SwitchMotion,
-    on: bool,
 }
 
 /// What a switch's paint depends on besides its place and the theme:
@@ -137,13 +136,16 @@ impl Toggle {
     }
 
     /// Go on from the switch a rebuild dropped: its knob, on its way or at
-    /// rest. Showing what it showed, a change since moves from there, as
-    /// the input that made it asks; showing something else, it rests.
-    fn take_up(&mut self, kept: KeptSwitch, found: crate::motion::Found) {
+    /// rest. Showing what it showed, a change since moves from there as the
+    /// input that made it asks; showing something else, it rests where it
+    /// is.
+    fn take_up(&mut self, kept: KeptSwitch) {
         self.switch = kept.switch;
-        // The same switch, changed since, goes there as the input asks; one
-        // that only stands where another was rests on what it shows.
-        if kept.on != self.control.is_checked && found == crate::motion::Found::Where {
+        // What the switch was going to, not how it was found, says whether it
+        // is this switch changed since: a value the one it replaces was
+        // heading for carries on as the input asks, and one it was not is
+        // another switch's — another page's, a row that moved — which rests.
+        if self.switch.shown != Some(self.control.is_checked) {
             self.switch.snap(self.control.is_checked);
         }
     }
@@ -758,16 +760,16 @@ impl Widget for Toggle {
             ..Default::default()
         };
         let identity = self.identity().map(str::to_owned);
-        if let Some((kept, found)) = self.hand_on.build(identity.as_deref()) {
-            self.take_up(kept, found);
+        if let Some((kept, _)) = self.hand_on.build(identity.as_deref()) {
+            self.take_up(kept);
         }
         taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.control.rect = crate::widget::layout_rect(taffy, node, origin);
-        if let Some((kept, found)) = self.hand_on.place(self.control.rect) {
-            self.take_up(kept, found);
+        if let Some((kept, _)) = self.hand_on.place(self.control.rect) {
+            self.take_up(kept);
         }
     }
 
@@ -920,8 +922,7 @@ bool_control_capabilities!(Toggle, "toggle");
 impl Drop for Toggle {
     fn drop(&mut self) {
         let switch = std::mem::take(&mut self.switch);
-        let on = self.control.is_checked;
-        self.hand_on.leave(KeptSwitch { switch, on });
+        self.hand_on.leave(KeptSwitch { switch });
     }
 }
 
