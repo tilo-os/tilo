@@ -1641,10 +1641,11 @@ mod tests {
             crate::network::AGENT_QUESTION,
             serde_json::to_value(tilo_sheets::portal::AgentQuestion {
                 agent: "notes-agent".into(),
-                action: "delete three notes".into(),
+                action: "Delete three notes".into(),
                 resource: "the recipes notebook".into(),
                 risk: "destructive".into(),
                 workspace: "Home".into(),
+                ..tilo_sheets::portal::AgentQuestion::default()
             })
             .unwrap(),
         )
@@ -1668,10 +1669,12 @@ mod tests {
             crate::network::AGENT_QUESTION,
             serde_json::to_value(tilo_sheets::portal::AgentQuestion {
                 agent: "notes-agent".into(),
-                action: "read a note".into(),
+                action: "Read a note".into(),
                 resource: "the recipes notebook".into(),
                 risk: String::new(),
+                kind: "read".into(),
                 workspace: "Home".into(),
+                ..tilo_sheets::portal::AgentQuestion::default()
             })
             .unwrap(),
         );

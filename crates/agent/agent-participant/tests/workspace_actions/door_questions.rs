@@ -43,12 +43,17 @@ impl QuestionSheet for Person {
 /// book's file, so the action asks first.
 const REMOVE: &str = "ebook/1 books#remove-from-library";
 
+/// The run the agent's call is a step of, by the title it gives it.
+const RUN: &str = "Fill Jane Doe’s visa application";
+
 /// `tilo_do` of [`REMOVE`] as an agent that waits for the person: the reply.
 async fn asking(mcp: &mut Mcp<'_>) -> Value {
     let (status, reply) = mcp
         .post(json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
                      "params": {"name": "tilo_do",
-                                "arguments": {"path": REMOVE, "args": {"book": "book:dusk"}}}}))
+                                "arguments": {"path": REMOVE, "args": {"book": "book:dusk"}},
+                                "_meta": {"so.tilo.mcp": {"run": {"id": "visa-1",
+                                                                  "title": RUN}}}}}))
         .await;
     assert_eq!(status, 200, "{reply}");
     reply
@@ -116,7 +121,8 @@ async fn a_page_holding_the_root_answers_what_the_agent_asks_through_the_door() 
         .unwrap_or_else(|| panic!("a workspace is made: {created}"))
         .to_owned();
     let minted = account
-        .tilo_do(json!({"path": "account/keys#mint", "args": {"workspace": workspace}}))
+        .tilo_do(json!({"path": "account/keys#mint",
+                        "args": {"workspace": workspace, "name": "Jane Doe’s agent"}}))
         .await;
     let token = minted["result"]["structuredContent"]["result"]["token"]
         .as_str()
@@ -156,11 +162,26 @@ async fn a_page_holding_the_root_answers_what_the_agent_asks_through_the_door() 
     );
     let asked = seen.asked.lock().unwrap().clone();
     assert_eq!(asked.len(), 1, "asked once: {asked:?}");
-    // The sheet says who asks (the agent by its key's name, not its id),
-    // what it would do and where.
-    assert_eq!(asked[0].agent_label, "Visa backend: Applicant: Jane Doe");
-    assert_eq!(asked[0].action_label, "remove-from-library");
-    assert_eq!(asked[0].workspace, "Applicant: Jane Doe");
+    // The sheet says who asks (the agent by its key's name, as History
+    // names its changes), in which run, exactly what it would do as the app
+    // declares it, on which record and where.
+    let question = &asked[0];
+    assert_eq!(question.agent_label, "Jane Doe’s agent");
+    assert_eq!(question.run, RUN);
+    assert_eq!(question.action_label, "Remove from library");
+    assert_eq!(
+        question.resource_label, "1 books",
+        "the library by its name"
+    );
+    assert_eq!(
+        question.arguments,
+        [("Book".to_owned(), "book:dusk".to_owned())]
+    );
+    assert_eq!(question.workspace, "Applicant: Jane Doe");
+    assert_eq!(
+        (question.risk.as_str(), question.undoable),
+        ("destructive", false)
+    );
 
     // Allowed, the same call runs.
     let (allowed, seen) = Box::pin(answered_by_page(

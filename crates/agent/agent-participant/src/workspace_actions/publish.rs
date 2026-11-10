@@ -86,6 +86,18 @@ impl Worker {
         }
     }
 
+    /// What the record at `route` is called in its app's index of the
+    /// workspace, when the index names it.
+    pub(super) fn record_name(&self, workspace_id: u64, route: &DocumentRoute) -> Option<String> {
+        let workspace = self.workspaces.get(&workspace_id)?;
+        let checkout = ui::record::identity(&document(&workspace.log, route))?;
+        let index = DocumentRoute {
+            record: String::new(),
+            ..route.clone()
+        };
+        ui::record::index::name_of(&document(&workspace.log, &index), &checkout.id)
+    }
+
     /// Name the record at `route` in its app's index of the workspace,
     /// under what its app calls it now, unless the index already does. A
     /// record of the workspace itself (its desk, its emoji), the index, and

@@ -741,3 +741,101 @@ fn an_answer_for_a_question_that_is_no_longer_showing_never_answers_the_next() {
         }]
     );
 }
+
+/// An agent's question as a reviewer reads it: who wants to do what as the
+/// title, the run it asks in, the record and the workspace, every argument
+/// in one line with its secret withheld, and what allowing it risks. Deny
+/// stands focused, and the card hugs what it says: the buttons sit one
+/// gutter under the last line, as the title sits one gutter under the top.
+#[test]
+fn an_agents_question_says_who_wants_what_and_hugs_its_words() {
+    use tilo_sheets::portal::AgentQuestion;
+    let asked = AgentQuestion {
+        agent: "Jane Doe’s agent".into(),
+        run: "Fill Jane Doe’s visa application".into(),
+        action: "Submit the application".into(),
+        resource: "Schengen visa: Jane Doe".into(),
+        arguments: vec![
+            ("Name".into(), "Jane Doe".into()),
+            ("Passport".into(), "X1234567".into()),
+            ("Consulate login".into(), "•••".into()),
+        ],
+        risk: "destructive".into(),
+        kind: "outside".into(),
+        undoable: false,
+        workspace: "Applicant: Jane Doe".into(),
+    };
+    let dialog = asked.dialog("request-1");
+    assert_eq!(
+        dialog.title,
+        "Jane Doe’s agent wants to submit the application"
+    );
+    assert_eq!(dialog.heading, "Fill Jane Doe’s visa application");
+    assert_eq!(
+        dialog.detail.lines().collect::<Vec<_>>(),
+        [
+            "On “Schengen visa: Jane Doe” in the workspace “Applicant: Jane Doe”.",
+            "Name:\u{a0}Jane\u{a0}Doe · Passport:\u{a0}X1234567 · Consulate\u{a0}login:\u{a0}•••",
+            "It acts outside Tilo and can’t be undone.",
+        ]
+    );
+    // A read of private data says so, and an undoable change risks nothing
+    // worth a line.
+    let reads = AgentQuestion {
+        risk: "sensitive".into(),
+        kind: "read".into(),
+        undoable: false,
+        ..asked.clone()
+    };
+    assert!(
+        reads
+            .dialog("r")
+            .detail
+            .ends_with("It can reveal private data.")
+    );
+    let edits = AgentQuestion {
+        risk: "low".into(),
+        kind: "undoable".into(),
+        undoable: true,
+        ..asked
+    };
+    assert_eq!(edits.dialog("r").detail.lines().count(), 2);
+
+    let (mut app, _seat) = seated(dialog);
+    let focused = app.harness().a11y_focus().map(|(_, node)| node);
+    assert_eq!(
+        focused.as_ref().and_then(|node| node.label()),
+        Some("Deny"),
+        "Deny stands focused"
+    );
+    let bounds = |role: ui::accesskit::Role, app: &mut HeadlessApp<PortalApp>| {
+        app.harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, node)| node.role() == role)
+            .filter_map(|(_, node)| node.bounds())
+            .collect::<Vec<_>>()
+    };
+    let card = bounds(ui::accesskit::Role::Dialog, &mut app)[0];
+    let words_end = bounds(ui::accesskit::Role::Label, &mut app)
+        .into_iter()
+        .filter(|text| text.y0 > card.y0 && text.y1 < card.y1)
+        .map(|text| text.y1)
+        .fold(f64::MIN, f64::max);
+    let buttons = bounds(ui::accesskit::Role::Button, &mut app);
+    let buttons_top = buttons
+        .iter()
+        .map(|button| button.y0)
+        .fold(f64::MAX, f64::min);
+    let buttons_end = buttons
+        .iter()
+        .map(|button| button.y1)
+        .fold(f64::MIN, f64::max);
+    let under_words = buttons_top - words_end;
+    let under_buttons = card.y1 - buttons_end;
+    assert!(
+        under_words > 0.0 && under_words <= under_buttons + 1.0,
+        "the buttons sit one gutter under the words: {under_words} px there, {under_buttons} px \
+         under the buttons"
+    );
+}

@@ -537,8 +537,15 @@ keyboard-shortcuts-list-description = Every desktop shortcut with its current an
 ## The collaboration network's own questions: an agent on a workspace host
 ## asks its person to allow one action, and a device asks its sibling for the
 ## disk key it boots with.
-network-agent-question-title = Let { $agent } { $action }?
-network-agent-question-detail = It acts on { $resource } in “{ $workspace }”. Allow only what you know it is doing.
+network-agent-question-title = { $agent } wants to { $doing }
+network-agent-question-detail = On “{ $resource }” in the workspace “{ $workspace }”.
+network-agent-question-outside = It acts outside Tilo.
+network-agent-question-outside-final = It acts outside Tilo and can’t be undone.
+network-agent-question-sensitive = It can reveal private data.
+network-agent-question-privileged = It acts with administrator rights.
+network-agent-question-destructive = It deletes or overwrites something and can’t be undone.
+network-agent-question-final = It can’t be undone.
+network-agent-question-unknown = It may do something that can’t be undone.
 network-agent-question-risk = It could { $risk }.
 network-agent-question-allow = Allow once
 run-question-title = { $agent } asks to: { $action }

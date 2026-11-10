@@ -28,7 +28,10 @@ use super::{
     DocumentMutation, DocumentRoute, HashMap, HashSet, Instant, InvocationId, InvokeRequest,
     Mounted, Mutex, Outcome, Seed, Worker, WorkspaceState, bytes_of, reads, whole,
 };
-use tilo_actions::remote::{ConfirmationQuestion, ConfirmationReply};
+use tilo_actions::InvocationUpdate;
+use tilo_actions::remote::{
+    ConfirmationQuestion, ConfirmationReply, InvocationReceipt, InvocationState,
+};
 use tilo_lock::MutexRecover as _;
 use ui::permissions::policy::{self, ActionKind, Answer, TreePath};
 
@@ -243,44 +246,58 @@ pub(super) fn refused_writes(
     Ok(refused)
 }
 
+/// What the person is asked about an invocation that waits for their answer:
+/// the action as its app declares it, the arguments it would run with, and
+/// the record it acts on by its name.
+pub(super) struct About {
+    pub(super) descriptor: tilo_actions::ActionDescriptor,
+    pub(super) arguments: serde_json::Map<String, serde_json::Value>,
+    /// The record's name in its app's index of the workspace, else what the
+    /// app calls the resource the action is on.
+    pub(super) record: String,
+}
+
 /// The question the person is put about `request`, which `caller` asks the
-/// host to run in `workspace`: what it is and on what, as the caller labelled
-/// it, and who asks.
+/// host to run in `workspace`: who asks, in which run, and exactly what
+/// would happen ([`About`]), as the host knows it rather than as the caller
+/// words it.
 pub(super) fn question(
     caller: &Caller,
     workspace: &str,
     request: &InvokeRequest,
+    about: &About,
 ) -> Result<ConfirmationQuestion, String> {
     let mut id = [0_u8; 32];
     getrandom::fill(&mut id).map_err(|error| error.to_string())?;
-    let address = &request.target.address;
-    let context = request.context.as_ref();
+    let agent = match caller.principal() {
+        // An agent by the name its key goes by, as History names its
+        // changes; else its id.
+        CallerPrincipal::Agent(agent) => caller.agent_name().unwrap_or(agent).to_owned(),
+        _ => "One of your devices".into(),
+    };
+    // The run as the agent titled it (`_meta` run.title); a run that goes
+    // by the agent's own name says nothing more.
+    let run = request
+        .context
+        .as_ref()
+        .and_then(|context| context.group.as_ref())
+        .filter(|group| {
+            group.kind == tilo_actions::context::AGENT_RUN_GROUP && group.label != agent
+        })
+        .map(|group| group.label.clone())
+        .unwrap_or_default();
+    let contract = &about.descriptor.contract;
     Ok(ConfirmationQuestion {
         id,
-        // An agent by the name it goes by (a run's "Visa backend #3"),
-        // else its id.
-        device_label: match caller.principal() {
-            CallerPrincipal::Agent(agent) => caller.agent_name().unwrap_or(agent).to_owned(),
-            _ => "One of your devices".into(),
-        },
+        device_label: agent,
         workspace: workspace.to_owned(),
-        action_label: context
-            .and_then(|context| context.purpose.clone())
-            .unwrap_or_else(|| address.action.clone()),
-        resource_label: context
-            .and_then(|context| context.resource.as_ref())
-            .map_or_else(
-                || address.resource.clone(),
-                |resource| resource.label.clone(),
-            ),
-        risk: context
-            .and_then(|context| {
-                context
-                    .facets
-                    .iter()
-                    .find(|facet| facet.key == tilo_actions::RISK_FACET)
-            })
-            .map_or_else(|| "destructive".to_owned(), |facet| facet.value.clone()),
+        run,
+        action_label: about.descriptor.action_label.clone(),
+        resource_label: about.record.clone(),
+        arguments: tilo_actions::Draft::render(&about.descriptor, &about.arguments).summary(),
+        risk: contract.risk.name().to_owned(),
+        kind: contract.kind.to_string(),
+        undoable: contract.can_be_undone(),
     })
 }
 
@@ -575,6 +592,84 @@ impl Worker {
             .unwrap_or_default())
     }
 
+    /// Put `request`, which `caller` (served within bounds) asked for and
+    /// which needs the person's confirmation, to that person on their own
+    /// devices, as `about` describes it: answered accepted, it runs on their
+    /// allowing it and ends refused otherwise. `None` when it cannot be
+    /// asked: the caller gave a confirmation of its own, the person was
+    /// asked already, or this host has nobody to ask.
+    pub(super) fn ask_person(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        request: &InvokeRequest,
+        about: &About,
+    ) -> Option<InvocationReceipt> {
+        let who = self.bounded(caller)?;
+        if request.confirmation.is_some() {
+            return None;
+        }
+        let invocation = request.invocation;
+        let workspace = self
+            .workspaces
+            .get(&workspace_id)
+            .and_then(|workspace| workspace.cluster_id(workspace_id))?;
+        let question = question(caller, &workspace, request, about).ok()?;
+        if self
+            .ledger()
+            .entries
+            .get_mut(&invocation)
+            .is_none_or(|entry| std::mem::replace(&mut entry.asked, true))
+        {
+            return None;
+        }
+        let Some(asked) = self
+            .shared
+            .link
+            .get()
+            .and_then(|link| link.ask_person(workspace_id, &who.person_caller, question))
+        else {
+            if let Some(entry) = self.ledger().entries.get_mut(&invocation) {
+                entry.asked = false;
+            }
+            return None;
+        };
+        let shared = Arc::clone(&self.shared);
+        let asking = Asking {
+            workspace_id,
+            invocation,
+            binding: WitnessBinding::of(workspace_id, caller, request),
+        };
+        asked.then(move |reply| shared.answered(asking, reply.as_ref()));
+        Some(InvocationState::new(invocation, InvocationUpdate::Accepted { invocation }).receipt())
+    }
+
+    /// `invocation` waits for the person's answer, asked as `about` says.
+    fn waits_for_person(&self, invocation: InvocationId, about: About) -> Outcome {
+        if let Some(entry) = self.ledger().entries.get_mut(&invocation) {
+            entry.about = Some(Box::new(about));
+        }
+        Outcome::Rejected(ActionHostError::ConfirmationRequired)
+    }
+
+    /// What the person is asked about running `descriptor` with `arguments`
+    /// on the record at `route` ([`About`]).
+    pub(super) fn about(
+        &self,
+        workspace_id: u64,
+        route: &DocumentRoute,
+        descriptor: &tilo_actions::ActionDescriptor,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> About {
+        About {
+            record: self
+                .record_name(workspace_id, route)
+                .unwrap_or_else(|| descriptor.resource_label.clone()),
+            descriptor: descriptor.clone(),
+            arguments,
+        }
+    }
+
     /// Run `request` on the record at `route` for `who`, in their replica:
     /// only what it offers them, confirmed only by the person's answer the
     /// host holds for it, and saved only once their standing, read again,
@@ -648,6 +743,10 @@ impl Worker {
             Ok(output) => output,
             Err(tilo_actions::door::DoorError::ConfirmationRequired) if given.is_some() => {
                 return Err(Outcome::Rejected(own_word_refused()));
+            }
+            Err(tilo_actions::door::DoorError::ConfirmationRequired) => {
+                let about = self.about(workspace_id, route, &descriptor, arguments);
+                return Err(self.waits_for_person(request.invocation, about));
             }
             Err(error) => return Err(super::door_outcome(&error)),
         };

@@ -379,8 +379,14 @@ impl Worker {
                 if super::bounded::witnessed(&self.shared.witnesses, given, &binding) {
                     return Ok(());
                 }
+                let about = self.about(
+                    workspace_id,
+                    route,
+                    &descriptor,
+                    super::invoke_arguments(&request.argument),
+                );
                 Err(self
-                    .ask_person(workspace_id, caller, request)
+                    .ask_person(workspace_id, caller, request, &about)
                     .unwrap_or_else(|| refused(ActionHostError::ConfirmationRequired)))
             }
         }

@@ -169,5 +169,6 @@ fn asked_there(
         // What it risks is not this host's to weigh for a workspace that is not
         // the person's, so it is read as the gravest a sheet shows.
         risk: tilo_actions::RiskLevel::Destructive.name().to_owned(),
+        ..ConfirmationQuestion::default()
     }
 }

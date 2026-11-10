@@ -138,9 +138,13 @@ impl QuestionSheet for SessionSheet {
             label: question.agent_label.clone(),
             details: serde_json::to_value(AgentQuestion {
                 agent: question.agent_label.clone(),
+                run: question.run.clone(),
                 action: question.action_label.clone(),
                 resource: question.resource_label.clone(),
+                arguments: question.arguments.clone(),
                 risk: question.risk.clone(),
+                kind: question.kind.clone(),
+                undoable: question.undoable,
                 workspace: question.workspace.clone(),
             })
             .unwrap_or_default(),

@@ -41,6 +41,9 @@ pub const MESSAGE_PREVIEW_TAG: &str = "draft:message";
 /// and cannot be edited in place.
 pub const MAX_FIELD_CHARS: usize = 64 * 1024;
 
+/// Longest value a [`Draft::summary`] line shows before it is cut.
+pub const SUMMARY_CHARS: usize = 48;
+
 /// Most entries a list field names before saying how many more there are.
 const MAX_LISTED: usize = 12;
 
@@ -275,6 +278,31 @@ impl Draft {
             .take(2)
             .collect();
         (!parts.is_empty()).then(|| parts.join(" · "))
+    }
+
+    /// Each field as one line a reviewer reads at a glance, by its label:
+    /// a long value cut at [`SUMMARY_CHARS`] with an ellipsis, a secret
+    /// withheld.
+    #[must_use]
+    pub fn summary(&self) -> Vec<(String, String)> {
+        self.fields
+            .iter()
+            .map(|field| {
+                let line = field
+                    .value
+                    .line()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let cut = if line.chars().count() > SUMMARY_CHARS {
+                    let kept: String = line.chars().take(SUMMARY_CHARS).collect();
+                    format!("{}…", kept.trim_end())
+                } else {
+                    line
+                };
+                (field.label.clone(), cut)
+            })
+            .collect()
     }
 
     /// `arguments` with the person's `edits` applied. Only fields this draft

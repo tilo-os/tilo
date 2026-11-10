@@ -116,11 +116,14 @@ fn question() -> PendingConfirmation {
         id: [0x21; 32],
         agent_id: "careful".into(),
         agent_label: "Careful".into(),
+        run: "Tidy the desk".into(),
         action_label: "Clear the history".into(),
+        arguments: vec![("Entries".into(), "All".into())],
         resource_label: "Calculator".into(),
         risk: "destructive".into(),
         workspace: "The desk".into(),
         expires_at_ns: tilo_clock::unix_now_ns().saturating_add(60_000_000_000),
+        ..PendingConfirmation::default()
     }
 }
 
@@ -199,6 +202,11 @@ fn an_agents_question_reaches_the_person_and_its_answer_the_agent() {
     let details: serde_json::Value = shown.details.clone();
     assert_eq!(details["agent"], "Careful");
     assert_eq!(details["action"], "Clear the history");
+    assert_eq!(details["run"], "Tidy the desk");
+    assert_eq!(
+        details["arguments"],
+        serde_json::json!([["Entries", "All"]])
+    );
     assert_eq!(details["resource"], "Calculator");
     assert_eq!(details["workspace"], "The desk");
     assert_eq!(details["risk"], "destructive");

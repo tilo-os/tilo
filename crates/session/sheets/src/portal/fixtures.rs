@@ -24,6 +24,7 @@ pub(super) const SCENARIOS: &[&str] = &[
     "pairing",
     "allowed",
     "agent-question",
+    "agent-question-long-run",
 ];
 
 fn base(handle: &str, title: &str, heading: &str, detail: &str) -> Dialog {
@@ -310,14 +311,14 @@ pub(super) fn dialog(scenario: Option<&str>) -> Dialog {
             cancel_label: "Don't pair".to_owned(),
             ..Dialog::default()
         },
-        Some("agent-question") => super::AgentQuestion {
-            agent: "Visa backend: Applicant: Jane Doe".to_owned(),
-            action: "submit the application".to_owned(),
-            resource: "Schengen visa form".to_owned(),
-            risk: "sensitive".to_owned(),
-            workspace: "Applicant: Jane Doe".to_owned(),
+        Some("agent-question") => {
+            visa_question("Fill Jane Doe’s visa application", "agent-question")
         }
-        .dialog("agent-question"),
+        Some("agent-question-long-run") => visa_question(
+            "Fill Jane Doe’s Schengen visa application for the annual conference in Lisbon, \
+             with the travel insurance and hotel booking she sent",
+            "agent-question-long-run",
+        ),
         Some("allowed") => Dialog {
             title: "Allowed for good".to_owned(),
             heading: "Meet".to_owned(),
@@ -338,4 +339,27 @@ pub(super) fn dialog(scenario: Option<&str>) -> Dialog {
             )
         },
     }
+}
+
+/// A visa backend's agent asking to submit what it filled in for its
+/// customer, as a reviewer is asked before it goes out.
+fn visa_question(run: &str, handle: &str) -> Dialog {
+    let argument = |label: &str, value: &str| (label.to_owned(), value.to_owned());
+    super::AgentQuestion {
+        agent: "Jane Doe’s agent".to_owned(),
+        run: run.to_owned(),
+        action: "Submit the application".to_owned(),
+        resource: "Schengen visa: Jane Doe".to_owned(),
+        arguments: vec![
+            argument("Name", "Jane Doe"),
+            argument("Passport", "X1234567"),
+            argument("Travel dates", "12 – 19 March 2027"),
+            argument("Consulate login", "•••"),
+        ],
+        risk: "destructive".to_owned(),
+        kind: "outside".to_owned(),
+        undoable: false,
+        workspace: "Applicant: Jane Doe".to_owned(),
+    }
+    .dialog(handle)
 }

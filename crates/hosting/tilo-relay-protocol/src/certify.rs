@@ -245,21 +245,34 @@ pub enum ApproverRequest {
 
 /// A question an agent on the host puts to its person: one invocation of
 /// an action the person's grants leave to them.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingConfirmation {
     /// Names this question, to answer it.
     pub id: [u8; 32],
     /// [`crate::delegation::Delegate::agent_id`] of the asking agent.
     pub agent_id: String,
-    /// The agent's display name.
+    /// The agent's display name: the name its key goes by, as History names
+    /// its changes.
     pub agent_label: String,
+    /// The run it asks in, by the title the agent gave it; empty when it
+    /// named none.
+    pub run: String,
+    /// The action, by the title its app declares.
     pub action_label: String,
-    /// What it acts on, as the record that offers it says.
+    /// What it acts on: the record by its name.
     pub resource_label: String,
+    /// The arguments it would run with, each by its label and value as a
+    /// reviewer reads it, long values cut and secrets withheld.
+    pub arguments: Vec<(String, String)>,
     /// What the action risks, as `tilo_actions::RiskLevel` names it
     /// (`none`, `low`, `destructive`, `privileged`, `sensitive`), for the
     /// sheet to state. An approver reads an unknown name as the gravest.
     pub risk: String,
+    /// What the action is able to do, as `tilo_actions::ActionKind` names it
+    /// (`read`, `undoable`, `outside`); empty when the host cannot say.
+    pub kind: String,
+    /// Whether Undo takes the action back.
+    pub undoable: bool,
     /// The workspace the agent acts in.
     #[serde(rename = "room")]
     pub workspace: String,

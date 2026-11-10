@@ -235,6 +235,7 @@ impl RelayWitness {
                 .map_or_else(|| "destructive".to_owned(), |facet| facet.value.clone()),
             workspace: workspace.to_owned(),
             expires_at_ns: tilo_clock::unix_now_ns().saturating_add(CONFIRMATION_WAIT_NS),
+            ..PendingConfirmation::default()
         })
     }
 }
@@ -556,9 +557,13 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
             id: question.id,
             agent_id,
             agent_label: question.device_label,
+            run: question.run,
             action_label: question.action_label,
             resource_label: question.resource_label,
+            arguments: question.arguments,
             risk: question.risk,
+            kind: question.kind,
+            undoable: question.undoable,
             workspace: question.workspace,
             expires_at_ns: tilo_clock::unix_now_ns().saturating_add(CONFIRMATION_WAIT_NS),
         };

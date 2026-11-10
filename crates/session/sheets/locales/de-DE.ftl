@@ -537,8 +537,15 @@ keyboard-shortcuts-list-description = Jedes Kürzel des Desktops mit seinen aktu
 ## Die Fragen des Zusammenarbeitsnetzes: ein Agent auf dem Rechner eines
 ## Arbeitsbereichs fragt seine Person um Erlaubnis für eine Aktion, und ein
 ## Gerät bittet sein Geschwistergerät um den Schlüssel, mit dem es startet.
-network-agent-question-title = { $agent } { $action } lassen?
-network-agent-question-detail = Es bearbeitet { $resource } in „{ $workspace }“. Erlaube nur, was du von ihm erwartest.
+network-agent-question-title = { $agent } möchte „{ $action }“ ausführen
+network-agent-question-detail = In „{ $resource }“ im Arbeitsbereich „{ $workspace }“.
+network-agent-question-outside = Es wirkt außerhalb von Tilo.
+network-agent-question-outside-final = Es wirkt außerhalb von Tilo und lässt sich nicht rückgängig machen.
+network-agent-question-sensitive = Es kann private Daten offenlegen.
+network-agent-question-privileged = Es handelt mit Administratorrechten.
+network-agent-question-destructive = Es löscht oder überschreibt etwas und lässt sich nicht rückgängig machen.
+network-agent-question-final = Es lässt sich nicht rückgängig machen.
+network-agent-question-unknown = Es könnte etwas tun, das sich nicht rückgängig machen lässt.
 network-agent-question-risk = Dabei könnte es { $risk }.
 network-agent-question-allow = Einmal erlauben
 run-question-title = { $agent } möchte: { $action }

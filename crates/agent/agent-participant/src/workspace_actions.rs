@@ -124,6 +124,9 @@ struct Entry {
     asked: bool,
     /// The token naming the person's answer, once they allowed it.
     witness: Option<String>,
+    /// What the person is asked about it, once it waits for their answer
+    /// ([`bounded::About`]).
+    about: Option<Box<bounded::About>>,
 }
 
 #[derive(Default)]
@@ -152,6 +155,7 @@ impl Ledger {
                 stop: None,
                 asked: false,
                 witness: None,
+                about: None,
             },
         );
     }
@@ -1873,10 +1877,16 @@ impl Worker {
             return receipt;
         }
         let outcome = self.perform(workspace_id, &caller, &request);
+        let about = self
+            .ledger()
+            .entries
+            .get_mut(&invocation)
+            .and_then(|entry| entry.about.take());
         if matches!(
             outcome,
             Err(Outcome::Rejected(ActionHostError::ConfirmationRequired))
-        ) && let Some(receipt) = self.ask_person(workspace_id, &caller, &request)
+        ) && let Some(about) = about
+            && let Some(receipt) = self.ask_person(workspace_id, &caller, &request, &about)
         {
             self.ledger().running = None;
             return receipt;
@@ -2320,57 +2330,6 @@ impl Worker {
     /// shared desk and run commands in the workspace's shell.
     fn acts_for_owner(&self, caller: &Caller) -> bool {
         acts_for(caller, &self.participant)
-    }
-
-    /// Put `request`, which `caller` (served within bounds) asked for and
-    /// which needs the person's confirmation, to that person on their own
-    /// devices: answered accepted, it runs on their allowing it and ends
-    /// refused otherwise ([`bounded`]). `None` when it cannot be asked: the
-    /// caller gave a confirmation of its own, the person was asked already,
-    /// or this host has nobody to ask.
-    fn ask_person(
-        &self,
-        workspace_id: u64,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Option<InvocationReceipt> {
-        let who = self.bounded(caller)?;
-        if request.confirmation.is_some() {
-            return None;
-        }
-        let invocation = request.invocation;
-        let workspace = self
-            .workspaces
-            .get(&workspace_id)
-            .and_then(|workspace| workspace.cluster_id(workspace_id))?;
-        let question = bounded::question(caller, &workspace, request).ok()?;
-        if self
-            .ledger()
-            .entries
-            .get_mut(&invocation)
-            .is_none_or(|entry| std::mem::replace(&mut entry.asked, true))
-        {
-            return None;
-        }
-        let Some(asked) = self
-            .shared
-            .link
-            .get()
-            .and_then(|link| link.ask_person(workspace_id, &who.person_caller, question))
-        else {
-            if let Some(entry) = self.ledger().entries.get_mut(&invocation) {
-                entry.asked = false;
-            }
-            return None;
-        };
-        let shared = Arc::clone(&self.shared);
-        let asking = bounded::Asking {
-            workspace_id,
-            invocation,
-            binding: bounded::WitnessBinding::of(workspace_id, caller, request),
-        };
-        asked.then(move |reply| shared.answered(asking, reply.as_ref()));
-        Some(InvocationState::new(invocation, InvocationUpdate::Accepted { invocation }).receipt())
     }
 
     fn try_registered_read(

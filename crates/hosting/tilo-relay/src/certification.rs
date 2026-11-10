@@ -776,6 +776,7 @@ mod confirmation_tests {
             risk: "destructive".into(),
             workspace: "room".into(),
             expires_at_ns: unix_now_ns().saturating_add(u64::try_from(wait.as_nanos()).unwrap()),
+            ..PendingConfirmation::default()
         }
     }
 

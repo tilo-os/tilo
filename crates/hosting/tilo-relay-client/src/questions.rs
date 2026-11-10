@@ -174,6 +174,7 @@ mod tests {
             risk: "sensitive".into(),
             workspace: "Applicant: Jane Doe".into(),
             expires_at_ns: 0,
+            ..PendingConfirmation::default()
         }
     }
 

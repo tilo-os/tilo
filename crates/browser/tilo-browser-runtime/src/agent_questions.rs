@@ -110,9 +110,13 @@ impl QuestionSheet for PageSheet {
 fn dialog(question: &PendingConfirmation) -> Dialog {
     AgentQuestion {
         agent: question.agent_label.clone(),
+        run: question.run.clone(),
         action: question.action_label.clone(),
         resource: question.resource_label.clone(),
+        arguments: question.arguments.clone(),
         risk: question.risk.clone(),
+        kind: question.kind.clone(),
+        undoable: question.undoable,
         workspace: question.workspace.clone(),
     }
     .dialog(&format!("agent-question:{}", hex::encode(question.id)))

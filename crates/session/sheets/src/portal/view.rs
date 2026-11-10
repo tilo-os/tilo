@@ -175,7 +175,11 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
                 .with_id("portal-code"),
         ));
     }
-    body = body.push(rows(dialog, shown.focus, parts));
+    // A review has nothing to choose: nothing stands between its words and
+    // its buttons.
+    if !matches!(dialog.body, Body::Review) {
+        body = body.push(rows(dialog, shown.focus, parts));
+    }
     if let Some(error) = &dialog.error {
         body = body.push(Box::new(
             Text::new(error)
@@ -186,7 +190,9 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
     let mut sheet = ModalDialog::new(dialog.title.clone(), body)
         .with_test_id(DIALOG_ID)
         .with_description(t("portal-sheet-description"))
-        .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet));
+        .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet))
+        // On a phone it rises from the foot as tall as what it asks.
+        .with_foot_sheet();
     let cancel = parts.clone();
     sheet = sheet.secondary_action(dialog.cancel_label.clone(), move || cancel.cancel());
     if let Some((page, _)) = dialog.page.filter(|(page, _)| *page > 0) {

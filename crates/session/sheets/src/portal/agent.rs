@@ -1,57 +1,124 @@
-//! An agent's question on a workspace host: what it wants to do, on what and
-//! where, and the person's answer for that one invocation. A native session
-//! and a page show it on the same sheet, in the same words.
+//! An agent's question on a workspace host: who asks, in which run, exactly
+//! what would happen and where, and the person's answer for that one
+//! invocation. A native session and a page show it on the same sheet, in the
+//! same words.
 
 use serde::{Deserialize, Serialize};
 
 use super::{Body, Dialog};
 use crate::{word, words};
 
+/// The longest argument, label and value, kept on one line.
+const UNBROKEN_CHARS: usize = 32;
+
 /// An agent's question, as the sheet shows it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct AgentQuestion {
-    /// The agent, as the host names it.
+    /// The agent, by the name it goes by in History.
     pub agent: String,
-    /// What it wants to do.
+    /// The run it asks in, by the title it gave it; empty when it named none.
+    #[serde(default)]
+    pub run: String,
+    /// The action, by the title its app declares.
     pub action: String,
-    /// What it acts on.
+    /// The record it acts on, by its name.
     pub resource: String,
-    /// What the host says the action risks.
+    /// The arguments it would run with, each by its label; secrets withheld.
+    #[serde(default)]
+    pub arguments: Vec<(String, String)>,
+    /// What the host says the action risks, by its risk level's name.
     pub risk: String,
+    /// What the action is able to do (`read`, `undoable`, `outside`).
+    #[serde(default)]
+    pub kind: String,
+    /// Whether Undo takes it back.
+    #[serde(default)]
+    pub undoable: bool,
     /// The workspace it acts in.
     pub workspace: String,
 }
 
 impl AgentQuestion {
-    /// The sheet asking it, as request `handle`: Allow once, or Deny.
+    /// The sheet asking it, as request `handle`: Allow once, or Deny. The
+    /// title says who wants to do what; the run, the record, the arguments
+    /// and what it risks follow.
     #[must_use]
     pub fn dialog(&self, handle: &str) -> Dialog {
-        let mut detail = words(
+        let mut lines = vec![words(
             "network-agent-question-detail",
             &[("resource", &self.resource), ("workspace", &self.workspace)],
-        );
-        if !self.risk.is_empty() {
-            detail.push('\n');
-            detail.push_str(&words(
-                "network-agent-question-risk",
-                &[("risk", &risk_words(&self.risk))],
-            ));
+        )];
+        let arguments: Vec<String> = self
+            .arguments
+            .iter()
+            .map(|(label, value)| {
+                // A line breaks between arguments, never inside a label,
+                // between a label and its value, or inside a short value.
+                let label = label.replace(' ', "\u{a0}");
+                let field = words("run-question-field", &[("label", &label), ("value", value)]);
+                if field.chars().count() <= UNBROKEN_CHARS {
+                    field.replace(' ', "\u{a0}")
+                } else {
+                    field.replacen(": ", ":\u{a0}", 1)
+                }
+            })
+            .collect();
+        if !arguments.is_empty() {
+            lines.push(arguments.join(" · "));
         }
+        lines.extend(self.consequence());
         Dialog {
             handle: handle.to_owned(),
             title: words(
                 "network-agent-question-title",
-                &[("agent", &self.agent), ("action", &self.action)],
+                &[
+                    ("agent", &self.agent),
+                    ("action", &self.action),
+                    ("doing", &in_sentence(&self.action)),
+                ],
             ),
-            // The title names the agent already.
-            heading: String::new(),
-            detail,
+            heading: self.run.clone(),
+            detail: lines.join("\n"),
             body: Body::Review,
             confirm_label: word("network-agent-question-allow"),
             cancel_label: word("portal-deny"),
             ..Dialog::default()
         }
     }
+
+    /// What allowing it risks, as the action declares it: acting outside
+    /// Tilo, revealing private data, or what Undo cannot take back. `None`
+    /// for an action Undo takes back that risks nothing more.
+    fn consequence(&self) -> Option<String> {
+        let key = match (self.kind.as_str(), self.risk.as_str()) {
+            ("outside", _) if self.undoable => "outside",
+            ("outside", _) => "outside-final",
+            (_, "sensitive") => "sensitive",
+            (_, "privileged") => "privileged",
+            (_, "destructive") => "destructive",
+            (kind, "none" | "low" | "") => {
+                if self.undoable || kind != "undoable" {
+                    return None;
+                }
+                "final"
+            }
+            _ => "unknown",
+        };
+        Some(word(&format!("network-agent-question-{key}")))
+    }
+}
+
+/// An action's title as it reads inside a sentence: its first letter in
+/// lower case, unless the first word is an initialism (`PDF`).
+fn in_sentence(title: &str) -> String {
+    let mut chars = title.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    if chars.clone().next().is_some_and(char::is_uppercase) {
+        return title.to_owned();
+    }
+    first.to_lowercase().chain(chars).collect()
 }
 
 /// What an action risks, in the person's words: an unknown name reads as
