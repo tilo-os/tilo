@@ -26,6 +26,12 @@
 #          A TILO_REQUIRE_* or TILO_PDFIUM_LIB already set is kept, and a
 #          machine that sets TILO_REQUIRE_GPU=0 (it promises no GPU) runs
 #          without lavapipe rather than failing.
+#          The pinned font catalog is prepared in TILO_FONT_ASSET_CACHE
+#          (default $CARGO_TARGET_DIR/font-artifacts, else the test cache's),
+#          where the toolkit's catalog roots find it, and TILO_REQUIRE_FONTS=1
+#          says every frame is to be set in it: a test job that reuses a build
+#          from elsewhere carries no catalog of its own, and a frame drawn in
+#          the host's faces is worse than a failure.
 # audio    a private software audio endpoint (tools/with-headless-audio.sh),
 #          and so TILO_REQUIRE_AUDIO=1. It lives as long as the process
 #          TILO_TEST_ENV_OWNER names (default: the caller, which under nextest
@@ -80,6 +86,21 @@ runtime() {
     fi
     mkdir -p "$cache_dir"
     provide TILO_TEST_CACHE_DIR "$cache_dir"
+    # The pinned font catalog every frame is set in. A build prepares its own into the cargo
+    # output directory of the crate that owns it, and that is not what a build directory carries
+    # from the job that built to the job that tests, so a test job that reuses a build elsewhere
+    # finds none and draws its frames in the host's faces: pixels that look almost right, judged
+    # against baselines recorded in the product's. Preparing it here, in the artifact cache the
+    # builder image seeds, puts it where the tests run — the first job on a machine copies it from
+    # the image and the rest verify what is there — and the toolkit's catalog roots read it. The
+    # build directory is the cache a job shares with the build; a run outside one keeps it in the
+    # test cache, where it outlives the run rather than being written into the tree.
+    provide TILO_FONT_ASSET_CACHE "${TILO_FONT_ASSET_CACHE:-${CARGO_TARGET_DIR:-$cache_dir}/font-artifacts}"
+    python3 "$repo/tools/font-catalog.py" root "$repo/crates/sdk/ui-core/assets/fonts" \
+        --scope fixtures --cache "$TILO_FONT_ASSET_CACHE" >/dev/null
+    # And a run promised the catalog stops where one is missing, rather than comparing frames set
+    # in whatever faces the machine happens to have.
+    provide TILO_REQUIRE_FONTS "${TILO_REQUIRE_FONTS:-1}"
 }
 
 audio() {

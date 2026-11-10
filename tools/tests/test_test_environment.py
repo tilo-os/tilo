@@ -211,6 +211,9 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(env["TILO_REQUIRE_MEDIA"], "1")
         self.assertTrue(env["TILO_TEST_CACHE_DIR"].endswith("/.cache/tilo/test-env"))
+        # The font catalog the frames are set in, where the runs that render find it.
+        self.assertTrue(env["TILO_FONT_ASSET_CACHE"].endswith("/font-artifacts"))
+        self.assertEqual(env["TILO_REQUIRE_FONTS"], "1")
         if driver.exists():
             self.assertEqual(env["VK_DRIVER_FILES"], str(driver))
             self.assertEqual(env["WGPU_ADAPTER_NAME"], "llvmpipe")
