@@ -105,4 +105,42 @@ describe("keys", () => {
     expect(house.polls).toBeGreaterThanOrEqual(1);
     await tilo.close();
   });
+
+  it("invites another person into a workspace with a link", async () => {
+    const house = new FakeDoor();
+    const tilo = open(house);
+
+    const invitation = await tilo.workspace("jane-doe").members.invite({ role: "editor" });
+
+    expect(invitation.link.startsWith("https://tilo.sh/i/")).toBe(true);
+    expect(invitation.role).toBe("editor");
+    expect(invitation.sent).toBe(false);
+    expect(house.asked("tilo_do").at(-1)?.arguments.path).toBe("workspace/members#invite");
+    expect(house.asked("tilo_do").at(-1)?.arguments.args).toEqual({ role: "editor" });
+    await tilo.close();
+  });
+
+  it("says an emailed invitation was not sent, and lists the members", async () => {
+    const house = new FakeDoor();
+    const tilo = open(house);
+    const workspace = tilo.workspace("jane-doe");
+
+    const invitation = await workspace.members.invite({ email: "rosa@example.com" });
+    expect(invitation.role).toBe("viewer");
+    expect(invitation.email).toBe("rosa@example.com");
+    expect(invitation.next).not.toBeNull();
+
+    const members = await workspace.members.list();
+    expect(members.map((member) => [member.name, member.role])).toEqual([["Rosa Ortiz", "editor"]]);
+    await tilo.close();
+  });
+
+  it("reaches a workspace one was invited into by its id", async () => {
+    const house = new FakeDoor();
+    const tilo = open(house);
+    const invited = "abcdef01-2345-6789-abcd-ef0123456789";
+
+    expect((await tilo.workspace(invited).info()).id).toBe(invited);
+    await tilo.close();
+  });
 });

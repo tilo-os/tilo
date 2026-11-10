@@ -31,7 +31,7 @@ use tilo_relay_protocol::workspaces::WorkspaceRole;
 
 pub use client::{
     Granted, Person, SiteEntry, SiteWorkspace, client, fetch_directory, invited_workspace, join,
-    read_site, sealed_invitation, site_entry, verify_invitation, web_origin,
+    read_site, sealed_invitation, shelve, site_entry, verify_invitation, web_origin,
 };
 pub use store::{Joined, Shelved, Store, Wake};
 pub use view::Held;

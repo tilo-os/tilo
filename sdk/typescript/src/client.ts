@@ -250,6 +250,11 @@ export class Tilo {
       throw error;
     }
     const found = listing.named(ref);
+    // A workspace you were invited into is someone else's, so your account
+    // does not list it: its id still reaches it, as the door decides.
+    if (found === undefined && looksLikeId(ref)) {
+      return { id: ref, name: "", host: "" };
+    }
     if (found === undefined) {
       throw new Refused("not_found", `no workspace ${ref}`, [
         "await tilo.workspaces.list() names them",

@@ -13,7 +13,7 @@
  */
 
 export { Tilo, Workspaces, Keys, SignIn, type TiloOptions } from "./client.ts";
-export { Workspace, Files, WorkspaceKeys } from "./workspace.ts";
+export { Workspace, Files, Members, WorkspaceKeys } from "./workspace.ts";
 export { resourceProxy, kebab, segments } from "./resource.ts";
 export type { Resource, Step } from "./resource.ts";
 export { Run } from "./run.ts";
@@ -23,8 +23,10 @@ export {
   type Event,
   type Hit,
   type Host,
+  type Invitation,
   type Key,
   Listing,
+  type Member,
   type MintedKey,
   type Person,
   type ProgramAnswer,

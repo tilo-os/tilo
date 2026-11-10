@@ -85,6 +85,9 @@ use tilo_lock::MutexRecover as _;
 pub(crate) const INVITATIONS: &str = "invitation.list";
 /// Cancelling an unredeemed invitation: part of inviting.
 pub(crate) const CANCEL_INVITATION: &str = "invitation.cancel";
+/// The people in the workspace and their roles: what whoever invites sees
+/// before and after inviting.
+pub(crate) const MEMBERS: &str = "member.list";
 /// Listing the workspace as a public workspace, with its description and the
 /// role everyone who joins gets.
 pub(crate) const PUBLISH: &str = "publish";
@@ -140,7 +143,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 14] = [
+const VERBS: [Verb; 15] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -161,6 +164,13 @@ const VERBS: [Verb; 14] = [
         gate: governance::INVITE,
         kind: roles::GOVERNANCE_KIND,
         params: invitation_params,
+    },
+    Verb {
+        id: MEMBERS,
+        label: "List members",
+        gate: governance::INVITE,
+        kind: ActionKind::Read,
+        params: Vec::new,
     },
     Verb {
         id: governance::UNBAN,
@@ -855,15 +865,13 @@ impl Workspaces {
     /// device in it: the one the workspace's governance certified, or the relay's
     /// own. `None` for a workspace that carries no governed workspace, a device
     /// the workspace never certified, and any caller but a person acting
-    /// themselves: an agent or a bot governs nothing.
+    /// themselves or their server key: an agent or a bot governs nothing,
+    /// and a server key only invites (`authority::server_key_invites`).
     async fn governed_by(
         &self,
         workspace_id: u64,
         caller: &Caller,
     ) -> Option<(Governed, DeviceCert)> {
-        if !speaks_for_themselves(caller) {
-            return None;
-        }
         let (user, device) = (caller.user_public_key()?, caller.device_public_key()?);
         let workspaces = self
             .inner
@@ -886,7 +894,9 @@ impl Workspaces {
                 .find(|cert| cert.device_public_key == *device)
                 .or_else(|| (host.device_public_key == *device).then(|| host.clone()))?;
             drop(workspace);
-            return (cert.user_public_key == *user).then_some((governed, cert));
+            let asking = speaks_for_themselves(caller)
+                || (cert.capabilities.server_key && asks_as_person(caller, &cert));
+            return (asking && cert.user_public_key == *user).then_some((governed, cert));
         }
         None
     }
@@ -1088,7 +1098,7 @@ impl Workspaces {
         call: GovernanceCall<'_>,
     ) -> Result<Value, ActionHostError> {
         match action {
-            governance::INVITE | INVITATIONS | CANCEL_INVITATION => {
+            governance::INVITE | INVITATIONS | CANCEL_INVITATION | MEMBERS => {
                 self.governance_invitations(action, call).await
             }
             PUBLISH | UNPUBLISH | PUBLICATION => self.governance_listing(action, call).await,
@@ -1282,6 +1292,7 @@ impl Workspaces {
                         .unwrap_or(DEFAULT_INVITATION_HOURS)
                         .saturating_mul(HOUR_NS),
                 };
+                let expires_at_ns = now.saturating_add(lifetime_ns);
                 let issued = self
                     .issue(
                         workspace,
@@ -1291,7 +1302,7 @@ impl Workspaces {
                             role: args.role()?,
                             recipient_user_public_key: args.key("recipient")?,
                             invitee_name: args.text("invitee_name")?.map(str::to_owned),
-                            expires_at_ns: now.saturating_add(lifetime_ns),
+                            expires_at_ns,
                             inviter_name: args.text("inviter_name")?.map(str::to_owned),
                         },
                     )
@@ -1300,6 +1311,7 @@ impl Workspaces {
                 Ok(json!({
                     "invite": hex::encode(issued.invite_id),
                     "invitation": hex::encode(issued.signed_invitation),
+                    "expires_at_ns": expires_at_ns,
                 }))
             }
             INVITATIONS => {
@@ -1308,6 +1320,29 @@ impl Workspaces {
                     .await
                     .map_err(|error| refused(&error))?;
                 Ok(pending.iter().map(pending_json).collect())
+            }
+            MEMBERS => {
+                let governed = self
+                    .workspace(workspace)
+                    .await
+                    .map_err(|error| refused(&error))?;
+                let governed = governed.lock().await;
+                let owner = governed.peer().owner();
+                Ok(governed
+                    .summary()
+                    .members
+                    .iter()
+                    .filter(|member| !member.removed)
+                    .map(|member| {
+                        json!({
+                            "person": hex::encode(member.user_public_key),
+                            "name": member.display_name,
+                            "role": role_name(member.role),
+                            "owner": member.user_public_key == owner,
+                            "administrator": member.administrator,
+                        })
+                    })
+                    .collect())
             }
             CANCEL_INVITATION => {
                 self.cancel(

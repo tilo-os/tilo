@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import builtins
 from typing import Any, AsyncIterator, Mapping
 
 from ._errors import ProtocolError, Refused
@@ -10,7 +11,9 @@ from ._link import CURRENT, Link, RunGroup
 from ._models import (
     Event,
     Hit,
+    Invitation,
     Listing,
+    Member,
     MintedKey,
     ProgramAnswer,
     WorkspaceInfo,
@@ -64,6 +67,41 @@ class WorkspaceKeys:
     def mint(self, name: str | None = None, expires_in: int | None = None) -> Any:
         """A key for an agent to act in this workspace, narrower than your own."""
         return self.workspace.client.handoff(self.workspace._mint(name, expires_in))
+
+
+class Members:
+    """The people in this workspace, and bringing someone else in.
+
+    Inviting takes a key you created reaching all your workspaces, into one
+    you administer, and invites as an editor at most.
+    """
+
+    PATH = "workspace/members"
+
+    def __init__(self, workspace: Workspace) -> None:
+        self.workspace = workspace
+
+    def invite(self, role: str = "viewer", email: str | None = None) -> Any:
+        """An `Invitation`: the link that brings one person in as `role`."""
+        return self.workspace.client.handoff(self._invite(role, email))
+
+    async def _invite(self, role: str, email: str | None) -> Invitation:
+        args: dict[str, Any] = {"role": role}
+        if email is not None:
+            args["email"] = email
+        result = await self.workspace._outcome(f"{self.PATH}#invite", args)
+        if not isinstance(result, Mapping):
+            raise ProtocolError("the door invited without answering a link")
+        return Invitation.of(result)
+
+    def list(self) -> Any:
+        """The `Member`s of the workspace, each with their role."""
+        return self.workspace.client.handoff(self._list())
+
+    async def _list(self) -> builtins.list[Member]:
+        result = await self.workspace._outcome(f"{self.PATH}#list", {})
+        rows = result.get("members") if isinstance(result, Mapping) else None
+        return [Member.of(row) for row in rows or [] if isinstance(row, Mapping)]
 
 
 class RunOpening:
@@ -132,6 +170,7 @@ class Workspace:
         self._info: WorkspaceInfo | None = None
         self.files = Files(self)
         self.keys = WorkspaceKeys(self)
+        self.members = Members(self)
 
     # -- identity --------------------------------------------------------
 
@@ -317,4 +356,12 @@ class Workspace:
         return f"Workspace({self._info.name if self._info else self.ref!r})"
 
 
-__all__ = ["Workspace", "Files", "WorkspaceKeys", "RunOpening", "ProgramAnswer", "Event"]
+__all__ = [
+    "Workspace",
+    "Files",
+    "WorkspaceKeys",
+    "Members",
+    "RunOpening",
+    "ProgramAnswer",
+    "Event",
+]

@@ -32,6 +32,9 @@ pub(crate) mod support;
 #[path = "workspace_actions/agent_mcp.rs"]
 mod agent_mcp;
 mod common;
+#[cfg(test)]
+#[path = "workspace_actions/door_invites.rs"]
+mod door_invites;
 #[path = "workspace_actions/door_on_relay.rs"]
 pub mod door_on_relay;
 #[cfg(test)]

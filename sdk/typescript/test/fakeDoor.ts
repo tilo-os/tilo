@@ -413,6 +413,23 @@ export class FakeDoor {
     if (path.endsWith("#undo")) {
       return { status: "ok", path, invocation_id: invocation, result: { undone: (args.steps as number) ?? 1 } };
     }
+    if (path === "workspace/members#invite") {
+      const invited: Answer = {
+        workspace: WORKSPACE_ID,
+        invite: "ab".repeat(32),
+        role: args.role,
+        link: "https://tilo.sh/i/AAAAAAAAAAAAAAAA#key",
+        expires_at_ns: 7,
+      };
+      if (args.email !== undefined) {
+        Object.assign(invited, { email: args.email, sent: false, next: "send the link yourself" });
+      }
+      return { status: "ok", path, result: invited };
+    }
+    if (path === "workspace/members#list") {
+      const members = [{ person: "cd".repeat(32), name: "Rosa Ortiz", role: "editor", administrator: false }];
+      return { status: "ok", path, result: { workspace: WORKSPACE_ID, members, invitations: [] } };
+    }
     if (path === `${TODO}#append-paragraph`) {
       if (this.appendPending) {
         return { status: "pending", path, invocation_id: invocation };

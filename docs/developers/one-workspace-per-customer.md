@@ -83,10 +83,22 @@ cannot list, read or act in any other workspace.
 
 ## Review
 
-Open the workspace in Tilo, or share it with the person who reviews it. Each
-agent session is one run in History, named after its key ("Jane Doe's agent
-#1"). Undo a run to take back everything it changed. Watch it live from your
-backend with `ws.watch()`.
+Open the workspace in Tilo, or invite the person who reviews it:
+
+```python
+invitation = await ws.members.invite(role="editor", email="ops@example.com")
+print(invitation.link)          # hand it over: no mail is sent yet
+print(await ws.members.list())  # who is in the workspace, with their roles
+```
+
+Following the link signs them in to Tilo (with a passkey, or by approving an
+agent) and lands them in the workspace as that role. Your key invites into
+the workspaces you administer, as an editor at most; a key minted for one
+workspace invites nobody. The reviewer then works with a key of their own.
+
+Each agent session is one run in History, named after its key ("Jane Doe's
+agent #1"). Undo a run to take back everything it changed. Watch it live from
+your backend with `ws.watch()`.
 
 ## The same from a shell
 
@@ -97,14 +109,17 @@ tilo -w applicant-jane-doe do pdf-viewer#read-form-fields
 tilo -w applicant-jane-doe do word-processor#export-content format=docx
 tilo files get tilo.content:… -w applicant-jane-doe -o cover-letter.docx
 tilo keys mint -w applicant-jane-doe --name "Jane Doe's agent"
+tilo members invite --role editor --email ops@example.com -w applicant-jane-doe
+tilo members ls -w applicant-jane-doe
 tilo keys revoke <grant>
 ```
 
 ## What is underneath
 
 There is no separate REST API. Making workspaces and keys are actions on your
-account (`account/workspaces#create`, `account/keys#mint`), and everything in
-a workspace is reached through the MCP tools at
+account (`account/workspaces#create`, `account/keys#mint`), inviting is the
+workspace's own (`workspace/members#invite`), and everything in a workspace is
+reached through the MCP tools at
 `https://mcp.tilo.sh/w/<workspace>/mcp`. The SDKs ask for typed answers
 ([the wire](sdk-wire.md)), and `PUT /w/<workspace>/content` takes a file's
 bytes. A minted key is a certificate your key signed, narrower than it. The

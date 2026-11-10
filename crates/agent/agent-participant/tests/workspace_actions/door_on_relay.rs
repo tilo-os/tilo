@@ -5,7 +5,8 @@
 //!
 //! The door's tests drive it in process; [`serve`] serves it on loopback
 //! for a client outside this process (an SDK's end-to-end run), with the
-//! keys a person approved there.
+//! key a person approved there, and plays another person who follows the
+//! invitation links the run hands them ([`accept_invitation`]).
 
 use super::{
     Arc, Device, DeviceCapabilities, Hosted, ModelChoice, Options, SigningKey, common, enrol,
@@ -53,6 +54,8 @@ pub struct OnRelay {
     pub issuer: String,
     /// The site's home workspace.
     pub lobby: String,
+    /// The relay's origin, where a page joins its workspaces.
+    pub relay: String,
     _site: test_http::Responder,
     _hosted: Hosted,
     _state: tempfile::TempDir,
@@ -101,12 +104,30 @@ pub async fn door_on_relay(issuer: &str) -> OnRelay {
     // The site names that door in its `entry.json`.
     let entry = json!({"home": {"host": {"origin": relay},
                                 "admission": format!("{relay}/peer/v1/directory/{lobby}/")}});
+    // Its shelf keeps the sealed invitations links name (`/i/<handle>`).
+    let shelf = std::sync::Mutex::new(HashMap::<String, Value>::new());
     let site = test_http::Responder::handle(move |request| {
-        (request.target == "/entry.json").then(|| {
+        use tilo_relay_protocol::sealed_invitations::{Fetched, Stored, handle_of};
+        let reply = |body: String| {
             test_http::Reply::status(200)
                 .header("content-type", "application/json")
-                .body(entry.to_string())
-        })
+                .body(body)
+        };
+        if request.target == "/entry.json" {
+            return Some(reply(entry.to_string()));
+        }
+        let handle = handle_of(&request.target)?.to_owned();
+        let mut shelf = shelf.lock().unwrap();
+        if request.method == "POST" {
+            let stored: Stored = serde_json::from_slice(&request.body).ok()?;
+            let fetched = Fetched {
+                sealed: stored.sealed,
+                host: stored.host,
+            };
+            shelf.insert(handle, serde_json::to_value(fetched).unwrap());
+            return Some(reply("{}".into()));
+        }
+        shelf.get(&handle).map(|fetched| reply(fetched.to_string()))
     });
     let door = Door::new(
         &Config {
@@ -122,6 +143,7 @@ pub async fn door_on_relay(issuer: &str) -> OnRelay {
         door,
         issuer: issuer.to_owned(),
         lobby,
+        relay,
         _site: site,
         _hosted: hosted,
         _state: state,
@@ -231,13 +253,137 @@ pub async fn approved_key(
     polled["key"].as_str().unwrap().to_owned()
 }
 
+/// A person following `link` on a page of theirs, as the site's join flow
+/// takes them (`admission.mjs`): the invitation opened from the site's shelf
+/// (or read from the link itself), what it offers inspected, then joined
+/// with a new device `root` certifies, named `name`. Answers that device and
+/// what the host admitted it to: `{workspace, name, role}`.
+pub async fn accept_invitation(
+    on_relay: &OnRelay,
+    link: &str,
+    root: &SigningKey,
+    name: &str,
+) -> (Device, Value) {
+    use base64::Engine as _;
+    use tilo_relay_protocol::workspaces::{JoinReply, JoinStep};
+    let text = if let Some((site, sealed)) = link.rsplit_once("/i/")
+        && let Some((handle, key)) = sealed.split_once('#')
+    {
+        tilo_workspace_directory::sealed_invitation(site, &format!("{handle}{key}"))
+            .await
+            .expect("the site's shelf opens the link")
+            .invitation
+    } else {
+        let (_, text) = link
+            .split_once("invite=")
+            .expect("a link names its invitation");
+        text.split('&').next().unwrap_or_default().to_owned()
+    };
+    let invitation = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(text)
+        .expect("an invitation's text");
+    let client = tilo_net::Client::builder().build().unwrap();
+    let host = tilo_relay_client::https::Origin::new(&client, &on_relay.relay);
+    let inspect = JoinStep::Inspect {
+        invitation: invitation.clone(),
+    };
+    let offer = tilo_relay_client::https::join(&host, &inspect)
+        .await
+        .unwrap();
+    assert!(matches!(offer, JoinReply::Invitation { .. }), "{offer:?}");
+    let page = enrol(root, name, DeviceCapabilities::member());
+    let joined = tilo_relay_client::invite::ask_to_join(
+        &host,
+        &invitation,
+        &page.cert,
+        &page.key,
+        page.cert.device_public_key,
+        name,
+    )
+    .await
+    .unwrap();
+    let JoinReply::Admitted {
+        workspace,
+        name,
+        role,
+        ..
+    } = joined
+    else {
+        panic!("the invitation admits the page: {joined:?}");
+    };
+    let role = format!("{role:?}").to_lowercase();
+    (
+        page,
+        json!({"workspace": workspace, "name": name, "role": role}),
+    )
+}
+
+/// Answer each `POST {link}` to `listener` as the person `root` would:
+/// they follow the link on a page of theirs ([`accept_invitation`]), then
+/// approve a key of their own at the door ([`approved_key`]). Each answer
+/// is `{key, person, joined}`.
+#[cfg(not(test))]
+async fn invitee(on_relay: &OnRelay, listener: tokio::net::TcpListener, root: SigningKey) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    while let Ok((mut stream, _)) = listener.accept().await {
+        let mut request = Vec::new();
+        let mut piece = [0; 4096];
+        let body = loop {
+            let Ok(read) = stream.read(&mut piece).await else {
+                break None;
+            };
+            if read == 0 {
+                break None;
+            }
+            request.extend_from_slice(&piece[..read]);
+            let text = String::from_utf8_lossy(&request);
+            let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                continue;
+            };
+            let length = head
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())?
+                })
+                .unwrap_or_default();
+            if body.len() >= length {
+                break Some(body.to_owned());
+            }
+        };
+        let link = body
+            .and_then(|body| serde_json::from_str::<Value>(&body).ok())
+            .and_then(|asked| asked["link"].as_str().map(str::to_owned));
+        let answer = match link {
+            Some(link) => {
+                let (page, joined) = accept_invitation(on_relay, &link, &root, "Rosa Ortiz").await;
+                let key = approved_key(on_relay, &root, &page, "Rosa's review").await;
+                json!({
+                    "key": key,
+                    "person": hex::encode(root.verifying_key().to_bytes()),
+                    "joined": joined,
+                })
+            }
+            None => json!({"error": "post a JSON object naming the link"}),
+        }
+        .to_string();
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{answer}",
+            answer.len()
+        );
+        let _ = stream.write_all(reply.as_bytes()).await;
+    }
+}
+
 /// Serve the door on a relay with its app workers on loopback, for a client
-/// outside this process. A person approves two keys reaching all their
-/// workspaces there: one for their backend and one their reviewer reads
-/// with. It prints one JSON line naming the door and both keys, then runs
+/// outside this process. A person approves a key reaching all their
+/// workspaces there, for their backend; another person, their reviewer,
+/// follows the invitation links posted to the invitee endpoint. It prints
+/// one JSON line naming the door, the key and that endpoint, then runs
 /// `command` with them in its environment (`TILO_DOOR`, `TILO_API_KEY`,
-/// `TILO_REVIEWER_KEY`) and answers its exit status, or with no command
-/// serves until its standard input closes.
+/// `TILO_INVITEE`) and answers its exit status, or with no command serves
+/// until its standard input closes.
 #[cfg(not(test))]
 pub async fn serve(command: &[std::ffi::OsString]) -> std::process::ExitCode {
     use std::io::Write as _;
@@ -248,30 +394,40 @@ pub async fn serve(command: &[std::ffi::OsString]) -> std::process::ExitCode {
     let (person, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&person, "Ada's browser", DeviceCapabilities::member());
     let key = approved_key(&on_relay, &person, &page, "Backend").await;
-    let reviewer = approved_key(&on_relay, &person, &page, "Reviewer").await;
     tokio::spawn(tilo_front_door::serve(Arc::clone(&on_relay.door), listener));
+    let accepting = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let invitee_url = format!("http://{}/accept", accepting.local_addr().unwrap());
+    let (reviewer, _) = tilo_user_identity::UserIdentity::generate("Rosa Ortiz", 1);
     let ready = json!({
         "door": issuer,
         "key": key,
-        "reviewer_key": reviewer,
+        "invitee": invitee_url,
         "person": hex::encode(person.verifying_key().to_bytes()),
     });
     let mut out = std::io::stdout().lock();
     writeln!(out, "{ready}").unwrap();
     out.flush().unwrap();
     drop(out);
+    // The reviewer answers on this task, beside whatever runs.
+    let reviewing = invitee(&on_relay, accepting, reviewer);
     let Some((program, arguments)) = command.split_first() else {
         let mut rest = Vec::new();
-        let _ = tokio::io::stdin().read_to_end(&mut rest).await;
+        let mut input = tokio::io::stdin();
+        tokio::select! {
+            _ = input.read_to_end(&mut rest) => {}
+            () = reviewing => {}
+        }
         return std::process::ExitCode::SUCCESS;
     };
-    let status = tokio::process::Command::new(program)
-        .args(arguments)
+    let mut run = tokio::process::Command::new(program);
+    run.args(arguments)
         .env("TILO_DOOR", &issuer)
         .env("TILO_API_KEY", &key)
-        .env("TILO_REVIEWER_KEY", &reviewer)
-        .status()
-        .await;
+        .env("TILO_INVITEE", &invitee_url);
+    let status = tokio::select! {
+        status = run.status() => status,
+        () = reviewing => Err(std::io::Error::other("the reviewer stopped answering")),
+    };
     drop(on_relay);
     match status.map(|status| status.code()) {
         Ok(Some(0)) => std::process::ExitCode::SUCCESS,

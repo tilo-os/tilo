@@ -1,10 +1,12 @@
 //! The MCP front door on a relay with its app workers, on loopback, for an
 //! SDK's end-to-end run: what tilo.sh runs, in one process.
 //!
-//! `door-on-relay` prints `{"door", "key", "reviewer_key", "person"}` and
+//! `door-on-relay` prints `{"door", "key", "invitee", "person"}` and
 //! serves until its standard input closes; `door-on-relay -- <command…>`
-//! runs the command with `TILO_DOOR`, `TILO_API_KEY` and
-//! `TILO_REVIEWER_KEY` set and exits as it does:
+//! runs the command with `TILO_DOOR`, `TILO_API_KEY` and `TILO_INVITEE` set
+//! and exits as it does. `POST {"link": …}` to `TILO_INVITEE` and another
+//! person follows the invitation link, approves a key of their own and
+//! answers `{"key", "person", "joined"}`:
 //!
 //! ```sh
 //! door-on-relay -- python3 sdk/python/examples/visa_proof.py

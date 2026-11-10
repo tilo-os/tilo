@@ -14,19 +14,19 @@ use std::sync::Arc;
 use tilo_front_door::Door;
 use tilo_user_identity::MAX_AGENT_GRANT_LIFETIME_NS;
 
-const ISSUER: &str = "https://mcp.tilo.test";
+pub(super) const ISSUER: &str = "https://mcp.tilo.test";
 
 /// An MCP session at the door's `path` with `token`.
-struct Mcp<'a> {
-    door: &'a Arc<Door>,
-    path: String,
-    token: String,
-    session: Option<String>,
+pub(super) struct Mcp<'a> {
+    pub(super) door: &'a Arc<Door>,
+    pub(super) path: String,
+    pub(super) token: String,
+    pub(super) session: Option<String>,
 }
 
 impl Mcp<'_> {
     /// Post `message`: the HTTP status and the reply.
-    async fn post(&mut self, message: Value) -> (u16, Value) {
+    pub(super) async fn post(&mut self, message: Value) -> (u16, Value) {
         let bearer = format!("Bearer {}", self.token);
         let mut pairs = vec![
             ("authorization", bearer.as_str()),
@@ -55,7 +55,7 @@ impl Mcp<'_> {
         json_of(reply).await
     }
 
-    async fn initialize(&mut self) -> (u16, Value) {
+    pub(super) async fn initialize(&mut self) -> (u16, Value) {
         self.post(json!({"jsonrpc": "2.0", "id": 0, "method": "initialize",
                          "params": {"protocolVersion": "2025-06-18", "capabilities": {},
                                     "clientInfo": {"name": "visa-backend", "version": "1"}}}))
@@ -63,7 +63,7 @@ impl Mcp<'_> {
     }
 
     /// `tilo_do` with `arguments`, its typed answer: what the SDKs read.
-    async fn tilo_do(&mut self, arguments: Value) -> Value {
+    pub(super) async fn tilo_do(&mut self, arguments: Value) -> Value {
         let (status, reply) = self
             .post(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                          "params": {"name": "tilo_do", "arguments": arguments,
@@ -74,7 +74,7 @@ impl Mcp<'_> {
     }
 
     /// What `tilo_do` of `path` with `args` answered, which it ran.
-    async fn did(&mut self, path: &str, args: Value) -> Value {
+    pub(super) async fn did(&mut self, path: &str, args: Value) -> Value {
         let reply = self.tilo_do(json!({"path": path, "args": args})).await;
         let answer = &reply["result"]["structuredContent"];
         assert_eq!(answer["status"], "ok", "{path} ran: {reply}");

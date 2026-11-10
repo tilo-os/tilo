@@ -68,6 +68,28 @@ pub enum KeysCmd {
 }
 
 #[derive(Subcommand)]
+pub enum MembersCmd {
+    /// A link that brings one more person into the workspace (-w) as --role.
+    #[command(
+        after_help = "Example:\n  tilo members invite --role editor --email ops@example.com -w jane-doe\n\n\
+                      Following the link signs them in and lands them in the workspace. A key you \
+                      created invites into workspaces you administer, as an editor at most. No mail \
+                      is sent: hand the link over yourself."
+    )]
+    Invite {
+        /// viewer, commenter or editor.
+        #[arg(long, default_value = "viewer")]
+        role: String,
+        /// Their address, which the invitation names.
+        #[arg(long)]
+        email: Option<String>,
+    },
+    /// The people in the workspace (-w), with their roles, and the
+    /// invitations still open.
+    Ls,
+}
+
+#[derive(Subcommand)]
 pub enum AccountCmd {
     /// Your workspaces.
     #[command(subcommand)]
@@ -615,6 +637,21 @@ async fn download(
             .context("writing to standard output")?,
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// `tilo members … -w <workspace>`: the workspace's `workspace/members`
+/// actions, as `tilo do` runs any action there.
+pub fn members(door: Option<&str>, json: bool, workspace: &str, cmd: MembersCmd) -> ExitCode {
+    let (path, args) = match cmd {
+        MembersCmd::Invite { role, email } => (
+            "workspace/members#invite",
+            std::iter::once(format!("role={role}"))
+                .chain(email.map(|email| format!("email={email}")))
+                .collect(),
+        ),
+        MembersCmd::Ls => ("workspace/members#list", Vec::new()),
+    };
+    act(door, json, workspace, path, &args)
 }
 
 /// `tilo keys …`.

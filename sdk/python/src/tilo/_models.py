@@ -210,6 +210,57 @@ class MintedKey:
 
 
 @dataclass(frozen=True)
+class Invitation:
+    """An invitation into a workspace: the link that brings one person in.
+
+    Following `link` signs them in (with a passkey, or by approving an
+    agent) and lands them in the workspace as `role`. The door sends no mail:
+    with an `email`, `sent` is false and `next` says to hand the link over.
+    """
+
+    link: str
+    role: str
+    workspace: str = ""
+    invite: str = ""
+    expires_at_ns: int | None = None
+    email: str | None = None
+    sent: bool = False
+    next: str | None = None
+
+    @classmethod
+    def of(cls, raw: Mapping[str, Any]) -> Invitation:
+        return cls(
+            link=str(raw.get("link") or ""),
+            role=str(raw.get("role") or ""),
+            workspace=str(raw.get("workspace") or ""),
+            invite=str(raw.get("invite") or ""),
+            expires_at_ns=_int(raw.get("expires_at_ns")),
+            email=_text(raw.get("email")),
+            sent=bool(raw.get("sent")),
+            next=_text(raw.get("next")),
+        )
+
+
+@dataclass(frozen=True)
+class Member:
+    """A person in a workspace, with their role there."""
+
+    person: str
+    role: str
+    name: str | None = None
+    administrator: bool = False
+
+    @classmethod
+    def of(cls, raw: Mapping[str, Any]) -> Member:
+        return cls(
+            person=str(raw.get("person") or ""),
+            role=str(raw.get("role") or ""),
+            name=_text(raw.get("name")),
+            administrator=bool(raw.get("administrator")),
+        )
+
+
+@dataclass(frozen=True)
 class Row:
     """One row of a listing: a resource, or an action of the resource listed."""
 

@@ -4,11 +4,17 @@ The backend holds one server key (`TILO_API_KEY`, all workspaces, no
 expiry) at a front door (`TILO_DOOR`). It makes a workspace per applicant,
 puts an applicant's passport and application form into theirs and mints a
 key that reaches that workspace alone. The applicant's agent, with only that
-key, fills the form in PDF Viewer and writes a cover letter in Writer. A
-reviewer, a key of the same person (`TILO_REVIEWER_KEY`, the backend's own
-when unset), then reads what the agent did, who did it, and takes it back.
+key, fills the form in PDF Viewer and writes a cover letter in Writer. The
+backend then invites the startup's ops person, another person, as a
+reviewer of Jane's workspace: they follow the link, sign in, and with a key
+of their own read what the agent did, who did it, and take it back.
 
     TILO_DOOR=https://mcp.tilo.sh TILO_API_KEY=tilo_sk_… python3 visa_proof.py
+
+The run prints the reviewer's link and asks for the key they made after
+following it; `TILO_INVITEE` instead names an endpoint that plays the
+reviewer (the `door-on-relay` harness): it is posted the link and answers
+the reviewer's key.
 
 `VISA_APPLICANTS` sets how many workspaces it makes (200). With
 `VISA_REVOKE_SERVER_KEY=1` it ends by revoking the server key itself, which
@@ -20,11 +26,13 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import os
 import statistics
 import struct
 import sys
 import time
+import urllib.request
 import zipfile
 import zlib
 from typing import Any, Mapping
@@ -35,6 +43,7 @@ from tilo.types.pdf_viewer import Document, FormFieldRow
 APPLICANTS = int(os.environ.get("VISA_APPLICANTS", "200"))
 REVOKE_SERVER_KEY = os.environ.get("VISA_REVOKE_SERVER_KEY") == "1"
 RUN_TITLE = "Fill Jane Doe's visa application"
+REVIEWER_EMAIL = "rosa@example.com"
 FORM = "pdf-viewer/application.pdf"
 
 FIRST = ["Jane", "Amara", "Luis", "Mei", "Omar", "Priya", "Tomas", "Yuki", "Noah", "Zara"]
@@ -164,6 +173,26 @@ async def refused(call: Any) -> str:
     return "allowed"
 
 
+async def reviewer_accepts(link: str) -> dict[str, Any]:
+    """The reviewer follows `link` and makes a key of their own: `{key, person, joined}`."""
+    invitee = os.environ.get("TILO_INVITEE")
+    if not invitee:
+        print(f"Reviewer: open {link}, sign in, then create a key at the door.", flush=True)
+        key = (await asyncio.to_thread(input, "The reviewer's key: ")).strip()
+        return {"key": key, "person": None, "joined": {"role": "editor"}}
+
+    def post() -> dict[str, Any]:
+        request = urllib.request.Request(
+            invitee,
+            data=json.dumps({"link": link}).encode(),
+            headers={"content-type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=120) as answer:
+            return json.load(answer)
+
+    return await asyncio.to_thread(post)
+
+
 # -- the proof ----------------------------------------------------------------
 
 
@@ -198,7 +227,6 @@ async def main() -> int:
     door = os.environ.get("TILO_DOOR", "https://mcp.tilo.sh")
     say("Door", door)
     backend = AsyncTilo()
-    reviewer = AsyncTilo(key=os.environ.get("TILO_REVIEWER_KEY") or None)
 
     made = await make_workspaces(backend)
     jane, other = made[0], made[1]
@@ -265,7 +293,24 @@ async def main() -> int:
     minting = await refused(agent.keys.mint(jane.id, name="escalated"))
     check(minting.startswith("forbidden"), f"it mints no keys ({minting})")
 
-    say("4b. The reviewer reads the filled form and who filled it")
+    say("4b. The backend invites its ops person, another person, as Jane's reviewer")
+    invitation = await ws.members.invite(role="editor", email=REVIEWER_EMAIL)
+    say("   invited", f"{invitation.role} via {invitation.link[:60]}… sent={invitation.sent} ({invitation.next})")
+    check(invitation.link.startswith("http"), "the invitation is a link to hand over")
+    check(invitation.email == REVIEWER_EMAIL and invitation.sent is False, "it names their address and says no mail went")
+    accepted = await reviewer_accepts(invitation.link)
+    say("   accepted", str(accepted.get("joined")))
+    check((accepted.get("joined") or {}).get("role") == "editor", "the link lands them in Jane's workspace as an editor")
+    reviewer_person = accepted.get("person")
+    members = await ws.members.list()
+    say("   members", ", ".join(f"{member.name or member.person[:8]} ({member.role})" for member in members))
+    check(
+        reviewer_person is None or any(member.person == reviewer_person and member.role == "editor" for member in members),
+        "the backend sees the reviewer among Jane's workspace's members",
+    )
+    reviewer = AsyncTilo(key=accepted["key"], door=door)
+
+    say("4c. The reviewer, with their own key, reads the filled form and who filled it")
     rws = reviewer.workspace(jane.id)
     seen = Document(rws, FORM)
     await seen.load()
@@ -290,8 +335,9 @@ async def main() -> int:
     runs = {version["run_id"]: version.get("run") for version in by_agent if version.get("run_id")}
     say("   runs", str(runs))
     check(list(runs.values()) == [RUN_TITLE], f"History names the agent's one run {RUN_TITLE!r}")
+    check(reviewer_person not in people, "the reviewer is not the person the agent acted for")
 
-    say("4c. The reviewer undoes the agent's run")
+    say("4d. The reviewer undoes the agent's run")
     run_id = next(iter(runs))
     await rws.do(f"{FORM}#undo", run=run_id)
     back = values_of((await seen.read_form_fields())["fields"])
@@ -299,8 +345,8 @@ async def main() -> int:
     check(back["surname"] == {"kind": "text", "value": ""}, "the surname is empty again")
     check(back["purpose"] == {"kind": "choice", "value": "Tourism"}, "the purpose is back to what the form said")
 
-    say("4d. No VM ran for any of it")
-    usage = await reviewer.usage()
+    say("4e. No VM ran for any of it")
+    usage = await backend.usage()
     jane_usage = next((row for row in usage.workspaces if row.workspace == jane.id), None)
     say("   usage", f"host {usage.host!r}, plan {usage.plan!r}, {len(usage.workspaces)} workspaces; Jane's: {jane_usage}")
     check(jane_usage is not None, "the account meters Jane's workspace")
@@ -308,7 +354,7 @@ async def main() -> int:
     check(usage.vm_seconds == 0 and not usage.running, f"0 VM seconds across all {len(usage.workspaces)} workspaces")
     check(usage.raw.get("standing", {}).get("account") in people, "the account is the person the agent acted for")
 
-    say("4e. Revoking ends what it reached")
+    say("4f. Revoking ends what it reached")
     await backend.keys.revoke(minted.grant)
     gone = await refused(aws.ls())
     check(gone in ("401", "403"), f"the agent's open session ends with its key ({gone})")

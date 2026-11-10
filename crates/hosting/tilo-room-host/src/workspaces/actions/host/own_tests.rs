@@ -84,9 +84,19 @@ async fn join(
     device: &DeviceCert,
 ) {
     let issued = created.invitation.as_ref().unwrap().decode().unwrap();
+    join_with(workspaces, issued.signed_invitation, key, device).await;
+}
+
+/// `device` redeems `invitation`, the signed bytes of one.
+async fn join_with(
+    workspaces: &Workspaces,
+    invitation: Vec<u8>,
+    key: &SigningKey,
+    device: &DeviceCert,
+) {
     let JoinReply::Challenge { challenge } = workspaces
         .page_join(JoinStep::Ask {
-            invitation: issued.signed_invitation,
+            invitation,
             device_cert: device.clone(),
             request_id: rand::random(),
         })
@@ -760,5 +770,182 @@ async fn a_server_key_reads_its_persons_account_and_an_agent_or_a_narrower_key_n
         matches!(refused, Err(ActionHostError::UnknownAction)),
         "{refused:?}"
     );
+    relay.shutdown().await;
+}
+
+/// A certificate `root` signs for `key` with `capabilities`, lasting an hour.
+fn certified(root: &SigningKey, key: &SigningKey, capabilities: DeviceCapabilities) -> DeviceCert {
+    let now = tilo_clock::unix_now_ns();
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: "key".into(),
+        capabilities,
+        issued_at_ns: now,
+        expires_at_ns: Some(now.saturating_add(3_600_000_000_000)),
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut cert, root).unwrap();
+    cert
+}
+
+/// The caller a key's session with the relay makes it: its person's agent.
+fn as_key(cert: &DeviceCert) -> Caller {
+    Caller::authenticated(cert.user_public_key, cert.device_public_key).delegated_to("key")
+}
+
+/// The person's own workspace `argument` asks for, as `cert`'s key asks.
+async fn own_as_key(
+    host: &HostWorkspaceActions,
+    cert: &DeviceCert,
+    argument: Value,
+) -> CreatedWorkspace {
+    let receipt = settled(
+        host.as_host(cert)
+            .invoke(&as_key(cert), own_request(argument)),
+    )
+    .await
+    .unwrap();
+    let ReceiptStatus::Completed { output } = receipt.status else {
+        panic!("the key's person's workspace is answered: {receipt:?}");
+    };
+    serde_json::from_value(output.value.unwrap()).unwrap()
+}
+
+/// `verb` of `workspace`'s governance with `argument`, asked by `cert`'s key.
+async fn govern(
+    host: &HostWorkspaceActions,
+    workspace: &tilo_relay_session::workspaces::WorkspaceListing,
+    cert: &DeviceCert,
+    verb: &str,
+    argument: Value,
+) -> Result<Value, ActionHostError> {
+    let request = super::super::tests::request(&workspace.workspace, verb, argument);
+    let receipt = settled(
+        host.in_workspace(workspace.workspace_id)
+            .invoke(&as_key(cert), request),
+    )
+    .await?;
+    match receipt.status {
+        ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
+        other => panic!("governance completes at once: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own() {
+    use tilo_action_policy::roles::governance;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    workspaces
+        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
+        .unwrap();
+    let host = HostWorkspaceActions::new();
+    host.attach(workspaces.clone());
+
+    // Ada's backend makes her workspace with her server key and enters it.
+    let ada = SigningKey::from_bytes(&rand::random());
+    let backend_key = SigningKey::from_bytes(&rand::random());
+    let backend = certified(&ada, &backend_key, DeviceCapabilities::server_key_grant());
+    let created = own_as_key(&host, &backend, json!({"name": "Applicant"})).await;
+    join(workspaces, &created, &backend_key, &backend).await;
+    let workspace = &created.workspace;
+
+    // It invites as an Editor at most, and does nothing else of governance.
+    let invite = |role: &str| json!({ "role": role });
+    let above = govern(
+        &host,
+        workspace,
+        &backend,
+        governance::INVITE,
+        invite("moderator"),
+    )
+    .await;
+    assert!(
+        matches!(above, Err(ActionHostError::Refused { .. })),
+        "{above:?}"
+    );
+    let unban = json!({"person": hex::encode([3; 32])});
+    let unban = govern(&host, workspace, &backend, governance::UNBAN, unban).await;
+    assert!(
+        matches!(unban, Err(ActionHostError::UnknownAction)),
+        "{unban:?}"
+    );
+    let issued = govern(
+        &host,
+        workspace,
+        &backend,
+        governance::INVITE,
+        invite("editor"),
+    )
+    .await
+    .unwrap();
+    let invitation = hex::decode(issued["invitation"].as_str().unwrap()).unwrap();
+
+    // An agent Ada connected through consent invites nobody.
+    let consented_key = SigningKey::from_bytes(&rand::random());
+    let all = DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces);
+    let consented = certified(&ada, &consented_key, all);
+    let entering = own_as_key(&host, &consented, json!({"room": workspace.workspace})).await;
+    join(workspaces, &entering, &consented_key, &consented).await;
+    let by_agent = govern(
+        &host,
+        workspace,
+        &consented,
+        governance::INVITE,
+        invite("viewer"),
+    )
+    .await;
+    assert!(
+        matches!(by_agent, Err(ActionHostError::UnknownAction)),
+        "{by_agent:?}"
+    );
+
+    // Rosa, another person, follows the link on a page of hers: an Editor.
+    let rosa = SigningKey::from_bytes(&rand::random());
+    let page_key = SigningKey::from_bytes(&rand::random());
+    let page = certified(&rosa, &page_key, DeviceCapabilities::member());
+    join_with(workspaces, invitation, &page_key, &page).await;
+    let rosa_person = rosa.verifying_key().to_bytes();
+    assert_eq!(
+        standing(workspaces, &workspace.workspace, rosa_person).await,
+        Some((MemberRole::Editor, false))
+    );
+
+    // Her own server key enters the workspace as her, at the role she holds.
+    let reviewer_key = SigningKey::from_bytes(&rand::random());
+    let reviewer = certified(&rosa, &reviewer_key, DeviceCapabilities::server_key_grant());
+    let entering = own_as_key(&host, &reviewer, json!({"room": workspace.workspace})).await;
+    assert_eq!(entering.workspace.workspace, workspace.workspace);
+    join(workspaces, &entering, &reviewer_key, &reviewer).await;
+    assert_eq!(
+        standing(workspaces, &workspace.workspace, rosa_person).await,
+        Some((MemberRole::Editor, false))
+    );
+    // She administers nothing there, so her key invites nobody into it.
+    let by_rosa = govern(
+        &host,
+        workspace,
+        &reviewer,
+        governance::INVITE,
+        invite("viewer"),
+    )
+    .await;
+    assert!(by_rosa.is_err(), "{by_rosa:?}");
+
+    // Ada's backend lists who is in it now.
+    let members = govern(&host, workspace, &backend, super::super::MEMBERS, json!({}))
+        .await
+        .unwrap();
+    let rosa_row = members
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|member| member["person"] == hex::encode(rosa_person))
+        .cloned();
+    assert_eq!(rosa_row.unwrap()["role"], "editor", "{members}");
     relay.shutdown().await;
 }

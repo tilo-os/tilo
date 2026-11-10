@@ -21,7 +21,7 @@ use tilo_peer_state::join::MemberRole;
 use tilo_relay_protocol::workspaces::{JoinReply, JoinStep, join_proof_digest};
 use tilo_user_identity::DeviceCert;
 
-use super::{CANCEL_INVITATION, GovernedPlane, HostWorkspaceActions, INVITATIONS};
+use super::{CANCEL_INVITATION, GovernedPlane, HostWorkspaceActions, INVITATIONS, MEMBERS};
 use crate::app_serving::AppServingPlane as _;
 use crate::workspaces::tests::{governor, guest_device, signed_pre_admission, test_host};
 use crate::workspaces::{PreAdmitRequest, SetMemberRoleRequest, Workspaces};
@@ -180,7 +180,7 @@ async fn invoke(
     }
 }
 
-const INVITE_FAMILY: [&str; 3] = [governance::INVITE, INVITATIONS, CANCEL_INVITATION];
+const INVITE_FAMILY: [&str; 4] = [governance::INVITE, INVITATIONS, CANCEL_INVITATION, MEMBERS];
 
 #[tokio::test]
 async fn the_catalogue_offers_what_the_rooms_governance_lets_each_caller_do() {

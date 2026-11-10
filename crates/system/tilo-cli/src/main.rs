@@ -198,6 +198,18 @@ enum Cmd {
         #[command(subcommand)]
         cmd: hosted::KeysCmd,
     },
+    /// The people in a hosted workspace, and inviting more.
+    #[command(
+        after_help = "Examples:\n  tilo members invite --role editor -w jane-doe   A link that brings a reviewer in\n  \
+                            tilo members ls -w jane-doe"
+    )]
+    Members {
+        /// The answer as JSON, typed as the SDK gets it.
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        cmd: hosted::MembersCmd,
+    },
     /// Your hosted account: its workspaces.
     #[command(
         after_help = "Examples:\n  tilo account workspaces create \"Applicant: Jane Doe\"\n  tilo account workspaces ls"
@@ -845,6 +857,9 @@ fn run_hosted(
     Ok(match cmd {
         Cmd::Do { action, args } => Ok(run_do(door, workspace, action, args, spelling)),
         Cmd::Keys { json, cmd } => Ok(hosted::keys(door, json, workspace.as_deref(), cmd)),
+        Cmd::Members { json, cmd } => workspace
+            .ok_or_else(needs_workspace)
+            .map(|workspace| hosted::members(door, json, &workspace, cmd)),
         Cmd::Account { json, cmd } => Ok(hosted::account(door, json, cmd)),
         Cmd::Files { json, cmd } => workspace
             .ok_or_else(needs_workspace)
@@ -866,6 +881,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
     match cmd {
         Cmd::Do { .. }
         | Cmd::Keys { .. }
+        | Cmd::Members { .. }
         | Cmd::Account { .. }
         | Cmd::Files { .. }
         | Cmd::Run { .. }
@@ -1908,6 +1924,7 @@ mod tests {
                 "action",
                 "workspace",
                 "keys",
+                "members",
                 "account",
                 "files",
                 "run",
@@ -1930,6 +1947,7 @@ mod tests {
                 "  action     See what this desktop can do, and do it\n",
                 "  workspace  Your workspaces on this desktop\n",
                 "  keys       Keys to your hosted workspaces, for your code and its agents\n",
+                "  members    The people in a hosted workspace, and inviting more\n",
                 "  account    Your hosted account: its workspaces\n",
                 "  files      Files into a hosted workspace\n",
                 "  run        Run a tilolang program in a hosted workspace, as one undoable step\n",
@@ -1975,7 +1993,9 @@ mod tests {
         };
         assert_eq!(
             listed(elsewhere),
-            ["app", "keys", "account", "files", "run", "sdk", "login"]
+            [
+                "app", "keys", "members", "account", "files", "run", "sdk", "login"
+            ]
         );
         let help = command_here(elsewhere).render_help().to_string();
         for absent in [
@@ -1997,7 +2017,7 @@ mod tests {
         // workspace, and reaches hosted workspaces with a key.
         assert_eq!(
             listed(nothing),
-            ["keys", "account", "files", "run", "sdk", "login"]
+            ["keys", "members", "account", "files", "run", "sdk", "login"]
         );
         let bare = command_here(nothing).render_help().to_string();
         assert!(bare.contains("tilo keys create"), "{bare}");

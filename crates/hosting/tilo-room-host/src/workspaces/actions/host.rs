@@ -523,6 +523,19 @@ impl Workspaces {
             self.summary(moving)
                 .await
                 .map_err(|error| refused(&error))?
+        } else if let Some(joined) = moving.filter(|_| name.is_none())
+            && let Some(role) = self.role_of(joined, person, now).await
+        {
+            // Another's, which the person was invited into: another device
+            // of theirs (their key) enters it as them, at the role they hold.
+            drop(making);
+            let summary = self
+                .summary(joined)
+                .await
+                .map_err(|error| refused(&error))?;
+            return self
+                .invite_own_person(summary, person, role, request_id, expiry(now, seconds))
+                .await;
         } else if name.is_none() && moving.is_some() && !mine.is_empty() {
             // A workspace this host does not keep for them, asked for as one
             // of theirs.
@@ -551,15 +564,50 @@ impl Workspaces {
         self.administer_own(&summary.workspace, person, now)
             .await
             .map_err(|error| refused(&error))?;
+        self.invite_own_person(
+            summary,
+            person,
+            MemberRole::Editor,
+            request_id,
+            expiry(now, seconds),
+        )
+        .await
+    }
+
+    /// The role `person` holds in `workspace` now, a member it has not
+    /// removed; `None` for anyone else, and for a workspace not governed
+    /// here.
+    async fn role_of(&self, workspace: &str, person: [u8; 32], now: u64) -> Option<MemberRole> {
+        let governed = self.workspace(workspace).await.ok()?;
+        let governed = governed.lock().await;
+        governed
+            .peer()
+            .governance()
+            .governed_members(crate::workspaces::system_time(now))
+            .ok()?
+            .into_iter()
+            .find(|member| member.user_public_key == person && !member.removed)
+            .map(|member| member.role)
+    }
+
+    /// Answer `summary` with an invitation for its `person` as `role`, until
+    /// `expires_at_ns`: the workspace's governor, the host, invites them.
+    async fn invite_own_person(
+        &self,
+        summary: WorkspaceSummary,
+        person: [u8; 32],
+        role: MemberRole,
+        request_id: [u8; 32],
+        expires_at_ns: u64,
+    ) -> Result<Value, ActionHostError> {
         let terms = IssueInvitationRequest {
             request_id,
-            role: MemberRole::Editor,
+            role,
             recipient_user_public_key: Some(person),
             invitee_name: None,
-            expires_at_ns: expiry(now, seconds),
+            expires_at_ns,
             inviter_name: None,
         };
-        // The workspace's governor, the host, invites its person.
         let issued = self
             .issue(&summary.workspace, &self.inner.host.cert, terms)
             .await

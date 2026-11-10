@@ -74,7 +74,7 @@ pub(crate) fn beyond_workspace(tool: &str, arguments: &Value, structured: bool) 
 }
 
 /// What an account action answered.
-enum Outcome {
+pub(crate) enum Outcome {
     Ok(Value),
     Pending {
         invocation: String,
@@ -87,7 +87,11 @@ enum Outcome {
     },
 }
 
-fn failed(code: &'static str, message: impl Into<String>, next: impl Into<String>) -> Outcome {
+pub(crate) fn failed(
+    code: &'static str,
+    message: impl Into<String>,
+    next: impl Into<String>,
+) -> Outcome {
     Outcome::Failed {
         code,
         message: message.into(),
@@ -95,7 +99,7 @@ fn failed(code: &'static str, message: impl Into<String>, next: impl Into<String
     }
 }
 
-fn refused(error: &RelayError) -> Outcome {
+pub(crate) fn refused(error: &RelayError) -> Outcome {
     match error {
         RelayError::NotFound => failed(
             "not_found",
@@ -128,7 +132,7 @@ fn tool_result(structured: bool, text: &str, typed: &Value, is_error: bool) -> V
 }
 
 /// The result of running `path`, as `tilo_do` and `tilo_status` answer it.
-fn answer(structured: bool, path: &str, outcome: Outcome) -> Value {
+pub(crate) fn answer(structured: bool, path: &str, outcome: Outcome) -> Value {
     match outcome {
         Outcome::Ok(result) => tool_result(
             structured,

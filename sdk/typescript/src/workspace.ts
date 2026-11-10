@@ -4,10 +4,14 @@ import type { Tilo } from "./client.ts";
 import { Link, RunGroup, withinRun } from "./link.ts";
 import {
   hitOf,
+  invitationOf,
+  memberOf,
   type Event,
   type Hit,
+  type Invitation,
   type Listing,
   Listing as ListingValue,
+  type Member,
   type MintedKey,
   type ProgramAnswer,
   type WorkspaceInfo,
@@ -127,6 +131,45 @@ export class WorkspaceKeys {
   }
 }
 
+/**
+ * The people in this workspace, and bringing someone else in.
+ *
+ * Inviting takes a key you created reaching all your workspaces, into one you
+ * administer, and invites as an editor at most.
+ */
+export class Members {
+  static readonly PATH = "workspace/members";
+  readonly workspace: Workspace;
+
+  constructor(workspace: Workspace) {
+    this.workspace = workspace;
+  }
+
+  /** The link that brings one person in as `role`. */
+  async invite(
+    options: { role?: "viewer" | "commenter" | "editor"; email?: string } = {},
+  ): Promise<Invitation> {
+    const args: Record<string, unknown> = { role: options.role ?? "viewer" };
+    if (options.email !== undefined) args.email = options.email;
+    const result = await this.workspace.do(`${Members.PATH}#invite`, args);
+    if (result === null || typeof result !== "object" || Array.isArray(result)) {
+      throw new ProtocolError("the door invited without answering a link");
+    }
+    return invitationOf(result as Record<string, unknown>);
+  }
+
+  /** The members of the workspace, each with their role. */
+  async list(): Promise<Member[]> {
+    const result = (await this.workspace.do(`${Members.PATH}#list`)) as
+      | { members?: unknown }
+      | null;
+    const rows = Array.isArray(result?.members) ? result.members : [];
+    return rows
+      .filter((row): row is Record<string, unknown> => row !== null && typeof row === "object")
+      .map(memberOf);
+  }
+}
+
 function runId(title: string): string {
   const slug = title
     .toLowerCase()
@@ -144,6 +187,7 @@ export class Workspace {
   readonly ref: string;
   readonly files: Files;
   readonly keys: WorkspaceKeys;
+  readonly members: Members;
   #info: WorkspaceInfo | null = null;
 
   constructor(client: Tilo, ref: string) {
@@ -151,6 +195,7 @@ export class Workspace {
     this.ref = ref;
     this.files = new Files(this);
     this.keys = new WorkspaceKeys(this);
+    this.members = new Members(this);
   }
 
   toString(): string {

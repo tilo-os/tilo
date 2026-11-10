@@ -26,6 +26,7 @@
     reason = "the presence `tilo mcp` says of its agent, the same source here"
 )]
 mod mcp_presence;
+pub mod members;
 
 use crate::relay::{Connection, Relay, RelayError};
 use crate::store::Scope;
@@ -220,9 +221,25 @@ impl Session {
     }
 
     /// Answer `request` in `workspace`'s run, showing the person what a
-    /// tool call did beside the agent.
+    /// tool call did beside the agent. The workspace's people
+    /// (`workspace/members`) are answered here ([`members`]).
     async fn serve(&self, workspace: &str, request: Value) -> Reply {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
+        if request.get("method").and_then(Value::as_str) == Some("tools/call") {
+            let tool = request
+                .pointer("/params/name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let arguments = request.pointer("/params/arguments").unwrap_or(&Value::Null);
+            if members::addresses(tool, arguments) {
+                let structured = request
+                    .pointer("/params/_meta/so.tilo.mcp/structured")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let answered = self.members(workspace, tool, arguments, structured).await;
+                return Reply::one(result(&id, &answered));
+            }
+        }
         let run = match self.served(workspace).await {
             Ok(run) => run,
             Err(RelayError::NotFound) => {
@@ -484,6 +501,9 @@ Paths under `account` manage them and need no `workspace`: `tilo_ls account` lis
 named by id in its `workspace` argument. To give another agent one workspace and nothing else \
 (one workspace per customer), `tilo_do {path: \"account/keys#mint\", args: {workspace}}` answers \
 an `mcp_url` and a `token` for it; revoking this key ends every key it minted. \
+To bring another person in (a reviewer, say), `tilo_do {path: \"workspace/members#invite\", \
+args: {role, email?}, workspace}` answers a `link` that signs them in and lands them there as \
+`role` (viewer, commenter or editor); `workspace/members#list` names who is in it. \
 Files go in with `tilo_put_begin`/`_append`/`_finish` (or `PUT /w/<workspace>/content`), answering \
 a `tilo.content:<hash>` an action takes; an action that makes a file (Writer's `export-content`) \
 names its `tilo.content:` in the answer's resources, and `tilo_get {content, offset}` reads it back.";

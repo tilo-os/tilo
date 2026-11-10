@@ -30,6 +30,8 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+# The link an invitation is handed over as: sealed onto the site's shelf.
+tilo-workspace-directory = { path = "../../session/workspace-directory" }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

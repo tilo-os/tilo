@@ -304,15 +304,38 @@ pub fn verify_invitation(text: &str, person: &Person) -> Result<Granted, String>
     })
 }
 
+/// Seal `invitation`, the signed bytes of one, under a fresh key and leave it
+/// on `site`'s shelf until `expires_at_ns`, naming `host`, the origin it
+/// admits into: the short link a person hands over
+/// (`https://<site>/i/<handle>#<key>`) and what takes it back. The desk's
+/// sheet ([`crate::Store::shelve`]) and a door that invites for a person
+/// leave it the same way.
+///
+/// # Errors
+/// No randomness to seal with, or why the site kept nothing.
+pub async fn shelve(
+    client: &Client,
+    site: &url::Url,
+    host: Option<&str>,
+    invitation: &[u8],
+    expires_at_ns: u64,
+) -> Result<crate::Shelved, String> {
+    let sealed = tilo_workspace_join::sealed::seal(invitation)?;
+    let link = leave(client, site, host, &sealed, expires_at_ns).await?;
+    Ok(crate::Shelved {
+        link,
+        site: site.clone(),
+        handle: sealed.handle,
+        delete: sealed.delete,
+    })
+}
+
 /// Leave `sealed` on `site`'s shelf, for the link that names it and carries
 /// its key: what a person hands over instead of the invitation's kilobytes.
 ///
 /// The site is given the ciphertext, when the invitation lapses, and the
 /// secret that takes it back — never the key, which is in the link alone.
-///
-/// # Errors
-/// Why the site did not keep it: it could not be reached, or refused.
-pub(crate) async fn leave(
+async fn leave(
     client: &Client,
     site: &url::Url,
     host: Option<&str>,

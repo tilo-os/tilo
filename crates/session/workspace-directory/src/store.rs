@@ -800,25 +800,10 @@ async fn work(
                 invite,
                 result: match &client {
                     Err(error) => Err(format!("no network to leave it over: {error}")),
-                    Ok(client) => match tilo_workspace_join::sealed::seal(&invitation) {
-                        Ok(sealed) => {
-                            let link = client::leave(
-                                client,
-                                &site,
-                                host.as_deref(),
-                                &sealed,
-                                expires_at_ns,
-                            )
-                            .await;
-                            link.map(|link| Shelved {
-                                link,
-                                site,
-                                handle: sealed.handle,
-                                delete: sealed.delete,
-                            })
-                        }
-                        Err(error) => Err(error),
-                    },
+                    Ok(client) => {
+                        client::shelve(client, &site, host.as_deref(), &invitation, expires_at_ns)
+                            .await
+                    }
                 },
             },
             Ask::Unshelve {

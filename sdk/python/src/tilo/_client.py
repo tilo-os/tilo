@@ -207,6 +207,10 @@ class AsyncTilo:
                 return WorkspaceInfo(id=ref, name="", host="")
             raise
         found = listing.named(ref)
+        # A workspace you were invited into is someone else's, so your account
+        # does not list it: its id still reaches it, as the door decides.
+        if found is None and _looks_like_id(ref):
+            return WorkspaceInfo(id=ref, name="", host="")
         if found is None:
             raise Refused(
                 "not_found",

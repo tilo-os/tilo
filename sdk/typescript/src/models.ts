@@ -108,6 +108,54 @@ export function mintedKeyOf(raw: Record<string, unknown>): MintedKey {
   };
 }
 
+/**
+ * An invitation into a workspace: the link that brings one person in.
+ *
+ * Following `link` signs them in (with a passkey, or by approving an agent)
+ * and lands them in the workspace as `role`. The door sends no mail: with an
+ * `email`, `sent` is false and `next` says to hand the link over.
+ */
+export interface Invitation {
+  link: string;
+  role: string;
+  workspace: string;
+  invite: string;
+  expiresAtNs: number | null;
+  email: string | null;
+  sent: boolean;
+  next: string | null;
+}
+
+export function invitationOf(raw: Record<string, unknown>): Invitation {
+  return {
+    link: String(raw.link ?? ""),
+    role: String(raw.role ?? ""),
+    workspace: String(raw.workspace ?? ""),
+    invite: String(raw.invite ?? ""),
+    expiresAtNs: intOf(raw.expires_at_ns),
+    email: textOf(raw.email),
+    sent: raw.sent === true,
+    next: textOf(raw.next),
+  };
+}
+
+/** A person in a workspace, with their role there. */
+export interface Member {
+  person: string;
+  role: string;
+  name: string | null;
+  administrator: boolean;
+}
+
+export function memberOf(raw: Record<string, unknown>): Member {
+  return {
+    person: String(raw.person ?? ""),
+    role: String(raw.role ?? ""),
+    name: textOf(raw.name),
+    administrator: raw.administrator === true,
+  };
+}
+
 export interface Row {
   path: string;
   name: string;

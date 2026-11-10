@@ -58,9 +58,11 @@ pub enum HostOperation {
     /// devices their root revoked, as the person's devices announced them.
     ListRevocations,
     /// Make, or answer again, the one workspace of the caller's own person on
-    /// this host, and invite them into it. Anyone's, on a host that keeps
-    /// workspaces of people's own (`crate::workspaces::OwnWorkspaceOffer`);
-    /// the door says whether it does.
+    /// this host, and invite them into it; or invite them again into a
+    /// workspace they were invited into, at the role they hold there, so
+    /// another device of theirs (a key of theirs) enters it as them.
+    /// Anyone's, on a host that keeps workspaces of people's own
+    /// (`crate::workspaces::OwnWorkspaceOffer`); the door says whether it does.
     CreateOwnWorkspace,
 }
 

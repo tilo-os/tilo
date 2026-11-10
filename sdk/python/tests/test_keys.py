@@ -117,3 +117,40 @@ async def test_the_account_says_what_its_workspaces_kept_and_ran(tilo, door):
     assert usage.workspaces[0].stored_bytes == 2048
     assert usage.vm_seconds == 90
     assert usage.running == ["other"]
+
+
+async def test_a_workspace_invites_another_person_with_a_link(tilo, door):
+    invitation = await tilo.workspace("jane-doe").members.invite(role="editor")
+
+    assert invitation.link.startswith("https://tilo.sh/i/")
+    assert invitation.role == "editor"
+    assert invitation.email is None and not invitation.sent
+    assert door.asked("tilo_do")[-1]["arguments"]["path"] == "workspace/members#invite"
+    assert door.asked("tilo_do")[-1]["arguments"]["args"] == {"role": "editor"}
+
+
+async def test_an_emailed_invitation_says_it_was_not_sent(tilo):
+    invitation = await tilo.workspace("jane-doe").members.invite(email="rosa@example.com")
+
+    assert invitation.role == "viewer"
+    assert invitation.email == "rosa@example.com"
+    assert invitation.sent is False and invitation.next
+
+
+async def test_an_invitation_above_editor_is_refused(tilo):
+    with pytest.raises(Refused) as raised:
+        await tilo.workspace("jane-doe").members.invite(role="moderator")
+
+    assert raised.value.code == "invalid_arguments"
+
+
+async def test_a_workspace_one_was_invited_into_is_reached_by_its_id(tilo):
+    invited = "abcdef01-2345-6789-abcd-ef0123456789"
+
+    assert (await tilo.workspace(invited).info()).id == invited
+
+
+async def test_the_members_of_a_workspace_with_their_roles(tilo):
+    members = await tilo.workspace("jane-doe").members.list()
+
+    assert [(member.name, member.role) for member in members] == [("Rosa Ortiz", "editor")]

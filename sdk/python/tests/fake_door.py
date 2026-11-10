@@ -477,6 +477,22 @@ class FakeDoor:
             }
         if path.endswith("#remove-me"):
             return {"status": "ok", "path": path, "invocation_id": invocation, "result": None}
+        if path == "workspace/members#invite":
+            if args.get("role") not in ("viewer", "commenter", "editor"):
+                return self.failed(path, "invalid_arguments", "`role` is viewer, commenter or editor", "pass args {role}")
+            invited = {
+                "workspace": WORKSPACE_ID,
+                "invite": "ab" * 32,
+                "role": args["role"],
+                "link": "https://tilo.sh/i/AAAAAAAAAAAAAAAA#key",
+                "expires_at_ns": 7,
+            }
+            if "email" in args:
+                invited |= {"email": args["email"], "sent": False, "next": "send the link yourself"}
+            return {"status": "ok", "path": path, "result": invited}
+        if path == "workspace/members#list":
+            members = [{"person": "cd" * 32, "name": "Rosa Ortiz", "role": "editor", "administrator": False}]
+            return {"status": "ok", "path": path, "result": {"workspace": WORKSPACE_ID, "members": members, "invitations": []}}
         return self.failed(path, "invalid_arguments", f"no action {path}", f"tilo_ls {path.split('#')[0]} lists its actions")
 
     def apply_edit(self, resource: str, edit: dict[str, Any]) -> None:

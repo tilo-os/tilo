@@ -160,6 +160,8 @@ tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents", "test-su
 tilo-front-door = { path = "../../hosting/tilo-front-door" }
 test-http = { path = "../../dev/test-http" }
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
+# Opens an invitation's link as a page does, from the site's shelf.
+tilo-workspace-directory = { path = "../../session/workspace-directory" }
 # The MCP projection `tilo mcp` serves, driven over a device's session.
 tilo-runtime = { path = "../../runtime/tilo-runtime" }
 iroh.workspace = true

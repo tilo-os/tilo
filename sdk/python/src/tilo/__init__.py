@@ -19,8 +19,10 @@ from ._models import (
     Event,
     Hit,
     Host,
+    Invitation,
     Key,
     Listing,
+    Member,
     MintedKey,
     Person,
     ProgramAnswer,
@@ -32,7 +34,7 @@ from ._models import (
 )
 from ._resource import FieldMap, Resource
 from ._run import Run
-from ._workspace import Files, RunOpening, Workspace, WorkspaceKeys
+from ._workspace import Files, Members, RunOpening, Workspace, WorkspaceKeys
 
 __version__ = "0.1.0"
 
@@ -45,8 +47,11 @@ __all__ = [
     "Files",
     "Hit",
     "Host",
+    "Invitation",
     "Key",
     "Listing",
+    "Member",
+    "Members",
     "MintedKey",
     "Person",
     "ProgramAnswer",

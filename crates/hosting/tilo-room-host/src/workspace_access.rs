@@ -35,7 +35,8 @@
 //!
 //! What it does there is its person's agent's ([`crate::peer`] makes its
 //! caller the agent, for its person): an agent's role cap holds it at
-//! Editor at most, and it governs, invites and administers nothing
+//! Editor at most, and it governs and administers nothing; only a person's
+//! server key invites, for its person, as an Editor at most
 //! (`workspaces::authority`). Its certificate's expiry and its person's
 //! revocations (a minted grant's issuer included) are step 1, checked at
 //! every handshake and audit.
