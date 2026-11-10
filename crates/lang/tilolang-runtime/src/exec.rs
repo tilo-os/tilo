@@ -245,13 +245,17 @@ impl Core {
                         p.ty
                     )
                 };
+                // A scalar a view carries from an event is boxed until it reaches the action it
+                // is passed to: the box is the place it lands, never a value of its own. Only a
+                // parameter of a scalar type unboxes: an option of one is a value as it is.
+                let scalar = || unboxed(v.clone());
                 match repr(&ty) {
-                    Repr::I64 => v.as_int().map(Wasm::I64).ok_or_else(mismatch),
-                    Repr::F64 => match v {
-                        Value::Float(f) => Ok(Wasm::F64(*f)),
+                    Repr::I64 => scalar().as_int().map(Wasm::I64).ok_or_else(mismatch),
+                    Repr::F64 => match scalar() {
+                        Value::Float(f) => Ok(Wasm::F64(f)),
                         _ => Err(mismatch()),
                     },
-                    Repr::Bool => v
+                    Repr::Bool => scalar()
                         .as_int()
                         .map(|i| Wasm::I32(i32::from(i != 0)))
                         .ok_or_else(mismatch),
