@@ -1756,6 +1756,36 @@ impl AppCheck<'_> {
         Ok(())
     }
 
+    /// Write the bar and the frame `audit` read into the dump, with a capture at plain scale.
+    fn dump_frame(
+        &mut self,
+        staged: &mut stage::Staged,
+        layout: Layout,
+        label: &str,
+        bar: &ui::window_toolbar::BarLayout,
+        inspection: &ui::headless::InspectionSnapshot,
+    ) -> Result<(), String> {
+        let json = serde_json::to_string_pretty(bar).map_err(|e| e.to_string())?;
+        let _ = writeln!(
+            self.dumped,
+            "== {} {label} at {layout} — the bar\n{json}",
+            self.meta.app
+        );
+        let json = serde_json::to_string_pretty(inspection).map_err(|e| e.to_string())?;
+        let _ = writeln!(
+            self.dumped,
+            "== {} {label} at {layout} — the frame\n{json}",
+            self.meta.app
+        );
+        if let Some(dir) = self.shots
+            && (layout.display_scale - 1.0).abs() < f64::EPSILON
+            && (layout.text_scale - 1.0).abs() < f32::EPSILON
+        {
+            self.shoot(staged, layout, label, dir)?;
+        }
+        Ok(())
+    }
+
     /// Gather what is wrong with `staged` as it is laid out now, at `layout`, as staged by
     /// `label`.
     fn audit(
@@ -1790,24 +1820,7 @@ impl AppCheck<'_> {
             .harness_mut()
             .window_bar_layout(f64::from(viewport.0));
         if self.dump == Some(viewport) {
-            let json = serde_json::to_string_pretty(&bar).map_err(|e| e.to_string())?;
-            let _ = writeln!(
-                self.dumped,
-                "== {} {label} at {layout} — the bar\n{json}",
-                self.meta.app
-            );
-            let json = serde_json::to_string_pretty(&inspection).map_err(|e| e.to_string())?;
-            let _ = writeln!(
-                self.dumped,
-                "== {} {label} at {layout} — the frame\n{json}",
-                self.meta.app
-            );
-            if let Some(dir) = self.shots
-                && (layout.display_scale - 1.0).abs() < f64::EPSILON
-                && (layout.text_scale - 1.0).abs() < f32::EPSILON
-            {
-                self.shoot(staged, layout, label, dir)?;
-            }
+            self.dump_frame(staged, layout, label, &bar, &inspection)?;
         }
         self.note_shown(&inspection.root);
         // A view that ran but drew nothing has no widget; what the app sent still names it. What

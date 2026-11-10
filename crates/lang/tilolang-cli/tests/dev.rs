@@ -184,13 +184,6 @@ impl Loop {
         })
     }
 
-    fn wait_generation(&self, updates: &Path, generation: Option<u64>) {
-        tilo_test_env::wait_until(
-            format!("the app's builds to reach generation {generation:?}"),
-            || tilo_app_module::current(updates).unwrap() == generation,
-        );
-    }
-
     /// Replace the runtime with a new build, as a build does: a new file, renamed over the old
     /// one, which leaves a new inode where the old file was.
     fn replace_runtime(&self, note: &str) {
@@ -279,7 +272,7 @@ fn a_saved_source_replaced_by_rename_reaches_the_app() {
     let dev = Loop::start();
     dev.wait_starts(1);
     let updates = dev.updates();
-    dev.wait_generation(&updates, Some(1));
+    wait_generation(&updates, Some(1));
     let file = dev.package.join("app.tl");
     let text = std::fs::read_to_string(&file).unwrap();
     let saved = text.replace(
@@ -290,7 +283,7 @@ fn a_saved_source_replaced_by_rename_reaches_the_app() {
     let staged = dev.package.join(".app.tl.saved");
     std::fs::write(&staged, saved).unwrap();
     std::fs::rename(&staged, &file).unwrap();
-    dev.wait_generation(&updates, Some(2));
+    wait_generation(&updates, Some(2));
     dev.stop();
 }
 
@@ -302,12 +295,19 @@ fn a_translation_saved_in_the_packages_locales_reaches_the_app() {
     let dev = Loop::start();
     dev.wait_starts(1);
     let updates = dev.updates();
-    dev.wait_generation(&updates, Some(1));
+    wait_generation(&updates, Some(1));
     std::fs::write(
         dev.package.join("locales/de-DE.ftl"),
         "d-so-tilo-lang-counter = Zähler\n",
     )
     .unwrap();
-    dev.wait_generation(&updates, Some(2));
+    wait_generation(&updates, Some(2));
     dev.stop();
+}
+
+fn wait_generation(updates: &Path, generation: Option<u64>) {
+    tilo_test_env::wait_until(
+        format!("the app's builds to reach generation {generation:?}"),
+        || tilo_app_module::current(updates).unwrap() == generation,
+    );
 }
