@@ -72,10 +72,10 @@ async fn follows_field(workspaces: &Workspaces, workspace: &str, field: &str, wa
             let holds = held
                 .and_then(|bytes| automerge::AutoCommit::load(&bytes).ok())
                 .and_then(|doc| {
-                    doc.get(automerge::ROOT, "offline")
+                    doc.get(automerge::ROOT, field)
                         .ok()
                         .flatten()
-                        .and_then(|value| value.into_string().ok())
+                        .and_then(|(value, _)| value.into_string().ok())
                 });
             if holds.as_deref() == Some(wanted) {
                 return;
