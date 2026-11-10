@@ -678,6 +678,93 @@ fn choosing_a_row_brings_its_field_into_view_on_the_page() {
     assert_eq!(scrolls, [(None, Some("d1e3".to_owned()))]);
 }
 
+/// The fields of a frame the tab's actors read or acted in are reviewed
+/// with the page's own, under their frame: what each holds and who set it.
+/// A frame's form is its own document's, whatever id it shares with a form
+/// of the page, and choosing its row brings the field into view in that
+/// frame.
+#[test]
+fn the_fields_of_a_frame_are_reviewed_under_their_frame() {
+    let (engine, mut app) = window();
+    page_holds(
+        &engine,
+        &[("Given names", "text", "Maria Elena", by("agent:ada", 1))],
+        &[],
+    );
+    // The fields read lists the frame's fields after the page's own, each
+    // with the frame it is in.
+    engine.set_page_data(
+        "fields",
+        json!({"fields": [
+            {"element": "d1e2", "role": "textbox", "name": "Given names",
+                "value": "Maria Elena", "form": "form1", "question": "Given names",
+                "set": by("agent:ada", 1)},
+            {"element": "d3e2", "role": "textbox", "name": "Card number",
+                "value": "<16 characters hidden>", "form": "form1", "question": "Card number",
+                "frame": "3", "set": {"how": "input"}},
+            {"element": "d3e3", "role": "textbox", "name": "Name on card",
+                "value": "Ada Lovelace", "form": "form1", "question": "Name on card",
+                "frame": "3", "set": by("agent:ben", 2)},
+        ]}),
+    );
+    invoke(&mut app, None, &BrowserEffect::ReviewPage);
+    eventually(&mut app, "the review lists the frame's fields", |app| {
+        app.harness()
+            .targets()
+            .contains_key("browser.review.frame3.form1.1")
+    });
+    assert!(
+        app.texts().iter().any(|text| text.contains("In frame 3")),
+        "{:?}",
+        app.texts()
+    );
+    assert!(row_says(
+        &mut app,
+        "Given names",
+        &["Maria Elena", "Set by ada"]
+    ));
+    assert_eq!(
+        row(&mut app, "Card number").as_deref(),
+        Some("Set, Typed into the page"),
+        "a secret in a frame is said as set"
+    );
+    assert!(row_says(
+        &mut app,
+        "Name on card",
+        &["Ada Lovelace", "Set by ben"]
+    ));
+    assert!(
+        app.harness()
+            .targets()
+            .contains_key("browser.review.form1.0"),
+        "the page's own form keeps its rows"
+    );
+
+    app.harness()
+        .click_named("browser.review.frame3.form1.1")
+        .expect("the row of the name on the card");
+    eventually(&mut app, "the page shows again", |app| {
+        app.harness().targets().contains_key("browser.surface")
+    });
+    let scrolls: Vec<_> = page_asks(&engine)
+        .into_iter()
+        .filter_map(|(actor, request)| match request {
+            PageRequest::Scroll {
+                into_view, frame, ..
+            } => Some((actor, into_view, frame)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        scrolls,
+        [(
+            None,
+            Some("d3e3".to_owned()),
+            ui::webview::FrameId::parse("3")
+        )]
+    );
+}
+
 /// The screenshot scenario reviews an application two agents and a person
 /// filled: every mark the review has, from the engine's own answer shapes.
 #[test]

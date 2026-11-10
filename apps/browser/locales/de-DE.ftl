@@ -255,6 +255,7 @@ browser-review-unreadable = Diese Seite konnte nicht gelesen werden
 browser-review-unreadable-hint = Laden Sie die Seite neu und versuchen Sie es erneut.
 browser-review-form-untitled = Formular
 browser-review-form-other = Weitere Felder
+browser-review-form-in-frame = In Frame { $name }
 browser-review-question-unnamed = Unbenanntes Feld
 browser-review-no-answer = Keine Antwort
 browser-review-yes = Ja

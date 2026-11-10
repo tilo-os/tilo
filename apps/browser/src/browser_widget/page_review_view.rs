@@ -9,6 +9,10 @@
 //! closes it. Choosing a row is the page's `show-page-field` action: the
 //! page again, with that field in view.
 //!
+//! The fields of the frames the tab's actors read or acted in are listed
+//! after the page's own, under their frame: the fields read answers them
+//! with the frame each is in.
+//!
 //! Nothing it shows is its own. It asks the engine for the page's forms, its
 //! fields and the tab's record, the reads `read-page-forms`,
 //! `read-page-fields` and `read-page-record` make, and draws what they
@@ -552,7 +556,10 @@ fn set_by_text(set: &SetBy) -> Option<String> {
 
 /// One form: its name, then a row per question.
 fn form_section(form: &Form, page: Option<&ResourceSpec>) -> Section {
-    let label = if !form.label.is_empty() {
+    let label = if let Some(frame) = &form.frame {
+        // No forms read names a frame's form: it is said by its frame.
+        named("browser-review-form-in-frame", frame)
+    } else if !form.label.is_empty() {
         form.label.clone()
     } else if form.id.is_empty() {
         t("browser-review-form-other")
@@ -564,11 +571,16 @@ fn form_section(form: &Form, page: Option<&ResourceSpec>) -> Section {
     } else {
         &form.id
     };
+    // A frame's forms are numbered in its own document, as the page's are.
+    let place = match &form.frame {
+        Some(frame) => format!("frame{frame}.{place}"),
+        None => place.to_owned(),
+    };
     let rows = form
         .questions
         .iter()
         .enumerate()
-        .map(|(index, question)| question_row(place, index, question, page))
+        .map(|(index, question)| question_row(&place, index, question, form.frame.as_deref(), page))
         .collect();
     Section::new(rows).with_header(SectionHeader::heading(label).count(form.questions.len()))
 }
@@ -579,6 +591,7 @@ fn question_row(
     form: &str,
     index: usize,
     question: &Question,
+    frame: Option<&str>,
     page: Option<&ResourceSpec>,
 ) -> Element {
     let name = if question.name.trim().is_empty() {
@@ -618,6 +631,10 @@ fn question_row(
     if let (Some(element), Some(page)) = (&question.element, page) {
         let mut arguments = serde_json::Map::new();
         arguments.insert("element".into(), element.clone().into());
+        // A field of a frame is brought into view in that frame's document.
+        if let Some(frame) = frame {
+            arguments.insert("frame".into(), frame.into());
+        }
         if let Ok(binding) = ActionBinding::static_json_for(page, "show-page-field", arguments) {
             row = row.on_action(binding).disclosure();
         }

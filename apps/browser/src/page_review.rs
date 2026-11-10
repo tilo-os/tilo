@@ -83,6 +83,9 @@ pub(crate) struct Form {
     pub(crate) id: String,
     /// Its own name or the heading it stands under; empty when it has none.
     pub(crate) label: String,
+    /// The frame whose document holds it, by the number the tab calls the
+    /// frame by; `None` for a form of the page's own document.
+    pub(crate) frame: Option<String>,
     pub(crate) questions: Vec<Question>,
 }
 
@@ -127,6 +130,56 @@ fn hidden_length(value: &str) -> Option<u64> {
         .strip_suffix(" characters hidden>")?
         .parse()
         .ok()
+}
+
+/// The frame a field is in, as the fields read says it of a field of a
+/// frame's document: the number the tab calls the frame by. `None` for a
+/// field of the page's own document.
+fn frame_of(field: &Value) -> Option<String> {
+    let said = match field.get("frame")? {
+        Value::String(frame) => frame.clone(),
+        Value::Number(frame) => frame.to_string(),
+        _ => return None,
+    };
+    ui::webview::FrameId::parse(&said).map(|frame| frame.as_str().to_owned())
+}
+
+/// List `fields`, which no forms read names, grouped by the question the
+/// fields read gives each, under the forms of `frame`'s document it puts
+/// them in (`None`: the page's own).
+fn list_alone(out: &mut Vec<Form>, frame: Option<&str>, fields: &[&Value]) {
+    let mut left: Vec<(&str, &str, Vec<&Value>)> = Vec::new();
+    for field in fields {
+        let form = text(field, "form");
+        let question = text(field, "question");
+        let same = left
+            .iter_mut()
+            .find(|(of, name, _)| !question.is_empty() && *of == form && *name == question);
+        match same {
+            Some((_, _, answers)) => answers.push(*field),
+            None => left.push((form, question, vec![*field])),
+        }
+    }
+    for (form, question, answers) in left {
+        let name = if question.is_empty() {
+            answers.first().map_or("", |field| text(field, "name"))
+        } else {
+            question
+        };
+        let question = Question::read(name, None, &answers);
+        match out
+            .iter_mut()
+            .find(|listed| listed.id == form && listed.frame.as_deref() == frame)
+        {
+            Some(listed) => listed.questions.push(question),
+            None => out.push(Form {
+                id: form.to_owned(),
+                label: String::new(),
+                frame: frame.map(str::to_owned),
+                questions: vec![question],
+            }),
+        }
+    }
 }
 
 /// Who set a field, as the fields read says it; `None` where it says
@@ -308,7 +361,13 @@ impl Fields {
     /// them when the forms read gave nothing) is listed after them, under the
     /// form the fields read puts it in.
     pub(crate) fn read(forms: Option<&Value>, fields: &Value) -> Self {
-        let listed = list(Some(fields), "fields");
+        let all = list(Some(fields), "fields");
+        // The page's own fields: a field of a frame says which frame, and is
+        // listed after them under that frame.
+        let listed: Vec<&Value> = all
+            .iter()
+            .filter(|field| frame_of(field).is_none())
+            .collect();
         let mut taken = vec![false; listed.len()];
         let mut out: Vec<Form> = Vec::new();
         for form in list(forms, "forms") {
@@ -316,13 +375,13 @@ impl Fields {
             let mut questions = Vec::new();
             for asked in list(Some(form), "fields") {
                 let name = text(asked, "name");
-                let mut answers = Vec::new();
+                let mut answers: Vec<&Value> = Vec::new();
                 for (index, field) in listed.iter().enumerate() {
                     if text(field, "form") == id && text(field, "question") == name {
                         if let Some(slot) = taken.get_mut(index) {
                             *slot = true;
                         }
-                        answers.push(field);
+                        answers.push(*field);
                     }
                 }
                 questions.push(Question::read(name, Some(&Asked::of(asked)), &answers));
@@ -331,38 +390,34 @@ impl Fields {
                 out.push(Form {
                     id: id.to_owned(),
                     label: text(form, "label").trim().to_owned(),
+                    frame: None,
                     questions,
                 });
             }
         }
         // What is left, grouped by the question the fields read gives it.
-        let mut left: Vec<(&str, &str, Vec<&Value>)> = Vec::new();
-        for (field, _) in listed.iter().zip(&taken).filter(|(_, taken)| !**taken) {
-            let form = text(field, "form");
-            let question = text(field, "question");
-            let same = left
-                .iter_mut()
-                .find(|(of, name, _)| !question.is_empty() && *of == form && *name == question);
-            match same {
-                Some((_, _, answers)) => answers.push(field),
-                None => left.push((form, question, vec![field])),
+        let left: Vec<&Value> = listed
+            .iter()
+            .zip(&taken)
+            .filter(|(_, taken)| !**taken)
+            .map(|(field, _)| *field)
+            .collect();
+        list_alone(&mut out, None, &left);
+        // The fields of each frame the read reached, in the order it listed
+        // the frames. No forms read names them: they are grouped by the
+        // question the fields read gives each.
+        let mut frames: Vec<String> = Vec::new();
+        for frame in all.iter().filter_map(frame_of) {
+            if !frames.contains(&frame) {
+                frames.push(frame);
             }
         }
-        for (form, question, answers) in left {
-            let name = if question.is_empty() {
-                answers.first().map_or("", |field| text(field, "name"))
-            } else {
-                question
-            };
-            let question = Question::read(name, None, &answers);
-            match out.iter_mut().find(|listed| listed.id == form) {
-                Some(listed) => listed.questions.push(question),
-                None => out.push(Form {
-                    id: form.to_owned(),
-                    label: String::new(),
-                    questions: vec![question],
-                }),
-            }
+        for frame in &frames {
+            let own: Vec<&Value> = all
+                .iter()
+                .filter(|field| frame_of(field).as_deref() == Some(frame.as_str()))
+                .collect();
+            list_alone(&mut out, Some(frame.as_str()), &own);
         }
         Self { forms: out }
     }
@@ -748,5 +803,60 @@ mod tests {
         assert_eq!(record.take(&other), (true, false));
         assert_eq!(record.steps.len(), 1);
         assert_eq!(record.steps[0].actor, "agent:cy");
+    }
+
+    /// A frame's fields are listed after the page's own, under their frame,
+    /// by the question the fields read gives each. A form of a frame is its
+    /// own document's: a question it shares a name with is not the page's.
+    #[test]
+    fn the_fields_of_a_frame_are_listed_under_their_frame() {
+        let (forms, _) = page();
+        let fields = json!({"fields": [
+            {"element": "d1e2", "role": "textbox", "name": "Given names", "value": "Maria Elena",
+                "form": "form1", "question": "Given names"},
+            {"element": "d3e2", "role": "textbox", "name": "Card number",
+                "value": "<16 characters hidden>", "form": "form1", "question": "Card number",
+                "frame": "3", "set": {"how": "input"}},
+            {"element": "d3e3", "role": "textbox", "name": "Given names", "value": "Ada",
+                "form": "form1", "question": "Given names", "frame": "3"},
+            {"element": "d5e1", "role": "searchbox", "name": "Search", "value": "", "frame": 5},
+            // What names no frame an outline printed is no frame's field.
+            {"element": "d9e1", "role": "textbox", "name": "Stray", "value": "", "frame": "x; y"},
+        ]});
+        let review = Fields::read(Some(&forms), &fields);
+        let listed: Vec<(Option<&str>, &str, usize)> = review
+            .forms
+            .iter()
+            .map(|form| {
+                (
+                    form.frame.as_deref(),
+                    form.id.as_str(),
+                    form.questions.len(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                (None, "form1", 6),
+                (None, "", 1),
+                (Some("3"), "form1", 2),
+                (Some("5"), "", 1)
+            ]
+        );
+        assert_eq!(
+            review.forms[0].questions[0].holds,
+            Holds::Text("Maria Elena".into()),
+            "the page's own question is answered by the page's own field"
+        );
+        let card = &review.forms[2].questions[0];
+        assert_eq!(
+            (card.name.as_str(), &card.holds, &card.set),
+            ("Card number", &Holds::Secret { set: true }, &SetBy::Input)
+        );
+        let given = &review.forms[2].questions[1];
+        assert_eq!(given.holds, Holds::Text("Ada".into()));
+        assert_eq!(given.element.as_deref(), Some("d3e3"));
+        assert_eq!(review.forms[3].questions[0].name, "Search");
     }
 }
