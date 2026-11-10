@@ -75,10 +75,12 @@ A method is the resource's action, its name in kebab case. An assignment (or
 "set", "value": "Doe"}}`. Items are named as steps too:
 `await document.edit("blocks", {"item": "c01e"}, "text", value="Buy oat milk")`.
 
-Types for the apps a workspace has are written by `tilo sdk gen --lang
-python -w <workspace>` into `tilo/types/`, declaring one class per resource
-kind over these proxies. Without them everything still works through
-`ws.resource(path)` and `ws.do(path, **args)`.
+The types of the built-in apps ship with the package: one module per app,
+declaring one class or interface per resource kind over these carriers
+(`from tilo.types.pdf_viewer import Document`). `tilo sdk gen --lang python -w <workspace>` writes a
+workspace's own apps' types, and `--out` names the directory they go in.
+Without generated types everything still works through `ws.resource(path)`
+and `ws.do(path, args)`.
 
 ## Tests
 
