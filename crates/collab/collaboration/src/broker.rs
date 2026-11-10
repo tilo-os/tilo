@@ -55,11 +55,18 @@ use realtime_stream::spawn_realtime_stream;
 mod key_fetch;
 #[path = "broker_key_schedule.rs"]
 mod key_schedule;
+#[path = "broker_route_join.rs"]
+mod route_join;
 use key_fetch::{
     FetchedKeys, KeyFetch, KeyQuery, answered_keys, certified_channel_keys, endpoint_channel_keys,
     update_route_keys,
 };
 use key_schedule::{KeyRound, KeySchedule, KeySignal};
+#[cfg(test)]
+use route_join::ROUTE_JOIN_WAIT;
+use route_join::{
+    JoinInputs, JoinedRoute, join_route, refuse_unjoined, start_route_join, waits_on_route,
+};
 #[path = "native_initial.rs"]
 pub mod native_initial;
 #[cfg(feature = "native")]
@@ -3669,6 +3676,41 @@ async fn drive_shovel(
     // The action directory the owner published while no primary route was
     // joined, sent as soon as one is.
     let mut unrouted_directory: Option<mpsc::SyncSender<ActionDirectoryRequest>> = None;
+    // The routes joining beside this loop ([`start_route_join`]), each with
+    // the commands that wait for it, in the order they came: one route's
+    // join never holds up the rest of the app's connection.
+    let mut joining = std::collections::HashMap::<String, Vec<(u64, QueuedSdkCommand)>>::new();
+    let (joined_tx, mut joined_rx) = tokio_mpsc::unbounded_channel::<JoinedRoute>();
+    // Commands whose route answered, and barriers whose joins ended, taken
+    // before anything newer, in the order they first came: each already had
+    // its place decided, and is not held again.
+    let mut replay = std::collections::VecDeque::<(u64, QueuedSdkCommand)>::new();
+    // The order commands came in, so what a join held back goes out in it.
+    let mut arrivals: u64 = 0;
+    // Publication barriers behind joins that were running when they came,
+    // with the routes each still waits for: a barrier answers for everything
+    // queued before it, a route's join and the writes waiting for it
+    // included, and for nothing queued after it.
+    let mut held_barriers = std::collections::VecDeque::<(
+        std::collections::HashSet<String>,
+        u64,
+        QueuedSdkCommand,
+    )>::new();
+    macro_rules! join_inputs {
+        () => {
+            JoinInputs {
+                asks_channel_keys,
+                key_signals: key_signals.clone(),
+                client: client.clone(),
+                presentation: presentation.clone(),
+                person: person.clone(),
+                participant_handle: participant_handle.clone(),
+                participant_kind,
+                inbound_tx: inbound_tx.clone(),
+                media_routes: media_routes.clone(),
+            }
+        };
+    }
 
     // How a route of this connection joins: the identity it joins as, as of
     // the last `Hello`.
@@ -3691,8 +3733,79 @@ async fn drive_shovel(
         let timed = asks_channel_keys
             && key_fetch.is_none()
             && key_schedule.timed(any_route_asking_on_timer(&routes));
-        let queued = tokio::select! {
-            queued = outbound_rx.recv() => queued,
+        let (queued, decided) = if let Some((arrival, next)) = replay.pop_front() {
+            (Some((arrival, next)), true)
+        } else {
+            let queued = tokio::select! {
+            queued = outbound_rx.recv() => queued.map(|queued| {
+                arrivals = arrivals.wrapping_add(1);
+                (arrivals, queued)
+            }),
+            Some((spec, joined)) = joined_rx.recv() => {
+                let key = spec.channel_id();
+                let mut waiting = joining.remove(&key).unwrap_or_default();
+                match joined {
+                    Ok(route) => {
+                        routes.entry(key.clone()).or_insert(route);
+                        note_route_join(&inbound_tx.state, &spec, Ok(()));
+                        // The owner holding changes for the route hears it
+                        // opened.
+                        inbound_tx.state.notify_events();
+                        if asks_channel_keys {
+                            // The route learns its keys (or that it waits)
+                            // before the edits that waited for it go out.
+                            if let Some(fetch) = key_fetch.take() {
+                                apply_fetched_keys(&routes, fetch.await, &mut signer, &inbound_tx)
+                                    .await;
+                            }
+                            let round = key_schedule.join_round();
+                            if let Some(fetch) =
+                                refresh_keys(&routes, &mut signer, &inbound_tx, &round).await
+                            {
+                                apply_fetched_keys(&routes, fetch.await, &mut signer, &inbound_tx)
+                                    .await;
+                            }
+                        }
+                    }
+                    Err(reason) => {
+                        // What reads the route hears that no read is coming,
+                        // the app is told the route cannot be reached, and
+                        // what waited for it is answered with the reason.
+                        inbound_tx
+                            .state
+                            .document_reads
+                            .join_failed(&key, reason.clone());
+                        note_route_join(&inbound_tx.state, &spec, Err(reason.clone()));
+                        inbound_tx.state.notify_events();
+                        let _ = inbound_tx.send_reply(CollabEvent::ChannelAccess {
+                            route: spec,
+                            state: crate::ChannelAccessState::Unavailable,
+                        });
+                        for (_, waited) in std::mem::take(&mut waiting) {
+                            refuse_unjoined(waited.command, &reason, &inbound_tx.state, &key);
+                        }
+                    }
+                }
+                for (waits_for, _, _) in &mut held_barriers {
+                    waits_for.remove(&key);
+                }
+                // The writes that waited for the route and the barriers whose
+                // joins all ended go out in the order they came: a barrier
+                // answers for what came before it, and not for a write that
+                // came after it and waited for the same join.
+                let mut released = waiting;
+                while held_barriers
+                    .front()
+                    .is_some_and(|(waits_for, _, _)| waits_for.is_empty())
+                {
+                    if let Some((_, arrival, barrier)) = held_barriers.pop_front() {
+                        released.push((arrival, barrier));
+                    }
+                }
+                released.sort_by_key(|(arrival, _)| *arrival);
+                replay.extend(released);
+                continue;
+            }
             // The broker hung up: every call on this connection now fails,
             // and nothing reconnects it (a host retry is a new connector).
             // Collaboration ends here, once, so the app goes offline instead
@@ -3740,11 +3853,16 @@ async fn drive_shovel(
                 }
                 continue;
             }
+            };
+            (queued, false)
         };
-        let Some(QueuedSdkCommand {
-            command,
-            _reservation,
-        }) = queued
+        let Some((
+            arrival,
+            QueuedSdkCommand {
+                command,
+                _reservation,
+            },
+        )) = queued
         else {
             break;
         };
@@ -3754,6 +3872,41 @@ async fn drive_shovel(
         if !inbound_tx.state.is_healthy() {
             stranded_break(&inbound_tx.state);
             break;
+        }
+        // A command for a route that has not joined waits for its join,
+        // which a write starts; the rest of the connection goes on.
+        if let Some((spec, starts)) = waits_on_route(&command).filter(|_| !decided) {
+            let key = spec.channel_id();
+            if !routes.contains_key(&key) && (starts || joining.contains_key(&key)) {
+                joining
+                    .entry(key)
+                    .or_insert_with(|| {
+                        start_route_join(join_inputs!(), spec, String::new(), joined_tx.clone());
+                        Vec::new()
+                    })
+                    .push((
+                        arrival,
+                        QueuedSdkCommand {
+                            command,
+                            _reservation,
+                        },
+                    ));
+                continue;
+            }
+        }
+        if !decided
+            && matches!(command, SdkCommand::PublicationBarrier(_))
+            && (!joining.is_empty() || !held_barriers.is_empty())
+        {
+            held_barriers.push_back((
+                joining.keys().cloned().collect(),
+                arrival,
+                QueuedSdkCommand {
+                    command,
+                    _reservation,
+                },
+            ));
+            continue;
         }
         let routes_before = routes.len();
         let document = command.document_len().is_some();
@@ -3839,25 +3992,22 @@ async fn drive_shovel(
                 }
             }
             SdkCommand::Join(spec, record_kind) => {
-                let joined = ensure_sdk_route(
-                    &join_context!(),
-                    &mut routes,
-                    &spec,
-                    record_kind.as_deref().unwrap_or(""),
-                )
-                .await;
-                // A read waiting for this route's first read hears that none
-                // is coming.
-                if let Err(error) = &joined {
-                    inbound_tx
-                        .state
-                        .document_reads
-                        .join_failed(&spec.channel_id(), error.clone());
+                // The route joins beside this loop; its answer comes back on
+                // `joined_rx`, failed or not, within `ROUTE_JOIN_WAIT`.
+                let key = spec.channel_id();
+                if routes.contains_key(&key) {
+                    note_route_join(&inbound_tx.state, &spec, Ok(()));
+                    inbound_tx.state.notify_events();
+                } else if let std::collections::hash_map::Entry::Vacant(entry) = joining.entry(key)
+                {
+                    entry.insert(Vec::new());
+                    start_route_join(
+                        join_inputs!(),
+                        spec,
+                        record_kind.unwrap_or_default(),
+                        joined_tx.clone(),
+                    );
                 }
-                // The owner holding changes for the route hears it opened or
-                // will not: either ends its wait for the route.
-                note_route_join(&inbound_tx.state, &spec, joined);
-                inbound_tx.state.notify_events();
             }
             SdkCommand::ToRoute(spec, request) => {
                 let key = spec.channel_id();
@@ -4241,222 +4391,12 @@ async fn ensure_sdk_route(
     spec: &RouteSpec,
     record_kind: &str,
 ) -> Result<(), String> {
-    let SdkJoinContext {
-        asks_channel_keys,
-        key_signals,
-        client,
-        presentation,
-        person,
-        participant_handle,
-        participant_kind,
-        inbound_tx,
-        media_routes,
-    } = *context;
     let channel_id = spec.channel_id();
     if routes.contains_key(&channel_id) {
         return Ok(());
     }
-    inbound_tx
-        .state
-        .connection_snapshots
-        .lock_recover()
-        .remove(&channel_id);
-    let identity_bytes = match person {
-        Some((workspace, proof)) if *workspace == spec.cluster_id.to_string() => proof.as_slice(),
-        _ => presentation,
-    };
-    // Each round trip of the join is marked, so a launch's startup line says which one
-    // its wait for the route went to (the route's join has been most of a cold start).
-    tilo_startup_metrics::startup_mark("collab-join-start");
-    let channel = match client
-        .join_channel_as_kind(
-            &channel_id,
-            identity_bytes,
-            participant_handle.unwrap_or(""),
-            broker_participant_kind(participant_kind),
-            record_kind,
-        )
-        .await
-    {
-        Ok(channel) => channel,
-        Err(error) => {
-            tracing::warn!(
-                "collab: joining channel {channel_id} failed ({error}); route unavailable"
-            );
-            return Err(format!("{}: {error}", super::ROUTE_JOIN_FAILED));
-        }
-    };
-    tilo_startup_metrics::startup_mark("collab-join-channel");
-
-    // Only the explicit agent constructors consume the eager workspace
-    // decision catalogue. Ordinary App owners discard that event and expose
-    // their own actions through publication and the bounded pull directory;
-    // acquiring every other app's inventory can prevent an unrelated app from
-    // starting. This selects a consumer, not authority: broker admission and
-    // per-action permissions are unchanged.
-    if participant_kind == "agent" {
-        // Queue the first decision baseline before document traffic so an
-        // agent cannot start deciding against stale local fallback data.
-        spawn_action_catalogue_stream(&channel, inbound_tx).await?;
-    }
-    let committed = committed_document::install(
-        &channel,
-        spec,
-        inbound_tx,
-        committed_document::NativeReadJoin {
-            client: client.clone(),
-            presentation: identity_bytes.to_vec(),
-            participant_handle: participant_handle.unwrap_or("").into(),
-            participant_kind: participant_kind.into(),
-            record_kind: record_kind.into(),
-        },
-    )
-    .await?;
-    tilo_startup_metrics::startup_mark("collab-join-committed-read");
-    if let Ok(runtime_collab::committed_document::Reply::ConnectionSnapshot(snapshot)) = channel
-        .committed_document(&runtime_collab::committed_document::Request::ConnectionSnapshot)
-        .await
-    {
-        if snapshot.app_id == spec.app_id
-            && snapshot.room == spec.cluster_id.to_string()
-            && snapshot.document == spec.record.as_deref().unwrap_or("")
-        {
-            inbound_tx
-                .state
-                .connection_snapshots
-                .lock_recover()
-                .insert(channel_id.clone(), snapshot);
-        }
-    }
-    tilo_startup_metrics::startup_mark("collab-join-connection-snapshot");
-    if committed {
-        // This reply contains only the original host-retained launch instance;
-        // a record label or app environment never becomes private authority.
-        let instance = match channel
-            .committed_document(&runtime_collab::committed_document::Request::PrivateWindowBinding)
-            .await
-        {
-            Ok(runtime_collab::committed_document::Reply::PrivateWindowBinding { instance }) => {
-                instance
-            }
-            _ => None,
-        };
-        inbound_tx
-            .state
-            .document_reads
-            .bind_private_window(&channel_id, instance)?;
-    }
-
-    // A workspace that seals its records takes every write encrypted under the
-    // record channel's keys, whoever reads the record for the app. A route
-    // whose endpoint has no keys to ask for refuses each write there.
-    let sealed = matches!(
-        channel
-            .committed_document(&runtime_collab::committed_document::Request::Writes)
-            .await,
-        Ok(runtime_collab::committed_document::Reply::Writes { sealed: true })
-    );
-    // A committed route's owner admits and applies each edit itself, and a
-    // committing host holds no channel keys: it could neither open a sealed
-    // edit nor accept cleartext on the route after one. Committed routes
-    // therefore stay cleartext end to end.
-    let encrypted = asks_channel_keys && (sealed || !committed);
-    let encryption = std::sync::Arc::new(std::sync::Mutex::new(if encrypted {
-        super::route_keys::RouteKeys::requested()
-    } else if sealed {
-        tracing::warn!(
-            app = %spec.app_id,
-            workspace = %spec.cluster_id,
-            "collab: this workspace seals every write and this connection holds no channel keys; its writes are refused"
-        );
-        super::route_keys::RouteKeys::unsealable()
-    } else {
-        super::route_keys::RouteKeys::plain()
-    }));
-    if encrypted {
-        follow_channel_keys(channel.clone(), channel_id.clone(), key_signals.clone());
-    }
-    tilo_startup_metrics::startup_mark("collab-join-window-binding");
-    change_waits::follow(&spec.app_id, &channel, inbound_tx);
-    // The streams are independent: subscribing to them together costs the
-    // join one broker round trip instead of one per stream.
-    let ((), (), (), (), (), (), presence) = tokio::join!(
-        async {
-            if !committed {
-                spawn_op_stream(
-                    &channel,
-                    RouteLabel::of(spec),
-                    inbound_tx,
-                    std::sync::Arc::clone(&encryption),
-                    encrypted.then(|| (channel_id.clone(), key_signals.clone())),
-                )
-                .await;
-            }
-        },
-        spawn_context_stream(&channel, spec.clone(), inbound_tx),
-        spawn_invocation_stream(&channel, spec, inbound_tx),
-        spawn_realtime_stream(&channel, inbound_tx),
-        async {
-            // This intentionally fails quietly for person sessions. An
-            // admitted agent gets a separate broker-addressed queue; a
-            // document agent never has to infer task work from workspace traffic.
-            if !crate::host::environment().identity.managed_agent_context {
-                spawn_task_run_stream(&channel, inbound_tx).await;
-            }
-        },
-        spawn_content_stream(&channel, spec.clone(), inbound_tx),
-        spawn_presence_stream(&channel, inbound_tx),
-    );
-    tilo_startup_metrics::startup_mark("collab-join-streams");
-    // Subscriptions are installed first so an existing holder's response
-    // cannot race ahead of our document stream.
-    if !committed && let Err(error) = channel.request_document_snapshot().await {
-        tracing::warn!(%error, "collab: late-join snapshot request failed");
-    }
-
-    // Each of these lanes is optional: without it the channel runs, and the
-    // warn the `map_err` closure writes says which feature it lost and why.
-    let checks = super::approved_checks::register(channel_id.clone(), channel.clone())
-        .map_err(|error| {
-            tracing::warn!(%error, "collab: approved project check lane unavailable");
-            error
-        })
-        .ok();
-    let moderation = super::external_moderation::register(channel_id.clone(), channel.clone())
-        .map_err(|error| {
-            tracing::warn!(%error, "collab: external moderation lane unavailable");
-            error
-        })
-        .ok();
-    let attribution = super::write_attribution_lane::register(channel_id.clone(), channel.clone())
-        .map_err(|error| {
-            tracing::warn!(%error, "collab: write attribution lane unavailable");
-            error
-        })
-        .ok();
-    media_routes.insert(channel_id.clone(), channel.clone());
-    if spec.record.is_none()
-        && participant_kind == "person"
-        && crate::host::environment()
-            .identity
-            .collab_service_configured
-    {
-        audio_output::install(channel.clone());
-    }
-    routes.insert(
-        channel_id,
-        SdkRoute {
-            _checks: checks,
-            _moderation: moderation,
-            _attribution: attribution,
-            spec: spec.clone(),
-            channel,
-            presence,
-            workspace_controls: std::collections::HashMap::new(),
-            committed,
-            encryption,
-        },
-    );
+    let route = join_route(context, spec, record_kind).await?;
+    routes.insert(channel_id, route);
     Ok(())
 }
 
@@ -6903,12 +6843,20 @@ mod tests {
         tilo_test_env::recv("the shovel to report its key schedule", &seen)
     }
 
-    /// Wait until the shovel has seen a queued document mutation find its
-    /// route not publishable: the mutation is held at the gate until the
-    /// route changes.
+    /// How often the shovel found a queued document mutation's route not
+    /// publishable so far: read before the step that queues the mutation.
     #[cfg(test)]
-    fn wait_held_at_publication_gate(state: &BridgeState) {
-        let before = state.publication_gate_waits.load(Ordering::Acquire);
+    fn publication_gate_waits(state: &BridgeState) -> usize {
+        state.publication_gate_waits.load(Ordering::Acquire)
+    }
+
+    /// Wait until the shovel has seen a queued document mutation find its
+    /// route not publishable since `before` ([`publication_gate_waits`]):
+    /// the mutation is held at the gate until the route changes. Read after
+    /// the mutation was queued, the count may already hold its one wait,
+    /// which then sleeps to its deadline without counting again.
+    #[cfg(test)]
+    fn wait_held_at_publication_gate(state: &BridgeState, before: usize) {
         tilo_test_env::wait_until(
             "the queued mutation to wait at the publication gate",
             || state.publication_gate_waits.load(Ordering::Acquire) > before,
@@ -6923,6 +6871,9 @@ mod tests {
     include!("directory_publication_tests.rs");
     #[cfg(test)]
     include!("committed_absent_tests.rs");
+    #[cfg(unix)]
+    #[cfg(test)]
+    include!("route_join_wait_tests.rs");
     #[cfg(test)]
     include!("committed_changes_tests.rs");
     use crate::CollaborationState;
@@ -6988,6 +6939,9 @@ mod tests {
         /// their `Await`s, as the session host does for an on-demand record
         /// its workspace's hosts have none of.
         pub committed_absent_channels: Vec<String>,
+        /// Never answer a committed Open on these channels, as a broker
+        /// whose read waits for an answer that never comes.
+        pub committed_open_unanswered_channels: Vec<String>,
         /// Hold committed-read `Await`s until this is notified, as the broker
         /// does until the read changes. Without it every `Await` fails, as a
         /// call to a broker can, and the reader re-Opens at its own pace.
@@ -8103,6 +8057,16 @@ mod tests {
                     );
                     committed_answer(&captures, &channel, Ok(open)).await
                 });
+            }
+            if let Ok(request @ (Ask::Open { .. } | Ask::OpenChanges { .. })) = &decoded {
+                let mut captures = self.captures();
+                if captures
+                    .committed_open_unanswered_channels
+                    .contains(&channel.channel_id)
+                {
+                    captures.committed_reads.push(request.clone());
+                    return Box::pin(std::future::pending());
+                }
             }
             committed_answer(&self.broker.captures, &channel.channel_id, decoded)
         }
@@ -10120,6 +10084,7 @@ mod tests {
         let ready = broker_state(&manager)
             .document_reads
             .close_for_test(&route.channel_id());
+        let before = publication_gate_waits(&broker_state(&manager));
         assert!(
             manager
                 .try_send_to_route(
@@ -10129,7 +10094,7 @@ mod tests {
                 .is_ok()
         );
         let pending = manager.begin_document_publication_barrier().unwrap();
-        wait_held_at_publication_gate(&broker_state(&manager));
+        wait_held_at_publication_gate(&broker_state(&manager), before);
         assert_eq!(
             pending.try_complete(),
             Ok(None),
@@ -10187,11 +10152,12 @@ mod tests {
         let key = manager.primary_route().unwrap().route.channel_id();
         let ready = state.document_reads.close_for_test(&key);
         let receipt = manager.begin_document_publication_barrier().unwrap();
+        let before = publication_gate_waits(&state);
         release.send(Ok(())).unwrap();
         tilo_test_env::wait_until("`captures.lock().unwrap().signed_ops.len() == 1`", || {
             captures.lock().unwrap().signed_ops.len() == 1
         });
-        wait_held_at_publication_gate(&state);
+        wait_held_at_publication_gate(&state, before);
         assert_eq!(
             receipt.try_complete(),
             Ok(None),
