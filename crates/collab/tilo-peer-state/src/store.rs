@@ -287,9 +287,9 @@ impl Store {
         let Some(stored) = held.workspaces.get(&workspace) else {
             return Ok(replay);
         };
-        let mut carried = 0_usize;
-        let mut carried_bytes = 0_u64;
-        'lineages: for (lineage, entries) in &stored.lineages {
+        // Each author line's frames after its cursor, in the line's order.
+        let mut pending: Vec<(Lineage, &[Entry])> = Vec::new();
+        for (lineage, entries) in &stored.lineages {
             let after = cursors
                 .iter()
                 .filter(|cursor| cursor.lineage == *lineage)
@@ -305,22 +305,56 @@ impl Store {
                     earliest_seq: first,
                 });
             }
-            for entry in entries {
-                if entry.seq <= after {
-                    continue;
-                }
-                if carried >= budget.max_frames
-                    || carried_bytes.saturating_add(entry.bytes) > budget.max_bytes
-                {
-                    replay.more = true;
-                    break 'lineages;
-                }
-                replay
-                    .frames
-                    .push(self.frame_at(workspace, *lineage, *entry)?);
-                carried = carried.saturating_add(1);
-                carried_bytes = carried_bytes.saturating_add(entry.bytes);
+            let from = entries.partition_point(|entry| entry.seq <= after);
+            if let Some(rest) = entries.get(from..)
+                && !rest.is_empty()
+            {
+                pending.push((*lineage, rest));
             }
+        }
+        // The lines are merged rather than sent one after another: a change
+        // is taken in only once its record holds a baseline, so each record's
+        // baselines go first, then every change in the order it was written.
+        // A line sent whole before the line holding the baseline left that
+        // line's changes held back for a baseline that came after them.
+        let mut carried = 0_usize;
+        let mut carried_bytes = 0_u64;
+        loop {
+            let next = pending
+                .iter()
+                .enumerate()
+                .filter_map(|(at, (lineage, rest))| {
+                    rest.first().map(|entry| {
+                        let key = (
+                            entry.retention != ContentRetention::Checkpoint,
+                            entry.authored_at_ns,
+                            *lineage,
+                        );
+                        (key, at)
+                    })
+                })
+                .min();
+            let Some((_, at)) = next else {
+                break;
+            };
+            let Some((lineage, rest)) = pending.get_mut(at) else {
+                break;
+            };
+            let Some((entry, after)) = rest.split_first() else {
+                break;
+            };
+            if carried >= budget.max_frames
+                || carried_bytes.saturating_add(entry.bytes) > budget.max_bytes
+            {
+                replay.more = true;
+                break;
+            }
+            replay
+                .frames
+                .push(self.frame_at(workspace, *lineage, *entry)?);
+            carried = carried.saturating_add(1);
+            carried_bytes = carried_bytes.saturating_add(entry.bytes);
+            *rest = after;
         }
         drop(held);
         Ok(replay)
@@ -830,7 +864,36 @@ mod tests {
                 other => panic!("a document frame, not {other:?}"),
             })
             .collect();
-        assert_eq!(seqs, vec![3, 4, 1], "lineage by lineage, in sequence order");
+        assert_eq!(
+            seqs,
+            vec![3, 1, 4],
+            "the baseline first, then the changes in the order they were written"
+        );
+    }
+
+    /// A member that catches up takes a change in only once its record holds a
+    /// baseline: the record's baseline is sent before any author's changes,
+    /// whichever author's line sorts first. A line sent whole before the
+    /// baseline's left the late member without that author's changes.
+    #[test]
+    fn replay_sends_a_records_baseline_before_its_changes() {
+        let (_dir, store) = open();
+        let channel = ChannelId::new();
+        let (mut founder, mut editor) = (device(2), device(3));
+        if frame(&editor, channel, 2, ContentRetention::Delta).lineage
+            > frame(&founder, channel, 1, ContentRetention::Checkpoint).lineage
+        {
+            // The editor's line sorts first, as a line sent whole once did.
+            std::mem::swap(&mut founder, &mut editor);
+        }
+        let baseline = frame(&founder, channel, 1, ContentRetention::Checkpoint);
+        let edit = frame(&editor, channel, 2, ContentRetention::Delta);
+        assert!(edit.lineage < baseline.lineage);
+        store.retain(WORKSPACE, &edit).unwrap();
+        store.retain(WORKSPACE, &baseline).unwrap();
+
+        let replay = store.replay(WORKSPACE, &[], Budget::default()).unwrap();
+        assert_eq!(replay.frames, vec![baseline.message, edit.message]);
     }
 
     #[test]
