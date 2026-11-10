@@ -40,6 +40,7 @@ impl RecordStore {
     /// readers. Callable while a frame reads the store.
     pub fn note_workspace_answered(&self, id: RecordId) {
         if let Ok(set) = self.0.try_borrow() {
+            set.wanted.borrow_mut().remove(&id);
             set.answered.borrow_mut().insert(id);
             set.kept.set(set.kept.get().wrapping_add(1));
         }

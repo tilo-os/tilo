@@ -118,7 +118,8 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
             tilo_test_env::within("a message on b_client", b_client.recv()).await,
             Some(Envelope::Ready {
                 workspace_id: 19,
-                pending_deltas: 1
+                pending_deltas: 1,
+                records_when_opened: false,
             })
         ));
     }
@@ -270,6 +271,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
                 Envelope::Ready {
                     workspace_id: 42,
                     pending_deltas: 0,
+                    records_when_opened: false,
                 } => {}
                 other => panic!("expected Ready(42, 0), got {other:?}"),
             }
@@ -352,6 +354,7 @@ async fn wait_for_ready_with_pending(
             Ok(Some(Envelope::Ready {
                 workspace_id: 9,
                 pending_deltas,
+                records_when_opened: false,
             })) => {
                 assert!(pending_deltas >= 1);
                 break;

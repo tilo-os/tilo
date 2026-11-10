@@ -240,9 +240,15 @@ pub(super) async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
         let replayed_frames = drive_replay(run, handle, peer, session, write).await?;
         crate::timing::event("join.replay_total", replaying, replayed_frames);
         authorize_replay(&ws, &StateSource::new(peer, session), &ticket.authority).await?;
+        // A host attached to the workspace was replayed every record.
+        let records_when_opened = {
+            let runtime = ws.lock().await;
+            runtime.store.records_when_opened() && !runtime.attached(&peer.device_public_key)
+        };
         reply = Some(Envelope::Ready {
             workspace_id,
             pending_deltas: u32::try_from(replayed_frames).unwrap_or(u32::MAX),
+            records_when_opened,
         });
         completed_replay = Some((
             catchup.clone(),

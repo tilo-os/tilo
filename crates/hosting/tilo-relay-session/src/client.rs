@@ -1559,6 +1559,7 @@ mod scheduling_tests {
         let frame = |id| Envelope::Ready {
             workspace_id: id,
             pending_deltas: 0,
+            records_when_opened: false,
         };
         let first =
             tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::State(frame(256))).unwrap();

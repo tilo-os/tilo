@@ -146,6 +146,7 @@ async fn catch_up_after_restart(
             Envelope::Ready {
                 workspace_id,
                 pending_deltas,
+                records_when_opened: false,
             } => {
                 assert_eq!(workspace_id, ws);
                 assert_eq!(pending_deltas, 1, "host reports the one queued delta");

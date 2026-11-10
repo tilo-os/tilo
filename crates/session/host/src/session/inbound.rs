@@ -111,14 +111,21 @@ impl Task {
             self.admit_governance();
         }
         match envelope {
-            Envelope::Ready { workspace_id, .. } => {
+            Envelope::Ready {
+                workspace_id,
+                records_when_opened,
+                ..
+            } => {
                 self.update(|status| {
                     status.workspaces.insert(workspace_id, true);
                 });
                 // The replay's documents reach the page before its `Ready`,
                 // as they arrived.
                 self.decide_held(workspace_id);
-                self.emit(&PeerEvent::Ready { workspace_id });
+                self.emit(&PeerEvent::Ready {
+                    workspace_id,
+                    records_when_opened,
+                });
             }
             Envelope::NotAuthorised {
                 workspace_id,

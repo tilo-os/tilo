@@ -23,6 +23,13 @@
 //!
 //! The declaration is the record id itself, because every host can read the
 //! route a change travels on, sealed or not.
+//!
+//! A workspace can also send all of its records on demand: a public one,
+//! which anyone may walk into, replays a newcomer only its governance, its
+//! shared desktop and the heads of its chains, whatever its records' ids say.
+//! Its host decides that for the workspace and says so in the `Ready` that
+//! ends a device's replay; the device then asks for every record it opens,
+//! and takes one as new only once the host answered it holds none of it.
 
 /// Role of a part of a chained record, in `derived:part.<n>@<base>`.
 const PART_ROLE: &str = "part.";

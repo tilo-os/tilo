@@ -138,7 +138,7 @@ impl BotParticipant {
 
     fn receive(&mut self, event: PeerEvent) {
         match event {
-            PeerEvent::Ready { workspace_id } if workspace_id == self.workspace_id => {
+            PeerEvent::Ready { workspace_id, .. } if workspace_id == self.workspace_id => {
                 self.ready = true;
             }
             PeerEvent::Document(document) => {

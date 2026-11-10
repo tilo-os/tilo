@@ -666,7 +666,7 @@ impl AgentParticipant {
 
     fn receive(&mut self, event: PeerEvent) {
         match event {
-            PeerEvent::Ready { workspace_id } if workspace_id == self.workspace_id => {
+            PeerEvent::Ready { workspace_id, .. } if workspace_id == self.workspace_id => {
                 if !self.ready {
                     self.settling = Some(Instant::now());
                 }

@@ -566,6 +566,13 @@ pub struct RecordSet {
     announced: std::cell::RefCell<std::collections::BTreeSet<RecordId>>,
     /// Records the workspace's hosts sent everything they hold of, until something of them arrives.
     answered: std::cell::RefCell<std::collections::BTreeSet<RecordId>>,
+    /// This store's records come from its workspace's hosts
+    /// ([`RecordStore::ask_workspace_for_missing`]): a record not here is
+    /// asked for and new only once they answered they hold none of it.
+    asks_workspace: std::cell::Cell<bool>,
+    /// The records not here that were opened while [`Self::asks_workspace`]:
+    /// what the workspace is asked for ([`RecordStore::wanted_records`]).
+    wanted: std::cell::RefCell<std::collections::BTreeSet<RecordId>>,
     /// The windows that read this store's records, woken when another replica's change arrives,
     /// which no input or wake of theirs announces.
     readers: std::cell::RefCell<Vec<crate::WakeHandle>>,
@@ -632,6 +639,8 @@ impl RecordSet {
             kept: std::cell::Cell::new(0),
             announced: std::cell::RefCell::default(),
             answered: std::cell::RefCell::default(),
+            asks_workspace: std::cell::Cell::new(false),
+            wanted: std::cell::RefCell::default(),
             readers: std::cell::RefCell::default(),
             _profile_lifetime: None,
         }
@@ -665,6 +674,8 @@ impl RecordSet {
             kept: std::cell::Cell::new(0),
             announced: std::cell::RefCell::default(),
             answered: std::cell::RefCell::default(),
+            asks_workspace: std::cell::Cell::new(false),
+            wanted: std::cell::RefCell::default(),
             readers: std::cell::RefCell::default(),
             _profile_lifetime: None,
         }
@@ -1793,6 +1804,8 @@ impl RecordOwners {
             kept: std::cell::Cell::new(0),
             announced: std::cell::RefCell::default(),
             answered: std::cell::RefCell::default(),
+            asks_workspace: std::cell::Cell::new(false),
+            wanted: std::cell::RefCell::default(),
             readers: std::cell::RefCell::default(),
             _profile_lifetime: self.profile_lifetime.clone(),
         });
@@ -2851,9 +2864,41 @@ impl RecordStore {
         ))
     }
 
-    /// Open Existing only; a missing document is never implicitly initialized. # Errors Reports
+    /// Open Existing only; a missing document is never implicitly initialized. In a store whose
+    /// records come from its workspace's hosts ([`Self::ask_workspace_for_missing`]) a record not
+    /// here is [`RecordOpenError::Arriving`] until they answered they hold none of it: only then is
+    /// it [`RecordOpenError::MissingRecord`], which a caller may take as new. # Errors Reports
     /// ownership contention, absence, identity or schema refusal and storage failures.
     pub fn try_open_record(
+        &self,
+        want: &RecordCheckout,
+    ) -> Result<RecordOpenOutcome, RecordOpenError> {
+        let opened = self
+            .0
+            .try_borrow_mut()
+            .map_err(|_| RecordOpenError::Busy)?
+            .try_open_record(want);
+        match opened {
+            Err(RecordOpenError::MissingRecord) if self.awaits_workspace(&want.id) => {
+                Err(RecordOpenError::Arriving)
+            }
+            Ok(outcome) => {
+                if let Ok(set) = self.0.try_borrow() {
+                    set.wanted.borrow_mut().remove(&want.id);
+                }
+                Ok(outcome)
+            }
+            other => other,
+        }
+    }
+
+    /// Open `want` if this store holds it, without asking the workspace for
+    /// one it does not hold: what a list checks for each record it could
+    /// name. [`RecordOpenError::MissingRecord`] says only that it is not here.
+    ///
+    /// # Errors
+    /// As [`Self::try_open_record`], a record not here always missing.
+    pub fn open_if_held(
         &self,
         want: &RecordCheckout,
     ) -> Result<RecordOpenOutcome, RecordOpenError> {
@@ -2861,6 +2906,45 @@ impl RecordStore {
             .try_borrow_mut()
             .map_err(|_| RecordOpenError::Busy)?
             .try_open_record(want)
+    }
+
+    /// Take this store's records to come from its workspace's hosts, which
+    /// may send a device a record only once it asks for it (a public
+    /// workspace sends a newcomer its governance and shared desktop, and the
+    /// rest when opened): a record not here is not new until they said they
+    /// hold none of it ([`Self::note_workspace_answered`]). Opening one asks
+    /// for it ([`Self::wanted_records`]) and is
+    /// [`RecordOpenError::Arriving`] meanwhile; it opens once it arrives.
+    /// Without this a record not here after the workspace's replay was
+    /// taken as new, and the fresh document a window founded overwrote or
+    /// forked the workspace's own.
+    pub fn ask_workspace_for_missing(&self) {
+        if let Ok(set) = self.0.try_borrow() {
+            set.asks_workspace.set(true);
+        }
+    }
+
+    /// The records opened here that are not here yet and that the
+    /// workspace's hosts have not answered: what to ask them for.
+    #[must_use]
+    pub fn wanted_records(&self) -> Vec<RecordId> {
+        self.0
+            .try_borrow()
+            .map(|set| set.wanted.borrow().iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Whether `id`, not here, waits for the workspace's hosts to send it or
+    /// to say they have none of it; it is wanted from them then.
+    fn awaits_workspace(&self, id: &RecordId) -> bool {
+        let Ok(set) = self.0.try_borrow() else {
+            return false;
+        };
+        if !set.asks_workspace.get() || set.answered.borrow().contains(id) {
+            return false;
+        }
+        set.wanted.borrow_mut().insert(id.clone());
+        true
     }
 
     /// Reserve a New identity with its gate and no document/history/writer yet:
@@ -4140,6 +4224,8 @@ pub use opening::RecordOpening;
 mod named_creation_tests;
 #[cfg(test)]
 mod replica_merge_tests;
+#[cfg(test)]
+mod workspace_answer_tests;
 
 #[cfg(test)]
 mod tests;

@@ -2040,7 +2040,8 @@ async fn interrupted_second_batch_preserves_entire_replay_until_reconnect() {
         reader.read_next().await.unwrap(),
         Some(EnvelopeV2::State(Envelope::Ready {
             workspace_id: 7,
-            pending_deltas: 25
+            pending_deltas: 25,
+            records_when_opened: false,
         }))
     );
     assert!(reader.read_next().await.unwrap().is_none());

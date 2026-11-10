@@ -823,6 +823,7 @@ impl Workspace {
             match event {
                 PeerEvent::Ready {
                     workspace_id: ready,
+                    ..
                 } if ready == workspace_id => {
                     self.ready = true;
                 }

@@ -276,6 +276,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Envelope::Position.workspace_id" = "#0 u64"
 "Envelope::Ready" = "#4 struct"
 "Envelope::Ready.pending_deltas" = "#1 u32"
+"Envelope::Ready.records_when_opened" = "#2 bool"
 "Envelope::Ready.workspace_id" = "#0 u64"
 "Envelope::RecordContent" = "#33 struct"
 "Envelope::RecordContent.frame" = "#3 Vec<u8> with=serde_bytes"

@@ -11,12 +11,14 @@ use ui::record::{RecordOwners, RecordStore};
 /// Each record in its owner's store of `workspace`: the one a window of the owner
 /// opened, or opened now and kept among `stores`, the stores the page flushes
 /// and replicates, so the record reaches every window of the workspace and every
-/// peer.
+/// peer. In a `replicated` workspace a store's records come from the
+/// workspace's hosts ([`RecordStore::ask_workspace_for_missing`]).
 pub(crate) fn in_page(
     owners: &RecordOwners,
     stores: &Rc<RefCell<Vec<RecordStore>>>,
     workspace: &str,
     author: String,
+    replicated: bool,
 ) -> WorkspaceRecords {
     let (owners, stores, workspace) = (owners.clone(), Rc::clone(stores), workspace.to_owned());
     WorkspaceRecords::new(UserId(author), move |owner| {
@@ -29,6 +31,9 @@ pub(crate) fn in_page(
             return Ok(store.clone());
         }
         let store = owners.clone().open_beside(owner, &workspace)?;
+        if replicated {
+            store.ask_workspace_for_missing();
+        }
         stores.borrow_mut().push(store.clone());
         Ok(store)
     })

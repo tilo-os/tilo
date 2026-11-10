@@ -549,6 +549,11 @@ impl Shared {
             .clone()
             .open(definition.app_id(), workspace)
             .map_err(|error| error.to_string())?;
+        // A record not here is the workspace's to send or to say it has none
+        // of, never a fresh one of this page's.
+        if self.record_actions.peer.is_some() {
+            store.ask_workspace_for_missing();
+        }
         self.stores.borrow_mut().push(store.clone());
         Ok(store)
     }
@@ -939,6 +944,7 @@ impl Tiles {
             &self.shared.stores,
             &self.inputs.workspace,
             self.inputs.author.clone(),
+            self.shared.record_actions.peer.is_some(),
         ));
         crate::person_records::provide(&mut context, &self.inputs.store)?;
         // Only registered control panels receive the administration capability.
@@ -999,7 +1005,9 @@ impl Tiles {
         let checkout = RecordCheckout::new(id, definition.record_kind.clone());
         match store.try_open_record(&checkout) {
             Ok(_) => {}
-            Err(ui::record::RecordOpenError::MissingRecord) => {
+            Err(
+                ui::record::RecordOpenError::MissingRecord | ui::record::RecordOpenError::Arriving,
+            ) => {
                 return Err("It shows once it reaches you".into());
             }
             Err(error) => return Err(error.to_string()),
@@ -1122,7 +1130,7 @@ impl Tiles {
         definition: &'static ApplicationDefinition,
         store: &RecordStore,
         tab: TabId,
-    ) -> Result<(LaunchTarget, Option<RecordId>), String> {
+    ) -> Result<(LaunchTarget, Option<RecordId>), Unready> {
         let saved = self.shared.records.borrow().get(&tab).cloned();
         match saved {
             Some(checkout) => Ok((
@@ -1135,11 +1143,22 @@ impl Tiles {
             None if definition.keeps_workspace_record() => Ok((
                 definition
                     .unsaved_target(store)
-                    .map_err(|error| error.to_string())?,
+                    .map_err(|error| self.unopened(tab, &error))?,
                 None,
             )),
             None => self.unbound_target(definition, store, tab),
         }
+    }
+
+    /// Why `tab`'s record did not open: one the workspace still sends (or
+    /// still has to say it has none of) keeps the window waiting for it,
+    /// built again once it is here, instead of starting one of its own.
+    fn unopened(&self, tab: TabId, error: &ui::record::RecordOpenError) -> Unready {
+        if matches!(error, ui::record::RecordOpenError::Arriving) {
+            self.shared.waiting.borrow_mut().insert(tab);
+            return Unready::Arriving;
+        }
+        Unready::Notice(error.to_string())
     }
 
     /// What a tab no record is bound to opens: the workspace's default record
@@ -1151,7 +1170,7 @@ impl Tiles {
         definition: &'static ApplicationDefinition,
         store: &RecordStore,
         tab: TabId,
-    ) -> Result<(LaunchTarget, Option<RecordId>), String> {
+    ) -> Result<(LaunchTarget, Option<RecordId>), Unready> {
         let default = RecordCheckout::new(
             RecordId::workspace_default(),
             definition.record_kind.clone(),
@@ -1176,7 +1195,7 @@ impl Tiles {
             Err(ui::record::RecordOpenError::MissingRecord) => {
                 Ok((LaunchTarget::New, Some(default.id)))
             }
-            Err(error) => Err(error.to_string()),
+            Err(error) => Err(self.unopened(tab, &error)),
         }
     }
 }

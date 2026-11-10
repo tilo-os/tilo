@@ -157,6 +157,7 @@ async fn p2_returns_and_drains(
             Envelope::Ready {
                 workspace_id: 3,
                 pending_deltas,
+                records_when_opened: false,
             } if pending_deltas == 1 || pending_deltas == 2 => ready = true,
             other => panic!("unexpected: {other:?}"),
         }
@@ -228,6 +229,7 @@ async fn peers_use_several_relays_and_fail_over() {
             Envelope::Ready {
                 workspace_id: 3,
                 pending_deltas: 0,
+                records_when_opened: false,
             } => {}
             other => panic!("expected empty Ready on relay2, got {other:?}"),
         }

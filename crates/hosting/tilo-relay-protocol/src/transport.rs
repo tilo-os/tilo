@@ -180,6 +180,12 @@ pub enum Envelope {
         /// Number of pending deltas queued for this peer that the
         /// relay is about to flush.
         pending_deltas: u32,
+        /// The workspace sends this peer its records only when it opens
+        /// them ([`Self::OpenRecord`]), as a public workspace does: the
+        /// replay carried its governance and shared desktop, and a record
+        /// the peer holds from before, or does not hold at all, is asked
+        /// for when it is opened, never taken as complete or as new.
+        records_when_opened: bool,
     },
 
     /// The relay's response to a subscribe that failed — e.g.
@@ -806,8 +812,9 @@ mod tests {
                 Envelope::Ready {
                     workspace_id: 7,
                     pending_deltas: 2,
+                    records_when_opened: true,
                 },
-                vec![4, 7, 2],
+                vec![4, 7, 2, 1],
             ),
             (
                 Envelope::NotAuthorised {

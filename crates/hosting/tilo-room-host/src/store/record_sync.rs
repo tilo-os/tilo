@@ -7,6 +7,13 @@
 //! A channel's record is read once, from the route of any frame retained on
 //! it, and remembered: a route never changes its channel. The heads of the
 //! chains are the highest parts this store has seen.
+//!
+//! A workspace can also load its records when opened as a whole
+//! ([`WorkspaceStore::set_records_when_opened`]): a public workspace, which
+//! anyone may walk into, sends a newcomer its governance and its shared
+//! desktop, and every other record only once the newcomer's page opens it.
+//! The heads of chained records stay as they are: a reader finds a chain's
+//! newest part by the parts it holds.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -48,6 +55,9 @@ pub(crate) enum Reach {
 #[derive(Default)]
 struct Classes {
     channels: HashMap<[u8; 32], Class>,
+    /// Every record but the shared desktop and the chains' heads reaches
+    /// only the devices that opened it.
+    when_opened: bool,
     /// Each chain's head: its highest part and that part's channel.
     heads: HashMap<String, (u64, [u8; 32])>,
     /// Lineages already read for their channel's record.
@@ -85,6 +95,9 @@ impl Classes {
 
     fn reach(&self, channel: &[u8; 32]) -> Option<Reach> {
         Some(match self.channels.get(channel)? {
+            Class::Eager if self.when_opened && *channel != desktop_channel() => {
+                Reach::Opened(*channel)
+            }
             Class::Eager => Reach::Everyone,
             Class::OnDemand | Class::Chunk => Reach::Opened(*channel),
             Class::Part { base, index } => {
@@ -112,6 +125,14 @@ enum LineageRecord {
 #[derive(Default)]
 pub(crate) struct RecordClasses(Mutex<Classes>);
 
+/// The retained channel of the workspace's shared desktop record: what a
+/// joining page shows first, sent to every device whichever way the
+/// workspace loads its records.
+fn desktop_channel() -> [u8; 32] {
+    use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
+    neighbour_wire::retention::app_document_channel(DESKTOP_APP, DESKTOP_RECORD)
+}
+
 /// The channel a retained lineage directory `<author>-<channel>` holds.
 fn lineage_channel(name: &OsStr) -> Option<[u8; 32]> {
     let (_, channel) = name.to_str()?.split_once('-')?;
@@ -122,6 +143,28 @@ fn lineage_channel(name: &OsStr) -> Option<[u8; 32]> {
 impl WorkspaceStore {
     fn classes(&self) -> std::sync::MutexGuard<'_, Classes> {
         self.capture_leases.records.0.lock_recover()
+    }
+
+    /// Load every record of this workspace but its shared desktop (and the
+    /// heads of its chains) only for the devices that open it, or, with
+    /// `false`, replay them to every device again. A public workspace does
+    /// the first: a newcomer is sent its governance and desktop, not
+    /// everything its crowd ever wrote. Captures list lineages afresh after
+    /// a change, so the next replay follows it.
+    pub(crate) fn set_records_when_opened(&self, when_opened: bool) {
+        let changed = {
+            let mut classes = self.classes();
+            std::mem::replace(&mut classes.when_opened, when_opened) != when_opened
+        };
+        if changed {
+            self.forget_listed(None);
+        }
+    }
+
+    /// Whether this workspace loads its records only when a device opens
+    /// them ([`Self::set_records_when_opened`]).
+    pub(crate) fn records_when_opened(&self) -> bool {
+        self.classes().when_opened
     }
 
     /// Who a retained frame on `channel`, whose co-edit body is `body`, goes
@@ -324,5 +367,23 @@ mod tests {
         classes.learn(first, &neighbour_wire::record_part("chat", 0));
         assert_eq!(classes.reach(&second), Some(Reach::Head(second)));
         assert_eq!(classes.reach(&[9; 32]), None);
+    }
+
+    #[test]
+    fn a_public_workspace_sends_every_record_but_its_desktop_and_chain_heads_when_opened() {
+        let mut classes = Classes {
+            when_opened: true,
+            ..Classes::default()
+        };
+        let (note, desktop, head) = ([1; 32], desktop_channel(), [3; 32]);
+        classes.learn(note, "note-1");
+        classes.learn(desktop, tilo_desktop_model::ownership::DESKTOP_RECORD);
+        classes.learn(head, &neighbour_wire::record_part("chat", 0));
+        assert_eq!(classes.reach(&note), Some(Reach::Opened(note)));
+        assert_eq!(classes.reach(&desktop), Some(Reach::Everyone));
+        // A reader finds a chain's newest part by the parts it holds.
+        assert_eq!(classes.reach(&head), Some(Reach::Head(head)));
+        classes.when_opened = false;
+        assert_eq!(classes.reach(&note), Some(Reach::Everyone));
     }
 }

@@ -384,6 +384,11 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         host: address.id,
         relay: relay_url.clone().expect("the host runs a packet relay"),
         desktop: &desktop,
+        note: &DocumentRoute {
+            app_id: "so.tilo.notes".into(),
+            cluster_id: lounge.workspace.clone(),
+            record: "note-0".into(),
+        },
     };
     let quick = guest_enters(&place, Duration::ZERO).await;
     quick.report("no delay");
@@ -487,6 +492,8 @@ struct Place<'a> {
     host: iroh::EndpointId,
     relay: iroh::RelayUrl,
     desktop: &'a DocumentRoute,
+    /// A record the members wrote, which a guest is sent once it opens it.
+    note: &'a DocumentRoute,
 }
 
 /// The network's round trip for the guest that counts them.
@@ -505,13 +512,13 @@ const MAX_ROUND_TRIPS: f64 = 8.5;
 /// The door, the workspace's challenge and the admission ride the session.
 const MAX_REQUESTS: usize = 1;
 
-/// What a fresh guest may receive before its desktop shows. Its keys to the
-/// desktop come only after the workspace's eager records (3.5 MB here) and its
-/// governance: a compressed base with the changes since, about 0.2 to 0.5 MB
-/// for 300 members, where the uncompressed history was 1.4 MB. So this bounds
-/// the whole workspace once over: a frame per record, governance sent twice or
-/// uncompressed, or records sent again cross it.
-const MAX_BYTES: u64 = 4_500_000;
+/// What a fresh guest may receive before its desktop shows: the workspace's
+/// governance (a compressed base with the changes since, about 0.2 to 0.5 MB
+/// for 300 members) and its shared desktop. The Lounge is public, so the
+/// members' records (3.5 MB here) come only when the guest opens them;
+/// governance sent twice or uncompressed, or any of those records sent with
+/// the desktop, crosses this.
+const MAX_BYTES: u64 = 1_800_000;
 
 /// One guest's entry, as it went.
 struct Entry {
@@ -605,6 +612,8 @@ async fn guest_enters(place: &Place<'_>, round_trip: Duration) -> Entry {
     page.open_route(place.desktop.clone()).unwrap();
     let (mut connected, mut admitted, mut ready, mut keyed_desktop, mut desktop_doc) =
         (None, None, None, None, None);
+    let mut when_opened = None;
+    let mut notes_before = 0_usize;
     let deadline = Instant::now() + Duration::from_secs(300);
     while desktop_doc.is_none() || keyed_desktop.is_none() {
         let status = page.status();
@@ -629,10 +638,18 @@ async fn guest_enters(place: &Place<'_>, round_trip: Duration) -> Entry {
             keyed_desktop = Some(started.elapsed());
         }
         for event in page.drain() {
-            if let PeerEvent::Document(document) = &event
-                && document.route == *place.desktop
-            {
-                desktop_doc.get_or_insert_with(|| started.elapsed());
+            match &event {
+                PeerEvent::Document(document) if document.route == *place.desktop => {
+                    desktop_doc.get_or_insert_with(|| started.elapsed());
+                }
+                PeerEvent::Document(document) if document.route.app_id == place.note.app_id => {
+                    notes_before += 1;
+                }
+                PeerEvent::Ready {
+                    records_when_opened,
+                    ..
+                } => when_opened = Some(*records_when_opened),
+                _ => {}
             }
         }
         assert!(
@@ -649,6 +666,45 @@ async fn guest_enters(place: &Place<'_>, round_trip: Duration) -> Entry {
     marks.push(("host admitted the subscription", ready.unwrap_or(shown)));
     marks.push(("desktop keyed", keyed_desktop.unwrap_or_default()));
     marks.push(("desktop record", desktop_doc.unwrap_or_default()));
+    // A public workspace sends its records when they are opened: none of the
+    // members' notes came with the desktop, and one opened now arrives.
+    assert_eq!(
+        notes_before, 0,
+        "a note reached the guest before it opened one"
+    );
+    page.open_record(place.workspace_id, place.note.clone())
+        .unwrap();
+    let (mut note, mut opened) = (false, None);
+    while !note || opened.is_none() || when_opened.is_none() {
+        for event in page.drain() {
+            match event {
+                PeerEvent::Document(document) if document.route == *place.note => note = true,
+                PeerEvent::RecordOpened { route, frames, .. } if route == *place.note => {
+                    opened = Some(frames);
+                }
+                PeerEvent::Ready {
+                    records_when_opened,
+                    ..
+                } => when_opened = Some(records_when_opened),
+                _ => {}
+            }
+        }
+        assert!(Instant::now() < deadline, "the opened note never arrived");
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    marks.push((
+        "a note opened after",
+        started.elapsed().saturating_sub(shown),
+    ));
+    assert_eq!(
+        when_opened,
+        Some(true),
+        "the guest was told records load when opened"
+    );
+    assert!(
+        opened.is_some_and(|frames| frames > 0),
+        "the host sent the note's frames"
+    );
     page.close();
     let http = std::mem::take(&mut *network.asked.lock().unwrap());
     let http_bytes: usize = http.iter().map(|(_, _, bytes)| bytes).sum();

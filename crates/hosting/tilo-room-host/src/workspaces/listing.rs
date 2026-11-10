@@ -175,6 +175,14 @@ impl Listings {
             .cloned()
     }
 
+    /// Whether `workspace` is public: listed in the directory.
+    pub(super) fn is_public(&self, workspace: &str) -> bool {
+        self.stored
+            .lock_recover()
+            .workspaces
+            .contains_key(workspace)
+    }
+
     fn listed(&self) -> Vec<(String, Listing)> {
         self.stored
             .lock_recover()
@@ -248,6 +256,33 @@ fn person(hex_key: &str) -> Result<[u8; 32], CollaborationError> {
 }
 
 impl Workspaces {
+    /// Have `workspace`'s host send its records to devices when they open
+    /// them (`when_opened`), as a public workspace does, or replay them to
+    /// every device again. A public workspace is one anyone may walk into:
+    /// what a newcomer waits for is its governance and its shared desktop,
+    /// not every record its crowd ever wrote.
+    async fn load_records_when_opened(&self, workspace: &str, when_opened: bool) {
+        let Ok(governed) = self.workspace(workspace).await else {
+            return;
+        };
+        let workspace_id = governed.lock().await.workspace_id();
+        let hosted = self
+            .inner
+            .host
+            .workspaces
+            .lock()
+            .await
+            .get(&workspace_id)
+            .cloned();
+        if let Some(hosted) = hosted {
+            hosted
+                .lock()
+                .await
+                .store
+                .set_records_when_opened(when_opened);
+        }
+    }
+
     /// Make `workspace` public with `listing`, as `device` asks: the workspace's
     /// governance must let its person change the workspace's settings.
     pub async fn publish(
@@ -273,6 +308,7 @@ impl Workspaces {
             .listings
             .set(workspace, Some(listing.clone()))
             .map_err(CollaborationError::new)?;
+        self.load_records_when_opened(workspace, true).await;
         tracing::info!(%workspace, role = ?listing.default_role, "workspace made public");
         Ok(listing)
     }
@@ -302,6 +338,7 @@ impl Workspaces {
             .listings
             .set(workspace, None)
             .map_err(CollaborationError::new)?;
+        self.load_records_when_opened(workspace, false).await;
         tracing::info!(%workspace, "workspace no longer public");
         Ok(())
     }

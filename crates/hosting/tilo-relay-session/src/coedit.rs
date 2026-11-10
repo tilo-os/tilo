@@ -790,6 +790,7 @@ mod tests {
             Envelope::Ready {
                 workspace_id: 42,
                 pending_deltas: 0,
+                records_when_opened: false,
             },
         ];
         for frame in bad {

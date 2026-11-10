@@ -625,7 +625,9 @@ async fn assert_page_reads_the_chat(
         || {
             for event in visiting.drain() {
                 match &event {
-                    PeerEvent::Ready { workspace_id: at } if *at == workspace_id => {
+                    PeerEvent::Ready {
+                        workspace_id: at, ..
+                    } if *at == workspace_id => {
                         ready = true;
                     }
                     // The room's other records arrive too; only the chat is read.

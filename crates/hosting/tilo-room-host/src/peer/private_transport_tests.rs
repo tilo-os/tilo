@@ -730,7 +730,8 @@ async fn retained_replay_failure_and_duplicate_retirement_are_recoverable() {
             other,
             Envelope::Ready {
                 workspace_id: 7,
-                pending_deltas: 3
+                pending_deltas: 3,
+                records_when_opened: false,
             }
         ]
     );

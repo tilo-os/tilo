@@ -1763,6 +1763,9 @@ impl Workspaces {
         .await
         .map_err(|error| error.to_string())?;
         let mut runtime = runtime_state.lock().await;
+        runtime
+            .store
+            .set_records_when_opened(self.inner.listings.is_public(&workspace));
         // This relay's workspace authority governs the workspace: never auto-enrol,
         // even if the workspace was autobound before the authority took it.
         if std::mem::replace(

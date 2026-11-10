@@ -130,7 +130,7 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
         peer.drain()
             .iter()
             .any(|event| {
-                matches!(event, PeerEvent::Ready { workspace_id } if *workspace_id == workspace())
+                matches!(event, PeerEvent::Ready { workspace_id, .. } if *workspace_id == workspace())
             })
             .then_some(())
     })

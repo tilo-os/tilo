@@ -44,6 +44,7 @@ mod connect;
 mod entry;
 mod governance;
 mod inbound;
+mod opened_records;
 mod plane;
 mod voice;
 
@@ -318,6 +319,12 @@ pub enum PeerEvent {
     Ready {
         /// The workspace id.
         workspace_id: u64,
+        /// The workspace sends this device its records only when it opens
+        /// them, as a public workspace does: a record this device holds no
+        /// copy of, or one from before, is asked for when it is opened
+        /// ([`PeerHandle::open_record`]), and is new only once the host
+        /// answered it has none ([`PeerEvent::RecordOpened`]).
+        records_when_opened: bool,
     },
     /// A commit became durable on the host.
     Committed {
@@ -793,6 +800,8 @@ impl PeerHandle {
             reassembly: Reassembly::default(),
             positions: BTreeMap::new(),
             opened_records: BTreeMap::new(),
+            opened_routes: BTreeSet::new(),
+            when_opened: BTreeSet::new(),
             doc_seq: 0,
             barriers: Vec::new(),
             held_barriers: Vec::new(),
@@ -1319,6 +1328,12 @@ struct Task {
     /// The on-demand records this page opened, by retained channel: opened
     /// again after every resubscription.
     opened_records: BTreeMap<[u8; 32], (u64, DocumentRoute)>,
+    /// The routes this session was asked to open ([`PeerHandle::open_route`]):
+    /// in a workspace that sends records when opened, each is opened as a
+    /// record too, so it arrives.
+    opened_routes: BTreeSet<DocumentRoute>,
+    /// The workspaces whose host said they send records only when opened.
+    when_opened: BTreeSet<u64>,
     doc_seq: u64,
     barriers: Vec<([u8; 16], Completion)>,
     /// Barriers called while frames were held, with the routes those frames
@@ -1404,7 +1419,16 @@ impl Task {
             Envelope::WorkspaceBootstrap { workspace_id, .. } => {
                 self.introduce(client, *workspace_id)
             }
-            Envelope::Ready { workspace_id, .. } => self.announce(client, *workspace_id),
+            Envelope::Ready {
+                workspace_id,
+                records_when_opened,
+                ..
+            } => {
+                if *records_when_opened {
+                    self.records_when_opened(*workspace_id, Some(client));
+                }
+                self.announce(client, *workspace_id)
+            }
             _ => true,
         }
     }
@@ -2202,7 +2226,14 @@ impl Task {
             }
             Command::OpenRoute(route) => {
                 self.open_channel(&route);
-                true
+                let asked = match route.workspace_id() {
+                    Ok(workspace_id) if self.when_opened.contains(&workspace_id) => {
+                        self.open_record_once(workspace_id, &route, client)
+                    }
+                    _ => true,
+                };
+                self.opened_routes.insert(route);
+                asked
             }
             Command::Publish(route, frames) => self.publish(route, frames, client).await,
             Command::Compact(request, snapshot) => self.compact(request, snapshot, client).await,
@@ -2706,53 +2737,6 @@ impl Task {
         }
         self.persist();
         delivered
-    }
-
-    /// Open the on-demand record `route` of `workspace_id`, and ask for its
-    /// keys at the same time. Returns `false` when the session could not
-    /// take the request.
-    fn open_record(
-        &mut self,
-        workspace_id: u64,
-        route: DocumentRoute,
-        client: Option<&RelayClient>,
-    ) -> bool {
-        let channel = neighbour_wire::app_document_channel(&route.app_id, &route.record);
-        self.open_channel(&route);
-        self.opened_records.insert(channel, (workspace_id, route));
-        client.is_none_or(|client| {
-            client
-                .send(Envelope::OpenRecord {
-                    workspace_id,
-                    channel,
-                })
-                .is_ok()
-        })
-    }
-
-    /// The host sent everything it holds of a record this page opened.
-    fn record_opened(&mut self, workspace_id: u64, channel: [u8; 32], frames: u32) {
-        if let Some(route) = self.owed_replays.remove(&channel) {
-            let artifact =
-                collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record);
-            let given_up = self
-                .held_inbound
-                .get_mut(&route)
-                .map(|held| held.give_up_owed(artifact))
-                .unwrap_or_default();
-            for owed in given_up {
-                let error = format!("the host's replay has no document {owed}");
-                self.refused = (self.refused.0.saturating_add(1), error.clone());
-                self.emit(&PeerEvent::DocumentRejected(error));
-            }
-        }
-        if let Some((_, route)) = self.opened_records.get(&channel) {
-            self.emit(&PeerEvent::RecordOpened {
-                workspace_id,
-                route: route.clone(),
-                frames,
-            });
-        }
     }
 
     /// Hold `token` for the rest of this session: what a page sends with

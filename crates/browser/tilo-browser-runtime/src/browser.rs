@@ -1433,6 +1433,7 @@ fn present_component(
         &stores,
         &config.workspace,
         config.author(),
+        config.peer.is_some(),
     ));
     crate::person_records::provide(&mut context, dyn_store).map_err(error)?;
     config.lend_provider_admin(&mut context)?;

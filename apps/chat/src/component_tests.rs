@@ -1706,3 +1706,72 @@ fn a_new_message_leaves_the_window_at_rest() {
     frame.close_components();
     eprintln!("{report}");
 }
+
+/// A newcomer's page in a public workspace holds none of the workspace's chat
+/// until it opens it, the workspace sending it then. Opening Chat before it
+/// arrived waits for it, however often it is asked, and opens the
+/// workspace's chat once it is here: never a fresh chat of the page's own,
+/// whose first publication would have replaced or forked everyone's.
+#[test]
+fn a_newcomer_opening_chat_waits_for_the_workspaces_chat_and_never_founds_one() {
+    use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
+    use std::rc::Rc;
+    use ui::application::LaunchTarget;
+    use ui::record::{RecordCheckout, RecordOpenError, RecordOwners};
+
+    let definition = crate::definition();
+    let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab";
+    let primary = RecordCheckout::package_primary(definition.record_kind.clone());
+    // The workspace's chat, as a member's device started it.
+    let elsewhere = RecordOwners::with_store(Rc::new(MemoryStore::queued()))
+        .open(definition.app_id(), workspace)
+        .unwrap();
+    let identity = LocalIdentity::demo();
+    elsewhere
+        .reserve_record(&primary)
+        .unwrap()
+        .initialize(|doc| {
+            crate::testing::starter(doc, &identity.id, &identity.name, &identity.initials);
+            Ok(())
+        })
+        .unwrap();
+    let (theirs, heads) = elsewhere.replication_snapshot(&primary.id).unwrap();
+
+    let memory = Rc::new(MemoryStore::queued());
+    let page = RecordOwners::with_store(Rc::clone(&memory) as Rc<dyn durable_store::DurableStore>)
+        .open(definition.app_id(), workspace)
+        .unwrap();
+    page.ask_workspace_for_missing();
+    for _ in 0..2 {
+        assert!(
+            matches!(
+                definition.unsaved_target(&page),
+                Err(RecordOpenError::Arriving)
+            ),
+            "a chat not here yet is on its way, not a new one"
+        );
+    }
+    assert!(!page.is_ready(&primary.id), "no chat was founded");
+
+    // The workspace sends its chat, which the page keeps for whoever opens it.
+    memory
+        .write(
+            &StorageKey::workspace_index(definition.app_id(), workspace),
+            WriteOp::Replace(theirs),
+            None,
+        )
+        .unwrap();
+    page.note_kept();
+    assert!(matches!(
+        definition.unsaved_target(&page),
+        Ok(LaunchTarget::Record { .. })
+    ));
+    let opened = page
+        .read(&primary.id, |doc| {
+            heads
+                .iter()
+                .all(|head| doc.get_change_by_hash(head).is_some())
+        })
+        .unwrap();
+    assert!(opened, "the page opened the workspace's chat");
+}

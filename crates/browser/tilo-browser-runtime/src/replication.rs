@@ -104,6 +104,13 @@ pub(crate) struct Joined {
     /// Where `store` lives.
     kept: Kept,
     ready: bool,
+    /// The workspace sends this page a record only once it is opened (a
+    /// public workspace): every record a mount opens is asked for, the
+    /// copy this page kept from before included.
+    when_opened: bool,
+    /// The records not here that this page asked the workspace for, as wire
+    /// `(app, record)` ([`ui::record::RecordStore::wanted_records`]).
+    asked: HashSet<(String, String)>,
     mounts: HashMap<u64, Mounted>,
     desktop: DocumentReplica,
     /// How this page sends its desktop to the workspace.
@@ -211,6 +218,8 @@ pub(crate) fn open(
         store,
         kept,
         ready: false,
+        when_opened: false,
+        asked: HashSet::new(),
         mounts: HashMap::new(),
         desktop: DocumentReplica::new(AutoCommit::new()),
         desktop_sending: DesktopSending::Snapshot,
@@ -889,8 +898,12 @@ impl Joined {
         let mut content_arrived = false;
         for event in self.events.drain() {
             match event {
-                PeerEvent::Ready { workspace_id } if workspace_id == self.workspace => {
+                PeerEvent::Ready {
+                    workspace_id,
+                    records_when_opened,
+                } if workspace_id == self.workspace => {
                     self.ready = true;
+                    self.when_opened = records_when_opened;
                     self.moderation_due_ms.store(0, Ordering::Relaxed);
                     // A frame asks what this person may do here, and only now
                     // may it ask: every mount draws once more, so a page that
@@ -1117,21 +1130,35 @@ impl Joined {
         }
     }
 
-    /// The host retains nothing of `route`, an on-demand record this page
-    /// opened: each store holding it tells what reads it
-    /// ([`ui::record::RecordStore::note_workspace_answered`]).
+    /// The host retains nothing of `route`, a record this page opened or
+    /// asked for: each store holding or wanting it tells what reads it
+    /// ([`ui::record::RecordStore::note_workspace_answered`]), and a window
+    /// that waited for it is built again, now on a new record.
     fn workspace_answered(&self, route: &DocumentRoute, woken: &mut HashSet<u64>) {
         for (&id, mounted) in &self.mounts {
+            let mut answered = false;
             for store in mounted.attachment.stores.borrow().iter() {
                 if store.package_and_home().0 != route.app_id {
                     continue;
                 }
-                if let Some(checkout) = store.open_records().into_iter().find(|checkout| {
-                    tilo_desktop_surface::host::records::wire_record(&checkout.id) == route.record
-                }) {
-                    store.note_workspace_answered(checkout.id);
-                    woken.insert(id);
+                let record = store
+                    .open_records()
+                    .into_iter()
+                    .map(|checkout| checkout.id)
+                    .chain(store.wanted_records())
+                    .find(|record| {
+                        tilo_desktop_surface::host::records::wire_record(record) == route.record
+                    });
+                if let Some(record) = record {
+                    store.note_workspace_answered(record);
+                    answered = true;
                 }
+            }
+            if answered {
+                if let Some((handle, shared)) = &mounted.attachment.desktop {
+                    shared.retry_waiting(handle);
+                }
+                woken.insert(id);
             }
         }
     }
@@ -1464,7 +1491,9 @@ impl Joined {
                     // A record a join does not replay is asked for when a
                     // mount first opens it.
                     if !mounted.records.contains_key(&key)
-                        && neighbour_wire::record_sync(&key.1) != neighbour_wire::RecordSync::Eager
+                        && (self.when_opened
+                            || neighbour_wire::record_sync(&key.1)
+                                != neighbour_wire::RecordSync::Eager)
                     {
                         opening.push(DocumentRoute {
                             app_id: app.clone(),
@@ -1499,7 +1528,36 @@ impl Joined {
                 }
             }
         }
+        // A record a window opened that is not here: the workspace sends it,
+        // or says it has none of it, and only then is it new.
+        for mounted in self.mounts.values() {
+            for store in mounted.attachment.stores.borrow().iter() {
+                let (app, home) = store.package_and_home();
+                if home != self.uuid {
+                    continue;
+                }
+                for record in store.wanted_records() {
+                    let key = (
+                        app.clone(),
+                        tilo_desktop_surface::host::records::wire_record(&record).to_owned(),
+                    );
+                    if !self.asked.contains(&key) {
+                        opening.push(DocumentRoute {
+                            app_id: key.0,
+                            cluster_id: self.uuid.clone(),
+                            record: key.1,
+                        });
+                    }
+                }
+            }
+        }
         for route in opening {
+            if !self
+                .asked
+                .insert((route.app_id.clone(), route.record.clone()))
+            {
+                continue;
+            }
             if self.peer.open_record(self.workspace, route).is_err() {
                 return;
             }
