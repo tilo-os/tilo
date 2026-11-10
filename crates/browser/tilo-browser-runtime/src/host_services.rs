@@ -447,6 +447,7 @@ pub(crate) fn provide_provider_admin(
 }
 
 use tilo_desktop_surface::{AppInbox, AppNotifier};
+use tilo_session::platform::notice::Toolkit;
 
 thread_local! {
     static NOTIFIER: RefCell<Option<Arc<AppNotifier>>> = const { RefCell::new(None) };
@@ -468,6 +469,17 @@ pub fn install(wake: Arc<dyn Fn() + Send + Sync>) {
         notifications: notifier,
         ..system
     });
+}
+
+thread_local! {
+    static NOTICES: std::cell::OnceCell<Rc<Toolkit>> = const { std::cell::OnceCell::new() };
+}
+
+/// What the session's roles tell the person on this page: one for the page, so the place of a
+/// notice they choose is reported once.
+pub(crate) fn notices() -> Rc<Toolkit> {
+    let made = || Rc::new(Toolkit::new(ui::host::current().notifications, ""));
+    NOTICES.with(|notices| Rc::clone(notices.get_or_init(made)))
 }
 
 /// A desktop's inbox of applications' notifications.

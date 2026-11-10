@@ -27,6 +27,9 @@ pub mod clipboard;
 #[cfg(target_os = "linux")]
 pub mod invite;
 
+#[cfg(target_os = "linux")]
+pub mod directory;
+
 /// Whether this device still holds custody of a workspace, as this desktop checks it.
 pub mod custody;
 

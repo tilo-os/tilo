@@ -1242,31 +1242,14 @@ fn present_desktop(
     DESKTOPS.with_borrow_mut(|desktops| desktops.insert(id));
     let generation = format!("mount-{id}");
     let requests = Rc::clone(&shared.requests);
-    let authorship = crate::shell::Authorship {
-        authors: Rc::clone(&shared.authors),
-        author: config.author(),
-    };
-    let wake = proxy()?;
-    let shell = crate::shell::BrowserShell::new(
-        surface,
-        handle.clone(),
-        generation.clone(),
-        host_offers(config),
-        Rc::clone(&requests),
-        crate::shell::ChromeSources {
-            here: Rc::clone(&here),
-            shared: shared.clone(),
-            authorship,
-            notifications: persistence.notifications.clone(),
-            peer: config.peer,
-            session: std::sync::Arc::clone(&session),
-            caller: tilo_actions::remote::Caller::local_person(config.author())
-                .in_workspace(config.workspace.clone()),
-            wake: Arc::new(move || {
-                let _ = wake.send_event(id);
-            }),
-        },
-    );
+    let shell = desktop_shell(
+        id,
+        config,
+        (surface, &handle, &generation),
+        &shared,
+        &persistence,
+        (&here, &session),
+    )?;
     // What the session asks the page for its windows, and the workspace's peer in it.
     let asks = session_asks::Asks::new(config.peer);
     let mentions = mention_notices::over(
@@ -1319,6 +1302,50 @@ fn present_desktop(
             finishing: RefCell::default(),
         }),
     })
+}
+
+/// The page's desktop shell over the mounted surface: its chrome, sheets and roster, fed from what
+/// the mount prepared.
+fn desktop_shell(
+    id: u64,
+    config: &Config,
+    (surface, handle, generation): (
+        tilo_desktop_surface::DesktopSurface,
+        &tilo_desktop_surface::DesktopHandle,
+        &str,
+    ),
+    shared: &crate::desktop::Shared,
+    persistence: &crate::desktop::Persistence,
+    (here, session): (
+        &tilo_desktop::here::Here,
+        &Arc<tilo_desktop_surface::session::DesktopSession>,
+    ),
+) -> Result<crate::shell::BrowserShell, JsValue> {
+    let authorship = crate::shell::Authorship {
+        authors: Rc::clone(&shared.authors),
+        author: config.author(),
+    };
+    let wake = proxy()?;
+    Ok(crate::shell::BrowserShell::new(
+        surface,
+        handle.clone(),
+        generation.to_owned(),
+        host_offers(config),
+        Rc::clone(&shared.requests),
+        crate::shell::ChromeSources {
+            here: Rc::clone(here),
+            shared: shared.clone(),
+            authorship,
+            notifications: persistence.notifications.clone(),
+            peer: config.peer,
+            session: Arc::clone(session),
+            caller: tilo_actions::remote::Caller::local_person(config.author())
+                .in_workspace(config.workspace.clone()),
+            wake: Arc::new(move || {
+                let _ = wake.send_event(id);
+            }),
+        },
+    ))
 }
 
 fn present_component(

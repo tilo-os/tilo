@@ -166,8 +166,7 @@ mod devices;
 mod diagnostics;
 #[cfg(target_os = "linux")]
 mod dictation;
-#[cfg(target_os = "linux")]
-mod directory;
+pub mod directory;
 #[cfg(target_os = "linux")]
 mod display_confirm;
 #[cfg(target_os = "linux")]

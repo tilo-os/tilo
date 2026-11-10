@@ -6,7 +6,7 @@ use crate::platform::surfaces::WidgetHost;
 use tilo_session_core::presence::{Place, Step, Target};
 use tilo_sheets::Seat as _;
 
-use crate::{Shared, arrangement, workspace_settings, workspaces};
+use crate::{Shared, arrangement, workspace_settings};
 
 impl Shared {
     /// Show each workspace's shared desktop as the workspace holds it, and write back what this
@@ -269,12 +269,11 @@ impl Shared {
             }
         }
 
-        workspaces::follow_directory(
+        crate::directory::follow(
             self.directory.as_ref(),
-            &self.handle,
             &self.directory_store,
             &*self.telling(),
-            &|joined| self.add_joined_workspace(joined),
+            &crate::platform::directory::DeskDirectory(self),
         );
         workspace_settings::follow(
             self.workspace_settings.as_ref(),

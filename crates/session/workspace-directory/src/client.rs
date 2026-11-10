@@ -113,7 +113,8 @@ pub struct Granted {
     /// The one-time token a page redeems the invitation with at the door's
     /// host; empty when the invitation came without a door (a pasted link).
     pub admission_token: String,
-    /// Where a page redeems it; the door's own origin when absent.
+    /// Where a page redeems it: what the door named, else the door's own origin; absent for an
+    /// invitation that came without a door.
     pub origin: Option<String>,
 }
 
@@ -676,7 +677,11 @@ impl<'a> Asking<'a> {
             workspace,
             invitation: answer.invitation.clone(),
             admission_token: answer.admission_token.clone(),
-            origin: answer.origin.clone(),
+            // A door that names no host of its own admits at its own origin.
+            origin: answer
+                .origin
+                .clone()
+                .or_else(|| Some(self.url.origin().ascii_serialization())),
         })
     }
 }

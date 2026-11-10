@@ -38,10 +38,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
-use tilo_desktop_surface::navigation::ChromeEffect;
-use tilo_desktop_surface::{DesktopHandle, notifications::NotificationIconKind};
+use tilo_desktop_surface::DesktopHandle;
 use tilo_sheets::Seat as _;
-use tilo_sheets::directory::{DirectoryEffect, DirectorySeat, ListingAction};
 use tilo_startup_metrics::JOIN_FLOW_TARGET;
 use tilo_user_identity::{
     CommunityState, DeviceCert, DirectoryError, DirectoryUpdate, RevocationList,
@@ -49,266 +47,12 @@ use tilo_user_identity::{
 };
 
 use crate::directory;
-use crate::platform::notice::{Notice, Notices};
+use crate::platform::notice::Notices;
 use crate::workspace_settings;
-
-/// Show the workspaces this computer may join or open: the ones it holds,
-/// and what the sites' directories list.
-pub(crate) fn open_directory(
-    seat: Option<&DirectorySeat>,
-    handle: &DesktopHandle,
-    directory: &directory::Store,
-) {
-    let Some(seat) = seat else {
-        return;
-    };
-    seat.clear_query();
-    seat.show(directory::view(directory, handle));
-    seat.presentation().open(false);
-    directory::ask(directory, None);
-}
-
-/// Carry out what the directory asked: reading a site's directory again,
-/// joining a public workspace, opening one this computer holds, and closing
-/// it.
-///
-/// `add_workspace` gives this computer the workspace a join was granted, by
-/// its id and its name, through the desk's own published action: the desk
-/// makes workspaces, not the directory.
-///
-/// Choosing Join (or Open) closes the sheet as soon as the choice has started:
-/// what became of it — the workspace opening, or joining it, or a refusal —
-/// is shown where the person now is, a banner, rather than a sheet left
-/// behind.
-pub(crate) fn follow_directory(
-    seat: Option<&DirectorySeat>,
-    handle: &DesktopHandle,
-    directory: &directory::Store,
-    notices: &dyn Notices,
-    add_workspace: &dyn Fn(&directory::Joined) -> Result<(), String>,
-) {
-    // A session the host set up to join one workspace joins it with nobody at the directory: what
-    // was granted is taken and added whether or not the sheet is open.
-    let answered = directory.answered();
-    for joined in directory.take_joined() {
-        match add_workspace(&joined) {
-            Ok(()) => {
-                // The person lands in the workspace they joined, as they do
-                // in any other they are given: the directory's work is done,
-                // once what the workspace holds is here. A join whose slot is
-                // still being admitted leaves the sheet up, saying so, and the
-                // "you joined" note is posted when the host admits it
-                // ([`Self::follow_enrollments`]), not before.
-                if let Some(seat) = seat
-                    && !directory.settling()
-                    && directory.joining().is_none()
-                {
-                    seat.presentation().close();
-                }
-                if !directory.settling() {
-                    joined_notice(notices, &joined.name);
-                }
-            }
-            Err(error) => {
-                tracing::warn!(%error, workspace = %joined.granted.workspace, "a joined workspace was not added");
-                tracing::info!(
-                    target: JOIN_FLOW_TARGET,
-                    workspace = %joined.granted.workspace,
-                    name = %joined.name,
-                    %error,
-                    outcome = "slot removed",
-                    "join: the desk would not make the workspace's slot, so nothing was joined"
-                );
-                directory.failing(tilo_sheets::words(
-                    "directory-join-failed",
-                    &[("name", &joined.name), ("error", &error)],
-                ));
-            }
-        }
-        if let Some(seat) = seat {
-            seat.show(directory::view(directory, handle));
-        }
-    }
-    // A join the person chose closed the sheet when it started. What became of it arrives after, so
-    // a join that failed is said where the person is now — a banner — rather than in a sheet that
-    // left.
-    for said in directory.take_failures_to_say() {
-        failure_notice(notices, &said);
-    }
-    let Some(seat) = seat else {
-        return;
-    };
-    if answered {
-        seat.show(directory::view(directory, handle));
-    }
-    for effect in seat.take_asked() {
-        match effect {
-            DirectoryEffect::Join { key } => {
-                join_listed(seat, handle, directory, &key);
-            }
-            DirectoryEffect::Open { key } => {
-                open_listed(seat, handle, directory, &key);
-            }
-            DirectoryEffect::Look { text } => {
-                if let Some(site) = typed_site(&text) {
-                    // A site the person typed is asked for what it lists,
-                    // and the sheet says it is being read until the worker
-                    // answers.
-                    directory::ask(directory, Some(site));
-                    seat.show(directory::view(directory, handle));
-                    continue;
-                }
-                // One workspace answers the search: Enter takes it, opening it when this computer
-                // holds it and joining it otherwise.
-                let only: Vec<_> = seat
-                    .directory()
-                    .listings
-                    .into_iter()
-                    .filter(|listing| listing.matches(&text))
-                    .collect();
-                let [only] = only.as_slice() else {
-                    tracing::debug!(
-                        %text,
-                        "the workspace directory looks up a site, a link or a code"
-                    );
-                    continue;
-                };
-                if only.action == ListingAction::Open {
-                    open_listed(seat, handle, directory, &only.key);
-                } else {
-                    join_listed(seat, handle, directory, &only.key);
-                }
-            }
-
-            DirectoryEffect::LinkOrCode { text } => {
-                // A link or a code the person pasted joins at once: what it is decides where, and
-                // the sheet says so until it lands.
-                if let Err(error) = directory::take(directory, &text) {
-                    directory.set_note(Some(error));
-                }
-                seat.show(directory::view(directory, handle));
-            }
-            DirectoryEffect::Refresh => {
-                directory::ask(directory, None);
-                seat.show(directory::view(directory, handle));
-            }
-            DirectoryEffect::ClearNote => {
-                directory.set_note(None);
-                seat.show(directory::view(directory, handle));
-            }
-            DirectoryEffect::Done => {
-                seat.presentation().close();
-            }
-        }
-    }
-}
-
-/// Go to the workspace `key` names, which this computer holds, and be done with the directory. A
-/// workspace the desk no longer admits is said where the person picked it, and the directory stays
-/// up to pick another.
-fn open_listed(
-    seat: &DirectorySeat,
-    handle: &DesktopHandle,
-    directory: &directory::Store,
-    key: &str,
-) {
-    let opened = handle.dispatch(ChromeEffect::SwitchWorkspace {
-        workspace: Some(key.to_owned()),
-        delta: None,
-    });
-    if let Err(error) = opened {
-        tracing::warn!(%error, %key, "workspace directory open");
-        directory.set_note(Some(error));
-        seat.show(directory::view(directory, handle));
-        return;
-    }
-    seat.presentation().close();
-}
-
-/// Join the listing `key` names, one join at a time: the row joining says so, and pressing it again
-/// says it is on its way.
-fn join_listed(
-    seat: &DirectorySeat,
-    handle: &DesktopHandle,
-    directory: &directory::Store,
-    key: &str,
-) {
-    let Some(listing) = directory.listing(key) else {
-        // The row was drawn from a list a later read replaced: answer the press, rather than leave
-        // the row saying nothing.
-        directory.set_note(Some(tilo_sheets::word("directory-listing-gone")));
-        seat.show(directory::view(directory, handle));
-        return;
-    };
-    match directory.joining() {
-        Some(joining) if joining == key => {
-            directory.set_note(Some(tilo_sheets::words(
-                "directory-already-joining",
-                &[("name", &listing.entry.name)],
-            )));
-        }
-        // One join at a time: the first is still on its way.
-        Some(_) => return,
-        None => match directory::join(directory, key, &listing) {
-            Ok(()) => {
-                // The join is on its way: the sheet is done with it, and the person is told when it
-                // lands (or why it did not).
-                seat.presentation().close();
-                return;
-            }
-            Err(error) => directory.set_note(Some(error)),
-        },
-    }
-    seat.show(directory::view(directory, handle));
-}
-
-/// Say the workspace `name` is theirs now, or no longer, in `words`' own: marked as the
-/// workspace's news.
-fn workspace_notice(notices: &dyn Notices, words: (&str, &str), name: &str) {
-    let (title, body) = words;
-    notices.show(
-        &Notice::new(
-            String::new(),
-            1,
-            tilo_desktop_surface::i18n::t_args(title, &[("name", name.into())]),
-            tilo_desktop_surface::i18n::t(body),
-        )
-        .about(NotificationIconKind::Workspace),
-    );
-}
-
-/// Say the person joined `name` , where they are now: a note that the workspace is theirs, its
-/// windows open there.
-fn joined_notice(notices: &dyn Notices, name: &str) {
-    workspace_notice(
-        notices,
-        ("session-joined-workspace", "session-joined-workspace-body"),
-        name,
-    );
-}
-
-/// Say a join the person chose did not happen, and why, where they are: the workspace directory's
-/// own sentence, as a banner.
-fn failure_notice(notices: &dyn Notices, said: &str) {
-    notices.show(&Notice::new(
-        String::new(),
-        2,
-        tilo_desktop_surface::i18n::t("session-join-failed-title"),
-        said,
-    ));
-}
-
-/// The site `text` names, when what was typed into the search is one: a word that is no address
-/// looks at the list instead.
-fn typed_site(text: &str) -> Option<String> {
-    let text = text.trim();
-    (!text.is_empty() && text.contains('.') && !text.chars().any(char::is_whitespace))
-        .then(|| text.to_owned())
-}
 
 /// Say the person left the workspace `name` , and what became of its windows.
 pub(crate) fn left_workspace(notices: &dyn Notices, name: &str) {
-    workspace_notice(
+    crate::directory::workspace_notice(
         notices,
         ("session-left-workspace", "session-left-workspace-body"),
         name,
@@ -1376,7 +1120,7 @@ impl crate::Shared {
                         // workspace of the person's own was on no sheet: it
                         // arrived on the desk where their list says it
                         // belongs.
-                        joined_notice(&*self.telling(), &listed);
+                        crate::directory::joined_notice(&*self.telling(), &listed);
                     }
                 }
                 // A workspace this desk held stays on it as it was: the
@@ -1430,7 +1174,10 @@ impl crate::Shared {
             // The sheet lists the directory as it now stands, a refusal included: its row says the
             // join did not happen and offers to join again, so the directory a person opens next is
             // not the one they left while the join was on its way.
-            seat.show(directory::view(&self.directory_store, &self.handle));
+            seat.show(
+                self.directory_store
+                    .view(&crate::platform::directory::held(&self.handle)),
+            );
             if !self.directory_store.settling() {
                 // The person lands in the workspace they joined: the directory has nothing left to
                 // say.

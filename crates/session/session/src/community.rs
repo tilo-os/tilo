@@ -83,7 +83,7 @@ impl Community {
             .borrow_mut()
             .decide_community(site.as_str(), CommunityState::Pending);
         self.asked = true;
-        if let Err(error) = directory::join_community(store, site) {
+        if let Err(error) = crate::platform::directory::join_community(store, site) {
             tracing::warn!(%error, site = %site, "the community was not asked for");
         }
     }

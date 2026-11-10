@@ -214,6 +214,25 @@ impl DirectorySeat {
     pub fn take_asked(&self) -> Vec<DirectoryEffect> {
         std::mem::take(&mut *self.asked.borrow_mut())
     }
+
+    /// The sheet as a host that draws it itself shows it: what it lists now, with the search kept
+    /// in the seat and every press asked of it. Built again when the listing or
+    /// [`Self::query_revision`] moved.
+    pub fn sheet(&self) -> Element {
+        let query = self
+            .query
+            .borrow_mut()
+            .get_or_insert_with(|| LocalState::new(String::new()))
+            .clone();
+        let asked = Rc::clone(&self.asked);
+        let ask: Ask = Rc::new(move |effect| asked.borrow_mut().push(effect));
+        sheet(&self.directory(), &query, &ask, None)
+    }
+
+    /// How far the search moved since the seat was made.
+    pub fn query_revision(&self) -> u64 {
+        self.query.borrow().as_ref().map_or(0, LocalState::revision)
+    }
 }
 
 /// How the sheet asks its host for something: an effect the person pressed,

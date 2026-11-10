@@ -468,7 +468,7 @@ impl Conversations {
     /// shown a routing id.
     fn channel_names(opened: &Opened, me: &str) -> chat::views::Names {
         let mut names = chat::views::Names {
-            me: crate::directory::desk_person_name(
+            me: crate::platform::person::desk_person_name(
                 ui::local_identity::load().map(|identity| identity.display_name),
                 me,
             ),

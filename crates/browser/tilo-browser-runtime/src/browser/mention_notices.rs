@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use tilo_actions::remote::{ActionHost as _, InvokeArgument, InvokeRequest};
 use tilo_session::mentions::Mentions;
-use tilo_session::platform::notice::{Place, Toolkit, open_target};
+use tilo_session::platform::notice::{Place, open_target};
 use tilo_session::platform::records::{Changed, Changes, Records};
 use ui::automerge::AutoCommit;
 
@@ -65,10 +65,7 @@ pub(super) fn role(
                     .unwrap_or_default()
             }),
         })),
-        notices: Some(Rc::new(Toolkit::new(
-            ui::host::current().notifications,
-            ui::mentions::TAGS,
-        ))),
+        notices: Some(crate::host_services::notices()),
         name,
         wake: Some(wake),
     })

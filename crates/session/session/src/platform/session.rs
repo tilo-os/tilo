@@ -1262,7 +1262,7 @@ impl Session {
         let directory_store = Rc::new(crate::directory::Store::default());
         let clipboard = Rc::new(crate::clipboard::Clipboard::new(options.wake.handle()));
         let boot_join = crate::boot_join::BootJoin::at_boot(&directory_store, &handle);
-        let community = crate::community::Community::for_site(crate::directory::community_site());
+        let community = crate::community::Community::for_site(crate::platform::directory::community_site());
         // The person's mentions in the workspaces' records: told through those notifications, kept
         // in the records' store, and opened through this session's own door to the apps.
         let mentions = records_store.clone().map(|store| {
@@ -1297,7 +1297,7 @@ impl Session {
                 sync: sync.is_some(),
                 engine: engine.clone(),
                 services: Rc::clone(&services),
-                site: crate::directory::community_site,
+                site: crate::platform::directory::community_site,
             }),
             Rc::clone(&clipboard) as Rc<dyn crate::platform::clipboard::Clipboard>,
             Rc::clone(&directory_store),

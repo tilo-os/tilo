@@ -143,6 +143,7 @@ serde_json.workspace = true
 # search reads them from, as the apps that write them keep them.
 tilo-app-state = { path = "../../system/app-state" }
 tilo-sheets = { path = "../sheets" }
+tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
 # The public workspaces sites list, their doors, and where a join stands.
 tilo-workspace-directory = { path = "../workspace-directory" }
 # The models a session's own questions run on, and the person's provider settings: the same
@@ -184,7 +185,6 @@ tilo-app = { path = "../../sdk/tilo-app" }
 chat = { path = "../../../apps/chat", default-features = false }
 # Where a login's time went, when `TILO_STARTUP_METRICS_PATH` asks
 # (`tools/perf/startup_marks.py` reads it).
-tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
 # The person's accessibility settings: the assists, the colour filter and
 # the magnifier the compositor applies.
 tilo-accessibility-settings = { path = "../../platform/tilo-accessibility-settings" }

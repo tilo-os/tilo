@@ -78,7 +78,7 @@ impl Shared {
                 // as the keys ask for them.
                 DesktopAsk::Switcher(action) => self.switcher_ask(action),
                 DesktopAsk::LeftWorkspace(name) => {
-                    workspaces::left_workspace(&*self.telling(), &name)
+                    workspaces::left_workspace(&*self.telling(), &name);
                 }
                 // The desk was asked to delete a workspace, and the person is the one who answers:
                 // the question stands in its own dialog, wherever deleting was asked from.
@@ -403,10 +403,10 @@ impl Shared {
             NEW_WORKSPACE => self.new_workspace(),
             BRANCH_WORKSPACE => self.branch_shown_workspace(),
             WORKSPACE_SETTINGS => self.open_workspace_settings(),
-            JOIN_WORKSPACE => workspaces::open_directory(
+            JOIN_WORKSPACE => crate::directory::open(
                 self.directory.as_ref(),
-                &self.handle,
                 &self.directory_store,
+                &crate::platform::directory::DeskDirectory(self),
             ),
             LEAVE_WORKSPACE => self.leave_workspace(),
             // Deleting is the desk's, which asks the person first: the desk's own action is the
