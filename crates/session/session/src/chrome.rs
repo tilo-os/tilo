@@ -18,16 +18,16 @@ use tilo_desktop::topbar::{Placement, TopBarChrome};
 use tilo_desktop_model::DesktopTree;
 use tilo_desktop_model::commands::Standing;
 use tilo_desktop_model::ownership::Authors;
+use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::host::chrome::{ChromeSource, Facts, HostChrome, Notices};
 use tilo_desktop_surface::navigation::ChromeEffect;
-use tilo_desktop_surface::notifications::Notification;
-use tilo_desktop_surface::{DesktopHandle, DesktopNotifications};
 use ui::floating_layer::Card;
 use ui::live_activity::{Published, Summary};
 use ui::search::Scope;
 use ui::vello::kurbo::Rect;
 
 use crate::notifications::NoticeSignals;
+use crate::platform::notice::{Notice, Notices as Told};
 
 /// The app whose live activity is the clocks app's when the desk reads the running timer.
 pub(crate) const CLOCKS_APP: &str = "so.tilo.clocks";
@@ -255,8 +255,8 @@ impl Activities {
         self.touch(app, activity);
     }
 
-    /// The due events the apps want announced, each posted once.
-    pub(crate) fn announce(&self, notices: &DesktopNotifications) {
+    /// The due events the apps want announced, each told once.
+    pub(crate) fn announce(&self, notices: &dyn Told) {
         for (app, published) in self.read().iter() {
             let Some(announcement) = &published.announce else {
                 continue;
@@ -275,7 +275,7 @@ impl Activities {
             } else {
                 announcement.body.clone()
             };
-            notices.post(Notification::new(title, body));
+            notices.show(&Notice::new(String::new(), 1, title, body));
         }
     }
 
@@ -360,7 +360,7 @@ pub(crate) struct BarFeeds {
     pub(crate) signals: Rc<NoticeSignals>,
     pub(crate) readings: crate::status::Shared,
     pub(crate) activities: Rc<Activities>,
-    pub(crate) notices: DesktopNotifications,
+    pub(crate) notices: Rc<dyn Told>,
     /// The applications' tray items, when their watcher serves.
     pub(crate) tray: Option<Arc<tilo_tray_host::Tray>>,
     /// The monitors of the displays a fullscreen window owns, as the loop found them this pass.
@@ -421,8 +421,8 @@ pub(crate) struct SessionChrome {
     readings: crate::status::Shared,
     /// The apps' live activities, which the bar's pill names and the floating layer shows as cards.
     activities: Rc<Activities>,
-    /// The desk's notifications, where a due timer is announced.
-    notices: DesktopNotifications,
+    /// The person's notices, where a due timer is announced.
+    notices: Rc<dyn Told>,
     /// The running applications' status-notifier items, as their host keeps them.
     tray: Option<Arc<tilo_tray_host::Tray>>,
     /// The monitors of the displays a fullscreen window owns, which the loop takes from the
@@ -592,7 +592,7 @@ impl ChromeSource for SessionChrome {
 
     fn fill(&self, snapshot: &mut DesktopChromeSnapshot) {
         // A due event is announced once, here, where the bar reads it.
-        self.activities.announce(&self.notices);
+        self.activities.announce(&*self.notices);
         snapshot.status = self.readings.borrow().status();
         snapshot.activities = self.activities.pill();
         snapshot.notifications_only = self.notifications_only;
@@ -1147,15 +1147,8 @@ mod tests {
     fn a_due_event_is_announced_once() {
         let board = Arc::new(runtime_collab::LiveActivities::default());
         let activities = Activities::new(Arc::clone(&board), crate::cards::Cards::new());
-        let notices = DesktopNotifications::default();
-        let announced = || {
-            notices
-                .log()
-                .active()
-                .iter()
-                .map(|notification| (notification.title.clone(), notification.body.clone()))
-                .collect::<Vec<_>>()
-        };
+        let notices = crate::notifications::told::Told::default();
+        let announced = || notices.told();
         publish(
             &board,
             CLOCKS_APP,

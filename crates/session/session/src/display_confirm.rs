@@ -21,13 +21,12 @@ use std::time::{Duration, Instant};
 use settings_store::display_tools::{DisplayTool, TrustedDisplayTools};
 use tilo_compositor::{Compositor, DisplayEvent};
 
-use tilo_desktop_surface::DesktopNotifications;
-use tilo_desktop_surface::notifications::Notification;
 use tilo_sheets::Seat as _;
 use tilo_sheets::display_confirm::{self, ConfirmEffect, ConfirmSeat};
 
 use crate::display_settings::{self, Displays};
 use crate::i18n::{t, t_args};
+use crate::platform::notice::{Notice, Notices};
 use ui::i18n::ArgValue;
 
 /// The change the question stands for.
@@ -72,7 +71,7 @@ impl Confirmation {
         compositor: &mut Compositor,
         seat: &ConfirmSeat,
         displays: &Displays,
-        notices: &DesktopNotifications,
+        notices: &dyn Notices,
     ) {
         for event in compositor.take_display_events() {
             self.hear(event, notices);
@@ -85,7 +84,7 @@ impl Confirmation {
     }
 
     /// What the compositor reported about display tools' changes.
-    fn hear(&mut self, event: DisplayEvent, notices: &DesktopNotifications) {
+    fn hear(&mut self, event: DisplayEvent, notices: &dyn Notices) {
         match event {
             DisplayEvent::Confirm { id, tool, within } => {
                 // The same clock the compositor asked on, so the countdown reads back the time it
@@ -263,7 +262,7 @@ fn trust(tool: Option<&DisplayTool>, compositor: &mut Compositor) {
 
 /// Tell the person `tool` put back a layout they had just reverted, and was refused instead of
 /// being asked again.
-fn report_refused(tool: Option<&DisplayTool>, notices: &DesktopNotifications) {
+fn report_refused(tool: Option<&DisplayTool>, notices: &dyn Notices) {
     let title = tool.map_or_else(
         || t("display-tool-reapply-refused-unknown"),
         |tool| {
@@ -273,7 +272,7 @@ fn report_refused(tool: Option<&DisplayTool>, notices: &DesktopNotifications) {
             )
         },
     );
-    notices.post(Notification::new(title, String::new()));
+    notices.show(&Notice::new(String::new(), 1, title, String::new()));
 }
 
 #[cfg(test)]
@@ -288,7 +287,7 @@ mod tests {
                 tool: None,
                 within: Duration::from_secs(15),
             },
-            &DesktopNotifications::default(),
+            &crate::notifications::told::Told::default(),
         );
         confirmation
     }
@@ -304,12 +303,12 @@ mod tests {
         let mut confirmation = asked_about_a_tool(7);
         confirmation.hear(
             DisplayEvent::Reverted { id: 8 },
-            &DesktopNotifications::default(),
+            &crate::notifications::told::Told::default(),
         );
         assert!(confirmation.asks_about_tool(7), "another change went back");
         confirmation.hear(
             DisplayEvent::Reverted { id: 7 },
-            &DesktopNotifications::default(),
+            &crate::notifications::told::Told::default(),
         );
         assert!(confirmation.asked.is_none());
     }
@@ -321,7 +320,7 @@ mod tests {
             DisplayEvent::Kept {
                 changes: Vec::new(),
             },
-            &DesktopNotifications::default(),
+            &crate::notifications::told::Told::default(),
         );
         assert!(confirmation.asks_about_tool(7));
     }
@@ -336,7 +335,7 @@ mod tests {
             DisplayEvent::Kept {
                 changes: Vec::new(),
             },
-            &DesktopNotifications::default(),
+            &crate::notifications::told::Told::default(),
         );
         assert!(confirmation.asked.is_none());
     }

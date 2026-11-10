@@ -19,6 +19,17 @@ pub enum NotificationSeverity {
 }
 
 impl NotificationSeverity {
+    /// The tier a sender's `urgency` (`0` low, `1` normal, `2` critical) shows as: only critical
+    /// leads as an error.
+    #[must_use]
+    pub fn at_urgency(urgency: u8) -> Self {
+        if urgency >= 2 {
+            Self::Error
+        } else {
+            Self::Info
+        }
+    }
+
     pub fn color(self, theme: &Theme) -> vello::peniko::Color {
         match self {
             Self::Info => theme.tokens.colors.semantic.info,
@@ -219,10 +230,6 @@ pub struct Notification {
     /// `(action_key, action_label)` pairs; activating the banner invokes the default (or first)
     /// action.
     pub actions: Vec<(String, String)>,
-    /// Show this banner even under Do-Not-Disturb: quiet asks for calm, not to be kept uninformed
-    /// of the machine's own state. Only the desktop itself sets it; nothing an application sends
-    /// can.
-    pub bypass_dnd: bool,
     /// Whether this notification contributes to the redacted lock-screen count. Content is never
     /// rendered on the lock screen.
     pub show_on_lock_screen: bool,
@@ -258,7 +265,6 @@ impl Notification {
             app_id: None,
             source_workspace: None,
             actions: Vec::new(),
-            bypass_dnd: false,
             show_on_lock_screen: true,
             show_preview: true,
             addressed: None,
@@ -338,6 +344,25 @@ impl Notification {
     #[must_use]
     pub fn with_icon_kind(mut self, kind: NotificationIconKind) -> Self {
         self.icon_kind = kind;
+        self
+    }
+
+    /// The notification as its sender states it: `urgency` (`0` low, `1` normal, `2` critical) picks
+    /// the tier and how long the banner stays, and `expires` is its own time on screen — `None` the
+    /// desktop's default, `Some(Duration::ZERO)` until the person takes it back, else that long. A
+    /// critical one stays until the person acts, as the specification asks.
+    #[must_use]
+    pub fn stated(mut self, urgency: u8, expires: Option<Duration>) -> Self {
+        self.severity = NotificationSeverity::at_urgency(urgency);
+        self.dismiss_after = if urgency >= 2 {
+            PERSISTENT_DISMISS
+        } else {
+            match expires {
+                None => DEFAULT_DISMISS_AFTER,
+                Some(after) if after.is_zero() => PERSISTENT_DISMISS,
+                Some(after) => after,
+            }
+        };
         self
     }
 

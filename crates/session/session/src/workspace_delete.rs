@@ -7,11 +7,12 @@
 
 use serde_json::{Map, Value};
 use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
-use tilo_desktop_surface::notifications::{Notification, NotificationIconKind};
+use tilo_desktop_surface::notifications::NotificationIconKind;
 use tilo_sheets::Seat as _;
 use tilo_sheets::delete_workspace::DeleteWorkspaceEffect;
 
 use crate::Shared;
+use crate::platform::notice::Notice;
 
 impl Shared {
     /// Ask the person whether to delete the workspace `slot`, called `name`:
@@ -88,14 +89,17 @@ impl Shared {
         {
             tracing::warn!(%error, %workspace, "a deleted workspace stays in this device's record");
         }
-        let mut notice = Notification::new(
-            tilo_desktop_surface::i18n::t_args(
-                "session-deleted-workspace",
-                &[("name", name.into())],
-            ),
-            tilo_desktop_surface::i18n::t("session-deleted-workspace-body"),
+        self.telling().show(
+            &Notice::new(
+                String::new(),
+                1,
+                tilo_desktop_surface::i18n::t_args(
+                    "session-deleted-workspace",
+                    &[("name", name.into())],
+                ),
+                tilo_desktop_surface::i18n::t("session-deleted-workspace-body"),
+            )
+            .about(NotificationIconKind::Workspace),
         );
-        notice.icon_kind = NotificationIconKind::Workspace;
-        self.notices.post(notice);
     }
 }

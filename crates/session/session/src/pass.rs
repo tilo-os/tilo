@@ -590,12 +590,9 @@ impl Session {
         // The question about a display change, before the sheets are placed: one that just opened
         // stands on this pass's displays.
         if let Some(confirm) = self.shared.display_confirm.as_ref() {
-            self.confirmation.follow(
-                &mut self.compositor,
-                confirm,
-                &self.displays,
-                &self.shared.notices,
-            );
+            let notices = self.shared.telling();
+            self.confirmation
+                .follow(&mut self.compositor, confirm, &self.displays, &*notices);
         }
         self.display_sheet.follow(
             &self.compositor.outputs(),

@@ -16,8 +16,6 @@ use std::rc::Rc;
 use serde_json::{Map, Value};
 use tilo_actions::remote::downloaded_apps::{self as wire, DownloadedApps, DownloadedDoing};
 use tilo_app_launch::downloaded;
-use tilo_desktop_surface::DesktopNotifications;
-use tilo_desktop_surface::notifications::{Notification, NotificationSeverity};
 use tilo_service::Services;
 use tilo_sheets::Seat as _;
 use tilo_sheets::add_app::{AddAppEffect, AddSeat, Offer};
@@ -25,6 +23,8 @@ use tilo_sheets::uninstall::{App, Going, Removal, UninstallEffect, UninstallSeat
 
 use crate::Shared;
 use crate::i18n::{t, t_args};
+use crate::platform::notice::{Notice, Notices};
+use tilo_desktop_surface::notifications::NotificationIconKind;
 use ui::i18n::ArgValue;
 
 /// The two app sheets, and what they were answered.
@@ -35,8 +35,8 @@ pub(crate) struct AppSheets {
     uninstall: Option<UninstallSeat>,
     /// The registry's actions and reading, as the session publishes them.
     services: Rc<RefCell<Services>>,
-    /// The desktop's notices: what an answer did.
-    notices: DesktopNotifications,
+    /// The person's notices: what an answer did.
+    notices: Rc<dyn Notices>,
     /// The files the add sheet asked about, so a program that keeps running is asked about once. A
     /// file the registry no longer offers is forgotten, so a program whose app was taken off the
     /// apps is asked about again when it runs.
@@ -68,7 +68,7 @@ impl AppSheets {
         add: Option<AddSeat>,
         uninstall: Option<UninstallSeat>,
         services: Rc<RefCell<Services>>,
-        notices: DesktopNotifications,
+        notices: Rc<dyn Notices>,
     ) -> Self {
         Self {
             add,
@@ -229,9 +229,14 @@ impl AppSheets {
                 seat.presentation().open(false);
             }
             None => {
-                self.notices.post(
-                    Notification::new(t("app-list-gone-title"), t("app-list-gone-body"))
-                        .with_app_name(t("app-list-app-name")),
+                self.notices.show(
+                    &Notice::new(
+                        t("app-list-app-name"),
+                        1,
+                        t("app-list-gone-title"),
+                        t("app-list-gone-body"),
+                    )
+                    .about(NotificationIconKind::Generic),
                 );
             }
         }
@@ -288,10 +293,9 @@ impl AppSheets {
                     t_args("app-list-uninstall-failed", &[("name", name)])
                 }
             };
-            self.notices.post(
-                Notification::new(title, failure.detail.clone())
-                    .with_severity(NotificationSeverity::Error)
-                    .with_app_name(t("app-list-app-name")),
+            self.notices.show(
+                &Notice::new(t("app-list-app-name"), 2, title, failure.detail.clone())
+                    .about(NotificationIconKind::Generic),
             );
         }
         self.reported.set(reported);
@@ -314,8 +318,10 @@ impl AppSheets {
                 (title, body)
             }
         };
-        self.notices
-            .post(Notification::new(title, body).with_app_name(t("app-list-app-name")));
+        self.notices.show(
+            &Notice::new(t("app-list-app-name"), 1, title, body)
+                .about(NotificationIconKind::Generic),
+        );
     }
 }
 
@@ -427,7 +433,7 @@ mod tests {
     struct Desk {
         sheets: AppSheets,
         services: Rc<RefCell<Services>>,
-        notices: DesktopNotifications,
+        notices: crate::notifications::told::Told,
         add: AddSeat,
         uninstall: UninstallSeat,
         home: TestHome,
@@ -461,14 +467,14 @@ mod tests {
         let mut services = Services::default();
         services.add(Box::new(registry));
         let services = Rc::new(RefCell::new(services));
-        let notices = DesktopNotifications::default();
+        let notices = crate::notifications::told::Told::default();
         let add = AddSeat::default();
         let uninstall = UninstallSeat::default();
         let sheets = AppSheets::new(
             Some(add.clone()),
             Some(uninstall.clone()),
             Rc::clone(&services),
-            notices.clone(),
+            Rc::new(notices.clone()) as Rc<dyn Notices>,
         );
         Desk {
             sheets,
@@ -580,12 +586,7 @@ mod tests {
 
         /// The titles and bodies of the notices the desk shows now.
         fn notices(&self) -> Vec<(String, String)> {
-            self.notices
-                .log()
-                .active()
-                .iter()
-                .map(|notice| (notice.title.clone(), notice.body.clone()))
-                .collect()
+            self.notices.told()
         }
     }
 

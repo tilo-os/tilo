@@ -26,6 +26,11 @@ use crate::{
 /// How far a popover stands clear of the caret it was opened from, logical pixels.
 const CARET_GAP: f64 = 6.0;
 
+/// The tag the ask about the device `digest` names is taken back under.
+fn pairing_tag(digest: [u8; 32]) -> String {
+    format!("pairing:{}", hex::encode(digest))
+}
+
 impl Shared {
     /// Carry out what the desktop asked since the last frame.
     pub(crate) fn follow_asks(&self, look: &mut tilo_session_core::door::Look<'_>) {
@@ -72,7 +77,9 @@ impl Shared {
                 // one, or a press away from the panel: the desk's own verbs,
                 // as the keys ask for them.
                 DesktopAsk::Switcher(action) => self.switcher_ask(action),
-                DesktopAsk::LeftWorkspace(name) => workspaces::left_workspace(&self.notices, &name),
+                DesktopAsk::LeftWorkspace(name) => {
+                    workspaces::left_workspace(&*self.telling(), &name)
+                }
                 // The desk was asked to delete a workspace, and the person is the one who answers:
                 // the question stands in its own dialog, wherever deleting was asked from.
                 DesktopAsk::DeleteWorkspace { slot, name } => {
@@ -226,7 +233,7 @@ impl Shared {
     /// their own desktop and everyone they work with say it from now on, and this workspace's
     /// presence says it here at once. Says so when the record could not keep it.
     fn name_self(&self, name: &str) {
-        use tilo_desktop_surface::notifications::{Notification, NotificationSeverity};
+        use crate::platform::notice::Notice;
 
         let name = name.trim();
         if name.is_empty() {
@@ -242,10 +249,12 @@ impl Shared {
             }
             Err(error) => {
                 tracing::warn!(%error, "could not keep the person's name");
-                self.notices.post(
-                    Notification::new(crate::i18n::t("profile-name-not-saved"), error)
-                        .with_severity(NotificationSeverity::Error),
-                );
+                self.telling().show(&Notice::new(
+                    String::new(),
+                    2,
+                    crate::i18n::t("profile-name-not-saved"),
+                    error,
+                ));
             }
         }
     }
@@ -427,13 +436,15 @@ impl Shared {
     /// writes what went wrong. A computer told nowhere to send reports says so where the person
     /// asked, rather than closing on nothing.
     fn report_problem(&self) {
-        use tilo_desktop_surface::notifications::Notification;
+        use crate::platform::notice::Notice;
 
         if self.feedback.is_some() {
             self.report_from.set(true);
             return;
         }
-        self.notices.post(Notification::new(
+        self.telling().show(&Notice::new(
+            String::new(),
+            1,
             t("session-feedback-nowhere"),
             t("session-feedback-nowhere-body"),
         ));
@@ -444,9 +455,9 @@ impl Shared {
     /// ([`crate::certification::host_action`]); an ask that went — answered elsewhere, or expired —
     /// is taken back from them.
     pub(crate) fn follow_device_asks(&self) {
-        use tilo_desktop_surface::notifications::{
-            Addressed, Notification, NotificationIconKind, NotificationSeverity, PERSISTENT_DISMISS,
-        };
+        use tilo_desktop_surface::notifications::NotificationIconKind;
+
+        use crate::platform::notice::Notice;
 
         let Some(fabric) = self.fabric.as_ref() else {
             return;
@@ -458,9 +469,7 @@ impl Shared {
             ))
         };
         for digest in gone {
-            for approve in [true, false] {
-                self.notices.withdraw_host_action(&answer(digest, approve));
-            }
+            self.telling().withdraw(&pairing_tag(digest));
         }
         for asking in fresh {
             let found = if asking.via.is_empty() {
@@ -482,27 +491,31 @@ impl Shared {
                     ("code", asking.code.clone().into()),
                 ],
             );
-            let mut notice =
-                Notification::new(tilo_desktop_surface::i18n::t("pairing-asks-title"), body);
-            notice.actions = vec![
-                (
-                    answer(asking.digest, true),
-                    tilo_desktop_surface::i18n::t_args(
-                        "pairing-approve",
-                        &[("code", asking.code.clone().into())],
+            self.telling().show(
+                &Notice::new(
+                    tilo_desktop_surface::i18n::t("host-action-source-devices"),
+                    1,
+                    tilo_desktop_surface::i18n::t("pairing-asks-title"),
+                    body,
+                )
+                .choosing(vec![
+                    (
+                        answer(asking.digest, true),
+                        tilo_desktop_surface::i18n::t_args(
+                            "pairing-approve",
+                            &[("code", asking.code.clone().into())],
+                        ),
                     ),
-                ),
-                (
-                    answer(asking.digest, false),
-                    tilo_desktop_surface::i18n::t("pairing-decline"),
-                ),
-            ];
-            notice.app_name = Some(tilo_desktop_surface::i18n::t("host-action-source-devices"));
-            notice.icon_kind = NotificationIconKind::Permission;
-            notice.severity = NotificationSeverity::Info;
-            notice.addressed = Some(Addressed::Ask);
-            notice.dismiss_after = PERSISTENT_DISMISS;
-            self.notices.post(notice);
+                    (
+                        answer(asking.digest, false),
+                        tilo_desktop_surface::i18n::t("pairing-decline"),
+                    ),
+                ])
+                .about(NotificationIconKind::Permission)
+                // It stays until the person answers it: waiting decides nothing.
+                .staying(Some(std::time::Duration::ZERO))
+                .tagged(pairing_tag(asking.digest)),
+            );
         }
     }
 

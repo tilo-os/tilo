@@ -152,10 +152,10 @@ pub fn desktop_offer_host_action(id: u64, offer: &str) -> Result<(), JsValue> {
                 .handle
                 .ask_personally(offer.action, offer.title, offer.body);
         } else {
-            desktop
-                .persistence
-                .notifications
-                .post(offer.action.notice(offer.title, offer.body));
+            desktop.persistence.notifications.post(
+                tilo_session_core::notice::Notice::asks(&offer.action, offer.title, offer.body)
+                    .shown(),
+            );
         }
         m.window.request_redraw();
         Ok(())

@@ -155,6 +155,26 @@ impl Session {
         let notification_policy = std::sync::Arc::new(std::sync::Mutex::new(
             settings_store::notification_policy::NotificationPolicy::load(),
         ));
+        // The notifications the banners app shows and the desk keeps, and the link it asks back on.
+        let banners = tilo_notification_banners::Link::new();
+        // The person's notifications: what their apps sent the notifications service, and what the
+        // session's roles tell them through it.
+        let notifications = Rc::new(RefCell::new(
+            crate::notifications::SessionNotifications::new(
+                options
+                    .desktop
+                    .as_ref()
+                    .map_or_else(tilo_notifications_service::Notifications::new, |desktop| {
+                        desktop.notifications().clone()
+                    }),
+                notices.clone(),
+                banners.clone(),
+                std::sync::Arc::clone(&notification_policy),
+                Rc::clone(&notice_signals),
+                options.power.clone(),
+                notice_history,
+            ),
+        ));
         let watched = std::sync::Arc::clone(&notification_policy);
         let woken = options.wake.handle();
         // A device's answer to another's ask about the person is worked out
@@ -302,7 +322,7 @@ impl Session {
             // they are looking at a desk that is not theirs, and have to be
             // told where their own still is.
             crate::desk_doc::Kept::Refused(refusal) => {
-                crate::notices::tell_desk_not_opened(&notices, &refusal);
+                crate::notices::tell_desk_not_opened(&notifications, &refusal);
             }
             crate::desk_doc::Kept::None => {}
         }
@@ -590,6 +610,8 @@ impl Session {
         // written there as their history.
         if let Some(link) = &fabric {
             activity.watch_fabric(Arc::clone(link));
+            // Notifications continue on the person's other devices.
+            notifications.borrow().attach_fabric(Arc::clone(link));
         }
         // Nearby Send: one engine for every file that leaves this device for
         // another of the person's, whether a screenshot the studio sends or a
@@ -682,7 +704,7 @@ impl Session {
                     signals: Rc::clone(&notice_signals),
                     readings: Rc::clone(&readings),
                     activities: Rc::clone(&activities),
-                    notices: notices.clone(),
+                    notices: crate::notifications::RoleNotices::of(&notifications),
                     tray: tray.clone(),
                     fullscreen: Rc::clone(&fullscreen),
                     shares: Rc::clone(&window_shares),
@@ -812,13 +834,14 @@ impl Session {
             readout_band.clone(),
             &options,
         );
-        let banners = mount_banners(
+        mount_banners(
             &mut compositor,
             &mut doors,
             &notices,
             &handle,
             &options,
             banner_stack,
+            banners.clone(),
         );
 
         // The sheets, over the desktop and its panels.
@@ -1207,7 +1230,7 @@ impl Session {
             add_app,
             uninstall,
             Rc::clone(&services),
-            notices.clone(),
+            crate::notifications::RoleNotices::of(&notifications),
         );
 
         // The settings pages are this desktop's own: every session it runs offers them to search.
@@ -1240,28 +1263,6 @@ impl Session {
         let clipboard = Rc::new(crate::clipboard::Clipboard::new(options.wake.handle()));
         let boot_join = crate::boot_join::BootJoin::at_boot(&directory_store, &handle);
         let community = crate::community::Community::for_site(crate::directory::community_site());
-        // The person's notifications: what their apps sent, and what the session's roles tell them
-        // through the same log.
-        let session_notifications = {
-            let notifications = crate::notifications::SessionNotifications::new(
-                options
-                    .desktop
-                    .as_ref()
-                    .map(|desktop| desktop.notifications().clone()),
-                notices.clone(),
-                banners.clone(),
-                notification_policy,
-                notice_signals,
-                options.power.clone(),
-                notice_history,
-            );
-            // Notifications continue on the person's other devices, when this session runs as one
-            // of them.
-            if let Some(link) = &fabric {
-                notifications.attach_fabric(std::sync::Arc::clone(link));
-            }
-            Rc::new(RefCell::new(notifications))
-        };
         // The person's mentions in the workspaces' records: told through those notifications, kept
         // in the records' store, and opened through this session's own door to the apps.
         let mentions = records_store.clone().map(|store| {
@@ -1273,9 +1274,7 @@ impl Session {
                     store,
                     crate::platform::records::Changes::clone(&changes),
                 ))),
-                notices: Some(Rc::new(crate::notifications::RoleNotices::over(Rc::clone(
-                    &session_notifications,
-                )))),
+                notices: Some(crate::notifications::RoleNotices::of(&notifications)),
                 name: Rc::new(move |person: &str| {
                     naming
                         .read(|tree| {
@@ -1369,7 +1368,10 @@ impl Session {
             owner_session: crate::owner_session::SessionFollow::default(),
             display_confirm,
             notices: notices.clone(),
-            moves: crate::window_move::Moves::new(notices.clone(), std::sync::Arc::clone(&notes)),
+            moves: crate::window_move::Moves::new(
+                crate::notifications::RoleNotices::of(&notifications),
+                std::sync::Arc::clone(&notes),
+            ),
             branches: crate::workspace_branch::Branches::default(),
             activities,
             tray,
@@ -1381,7 +1383,7 @@ impl Session {
             here_at: Cell::new(0),
             here_seen: Cell::new(0),
             places_seen: RefCell::default(),
-            notifications: Rc::clone(&session_notifications),
+            notifications: Rc::clone(&notifications),
             mentions,
             asker,
             agent_door: RefCell::new(agent_door),

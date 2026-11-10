@@ -270,7 +270,9 @@ pub enum HostActionSource {
 }
 
 impl HostActionSource {
-    fn label(self) -> String {
+    /// The name the person sees an offer from it under ("Devices").
+    #[must_use]
+    pub fn label(self) -> String {
         crate::i18n::t(match self {
             Self::Identity => "host-action-source-identity",
             Self::Devices => "host-action-source-devices",
@@ -281,31 +283,10 @@ impl HostActionSource {
 }
 
 impl HostAction {
-    /// A banner that offers this action: choosing it performs the action.
+    /// The name the person sees this offer from.
     #[must_use]
-    ///
-    /// An offer is an ask: it stays until the person answers it or puts it off ("Not now", which
-    /// keeps it in the notification centre), so nothing is decided by waiting.
-    pub fn notice(
-        &self,
-        title: impl Into<String>,
-        body: impl Into<String>,
-    ) -> crate::notifications::Notification {
-        let mut notice = crate::notifications::Notification::new(title, body);
-        // The action first: it is what choosing the ask itself does, from the banner or later from
-        // the centre.
-        notice.actions = vec![
-            (self.key(), self.title.clone()),
-            (
-                crate::notifications::NOT_NOW_ACTION.to_owned(),
-                crate::i18n::t("notification-not-now"),
-            ),
-        ];
-        notice.app_name = self.source.map(HostActionSource::label);
-        notice.dismiss_after = crate::notifications::PERSISTENT_DISMISS;
-        // What a host asks is on the person's behalf: who they are and which devices are theirs.
-        notice.icon_kind = crate::notifications::NotificationIconKind::Permission;
-        notice
+    pub fn source_label(&self) -> String {
+        self.source.map(HostActionSource::label).unwrap_or_default()
     }
 
     /// The banner action key this action is offered under: a banner button with this key hands `id`
@@ -1496,25 +1477,6 @@ mod tests {
 
     fn mods(state: ModifiersState) -> Modifiers {
         Modifiers::from(state)
-    }
-
-    #[test]
-    fn a_host_actions_notice_names_what_it_is_about() {
-        let pair: HostAction = serde_json::from_str(
-            r#"{"id":"pair-device","title":"Pair a new device","source":"devices"}"#,
-        )
-        .unwrap();
-        let notice = pair.notice("Pair “Phone”?", "");
-        assert_eq!(
-            notice.sender_name(),
-            crate::i18n::t("host-action-source-devices")
-        );
-        let plain: HostAction = serde_json::from_str(r#"{"id":"x","title":"X"}"#).unwrap();
-        assert_eq!(
-            plain.notice("X", "").sender_name(),
-            crate::i18n::t("notification-group-system"),
-            "a notice from no named part of the desktop still says who it is from"
-        );
     }
 
     #[test]

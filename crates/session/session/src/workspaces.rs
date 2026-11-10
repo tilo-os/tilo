@@ -39,10 +39,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
 use tilo_desktop_surface::navigation::ChromeEffect;
-use tilo_desktop_surface::{
-    DesktopHandle, DesktopNotifications,
-    notifications::{Notification, NotificationIconKind},
-};
+use tilo_desktop_surface::{DesktopHandle, notifications::NotificationIconKind};
 use tilo_sheets::Seat as _;
 use tilo_sheets::directory::{DirectoryEffect, DirectorySeat, ListingAction};
 use tilo_startup_metrics::JOIN_FLOW_TARGET;
@@ -52,6 +49,7 @@ use tilo_user_identity::{
 };
 
 use crate::directory;
+use crate::platform::notice::{Notice, Notices};
 use crate::workspace_settings;
 
 /// Show the workspaces this computer may join or open: the ones it holds,
@@ -86,7 +84,7 @@ pub(crate) fn follow_directory(
     seat: Option<&DirectorySeat>,
     handle: &DesktopHandle,
     directory: &directory::Store,
-    notices: &DesktopNotifications,
+    notices: &dyn Notices,
     add_workspace: &dyn Fn(&directory::Joined) -> Result<(), String>,
 ) {
     // A session the host set up to join one workspace joins it with nobody at the directory: what
@@ -266,24 +264,30 @@ fn join_listed(
 
 /// Say the person joined `name` , where they are now: a note that the workspace is theirs, its
 /// windows open there.
-fn joined_notice(notices: &DesktopNotifications, name: &str) {
-    let mut notice = Notification::new(
-        tilo_desktop_surface::i18n::t_args("session-joined-workspace", &[("name", name.into())]),
-        tilo_desktop_surface::i18n::t("session-joined-workspace-body"),
+fn joined_notice(notices: &dyn Notices, name: &str) {
+    notices.show(
+        &Notice::new(
+            String::new(),
+            1,
+            tilo_desktop_surface::i18n::t_args(
+                "session-joined-workspace",
+                &[("name", name.into())],
+            ),
+            tilo_desktop_surface::i18n::t("session-joined-workspace-body"),
+        )
+        .about(NotificationIconKind::Workspace),
     );
-    notice.icon_kind = NotificationIconKind::Workspace;
-    notices.post(notice);
 }
 
 /// Say a join the person chose did not happen, and why, where they are: the workspace directory's
 /// own sentence, as a banner.
-fn failure_notice(notices: &DesktopNotifications, said: &str) {
-    let notice = Notification::new(
+fn failure_notice(notices: &dyn Notices, said: &str) {
+    notices.show(&Notice::new(
+        String::new(),
+        2,
         tilo_desktop_surface::i18n::t("session-join-failed-title"),
-        said.to_owned(),
-    )
-    .with_severity(tilo_desktop_surface::notifications::NotificationSeverity::Error);
-    notices.post(notice);
+        said,
+    ));
 }
 
 /// The site `text` names, when what was typed into the search is one: a word that is no address
@@ -295,13 +299,16 @@ fn typed_site(text: &str) -> Option<String> {
 }
 
 /// Say the person left the workspace `name` , and what became of its windows.
-pub(crate) fn left_workspace(notices: &DesktopNotifications, name: &str) {
-    let mut notice = Notification::new(
-        tilo_desktop_surface::i18n::t_args("session-left-workspace", &[("name", name.into())]),
-        tilo_desktop_surface::i18n::t("session-left-workspace-body"),
+pub(crate) fn left_workspace(notices: &dyn Notices, name: &str) {
+    notices.show(
+        &Notice::new(
+            String::new(),
+            1,
+            tilo_desktop_surface::i18n::t_args("session-left-workspace", &[("name", name.into())]),
+            tilo_desktop_surface::i18n::t("session-left-workspace-body"),
+        )
+        .about(NotificationIconKind::Workspace),
     );
-    notice.icon_kind = NotificationIconKind::Workspace;
-    notices.post(notice);
 }
 
 /// The file beside the desk that keeps the person's list of their own workspaces.
@@ -1365,7 +1372,7 @@ impl crate::Shared {
                         // workspace of the person's own was on no sheet: it
                         // arrived on the desk where their list says it
                         // belongs.
-                        joined_notice(&self.notices, &listed);
+                        joined_notice(&*self.telling(), &listed);
                     }
                 }
                 // A workspace this desk held stays on it as it was: the

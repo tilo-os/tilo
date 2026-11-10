@@ -14,7 +14,6 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use settings_store::system_sounds::SystemSoundEvent;
-use tilo_desktop_surface::DesktopNotifications;
 use tilo_files::native::ChangeWatch;
 use tilo_notifications_service::Notifications;
 use tilo_system_service::update;
@@ -192,8 +191,11 @@ pub fn wake_notice(event: &crate::platform::fabric::wake::WakeEvent) -> Option<N
 
 /// Tell the person the desk this device saved was not opened, and stays until they let it go: it is
 /// untouched on disk, and a desk that is not theirs looks exactly like theirs.
-pub(crate) fn tell_desk_not_opened(notices: &DesktopNotifications, refusal: &StateNotice) {
-    crate::notifications::tell_desk(
+pub(crate) fn tell_desk_not_opened(
+    notifications: &std::cell::RefCell<crate::notifications::SessionNotifications>,
+    refusal: &StateNotice,
+) {
+    notifications.borrow().tell(
         &Notice::new(
             t("desk-not-opened-app-name"),
             2,
@@ -201,7 +203,6 @@ pub(crate) fn tell_desk_not_opened(notices: &DesktopNotifications, refusal: &Sta
             refusal.explains(),
         )
         .staying(Some(Duration::ZERO)),
-        notices,
     );
 }
 
@@ -1285,21 +1286,27 @@ mod tests {
         }
     }
 
-    /// A desk with no notifications service to show a notice still shows it as the system's: its
-    /// own name and the system's mark, never a sender's claim and a generic window.
+    /// A notice shown as the system's: its own name and the system's mark, never a sender's claim
+    /// and a generic window.
     #[test]
-    fn a_notice_with_no_service_to_show_it_is_still_the_systems() {
-        let desks = DesktopNotifications::default();
+    fn a_notice_shows_as_the_systems_word() {
+        let tolds = crate::notifications::told::Told::default();
         let newer = crate::network::VersionMismatch {
             endpoint: "zpeerexample".into(),
             theirs: 31,
             ours: 30,
         };
-        crate::notifications::tell_desk(
+        crate::platform::notice::Notices::show(
+            &tolds,
             &version_mismatch_notice(&newer, Some("Framework 16")),
-            &desks,
         );
-        let banner = desks.log().active().first().cloned().expect("it is shown");
+        let banner = tolds
+            .0
+            .log()
+            .active()
+            .first()
+            .cloned()
+            .expect("it is shown");
         assert_eq!(banner.app_name.as_deref(), Some("Updates"));
         assert_eq!(banner.mark().icon, Some(ui::icons::Icon::Bell));
     }

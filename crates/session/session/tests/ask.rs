@@ -17,8 +17,10 @@ mod common;
 use std::time::Duration;
 
 use tilo_compositor::{InputEvent, OutputConfig};
-use tilo_desktop_surface::{HostAction, HostActionSource};
-use tilo_session::{Options, Session};
+use tilo_desktop_surface::{DesktopNotifications, HostAction, HostActionSource};
+use tilo_session::Options;
+use tilo_session::Session;
+use tilo_session::platform::notice::{Notice, Notices};
 use ui::accesskit::{Node, NodeId, Role, TreeUpdate};
 
 const SETTLE: Duration = Duration::from_millis(1);
@@ -44,6 +46,22 @@ fn session_on(width: i32, height: i32) -> Session {
 /// A headless session at its desk, drawn once.
 fn session() -> Session {
     session_on(WIDTH, HEIGHT)
+}
+
+/// The notices a test host shows, on the desk this session draws them on.
+struct Told(DesktopNotifications);
+
+impl Notices for Told {
+    fn show(&self, notice: &Notice) {
+        self.0.post(notice.shown());
+    }
+
+    fn withdraw(&self, _tag: &str) {}
+}
+
+/// The notices this session shows, as the person's own.
+fn told(session: &Session) -> Told {
+    Told(session.notifications())
 }
 
 /// Keeping who the person is here: the offer a page makes from their own avatar.
@@ -151,7 +169,7 @@ fn an_ask_about_the_person_waits_on_their_avatar_until_they_answer_it() {
 
     tilo_session::identity::offer(
         session.handle(),
-        &session.notifications(),
+        &told(&session),
         keep_identity(),
         "Keep your name and work?",
         "A passkey brings you back as yourself on this device.",
@@ -226,7 +244,7 @@ fn an_ask_that_does_not_fit_the_bar_opens_as_a_card_under_it() {
     let mut session = session_on(NARROW, HEIGHT);
     tilo_session::identity::offer(
         session.handle(),
-        &session.notifications(),
+        &told(&session),
         keep_identity(),
         "Keep your name and work?",
         "A passkey brings you back as yourself on this device.",
@@ -270,7 +288,7 @@ fn a_folded_ask_on_a_narrow_bar_opens_from_its_avatar() {
     let mut session = session_on(NARROW, HEIGHT);
     tilo_session::identity::offer(
         session.handle(),
-        &session.notifications(),
+        &told(&session),
         keep_identity(),
         "Keep your name and work?",
         "A passkey brings you back as yourself on this device.",

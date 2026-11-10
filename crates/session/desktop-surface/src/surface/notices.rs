@@ -1856,20 +1856,25 @@ mod tests {
         assert!(layer.open_app.is_none());
     }
 
+    /// An ask as a host offers it: its answer, and "Not now" under it.
     fn ask() -> Notification {
-        crate::HostAction {
-            id: "keep-identity".into(),
-            title: "Keep with passkey".into(),
-            subtitle: None,
-            icon: None,
-            destructive: false,
-            unasked: false,
-            source: None,
-        }
-        .notice(
+        let mut ask = Notification::new(
             "Keep this identity?",
             "A passkey brings you back on any browser.",
-        )
+        );
+        ask.actions = vec![
+            (
+                crate::host_action_key("keep-identity"),
+                "Keep with passkey".to_owned(),
+            ),
+            (
+                crate::notifications::NOT_NOW_ACTION.to_owned(),
+                crate::i18n::t("notification-not-now"),
+            ),
+        ];
+        ask.icon_kind = crate::notifications::NotificationIconKind::Permission;
+        ask.dismiss_after = crate::notifications::PERSISTENT_DISMISS;
+        ask
     }
 
     #[test]

@@ -1378,9 +1378,12 @@ impl crate::Session {
         };
         if let Some((_, title, body)) = shell.new_due_timer() {
             self.shared
-                .notices
-                .post(tilo_desktop_surface::notifications::Notification::new(
-                    title, body,
+                .telling()
+                .show(&crate::platform::notice::Notice::new(
+                    String::new(),
+                    1,
+                    title,
+                    body,
                 ));
         }
         // The desk styles every installed package offers: read when the store moved, so a

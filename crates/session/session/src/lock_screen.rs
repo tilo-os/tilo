@@ -5,7 +5,6 @@
 //! the same view itself ([`LockView`]), so a lock never lifts itself.
 
 use tilo_compositor::Error;
-use tilo_desktop_surface::notifications::{Notification, NotificationSeverity};
 use tilo_sheets::Seat as _;
 
 use crate::lock_service;
@@ -252,13 +251,14 @@ impl crate::Session {
                 "the lock screen cannot show the lock, and the session has no view of its own: the lock stays"
             );
         }
-        self.notices().post(
-            Notification::new(
+        self.shared
+            .telling()
+            .show(&crate::platform::notice::Notice::new(
+                String::new(),
+                2,
                 crate::i18n::t("lock-screen-failed-title"),
                 crate::i18n::t("lock-screen-failed-body"),
-            )
-            .with_severity(NotificationSeverity::Error),
-        );
+            ));
     }
 
     /// Start the lock screen, if it does not run: a locked session is shown by its screen, whoever

@@ -831,7 +831,6 @@ impl DeskWidgets {
         .with_icon_kind(NotificationIconKind::Generic);
         toast.dismiss_after = CLEAR_UNDO_WINDOW;
         toast.actions = vec![("default".into(), crate::i18n::t("desk-widget-undo"))];
-        toast.bypass_dnd = true;
         toast.show_on_lock_screen = false;
         let posted = self.notices.post(toast);
         self.undo.borrow_mut().insert(posted, id);

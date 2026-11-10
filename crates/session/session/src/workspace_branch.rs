@@ -40,10 +40,11 @@ use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, Workspace, WorkspaceId,
     WorkspaceSlot,
 };
-use tilo_desktop_surface::notifications::{Notification, NotificationIconKind};
+use tilo_desktop_surface::notifications::NotificationIconKind;
 use tilo_files::native::tree::{Copied, Strategy, clone_tree};
 
 use crate::engine::{Engine, SealKeys};
+use crate::platform::notice::Notice;
 
 /// Chat's records: every conversation of the workspace, which stays behind.
 const CHAT: &str = "so.tilo.chat";
@@ -741,18 +742,21 @@ impl crate::Shared {
             self.handle.acknowledge(error.to_string());
             return;
         }
-        let mut notice = Notification::new(
-            tilo_desktop_surface::i18n::t_args(
-                "session-branching-workspace",
-                &[("name", source_name.clone().into())],
-            ),
-            tilo_desktop_surface::i18n::t_args(
-                "session-branching-workspace-body",
-                &[("branch", name.clone().into())],
-            ),
+        self.telling().show(
+            &Notice::new(
+                String::new(),
+                1,
+                tilo_desktop_surface::i18n::t_args(
+                    "session-branching-workspace",
+                    &[("name", source_name.clone().into())],
+                ),
+                tilo_desktop_surface::i18n::t_args(
+                    "session-branching-workspace-body",
+                    &[("branch", name.clone().into())],
+                ),
+            )
+            .about(NotificationIconKind::Workspace),
         );
-        notice.icon_kind = NotificationIconKind::Workspace;
-        self.notices.post(notice);
         self.branches.0.borrow_mut().push(Branching {
             source: from,
             source_slot: source,
@@ -842,8 +846,9 @@ impl crate::Shared {
             missing = branched.missing.len(),
             "a workspace was branched"
         );
-        let mut notice = if branched.missing.is_empty() {
-            Notification::new(
+        let (urgency, title, body) = if branched.missing.is_empty() {
+            (
+                1,
                 tilo_desktop_surface::i18n::t_args(
                     "session-branched-workspace",
                     &[("branch", name.to_owned().into())],
@@ -857,7 +862,8 @@ impl crate::Shared {
             for missing in &branched.missing {
                 tracing::warn!(%workspace, %missing, "a branch of a workspace is not complete");
             }
-            Notification::new(
+            (
+                1,
                 tilo_desktop_surface::i18n::t_args(
                     "session-branch-failed",
                     &[("branch", name.to_owned().into())],
@@ -865,8 +871,10 @@ impl crate::Shared {
                 branched.missing.join("\n"),
             )
         };
-        notice.icon_kind = NotificationIconKind::Workspace;
-        self.notices.post(notice);
+        self.telling().show(
+            &Notice::new(String::new(), urgency, title, body)
+                .about(NotificationIconKind::Workspace),
+        );
     }
 }
 

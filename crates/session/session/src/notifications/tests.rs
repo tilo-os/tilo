@@ -9,6 +9,9 @@ use std::sync::{Arc, Mutex};
 
 use settings_store::notification_policy::AppNotificationRule;
 use settings_store::system_sounds::{SystemSoundEvent, SystemSoundPrefs, should_play};
+use tilo_desktop_surface::notifications::{
+    DEFAULT_DISMISS_AFTER, NotificationSeverity, PERSISTENT_DISMISS,
+};
 use tilo_notifications_service::{Caller, ImageData, Occurrence, Taken};
 use tilo_power_mgmt::inhibit::INHIBIT_IDLE;
 use tilo_session_power::PowerLink;
@@ -97,7 +100,7 @@ fn rig_at(history: Option<std::path::PathBuf>) -> Rig {
     let signals = Rc::new(NoticeSignals::default());
     let power = PowerLink::default();
     let bridge = Rc::new(RefCell::new(SessionNotifications::new(
-        Some(daemon.clone()),
+        daemon.clone(),
         desktop.clone(),
         Link::new(),
         Arc::clone(&policy),
@@ -176,7 +179,7 @@ fn urgency_and_timeout_set_how_long_a_banner_stays() {
         let mut critical = sent(1);
         critical.urgency = 2;
         critical.expire_timeout = 1000;
-        shown(critical, 0)
+        shown(critical, 0, None)
     };
     assert_eq!(critical.severity, NotificationSeverity::Error);
     assert_eq!(critical.dismiss_after, PERSISTENT_DISMISS);
@@ -187,7 +190,7 @@ fn urgency_and_timeout_set_how_long_a_banner_stays() {
     ] {
         let mut normal = sent(1);
         normal.expire_timeout = timeout;
-        let normal = shown(normal, 0);
+        let normal = shown(normal, 0, None);
         assert_eq!(normal.severity, NotificationSeverity::Info);
         assert_eq!(normal.dismiss_after, stays, "timeout {timeout}");
     }
@@ -201,7 +204,7 @@ fn the_desktops_own_notice_is_the_systems_never_a_claim() {
     let mut notice = sent(8);
     notice.app_name = "Updates".into();
     notice.system = true;
-    let banner = shown(notice, 0);
+    let banner = shown(notice, 0, None);
     assert_eq!(banner.app_id, None, "no app is behind it");
     assert_eq!(
         banner.app_name.as_deref(),
@@ -214,7 +217,7 @@ fn the_desktops_own_notice_is_the_systems_never_a_claim() {
         "the system's mark, not a generic window"
     );
     assert_eq!(
-        shown(sent(9), 0).app_name,
+        shown(sent(9), 0, None).app_name,
         notifications::sender_claim("Mail"),
         "a program nobody attributed still says what it claims"
     );
@@ -222,7 +225,7 @@ fn the_desktops_own_notice_is_the_systems_never_a_claim() {
 
 #[test]
 fn only_an_attributed_app_is_named_and_a_person_needs_a_name() {
-    let unattributed = shown(sent(3), 0);
+    let unattributed = shown(sent(3), 0, None);
     assert_eq!(unattributed.sender_id, Some(3));
     assert_eq!(unattributed.app_id, None);
     let claim = unattributed.app_name.expect("the sender's claim");
@@ -238,7 +241,7 @@ fn only_an_attributed_app_is_named_and_a_person_needs_a_name() {
     });
     message.contact_endpoint = Some("mailto:ada@example.org".into());
     message.incoming_call = true;
-    let handle_only = shown(message.clone(), 0);
+    let handle_only = shown(message.clone(), 0, None);
     assert_eq!(
         handle_only.app_name.as_deref(),
         Some("Chat"),
@@ -249,7 +252,7 @@ fn only_an_attributed_app_is_named_and_a_person_needs_a_name() {
     assert_eq!(handle_only.addressed, None, "a call needs its caller");
 
     message.sender_name = Some("Ada".into());
-    let named = shown(message, 0);
+    let named = shown(message, 0, None);
     assert_eq!(
         named.from,
         Some(NotificationPerson {
@@ -258,7 +261,6 @@ fn only_an_attributed_app_is_named_and_a_person_needs_a_name() {
         })
     );
     assert_eq!(named.addressed, Some(Addressed::IncomingCall));
-    assert!(!named.bypass_dnd, "an app never pierces Do Not Disturb");
 }
 
 /// A program the session proved with no installed app behind it is named by the name it gives
@@ -268,7 +270,7 @@ fn only_an_attributed_app_is_named_and_a_person_needs_a_name() {
 fn a_program_is_named_by_itself_never_by_its_path() {
     let mut program = sent(6);
     program.app_name = "/usr/bin/notify-send".into();
-    let named = shown(from_app(program.clone(), "/usr/bin/notify-send"), 0);
+    let named = shown(from_app(program.clone(), "/usr/bin/notify-send"), 0, None);
     assert_eq!(
         named.app_name.as_deref(),
         Some("Notify Send"),
@@ -276,7 +278,7 @@ fn a_program_is_named_by_itself_never_by_its_path() {
     );
 
     program.app_name = "Notes".into();
-    let says = shown(from_app(program, "/usr/bin/notify-send"), 0);
+    let says = shown(from_app(program, "/usr/bin/notify-send"), 0, None);
     assert_eq!(
         says.app_name.as_deref(),
         Some("Notes"),
@@ -288,12 +290,12 @@ fn a_program_is_named_by_itself_never_by_its_path() {
 fn the_senders_pixels_are_the_banners_artwork() {
     let mut with_image = sent(5);
     with_image.image_data = Some(pixels());
-    let image = shown(with_image, 7).app_image.expect("artwork");
+    let image = shown(with_image, 7, None).app_image.expect("artwork");
     assert_eq!(image.key(), "notification:5:7");
     let painted = image.pixels(64).expect("pixels");
     assert_eq!((painted.width, painted.height), (2, 1));
     assert_eq!(painted.data.data(), pixels().rgba.as_slice());
-    assert!(shown(sent(5), 7).app_image.is_none());
+    assert!(shown(sent(5), 7, None).app_image.is_none());
 }
 
 #[test]
@@ -304,7 +306,7 @@ fn actions_are_labelled_by_the_desktop_where_it_owns_the_words() {
         ("snooze".into(), "zzz".into()),
         ("archive".into(), "Archive".into()),
     ];
-    let plain = shown(alarm.clone(), 0);
+    let plain = shown(alarm.clone(), 0, None);
     assert_eq!(plain.actions[0].1, notifications::open_action_label());
     assert_eq!(plain.actions[1].1, "zzz", "only an alarm's are relabelled");
     alarm.scheduled = Some(Occurrence {
@@ -314,7 +316,7 @@ fn actions_are_labelled_by_the_desktop_where_it_owns_the_words() {
         calendar_alarm: true,
         uri: "tilo://clock".into(),
     });
-    let ringing = shown(alarm, 0);
+    let ringing = shown(alarm, 0, None);
     let snooze = notifications::alarm_action_labels()
         .into_iter()
         .find(|(key, _)| key == "snooze")
@@ -565,7 +567,7 @@ fn the_centre_opens_with_what_the_last_session_kept() {
     let reopened = DesktopNotifications::default();
     super::restore_kept(&reopened, &path);
     let next = SessionNotifications::new(
-        None,
+        Notifications::new(),
         reopened,
         Link::new(),
         Arc::clone(&rig.policy),
