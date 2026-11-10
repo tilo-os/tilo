@@ -891,3 +891,112 @@ async fn leaves_who_is_here(ending: Ending) {
     }
     drop(presence);
 }
+
+/// The longest an open page may take to list the agent of a new `tilo mcp` run on the same
+/// computer, with what it is doing: a run that restarts (after `tilo login`, or as an agent's
+/// client restarts its MCP server) is the same agent coming back to the person.
+const COMES_BACK_WITHIN: Duration = Duration::from_secs(6);
+
+/// One computer runs `tilo mcp` again and again, each run ending its own way: the person's page,
+/// open the whole time, lists each run's agent with what it is doing, and drops it as it ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_that_comes_back_is_heard_by_an_open_page_every_time() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let computer = enrol(
+        &root,
+        "Claude Code on build-box",
+        DeviceCapabilities::member(),
+    );
+    let device = computer.cert.device_public_key;
+    let state = support::scratch_dir();
+    let hosted = start(&root, &host, state.path()).await;
+    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    let _sheets = browser.create(SHEETS);
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let roster = Roster::of(&browser_device);
+    let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
+        collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
+    ) else {
+        panic!("a key names a person")
+    };
+    for (run, ending) in [
+        Ending::Leaves,
+        Ending::Closes,
+        Ending::Leaves,
+        Ending::Closes,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let started = Instant::now();
+        let agent = Browser::open(&hosted, &computer, &host).await;
+        tilo_session_host::device::run_as_agent(&agent.peer, "Claude Code")
+            .await
+            .expect("the computer's session is the agent's run");
+        let actions =
+            SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
+        let presence = mcp_presence::Presence::new(
+            (&agent.peer, &computer.cert),
+            actions,
+            person.clone(),
+            (WORKSPACE.into(), agent.workspace),
+            "Claude Code".into(),
+        )
+        .expect("the agent's certificate names a device");
+        presence.arrive();
+        let path = format!("/{SHEETS}/run-{run}");
+        presence
+            .called(
+                &json!({"method": "tools/call",
+                        "params": {"name": "tilo_read", "arguments": {"path": path}}}),
+                false,
+                None,
+            )
+            .await;
+        let opened = Instant::now();
+        let doing = |roster: &Roster, browser: &mut Browser| {
+            roster.listed(browser, device);
+            roster
+                .board
+                .members(WORKSPACE)
+                .into_iter()
+                .find(|member| member.agent && member.publisher == hex::encode(device))
+                .and_then(|member| member.activity)
+        };
+        loop {
+            let activity = doing(&roster, &mut browser);
+            if activity
+                .as_deref()
+                .is_some_and(|line| line.contains(&format!("run-{run}")))
+            {
+                break;
+            }
+            assert!(
+                opened.elapsed() < COMES_BACK_WITHIN,
+                "run {run}: the open page never heard the agent come back ({:?} since its \
+                 session opened, {:?} in all), it shows {activity:?}",
+                opened.elapsed(),
+                started.elapsed()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let ended = Instant::now();
+        if matches!(ending, Ending::Leaves) {
+            presence.leave();
+        }
+        agent.peer.close();
+        while roster.listed(&mut browser, device) {
+            assert!(
+                ended.elapsed() < LEAVES_WITHIN,
+                "run {run} ({ending:?}): the agent is still listed {:?} after its session ended",
+                ended.elapsed()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        drop(presence);
+        drop(agent);
+    }
+}

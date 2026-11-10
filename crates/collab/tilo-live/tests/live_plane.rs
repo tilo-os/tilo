@@ -631,6 +631,147 @@ async fn a_plane_that_joins_after_presence_was_said_hears_it_without_a_new_one()
     drop(b);
 }
 
+/// Everything `plane` heard on the presence track from `device` until `done`
+/// holds of it, publishing through `say` between looks as a heartbeat would;
+/// `what` names the wait.
+async fn hear_until(
+    plane: &Plane,
+    device: [u8; 32],
+    what: &str,
+    mut say: impl FnMut(),
+    done: impl Fn(&[Heard]) -> bool,
+) -> Vec<Heard> {
+    let since = std::time::Instant::now();
+    let mut drawn = Vec::new();
+    while !done(&drawn) {
+        assert!(
+            since.elapsed() < Duration::from_secs(5),
+            "{what} after {:?}: {drawn:?}",
+            since.elapsed()
+        );
+        say();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drawn.extend(
+            heard(plane, Track::Presence)
+                .into_iter()
+                .filter(|object| object.sender == device),
+        );
+    }
+    drawn
+}
+
+/// A device whose session ends and that joins again — `tilo mcp` run again on
+/// the same computer — is heard by a plane that stayed the whole time, every
+/// time. Each new session numbers its presence from one again, under the same
+/// name as the one before. Some sessions end before the next one joins, and
+/// the plane that stayed hears them leave; others are still held when the next
+/// one joins, as a killed process leaves its session until the relay notices,
+/// and the new one is heard all the same, and nothing of the old one after.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_that_joins_again_is_heard_by_a_plane_that_stayed() {
+    let authority = Authority::new();
+    let (relay_endpoint, a_endpoint, b_endpoint) =
+        (endpoint().await, endpoint().await, endpoint().await);
+    let (a_key, b_key) = (*a_endpoint.id().as_bytes(), *b_endpoint.id().as_bytes());
+    let (a_cert, b_cert) = (authority.admit_device(a_key), authority.admit_device(b_key));
+    let roster = authority.roster();
+    let relay = Relay::new(authority.clone());
+    let _router = serve(&relay, &relay_endpoint);
+    let keys = keys();
+    let session = || async {
+        Plane::join(
+            &native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint)),
+            &grant_for(&a_cert),
+            join(a_key, roster.clone(), keys.clone()),
+        )
+        .await
+        .unwrap()
+    };
+    let first = session().await;
+    let b = Plane::join(
+        &native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint)),
+        &grant_for(&b_cert),
+        join(b_key, roster.clone(), keys.clone()),
+    )
+    .await
+    .unwrap();
+    // The session the next run starts with, and the sequence it says next.
+    let mut current = Some((first, 1));
+    // Whether each session is still held when the next one joins.
+    for (run, lingers) in [false, true, false, true, false].into_iter().enumerate() {
+        let (a, mut sequence) = match current.take() {
+            Some(held) => held,
+            None => (session().await, 1),
+        };
+        let said = format!("run={run}").into_bytes();
+        let mut say = || {
+            a.publish(Track::Presence, sequence, &said)
+                .unwrap_or_else(|error| panic!("run {run}, frame {sequence}: {error}"));
+            sequence += 1;
+        };
+        hear_until(
+            &b,
+            a_key,
+            &format!("run {run}: the plane that stayed never heard the device"),
+            &mut say,
+            |drawn| drawn.iter().any(|object| object.body == said),
+        )
+        .await;
+        if lingers {
+            let next = session().await;
+            let next_said = format!("run={}", run + 1).into_bytes();
+            let mut next_sequence = 1;
+            hear_until(
+                &b,
+                a_key,
+                &format!(
+                    "run {}: a session that joined while the last was held is unheard",
+                    run + 1
+                ),
+                || {
+                    next.publish(Track::Presence, next_sequence, &next_said)
+                        .unwrap();
+                    next_sequence += 1;
+                },
+                |drawn| drawn.iter().any(|object| object.body == next_said),
+            )
+            .await;
+            drop(a);
+            // The old session goes as the relay notices it, and the new one is
+            // what the plane that stayed hears: the device is still here.
+            let mut later = Vec::new();
+            let held = std::time::Instant::now();
+            while held.elapsed() < Duration::from_secs(1) {
+                next.publish(Track::Presence, next_sequence, &next_said)
+                    .unwrap();
+                next_sequence += 1;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                later.extend(
+                    heard(&b, Track::Presence)
+                        .into_iter()
+                        .filter(|object| object.sender == a_key),
+                );
+            }
+            assert!(
+                later.last().is_some_and(|object| object.body == next_said),
+                "run {run}: once the old session went, the device is not heard as the new \
+                 one: {later:?}"
+            );
+            current = Some((next, next_sequence));
+            continue;
+        }
+        drop(a);
+        hear_until(
+            &b,
+            a_key,
+            &format!("run {run}: the plane that stayed never heard the device leave"),
+            || {},
+            |drawn| drawn.iter().any(|object| object.body.is_empty()),
+        )
+        .await;
+    }
+}
+
 /// One camera picture of `layer`, sealed and sent through `plane`.
 fn picture(
     layer: tilo_live::video::Layer,

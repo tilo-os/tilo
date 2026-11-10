@@ -1500,6 +1500,52 @@ try {
         log(`${combo}: the agent left who is here ${leftAfter.toFixed(1)} s after its tilo mcp ended`);
         check(`${combo}: the agent leaves who is here once its tilo mcp ends`, Boolean(gone) && leftAfter < 10,
           gone ? `${leftAfter.toFixed(1)} s after tilo mcp ended` : `still listed 30 s after: ${names(await semantics(tab))}`);
+        // 7b. The agent comes back: `tilo login` tells it to restart, and its client restarts its
+        //     MCP server often. Each new tilo mcp on this computer is on the page that stayed
+        //     open, with what it is doing: once after the last one ended, and once straight
+        //     after the last one was killed, before the host could notice it went.
+        for (const [round, ending] of [[1, 'ended'], [2, 'killed']]) {
+          agent = mcpClient();
+          const startedAt = Date.now();
+          await agent.initialize();
+          await agent.call('tilo_ls');
+          const back = await until(async () => (await present()) || undefined, 30000, 250);
+          const backAfter = (Date.now() - startedAt) / 1000;
+          log(`${combo}: tilo mcp run ${round + 1} is on the open page ${backAfter.toFixed(1)} s after it started`);
+          check(`${combo}: a tilo mcp started again is on the open page (after the last ${ending === 'ended' ? 'ended' : 'one ended'})`,
+            Boolean(back) && backAfter < 15,
+            back ? `${backAfter.toFixed(1)} s after it started` : `not listed 30 s after it started: ${names(await semantics(tab))}`);
+          if (ending === 'killed') {
+            agent.child.kill('SIGKILL');
+            await until(() => agent.child.exitCode !== null || agent.child.signalCode !== null || undefined, 5000, 50);
+          } else {
+            await agent.close();
+            const left = await until(async () => (await present()) ? undefined : true, 30000, 250);
+            check(`${combo}: tilo mcp run ${round + 1} leaves who is here once it ends`, Boolean(left),
+              left ? 'gone' : `still listed 30 s after: ${names(await semantics(tab))}`);
+          }
+        }
+        // The killed run's successor: on the page though its predecessor never said it left.
+        agent = mcpClient();
+        const restartedAt = Date.now();
+        await agent.initialize();
+        await agent.call('tilo_ls');
+        const afterKill = await until(async () => (await present()) || undefined, 30000, 250);
+        const afterKillIn = (Date.now() - restartedAt) / 1000;
+        log(`${combo}: tilo mcp after a killed one is on the open page ${afterKillIn.toFixed(1)} s after it started`);
+        // The killed run is listed until the host notices it went, so the agent is still listed
+        // well after that only if the page hears its successor.
+        await sleep(35000);
+        const stays = await present();
+        check(`${combo}: a tilo mcp started right after one was killed is on the open page`,
+          Boolean(afterKill) && afterKillIn < 15 && stays,
+          !afterKill ? `not listed 30 s after it started: ${names(await semantics(tab))}`
+            : stays ? `${afterKillIn.toFixed(1)} s after it started, still listed 35 s later`
+              : `listed ${afterKillIn.toFixed(1)} s after it started, gone 35 s later with its killed predecessor`);
+        await agent.close();
+        const finalLeft = await until(async () => (await present()) ? undefined : true, 30000, 250);
+        check(`${combo}: the last tilo mcp leaves who is here once it ends`, Boolean(finalLeft),
+          finalLeft ? 'gone' : `still listed 30 s after: ${names(await semantics(tab))}`);
         const finishedNotice = node => /claude code finished/i.test(`${node.name} ${node.description ?? ''}`);
         const finished = await until(async () => (await semantics(tab))
           .find(node => /claude code finished: \d+ changes?/i.test(`${node.name} ${node.description ?? ''}`)), 150000, 1000);
