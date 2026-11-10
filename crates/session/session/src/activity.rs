@@ -1310,6 +1310,11 @@ mod tests {
 
     impl Desk {
         fn new() -> Self {
+            Self::seeded(|minter, notes| seed_tree(minter, "Studio", vec![notes]))
+        }
+
+        /// A desk seeded by `seed` , given its minter and the Notes window it shows.
+        fn seeded(seed: impl FnOnce(&mut IdMinter, Tab) -> DesktopTree) -> Self {
             let mut minter = IdMinter::new(7);
             let notes = Tab {
                 id: minter.mint(),
@@ -1323,7 +1328,7 @@ mod tests {
                 view: String::new(),
                 pinned: false,
             };
-            let tree = seed_tree(&mut minter, "Studio", vec![notes]);
+            let tree = seed(&mut minter, notes);
             let workspace = tree.active;
             let (mut surface, handle) = DesktopSurface::new(tree, 7, Box::new(Tiles));
             let activity = Activity::new(
@@ -1459,25 +1464,32 @@ mod tests {
     /// for an agent is that one. Its card lists the run, and the notice that it finished counts
     /// the record it changed. Each time it writes again, the history reads what it added and
     /// lists that too.
+    ///
+    /// The desk is seeded in the workspace as a page in it seeds its own, and what the host
+    /// delivers is kept by the workspace's id, as a page's replica keeps it: the desk's workspace
+    /// is that one, so its history finds the agent's writes.
     #[cfg(target_os = "linux")]
     #[test]
     fn an_agents_run_in_an_apps_own_record_is_listed_with_its_changes() {
         use ui::automerge::transaction::Transactable as _;
         let dir = tempfile::tempdir().unwrap();
         let store = std::sync::Arc::new(app_state::FsStore::new(dir.path())) as Store;
-        let mut desk = Desk::new();
-        let workspace = desk
-            .handle
-            .read(|tree| tree.active_workspace().map(Workspace::id))
-            .expect("a workspace")
-            .to_string();
+        let workspace = "7c307c8d-bfa5-46fa-ae08-fa2fe4790bd3";
+        let mut desk = Desk::seeded(|minter, notes| {
+            tilo_desktop_surface::seed_tree_in(
+                minter,
+                WorkspaceId::parse(workspace).expect("a workspace id"),
+                "Workspace",
+                vec![notes],
+            )
+        });
         // The notebook as a host keeps it: what the agent wrote, for the person, in its run.
         let mut notebook = ui::automerge::AutoCommit::new();
         let body = notebook
             .put_object(ui::automerge::ROOT, "body", ui::automerge::ObjType::Text)
             .unwrap();
         notebook.commit();
-        let key = StorageKey::workspace_index("so.tilo.notes", &workspace);
+        let key = StorageKey::workspace_index("so.tilo.notes", workspace);
         let _lease = store.lease(&key).unwrap();
         // Each write is noted on the one stream of record changes, as the store's writers note it.
         let changes = crate::platform::records::Changes::default();
@@ -1487,7 +1499,7 @@ mod tests {
             store
                 .write(&key, WriteOp::Replace(notebook.save()), None)
                 .unwrap();
-            changes.note(&workspace, "so.tilo.notes", "", false);
+            changes.note(workspace, "so.tilo.notes", "", false);
         };
         write(&mut notebook, 2);
 

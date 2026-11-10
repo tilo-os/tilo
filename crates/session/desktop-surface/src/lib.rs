@@ -42,5 +42,5 @@ pub use surface::{
     NotificationOutcome, OpenActivity, PALETTE_EDGE, PersonalAsk, SearchHost, SearchHostFeed,
     SearchRow, TileSource, TypedField, TypedInsertion, TypedRefusal, host_action_key, is_escape,
     is_host_offer, is_search_chord, open_activity, published_selection, search_chord_keys,
-    seed_tree, tile_app_kind,
+    seed_tree, seed_tree_in, tile_app_kind,
 };

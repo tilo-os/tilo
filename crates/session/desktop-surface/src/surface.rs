@@ -91,7 +91,7 @@ pub use search::{
     TypedInsertion, TypedRefusal, host_action_key, is_escape, is_host_offer, is_search_chord,
     search_chord_keys,
 };
-pub use seed::seed_tree;
+pub use seed::{seed_tree, seed_tree_in};
 pub use tile_content::tile_app_kind;
 use tile_content::{build_tile, descriptor, placeholder};
 pub use window_menu::Row as WindowMenuRow;

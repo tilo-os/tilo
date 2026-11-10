@@ -1765,7 +1765,11 @@ pub(crate) fn mount(
             .map(str::trim)
             .filter(|name| !name.is_empty())
             .unwrap_or("Workspace");
-        tilo_desktop_surface::seed_tree(&mut minter, name, tabs)
+        // In a workspace the desk is that workspace's, by its id: the one its records are kept by.
+        match tilo_desktop_model::WorkspaceId::parse(&inputs.workspace) {
+            Some(identity) => tilo_desktop_surface::seed_tree_in(&mut minter, identity, name, tabs),
+            None => tilo_desktop_surface::seed_tree(&mut minter, name, tabs),
+        }
     };
     let notifications_key =
         StorageKey::record(DESKTOP_PACKAGE, inputs.workspace.clone(), "notifications");

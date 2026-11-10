@@ -1415,6 +1415,30 @@ try {
             step.answer ? `${verdict(step.answer)}: ${step.answer.text.slice(0, 400)}` : 'it never ran');
         }
         if (video) log(`${combo}: recording`, JSON.stringify(video));
+        // The agent's card lists the run it just made: a row under its Runs, where it said "No
+        // runs yet". Following opens it beside the work when the page saw the agent arrive;
+        // otherwise the person opens it from the agent's face in the bar.
+        const cardSays = nodes => {
+          const heading = nodes.findIndex(node => /^runs$/i.test(node.name) && /heading/i.test(JSON.stringify(node.role)));
+          if (heading >= 0) return nodes.slice(heading + 1).find(node => /listitem/i.test(JSON.stringify(node.role)) && node.name) ?? {name: 'Runs, with none listed'};
+          return nodes.find(node => /^no runs yet$/i.test(node.name));
+        };
+        const listsRun = said => Boolean(said) && !/^(no runs yet|runs, with none listed)$/i.test(said.name);
+        const openCard = async () => {
+          if (cardSays(await semantics(tab))) return;
+          await press(tab, /^claude code, agent$/i, {what: "the agent's face"});
+          await until(async () => matching(await semantics(tab), /^open card$/i), 3000, 200);
+          await press(tab, /^open card$/i, {what: "the agent's card"});
+        };
+        await openCard();
+        const card = await until(async () => {
+          const said = cardSays(await semantics(tab));
+          return listsRun(said) ? said : undefined;
+        }, 20000, 500);
+        const cardNow = cardSays(await semantics(tab));
+        check(`${combo}: the agent's card lists its run`, Boolean(card),
+          card ? card.name : cardNow ? `the card says "${cardNow.name}"` : `no card: ${names(await semantics(tab))}`);
+        await shot(tab, combo, 'agent-card');
 
         // 6. Who is here, kept on screen, with the agent in it.
         const pinProblem = await pinOverlay(tab);
@@ -1446,6 +1470,25 @@ try {
           check(`${combo}: who is here goes back in the bar`, Boolean(back),
             back ? 'pressed, and the list closed' : names(await semantics(tab)));
         }
+        // 7. Once the agent leaves, the person is told what came of it ("Claude Code finished:
+        //    3 changes in Workspace"): it is finished once it stayed away longer than a reconnect.
+        await agent.close();
+        const present = async () => (await semantics(tab)).some(node => /^stop$/i.test(node.name) || /claude code, agent/i.test(node.name));
+        await sleep(30000);
+        if (await present()) {
+          note(`${combo}: the agent leaves who is here once its tilo mcp ends`, false,
+            `30 s after tilo mcp ended, the agent is still listed: ${names(await semantics(tab))}`);
+          await openCard();
+          await press(tab, /^stop$/i, {what: 'stopping the agent from its card'});
+        }
+        const finishedNotice = node => /claude code finished/i.test(`${node.name} ${node.description ?? ''}`);
+        const finished = await until(async () => (await semantics(tab))
+          .find(node => /claude code finished: \d+ changes?/i.test(`${node.name} ${node.description ?? ''}`)), 150000, 1000);
+        if (!finished) log(`${combo}: the finished notice`, (await semantics(tab)).filter(finishedNotice).map(node => node.name).join(' | ') || 'none');
+        check(`${combo}: the person is told what the agent changed once it stops`, Boolean(finished),
+          finished ? finished.name : names(await semantics(tab)));
+        await shot(tab, combo, 'agent-finished');
+
         const exceptions = tab.log.filter(line => line.startsWith('EXC') || /panic/i.test(line));
         check(`${combo}: no exceptions in the page`, exceptions.length === 0, exceptions.join(' | '));
 
