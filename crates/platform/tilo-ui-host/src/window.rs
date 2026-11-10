@@ -16,9 +16,12 @@
 //! toolkit's field shows the typing at once), the rows a list shows now.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+mod page;
+
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
+use page::{chosen_item, content_nodes, node_of_key};
 use tilo_render_protocol::patch::validate::{PatchLimits, Validator};
 use tilo_render_protocol::patch::{self as wire, Answer, Lane, ToApp, ToUi, Transport, Words};
 use ui::tokens::{MotionSource, Rhythm, TextRole};
@@ -265,6 +268,18 @@ pub struct AppWindow {
     /// what the person types meanwhile is that field's, not the one the keyboard is leaving
     /// ([`Self::hold_for_landing`]). In the composed tree.
     landing: Option<String>,
+    /// The item the window's own view shows in place (a tree beside what it shows): what the
+    /// fields of its content belong to.
+    shown_in_place: Option<ResourceRef>,
+    /// The field of the page the window draws for the item a press showed, until the keyboard
+    /// is in it: the page is built again when the item changes, and the keyboard goes with it.
+    page_focus: Option<String>,
+    /// What the app last said each bound control holds, by key: what the window shows again
+    /// when the person's typing goes elsewhere.
+    app_bound: HashMap<String, Value>,
+    /// The item each press showed the window's own view (by the press's count): what the
+    /// person typed after that press belongs to it, even once a later press showed another.
+    shows_by_press: BTreeMap<u64, ResourceRef>,
     /// How many presses the window had sent when the app last opened a view for the person's
     /// input, until the app says it ran them (`ToUi::Took`).
     opened: Option<u64>,
@@ -379,6 +394,10 @@ impl AppWindow {
             pointed_after: None,
             focus_request: None,
             landing: None,
+            shown_in_place: None,
+            page_focus: None,
+            app_bound: HashMap::new(),
+            shows_by_press: BTreeMap::new(),
             opened: None,
             rem: 16.0,
             root_space: None,
@@ -559,7 +578,30 @@ impl AppWindow {
                         content = true;
                     }
                 }
-                ToUi::Front(brought) => front = Some(brought),
+                ToUi::Front {
+                    front: brought,
+                    shows,
+                } => {
+                    front = Some(brought);
+                    // The window's own page first, and no page after it (a tree beside what it
+                    // shows): the item the press showed stands in the root's content, and what
+                    // the person types into it is that item's.
+                    if let Some((press, shows)) = shows {
+                        if press > 0 {
+                            self.shows_by_press.insert(press, shows.clone());
+                            // A press a person made long ago has no typing left on its way.
+                            self.shows_by_press
+                                .retain(|press, _| press.saturating_add(64) > self.fired);
+                        }
+                        self.shown_in_place = Some(shows);
+                    }
+                    if self.detail.is_none()
+                        && matches!(brought, wire::Front::Input | wire::Front::Action)
+                    {
+                        opened_for_input = true;
+                        self.opened = Some(self.fired);
+                    }
+                }
                 ToUi::Patch { lane, patches } => {
                     let view = match lane {
                         Lane::Root => self.root.as_mut(),
@@ -610,6 +652,16 @@ impl AppWindow {
             self.select_shown();
         }
         self.send_typed_into(opened_for_input);
+        // The page the person's press showed is built again with the item: the keyboard goes
+        // into it once it stands.
+        if let Some(field) = self.page_focus.clone() {
+            if self.focused_field().as_deref() == Some(field.as_str()) {
+                self.page_focus = None;
+            } else {
+                self.focus_request = Some(field);
+                self.structure_dirty = true;
+            }
+        }
         if self.fired <= self.took {
             self.opened = None;
         }
@@ -823,6 +875,7 @@ impl AppWindow {
     /// person typed into it since what the app took (`acked`).
     fn take_bound(&mut self, lane: Lane, key: &str, value: Value, acked: u64) {
         let key = composed_key(lane, key);
+        self.app_bound.insert(key.clone(), value.clone());
         // The field keeps what the person typed into it while a press was running, while it
         // still shows the resource they typed into.
         let shows = self.target(lane);
@@ -955,7 +1008,16 @@ impl AppWindow {
         // resource the window already is (`show(r)` of the app's own root, a scenario that
         // stages it) stands where the window opens, with nothing to go back to.
         let composed = match (&self.root, &self.detail) {
-            (Some(root), Some(detail)) if root.target == detail.target => {
+            (Some(root), Some(detail))
+                if root.target == detail.target
+                    // A page the window's own view already shows (a tree beside what it shows)
+                    // is no page after it: nothing stands behind to go back to.
+                    || {
+                        let mut chosen = None;
+                        chosen_item(&root.tree, &mut chosen);
+                        chosen == Some(&detail.target)
+                    } =>
+            {
                 let mut shell = composed;
                 shell.events.remove(crate::shell::BACK);
                 shell
@@ -1439,18 +1501,39 @@ impl AppWindow {
             }
             node.children.iter().find_map(first_field)
         }
-        let Some(field) = self
+        // The page a press showed: the item opened after the window's own, or — for a window
+        // whose page is its own, a tree beside what it shows — the first field of its content.
+        let (field, lane) = match self
             .detail
             .as_ref()
             .and_then(|detail| first_field(&detail.tree))
-            .map(|field| composed_key(Lane::Detail, &field.key))
-        else {
-            return;
+        {
+            Some(field) => (composed_key(Lane::Detail, &field.key), Lane::Detail),
+            None => {
+                let Some(root) = self.root.as_ref() else {
+                    return;
+                };
+                let Some(field) = content_nodes(&root.tree).into_iter().find_map(first_field)
+                else {
+                    return;
+                };
+                (field.key.clone(), Lane::Root)
+            }
         };
         // What was typed with no field focused after the press the app just ran, not after a
         // later one.
         let took = self.took;
-        let target = self.target(Lane::Detail);
+        let target = self.target(lane);
+        // What the field the keyboard goes to holds: a body's rich text typed into a title is
+        // words, and the title takes words.
+        let rich = self
+            .built
+            .as_ref()
+            .and_then(|built| node_of_key(built, lane_of(&field).1.as_str()))
+            .is_some_and(|node| node.kind == crate::adapter::kind("RichInput"));
+        // The fields the typing leaves show what the app has of them again, not the words that
+        // went elsewhere.
+        let mut left = Vec::new();
         for typed in &mut self.typed {
             if typed.after <= took && typed.follows && !typed.moved {
                 if typed.key.is_some() {
@@ -1464,13 +1547,13 @@ impl AppWindow {
                     };
                     let kept = insert.trim_end_matches('\n').to_owned();
                     typed.held = match &mut typed.held {
-                        Held::Text { .. } => Held::Text {
-                            base: String::new(),
-                            now: kept,
-                        },
-                        Held::Rich { now, .. } => Held::Rich {
+                        Held::Rich { now, .. } if rich => Held::Rich {
                             base: wire::rich::RichText::default(),
                             now: rich_spliced_at(now, 0, rich_text_of(now).len(), &kept),
+                        },
+                        _ => Held::Text {
+                            base: String::new(),
+                            now: kept,
                         },
                     };
                 }
@@ -1478,9 +1561,19 @@ impl AppWindow {
                 // read from that field.
                 typed.sent = None;
                 typed.moved = true;
-                typed.key = Some(field.clone());
+                if let Some(old) = typed.key.replace(field.clone())
+                    && old != field
+                {
+                    left.push(old);
+                }
                 typed.target.clone_from(&target);
             }
+        }
+        for key in left {
+            self.show_bound_again(&key);
+        }
+        if lane == Lane::Root && self.detail.is_none() {
+            self.page_focus = Some(field.clone());
         }
         self.ask_focus(field);
     }
@@ -1804,7 +1897,9 @@ impl AppWindow {
     /// field the keyboard is in now, at its end; with none, the window says where it went.
     fn send_typed_now(&mut self, mut typed: Typed) {
         if typed.key.is_none() {
-            let Some(field) = self.focused_field() else {
+            // The field the press showed takes it: the page beside a list, or the page after
+            // the window's own, named while the keyboard goes there.
+            let Some(field) = self.landing.clone().or_else(|| self.focused_field()) else {
                 let typed_text = typed.held.texts().1;
                 if !typed_text.is_empty() {
                     let words = Words::Plain(t_args(
@@ -1816,7 +1911,7 @@ impl AppWindow {
                 return;
             };
             typed.sent = self.bound.borrow().get(&field).cloned();
-            typed.target = self.target(lane_of(&field).0);
+            typed.target = self.field_target_for(&field, Some(typed.after));
             typed.key = Some(field);
         }
         let Some(key) = typed.key else {
@@ -1828,16 +1923,23 @@ impl AppWindow {
             typed.sent = self.bound.borrow().get(&key).cloned();
         }
         let (lane, field) = lane_of(&key);
-        // The resource the lane shows now, when it is the one the person typed into.
-        let target = self.target(lane);
-        let still_shown = typed.target.is_none() || typed.target == target;
+        // The resource the field belongs to, when it is the one the person typed into: the item
+        // the press before their typing showed, where the window draws the page itself.
+        let target = self.field_target_for(&key, Some(typed.after));
+        // A field of the page belongs to the item its press showed: it goes there even once the
+        // page shows another, and what it showed when the person typed is what they typed into.
+        let page = self.page_field(&key);
+        let still_shown = typed.target.is_none() || typed.target == target || page;
         // What the field shows now: what the app sent for it since, or what it showed when the
         // person began typing (the window showed their typing meanwhile, which is no part of
         // what it shows now).
-        let shown = typed.sent.take().unwrap_or_else(|| match &typed.held {
-            Held::Text { base, .. } => Value::Text(base.clone()),
-            Held::Rich { base, .. } => Value::Rich(base.clone()),
-        });
+        let shown = match typed.sent.take() {
+            Some(sent) if !page => sent,
+            _ => match &typed.held {
+                Held::Text { base, .. } => Value::Text(base.clone()),
+                Held::Rich { base, .. } => Value::Rich(base.clone()),
+            },
+        };
         if still_shown && let Some(target) = target {
             self.send_typed_into_field(&key, lane, field, target, &typed.held, &shown);
             return;
@@ -1999,9 +2101,9 @@ impl AppWindow {
     /// shows.
     fn splice(&mut self, composed: &str, before: &str, text: String) -> Option<ToApp> {
         let (lane, key) = lane_of(composed);
-        // Of the resource the lane shows now: the app applies it there, whatever it shows by
-        // the time it takes it.
-        let target = self.target(lane)?;
+        // Of the resource the field belongs to: the app applies it there, whatever the lane
+        // shows by the time it takes it.
+        let target = self.field_target(composed)?;
         let (at, delete, insert) = splice_between(before, &text);
         let seq = self.seqs.entry(composed.to_owned()).or_default();
         *seq = seq.saturating_add(1);
@@ -2730,6 +2832,19 @@ impl ui::widget::Decorator for AppWindow {
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
         use ui::winit::event::WindowEvent;
+        // A press in the window is the person putting the keyboard where they chose: a keyboard
+        // still on its way to the field a press opened stays where it was.
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ui::winit::event::ElementState::Pressed,
+                ..
+            }
+        ) || matches!(event, WindowEvent::Touch(touch) if touch.phase == ui::winit::event::TouchPhase::Started)
+        {
+            self.landing = None;
+            self.focus_request = None;
+        }
         // What the person typed while the keyboard was on its way to the field a press opened
         // goes there first, before the input this event brings.
         self.release_landing();

@@ -84,7 +84,7 @@ impl Instance {
             .is_some_and(|detail| detail.target == *target && with.is_none())
         {
             if let Some(front) = front {
-                self.out.push(ToUi::Front(front));
+                self.out.push(ToUi::Front { front, shows: None });
             }
             return;
         }
@@ -120,7 +120,12 @@ impl Instance {
     /// its type (`on show`) in its own state, so a list opens the item's row where it stands and
     /// the window follows the item to the place it belongs to. What the view does not open in
     /// place — an item of a type it does not list — opens in the detail lane, as it always has.
-    pub(super) fn show_in_window(&mut self, target: &ResourceRef, front: Option<ui::Front>) {
+    pub(super) fn show_in_window(
+        &mut self,
+        target: &ResourceRef,
+        front: Option<ui::Front>,
+        press: u64,
+    ) {
         let shown = self
             .root
             .as_ref()
@@ -132,8 +137,14 @@ impl Instance {
                 }
             });
         if shown {
+            if let Some(root) = self.root.as_mut() {
+                root.in_place = Some(target.clone());
+            }
             if let Some(front) = front {
-                self.out.push(ToUi::Front(front));
+                self.out.push(ToUi::Front {
+                    front,
+                    shows: Some((press, wire::resource(target))),
+                });
             }
             return;
         }

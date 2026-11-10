@@ -854,18 +854,34 @@ impl Session {
     /// The key in the composed tree of the open note's field whose placeholder is
     /// `placeholder`.
     fn field_key(&mut self, placeholder: &str) -> String {
-        let detail = self
-            .hosted()
-            .view()
-            .and_then(tilo_ui_host::AppWindow::detail_tree)
-            .expect("a note is open");
-        let key = find(&detail, &|node| {
-            matches!(node.props.get("placeholder"), Some(tilo_ui_host::Value::Text(p)) if p == placeholder)
-        })
-        .unwrap_or_else(|| panic!("the open note has a field {placeholder:?}"))
-        .key
-        .clone();
-        format!("{}{key}", tilo_ui_host::shell::DETAIL)
+        let view = self.hosted().view().expect("the window is connected");
+        let field = |tree: &tilo_ui_host::UiNode| {
+            find(tree, &|node| {
+                matches!(node.props.get("placeholder"), Some(tilo_ui_host::Value::Text(p)) if p == placeholder)
+            })
+            .unwrap_or_else(|| panic!("the open note has a field {placeholder:?}"))
+            .key
+            .clone()
+        };
+        // A window whose page is another's after it opens the page in the lane after its own;
+        // one whose page is its own (a tree beside what it shows) draws it in its content.
+        if let Some(detail) = view.detail_tree() {
+            return format!("{}{}", tilo_ui_host::shell::DETAIL, field(&detail));
+        }
+        let root = view.root_tree().expect("the window's view");
+        let mut page = Vec::new();
+        content_nodes(&root, &mut page);
+        let key = page
+            .iter()
+            .find_map(|node| {
+                find(node, &|node| {
+                    matches!(node.props.get("placeholder"), Some(tilo_ui_host::Value::Text(p)) if p == placeholder)
+                })
+            })
+            .unwrap_or_else(|| panic!("the open note has a field {placeholder:?}"))
+            .key
+            .clone();
+        key
     }
 
     /// The centre of the open note's field whose placeholder is `placeholder`.
@@ -916,6 +932,18 @@ fn find<'a>(
         return Some(node);
     }
     node.children.iter().find_map(|child| find(child, want))
+}
+
+/// The nodes of the content slot of `tree`, the window shell's page beside its sidebar.
+fn content_nodes<'a>(tree: &'a tilo_ui_host::UiNode, out: &mut Vec<&'a tilo_ui_host::UiNode>) {
+    if tree.kind == "slot" && tree.props.get("name") == Some(&tilo_ui_host::Value::text("content"))
+    {
+        out.extend(tree.children.iter());
+        return;
+    }
+    for child in &tree.children {
+        content_nodes(child, out);
+    }
 }
 
 fn widget_by_id<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {

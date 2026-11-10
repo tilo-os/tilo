@@ -373,8 +373,8 @@ fn a_note_a_write_just_made_opens_and_shows_its_fields_before_the_index_names_it
         "and shows the title the write did not write"
     );
     assert_eq!(
-        workspace.window.detail_target(),
-        Some(&made),
+        workspace.opened_note(),
+        made,
         "the window shows the note it just made"
     );
     assert!(

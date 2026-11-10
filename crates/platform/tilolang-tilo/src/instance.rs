@@ -195,6 +195,9 @@ impl crate::runtime::ShownHost for PlatformShown {
 /// One of the window's two views: a resource shown through a view.
 struct Shown {
     target: ResourceRef,
+    /// The item of the window's own view this lane shows in place (a tree beside what it
+    /// shows), when it shows one there: edits to its page apply to the lane's own view.
+    in_place: Option<ResourceRef>,
     /// The view `open(r, view: v)` named, when it named one; the default view of the type
     /// otherwise.
     with: Option<String>,
@@ -214,6 +217,7 @@ impl Shown {
         show_content_rows(&mut view);
         Self {
             target,
+            in_place: None,
             with: None,
             view: Rc::new(RefCell::new(view)),
             sent: None,
@@ -294,7 +298,7 @@ pub struct Instance {
     /// arranges on the canvas.
     opens_to_place: Vec<(ResourceRef, Option<String>, bool)>,
     /// What a person's press of a primary action made, to open as they asked for it.
-    pressed_opens: Vec<String>,
+    pressed_opens: Vec<(u64, String)>,
     ask: Option<Suggestion>,
     settle_due: bool,
     sink: Option<Box<dyn OutsideSink>>,
@@ -339,6 +343,9 @@ pub struct Instance {
     /// The number of the last press of a view's own control the instance made: its frame runs
     /// it, where an invocation is run by the host after the presses it came with.
     last_fire: u64,
+    /// The press the host took from [`Self::take_chosen`] and runs: the item an action it runs
+    /// shows is what the person typed after that press goes into.
+    taken_press: u64,
     /// How many presses the instance ran in order: an invocation is run by the host after the
     /// presses it came with, so a later press can run before it.
     ran: u64,
@@ -429,6 +436,7 @@ impl Instance {
             composing: false,
             fired: 0,
             last_fire: 0,
+            taken_press: 0,
             ran: 0,
             ran_ahead: BTreeSet::new(),
             fired_told: 0,
@@ -540,7 +548,7 @@ impl Instance {
     /// Show what the person's own step made, as a press of the action that made it does: it
     /// comes to the front as their input does, and takes the keyboard.
     pub fn opens_what_it_made(&mut self, anchor: String) {
-        self.pressed_opens.push(anchor);
+        self.pressed_opens.push((self.taken_press, anchor));
     }
 
     /// Where the door's answers to effects mark work for the next frame.
@@ -712,7 +720,11 @@ impl Instance {
     /// ([`Instance::press_ran`]). One a frame: what a press made opens, and the window hears
     /// it ran, before the press after it.
     pub fn take_chosen(&mut self) -> Option<(u64, ActionAddress, Option<String>)> {
-        self.chosen.pop_front()
+        let chosen = self.chosen.pop_front();
+        if let Some((press, _, _)) = &chosen {
+            self.taken_press = *press;
+        }
+        chosen
     }
 
     /// Send the window `message` with this frame's batch: what the host knows of the actions it
@@ -1083,7 +1095,7 @@ impl Instance {
         // in place in the list of the place it belongs to, when the view lists its type. A
         // script opened it, so a narrow window brings it in front at once.
         if let Some(shown) = shown {
-            self.show_in_window(&shown, Some(ui::Front::Action));
+            self.show_in_window(&shown, Some(ui::Front::Action), 0);
         }
     }
 
@@ -1185,19 +1197,20 @@ impl Instance {
     fn take_open_requests(&mut self) -> bool {
         // What a press made comes to the front as the person's input does, and takes the
         // keyboard; a search hit or an agent's `open` moved no hand, and lands at once.
-        let anchors: Vec<(crate::effects::OpenEffect, ui::Front)> =
+        let anchors: Vec<(crate::effects::OpenEffect, ui::Front, u64)> =
             std::mem::take(&mut self.pressed_opens)
                 .into_iter()
-                .map(|anchor| {
+                .map(|(press, anchor)| {
                     (
                         crate::effects::OpenEffect::Open { anchor },
                         ui::Front::Input,
+                        press,
                     )
                 })
                 .chain(
                     std::mem::take(&mut *self.open_requests.borrow_mut())
                         .into_iter()
-                        .map(|open| (open, ui::Front::Action)),
+                        .map(|open| (open, ui::Front::Action, self.last_fire)),
                 )
                 .collect();
         if anchors.is_empty() {
@@ -1206,7 +1219,7 @@ impl Instance {
         let Some(host) = self.host() else {
             return false;
         };
-        for (open, front) in anchors {
+        for (open, front, press) in anchors {
             // A hit names the published resource (`tl:<app>:<id>`) or the resource's id.
             let anchor = open.anchor();
             let anchor = anchor
@@ -1220,7 +1233,7 @@ impl Instance {
                         && (target.item.is_some() || plan.app != self.app || plan.view.is_some())
                     {
                         match plan.view.as_deref() {
-                            None => self.show_in_window(&target, Some(front)),
+                            None => self.show_in_window(&target, Some(front), press),
                             Some(view) => self.open_detail(&target, Some(view), Some(front)),
                         }
                     }
@@ -1452,7 +1465,11 @@ impl Instance {
             // What the press made opens now, and the window hears right after it that the press
             // ran: what the person typed after it goes to what it opened, never to what a later
             // press of the same batch opens.
+            // What it opened is drawn before what the person did after the press reaches the
+            // view: the page beside the list shows the item the press opened, and what they
+            // type into it is that item's.
             self.take_open_requests();
+            self.poll_views();
             self.press_ran(self.last_fire);
             self.tell_took();
         }
@@ -1532,6 +1549,7 @@ impl Instance {
                 // not given.
                 let fired = self.fired.saturating_add(1);
                 self.fired = fired;
+                self.last_fire = fired;
                 if argument.is_none() && self.open_chosen_form(&address) {
                     Ok(())
                 } else {
@@ -1570,7 +1588,7 @@ impl Instance {
     /// Show the resource `resource` a component was activated for, in front of the window.
     fn show_now(&mut self, resource: &tilo_render_protocol::patch::ResourceRef) {
         if let Some(target) = wire::runtime_resource(resource) {
-            self.show_in_window(&target, Some(ui::Front::Input));
+            self.show_in_window(&target, Some(ui::Front::Input), self.last_fire);
         }
     }
 
@@ -1870,6 +1888,23 @@ impl Instance {
         }
         let open_failed = || Words::phrase("tilolang-open-failed");
         let host = self.host().ok_or_else(open_failed)?;
+        // The window's own view draws the item in place (a tree beside what it shows): a view
+        // of the window's resource opened on the item the edit was made in, so the edit lands
+        // there while the window still shows the item it shows.
+        if let Some(shown) = self.lane(lane)
+            && shown.in_place.is_some()
+            && let Some(resource) = wire::runtime_resource(&wire::resource(&shown.target))
+            && let Some(item) = wire::runtime_resource(target)
+            && let Ok(mut view) = host.open_resource(&resource, None)
+            && let Ok(true) = view.show(&item)
+        {
+            // Drawn once, so the field the edit names is in the tree it shows.
+            if let Err(error) = view.poll_patches() {
+                tracing::warn!(%error, "the view an edit was made in did not run");
+                return Err(open_failed());
+            }
+            return Ok((Rc::new(RefCell::new(view)), true));
+        }
         let resource = wire::runtime_resource(target).ok_or_else(open_failed)?;
         let view = host.open_resource(&resource, None).map_err(|error| {
             tracing::warn!(%error, "the resource an edit was made in did not open");
@@ -2050,7 +2085,8 @@ impl Instance {
             Some("primary") => {
                 // What a primary action made opens beside the list, as the person asked for it.
                 if let Value::Ref(made) = result {
-                    self.pressed_opens.push(made.target.id_string());
+                    self.pressed_opens
+                        .push((self.last_fire, made.target.id_string()));
                 }
             }
             _ => {}

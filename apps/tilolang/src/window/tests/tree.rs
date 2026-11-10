@@ -179,3 +179,84 @@ fn typing_in_the_window_s_search_narrows_a_tree_to_what_matches() {
         "the tree widens back to the notebook's notes"
     );
 }
+
+#[test]
+fn typing_into_a_shown_items_title_keeps_the_windows_tree() {
+    use ui::widget::Widget as _;
+    // A task opens where it stands: the scenario's task is the row the window shows, and its
+    // title is that row's field.
+    let mut workspace = Workspace::seeded("tasks");
+    let row = workspace
+        .first_open_row()
+        .expect("the item's row stands open into its page");
+    let input = first_input_key(&row).expect("the page's title");
+    // The list mounts the rows its laid-out height shows, measures them as they are laid out,
+    // then holds them.
+    workspace.lay_out();
+    workspace.settle();
+    workspace.lay_out();
+    workspace.lay_out();
+    let rows = workspace.rows().len();
+    let mut typed = String::new();
+    for letter in ['p', 'l', 'a', 'n'] {
+        typed.push(letter);
+        workspace
+            .window
+            .act(UiEvent::Edit(input.clone(), typed.clone()));
+        workspace.settle();
+        // The page stands in the row's place, so the page a keystroke renders again is the
+        // row's own; the rows the list holds are the rows it held.
+        let change = workspace.window.take_structure_change();
+        assert!(
+            change <= ui::widget::StructureChange::Children,
+            "a keystroke in the page changed the window's structure: {change:?}"
+        );
+        assert_eq!(
+            workspace.rows().len(),
+            rows,
+            "a keystroke in the page left the list's rows as they were"
+        );
+        workspace.lay_out();
+    }
+}
+
+#[test]
+fn a_keystroke_repaints_its_field_not_the_window() {
+    // The item opens where it stands: what a keystroke repaints is asked of the
+    // window at rest.
+    let _settled = ui::motion::testing::settled();
+    // The scenario's task is the row the window shows.
+    let mut workspace = Workspace::seeded("tasks");
+    let row = workspace
+        .first_open_row()
+        .expect("the item's row stands open into its page");
+    let input = first_input_key(&row).expect("the page's title");
+    workspace.lay_out();
+    workspace.settle();
+    workspace.lay_out();
+    workspace.draw();
+    let window = workspace.window.get_rect();
+    let mut typed = String::new();
+    for letter in ['p', 'l', 'a', 'n'] {
+        typed.push(letter);
+        workspace
+            .window
+            .act(UiEvent::Edit(input.clone(), typed.clone()));
+        workspace.settle();
+        // Drawn where the last layout placed it: the harness lays a window
+        // out only by rebuilding it, which the live window does not do for
+        // a keystroke.
+        let mut scene = ui::vello::Scene::new();
+        workspace.paint(&mut scene);
+        let mut damage = Vec::new();
+        workspace.window.collect_damage(&mut damage);
+        workspace.window.mark_drawn();
+        // The field and the row change; nothing that holds them repaints
+        // as a whole (the harness, which presents no frame, leaves the
+        // list's column to repaint its box).
+        assert!(
+            !damage.is_empty() && damage.iter().all(|rect| rect.area() < window.area() / 2.0),
+            "a keystroke repainted what holds the field: {damage:?} of {window:?}"
+        );
+    }
+}

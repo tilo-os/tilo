@@ -173,7 +173,7 @@ impl<'a> Validator<'a> {
         match message {
             ToUi::Loading
             | ToUi::Close
-            | ToUi::Front(_)
+            | ToUi::Front { shows: None, .. }
             | ToUi::Ask(None)
             | ToUi::Form(None)
             | ToUi::Activate
@@ -187,6 +187,13 @@ impl<'a> Validator<'a> {
                     return Err(Refused::invalid("over the limit of bytes in a catalogue"));
                 }
                 Ok(())
+            }
+            ToUi::Front {
+                shows: Some((_, target)),
+                ..
+            } => {
+                self.key(&target.id)?;
+                self.key(&target.ty)
             }
             ToUi::Open { target, tree, .. } => {
                 self.key(&target.id)?;

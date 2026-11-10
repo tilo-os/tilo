@@ -753,16 +753,16 @@ fn a_notebook_is_the_native_tree_shell_with_the_header_the_platform_fills() {
         shell.props.get("sidebar_title"),
         Some(&Value::text("Notes"))
     );
-    assert_eq!(
-        workspace.header_buttons("sidebar_actions"),
-        ["New note"],
-        "the window's primary action stands where what it makes stands"
+    assert!(
+        workspace.header_buttons("sidebar_actions").is_empty(),
+        "the sidebar's header offers no button of the window's: {:?}",
+        workspace.header_buttons("sidebar_actions")
     );
     assert!(
-        !workspace
+        workspace
             .header_buttons("actions")
             .contains(&"New note".to_owned()),
-        "and the bar does not offer it again: {:?}",
+        "the window's primary action stands in its bar: {:?}",
         workspace.header_buttons("actions")
     );
     // The window opens on the first note of the tree, its page beside it.
@@ -797,8 +797,8 @@ fn choosing_a_note_in_the_tree_shows_it_beside_the_tree() {
     );
     assert_eq!(
         workspace.composed().props.get("title"),
-        Some(&Value::text("Q3 plan")),
-        "the bar names where the open note stands, for when the page's heading scrolls away"
+        Some(&Value::text("Standups")),
+        "the bar names the note the page shows, for when the page's heading scrolls away"
     );
     // Editing the title on the page renames the note, and the tree's row says so.
     let input = first_input(&workspace.composed())
@@ -841,10 +841,16 @@ fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_
     }
     let empty = empty.first().expect("the empty notebook says so");
     assert_eq!(empty.props.get("title"), Some(&Value::text("No notes yet")));
-    assert_eq!(
-        workspace.header_buttons("sidebar_actions"),
-        ["New note"],
-        "the sidebar's header offers the primary once"
+    assert!(
+        workspace.header_buttons("sidebar_actions").is_empty(),
+        "the sidebar's header offers no second button"
+    );
+    assert!(
+        workspace
+            .header_buttons("actions")
+            .contains(&"New note".to_owned()),
+        "the bar offers the primary once: {:?}",
+        workspace.header_buttons("actions")
     );
     workspace.header_action("New note");
     assert_eq!(
@@ -855,8 +861,8 @@ fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_
     assert_eq!(workspace.tree_labels(), ["Untitled"]);
     let made = workspace.tree_row_note("Untitled");
     assert_eq!(
-        workspace.window.detail_target(),
-        Some(&made),
+        workspace.opened_note(),
+        made,
         "and the note it made stands beside the tree"
     );
 }
@@ -950,11 +956,7 @@ fn what_an_agent_or_a_script_creates_through_the_door_moves_nobodys_view() {
     // The person pressing New note in the window opens what it made, whatever was made before.
     workspace.header_action("New note");
     assert_eq!(workspace.items_of("so.tilo.lang.notes", "notes"), 3);
-    let opened = workspace
-        .window
-        .detail_target()
-        .cloned()
-        .expect("the person's note opened");
+    let opened = workspace.opened_note();
     let notes: Vec<String> = workspace.tree_labels();
     assert!(
         notes.iter().filter(|label| *label == "Untitled").count() == 3,
@@ -964,7 +966,7 @@ fn what_an_agent_or_a_script_creates_through_the_door_moves_nobodys_view() {
     workspace
         .applies_as(Some(task()), &notebook, &new_note, &Json::Null)
         .unwrap();
-    assert_eq!(workspace.window.detail_target(), Some(&opened));
+    assert_eq!(workspace.opened_note(), opened);
 }
 
 #[test]
@@ -1782,9 +1784,12 @@ fn search_entries_find_notes_and_open_the_window_at_the_note() {
         .borrow_mut()
         .push(tilolang_tilo::OpenEffect::Open { anchor });
     workspace.settle();
-    assert!(
-        workspace.window.detail_target().is_some(),
-        "the hit showed the note"
+    let host = workspace.window.current_host().unwrap();
+    let note = workspace.opened_note();
+    assert_eq!(
+        tilolang_tilo::instance::title_of(&host, &note),
+        first.title,
+        "the hit showed the note it names in the page beside the tree"
     );
 }
 
@@ -1954,8 +1959,8 @@ fn a_document_edits_its_title_as_its_large_title_and_the_shell_leaves_it_to_the_
     let shell = workspace.composed();
     assert_eq!(
         shell.props.get("title"),
-        Some(&Value::text("Q3 plan")),
-        "the bar names the note the open one stands under"
+        Some(&Value::text("Standups")),
+        "the bar names the note the page shows"
     );
     let title = first_input(&shell).expect("the editor");
     assert!(
@@ -2583,87 +2588,6 @@ fn a_later_build_that_changes_a_field_type_starts_over_on_the_same_data() {
         workspace.window.detail_target().is_none(),
         "the window started over"
     );
-}
-
-#[test]
-fn typing_into_a_shown_items_title_keeps_the_windows_tree() {
-    use ui::widget::Widget as _;
-    // A task opens where it stands: the scenario's task is the row the window shows, and its
-    // title is that row's field.
-    let mut workspace = Workspace::seeded("tasks");
-    let row = workspace
-        .first_open_row()
-        .expect("the item's row stands open into its page");
-    let input = first_input_key(&row).expect("the page's title");
-    // The list mounts the rows its laid-out height shows, measures them as they are laid out,
-    // then holds them.
-    workspace.lay_out();
-    workspace.settle();
-    workspace.lay_out();
-    workspace.lay_out();
-    let rows = workspace.rows().len();
-    let mut typed = String::new();
-    for letter in ['p', 'l', 'a', 'n'] {
-        typed.push(letter);
-        workspace
-            .window
-            .act(UiEvent::Edit(input.clone(), typed.clone()));
-        workspace.settle();
-        // The page stands in the row's place, so the page a keystroke renders again is the
-        // row's own; the rows the list holds are the rows it held.
-        let change = workspace.window.take_structure_change();
-        assert!(
-            change <= ui::widget::StructureChange::Children,
-            "a keystroke in the page changed the window's structure: {change:?}"
-        );
-        assert_eq!(
-            workspace.rows().len(),
-            rows,
-            "a keystroke in the page left the list's rows as they were"
-        );
-        workspace.lay_out();
-    }
-}
-
-#[test]
-fn a_keystroke_repaints_its_field_not_the_window() {
-    // The item opens where it stands: what a keystroke repaints is asked of the
-    // window at rest.
-    let _settled = ui::motion::testing::settled();
-    // The scenario's task is the row the window shows.
-    let mut workspace = Workspace::seeded("tasks");
-    let row = workspace
-        .first_open_row()
-        .expect("the item's row stands open into its page");
-    let input = first_input_key(&row).expect("the page's title");
-    workspace.lay_out();
-    workspace.settle();
-    workspace.lay_out();
-    workspace.draw();
-    let window = workspace.window.get_rect();
-    let mut typed = String::new();
-    for letter in ['p', 'l', 'a', 'n'] {
-        typed.push(letter);
-        workspace
-            .window
-            .act(UiEvent::Edit(input.clone(), typed.clone()));
-        workspace.settle();
-        // Drawn where the last layout placed it: the harness lays a window
-        // out only by rebuilding it, which the live window does not do for
-        // a keystroke.
-        let mut scene = ui::vello::Scene::new();
-        workspace.paint(&mut scene);
-        let mut damage = Vec::new();
-        workspace.window.collect_damage(&mut damage);
-        workspace.window.mark_drawn();
-        // The field and the row change; nothing that holds them repaints
-        // as a whole (the harness, which presents no frame, leaves the
-        // list's column to repaint its box).
-        assert!(
-            !damage.is_empty() && damage.iter().all(|rect| rect.area() < window.area() / 2.0),
-            "a keystroke repainted what holds the field: {damage:?} of {window:?}"
-        );
-    }
 }
 
 #[test]

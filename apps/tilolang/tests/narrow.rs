@@ -133,7 +133,7 @@ fn push_motion(harness: &FrameHarness) -> ui::time::Duration {
 }
 
 #[test]
-fn the_note_a_scenario_opens_in_a_narrow_window_is_in_front_at_rest() {
+fn a_narrow_window_opens_on_its_tree_at_rest_and_asks_for_no_frames() {
     // Staged at one instant, as fast as a machine could stage it: the frame the capture takes
     // is the one staging laid out, however little time passed since the notebook opened.
     let at = now();
@@ -141,23 +141,21 @@ fn the_note_a_scenario_opens_in_a_narrow_window_is_in_front_at_rest() {
     with_monotonic_time(at, || {
         assert!(
             !app.harness().frame_schedule().needs_animation_frame,
-            "the staged note is still moving: {}",
+            "the staged window is still moving: {}",
             asking(app.harness())
         );
     });
-    // The note's page is the column in front. The notebook's tree is the window's own screen,
-    // brought forward by its sidebar toggle rather than pushed over the page: there is no Back.
+    // The tree is the window's first screen, as a list of files is: a note is pushed in front
+    // of it, with Back to the tree, and nothing is pushed at rest.
     let targets = app.harness().targets();
     assert!(
-        targets.keys().any(|key| key.ends_with("/BlockEditor")),
-        "the note's page is in front"
+        targets.keys().any(|key| key.ends_with("/TreeView")),
+        "the tree is in front"
     );
     assert!(
         !targets.contains_key("nav-shell-back"),
-        "the tree is a screen of the window's, not a page pressed over it"
+        "nothing is pushed over the tree at rest"
     );
-    let motion = push_motion(app.harness());
-    assert_settles(&mut app, motion, "the staged note");
 }
 
 #[test]
@@ -241,23 +239,16 @@ fn tree_row_node(harness: &FrameHarness, name: &str) -> ui::accesskit::NodeId {
 }
 
 #[test]
-fn the_sidebar_toggle_brings_the_tree_forward_and_a_row_of_it_opens_its_note() {
+fn a_row_of_the_tree_pushes_its_note_and_back_returns_to_the_tree() {
     let mut app = staged();
-    // The window stands in the desktop's bar, where its sidebar toggle is.
+    // The window stands in the desktop's bar, where its way back is.
     app.harness().present_in_window_bar();
     app.harness().relayout();
     assert!(
-        named_control(app.harness(), "Groceries").is_none(),
-        "the tree stands behind the note's page"
-    );
-    app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
-    app.harness().relayout();
-    assert!(
         named_control(app.harness(), "Groceries").is_some(),
-        "the toggle brought the tree forward"
+        "the tree is the window's first screen"
     );
-    // The person opens a note of the tree, which comes forward in front of the page.
+    // The person opens a note of the tree, which comes forward in front of it.
     let row = tree_row_node(app.harness(), "Groceries");
     app.harness()
         .perform_a11y_action(row, &ui::a11y::Action::Activate)
@@ -267,22 +258,34 @@ fn the_sidebar_toggle_brings_the_tree_forward_and_a_row_of_it_opens_its_note() {
         named_control(app.harness(), "Groceries").is_none(),
         "the tree went behind the note its row opened"
     );
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Back);
+    app.harness().relayout();
+    assert!(
+        named_control(app.harness(), "Groceries").is_some(),
+        "Back brought the tree back"
+    );
 }
 
 #[test]
-fn the_sidebar_toggle_in_a_driven_phone_window_shows_the_tree_in_the_frame_it_takes() {
+fn back_in_a_driven_phone_window_shows_the_tree_in_the_frame_it_takes() {
     let mut app = phone_driven();
-    // The window stands in the desktop's bar, where its sidebar toggle is.
+    // The window stands in the desktop's bar, where its way back is.
     app.harness().present_in_window_bar();
     let motion = push_motion(app.harness());
-    assert_settles(&mut app, motion, "the staged note");
+    assert_settles(&mut app, motion, "the staged tree");
+    let row = tree_row_node(app.harness(), "Groceries");
+    app.harness()
+        .perform_a11y_action(row, &ui::a11y::Action::Activate)
+        .expect("the row opens what it names");
+    assert_settles(&mut app, motion, "the note the row opened");
     assert!(
         named_control(app.harness(), "Groceries").is_none(),
         "the tree stands behind the note's page"
     );
     app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
-    // The frame the press asks for shows the tree it brought forward: the toggle's own frame is
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Back);
+    // The frame the press asks for shows the tree it returned to: the press's own frame is
     // never one that rested on what stood before it.
     app.frame();
     assert!(
@@ -290,7 +293,7 @@ fn the_sidebar_toggle_in_a_driven_phone_window_shows_the_tree_in_the_frame_it_ta
         "the frame after the press shows the tree: {}",
         asking(app.harness())
     );
-    assert_settles(&mut app, motion, "the drawer");
+    assert_settles(&mut app, motion, "the tree");
 }
 
 #[test]

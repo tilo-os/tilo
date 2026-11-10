@@ -1289,7 +1289,16 @@ fn a_window_keeps_the_column_in_front_when_its_shell_is_built_anew() {
     );
     // Back closes the note: the list stands alone again, and the app saying a row opened brings
     // no column forward until one stands beside the list.
-    send(&mut app, &[ToUi::Close, ToUi::Front(wire::Front::Input)]);
+    send(
+        &mut app,
+        &[
+            ToUi::Close,
+            ToUi::Front {
+                front: wire::Front::Input,
+                shows: None,
+            },
+        ],
+    );
     window.receive();
     assert!(window.failed().is_none(), "{:?}", window.failed());
     assert_eq!(front(&mut window), Some(NavPane::Overview));

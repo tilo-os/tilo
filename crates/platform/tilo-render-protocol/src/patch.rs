@@ -539,8 +539,13 @@ pub enum ToUi {
     },
     /// The detail lane closed.
     Close,
-    /// The detail lane, already open, comes to the front.
-    Front(Front),
+    /// A lane's page comes to the front of a narrow window. When the window draws the item its
+    /// own view shows in place (a tree beside what it shows), `shows` is that item and the press
+    /// that showed it: what the person types after that press belongs to it.
+    Front {
+        front: Front,
+        shows: Option<(u64, ResourceRef)>,
+    },
     /// The runtime's patches to a lane's tree.
     Patch { lane: Lane, patches: Vec<Patch> },
     /// What the bound control `key` shows now. `acked` is the last of its splices the app took:
