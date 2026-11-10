@@ -111,8 +111,8 @@ struct Hosted {
     /// What the members it streams to decode: a stream is only encoded in a codec every one of them
     /// takes.
     receivers: Vec<CodecCapabilities>,
-    /// The members the person let control the window: their input reaches it for as long as the
-    /// share runs, across a restart of its stream.
+    /// The members the person let control the window: their input reaches it while they view it,
+    /// for as long as the share runs, across a restart of its stream.
     controlled: BTreeSet<PeerId>,
 }
 
@@ -475,6 +475,8 @@ impl WindowShares {
         self.show_streams(desk);
         land_displays(desk, displays);
         self.renegotiate(sync);
+        self.end_silent_viewers(now);
+        self.close_left_seats(compositor);
         self.ask_again(compositor, sync, now);
         self.capture(compositor, sync, now);
         // What the members' pages this device shows bring: the objects the planes sent, and the
@@ -962,10 +964,15 @@ impl WindowShares {
             .filter(|tab| self.hosted.contains_key(tab))
             .collect();
         for tab in due {
-            let Some(hosted) = self.hosted.get(&tab) else {
+            let receivers = self.receivers_for(tab);
+            let Some(hosted) = self.hosted.get_mut(&tab) else {
                 continue;
             };
-            if hosted.receivers == self.receivers_for(tab) {
+            // A member that came or went with the decoders the others have changes nothing about
+            // the stream: it goes on as it is for the members viewing it, and a member that came
+            // starts at its next keyframe.
+            if decode_alike(&hosted.receivers, &receivers) {
+                hosted.receivers = receivers;
                 continue;
             }
             self.restart(sync, tab);
@@ -1439,8 +1446,9 @@ impl WindowShares {
         changed
     }
 
-    /// A member's input for the window of `surface` : it reaches the window only while the share
-    /// lets that member control it and the compositor's firewall lets remote input through at all.
+    /// A member's input for the window of `surface` : it reaches the window only while that member
+    /// views it, the share lets the member control it and the compositor's firewall lets remote
+    /// input through at all.
     fn apply_input(
         &mut self,
         compositor: &mut Compositor,
@@ -1448,10 +1456,10 @@ impl WindowShares {
         surface: SurfaceId,
         event: &[u8],
     ) {
+        // A member the person let in acts in the window while it views it: one that stopped
+        // viewing is no longer among the viewers this device names, and reaches nothing.
         let Some((window, size)) = self.hosted.get(&surface).and_then(|hosted| {
-            hosted
-                .controlled
-                .contains(&peer)
+            (hosted.controlled.contains(&peer) && self.asked.contains_key(&(surface, peer)))
                 .then(|| (hosted.window.clone(), hosted.share.dimensions()))
         }) else {
             return;
@@ -1564,6 +1572,20 @@ impl WindowShares {
         Some(seat)
     }
 
+    /// Close the seats of the members that stopped viewing the window they acted in: a seat is its
+    /// member's hand in the window, and what it still held there is let go when the member is gone.
+    fn close_left_seats(&mut self, compositor: &mut Compositor) {
+        let left: Vec<(PeerId, SurfaceId)> = self
+            .seats
+            .keys()
+            .filter(|(peer, surface)| !self.asked.contains_key(&(*surface, *peer)))
+            .copied()
+            .collect();
+        for (peer, surface) in left {
+            self.close_seats(compositor, surface, Some(peer));
+        }
+    }
+
     /// Close the seats acting in the window of `tab` : all of them, or the one `peer` acts at.
     fn close_seats(&mut self, compositor: &mut Compositor, tab: TabId, peer: Option<PeerId>) {
         let ended: Vec<tilo_compositor::Seat> = self
@@ -1585,6 +1607,34 @@ impl WindowShares {
         }
     }
 
+    /// End the streams of the members this device stopped hearing ask for its windows. A viewer
+    /// that went away, or stopped showing the window, says nothing: its last ask keeps its stream
+    /// up for [`VIEW_EXPIRY`] and no longer, whether or not this device watches a window itself.
+    fn end_silent_viewers(&mut self, now: Instant) {
+        let expired: Vec<(TabId, PeerId)> = self
+            .asked
+            .iter()
+            .filter(|(_, asked)| now.duration_since(asked.at) > VIEW_EXPIRY)
+            .map(|(key, _)| *key)
+            .collect();
+        if expired.is_empty() {
+            return;
+        }
+        for key in &expired {
+            self.asked.remove(key);
+        }
+        for (tab, hosted) in &self.hosted {
+            let desired: HashSet<PeerId> = self
+                .asked
+                .keys()
+                .filter(|(asking, _)| asking == tab)
+                .map(|(_, viewing)| *viewing)
+                .collect();
+            hosted.share.sync_viewers(&desired);
+        }
+        self.changed();
+    }
+
     /// Say again which windows of which hosts this device shows, so their hosts keep streaming to
     /// it.
     fn ask_again(&mut self, compositor: &Compositor, sync: &Client, now: Instant) {
@@ -1597,28 +1647,6 @@ impl WindowShares {
         }
         if self.watching.is_empty() {
             return;
-        }
-        // Who watches which window of this device: a viewer that stopped asking stops viewing.
-        let expired: Vec<(TabId, PeerId)> = self
-            .asked
-            .iter()
-            .filter(|(_, asked)| now.duration_since(asked.at) > VIEW_EXPIRY)
-            .map(|(key, _)| *key)
-            .collect();
-        if !expired.is_empty() {
-            for key in &expired {
-                self.asked.remove(key);
-            }
-            for (tab, hosted) in &self.hosted {
-                let desired: HashSet<PeerId> = self
-                    .asked
-                    .keys()
-                    .filter(|(asking, _)| asking == tab)
-                    .map(|(_, viewing)| *viewing)
-                    .collect();
-                hosted.share.sync_viewers(&desired);
-            }
-            self.changed();
         }
         let (width, height) = view_size(compositor);
         let decode = local_decode();
@@ -1836,6 +1864,12 @@ fn pages_to_show(
             .insert(stream.tab);
     }
     wanted
+}
+
+/// Whether the members of `one` and of `other` decode the same, however many of each there are: a
+/// stream is encoded for what its viewers take, so one that suits the first suits the second.
+fn decode_alike(one: &[CodecCapabilities], other: &[CodecCapabilities]) -> bool {
+    one.iter().all(|caps| other.contains(caps)) && other.iter().all(|caps| one.contains(caps))
 }
 
 /// The limits a viewer reported, by codec: codecs this build does not know and codecs without a
