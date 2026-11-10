@@ -56,7 +56,11 @@ pub(super) async fn admit_person(
         tilo_clock::unix_now_ns(),
     )
     .unwrap();
-    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+    // As a device dials: relays on, since an invitation names what a stranger
+    // can dial — the host's relay and its public addresses — and an endpoint
+    // bound with relays off redeems only an invitation naming a direct address
+    // of the host's own network.
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
         .secret_key(iroh::SecretKey::from_bytes(&device.key.to_bytes()))
         .bind()
         .await

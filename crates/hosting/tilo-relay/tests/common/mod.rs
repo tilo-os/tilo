@@ -225,9 +225,15 @@ pub async fn client_endpoint() -> Endpoint {
     Endpoint::builder(presets::Minimal).bind().await.unwrap()
 }
 
-/// An endpoint whose key is the device's own, as a device dials with.
+/// An endpoint whose key is the device's own, as a device dials with: relays
+/// and discovery on, as a page and a desk dial a host they were handed a link
+/// to (`tilo-relay-client`'s `Host::bind` reaches the host through the relay
+/// it names). An endpoint that bound with relays off could redeem an
+/// invitation only while links carried a direct address of the host's own
+/// network; a link names what a stranger can dial instead — the host's relay
+/// and its public addresses.
 pub async fn device_endpoint(device: &TestDevice) -> Endpoint {
-    Endpoint::builder(presets::Minimal)
+    Endpoint::builder(presets::N0)
         .secret_key(iroh::SecretKey::from_bytes(&device.sk.to_bytes()))
         .bind()
         .await
