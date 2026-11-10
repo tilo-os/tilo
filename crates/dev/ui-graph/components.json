@@ -331,7 +331,7 @@
         },
         {
           "name": "links",
-          "doc": "The records a `[[` link offers, each as it reads for the person now: choosing one writes a reference to it in the text, which every reader reads as it reads now. A view names them, `links: nb.notes`.",
+          "doc": "The records a `[[` link offers, each as it reads for the person now: choosing one writes a reference to it in the text, which every reader reads as it reads now. A view names them, `links: nb.notes`.\nA view whose records are a collection answers the picker's text with them (`links_query`) rather than handing all of them: what it offers is then what the picker is open to show, and offering none while the picker is closed costs it no read of the collection.",
           "type": {
             "list": "link"
           }
@@ -348,6 +348,16 @@
         {
           "name": "open_reference",
           "doc": "A reference in the text was activated, carrying the reference. Without one, the reference is opened.",
+          "value": "text"
+        },
+        {
+          "name": "links_open",
+          "doc": "The `[[` link picker opened or closed: what a view answering `links_query` keeps to offer records only while the picker shows them.",
+          "value": "bool"
+        },
+        {
+          "name": "links_query",
+          "doc": "The text typed into the open `[[` link picker, each time it changes: a view whose records are a collection asks the store for what it holds of it, and hands back `links` — a page of them, read when the picker shows it rather than on every frame of the document.",
           "value": "text"
         },
         {

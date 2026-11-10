@@ -142,8 +142,33 @@ impl NameHost for Names {
     }
 }
 
-/// The view of the note `note`, and the tree the window receives of it.
+/// The view of the note `note`, and the tree the window receives of it: its `[[` picker closed,
+/// as a note opens.
 fn window(replica: &Replica, note: &str) -> (ViewInstance, tilo_ui_host::UiNode) {
+    let view = note_view(replica, note);
+    let tree = rendered(replica, &view);
+    (view, tree)
+}
+
+/// The view of the note `note`, its `[[` picker opened with `query` typed into it, and the tree
+/// the window receives of it then.
+fn picking(replica: &Replica, note: &str, query: &str) -> (ViewInstance, tilo_ui_host::UiNode) {
+    let mut view = note_view(replica, note);
+    let key = editor_key(&rendered(replica, &view));
+    view.fire_with(&key, "links_open", Some(&Value::Bool(true)))
+        .expect("the picker opens");
+    view.fire_with(&key, "links_query", Some(&Value::text(query)))
+        .expect("the text typed reaches the view");
+    // What the person did runs the view again, as the window's next frame does.
+    assert!(view.is_stale(), "what was typed reaches the view's state");
+    view.poll_patches()
+        .expect("the view runs with the picker open");
+    let tree = rendered(replica, &view);
+    (view, tree)
+}
+
+/// The view of the note `note`.
+fn note_view(replica: &Replica, note: &str) -> ViewInstance {
     let package = replica.host.package(APP).unwrap();
     let ty = package
         .meta
@@ -157,7 +182,19 @@ fn window(replica: &Replica, note: &str) -> (ViewInstance, tilo_ui_host::UiNode)
         ty,
         ..ResourceRef::parse_id(note, String::new()).unwrap()
     };
-    let view = replica.host.open_resource(&target, None).unwrap();
+    replica.host.open_resource(&target, None).unwrap()
+}
+
+/// The key of the note's editor in `tree`.
+fn editor_key(tree: &tilo_ui_host::UiNode) -> String {
+    find(tree, "ui.BlockEditor")
+        .expect("the note's body is the editor")
+        .key
+        .clone()
+}
+
+/// The tree the window receives of `view`.
+fn rendered(replica: &Replica, view: &ViewInstance) -> tilo_ui_host::UiNode {
     let names = Names;
     let convert = tilolang_tilo::instance::wire::Convert {
         names: &names,
@@ -168,8 +205,7 @@ fn window(replica: &Replica, note: &str) -> (ViewInstance, tilo_ui_host::UiNode)
         embeds: &|_| tilo_render_protocol::patch::rich::InlineView::Elsewhere,
         link: &|at| tilolang_tilo::instance::link_of(&replica.host, at),
     };
-    let tree = convert.node(view.tree());
-    (view, tree)
+    convert.node(view.tree())
 }
 
 #[test]
@@ -179,7 +215,17 @@ fn a_note_offers_its_notebooks_notes_by_the_titles_they_read_as_now() {
         plan,
         groceries,
     } = workspace();
+    // A note opens with its picker closed, and offers nothing: reading the notebook's notes is
+    // the picker's work, not every frame of the document's.
     let (_view, tree) = window(&ada, &plan);
+    let editor = find(&tree, "ui.BlockEditor").expect("the note's body is the editor");
+    assert_eq!(
+        offered(editor),
+        [],
+        "no note is read while the picker is closed"
+    );
+
+    let (_view, tree) = picking(&ada, &plan, "");
     let editor = find(&tree, "ui.BlockEditor").expect("the note's body is the editor");
     let links = offered(editor);
     assert_eq!(
@@ -196,6 +242,16 @@ fn a_note_offers_its_notebooks_notes_by_the_titles_they_read_as_now() {
         ),
         "each is the catalogue's reference to the note, never its title: {links:?}"
     );
+    // What is typed in the picker narrows them, as search finds them.
+    let (_view, tree) = picking(&ada, &plan, "gro");
+    assert_eq!(
+        offered(find(&tree, "ui.BlockEditor").unwrap())
+            .iter()
+            .map(|(_, title)| title.as_str())
+            .collect::<Vec<_>>(),
+        ["Groceries"],
+        "only the note holding what was typed"
+    );
 
     // A note renamed later is offered by its new title: the view names the record, and how it
     // reads is read now.
@@ -208,7 +264,7 @@ fn a_note_offers_its_notebooks_notes_by_the_titles_they_read_as_now() {
         "retitle",
         json!({ "title": "Shopping" }),
     );
-    let (_view, tree) = window(&ada, &plan);
+    let (_view, tree) = picking(&ada, &plan, "");
     let editor = find(&tree, "ui.BlockEditor").expect("the note's body is the editor");
     assert_eq!(
         offered(editor)
@@ -235,7 +291,7 @@ fn a_reference_written_into_a_note_is_a_mention_that_linked_reports() {
 
     // What choosing a note in the editor writes: a run that reads as the note's title, marked
     // as the reference to it (`ui.BlockEditor`'s own test drives the picker to this).
-    let (_view, other) = window(&ada, &groceries);
+    let (_view, other) = picking(&ada, &groceries, "gro");
     let (reference, title) = offered(find(&other, "ui.BlockEditor").unwrap())
         .into_iter()
         .find(|(_, title)| title == "Groceries")

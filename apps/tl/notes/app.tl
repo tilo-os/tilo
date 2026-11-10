@@ -328,6 +328,8 @@ view note_editor(n: Note) {
 /// its history. Its body's `[[` writes a link to another of the notebook's notes.
 view note_page(n: Note) {
     let nb = root Notebook
+    state linking: Bool = false
+    state link_text: Text = ""
     ui.TextInput(bind: n.title, title: true)
     if not n.tags.is_empty() {
         row(gap: .related, wrap: true) {
@@ -341,7 +343,16 @@ view note_page(n: Note) {
     row(distribute: .end) {
         note_menu(n)
     }
-    ui.BlockEditor(bind: n.body, placeholder: "Write something", links: nb.notes)
+    // What `[[` offers: the notebook's notes that hold what is typed in it, asked of the store
+    // as it is typed and handed a page at a time, and none at all while the picker is closed.
+    ui.BlockEditor(
+        bind: n.body,
+        placeholder: "Write something",
+        links: if linking { nb.notes.matching(link_text).take(48) } else { [] },
+    ) {
+        on links_open(open): set(linking, open)
+        on links_query(text): set(link_text, text)
+    }
     std.linked(n, compact: true)
     discussion.thread(n)
     std.history(n)

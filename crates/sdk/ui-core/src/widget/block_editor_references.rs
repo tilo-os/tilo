@@ -66,7 +66,20 @@ pub struct BlockEditorProps {
     /// The records a `[[` link offers, each as it reads for the person now: choosing one writes
     /// a reference to it in the text, which every reader reads as it reads now. A view names
     /// them, `links: nb.notes`.
+    ///
+    /// A view whose records are a collection answers the picker's text with them (`links_query`)
+    /// rather than handing all of them: what it offers is then what the picker is open to show,
+    /// and offering none while the picker is closed costs it no read of the collection.
     pub links: Vec<Link>,
+    /// The `[[` link picker opened or closed: what a view answering `links_query` keeps to offer
+    /// records only while the picker shows them.
+    #[component(event(value = bool))]
+    pub links_open: Event,
+    /// The text typed into the open `[[` link picker, each time it changes: a view whose records
+    /// are a collection asks the store for what it holds of it, and hands back `links` — a page
+    /// of them, read when the picker shows it rather than on every frame of the document.
+    #[component(event(value = String))]
+    pub links_query: Event,
     /// The commands the editor's slash menu offers besides the block kinds, by their labels:
     /// choosing one reports it as `command`.
     pub commands: Vec<String>,
@@ -102,6 +115,13 @@ pub(super) struct References {
     headings: Event,
     /// The headings last reported to it: it is told again only when they change.
     reported: Option<Vec<String>>,
+    /// What the view does with the `[[` picker's state: that it opened or closed, and the text
+    /// typed into it.
+    links_open: Event,
+    links_query: Event,
+    /// What the picker last told the view, which it hears again only when that changes: whether
+    /// it was open, and the text it held.
+    picker: Option<(bool, String)>,
 }
 
 impl BlockEditor {
@@ -286,6 +306,8 @@ impl Described for BlockEditor {
             placeholder,
             open_reference,
             links,
+            links_open,
+            links_query,
             commands,
             command,
             headings,
@@ -311,6 +333,8 @@ impl Described for BlockEditor {
         };
         editor.offer(
             links,
+            links_open,
+            links_query,
             &commands,
             command,
             headings,
@@ -338,6 +362,8 @@ impl Described for BlockEditor {
             placeholder,
             open_reference,
             links,
+            links_open,
+            links_query,
             commands,
             command,
             headings,
@@ -348,7 +374,16 @@ impl Described for BlockEditor {
             return false;
         }
         let showing = self.body.is_none();
-        self.offer(links, &commands, command, headings, open_reference, showing);
+        self.offer(
+            links,
+            links_open,
+            links_query,
+            &commands,
+            command,
+            headings,
+            open_reference,
+            showing,
+        );
         self.set_find_replace_enabled(!showing);
         let rebound = if showing {
             self.show_rich_text(&value.unwrap_or_default());
@@ -363,22 +398,39 @@ impl Described for BlockEditor {
 
 impl BlockEditor {
     /// What the view gives the editor itself, beside the body it edits: the records its `[[`
-    /// link offers, the commands its slash menu answers, the headings it is told of, and what
-    /// activating a reference does.
+    /// link offers and what it answers the picker with, the commands its slash menu answers, the
+    /// headings it is told of, and what activating a reference does.
     fn offer(
         &mut self,
         links: Vec<Link>,
+        links_open: Event,
+        links_query: Event,
         commands: &[String],
         command: Event,
         headings: Event,
         open_reference: Event,
         open_by_itself: bool,
     ) {
+        // A view that answers the picker's text finds its records itself: what it hands is what
+        // the picker shows, and it offers records even while it hands none.
+        let answering = !links_query.is_none();
         self.set_links(
             links
                 .iter()
                 .map(|link| (link.reference.clone(), link.title.clone())),
         );
+        if answering {
+            self.link_pages_offered = true;
+            self.refresh_slash_commands();
+        }
+        self.link_popover.set_narrows_itself(!answering);
+        self.references.links_open = links_open;
+        self.references.links_query = links_query;
+        // A picker just built is closed and holds nothing: a view already offers nothing there,
+        // so it is told only of what changes from here on.
+        self.references
+            .picker
+            .get_or_insert_with(|| (false, String::new()));
         self.set_view_commands(commands);
         self.on_command(move |label| {
             command.fire(Some(Value::Text(label.to_owned())));
@@ -391,6 +443,34 @@ impl BlockEditor {
             });
         }
         self.references.headings = headings;
+    }
+
+    /// Tell the view the `[[` picker's state once it is not the one it was told of: opened or
+    /// closed, and the text typed into it. A view offering a collection's records reads the ones
+    /// the picker is open to show, and none while it is closed.
+    pub(super) fn publish_link_query(&mut self) {
+        let open = self.link_popover.is_visible();
+        let text = self.link_popover.filter().to_owned();
+        let before = self.references.picker.replace((open, text.clone()));
+        if before
+            .as_ref()
+            .is_some_and(|(was_open, was_text)| *was_open == open && *was_text == text)
+        {
+            return;
+        }
+        if before
+            .as_ref()
+            .is_none_or(|(was_open, _)| *was_open != open)
+        {
+            self.references.links_open.fire(Some(Value::Bool(open)));
+        }
+        if open
+            && before
+                .as_ref()
+                .is_none_or(|(_, was_text)| *was_text != text)
+        {
+            self.references.links_query.fire(Some(Value::Text(text)));
+        }
     }
 
     /// Tell the view the document's headings once they are not the ones it was told of: what it
@@ -684,6 +764,80 @@ mod tests {
                 .highlighted()
                 .map(|page| page.title.as_str()),
             Some("Plan for Q4")
+        );
+    }
+
+    #[test]
+    fn the_picker_tells_its_view_when_it_opens_and_what_is_typed_in_it() {
+        use crate::widget::CursorPlacement;
+
+        let fired = crate::Intents::<Fired>::default();
+        let asked = crate::Intents::<Fired>::default();
+        let body = crate::LocalState::new(RichText::default());
+        let link = |title: &str| Link {
+            reference: "tl:so.tilo.notes:tl.so.tilo.notes.d/f:t1".into(),
+            title: title.into(),
+        };
+        let props = |links: Vec<Link>| BlockEditorProps {
+            rich: bound(&fired, body.clone()),
+            // The view answers the picker's text with the records it found: what it hands is
+            // what the picker shows.
+            links_open: Event::View(Intent::new(&asked, "b", "links_open")),
+            links_query: Event::View(Intent::new(&asked, "b", "links_query")),
+            links,
+            ..BlockEditorProps::default()
+        };
+        let mut editor = BlockEditor::from_props("b", props(Vec::new()));
+        editor.focus_block(0, CursorPlacement::End);
+        type_keys(&mut editor, "[[gr");
+
+        // It is told the picker opened, and each text typed into it in turn.
+        let told = asked.take();
+        assert!(
+            matches!(
+                told.first(),
+                Some(Fired { event, value: Some(Value::Bool(true)), .. }) if event == "links_open"
+            ),
+            "the picker opening reaches the view: {told:?}"
+        );
+        let texts: Vec<&str> = told
+            .iter()
+            .filter(|fired| fired.event == "links_query")
+            .filter_map(|fired| match &fired.value {
+                Some(Value::Text(text)) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, ["g", "gr"], "what was typed: {told:?}");
+
+        // What the view hands back shows as it is: the view already found it by that text.
+        editor.set_props(props(vec![link("Groceries")]));
+        assert_eq!(
+            editor
+                .link_popover()
+                .highlighted()
+                .map(|page| page.title.as_str()),
+            Some("Groceries"),
+            "the record the view found by what was typed"
+        );
+
+        // Closing tells it the picker is shut, so a view reading a collection stops.
+        crate::testing::dispatch(
+            &mut editor,
+            &crate::synthetic_input::key_press(
+                winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
+                None,
+            ),
+        );
+        assert!(!editor.link_popover().is_visible());
+        assert_eq!(
+            asked.take(),
+            vec![Fired {
+                key: "b".into(),
+                event: "links_open".into(),
+                value: Some(Value::Bool(false)),
+            }],
+            "the picker closing reaches the view"
         );
     }
 

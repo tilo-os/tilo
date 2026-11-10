@@ -404,11 +404,16 @@ pub fn resolve(
 /// Free text as a predicate over the type's text fields: the conjunction of each word being
 /// found inside some one of them, so `launch plan` finds a body holding both. A type with no
 /// text field holds none of it.
+///
+/// A rich text's words are its reader's — what its references say depends on what the person
+/// reading holds — so a filter does not compare them ([`crate::store::lit_of`]); a query reads
+/// the type's `Text` fields, and the session's search reads its rich texts for the person
+/// searching. A type whose only text is rich holds none of it.
 fn text_pred(words: &[String], ty: &TypeMeta) -> Pred<String> {
     let fields: Vec<&str> = ty
         .fields
         .iter()
-        .filter(|f| matches!(f.ty.trim(), "Text" | "RichText"))
+        .filter(|f| f.ty.trim() == "Text")
         .map(|f| f.id.as_str())
         .collect();
     let each: Vec<Pred<String>> = words

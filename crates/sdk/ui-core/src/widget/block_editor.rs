@@ -10192,6 +10192,7 @@ impl Widget for BlockEditor {
         let typing = self.typing_position(event, *ctx.modifiers);
         self.handle_event_unscoped(event, ctx);
         self.sync_slash_query();
+        self.publish_link_query();
         let scope = match typing {
             Some((index, count, id))
                 if self.blocks.len() == count

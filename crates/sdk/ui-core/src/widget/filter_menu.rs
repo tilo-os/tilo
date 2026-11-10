@@ -116,6 +116,9 @@ pub struct FilterMenu<T> {
     visible_flag: bool,
     /// The query is the parent's text, not the menu's own field.
     inline: bool,
+    /// Whether its own filter text narrows its rows. A menu whose host answers the text with the
+    /// rows it finds shows the rows it is given: they are already what the text asked for.
+    narrows_itself: bool,
     /// The text scale its field and width grow with.
     scale: f64,
     /// One-shot: the committed row's value, drained by the parent. Hiding
@@ -151,6 +154,7 @@ impl<T: Clone> FilterMenu<T> {
             filter_composition: QueryComposition::new(),
             visible_flag: false,
             inline: false,
+            narrows_itself: true,
             scale: 1.0,
             pending: None,
             appear: crate::motion::Appearing::closed(),
@@ -220,6 +224,18 @@ impl<T: Clone> FilterMenu<T> {
 
     pub fn is_inline(&self) -> bool {
         self.inline
+    }
+
+    /// Whether the filter text narrows the rows. A menu whose host answers the text itself — a
+    /// picker over a collection, asked for what its text finds — shows the rows it is given,
+    /// ranked as the host found them, and the text only says what it asked for.
+    pub fn set_narrows_itself(&mut self, narrows: bool) {
+        if self.narrows_itself == narrows {
+            return;
+        }
+        self.narrows_itself = narrows;
+        self.dirty = true;
+        self.rebuild_visible();
     }
 
     /// Grow the field and width with the reader's text scale; the rows
@@ -353,18 +369,22 @@ impl<T: Clone> FilterMenu<T> {
 
     /// Rank the rows against the filter and start at the top one.
     fn rebuild_visible(&mut self) {
-        self.visible = crate::search::ranked_rows(
-            &self.index,
-            self.filter.trim(),
-            self.entries.iter().map(|entry| {
-                std::iter::once((entry.label.as_str(), FieldWeight::TITLE)).chain(
-                    entry
-                        .keywords
-                        .iter()
-                        .map(|keyword| (*keyword, FieldWeight::KEYWORD)),
-                )
-            }),
-        );
+        self.visible = if self.narrows_itself {
+            crate::search::ranked_rows(
+                &self.index,
+                self.filter.trim(),
+                self.entries.iter().map(|entry| {
+                    std::iter::once((entry.label.as_str(), FieldWeight::TITLE)).chain(
+                        entry
+                            .keywords
+                            .iter()
+                            .map(|keyword| (*keyword, FieldWeight::KEYWORD)),
+                    )
+                }),
+            )
+        } else {
+            (0..self.entries.len()).collect()
+        };
         let rows = self
             .visible
             .iter()

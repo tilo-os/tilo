@@ -1107,22 +1107,29 @@ impl Checker<'_> {
                 return Ex::error();
             }
             // A scalar is boxed until the event puts it in place, as view state read at the
-            // event is (`Self::arg_at_press`).
+            // event is (`Self::arg_at_press`): the placeholder stands inside the box, so what
+            // the event carries lands where the box holds it and a slot that keeps it keeps it
+            // as it is read (`set(linking, open)` on a `Bool` state).
             let scalar = ty.is_scalar();
             let ty = if scalar { Ty::Option(Box::new(ty)) } else { ty };
             let local = self.declare(&p.name.name, ty.clone());
             if scalar {
                 self.st.event_scalars.insert(local);
             }
-            let value = if parts {
+            let placeholder = if parts {
                 let part = i32::try_from(i).unwrap_or(0);
                 Ex::host(
                     Imp::EventPart,
                     vec![Ex::new(crate::ir::Ek::I32(part), Ty::Bool)],
-                    ty,
+                    ty.clone(),
                 )
             } else {
-                Ex::host(Imp::EventValue, Vec::new(), ty)
+                Ex::host(Imp::EventValue, Vec::new(), ty.clone())
+            };
+            let value = if scalar {
+                Ex::host(Imp::SomeH, vec![placeholder], ty)
+            } else {
+                placeholder
             };
             self.emit(Stmt::Set(local, value));
         }
