@@ -3,7 +3,7 @@
 //! `dist/dev/shell-run.sh` builds each app of `apps/tl` into a signed `.tapp` and installs it into
 //! the session's own app store; the session then reads each app from its store row, the way it
 //! reads a device's installed apps, and the manifest it reads there is what the launcher and the
-//! connector planning see (`tilo_session::mount::apps::Apps::plan_connector`). So the `YouTube`
+//! connector planning see (`tilo_session::apps::Apps::plan_connector`). So the `YouTube`
 //! client's connector is planned from its installed manifest, and Mail's from its own: their
 //! origins are the apps' declarations, never something a test or a seed path supplies.
 //! Nothing here loads a package into the session from a test's own copy: what runs is what the
@@ -23,7 +23,7 @@ mod common;
 
 use tilo_app_launch::SessionEnvironment;
 use tilo_service::Service as _;
-use tilo_session::mount::apps::Apps;
+use tilo_session::apps::Apps;
 
 /// Every app of the development session is a package the session's store holds, built from
 /// `apps/tl` and installed with its signed manifest.

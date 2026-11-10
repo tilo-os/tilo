@@ -135,7 +135,7 @@ fn session(
     root: &Path,
     launcher: &tilo_test_env::StandIn,
 ) -> Session {
-    let apps = Rc::new(tilo_session::mount::apps::Apps::with_launcher(
+    let apps = Rc::new(tilo_session::apps::Apps::with_launcher(
         tilo_app_launch::SessionEnvironment::from_process(),
         None,
         Some(launcher.path().to_owned()),

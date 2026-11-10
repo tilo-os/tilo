@@ -25,9 +25,9 @@ use ui::record::RecordId;
 use ui::record::transfer::{Origin, Retirement, TransferError};
 
 use crate::Shared;
+use crate::apps::launch_of;
 use crate::continuations::{Continuations, HandoffNote};
 use crate::i18n::{t, t_args};
-use crate::mount::apps::launch_of;
 use crate::notices::Notice;
 use crate::window_transfer::{self, Arrived, Fault, Merged, Profile};
 
@@ -1138,7 +1138,7 @@ mod tests {
     use ui::record::transfer::retirement;
     use ui::record::{RecordCheckout, RecordKind, RecordOwners};
 
-    use crate::mount::apps::Apps;
+    use crate::apps::Apps;
     use crate::{AppActions, Options, Session};
 
     use super::*;

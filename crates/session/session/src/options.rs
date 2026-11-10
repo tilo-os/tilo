@@ -65,7 +65,7 @@ pub struct Options {
     pub apps: Option<Rc<dyn AppActions>>,
     /// The apps this session starts: what the desktop asks for, by name, and what a search row or a
     /// file opens.
-    pub launch: Option<Rc<mount::apps::Apps>>,
+    pub launch: Option<Rc<crate::apps::Apps>>,
     /// The apps this session started, which its broker admits a connection for: the app, workspace
     /// and process it launched itself. The apps it starts record their launch here; a session whose
     /// apps run in its own process (a test) records one itself.

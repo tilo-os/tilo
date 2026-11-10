@@ -4,7 +4,7 @@
 
 use tilo_actions::ActionAddress;
 
-use crate::{Session, mount, slots, surfaces};
+use crate::{Session, slots, surfaces};
 use tilo_compositor::Error;
 
 impl Session {
@@ -28,11 +28,11 @@ impl Session {
         use slots::{Mount, View};
 
         /// The view's surface name, whatever view draws it.
-        const VIEW: &str = mount::shell::WINDOW_MENU_SLOT;
+        const VIEW: &str = crate::shell::state::WINDOW_MENU_SLOT;
         /// The app whose view the session shows the menu through until the person binds another.
         const SHIPPED: (&str, &str) = ("so.tilo.window-menu", "window-menu");
         // Nothing to draw or to watch until the session publishes the menu.
-        let Some(reading) = self.read(mount::shell::WINDOW_MENU) else {
+        let Some(reading) = self.read(crate::shell::state::WINDOW_MENU) else {
             return;
         };
         let for_a_window = reading.get("tab").is_some_and(|tab| !tab.is_null());
@@ -120,8 +120,11 @@ impl Session {
     /// Close the window menu through the verb it publishes: the same path a press outside the menu
     /// and the person's own Escape take.
     fn close_window_menu(&mut self) {
-        if let Err(error) = self.invoke(mount::shell::WINDOW_MENU, "close", &serde_json::Map::new())
-        {
+        if let Err(error) = self.invoke(
+            crate::shell::state::WINDOW_MENU,
+            "close",
+            &serde_json::Map::new(),
+        ) {
             tracing::warn!(%error, "a menu left up for a window that is gone was not closed");
         }
     }
@@ -183,7 +186,7 @@ impl Session {
     /// menu does, and what else the view asked runs through the session's door.
     pub(crate) fn follow_slot_views(&mut self) -> Result<(), Error> {
         /// The one slot a person can bind a view to today.
-        const VIEW: &str = mount::shell::WINDOW_MENU_SLOT;
+        const VIEW: &str = crate::shell::state::WINDOW_MENU_SLOT;
         let Some(state) = slots::surface(VIEW) else {
             return Ok(());
         };

@@ -359,7 +359,7 @@ pub struct Hosted {
     pub lists: Lists,
     /// The session's tools service, while it serves one: what Files' waits
     /// for its drive and app lists' changes are answered from.
-    pub tools: Option<crate::mount::tools::Handle>,
+    pub tools: Option<crate::tools::Handle>,
     /// The programs the agents working this session's tasks write, which this
     /// session's door runs as steps of their runs.
     pub task_programs: Option<std::sync::Arc<crate::task_programs::TaskPrograms>>,

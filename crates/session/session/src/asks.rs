@@ -554,14 +554,14 @@ impl Shared {
     /// loop: workspace settings on a route's tab, and an app the person asked to uninstall.
     pub(crate) fn follow_tools(
         &self,
-        tools: &mount::tools::Handle,
+        tools: &crate::tools::Handle,
         media: Vec<mount::drives::Medium>,
     ) {
         tools.saw_apps(&crate::app_icons::app_lists().unwrap_or_default().tools);
         tools.saw_media(media);
         for ask in tools.take_asks() {
             let answered = match &ask {
-                mount::tools::Ask::WorkspaceSettings {
+                crate::tools::Ask::WorkspaceSettings {
                     workspace, route, ..
                 } => workspace_settings::open_route(
                     self.workspace_settings.as_ref(),
@@ -569,7 +569,7 @@ impl Shared {
                     workspace,
                     *route,
                 ),
-                mount::tools::Ask::Uninstall { app, .. } => {
+                crate::tools::Ask::Uninstall { app, .. } => {
                     if self.ask_uninstall(app) {
                         Ok(())
                     } else {
@@ -695,7 +695,7 @@ impl Shared {
                 invocations.push(Invocation::new(DESK_RESOURCE, "search"));
             }
             ShortcutAction::TabMenu => {
-                invocations.push(Invocation::new(mount::shell::WINDOW_MENU, "open"));
+                invocations.push(Invocation::new(crate::shell::state::WINDOW_MENU, "open"));
             }
             ShortcutAction::Lock => self.commands.borrow_mut().push(SessionCommand::Lock),
             ShortcutAction::PowerMenu => self

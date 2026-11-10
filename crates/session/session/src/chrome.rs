@@ -737,7 +737,7 @@ impl crate::Session {
                 }
             }
         }
-        let Some(reading) = self.read(crate::mount::shell::WINDOW_MENU) else {
+        let Some(reading) = self.read(crate::shell::state::WINDOW_MENU) else {
             return Vec::new();
         };
         let mut rows = Vec::new();

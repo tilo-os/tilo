@@ -47,7 +47,7 @@ pub use crate::search::{AppActions, SearchOptions};
 pub use crate::setup::BeforeDesk;
 pub use tilo_service::{Service, Services};
 
-use crate::mount::services::{mount_services, start_action_plane};
+use crate::doors::plane::{mount_services, start_action_plane};
 use crate::notifications::mount_banners;
 use crate::panels::mount::mount_activities;
 use crate::panels::mount::{KeyContext, mount_controls, mount_setup};
@@ -389,7 +389,7 @@ impl Session {
         // process the session started, with connections of their own. A
         // window mapping settles what its app's door serves, so an app built
         // before the door keeps a process per window from then on.
-        let window_doors = WindowDoors::new(crate::mount::app_tabs::ServiceLinks::new(
+        let window_doors = WindowDoors::new(crate::app_tabs::ServiceLinks::new(
             std::sync::Arc::clone(&options.launches),
         ));
         let settling = Rc::clone(&window_doors);
@@ -925,7 +925,7 @@ impl Session {
         // The typed opens an app asks this session for: one service, made
         // here so the broker below serves Files' waits for its lists'
         // changes, and started from the doors table.
-        let tools = crate::mount::tools::Handle::new(
+        let tools = crate::tools::Handle::new(
             std::sync::Arc::clone(&options.launches),
             options.wake.handle(),
         );
@@ -935,12 +935,12 @@ impl Session {
             &handle,
             std::sync::Arc::new(shortcut_library),
             &activity,
-            crate::mount::services::Knitted {
+            crate::doors::plane::Knitted {
                 turns: Some(conversations.runs()),
                 agents: Some(agents.roster()),
                 tools: Some(tools.clone()),
             },
-            crate::mount::services::Collaboration {
+            crate::doors::plane::Collaboration {
                 revocations: std::sync::Arc::clone(&revocations),
                 sync: sync.as_deref(),
                 engine: engine.as_ref().map(std::sync::Arc::clone),
@@ -993,7 +993,7 @@ impl Session {
         // who serves each: the identity an app signs in through, the
         // machine's readings an app the launcher connects reads, and the
         // data this device used. They start here, before any app does.
-        let table = crate::mount::doors::start(crate::mount::doors::Serving {
+        let table = crate::doors::start(crate::doors::Serving {
             desk: action_plane
                 .as_ref()
                 .map(|plane| std::sync::Arc::clone(&plane.desk)),
@@ -1071,7 +1071,7 @@ impl Session {
 
         // The shell-ui socket this session serves: what an app asks about
         // its own tabs arrives there and is answered on this loop's pass.
-        let tabs = crate::mount::app_tabs::AppTabs::start(
+        let tabs = crate::app_tabs::AppTabs::start(
             std::sync::Arc::clone(&options.launches),
             options.wake.handle(),
             cards,
@@ -1134,7 +1134,7 @@ impl Session {
         }
         // The shell's own readings and verbs, on the same door every other
         // service answers on.
-        crate::mount::shell::Shell::mount(
+        crate::shell::state::ShellService::mount(
             &services,
             &handle,
             overlays.clone(),

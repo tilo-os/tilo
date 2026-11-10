@@ -18,7 +18,7 @@ use serde_json::Value;
 use settings_store::device_class::DeviceClass;
 use tilo_surface_host::slot_view::SlotSurface;
 
-use crate::{mount, surfaces};
+use crate::surfaces;
 
 /// The resource that binds a slot to a view.
 pub const BINDINGS: &str = "settings:shell-views";
@@ -234,12 +234,12 @@ fn package_at(dir: &Path, binding: &Binding) -> Option<View> {
 #[must_use]
 pub fn surface(slot: &str) -> Option<SlotSurface> {
     match slot {
-        mount::shell::WINDOW_MENU_SLOT => Some(SlotSurface {
-            id: mount::shell::WINDOW_MENU.to_owned(),
-            kind: mount::shell::WINDOW_MENU_KIND.to_owned(),
-            app: mount::shell::WINDOW_MENU_APP.to_owned(),
+        crate::shell::state::WINDOW_MENU_SLOT => Some(SlotSurface {
+            id: crate::shell::state::WINDOW_MENU.to_owned(),
+            kind: crate::shell::state::WINDOW_MENU_KIND.to_owned(),
+            app: crate::shell::state::WINDOW_MENU_APP.to_owned(),
             title: "Window menu".to_owned(),
-            text: mount::shell::WINDOW_MENU_SURFACE.to_owned(),
+            text: crate::shell::state::WINDOW_MENU_SURFACE.to_owned(),
         }),
         _ => None,
     }

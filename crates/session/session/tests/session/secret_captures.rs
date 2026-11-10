@@ -95,12 +95,11 @@ fn shell_ui_connection(
     pid: u32,
     messages: &[ui::floating_surface::FloatingSurfaceClientMessage],
 ) -> UnixStream {
-    let mut stream: UnixStream =
-        tilo_session::mount::app_tabs::ServiceLinks::new(Arc::clone(launches))
-            .window(app, workspace, 7, Some(pid))
-            .shell_ui
-            .expect("the app's shell-ui connection")
-            .into();
+    let mut stream: UnixStream = tilo_session::app_tabs::ServiceLinks::new(Arc::clone(launches))
+        .window(app, workspace, 7, Some(pid))
+        .shell_ui
+        .expect("the app's shell-ui connection")
+        .into();
     stream
         .set_read_timeout(Some(Duration::from_millis(20)))
         .expect("a timeout on reading");

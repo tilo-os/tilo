@@ -47,7 +47,7 @@ use tilo_desktop_model::{
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent};
-use tilo_session::mount::apps::Apps;
+use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
 use tilo_sheets::directory::{ListingAction, Status};
 use tilo_test_env::SpawnUnderEnvLock as _;

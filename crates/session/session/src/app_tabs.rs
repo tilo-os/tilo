@@ -36,10 +36,10 @@ use ui::theme::ThemeDocument;
 use ui::workspace_sync::WorkspaceSync;
 
 use crate::Launches;
+use crate::apps::Apps;
 use crate::capture_studio::CaptureStudio;
 use crate::desktop_services::DesktopServices;
-use crate::mount::apps::Apps;
-use crate::mount::host_shell::HostShellAsks;
+use crate::host_shell::HostShellAsks;
 
 /// The longest frame an app may send: a paint stream and a marker inventory both fit, and nothing
 /// else comes close.

@@ -36,7 +36,7 @@ use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::{self, testing};
-use tilo_session::mount::apps::Apps;
+use tilo_session::apps::Apps;
 use tilo_session::{ActionPlane, AppActions, Launches, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 

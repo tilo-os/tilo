@@ -1,5 +1,5 @@
-//! Every service this session serves, in one table: the name a client
-//! dials it by, how the client reaches it, and what serves it.
+//! Every service this session serves, in one table — the name a client dials it by, how the client
+//! reaches it, and what serves it — and the plane the apps read them on ([`plane`]).
 //!
 //! The session's apps and the person's own devices reach it in two ways. A
 //! socket under the launcher's services root is what the launcher hands an
@@ -41,8 +41,10 @@ use tilo_system_stats::server::{Prompter, Server};
 
 use crate::plane::DeskAuthority;
 
-use super::render;
-use super::tools;
+use crate::render;
+use crate::tools;
+
+pub(crate) mod plane;
 
 /// How a client reaches a service of this session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,12 +103,12 @@ pub(crate) const TABLE: &[Door] = &[
     Door {
         name: launcher::services::COLLAB_SERVICE,
         reach: Reach::Launcher,
-        owner: Owner::Module("mount::services"),
+        owner: Owner::Module("doors::plane"),
     },
     Door {
         name: launcher::services::SHELL_UI_SERVICE,
         reach: Reach::Launcher,
-        owner: Owner::Module("mount::app_tabs"),
+        owner: Owner::Module("app_tabs"),
     },
     Door {
         name: launcher::services::IDENTITY_SERVICE,
@@ -121,7 +123,7 @@ pub(crate) const TABLE: &[Door] = &[
     Door {
         name: launcher::services::SYSTEM_SERVICE,
         reach: Reach::NoConnection,
-        owner: Owner::Module("mount::services"),
+        owner: Owner::Module("doors::plane"),
     },
     Door {
         name: "network-usage",

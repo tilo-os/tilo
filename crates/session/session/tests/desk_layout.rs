@@ -29,7 +29,7 @@ use tilo_desktop_model::{
 use tilo_desktop_policy::Window;
 use tilo_desktop_surface::notifications::NotificationSeverity;
 use tilo_desktop_surface::surface::window_menu::MOVE_TO_WORKSPACE;
-use tilo_session::mount::apps::Apps;
+use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
 
 /// The app a test installs: a Tilo package whose window is a tab of the desk.

@@ -27,7 +27,7 @@ use ui::floating_surface::HostNetworkStatus;
 use ui::tokens::PresenceHue;
 use ui::workspace_sync::WorkspaceSync;
 
-use crate::mount::app_tabs::AppTabs;
+use crate::app_tabs::AppTabs;
 use crate::wallpapers::Wallpapers;
 
 /// What every window is told of the desk it stands on, and the settings that decide it as last

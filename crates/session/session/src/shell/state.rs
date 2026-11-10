@@ -317,7 +317,7 @@ fn named(text: &str) -> Result<Slot, DoorError> {
 }
 
 /// The shell's resources, read from the desk and from the state the session keeps beside it.
-pub struct Shell {
+pub struct ShellService {
     handle: DesktopHandle,
     state: ShellState,
     /// The surfaces over the desk: what stands where, which holds the keyboard, and what a press
@@ -328,7 +328,7 @@ pub struct Shell {
     shortcuts: crate::panels::mount::Shortcuts,
 }
 
-impl Shell {
+impl ShellService {
     /// The shell over `handle` , publishing the surfaces in `overlays` .
     #[must_use]
     pub(crate) fn new(
@@ -507,7 +507,7 @@ impl Shell {
     }
 }
 
-impl Service for Shell {
+impl Service for ShellService {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![
             offer::<ShellEffect>(ResourceSpec::new(
@@ -589,7 +589,7 @@ impl Service for Shell {
     }
 }
 
-impl Shell {
+impl ShellService {
     /// The window menu as the desk offers it now.
     fn window_menu(&self) -> Reading {
         let Some(open) = &self.state.menu else {

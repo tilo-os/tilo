@@ -1,5 +1,5 @@
-//! The system services, and the door apps reach this session's actions through: one published side
-//! for all of them, and the plane they read it on.
+//! The plane apps reach this session's services on: one published side for all of them, and the
+//! keys, authority and turns the loop answers their calls with.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -251,7 +251,7 @@ fn acting_fabric(
 pub(crate) struct Knitted {
     pub(crate) turns: Option<std::sync::Arc<crate::conversations::Runs>>,
     pub(crate) agents: Option<std::sync::Arc<dyn tilo_action_broker::services::AgentRoster>>,
-    pub(crate) tools: Option<crate::mount::tools::Handle>,
+    pub(crate) tools: Option<crate::tools::Handle>,
 }
 
 pub(crate) fn start_action_plane(

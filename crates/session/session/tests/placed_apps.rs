@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use tilo_app_launch::SessionEnvironment;
-use tilo_session::mount::apps::Apps;
+use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
 
 use common::PERSON;

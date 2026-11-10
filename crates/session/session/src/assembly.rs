@@ -46,7 +46,7 @@ pub(crate) struct Shared {
     pub(crate) search: Rc<crate::search::SessionSearch>,
     /// The apps the person opens, when this session starts them.
     #[cfg(target_os = "linux")]
-    pub(crate) launch: Option<Rc<crate::mount::apps::Apps>>,
+    pub(crate) launch: Option<Rc<crate::apps::Apps>>,
     /// The windows this device left open, asked for again one at a time into
     /// the tabs they were in.
     #[cfg(target_os = "linux")]
@@ -124,7 +124,7 @@ pub(crate) struct Shared {
     pub(crate) services: Rc<RefCell<tilo_service::Services>>,
     /// The services the session serves its apps itself.
     #[cfg(target_os = "linux")]
-    pub(crate) table: crate::mount::doors::Doors,
+    pub(crate) table: crate::doors::Doors,
     /// The windows this session shares with its workspaces, and the streams it receives from them.
     #[cfg(target_os = "linux")]
     pub(crate) window_shares: Rc<RefCell<crate::window_share::WindowShares>>,
@@ -640,7 +640,7 @@ pub struct Session {
     /// The shell-ui socket the apps ask about their own tabs on, while it
     /// serves.
     #[cfg(target_os = "linux")]
-    pub(crate) tabs: Option<crate::mount::app_tabs::AppTabs>,
+    pub(crate) tabs: Option<crate::app_tabs::AppTabs>,
     /// The controllers in the room, and how they drive the desktop; `None`
     /// when this session reads none.
     #[cfg(target_os = "linux")]

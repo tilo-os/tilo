@@ -1,13 +1,10 @@
 //! The tools service: the typed opens an app asks this session for.
-//! An app the launcher starts is handed the `tools` socket
-//! ([`runtime_portal::tools`]) and asks on it for what only the session can do:
-//! open one of its tools at a typed context, list the drives the person plugged in
-//! and open one in Files, list the person's apps and open or uninstall one. Nothing
-//! on the wire names a program or arguments: [`ToolIntent`] is the whole vocabulary.
-//! Who asks is read from the connection's peer credentials, and the request must
-//! belong to the workspace that launch recorded, never what the request says of
-//! itself. Everything that starts a process goes through [`crate::Launches::ask`],
-//! so a tool opened here is the same launch as one opened from the desk.
+//!
+//! An app the launcher starts is handed the `tools` socket ([`runtime_portal::tools`]) and asks
+//! for what only the session can do: open a tool at a typed context, list or open the drives the
+//! person plugged in, list or uninstall the person's apps ([`ToolIntent`] is the whole
+//! vocabulary). Who asks is read from the connection's peer credentials, and the request must
+//! belong to the workspace that launch recorded.
 
 use std::io::{BufRead, BufReader, ErrorKind, Read as _, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -509,7 +506,7 @@ fn documents_of(
     Vec<app_catalogue::apps::InstalledApp>,
     desktop_entry::Scan,
 ) {
-    let (installed, entries) = super::apps::routes();
+    let (installed, entries) = crate::apps::routes();
     let launches = routing::documents(path, &installed, &entries);
     (launches, installed, entries)
 }

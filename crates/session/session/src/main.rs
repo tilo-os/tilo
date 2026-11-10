@@ -660,7 +660,7 @@ fn start(
     tell_the_person(backend, desktop.as_deref());
     // The apps this session opens start from its own displays and the person's variables, once the
     // compositor has bound its socket.
-    let launch = std::rc::Rc::new(tilo_session::mount::apps::Apps::new(
+    let launch = std::rc::Rc::new(tilo_session::apps::Apps::new(
         tilo_app_launch::SessionEnvironment::from_process(),
         Some(wake.handle()),
     ));
@@ -829,7 +829,7 @@ fn run(
     mut session: tilo_session::Session,
     ours: &[String],
     command: &[String],
-    launch: Option<&std::rc::Rc<tilo_session::mount::apps::Apps>>,
+    launch: Option<&std::rc::Rc<tilo_session::apps::Apps>>,
     session_bus: Option<&str>,
     export_displays: bool,
     host_desktop: bool,

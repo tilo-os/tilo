@@ -19,7 +19,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use tilo_app_launch::{Launch, Open};
 use tilo_notifications_service::{Notifications, Taken};
 
-use crate::mount::apps::Apps;
+use crate::apps::Apps;
 use crate::notices;
 
 /// A medium a person plugged in, as udisks describes it.

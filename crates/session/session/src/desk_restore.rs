@@ -22,8 +22,8 @@ use tilo_app_launch::Launch;
 use tilo_desktop_model::{DesktopTree, TabId, TileContent, WorkspaceSlot};
 use tilo_surface_host::DesktopHost;
 
+use crate::apps::{self, Apps};
 use crate::i18n::t_args;
-use crate::mount::apps::{self, Apps};
 
 /// How long a saved window may take to show itself before its tab says it did not open: an app that
 /// started and never mapped is not coming.

@@ -26,7 +26,7 @@ use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceSlot,
 };
-use tilo_session::mount::shell::WINDOW_MENU;
+use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::surfaces::Surface;
 use tilo_session::{ActionPlane, Options, Session};
 use tilo_test_env::ScopedEnv;

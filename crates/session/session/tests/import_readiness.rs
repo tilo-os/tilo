@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use tilo_app_launch::SessionEnvironment;
 use tilo_compositor::OutputConfig;
-use tilo_session::mount::apps::Apps;
+use tilo_session::apps::Apps;
 use tilo_session::{Options, Session};
 
 /// A session that starts the person's apps, on the display it binds, through a launcher that

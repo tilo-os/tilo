@@ -32,7 +32,7 @@ use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceSlot,
 };
-use tilo_session::mount::shell::WINDOW_MENU;
+use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::slots::BINDINGS;
 use tilo_session::{ActionPlane, Options, Session};
 use tilo_settings_service::SettingsService;
@@ -488,7 +488,7 @@ fn a_package_bound_to_the_slot_reads_the_menu_and_closes_it_through_its_own_verb
                 .is_some_and(|reading| reading.get("tab").is_some_and(Value::is_null))
         },
     );
-    let namespace = tilo_session::surfaces::namespace(tilo_session::mount::shell::WINDOW_MENU_SLOT);
+    let namespace = tilo_session::surfaces::namespace(tilo_session::shell::state::WINDOW_MENU_SLOT);
     assert_eq!(
         session.compositor().layer_shown(&namespace),
         Some(false),

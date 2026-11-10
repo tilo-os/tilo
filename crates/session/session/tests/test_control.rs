@@ -33,7 +33,7 @@ use tilo_desktop_model::{
     WorkspaceSlot,
 };
 use tilo_service::Service as _;
-use tilo_session::mount::shell::WINDOW_MENU;
+use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::{Options, Session};
 use tilo_test_env::SpawnUnderEnvLock as _;
 

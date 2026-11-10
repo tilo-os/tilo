@@ -1581,7 +1581,7 @@ fn a_search_row_for_an_app_starts_it_through_the_sessions_own_host() {
     .expect("a launcher");
     let mut environment = SessionEnvironment::from_process();
     environment.wayland_socket = Some(home.runtime().join("wayland-7"));
-    let apps = Rc::new(tilo_session::mount::apps::Apps::with_launcher(
+    let apps = Rc::new(tilo_session::apps::Apps::with_launcher(
         environment,
         None,
         Some(launcher.path().to_owned()),

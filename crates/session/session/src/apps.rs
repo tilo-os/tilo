@@ -1,11 +1,11 @@
-//! Opening an app: the launches the desktop asks for, planned into the process that
-//! starts them and started in the session's own environment.
-//! The desktop surface knows an app by name and opens a tab for one of its windows,
-//! but cannot start a process: it queues the launch for the session
-//! ([`tilo_app_launch`]), which plans it against the workspace in front and the
-//! displays this session bound, and starts it without waiting. The same entry point
-//! serves a search row, a file or a link the person opens. When an app stops without
-//! choosing to, the session offers it again in the place its window had.
+//! Opening an app: the launches the desktop asks for, planned into the process that starts them
+//! and started in the session's own environment.
+//!
+//! The desktop surface knows an app by name but cannot start a process: it queues the launch for
+//! the session ([`tilo_app_launch`]), which plans it against the workspace in front and the
+//! displays this session bound, and starts it without waiting. Search rows, files and links open
+//! the same way, and an app that stops without choosing to is offered again where its window was.
+
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

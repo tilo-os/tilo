@@ -46,12 +46,11 @@ impl Window {
         workspace: &str,
         pid: u32,
     ) -> Self {
-        let stream: UnixStream =
-            tilo_session::mount::app_tabs::ServiceLinks::new(Arc::clone(launches))
-                .window(app, workspace, 7, Some(pid))
-                .shell_ui
-                .expect("the app's shell-ui connection")
-                .into();
+        let stream: UnixStream = tilo_session::app_tabs::ServiceLinks::new(Arc::clone(launches))
+            .window(app, workspace, 7, Some(pid))
+            .shell_ui
+            .expect("the app's shell-ui connection")
+            .into();
         let from_session = stream.try_clone().expect("a reading end");
         from_session
             .set_read_timeout(Some(Duration::from_millis(20)))

@@ -32,9 +32,9 @@ use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, 
 use tilo_desktop_model::TileContent;
 use tilo_desktop_policy::{DesktopPolicy, Window};
 use tilo_desktop_search::providers::host_apps::HostAppEntry;
+use tilo_session::app_tabs::ServiceLinks;
+use tilo_session::apps::Apps;
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
-use tilo_session::mount::app_tabs::ServiceLinks;
-use tilo_session::mount::apps::Apps;
 use tilo_session::{AppActions, AppLists, Launches, Lists, Options, Session};
 use ui::floating_surface::{
     FLOATING_SURFACE_PROTOCOL_VERSION, FloatingSurfaceClientMessage, FloatingSurfaceHostMessage,

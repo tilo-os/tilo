@@ -74,7 +74,11 @@ mod app_names;
 #[cfg(target_os = "linux")]
 mod app_sheets;
 #[cfg(target_os = "linux")]
+pub mod app_tabs;
+#[cfg(target_os = "linux")]
 mod app_tiers;
+#[cfg(target_os = "linux")]
+pub mod apps;
 pub mod arrangement;
 #[cfg(target_os = "linux")]
 mod asks;
@@ -168,6 +172,8 @@ pub mod displays;
 #[cfg(target_os = "linux")]
 mod door_runs;
 #[cfg(target_os = "linux")]
+mod doors;
+#[cfg(target_os = "linux")]
 mod downloaded;
 #[cfg(target_os = "linux")]
 mod emoji;
@@ -193,6 +199,8 @@ mod held;
 mod here;
 #[cfg(target_os = "linux")]
 mod host_account;
+#[cfg(target_os = "linux")]
+mod host_shell;
 mod i18n;
 #[cfg(target_os = "linux")]
 pub mod identity;
@@ -273,6 +281,8 @@ pub mod recovery;
 #[cfg(target_os = "linux")]
 mod remote_door;
 #[cfg(target_os = "linux")]
+mod render;
+#[cfg(target_os = "linux")]
 mod rotation;
 #[cfg(target_os = "linux")]
 pub mod run;
@@ -333,6 +343,8 @@ mod task_undo;
 pub mod termination;
 #[cfg(target_os = "linux")]
 pub mod test_control;
+#[cfg(target_os = "linux")]
+mod tools;
 #[cfg(target_os = "linux")]
 pub mod unlock;
 #[cfg(target_os = "linux")]

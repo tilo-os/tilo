@@ -1,27 +1,10 @@
-//! The render broker: which workspace's render service draws which app, and
-//! keeping those services alive.
+//! The render broker: which workspace's render service draws which app, and keeping those
+//! services alive.
 //!
-//! Toolkit apps do not draw on the GPU themselves; the render service of
-//! their workspace does (`tilo-render-service`). The broker is where that is
-//! decided and supervised:
-//!
-//! - **Attribution.** The launcher connects every app it starts to the
-//!   broker's socket and writes the app's id and workspace before the app
-//!   holds the connection (`tilo_render_protocol::broker`). The broker reads
-//!   that, never anything the app says, to pick a service.
-//! - **One service per workspace.** The person's private workspaces — those
-//!   nobody but them may read — share one service; every other workspace
-//!   gets its own, so an app in a workspace with strangers never shares a
-//!   device, a cache or GPU memory with another workspace's apps. A
-//!   workspace that changes hands moves its apps: the broker drops their
-//!   channels on the old service and they ask again.
-//! - **Channels.** Each request gets a fresh `SOCK_SEQPACKET` pair: one end
-//!   goes to the service with the app's identity, the other back to the app.
-//! - **Supervision.** A service is started on first use (the private one at
-//!   session start, so the first app finds it warm) as `tilo-session
-//!   __render-service`, holding only its broker socket. When one dies, apps
-//!   keep their last frame on screen; their next request starts a new one.
-//!   A service that keeps dying is restarted with backoff, never in a spin.
+//! The launcher writes each app's id and workspace before the app holds the broker's connection
+//! ([`tilo_render_protocol::broker`]); the broker reads that, never what the app says. The
+//! person's private workspaces share one service and every other workspace gets its own, so an
+//! app never shares a device, a cache or GPU memory with another workspace's apps.
 
 use std::collections::HashMap;
 use std::io;

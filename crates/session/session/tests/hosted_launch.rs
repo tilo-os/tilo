@@ -26,7 +26,7 @@ use tilo_desktop_model::{
     WorkspaceSlot,
 };
 use tilo_model_host::ModelService;
-use tilo_session::mount::apps::Apps;
+use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
 
 use common::PERSON;

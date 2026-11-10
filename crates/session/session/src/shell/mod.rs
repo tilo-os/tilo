@@ -18,6 +18,9 @@ use crate::desk_resource::Desk;
 use crate::displays;
 use crate::platform::surfaces::Held;
 
+#[cfg(target_os = "linux")]
+pub mod state;
+
 /// The shell package and the packages it uses, compiled, the shell last: what the shell's
 /// instance runs. The installed `so.tilo.shell` when the person's app store holds one, the
 /// build's fallback copy when it does not (shell.md §6).

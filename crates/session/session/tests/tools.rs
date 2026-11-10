@@ -31,7 +31,7 @@ use tilo_app_launch::SessionEnvironment;
 use tilo_desktop_model::Workspace;
 use tilo_desktop_policy::Window;
 use tilo_notifications_service::Notifications;
-use tilo_session::mount::apps::Apps;
+use tilo_session::apps::Apps;
 use tilo_session::mount::drives::{Drives, Media, Medium};
 use tilo_session::{AppActions, AppLists, Launches, Lists, Options, Session};
 
