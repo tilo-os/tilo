@@ -95,7 +95,6 @@ mod tests {
             place: None,
             status: None,
             recent: None,
-            screen: None,
             availability: ui::Availability::Available,
             call: None,
         }

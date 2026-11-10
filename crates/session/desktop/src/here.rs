@@ -201,9 +201,6 @@ pub struct Person {
     pub place: Option<String>,
     pub status: Option<Line>,
     pub recent: Option<Line>,
-    /// Where their windows are on their screen, as their live presence says: a person's only, from
-    /// the first of their devices that says.
-    pub screen: Option<Screen>,
     /// How available they said they were, from their presence: the face dims while they are away or
     /// idle.
     pub availability: ui::Availability,
@@ -212,15 +209,11 @@ pub struct Person {
 }
 
 impl Person {
-    /// The app following them brings forward where no window here shows their record: the one in
-    /// front on their screen, else (an agent has no screen) the app of the record they act in.
+    /// The app following them brings forward where no window here shows their record: the app their
+    /// presence focuses, as their screen's front window says it.
     #[must_use]
     pub fn followed_app(&self) -> Option<&str> {
-        self.screen
-            .as_ref()
-            .and_then(|screen| screen.windows.iter().find(|window| window.focused))
-            .map(|window| window.app.as_str())
-            .or(self.focus_app.as_deref())
+        self.focus_app.as_deref()
     }
 }
 
@@ -781,16 +774,6 @@ impl HereState {
         names
     }
 
-    /// Where `person` 's windows are: the layout of the first of their devices in the live layer
-    /// that says.
-    fn screen_of(&self, person: &str) -> Option<Screen> {
-        self.members
-            .iter()
-            .flatten()
-            .filter(|member| member.kind != "agent" && self.person_of(&member.publisher) == person)
-            .find_map(|member| member.layout.as_ref().and_then(Screen::from_layout))
-    }
-
     /// Whether `publisher` is this page or another device of its person.
     fn is_own_person(&self, publisher: &str) -> bool {
         Some(publisher) == self.own_id()
@@ -999,7 +982,6 @@ impl HereState {
                 place,
                 status,
                 recent: line_of.and_then(|l| host_line(&l.recent, l.generated)),
-                screen: if agent { None } else { self.screen_of(person) },
                 availability: availability_of(member),
                 call: member.call.as_deref().and_then(ui::CallPresence::decode),
             });
@@ -1069,7 +1051,6 @@ impl HereState {
             place: tab.and_then(|tab| worded_place(tree, tab, app_name, status.as_ref())),
             status,
             recent: host_line(&l.recent, l.generated),
-            screen: None,
             // The host's lines say what a person does, never whether they are at their machine.
             availability: ui::Availability::Available,
             call: None,
@@ -1577,41 +1558,6 @@ mod tests {
     }
 
     /// A person's screen is their device's layout; an agent has none, even when its frame says one.
-    #[test]
-    fn a_person_s_layout_is_their_screen_and_an_agent_shows_none() {
-        let layout = MemberLayout {
-            size: [800, 600],
-            windows: vec![MemberWindow {
-                app: "so.tilo.notes".into(),
-                record: "0123456789abcdef".into(),
-                rect: [0, 0, 10_000, 10_000],
-                focused: true,
-            }],
-        };
-        let mut here = HereState::default();
-        here.set_members(
-            None,
-            Some(vec![
-                LiveMember {
-                    layout: Some(layout.clone()),
-                    ..member("ada", "person", "Ada")
-                },
-                LiveMember {
-                    layout: Some(layout.clone()),
-                    ..member("bot", "agent", "Scribe")
-                },
-            ]),
-        );
-        let people = here.people(&DesktopTree::default(), &[], &|_| None, 0);
-        let ada = people.iter().find(|p| p.id == "ada").expect("Ada");
-        assert_eq!(ada.screen, Screen::from_layout(&layout));
-        assert!(ada.screen.is_some());
-        let bot = people.iter().find(|p| p.id == "bot").expect("the agent");
-        assert_eq!(bot.screen, None);
-    }
-
-    /// A person is named as their page's presence names them, found through the host's line pairing
-    /// their device with their user root.
     #[test]
     fn a_person_is_named_by_their_pages_presence() {
         let mut here = HereState::default();
@@ -2664,7 +2610,6 @@ mod tests {
             place: None,
             status: None,
             recent: None,
-            screen: None,
             availability: ui::Availability::Available,
             call: None,
         }];
@@ -2718,7 +2663,6 @@ mod tests {
             place: None,
             status: None,
             recent: None,
-            screen: None,
             availability: ui::Availability::Available,
             call: None,
         }];

@@ -275,6 +275,7 @@ device-wake-failed-body = In seinem Netzwerk konnte kein Aufwecksignal gesendet 
 ## welchem Fenster er steht.
 people-pointer-where = { $who } ist in { $where }
 
+
 ## Was die Statusanzeige über die Maschine in einer Zeile sagt, für einen
 ## Reader, der sie hört statt ihre Symbole zu sehen.
 status-battery = Akku { $percent } %

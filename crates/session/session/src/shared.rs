@@ -76,13 +76,18 @@ impl Shared {
             return;
         }
         // Their own gesture or typing is them, not the person they followed: the view is theirs
-        // again, and the workspace hears they follow nobody.
+        // again, and the workspace hears they follow nobody. The press that asked to follow is not
+        // them working, so it does not end what it began.
         if self.underway.get().holds() {
+            if sync.follow_asked() {
+                return;
+            }
             follow.follow(None);
             drop(follow);
             self.say_following_nobody();
             return;
         }
+        sync.forget_follow_asked();
         follow.follow(followed);
         let people = sync.people(
             &self.handle.read(Clone::clone),

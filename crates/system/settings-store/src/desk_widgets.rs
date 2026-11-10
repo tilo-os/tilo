@@ -280,6 +280,33 @@ pub const SYSTEM_MONITOR: Key<WidgetPrefs> = Key::new(SECTION, "system_monitor",
     WidgetPrefs::default_for(WidgetId::SystemMonitor)
 });
 
+/// The people roster pinned out of the bar: whether it waits at an edge of the desk, and which.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeopleOverlayPrefs {
+    /// Whether the person pinned it to their desk.
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default = "people_overlay_edge")]
+    pub edge: DockEdge,
+}
+
+const fn people_overlay_edge() -> DockEdge {
+    DockEdge::Right
+}
+
+impl Default for PeopleOverlayPrefs {
+    fn default() -> Self {
+        Self {
+            pinned: false,
+            edge: people_overlay_edge(),
+        }
+    }
+}
+
+/// The pinned roster's choices.
+pub const PEOPLE_OVERLAY: Key<PeopleOverlayPrefs> =
+    Key::new(SECTION, "people_overlay", PeopleOverlayPrefs::default);
+
 /// The key holding `id`'s choices.
 #[must_use]
 pub const fn prefs_key(id: WidgetId) -> &'static Key<WidgetPrefs> {
@@ -406,6 +433,20 @@ mod tests {
         assert!(prefs.always_on(Some(7)));
         assert!(!prefs.always_on(Some(1)));
         assert!(!prefs.always_on(None));
+    }
+
+    #[test]
+    fn the_pinned_roster_keeps_its_edge_beside_the_widgets() {
+        assert_eq!(
+            PEOPLE_OVERLAY.from_document(&serde_json::Map::new()),
+            PeopleOverlayPrefs::default()
+        );
+        let document = serde_json::json!({
+            "desk_widgets": { "people_overlay": { "pinned": true, "edge": "bottom_left" } }
+        });
+        let prefs = PEOPLE_OVERLAY.from_document(document.as_object().unwrap());
+        assert!(prefs.pinned);
+        assert_eq!(prefs.edge, DockEdge::BottomLeft);
     }
 
     #[test]

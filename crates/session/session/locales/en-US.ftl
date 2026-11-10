@@ -271,6 +271,7 @@ device-wake-failed-body = No wake-up signal could be sent on its network.
 ## window they are over.
 people-pointer-where = { $who } is in { $where }
 
+
 ## What the status cluster says of the machine in a line, for a reader
 ## that hears it rather than sees its glyphs.
 status-battery = Battery { $percent }%

@@ -1,37 +1,41 @@
 //! Who is here: the roster the bar's faces open, and every other person's pointer where they are
-//! working.
+//! working. The roster can also be kept on screen, waiting at an edge of the desk with a mirror of
+//! each person's screen beside their row, pressed to follow them.
 //! The roster reads the desk's collaborators, which the collaboration plane writes each frame
 //! ([`crate::sync`]): the one feed the bar's faces and the launcher's Happening now list read too.
 //! Everyone's pointer is the plane's tile pointer, drawn over the tile of the tab they are on, in
 //! their own colour.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
-use ui::time::Duration;
 
+use settings_store::desk_widgets::{PEOPLE_OVERLAY, PeopleOverlayPrefs};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_desktop::chrome::ChromeIntent;
-use tilo_desktop_surface::DesktopHandle;
-use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect};
-use tilo_session_core::door::{Look, Published};
-use ui::host_operation::ResourceOperationStart;
-use ui::kurbo::{Affine, Point, Rect};
-use ui::peniko::Color;
-use ui::taffy::{NodeId, Style, TaffyTree};
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::Widget;
-use ui::winit::event::WindowEvent;
-
 use tilo_desktop::collaborators::{
     CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay, RosterRow,
-    collaborator_roster_rows_named,
+    collaborator_roster_rows_named, doing_line,
 };
+use tilo_desktop::desk_edges::{self, DockEdge, EdgeDrag, Item};
+use tilo_desktop::here::Screen;
 use tilo_desktop::launchpad::LaunchpadAppAction;
 use tilo_desktop::profile_card::{
     OtherPerson, ProfileAction, ProfileCard, ProfileChoice, ProfileGroup, ProfileModel,
 };
+use tilo_desktop_surface::DesktopHandle;
+use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect};
+use tilo_session_core::door::{Look, Published};
+use ui::host_operation::ResourceOperationStart;
+use ui::kurbo::{Affine, Point, Rect, Size, Vec2};
+use ui::motion::{Appear, Direction, MotionValue, Presence, Snap};
+use ui::peniko::{BlendMode, Color, Fill};
+use ui::taffy::{NodeId, Style, TaffyTree};
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::time::Duration;
+use ui::widget::Widget;
+use ui::winit::event::WindowEvent;
 
 /// How long after the person pressed elsewhere a press on the faces does not reopen the roster:
 /// their press closed it.
@@ -98,11 +102,69 @@ pub(crate) fn own_face(own: &crate::sync::OwnPresence, seated: &str) -> (String,
 /// [`Shown::card_open`] while it stands there.
 const SELF_CARD: &str = "";
 
+/// The roster kept on screen: where it waits, how it arrived, and how it is dragged to another
+/// edge of the desk. What it shows is the roster's own painting, at an edge.
+struct Pinned {
+    /// The edge it waits at, as the person's settings keep it.
+    edge: DockEdge,
+    /// It comes in when it is first placed, and leaves once it is put back in the bar.
+    arriving: bool,
+    gone: bool,
+    shown: Presence,
+    /// The panel as drawn this frame.
+    panel: Rect,
+    /// A press on it, and the drag to another edge it may become.
+    drag: Option<EdgeDrag<()>>,
+    /// Where a drop left the panel, until the next layout springs it to its slot.
+    dropped: Option<Point>,
+    /// How far from its slot the panel is drawn while it springs there.
+    settle: MotionValue<Point>,
+    /// The pointer, in the desk's coordinates: where a drag of the panel is drawn under.
+    pointer: Point,
+    /// The screen's room, as the roster last laid it out: where a drop snaps.
+    work: Rect,
+}
+
+impl Pinned {
+    /// The roster waiting at `edge`; `resting` when it was pinned before this session began.
+    fn new(edge: DockEdge, resting: bool) -> Self {
+        let mut shown = Presence::closed();
+        if resting {
+            shown.snap(true);
+        }
+        Self {
+            edge,
+            arriving: !resting,
+            gone: false,
+            shown,
+            panel: Rect::ZERO,
+            drag: None,
+            dropped: None,
+            settle: MotionValue::new(Point::ZERO),
+            pointer: Point::ZERO,
+            work: Rect::ZERO,
+        }
+    }
+
+    /// Whether anything of it is moving: arriving, leaving, sprung to its slot, or dragged.
+    fn is_moving(&self, now: ui::time::Instant) -> bool {
+        self.arriving
+            || self.gone
+            || self.drag.is_some_and(|drag| drag.dragging)
+            || self.shown.is_moving(now)
+            || self.settle.is_moving(now)
+            || self.dropped.is_some()
+    }
+}
+
 /// What the panel shows and where it stands, kept at rest between frames.
 #[derive(Default)]
 struct Shown {
     overlay: CollaboratorsOverlay,
     rows: Vec<RosterRow>,
+    /// Each person's screen as their presence says it, by roster id, `None` for someone who keeps
+    /// where they are to themselves.
+    screens: Vec<(String, Option<Screen>)>,
     workspace: String,
     expanded: Option<String>,
     /// Whose card the next frame opens, as the bar's face or the session asked: read once the
@@ -129,6 +191,8 @@ struct Shown {
     cursors: Vec<(String, (f64, f64))>,
     /// Where the desk is drawn, as the surface last laid out.
     area: Rect,
+    /// The roster kept on screen at an edge, while the person keeps it there.
+    pinned: Option<Pinned>,
 }
 
 impl Shown {
@@ -154,9 +218,35 @@ pub struct People {
     asks: Rc<RefCell<Vec<PeopleAsk>>>,
 }
 
+/// Keep the roster on screen: it waits at the edge the person last chose, and what they see from
+/// then on is the panel, not the dropdown the faces open.
+fn pin_roster(shown: &mut Shown, open: &Cell<bool>) {
+    if shown.pinned.is_some() {
+        return;
+    }
+    let edge = PEOPLE_OVERLAY.get().edge;
+    shown.pinned = Some(Pinned::new(edge, false));
+    shown.close();
+    open.set(false);
+    keep_pinned(true, edge);
+}
+
+/// Keep the pinned roster's edge in the person's settings, as the desk widgets keep theirs.
+fn keep_pinned(pinned: bool, edge: DockEdge) {
+    let kept = PEOPLE_OVERLAY.update(|_| PeopleOverlayPrefs { pinned, edge });
+    if let Err(error) = kept {
+        tracing::warn!(%error, "could not keep the roster's pin");
+    }
+}
+
 impl People {
     /// Open the roster, or close it again: what the bar's faces do.
     pub fn toggle(&self) {
+        // Kept on screen, the roster is already where the faces would open it: they have nothing
+        // to do, and the panel's own button puts it back in the bar.
+        if self.shown.borrow().pinned.is_some() {
+            return;
+        }
         // Their press closed it a moment ago: this is that press, not another.
         let dismissed = self
             .dismissed
@@ -220,6 +310,11 @@ impl People {
         self.open.get()
     }
 
+    /// Whether the roster is kept on screen at an edge now.
+    pub fn is_pinned(&self) -> bool {
+        self.shown.borrow().pinned.is_some()
+    }
+
     /// Close the roster: the person pressed elsewhere.
     pub fn dismiss(&self) {
         if !self.open.replace(false) {
@@ -280,7 +375,7 @@ impl Published for People {
     }
 
     fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
-        if !self.open.get() {
+        if !self.open.get() && !self.is_pinned() {
             return None;
         }
         self.layer().and_then(|layer| layer.a11y_tree())
@@ -291,7 +386,7 @@ impl Published for People {
     }
 
     fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
-        self.open.get()
+        (self.open.get() || self.is_pinned())
             && self
                 .layer()
                 .is_some_and(|layer| layer.a11y_action(target, action))
@@ -301,26 +396,27 @@ impl Published for People {
         self.open.get()
     }
 
-    /// The controls the open roster and its card show, where they stand: what the host drew.
+    /// The controls the open roster, its card and the pinned roster show, where they stand: what
+    /// the host drew.
     fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
         match self.layer() {
-            Some(layer) if self.open.get() => layer.controls(),
+            Some(layer) if self.open.get() || self.is_pinned() => layer.controls(),
             _ => Vec::new(),
         }
     }
 
     fn press(&mut self, name: &str) -> Result<(), String> {
         match self.layer() {
-            Some(layer) if self.open.get() => layer.press(name),
+            Some(layer) if self.open.get() || self.is_pinned() => layer.press(name),
             _ => Err(format!("no control named {name}")),
         }
     }
 
-    /// Who is here, as the open roster lists them: each person's name, what they are doing, and
+    /// Who is here, as the roster lists them: each person's name, what they are doing, and
     /// where they are. While a person's card stands in the roster's place, there are no rows to
     /// read: the card is what is read, and what is read is what the host drew of it.
     fn accessible_labels(&mut self) -> Vec<String> {
-        if !self.open.get() {
+        if !self.open.get() && !self.is_pinned() {
             return Vec::new();
         }
         if self.shown.borrow().card_open.is_some() {
@@ -329,15 +425,26 @@ impl Published for People {
                 .map_or_else(Vec::new, |layer| layer.accessible_labels());
         }
         let shown = self.shown.borrow();
-        let snapshot = shown.overlay.accessibility_snapshot();
         let mut labels = Vec::new();
-        let mut pending = vec![snapshot];
-        while let Some(node) = pending.pop() {
-            labels.extend(node.name.clone());
-            labels.extend(node.value.clone());
-            // What the row says of the person: where they are and how they said they are.
-            labels.extend(node.description.clone());
-            pending.extend(node.children);
+        if self.open.get() {
+            let mut pending = vec![shown.overlay.accessibility_snapshot()];
+            while let Some(node) = pending.pop() {
+                labels.extend(node.name.clone());
+                labels.extend(node.value.clone());
+                // What the row says of the person: where they are and how they said they are.
+                labels.extend(node.description.clone());
+                pending.extend(node.children);
+            }
+        }
+        if shown.pinned.is_some() {
+            for row in &shown.rows {
+                if row.invited || row.own_device {
+                    continue;
+                }
+                labels.push(row.label.clone());
+                labels.extend(row.activity.clone());
+                labels.extend(doing_line(row));
+            }
         }
         // Where everyone else is working: their pointer over a window of this desk says so, beside
         // their name. A pointer the roster cannot put a name to is drawn all the same, but says
@@ -383,6 +490,11 @@ pub fn mount(
     given: Given,
 ) -> Rc<RefCell<People>> {
     let shown = Rc::new(RefCell::new(Shown::default()));
+    // Kept on screen when it was pinned before, it is already there: no motion.
+    let kept = PEOPLE_OVERLAY.get();
+    if kept.pinned {
+        shown.borrow_mut().pinned = Some(Pinned::new(kept.edge, true));
+    }
     let asks: Rc<RefCell<Vec<PeopleAsk>>> = Rc::default();
     let open = Rc::new(Cell::new(false));
     let dismissed: Rc<Cell<Option<ui::time::Instant>>> = Rc::default();
@@ -479,12 +591,17 @@ struct Panel {
 impl Panel {
     /// Stop following, and the workspace hears it once.
     fn stop_following(&self) {
-        let Some(sync) = &self.sync else {
-            return;
-        };
-        let mut own = sync.own();
-        if own.following.take().is_some() {
-            sync.set_own(own);
+        if let Some(sync) = &self.sync {
+            sync.set_following(None);
+        }
+    }
+
+    /// Follow the person with this roster id, or stop following them: one path for a card, a row
+    /// and the banner, and the verb is the control's own — a press that stops following is not a
+    /// gesture that begins it again.
+    fn follow_person(&self, id: &str, following: bool) {
+        if let Some(sync) = &self.sync {
+            sync.set_following(following.then(|| id.to_owned()));
         }
     }
 
@@ -685,12 +802,11 @@ impl Panel {
         while let Some(choice) = self.profile.take_choice() {
             match choice {
                 ProfileChoice::Follow(id) => {
-                    let Some(sync) = &self.sync else {
-                        continue;
-                    };
-                    let mut own = sync.own();
-                    own.following = (own.following.as_deref() != Some(id.as_str())).then_some(id);
-                    sync.set_own(own);
+                    let following = self
+                        .sync
+                        .as_ref()
+                        .is_none_or(|sync| sync.own().following.as_deref() != Some(id.as_str()));
+                    self.follow_person(&id, following);
                 }
                 ProfileChoice::Message(key) => {
                     self.asks.borrow_mut().push(PeopleAsk::Message { key });
@@ -745,23 +861,60 @@ impl Panel {
     }
 
     /// Read who is here, as the plane wrote them into the desk's collaborators this frame: the
-    /// roster, and the workspace it is of.
-    fn read_roster(&self) -> (Vec<RosterRow>, String) {
+    /// roster, the workspace it is of, and each person's screen, its windows named by the records
+    /// this desk shows.
+    fn read_roster(&self) -> (Vec<RosterRow>, String, Vec<(String, Option<Screen>)>) {
         let own = self
             .sync
             .as_ref()
             .map_or_else(String::new, |sync| sync.publisher().to_string());
         let app_name = |_: &str| None;
+        let records = (self.notes)();
         let mut tree = self.handle.read(Clone::clone);
         if let Some(sync) = &self.sync {
-            sync.show(&mut tree, &(self.notes)(), &app_name);
+            sync.show(&mut tree, &records, &app_name);
         }
         let (rows, _) = collaborator_roster_rows_named(&tree, &own, None);
         let workspace = tree
             .active_workspace()
             .map(|workspace| workspace.name.clone())
             .unwrap_or_default();
-        (rows, workspace)
+        let front = tree
+            .active_workspace()
+            .map(|workspace| workspace.id().to_string());
+        // What each window here shows, by the digest presence names it with: what a person's window
+        // on the same record is called here.
+        let titled: BTreeMap<String, String> = crate::sync::presence::bindings(&tree, &records)
+            .into_iter()
+            .filter_map(|(tab, digest)| {
+                let title = tree.tab(tab)?.title.trim().to_owned();
+                (!title.is_empty()).then_some((digest, title))
+            })
+            .collect();
+        // Each person's screen, its windows named with what they show where this desk holds that
+        // record, else with the app's name.
+        let apps = self.apps.as_deref();
+        let screens = match (self.sync.as_ref(), front) {
+            (Some(sync), Some(workspace)) => sync
+                .members(&workspace)
+                .into_iter()
+                .map(|member| {
+                    let name_of = |app: &str, record: &str| {
+                        titled.get(record).cloned().or_else(|| {
+                            let name = apps.map_or_else(String::new, |apps| apps.name(app));
+                            (!name.trim().is_empty()).then_some(name)
+                        })
+                    };
+                    let screen = member
+                        .layout
+                        .as_ref()
+                        .and_then(|layout| Screen::of(layout, name_of));
+                    (member.publisher, screen)
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        (rows, workspace, screens)
     }
 
     /// Act on what a press or a key on the roster meant.
@@ -780,16 +933,15 @@ impl Panel {
                     .filter(|open| Some(open) != id.as_ref())
                     .or(id);
             }
-            CollaboratorsHit::ToggleFollow(index) => {
-                let Some(id) = shown.rows.get(index).map(|row| row.id.clone()) else {
-                    return;
-                };
-                let Some(sync) = &self.sync else {
-                    return;
-                };
-                let mut own = sync.own();
-                own.following = (own.following.as_deref() != Some(id.as_str())).then_some(id);
-                sync.set_own(own);
+            CollaboratorsHit::Follow(index) => {
+                if let Some(id) = shown.rows.get(index).map(|row| row.id.clone()) {
+                    self.follow_person(&id, true);
+                }
+            }
+            CollaboratorsHit::Unfollow(index) => {
+                if let Some(id) = shown.rows.get(index).map(|row| row.id.clone()) {
+                    self.follow_person(&id, false);
+                }
             }
             CollaboratorsHit::Wave(index) => {
                 let Some(id) = shown.rows.get(index).map(|row| row.id.clone()) else {
@@ -812,84 +964,26 @@ impl Panel {
             CollaboratorsHit::Invite => {
                 self.intents.borrow_mut().push(ChromeIntent::Invite);
             }
+            // Keeping the roster on screen moves it out of the bar to an edge of the desk; pressed
+            // where it stands, it goes back into the bar.
+            CollaboratorsHit::Pin => {
+                if shown.pinned.is_some() {
+                    let edge = shown
+                        .pinned
+                        .as_ref()
+                        .map_or(DockEdge::Right, |pin| pin.edge);
+                    if let Some(pin) = shown.pinned.as_mut() {
+                        pin.gone = true;
+                    }
+                    keep_pinned(false, edge);
+                } else {
+                    pin_roster(shown, self.open.as_ref());
+                }
+            }
             // No call to join from here (a call is Chat's, in an app window),
             // and nothing else to do: the roster kept the press.
-            CollaboratorsHit::JoinCall(_) | CollaboratorsHit::Pin | CollaboratorsHit::Absorb => {}
+            CollaboratorsHit::JoinCall(_) | CollaboratorsHit::Absorb => {}
         }
-    }
-
-    /// What the open panel draws: the card standing where the roster would,
-    /// or the roster's own rows and its detail.
-    fn draw_open(
-        &mut self,
-        scene: &mut ui::vello::Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-        shown: &mut Shown,
-    ) {
-        // The card is the roster's detail: opened on one of its rows, it stands where the roster
-        // would, and the rows wait behind it.
-        let card_stands = if shown.card_of.is_some() || shown.own_card || self.profile.is_open() {
-            self.draw_card(scene, transform, text, theme, presence, shown)
-        } else {
-            false
-        };
-        if card_stands {
-            return;
-        }
-        shown.card_open = None;
-        let own_id = self
-            .sync
-            .as_ref()
-            .map_or_else(String::new, |sync| sync.publisher().to_string());
-        let following = self.sync.as_ref().map_or_else(Vec::new, |sync| {
-            let target = sync.own().following.unwrap_or_default();
-            if target.is_empty() {
-                Vec::new()
-            } else {
-                vec![(own_id, target)]
-            }
-        });
-        let followed = self.sync.as_ref().and_then(|sync| sync.own().following);
-        let expanded = shown.expanded.clone();
-        let workspace = shown.workspace.clone();
-        let rows = shown.rows.clone();
-        let waved = shown
-            .waved
-            .as_ref()
-            .filter(|(_, at)| at.elapsed() < WAVE_SHOWN)
-            .map(|(id, _)| id.clone())
-            .into_iter()
-            .collect::<Vec<_>>();
-        let waved_until = shown
-            .waved
-            .as_ref()
-            .filter(|(_, at)| at.elapsed() < WAVE_SHOWN)
-            .and_then(|(_, at)| at.checked_add(WAVE_SHOWN));
-        let model = CollaboratorsModel {
-            host: shown.area,
-            workspace: &workspace,
-            rows: &rows,
-            unavailable: None,
-            exposure: None,
-            // Inviting is the invite sheet's own surface here, offered from the footer while the
-            // person may hand out a link into this workspace; keeping the list on screen is not
-            // offered yet.
-            may_invite: self.invitable.get(),
-            may_pin: false,
-            followed_id: followed.as_deref(),
-            following_pairs: &following,
-            expanded_id: expanded.as_deref(),
-            watching: 0,
-            waved: &waved,
-            waved_until,
-        };
-        let cursor = shown.cursor;
-        shown
-            .overlay
-            .draw(scene, transform, text, theme, &model, cursor);
     }
 
     /// How many times what the desk's people say of themselves changed.
@@ -930,6 +1024,7 @@ impl Panel {
         presence: &ui::presence::PresenceCtx,
         shown: &mut Shown,
     ) {
+        let _ = presence;
         let open = self.open.get();
         let tiles: Vec<tilo_live::presence::Tile> = self
             .handle
@@ -971,16 +1066,16 @@ impl Panel {
         if let Some(until) = pointers.motion_until {
             self.motion_until.set(self.motion_until.get().max(until));
         }
-        // Who is here is read once, for the rows and the card opened on one of them.
-        if open || !pointers.drawn.is_empty() {
-            let (rows, workspace) = self.read_roster();
+        // Who is here is read once, for the rows and the card opened on one of them, for the pinned
+        // roster's cards, and for the banner that names whose view this is.
+        let following = self.sync.as_ref().and_then(|sync| sync.own().following);
+        if open || shown.pinned.is_some() || !pointers.drawn.is_empty() || following.is_some() {
+            let (rows, workspace, screens) = self.read_roster();
             shown.rows = rows;
+            shown.screens = screens;
             if open {
                 shown.workspace = workspace;
             }
-        }
-        if open {
-            self.draw_open(scene, transform, text, theme, presence, shown);
         }
         shown.pointers = pointers
             .drawn
@@ -1011,34 +1106,13 @@ impl Panel {
         transform: Affine,
         text: &mut TextRenderer,
         theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
         shown: &Shown,
     ) {
         let following = self.sync.as_ref().and_then(|sync| sync.own().following);
-        let names = if following.is_some() || self.followed.borrow().is_some() {
-            self.sync.as_ref().map_or_else(HashMap::new, |sync| {
-                let here = sync.here();
-                let here = here.borrow();
-                here.person_names()
-            })
-        } else {
-            HashMap::new()
-        };
-        let row = following.as_deref().and_then(|id| {
-            names.get(id).map(|(label, _)| {
-                // Their colour is the one their pointer is drawn in on this desk, so the frame and
-                // the bar read as following them and nothing else here.
-                let user = ui::permissions::UserId(id.to_owned());
-                let mut row = RosterRow::own(
-                    id.to_owned(),
-                    label.clone(),
-                    ui::presence::presence_colour(presence.color_for(&user)),
-                    None,
-                );
-                row.is_agent = presence.is_agent(&user);
-                row
-            })
-        });
+        // The roster's own row for them: the same face, name and colour the roster lists.
+        let row = following
+            .as_deref()
+            .and_then(|id| shown.rows.iter().find(|row| row.id == id).cloned());
         let was = self.followed.replace(following.clone());
         if was != following {
             let now = ui::time::now();
@@ -1052,7 +1126,9 @@ impl Panel {
             } else {
                 // They left: following them ends with them. Still here, the person's own input
                 // took their view back, and the banner says so a moment.
-                let left = was.is_some_and(|id| !names.contains_key(&id));
+                let left = was
+                    .as_deref()
+                    .is_some_and(|id| !shown.rows.iter().any(|row| row.id == id));
                 self.banner.ended(
                     !left,
                     theme.motion(),
@@ -1090,6 +1166,273 @@ impl Panel {
         if !kept {
             self.stop_following();
         }
+    }
+
+    /// The roster, drawn where it stands: under the bar as the faces open it, or kept on screen at
+    /// an edge with a mirror of each person's screen. One painting for both.
+    fn draw_roster(
+        &mut self,
+        scene: &mut ui::vello::Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &ui::presence::PresenceCtx,
+        shown: &mut Shown,
+    ) {
+        let now = ui::motion::frame_now();
+        let motion = theme.motion();
+        if shown.pinned.is_none() {
+            self.draw_one_roster(scene, transform, text, theme, presence, shown, None);
+            return;
+        }
+        if let Some(pin) = shown.pinned.as_mut() {
+            if pin.arriving {
+                pin.arriving = false;
+                pin.shown
+                    .show(true, Appear::SPEC, motion, ui::motion::input_source(), now);
+            }
+            if pin.gone {
+                pin.shown
+                    .show(false, Appear::SPEC, motion, ui::motion::input_source(), now);
+            }
+            if !pin.shown.is_visible(now) {
+                shown.pinned = None;
+            }
+        } else if !self.open.get() {
+            return;
+        }
+        let area = shown.area;
+        let standing = {
+            let Some(pin) = shown.pinned.as_mut() else {
+                return;
+            };
+            self.place_pinned(pin, area, theme, now);
+            let anchor = match pin.edge {
+                DockEdge::Left | DockEdge::BottomLeft => {
+                    Point::new(pin.panel.x0, pin.panel.center().y)
+                }
+                DockEdge::Bottom => Point::new(pin.panel.center().x, pin.panel.y1),
+                DockEdge::Right | DockEdge::BottomRight => {
+                    Point::new(pin.panel.x1, pin.panel.center().y)
+                }
+            };
+            let pose = Appear::pose(
+                pin.shown.progress(now),
+                Direction::of(pin.shown.is_open()),
+                pin.panel,
+                anchor,
+                motion,
+            );
+            (pose, pin.panel)
+        };
+        let (pose, slot) = standing;
+        let placed = pose.applied_to(transform);
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            pose.opacity,
+            placed,
+            &slot.inflate(32.0, 32.0),
+        );
+        self.draw_one_roster(scene, placed, text, theme, presence, shown, Some(slot));
+        scene.pop_layer();
+        // What the roster made of its slot is where it now stands: the next placement centres it
+        // by that, and a press on its header drags the panel the person sees.
+        let drawn = shown.overlay.panel_rect();
+        if let Some(pin) = shown.pinned.as_mut() {
+            pin.panel = drawn;
+        }
+    }
+
+    /// The roster's one painting, with the model this session builds of who is here.
+    fn draw_one_roster(
+        &mut self,
+        scene: &mut ui::vello::Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &ui::presence::PresenceCtx,
+        shown: &mut Shown,
+        panel: Option<Rect>,
+    ) {
+        let card_stands = if shown.card_of.is_some() || shown.own_card || self.profile.is_open() {
+            self.draw_card(scene, transform, text, theme, presence, shown)
+        } else {
+            false
+        };
+        if card_stands {
+            return;
+        }
+        shown.card_open = None;
+        let pinned = shown.pinned.is_some();
+        let own_id = self
+            .sync
+            .as_ref()
+            .map_or_else(String::new, |sync| sync.publisher().to_string());
+        let following = self.sync.as_ref().map_or_else(Vec::new, |sync| {
+            let target = sync.own().following.unwrap_or_default();
+            if target.is_empty() {
+                Vec::new()
+            } else {
+                vec![(own_id, target)]
+            }
+        });
+        let followed = self.sync.as_ref().and_then(|sync| sync.own().following);
+        let expanded = shown.expanded.clone();
+        let workspace = shown.workspace.clone();
+        let rows = shown.rows.clone();
+        let screens = shown.screens.clone();
+        let waved = shown
+            .waved
+            .as_ref()
+            .filter(|(_, at)| at.elapsed() < WAVE_SHOWN)
+            .map(|(id, _)| id.clone())
+            .into_iter()
+            .collect::<Vec<_>>();
+        let waved_until = shown
+            .waved
+            .as_ref()
+            .filter(|(_, at)| at.elapsed() < WAVE_SHOWN)
+            .and_then(|(_, at)| at.checked_add(WAVE_SHOWN));
+        let model = CollaboratorsModel {
+            host: shown.area,
+            workspace: &workspace,
+            rows: &rows,
+            may_invite: self.invitable.get(),
+            may_pin: !pinned,
+            pinned,
+            panel,
+            screens: &screens,
+            followed_id: followed.as_deref(),
+            following_pairs: &following,
+            expanded_id: expanded.as_deref(),
+            waved: &waved,
+            waved_until,
+        };
+        let cursor = shown.cursor;
+        shown
+            .overlay
+            .draw(scene, transform, text, theme, &model, cursor);
+    }
+
+    /// Where the pinned roster waits this frame: its slot at its edge, under a drag, or springing
+    /// back from a drop.
+    fn place_pinned(
+        &mut self,
+        pin: &mut Pinned,
+        area: Rect,
+        theme: &Theme,
+        now: ui::time::Instant,
+    ) {
+        let spacing = &theme.tokens.spacing;
+        let bar = f64::from(tilo_desktop::topbar::topbar_height(theme));
+        let work = Rect::new(area.x0, area.y0 + bar, area.x1, area.y1);
+        pin.work = work;
+        // The roster lays itself out in whatever rect it is given: its slot is the one it measured
+        // last, so the panel keeps the height its own painting asked for.
+        let size = if pin.panel.area() > 0.0 {
+            pin.panel.size()
+        } else {
+            Size::new(
+                f64::from(theme.tokens.metrics.panel_width_utility),
+                work.height() * 0.5,
+            )
+        };
+        let slot = desk_edges::place(
+            work,
+            &[Item {
+                id: (),
+                edge: pin.edge,
+                glance: size,
+                open: size,
+                has_content: true,
+            }],
+            &[],
+            false,
+        );
+        let rest = slot.first().map_or_else(
+            || Rect::from_origin_size(work.origin(), size),
+            |slot| slot.glance,
+        );
+        let mut panel = rest;
+        if let Some(dropped) = pin.dropped.take() {
+            let from = dropped - rest.origin();
+            pin.settle.snap(Point::new(from.x, from.y));
+            let timing = Snap::SPEC.timing(
+                Direction::Enter,
+                theme.motion(),
+                ui::tokens::MotionSource::Gesture,
+            );
+            pin.settle.set(Point::ZERO, timing, now);
+        }
+        let offset = pin.settle.get(now);
+        panel = panel + Vec2::new(offset.x, offset.y);
+        if let Some(shift) = pin.drag.and_then(|drag| drag.shift(pin.pointer)) {
+            panel = panel + shift;
+        }
+        let _ = spacing;
+        pin.panel = panel;
+    }
+
+    /// What a drag of the pinned roster asks: the pointer moved, a press started on it, or it was
+    /// let go at an edge.
+    fn handle_pinned(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
+        let roster = Rc::clone(&self.shown);
+        let mut shown = roster.borrow_mut();
+        let cursor = shown.cursor;
+        let mut handled = false;
+        {
+            let Some(pin) = shown.pinned.as_mut() else {
+                return false;
+            };
+            match event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    pin.pointer = Point::new(position.x, position.y);
+                    if let Some(drag) = &mut pin.drag {
+                        handled = drag.moved(pin.pointer);
+                    }
+                }
+                WindowEvent::CursorLeft { .. } => {
+                    // The pointer left the desk: a press in flight lets go where it was drawn.
+                    if let Some(drag) = pin.drag.take()
+                        && drag.dragging
+                    {
+                        pin.dropped = Some(pin.panel.origin());
+                    }
+                }
+                WindowEvent::MouseInput {
+                    state,
+                    button: ui::winit::event::MouseButton::Left,
+                    ..
+                } => {
+                    match state {
+                        ui::winit::event::ElementState::Pressed => {
+                            // A press on the panel itself, off its controls, drags it: the roster's
+                            // own painting took the controls.
+                            if let Some(point) = cursor
+                                && pin.panel.contains(point)
+                            {
+                                pin.drag = Some(EdgeDrag::new((), point));
+                                pin.pointer = point;
+                            }
+                        }
+                        ui::winit::event::ElementState::Released => {
+                            if let Some(drag) = pin.drag.take()
+                                && let Some(edge) =
+                                    cursor.and_then(|point| drag.release(pin.work, point))
+                            {
+                                pin.edge = edge;
+                                pin.dropped = Some(pin.panel.origin());
+                                keep_pinned(true, edge);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        *ctx.handled |= handled;
+        handled
     }
 }
 
@@ -1164,15 +1507,19 @@ impl Widget for Panel {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        if self.open.get() && !self.profile.is_open() {
-            Some(self.shown.borrow().overlay.accessibility_snapshot())
-        } else {
-            // The banner stands beside the windows, so it is read whether the roster is up or not.
-            self.banner.accessibility()
+        let shown = self.shown.borrow();
+        if (self.open.get() || shown.pinned.is_some()) && !self.profile.is_open() {
+            // Each control says where it stands and carries what pressing it does, so a reader
+            // presses the roster's own buttons as the person does.
+            return Some(shown.overlay.accessibility_with_targets());
         }
+        drop(shown);
+        // The banner stands beside the windows, so it is read whether the roster is up or not.
+        self.banner.accessibility()
     }
 
-    /// Following's Stop is the banner's own verb, pressed there by a reader as by the person.
+    /// Following's Stop is the banner's own verb, and the pinned roster's controls are its own,
+    /// pressed there by a reader as by the person.
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -1186,7 +1533,18 @@ impl Widget for Panel {
             self.stop_following();
             return true;
         }
-        false
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        // The roster's own controls, as its tree names them.
+        let pressed = self.shown.borrow().overlay.hit_for_target(target);
+        let Some(hit) = pressed else {
+            return false;
+        };
+        let roster = Rc::clone(&self.shown);
+        let mut shown = roster.borrow_mut();
+        self.follow(hit, &mut shown);
+        true
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -1219,11 +1577,20 @@ impl Widget for Panel {
             self.profile.close();
         }
         self.draw_pointers(scene, transform, text, theme, presence, &mut shown);
-        self.draw_follow(scene, transform, text, theme, presence, &shown);
+        self.draw_roster(scene, transform, text, theme, presence, &mut shown);
+        self.draw_follow(scene, transform, text, theme, &shown);
         self.drawn.set(revision);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        // Where the pointer is, as the panel draws by it: under the pointer of the bar's faces, the
+        // banner's Stop and every other person's name.
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.shown.borrow_mut().cursor = Some(Point::new(position.x, position.y));
+        }
+        if matches!(event, WindowEvent::CursorLeft { .. }) {
+            self.shown.borrow_mut().cursor = None;
+        }
         // The banner's Stop takes its press whether the roster is open or not: following is the
         // person's view, not the roster's.
         if let WindowEvent::MouseInput {
@@ -1237,7 +1604,11 @@ impl Widget for Panel {
             *ctx.handled = true;
             return;
         }
-        if !self.open.get() {
+        // Kept on screen, the roster is pressed by the person's own pointer: it draws and answers
+        // where it stands, and never takes the keyboard.
+        let kept = self.shown.borrow().pinned.is_some();
+        if !self.open.get() && !kept {
+            self.handle_pinned(event, ctx);
             return;
         }
         // The card stands where the roster would, so there are no rows under it to press: it takes
@@ -1275,11 +1646,25 @@ impl Widget for Panel {
         let roster = Rc::clone(&self.shown);
         let mut shown = roster.borrow_mut();
         let cursor = shown.cursor;
-        let Some(hit) = shown.overlay.handle_event(event, ctx, true, cursor) else {
+        let hit = shown.overlay.handle_event(event, ctx, true, cursor);
+        let Some(hit) = hit else {
             return;
         };
-        // A press away from the roster takes the card with it, as `follow` does.
+        // A press away from the roster takes the card with it.
+        if matches!(hit, CollaboratorsHit::Dismiss) {
+            self.profile.close();
+        }
+        // Kept on screen, a press on its header drags it to another edge: a card's own press is
+        // the card's.
+        let drags = shown.pinned.is_some()
+            && shown
+                .cursor
+                .is_some_and(|point| shown.overlay.header_rect().contains(point));
         self.follow(hit, &mut shown);
+        drop(shown);
+        if drags {
+            self.handle_pinned(event, ctx);
+        }
     }
 
     /// Whether the panel owes a frame: while it is open, because its rows move with the people on
@@ -1288,6 +1673,20 @@ impl Widget for Panel {
     /// a remote pointer rests where it was drawn asks for no frame.
     fn needs_redraw(&self) -> bool {
         let now = ui::time::now();
+        if self.shown.borrow().pinned.is_some() {
+            // The pinned roster draws while its cards arrive and move, and when what the workspace
+            // says of its people changed: a pointer at rest asks for no frame.
+            return self
+                .shown
+                .borrow()
+                .pinned
+                .as_ref()
+                .is_some_and(|pin| pin.is_moving(now))
+                || self.presence_revision() != self.drawn.get()
+                || self.chats.borrow().animating(now)
+                || self.banner.is_moving(now)
+                || Self::presence_ms() < self.motion_until.get();
+        }
         self.open.get()
             || self.presence_revision() != self.drawn.get()
             || self.chats.borrow().animating(now)

@@ -968,6 +968,7 @@ a11y-shell-sharing-change = Ändern, was du teilst
 a11y-shell-follow-collaborator = Mitwirkender Person folgen
 a11y-shell-follow = { $name } folgen
 a11y-shell-follow-description = Die Live-Ansicht dieser Person im Arbeitsbereich spiegeln
+a11y-shell-stop-following = { $name } nicht mehr folgen
 a11y-shell-invite = Personen einladen
 a11y-shell-invite-description = Eine authentifizierte Einladung in den Arbeitsbereich erstellen
 a11y-shell-join = Arbeitsbereich beitreten
@@ -1011,11 +1012,6 @@ people-panel-here-count = { $count ->
     [one] Du und 1 weitere Person
    *[other] Du und { $count } weitere
 }
-people-panel-here-watching = { $count ->
-    [0] Nur du
-    [one] Du und 1 weitere Person
-   *[other] Du und { $count } weitere
-}, { $watching } schauen zu
 people-panel-section-people = Personen
 people-panel-section-agents = Agenten
 people-panel-section-devices = Deine Geräte
@@ -1042,25 +1038,16 @@ people-panel-follow = Folgen
 people-panel-stop-following = Beenden
 
 # The people overlay: the roster pinned out of the bar, floating over windows
+people-panel-unpin = Zurück in die Leiste
+a11y-people-unpin = Wer hier ist, zurück in die Leiste
+people-panel-screen-private = { $name } behält für sich, wo { $name } gerade ist
+people-panel-nothing-open = Auf dem Bildschirm von { $name } ist nichts offen
 people-panel-pin = Auf dem Bildschirm halten
 a11y-people-pin = Wer hier ist, auf dem Bildschirm halten
 a11y-people-overlay = Wer hier ist
-people-overlay-title = { $count ->
-    [0] Nur du
-    [one] 1 hier
-   *[other] { $count } hier
-}
 people-overlay-unpin = Zurück in die Leiste
-people-overlay-follow-name = { $name } folgen
-people-overlay-doing-nothing = Hier
 people-overlay-screen-private = { $name } behält für sich, wo { $name } gerade ist
 people-overlay-empty-desk = Auf dem Bildschirm von { $name } ist nichts offen
-people-overlay-message-placeholder = Nachricht an { $name }
-people-overlay-message-you = Du
-people-overlay-send = Senden
-people-overlay-own-status = Was du gerade machst
-people-overlay-own-status-placeholder = Woran arbeitest du?
-people-overlay-own-status-clear = Leeren, was du gerade machst
 a11y-people-follow = { $name } folgen
 a11y-people-stop-following = { $name } nicht mehr folgen
 launchpad-subtitle = Wähle, wie du anfängst. Alle in diesem Arbeitsbereich sehen, was du hier machst.

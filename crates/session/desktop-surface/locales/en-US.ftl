@@ -949,6 +949,7 @@ a11y-shell-sharing-change = Change what you share
 a11y-shell-follow-collaborator = Follow collaborator
 a11y-shell-follow = Follow { $name }
 a11y-shell-follow-description = Mirror this participant's live workspace view
+a11y-shell-stop-following = Stop following { $name }
 a11y-shell-invite = Invite people
 a11y-shell-invite-description = Create an authenticated workspace invitation
 a11y-shell-join = Join workspace
@@ -992,11 +993,6 @@ people-panel-here-count = { $count ->
     [one] You and 1 other
    *[other] You and { $count } others
 }
-people-panel-here-watching = { $count ->
-    [0] Just you
-    [one] You and 1 other
-   *[other] You and { $count } others
-}, { $watching } watching
 people-panel-section-people = People
 people-panel-section-agents = Agents
 people-panel-section-devices = Your devices
@@ -1023,25 +1019,16 @@ people-panel-follow = Follow
 people-panel-stop-following = Stop
 
 # The people overlay: the roster pinned out of the bar, floating over windows
+people-panel-unpin = Put back in the bar
+a11y-people-unpin = Put who is here back in the bar
+people-panel-screen-private = { $name } keeps where they are to themselves
+people-panel-nothing-open = Nothing open on { $name }’s screen
 people-panel-pin = Keep on screen
 a11y-people-pin = Keep who is here on screen
 a11y-people-overlay = Who is here
-people-overlay-title = { $count ->
-    [0] Just you
-    [one] 1 here
-   *[other] { $count } here
-}
 people-overlay-unpin = Put back in the bar
-people-overlay-follow-name = Follow { $name }
-people-overlay-doing-nothing = Here
 people-overlay-screen-private = { $name } keeps where they are to themselves
 people-overlay-empty-desk = Nothing open on { $name }’s screen
-people-overlay-message-placeholder = Message { $name }
-people-overlay-message-you = You
-people-overlay-send = Send
-people-overlay-own-status = What you're doing
-people-overlay-own-status-placeholder = What are you working on?
-people-overlay-own-status-clear = Clear what you're doing
 a11y-people-follow = Follow { $name }
 a11y-people-stop-following = Stop following { $name }
 launchpad-subtitle = Pick a way to start. Everyone in this workspace sees what you make here.

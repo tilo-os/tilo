@@ -175,6 +175,10 @@ pub struct Client {
     here: Here,
     /// The count this person's last wave carried here.
     wave_seq: Cell<u32>,
+    /// This device's view was asked to follow someone by its own people panel, and the pass that
+    /// reads the person's gesture has not heard it yet: the press that asks to follow is not the
+    /// person at work taking the view back.
+    follow_asked: Cell<bool>,
     /// What this device said while it held no plane to say it on, for the tests that read what a
     /// session would have published.
     #[cfg(test)]
@@ -461,6 +465,7 @@ impl Client {
             says: RefCell::default(),
             here: Here::default(),
             wave_seq: Cell::new(0),
+            follow_asked: Cell::new(false),
             #[cfg(test)]
             said: RefCell::new(Vec::new()),
             sent_wave: RefCell::new(None),
@@ -618,6 +623,30 @@ impl Client {
         *self.own.borrow_mut() = own;
         self.say_own();
         true
+    }
+
+    /// Follow `target` (or nobody, `None`): this person's own word on whose view is theirs. Answers
+    /// whether it changed. An ask made here is not the person working, so the gesture that carried
+    /// it does not take back the view it began ([`Self::follow_asked`]).
+    pub fn set_following(&self, target: Option<String>) -> bool {
+        let mut own = self.own();
+        if own.following == target {
+            return false;
+        }
+        own.following = target;
+        self.follow_asked.set(true);
+        self.set_own(own)
+    }
+
+    /// Whether this device's view was asked to follow someone and the gesture carrying the ask is
+    /// still in flight: what keeps it from ending the following it began.
+    pub fn follow_asked(&self) -> bool {
+        self.follow_asked.get()
+    }
+
+    /// The gesture that asked to follow has ended: the next ask is a new one.
+    pub fn forget_follow_asked(&self) {
+        self.follow_asked.set(false);
     }
 
     /// Where this person is on this desk now: their `pointer` over the tile it is on, and their
