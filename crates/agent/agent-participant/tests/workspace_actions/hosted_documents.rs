@@ -527,15 +527,15 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let values = form_values(&mut page, &pdf);
+        // Each field the agent filled arrives as a change of its own: the
+        // page waits for all of them.
         if values.get("surname") == Some(&pdf_viewer::model::FormEntry::Text("Okafor".into()))
+            && values.get("purpose")
+                == Some(&pdf_viewer::model::FormEntry::Choice(
+                    "Visiting family".into(),
+                ))
             && writer_text(&mut page, &writer).contains("Dear Visa Officer")
         {
-            assert_eq!(
-                values.get("purpose"),
-                Some(&pdf_viewer::model::FormEntry::Choice(
-                    "Visiting family".into()
-                ))
-            );
             break;
         }
         assert!(
