@@ -24,7 +24,8 @@ pub const DIRECTORY: &str = "content";
 
 /// What one workspace may keep on its host: no bound of its own. A host
 /// serves hundreds of workspaces, each as large as its people make it; what
-/// bounds them is the disk.
+/// bounds them is the disk, which refuses new content with its reason while
+/// it runs low ([`tilo_content::ContentError::DiskLow`]) and drops nothing.
 pub const WORKSPACE_LIMITS: ContentLimits = ContentLimits {
     max_item_bytes: usize::MAX,
     max_total_bytes: usize::MAX,

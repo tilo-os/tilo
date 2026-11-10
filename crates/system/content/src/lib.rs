@@ -138,6 +138,11 @@ pub enum ContentError {
     ScanLimitExceeded { limit: usize },
     #[error("this store cannot collect unreferenced content")]
     CollectionUnsupported,
+    #[error(
+        "the disk holding this content has {free} bytes free, under the {keep_free} it keeps \
+         for the host's own state: nothing new is kept until there is room"
+    )]
+    DiskLow { free: u64, keep_free: u64 },
     #[error("content store I/O: {0}")]
     Io(String),
 }
