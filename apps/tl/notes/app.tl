@@ -159,7 +159,7 @@ action insert_image(n: Note, image: File) (icon: .image, did: "added an image") 
 }
 
 /// A note as Markdown: its title, then its body, each picture it shows standing beside it as
-/// `<note>/images/<name>` — a path another reader of the file follows, and this app reads again
+/// `<note>/images/<name>`, a path another reader of the file follows and this app reads again
 /// as the address of the picture's bytes.
 action export_markdown(n: Note) -> Text (icon: .download) {
     note_markdown(n, file_name(n))
@@ -265,7 +265,7 @@ action import_markdown(nb: Notebook, file: File) -> Note (
     }
 }
 
-/// Imports a zip of Markdown — a notebook this app exported, or a Notion export — as notes under
+/// Imports a zip of Markdown (a notebook this app exported, or a Notion export) as notes under
 /// the notebook, a page under the page that held it, in one change: undo takes the whole import
 /// back. Each page's title is its first heading, or its file's name; the pictures a page shows
 /// are the files it stands beside, a reference read from the page's own folder. A page that is

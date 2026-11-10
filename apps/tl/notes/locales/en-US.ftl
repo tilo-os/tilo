@@ -82,7 +82,7 @@ d-4s5iqnfo = Insert image
     .did = added an image
 
 d-xptsjaii = Export markdown
-    .doc = A note as Markdown: its title, then its body, each picture it shows standing beside it as `<note>/images/<name>` — a path another reader of the file follows, and this app reads again as the address of the picture's bytes.
+    .doc = A note as Markdown: its title, then its body, each picture it shows standing beside it as `<note>/images/<name>`, a path another reader of the file follows and this app reads again as the address of the picture's bytes.
 
 d-2e5dloct = Export note
     .doc = A note as a file: its Markdown, and the pictures it shows beside it.
@@ -95,7 +95,7 @@ d-t4nxxtng = Import markdown
     .did = imported a note
 
 d-h3zczsen = Import archive
-    .doc = Imports a zip of Markdown — a notebook this app exported, or a Notion export — as notes under the notebook, a page under the page that held it, in one change: undo takes the whole import back.
+    .doc = Imports a zip of Markdown (a notebook this app exported, or a Notion export) as notes under the notebook, a page under the page that held it, in one change: undo takes the whole import back.
     .did = imported a notebook
 
 d-m6rqg3kf = Pin~present

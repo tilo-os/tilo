@@ -359,19 +359,19 @@ d-4fjgzcq6 = Unified
     .w-all-mail = All mail
     .w-labels = Labels
     .w-could-not-save-what-it-fetched = { $name } could not save what it fetched
-    .w-can-t-reach-showing-what-was = Can't reach { $name } — showing what was last fetched
+    .w-can-t-reach-showing-what-was = Can't reach { $name }. Showing what was last fetched.
     .w-try-again = Try again
 
 d-gka45our = Mailboxes
     .w-all-mail = All mail
     .w-labels = Labels
     .w-could-not-save-what-it-fetched = { $name } could not save what it fetched
-    .w-can-t-reach-showing-what-was = Can't reach { $name } — showing what was last fetched
+    .w-can-t-reach-showing-what-was = Can't reach { $name }. Showing what was last fetched.
     .w-try-again = Try again
 
 d-zp2cy2sc = Inbox
     .w-could-not-save-what-it-fetched = { $name } could not save what it fetched
-    .w-can-t-reach-showing-what-was = Can't reach { $name } — showing what was last fetched
+    .w-can-t-reach-showing-what-was = Can't reach { $name }. Showing what was last fetched.
     .w-try-again = Try again
     .w-nothing-here = Nothing here
 

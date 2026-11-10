@@ -121,7 +121,7 @@ template view service_banner(name: Text, online: Bool, trouble: Text, retry: Act
             if online {
                 "{name} could not save what it fetched"
             } else {
-                "Can't reach {name} — showing what was last fetched"
+                "Can't reach {name}. Showing what was last fetched."
             },
             message: trouble,
             kind: .warning,
