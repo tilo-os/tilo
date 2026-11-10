@@ -353,7 +353,7 @@ view notebook(nb: Notebook) {
         place: (moved, parent, before) -> move_to(nb, moved, parent, before),
         place_after: (moved, x) -> move_after(nb, moved, x),
         add: add_child,
-        path: n -> trail(n),
+        path: n -> meta(n).title,
         doc: note_page,
     ) { n ->
         // A note with no title yet is called what its type calls it, as in every list of it.
@@ -455,17 +455,23 @@ view note_details(n: Note) {
     let edited = updated(n)?.at
     let count = n.body.text.words()
     row(gap: .related, align: .center) {
+        // The trail takes the room the facts leave, a line under the title rather than the
+        // window's own: what the page says of the note stands with the note.
         if not places.is_empty() {
-            ui.Breadcrumb {
-                for a in places {
-                    ui.BreadcrumbSegment(meta(a).title) {
-                        on activate: open(a)
+            stack(fill: 1.0) {
+                ui.Breadcrumb {
+                    for a in places {
+                        ui.BreadcrumbSegment(meta(a).title) {
+                            on activate: open(a)
+                        }
                     }
+                    ui.BreadcrumbSegment(meta(n).title)
                 }
-                ui.BreadcrumbSegment(meta(n).title)
             }
         }
-        row(gap: .related, align: .center) {
+        // The facts are as wide as their words (`fill: 0`), so the trail takes the room they
+        // leave and elides its middle where that is not enough, never the other way round.
+        row(gap: .related, align: .center, fill: 0.0) {
             // When it was made, and when it was written since: one moment says both.
             if let at = made {
                 row(gap: .tight) {
@@ -686,14 +692,6 @@ fn depth_of(n: Note) -> Int {
 /// Whether `n` holds notes of its own, which the tree shows folded away or open.
 fn holds_any(nb: Notebook, n: Note) -> Bool {
     nb.notes.filter(x -> x.parent == n).count() > 0
-}
-
-/// Where `n` stands, as the bar over its page names it: the notes it is under, root first.
-fn trail(n: Note) -> Text {
-    if let p = n.parent {
-        let over = trail(p)
-        if over == "" { p.title } else { "{over} / {p.title}" }
-    } else { "" }
 }
 
 /// A notebook a week into a project: two branches of notes, one of them three deep, a few of
