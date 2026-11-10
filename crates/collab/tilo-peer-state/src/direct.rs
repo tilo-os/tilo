@@ -163,6 +163,11 @@ struct Inner {
     changed: watch::Sender<u64>,
     /// Set once the other device's retained history is in hand.
     caught_up: watch::Sender<bool>,
+    /// Set once this device has written what the other one lacks — its
+    /// certificate, the revocations and the workspace's governance — to the
+    /// link. The other one decides the retained history it asks for next
+    /// against that governance, so the history waits for it.
+    catch_up_written: watch::Sender<bool>,
     /// This device is the workspace's host on its links: what they bring in,
     /// it sends on to its other links, so a member's frame reaches every
     /// member through one path.
@@ -216,6 +221,7 @@ impl DirectSync {
             heard: broadcast::channel(OUTGOING).0,
             changed: watch::channel(0).0,
             caught_up: watch::channel(false).0,
+            catch_up_written: watch::channel(false).0,
             fan_out: std::sync::atomic::AtomicBool::new(false),
             hearing: None,
         }))
@@ -238,6 +244,7 @@ impl DirectSync {
             heard: self.0.heard.clone(),
             changed: self.0.changed.clone(),
             caught_up: self.0.caught_up.clone(),
+            catch_up_written: self.0.catch_up_written.clone(),
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
             hearing: self.0.hearing.clone(),
         }))
@@ -254,6 +261,7 @@ impl DirectSync {
             heard: self.0.heard.clone(),
             changed: self.0.changed.clone(),
             caught_up: self.0.caught_up.clone(),
+            catch_up_written: self.0.catch_up_written.clone(),
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
             hearing: Some(hearing),
         }))
@@ -287,6 +295,7 @@ impl DirectSync {
             heard: broadcast::channel(capacity).0,
             changed: self.0.changed.clone(),
             caught_up: self.0.caught_up.clone(),
+            catch_up_written: self.0.catch_up_written.clone(),
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
             hearing: self.0.hearing.clone(),
         }))
@@ -381,6 +390,15 @@ impl DirectSync {
             published: true,
         });
         Ok(())
+    }
+
+    /// Keep `message`, a frame the workspace admitted on a carrier other than
+    /// this link, at this device's store: the history a device that joins the
+    /// workspace later replays. A member's write reaches the workspace on
+    /// whatever carrier its runtime runs, and a device that reads the workspace
+    /// over a link reads what the others wrote on any of them.
+    pub fn keep_admitted(&self, message: &NeighbourMsg) {
+        self.keep(message);
     }
 
     /// Hand `authored` to every open link; no open link is no error, as the
@@ -602,6 +620,17 @@ impl DirectSync {
 
     /// Answer the dialling device's cursors from this device's store.
     async fn answer_store(&self, mut control: Control) -> Result<(), String> {
+        // The history this answers is decided by the other device against the
+        // governance it has not been sent yet: it arrives with the catch-up,
+        // and the frames asked for before it are the ones it cannot admit.
+        // The answer waits for the catch-up to be written, so a device that
+        // joins takes the workspace's governance in before its records.
+        let mut written = self.0.catch_up_written.subscribe();
+        while !*written.borrow_and_update() {
+            if written.changed().await.is_err() {
+                return Ok(());
+            }
+        }
         while let Some(frame) = read_link(&mut control.recv, MAX_FRAME_BYTES).await? {
             let LinkFrame::Cursors(cursors) = frame else {
                 return Err("the device asked for something else than retained frames".into());
@@ -1253,6 +1282,7 @@ async fn send_authored(
     for authored in &catch_up {
         write_authored(&mut send, authored).await?;
     }
+    link.0.catch_up_written.send_replace(true);
     loop {
         match live.recv().await {
             Ok(authored) if already_theirs(&authored, remote, own) => {}

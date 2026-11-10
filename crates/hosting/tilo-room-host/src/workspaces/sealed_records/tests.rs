@@ -60,6 +60,32 @@ async fn follows(workspaces: &Workspaces, workspace: &str, wanted: &str) {
     .await;
 }
 
+/// Wait until the node's copy of [`RECORD`] holds `wanted` at `field`: a write that changes
+/// no title is followed too, and a check made before it lands reads a copy without it.
+async fn follows_field(workspaces: &Workspaces, workspace: &str, field: &str, wanted: &str) {
+    tilo_test_env::within("the node follows the record's writes", async {
+        loop {
+            let held = workspaces
+                .record_document(workspace, APP, RECORD)
+                .await
+                .expect("the node reads its record");
+            let holds = held
+                .and_then(|bytes| automerge::AutoCommit::load(&bytes).ok())
+                .and_then(|doc| {
+                    doc.get(automerge::ROOT, "offline")
+                        .ok()
+                        .flatten()
+                        .and_then(|value| value.into_string().ok())
+                });
+            if holds.as_deref() == Some(wanted) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    })
+    .await;
+}
+
 /// A node governing a "Lounge" workspace, the workspace's record of [`APP`] it holds, and
 /// a member device that writes it sealed under the keys the node takes part in.
 struct Lounge {
@@ -1321,11 +1347,16 @@ async fn a_device_that_holds_changes_the_repair_lacks_still_reaches_a_joiner() {
         .await
         .expect("the governor founds the record again");
 
-    // The away device comes back and sends what it held.
+    // The away device comes back and sends what it held. The relay keeps a
+    // write as it arrives, before the node follows it, so the wait is for the
+    // node's own copy to hold what the away device wrote: the record a device
+    // joining now is replayed is the node's, and a check made before the node
+    // followed the last write would read a record it has yet to hold.
     for message in [offline_one, offline_two] {
         send_sealed(&client, workspace_id, &member_key, &message);
     }
     follows(&workspaces, &workspace, "line 3").await;
+    follows_field(&workspaces, &workspace, "offline", "two").await;
 
     // What a device joining now is replayed: it reads the record the governor
     // reads, with the away device's changes in it.

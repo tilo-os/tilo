@@ -339,7 +339,7 @@ async fn tell_governor(ws: &SharedWorkspace, delta: &Envelope) {
     };
     let tap = ws.lock().await.governor_tap.clone();
     if let Some((tap, body)) = tap.zip(governor_notice(delta)) {
-        super::state::tell_governor(&tap, *author_device_public_key, body).await;
+        super::state::tell_governor(ws, &tap, *author_device_public_key, body).await;
     }
 }
 
