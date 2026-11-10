@@ -406,6 +406,7 @@ impl WorkspaceActivityPane {
                 from: hex(&oldest.id),
                 to: hex(&newest.id),
             },
+            changes: segment.entries.len(),
             at_ms: millis(oldest.timestamp),
             summary,
             view,
@@ -588,6 +589,7 @@ impl WorkspaceActivityPane {
         let at_ms = number("started_ms").unwrap_or_else(|| millis(entry.timestamp));
         wire::RunAction {
             range: wire::Range::one(&hex(&entry.id)),
+            changes: 1,
             at_ms,
             summary: asked.command,
             view,

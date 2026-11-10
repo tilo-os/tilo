@@ -101,7 +101,8 @@ fn wash(surface: Color, alpha: u8) -> Color {
 fn author_face(author: &HistoryAuthor, colour: Color) -> crate::widget::avatar::AvatarFace<'_> {
     let face = crate::widget::avatar::AvatarFace::new(&author.name, &author.identity_short);
     if author.relation == crate::widget::history::AuthorRelation::Software {
-        face.glyph(crate::icons::Icon::Bot)
+        face.hue(crate::tokens::colors::PresenceHue::of_agent(&author.name))
+            .agent()
     } else {
         face.presence(colour)
     }

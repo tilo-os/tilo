@@ -22,6 +22,10 @@ console-run-actions = { $count ->
     [one] 1 action
    *[other] { $count } actions
 }
+console-run-changes = { $count ->
+    [one] 1 change
+   *[other] { $count } changes
+}
 
 console-run = Agent run
 console-run-copy-link = Copy link

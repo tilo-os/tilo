@@ -787,6 +787,9 @@ pub enum DiffSide {
 pub struct RunAction {
     /// Its changes, which [`UNDO`] takes back on their own.
     pub range: Range,
+    /// How many changes `range` is: an action that wrote four paragraphs in one note is one
+    /// action of four changes.
+    pub changes: usize,
     pub at_ms: i64,
     /// What it did, as a sentence.
     pub summary: String,
@@ -830,6 +833,25 @@ pub struct AgentRun {
     /// newest action. A reader shows it only for a run that is working.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub now: Option<Now>,
+}
+
+impl AgentRun {
+    /// How many changes the run made to records and files, as a person counts what it changed:
+    /// each of its edits, not the commands it ran or the pages it read. What its card and the
+    /// notice that it finished both say.
+    #[must_use]
+    pub fn changes(&self) -> usize {
+        self.actions
+            .iter()
+            .filter(|action| {
+                matches!(
+                    action.view,
+                    ActionView::File { .. } | ActionView::Record { .. }
+                )
+            })
+            .map(|action| action.changes.max(1))
+            .sum()
+    }
 }
 
 /// What a run is doing at the moment it is read.

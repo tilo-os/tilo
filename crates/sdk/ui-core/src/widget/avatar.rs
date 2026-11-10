@@ -114,6 +114,8 @@ pub struct AvatarFace<'a> {
     ring_on: Option<Color>,
     status: Option<PresenceStatus>,
     glyph: Option<crate::icons::Icon>,
+    /// Software: the agent mark on its rounded square, as every face of an agent is drawn.
+    agent: bool,
     presence_ring: bool,
     speaking: f32,
     idle_on: Option<Color>,
@@ -133,10 +135,26 @@ impl<'a> AvatarFace<'a> {
             ring_on: None,
             status: None,
             glyph: None,
+            agent: false,
             presence_ring: false,
             speaking: 0.0,
             idle_on: None,
         }
+    }
+
+    /// Software, not a person: the agent's own face, the agent mark on a rounded square in its
+    /// colour ([`Self::hue`] for its client's), drawn as the faces of who is here draw it
+    /// ([`crate::agent_identity::draw_agent_identity_mark`]), so an agent looks the same on every
+    /// row, card and bar it shows on.
+    #[must_use]
+    pub fn agent(mut self) -> Self {
+        self.agent = true;
+        self.square = true;
+        self.glyph = None;
+        if self.tint == Tint::Neutral {
+            self.tint = Tint::Identity(self.identity);
+        }
+        self
     }
 
     /// An app without artwork of its own: its glyph from the icon set
@@ -442,6 +460,19 @@ impl<'a> AvatarFace<'a> {
             );
         }
         let shape = self.paint_presence_rings(ctx, shape);
+        // Software wears no picture: the agent mark is its face wherever it shows.
+        if self.agent {
+            crate::agent_identity::draw_agent_identity_mark(
+                ctx.scene,
+                ctx.transform,
+                shape.rect(),
+                self.colour(ctx.theme),
+                ctx.theme,
+                crate::agent_identity::AgentIdentityStyle::Solid,
+            );
+            self.paint_status(ctx, rect);
+            return;
+        }
         #[cfg(feature = "local-daemons")]
         let public_image = if self.image.is_none() {
             if self.tint == Tint::Neutral {
@@ -695,6 +726,8 @@ pub struct Avatar {
     neutral: bool,
     status: Option<PresenceStatus>,
     glyph: Option<crate::icons::Icon>,
+    /// Software: see [`AvatarFace::agent`].
+    agent: bool,
     side: f64,
     rect: Rect,
     dirty: bool,
@@ -729,6 +762,7 @@ impl Avatar {
             neutral: false,
             status: None,
             glyph: None,
+            agent: false,
             side: 0.0,
             rect: Rect::ZERO,
             dirty: true,
@@ -755,11 +789,12 @@ impl Avatar {
         self
     }
 
-    /// Software, not a person: the agent mark on a rounded square, in its presence colour
-    /// ([`Self::with_presence`], its client's hue), so it is never read as anyone's face.
+    /// Software, not a person: the agent's own face ([`AvatarFace::agent`]) in its presence
+    /// colour ([`Self::with_presence`], its client's hue), so it is never read as anyone's face.
     #[must_use]
     pub fn agent(mut self) -> Self {
-        self.glyph = Some(crate::icons::Icon::Bot);
+        self.agent = true;
+        self.glyph = None;
         self.square = true;
         self.neutral = false;
         self
@@ -880,6 +915,9 @@ impl Avatar {
         }
         if self.neutral {
             face = face.neutral();
+        }
+        if self.agent {
+            face = face.agent();
         }
         if let Some(status) = self.status {
             face = face.status(status);

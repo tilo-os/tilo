@@ -256,6 +256,7 @@ fn run() -> wire::AgentRun {
         },
         actions: vec![wire::RunAction {
             range: wire::Range::one("ab"),
+            changes: 1,
             at_ms: 2,
             summary: "Rewrote the intro".into(),
             view: wire::ActionView::Record { target },

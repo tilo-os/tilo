@@ -984,6 +984,8 @@ enum Leading {
         square: bool,
         glyph: Option<Icon>,
         tint: Option<AvatarTint>,
+        /// Software: the agent's own face ([`AvatarFace::agent`]).
+        agent: bool,
     },
     /// The room an avatar takes, left empty ([`RowLeading::AvatarSpace`]).
     AvatarSpace,
@@ -1588,7 +1590,18 @@ impl ListRow {
             square: false,
             glyph: None,
             tint: None,
+            agent: false,
         });
+        self
+    }
+
+    /// The leading avatar is an agent's own face ([`AvatarFace::agent`]), in its tint.
+    #[must_use]
+    pub fn agent_face(mut self) -> Self {
+        if let Some(Leading::Avatar { agent, square, .. }) = &mut self.leading {
+            *agent = true;
+            *square = true;
+        }
         self
     }
 
@@ -2373,6 +2386,7 @@ impl ListRow {
                     square,
                     glyph,
                     tint,
+                    agent,
                 } => {
                     let avatar = AvatarFace::new(name, identity).image(image.as_ref());
                     let avatar = if *square { avatar.square() } else { avatar };
@@ -2382,11 +2396,12 @@ impl ListRow {
                     };
                     // Its own tint, after the glyph, which asks for the
                     // neutral square.
-                    RowLeading::Avatar(match tint {
+                    let avatar = match tint {
                         Some(AvatarTint::Colour(colour)) => avatar.presence(*colour),
                         Some(AvatarTint::Hue(hue)) => avatar.hue(*hue),
                         None => avatar,
-                    })
+                    };
+                    RowLeading::Avatar(if *agent { avatar.agent() } else { avatar })
                 }
                 Leading::AvatarSpace => RowLeading::AvatarSpace,
                 Leading::Icon(icon) => RowLeading::Icon(*icon),

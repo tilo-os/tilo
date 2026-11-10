@@ -83,6 +83,7 @@ fn action(n: u8, minutes_ago: i64, summary: &str, view: wire::ActionView) -> wir
     );
     wire::RunAction {
         range: wire::Range::one(&id(n)),
+        changes: 1,
         at_ms: minutes_ago_ms(minutes_ago),
         summary: summary.to_owned(),
         app_id: target.app_id.unwrap_or_default(),

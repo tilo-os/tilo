@@ -261,7 +261,6 @@ impl AgentFinished {
         &self,
         runs: &tilo_actions::remote::workspace_activity::Runs,
     ) -> Option<RunSummary> {
-        use tilo_actions::remote::workspace_activity::ActionView;
         let client = ui::presence::agent_client(&self.label);
         let run = runs
             .runs
@@ -269,16 +268,7 @@ impl AgentFinished {
             .filter(|run| ui::presence::agent_client(&run.agent.name) == client)
             .max_by_key(|run| run.last_ms)?;
         Some(RunSummary {
-            changes: run
-                .actions
-                .iter()
-                .filter(|action| {
-                    matches!(
-                        action.view,
-                        ActionView::File { .. } | ActionView::Record { .. }
-                    )
-                })
-                .count(),
+            changes: run.changes(),
             workspace: run.workspace.clone().filter(|name| !name.trim().is_empty()),
         })
     }
@@ -1243,8 +1233,8 @@ mod tests {
         assert!(here.take_own_agents_arrived().is_empty(), "met once");
     }
 
-    /// A finished agent's notice counts what its newest run changed: its record and file edits,
-    /// not the commands it ran or pages it read, and names the workspace the history gives it.
+    /// A finished agent's notice counts what its newest run changed: each change of its record and
+    /// file edits, not the commands it ran or pages it read, and names the workspace the history gives it.
     #[test]
     fn a_finished_agent_says_how_many_changes_its_run_made_and_where() {
         use tilo_actions::remote::workspace_activity as wire;
@@ -1260,6 +1250,7 @@ mod tests {
                 from: "aa".into(),
                 to: "ab".into(),
             },
+            changes: 2,
             at_ms: 1,
             summary: String::new(),
             view,
@@ -1329,10 +1320,11 @@ mod tests {
         assert_eq!(
             finished.summary(&runs),
             Some(RunSummary {
-                changes: 4,
+                changes: 8,
                 workspace: Some("Storefront".into()),
             }),
-            "its newest run, counting the four records it changed and not the command"
+            "its newest run, counting the two changes of each of its four record edits and not the \
+             command"
         );
         let unknown = AgentFinished {
             label: "Cursor".into(),

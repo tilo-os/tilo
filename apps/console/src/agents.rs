@@ -256,12 +256,7 @@ pub(crate) fn run_row(nav: &Nav, seen: &Seen, run: &wire::AgentRun, selected: bo
             .filter(|_| working)
             .map_or_else(|| ui::wire_author_line(&run.agent), now_line),
     )
-    .secondary(run.workspace.clone().unwrap_or_else(|| {
-        trf(
-            "console-run-actions",
-            &[("count", run.actions.len().into())],
-        )
-    }))
+    .secondary(run.workspace.clone().unwrap_or_else(|| run_size(run)))
     .meta(ago(run.last_ms))
     .selected(selected);
     if working {
@@ -269,6 +264,19 @@ pub(crate) fn run_row(nav: &Nav, seen: &Seen, run: &wire::AgentRun, selected: bo
     }
     let (chosen, id) = (nav.clone(), run.id.clone());
     Box::new(row.on_view(move || chosen.open_run(&id)))
+}
+
+/// How much a run did, as its row says it: the changes it made, as its finished notice counts
+/// them ("4 changes" for four paragraphs written in one note), else the commands and pages it
+/// went through.
+fn run_size(run: &wire::AgentRun) -> String {
+    match run.changes() {
+        0 => trf(
+            "console-run-actions",
+            &[("count", run.actions.len().into())],
+        ),
+        changes => trf("console-run-changes", &[("count", changes.into())]),
+    }
 }
 
 /// What a working run is doing now, as its row says it: "Running `cargo test`…", "Editing
