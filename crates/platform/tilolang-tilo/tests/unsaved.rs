@@ -133,6 +133,57 @@ fn clock_of(host: &Host, desk: &ResourceRef) -> Option<DynValue> {
         .cloned()
 }
 
+/// The type id of `name` in the shell package.
+fn type_of(host: &Host, name: &str) -> String {
+    host.package("so.tilo.test.shell")
+        .unwrap()
+        .meta
+        .types
+        .iter()
+        .find(|ty| ty.name == name)
+        .unwrap()
+        .id
+        .clone()
+}
+
+#[test]
+fn a_record_a_write_made_answers_a_field_the_write_did_not_write() {
+    let (host, mut doc) = host();
+    let desk = host.root_of("so.tilo.test.shell").unwrap();
+    commit(&host, &mut doc);
+    // The session's sync makes a workspace in the desk's collection, naming its key alone.
+    let made = host
+        .runtime()
+        .apply_origin(
+            "session",
+            vec![OriginWrite::Insert {
+                owner: desk,
+                field: desk_field(&host, "workspaces"),
+                ty: type_of(&host, "Workspace"),
+                fields: vec![("key".to_owned(), Value::Text("one".to_owned()))],
+            }],
+            None,
+        )
+        .unwrap();
+    let workspace = made
+        .into_iter()
+        .flatten()
+        .next()
+        .expect("the sync made the workspace");
+    // A field the write did not write is the record's own: the index names the record at its
+    // next derivation, and until then the record answers.
+    assert_eq!(
+        host.runtime().read(&workspace, "name").unwrap(),
+        Value::Text(String::new()),
+        "a field the write did not write reads as the record holds it"
+    );
+    assert_eq!(
+        host.runtime().read(&workspace, "key").unwrap(),
+        Value::Text("one".to_owned()),
+        "and a field it did write reads as it wrote it"
+    );
+}
+
 #[test]
 fn a_session_origin_update_writes_nothing_to_the_record() {
     let (host, mut doc) = host();

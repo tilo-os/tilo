@@ -853,14 +853,16 @@ impl TiloStore {
         };
         let resource = at.id_string();
         let Some(stored) = view.type_of(&resource).map_err(backend)? else {
-            // A record the index cannot name yet: a write (an origin's, a window's own) is
-            // derived, and the record it makes (or moves on) is read before the next derivation
-            // names it. The overlay the write made holds its fields, so a field it wrote reads
-            // from there; one it did not is the record's own, not gone because the index lags.
-            return Ok(match view.field(&resource, &field.id) {
-                Ok(Some(written)) => Some(written),
-                _ => None,
-            });
+            // A record the index cannot name: a write (an origin's, a window's own) is derived
+            // into the record before the next derivation names it, and the overlay holds what
+            // the write wrote. A field it did not write is the record's own, not gone because
+            // the index lags — but only for a record the writes hold in a place. A record they
+            // took away, or never named, is not in the workspace: the index names every record
+            // it holds, so one it names nowhere and no write made is gone.
+            if !view.named_by_writes(&resource) {
+                return Err(not_found(format!("resource {resource}")));
+            }
+            return Ok(view.field(&resource, &field.id).ok().flatten());
         };
         let schema = lookup(&stored).ok_or_else(|| not_found(format!("type {stored}")))?;
         let spec = schema

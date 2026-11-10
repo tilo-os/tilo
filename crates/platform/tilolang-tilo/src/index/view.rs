@@ -180,6 +180,14 @@ impl View<'_> {
         self.text(resource, TYPE)
     }
 
+    /// Whether the store's writes name `resource`: they made it or moved it, and the index has
+    /// not derived that yet. A record they removed, and one they never held, is named by
+    /// neither — the index names every record the workspace holds.
+    #[must_use]
+    pub fn named_by_writes(&self, resource: &str) -> bool {
+        matches!(self.overlay.text(resource, TYPE), Some(Some(_)))
+    }
+
     /// The schema of `resource`: its stored type's, else `fallback`'s.
     fn schema_of(&self, resource: &str, fallback: &str) -> Option<&'static TypeSchema> {
         self.type_of(resource)
