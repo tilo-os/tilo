@@ -99,15 +99,6 @@ pub struct HandoffTarget {
     pub local: bool,
 }
 
-/// A single frame in the `QuickSettings` navigation stack. A section
-/// ([`QsSection`]) opens its own page in the controls' place.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum QsLevel {
-    Root,
-    /// One accessory's exact-device handoff to the person's other devices.
-    BluetoothDetails(String),
-}
-
 /// A part of Quick Settings whose page replaces the controls, with the
 /// standard drill motion; Back returns. One is open at a time.
 #[derive(

@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use tilo_audio_service::media::Media as Players;
-use tilo_audio_service::sound::{Sound, Use, UseKind};
+use tilo_audio_service::sound::{Sound, UseKind};
 use tilo_connectivity_service::model::{LinkKind, Network};
 use tilo_desktop::chrome::{
     ActiveMediaUse, LinkKind as BarLinkKind, LinkStatus, MediaKind, VolumeState,
@@ -26,10 +26,10 @@ impl Machine for Services {
 
     fn read(&self) -> Reading {
         reading(
-            read(self, NETWORK),
-            read(self, SOUND),
-            read(self, BATTERY),
-            read(self, MEDIA),
+            self.published(NETWORK),
+            self.published(SOUND),
+            self.published(BATTERY),
+            self.published(MEDIA),
             Instant::now(),
         )
     }
@@ -63,7 +63,16 @@ pub(crate) fn reading(
             })
         }),
         uses: sound.map_or_else(Vec::new, |sound| {
-            sound.uses.iter().map(active_use).collect()
+            (sound.uses.iter())
+                .map(|used| ActiveMediaUse {
+                    client_id: used.client_id,
+                    label: used.label.clone(),
+                    kind: match used.kind {
+                        UseKind::Microphone => MediaKind::Microphone,
+                        UseKind::Camera => MediaKind::Camera,
+                    },
+                })
+                .collect()
         }),
         battery: battery
             .filter(|battery| battery.present)
@@ -108,29 +117,5 @@ impl Media for Playing {
             ),
             playing: front.playing,
         })
-    }
-}
-
-/// One application using the camera or the microphone, as the bar names it.
-fn active_use(published: &Use) -> ActiveMediaUse {
-    ActiveMediaUse {
-        client_id: published.client_id,
-        label: published.label.clone(),
-        kind: match published.kind {
-            UseKind::Microphone => MediaKind::Microphone,
-            UseKind::Camera => MediaKind::Camera,
-        },
-    }
-}
-
-/// The reading of `resource` , parsed into what its service publishes.
-fn read<T: serde::de::DeserializeOwned>(services: &Services, resource: &str) -> Option<T> {
-    let published = services.read(resource)?;
-    match serde_json::from_value(published) {
-        Ok(reading) => Some(reading),
-        Err(error) => {
-            tracing::warn!(%error, resource, "a reading the session shows did not parse");
-            None
-        }
     }
 }

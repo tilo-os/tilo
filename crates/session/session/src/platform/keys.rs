@@ -519,15 +519,9 @@ impl Shared {
         ran
     }
 
-    /// What a service publishes now, read back from `resource` , or `None` while nothing publishes
-    /// it or it does not read back.
+    /// What a service publishes now, read back from `resource`.
     fn published<T: serde::de::DeserializeOwned>(&self, resource: &str) -> Option<T> {
-        let reading = self.services.borrow().read(resource)?;
-        serde_json::from_value(reading)
-            .inspect_err(|error| {
-                tracing::warn!(%error, resource, "a service's reading does not read back");
-            })
-            .ok()
+        self.services.borrow().published(resource)
     }
 
     /// The readout of `kind` as the device's own service publishes it now: naming the device it is

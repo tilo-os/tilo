@@ -2,7 +2,7 @@
 
 use connectivity::model::{Bluetooth, Network, Vpn};
 
-use crate::{PowerProfile, QsLevel};
+use crate::PowerProfile;
 
 /// One monitor's brightness control in Quick Settings.
 #[derive(Clone, Debug, PartialEq)]
@@ -81,10 +81,6 @@ pub struct QuickSettingsState {
     pub rotation_available: bool,
     /// `display.rotation_lock`: the screen stays put when the device turns.
     pub rotation_lock: bool,
-    /// The renderer dispatches on `nav_stack.last()` (always at least
-    /// `Root`) — pushing `Wifi`/`Bluetooth` flips the popover to the
-    /// drill-in list.
-    pub nav_stack: Vec<QsLevel>,
     /// The section whose page replaces the controls (Wi-Fi's networks,
     /// Bluetooth's devices, a VPN's profiles, the battery); at most one.
     pub section: Option<crate::QsSection>,
@@ -174,7 +170,6 @@ impl Default for QuickSettingsState {
             night_light: night_light_shows(),
             rotation_available: os_actions::has_accelerometer(),
             rotation_lock: settings_store::hardware::ROTATION_LOCK.get(),
-            nav_stack: vec![QsLevel::Root],
             section: None,
             wifi_hidden: None,
             wifi_joining: None,
@@ -289,25 +284,6 @@ impl QuickSettingsState {
         }
     }
 
-    /// The renderer's dispatch key. Defaults to `Root` if the stack is
-    /// somehow empty (`new()` always seeds it).
-    pub fn current_level(&self) -> &QsLevel {
-        self.nav_stack.last().unwrap_or(&QsLevel::Root)
-    }
-
-    pub fn push_level(&mut self, level: QsLevel) {
-        self.nav_stack.push(level);
-    }
-
-    /// Replace stale drill-in history with one authoritative destination.
-    pub fn show_level(&mut self, level: QsLevel) {
-        self.nav_stack.clear();
-        self.nav_stack.push(QsLevel::Root);
-        if level != QsLevel::Root {
-            self.nav_stack.push(level);
-        }
-    }
-
     /// Open `section`'s page, closing any other: one section is open at a
     /// time.
     pub fn open_section(&mut self, section: crate::QsSection) {
@@ -317,12 +293,5 @@ impl QuickSettingsState {
     /// Open `section`, or close it when it is the one open.
     pub fn toggle_section(&mut self, section: crate::QsSection) {
         self.section = (self.section != Some(section)).then_some(section);
-    }
-
-    /// No-op when only `Root` remains so the popover can't be emptied.
-    pub fn pop_level(&mut self) {
-        if self.nav_stack.len() > 1 {
-            self.nav_stack.pop();
-        }
     }
 }

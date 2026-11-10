@@ -490,6 +490,15 @@ impl Services {
             .find_map(|service| service.read(resource))
     }
 
+    /// The reading of `resource`, as what its service publishes; `None` when no service publishes
+    /// it or it does not read back.
+    #[must_use]
+    pub fn published<T: serde::de::DeserializeOwned>(&self, resource: &str) -> Option<T> {
+        serde_json::from_value(self.read(resource)?)
+            .inspect_err(|error| tracing::warn!(%error, resource, "a reading does not read back"))
+            .ok()
+    }
+
     /// Invoke `action` of `resource` on the service publishing it; `None`
     /// when no service does. An action whose contract asks for
     /// confirmation (restart, power off) is refused with

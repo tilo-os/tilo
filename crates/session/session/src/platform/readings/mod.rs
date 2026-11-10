@@ -1,9 +1,5 @@
-//! What a host reads of the machine it runs on: its connection, its sound and the apps using its
-//! camera or microphone, its charge, and what plays.
-//!
-//! A Linux desktop reads them off the services it hosts; the page answers what a browser knows of
-//! its machine and nothing for the rest. A role reads the [`Reading`] in the bar's terms and never
-//! the services behind it.
+//! What a host reads of the machine it runs on, in the bar's terms: a Linux desktop reads its
+//! services, the page what a browser knows and nothing for the rest.
 
 use std::rc::Rc;
 
@@ -26,15 +22,12 @@ pub trait Machine {
 /// The machine as a host read it, each part only when it could read it.
 #[derive(Clone, Default)]
 pub struct Reading {
-    /// The connection this machine's traffic leaves on.
     pub link: Option<LinkStatus>,
-    /// The output's level and mute.
     pub volume: Option<VolumeState>,
     /// The apps using the camera or the microphone.
     pub uses: Vec<ActiveMediaUse>,
     /// The pack's charge, when this machine has one.
     pub battery: Option<Charge>,
-    /// What the players hold.
     pub media: Option<Rc<dyn Media>>,
 }
 

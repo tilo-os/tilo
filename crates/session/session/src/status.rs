@@ -1,12 +1,8 @@
-//! What the machine says of itself: the connection its traffic leaves on, how loud its sound is,
-//! which applications use the camera or the microphone, what plays, and its charge.
-//!
-//! One reading for every surface that shows the machine: the bar's status cluster, the lock screen
-//! under its card, and the desk's reading. The host reads it ([`crate::platform::readings`]), so no
-//! two surfaces can disagree about it; the loop reads it again when the host says it moved
-//! ([`Readings::follow`]), and a frame only copies what was read.
+//! What the machine says of itself, as one reading every surface shows (the bar's status cluster,
+//! the lock screen, the desk): its host reads it ([`crate::platform::readings`]) when it moved, and
+//! a frame only copies what was read.
 
-use tilo_desktop::chrome::{LinkKind, LinkStatus, SystemStatus, VolumeState};
+use tilo_desktop::chrome::{LinkKind, LinkStatus, SystemStatus};
 use tilo_desktop_surface::now_playing::NowPlaying;
 
 use crate::i18n::{t, t_args};
@@ -112,16 +108,10 @@ impl Readings {
             battery_low: draining_at(LOW_PERCENT),
             battery_critical: draining_at(CRITICAL_PERCENT),
             link: self.link(),
-            volume: self.volume(),
+            volume: self.reading.volume,
             media: self.reading.uses.clone(),
             summary: self.summary(),
         }
-    }
-
-    /// The output's level and mute, when its host read it.
-    #[must_use]
-    pub fn volume(&self) -> Option<VolumeState> {
-        self.reading.volume
     }
 
     /// The status in a line, for a reader that hears it rather than sees a glyph: the link, the
@@ -131,7 +121,7 @@ impl Readings {
         if let Some(link) = self.link() {
             parts.push(link_reading(&link));
         }
-        if let Some(volume) = self.volume() {
+        if let Some(volume) = self.reading.volume {
             parts.push(if volume.muted {
                 t("status-muted")
             } else {
@@ -260,7 +250,7 @@ mod tests {
     }
 
     /// The bar's glyphs: the battery's charge, the network's name and strength, the volume's level,
-    /// and the stream being captured.
+    /// and the stream being captured; the lock screen reads the same link and charge.
     #[test]
     fn the_bar_reads_the_machines_battery_network_and_volume() {
         let readings = Read {
@@ -270,6 +260,11 @@ mod tests {
             ..Read::default()
         }
         .readings();
+        assert_eq!(
+            readings.charge(),
+            Some((42, true)),
+            "the lock screen's charge"
+        );
         let status = readings.status();
         assert_eq!(status.battery_percent(), Some(42));
         assert!(status.battery_is_charging());
@@ -380,23 +375,6 @@ mod tests {
         }
         .readings();
         assert!(older.link().is_none());
-    }
-
-    /// The lock screen names the network the person is on and the charge of a pack this machine
-    /// has.
-    #[test]
-    fn the_lock_screen_reads_the_network_and_the_charge() {
-        let readings = Read {
-            network: Some(wifi()),
-            battery: Some(charging()),
-            ..Read::default()
-        }
-        .readings();
-        assert_eq!(
-            readings.link().and_then(|link| link.name).as_deref(),
-            Some("Home")
-        );
-        assert_eq!(readings.charge(), Some((42, true)));
     }
 
     /// What plays is the player the panel's own controls reach: the one playing, else the one
