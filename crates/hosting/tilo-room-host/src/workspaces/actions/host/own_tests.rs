@@ -454,11 +454,52 @@ async fn their_workspaces_of_their_own_share_the_storage_the_host_gives_them() {
         kept(&second.workspace.workspace),
     ];
     assert!(one > 0 && two > 0, "{one} {two}");
+    // What the two keep is measured on the disk, and the record a workspace
+    // is made of is written as the host settles it: a write still on its way
+    // when the account was read lands after it. The budget is set against the
+    // size they come to once no write is on its way, which is the size every
+    // read of the account finds from then on.
+    let settled = |limit: Option<u64>| {
+        let workspaces = workspaces.clone();
+        let person = guest.user_public_key;
+        let workspace = first.workspace.workspace.clone();
+        async move {
+            let plan = tilo_actions::remote::host_account::PlanOffer {
+                limits: tilo_actions::remote::host_account::Limits {
+                    storage_bytes: limit,
+                    ..tilo_actions::remote::host_account::Limits::default()
+                },
+                ..tilo_actions::remote::host_account::PlanOffer::default()
+            };
+            assert!(workspaces.set_own_plan(&person, plan));
+            // Measured afresh while they are over what the plan allows: the
+            // latest write is in the number before it is taken.
+            let mut last = None;
+            for _ in 0..100 {
+                let refused = workspaces
+                    .storage_refusal(&workspace)
+                    .expect("they are over the plan they were given");
+                let Reason::StorageFull { used_bytes, .. } = refused.reason else {
+                    panic!("{refused:?}");
+                };
+                if last == Some(used_bytes) {
+                    return used_bytes;
+                }
+                last = Some(used_bytes);
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            panic!("the workspaces' size never stood still: {last:?}");
+        }
+    };
+    // A byte is under both: measuring afresh twice over, what the two keep is
+    // what no further write changes.
+    let total = settled(Some(1)).await;
+    assert!(one < total && two < total, "{one} {two} {total}");
     // Room for all but the last byte of what the two take between them: what
     // they share is full while neither alone would be.
     let plan = tilo_actions::remote::host_account::PlanOffer {
         limits: tilo_actions::remote::host_account::Limits {
-            storage_bytes: Some(one + two - 1),
+            storage_bytes: Some(total - 1),
             ..tilo_actions::remote::host_account::Limits::default()
         },
         ..tilo_actions::remote::host_account::PlanOffer::default()
@@ -474,7 +515,7 @@ async fn their_workspaces_of_their_own_share_the_storage_the_host_gives_them() {
     else {
         panic!("{full:?}");
     };
-    assert_eq!((limit_bytes, used_bytes), (one + two - 1, one + two));
+    assert_eq!((limit_bytes, used_bytes), (total - 1, total));
     let theirs = workspaces
         .storage_refusal(&second.workspace.workspace)
         .expect("either of them is refused while they share a full budget");
