@@ -155,19 +155,26 @@ fn wait_for_file(path: &Path, bytes: &[u8], what: &str, log: &Path) {
 
 /// Wait until the relay's blobs under `dir` take `bytes` together, failing
 /// with how much they take.
+/// What the files under `dir` take, every directory below it included.
+fn bytes_under(dir: &Path) -> u64 {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| match entry.file_type() {
+                    Ok(kind) if kind.is_dir() => bytes_under(&entry.path()),
+                    _ => entry.metadata().map_or(0, |kept| kept.len()),
+                })
+                .fold(0, u64::saturating_add)
+        })
+        .unwrap_or_default()
+}
+
 fn wait_for_kept(dir: &Path, bytes: u64, what: &str) {
     let started = std::time::Instant::now();
     let bound = tilo_test_env::hang_bound().saturating_sub(WAIT_LEAD);
     loop {
-        let kept: u64 = std::fs::read_dir(dir)
-            .map(|entries| {
-                entries
-                    .filter_map(Result::ok)
-                    .filter_map(|entry| entry.metadata().ok())
-                    .map(|kept| kept.len())
-                    .fold(0, u64::saturating_add)
-            })
-            .unwrap_or_default();
+        let kept = bytes_under(dir);
         if kept >= bytes {
             return;
         }
@@ -394,7 +401,10 @@ fn a_file_the_relay_kept_reaches_a_device_that_joins_after_its_writer_left() {
 
     // The relay keeps the content of both while the member that wrote them is
     // still here: the member leaves entirely before anything reads them again.
-    let kept = state.join("state").join("blobs");
+    let kept = state
+        .join("state")
+        .join(tilo_relay::content::DIRECTORY)
+        .join(&workspace);
     let written = u64::try_from(report.len() + build.len()).unwrap();
     wait_for_kept(
         &kept,

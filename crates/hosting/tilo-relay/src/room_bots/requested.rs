@@ -327,7 +327,7 @@ impl Follower {
             .await?;
             settings.insert(app.clone(), env);
         }
-        let blobs = host.blobs(&self.workspaces);
+        let blobs = host.blobs(&self.workspace)?;
         installed::start_connectors(&wanted, &self.state, &host.workers, &settings, &blobs).await
     }
 

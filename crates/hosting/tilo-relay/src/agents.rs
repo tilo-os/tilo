@@ -33,7 +33,7 @@ use tilo_actions::remote::{
     Confirmation, ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
 use tilo_agent_participant::workspace_actions::{
-    ShellRan, Watching, WorkspaceMember, WorkspaceShell, WorkspaceStores,
+    ShellRan, Watching, WorkspaceMember, WorkspaceShell,
 };
 use tilo_agent_participant::{
     AdmissionDone, AgentHost, AgentHostLink, AppCatalogue, ApprovalDone, CatalogueFactory,
@@ -50,11 +50,8 @@ use tilo_user_identity::{
 use crate::certification::CertificationProtocol;
 use crate::daemon::{Relay, RelayError, RelayIdentity};
 use crate::peer::AgentRegistry;
+use tilo_content::WorkspaceStores;
 use tilo_lock::RwLockRecover as _;
-
-/// Where a host serving records without agents keeps its workspaces'
-/// content, under its state root.
-const CONTENT_DIR: &str = "workspace-content";
 
 /// How long an agent's approval request waits for an approver.
 const APPROVAL_WAIT_NS: u64 = 10 * 60 * 1_000_000_000;
@@ -407,13 +404,14 @@ impl WorkspaceShell for HostShells {
     }
 }
 
-/// The host's app-serving plane: agents and the workspaces' page actions.
-struct HostActionsPlane(HostActions);
+/// The host's app-serving plane: agents and the workspaces' page actions,
+/// keeping what they make in the host's content.
+struct HostActionsPlane(HostActions, Arc<WorkspaceStores>);
 
 /// The app-serving plane of a host that runs no agents: the workspaces' page
 /// actions alone. A member's own actions on a workspace record (linking their
 /// account on the workspace's Discord from the profile card) need nothing more.
-struct WorkspaceRecordsPlane(WorkspaceActions);
+struct WorkspaceRecordsPlane(WorkspaceActions, Arc<WorkspaceStores>);
 
 impl crate::AppServingPlane for WorkspaceRecordsPlane {
     fn serve(
@@ -436,6 +434,10 @@ impl crate::AppServingPlane for WorkspaceRecordsPlane {
         }
         self.0.serve(workspace_id, caller, message)
     }
+
+    fn content(&self) -> Option<Arc<WorkspaceStores>> {
+        Some(Arc::clone(&self.1))
+    }
 }
 
 impl crate::AppServingPlane for HostActionsPlane {
@@ -446,6 +448,10 @@ impl crate::AppServingPlane for HostActionsPlane {
         message: tilo_actions::remote::RemoteActionMessage,
     ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>> {
         self.0.serve(workspace_id, caller, message)
+    }
+
+    fn content(&self) -> Option<Arc<WorkspaceStores>> {
+        Some(Arc::clone(&self.1))
     }
 }
 
@@ -459,17 +465,6 @@ struct RelayRecordsLink {
     feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
     shell: Option<Arc<dyn WorkspaceShell>>,
     stores: Arc<WorkspaceStores>,
-}
-
-/// The workspaces' content stores, as the host answers its members from
-/// them: a file a caller put, or an app made in a record the host runs
-/// actions on, reaches a page that opens the record.
-struct StoresContent(Arc<WorkspaceStores>);
-
-impl crate::workspaces::WorkspaceContent for StoresContent {
-    fn read(&self, workspace: &str, _app: &str, hash: &str) -> Option<Vec<u8>> {
-        self.0.get(workspace).ok()?.read(hash)
-    }
 }
 
 impl WorkspaceRecordsLink for RelayRecordsLink {
@@ -596,15 +591,17 @@ pub async fn start_serving_records(
     let host_cert = identity.device_cert.clone();
     let catalogue = catalogue.unwrap_or_else(|| Arc::new(AppCatalogue::native));
     cfg.services.app_serving = true;
-    let plane = Arc::new(WorkspaceRecordsPlane(WorkspaceActions::new(catalogue)));
+    let plane = Arc::new(WorkspaceRecordsPlane(
+        WorkspaceActions::new(catalogue),
+        crate::content::stores(&cfg.state_root),
+    ));
     let web_entry = cfg.web_entry.clone();
-    let stores = Arc::new(WorkspaceStores::in_dir(cfg.state_root.join(CONTENT_DIR)));
     let relay = Relay::start_with_app_serving(cfg, identity, Some(plane.clone())).await?;
     attach_records(
         &plane.0,
         &relay,
         &host_cert,
-        (web_entry, stores),
+        web_entry,
         (feedback_reviewer, shell),
     )?;
     Ok(relay)
@@ -615,14 +612,11 @@ fn attach_records(
     actions: &WorkspaceActions,
     relay: &Relay,
     host_cert: &DeviceCert,
-    (web_entry, stores): (Option<String>, Arc<WorkspaceStores>),
+    web_entry: Option<String>,
     (feedback_reviewer, shell): Lent,
 ) -> Result<(), RelayError> {
     if let Some(shell) = &shell {
         shell.serve_from(relay);
-    }
-    if let Some(workspaces) = relay.workspaces() {
-        workspaces.serve_content(Arc::new(StoresContent(Arc::clone(&stores))));
     }
     let shell = shell.map(|shell| shell as Arc<dyn WorkspaceShell>);
     actions
@@ -633,7 +627,7 @@ fn attach_records(
             browser_origin: Arc::clone(&relay.browser_origin),
             web_entry,
             feedback_reviewer,
-            stores,
+            stores: relay.content(),
             member: WorkspaceMember {
                 endpoint: HostEndpoint::iroh(relay.node_addr(), host_cert.clone()),
                 key: relay.workspace_records().signing_key().clone(),
@@ -677,17 +671,21 @@ async fn start_inner(
     let catalogue = options
         .catalogue
         .unwrap_or_else(|| Arc::new(AppCatalogue::native));
+    let content = crate::content::stores(&cfg.state_root);
     let mut agents = AgentHost::new(
         identity.user_public_key,
-        options.state_dir,
+        (options.state_dir, Arc::clone(&content)),
         options.model,
         Arc::clone(&catalogue),
     );
     cfg.services.app_serving = true;
-    let plane = Arc::new(HostActionsPlane(HostActions {
-        supervisor: SupervisorHost(agents.supervisor().clone()),
-        actions: WorkspaceActions::new(catalogue),
-    }));
+    let plane = Arc::new(HostActionsPlane(
+        HostActions {
+            supervisor: SupervisorHost(agents.supervisor().clone()),
+            actions: WorkspaceActions::new(catalogue),
+        },
+        content,
+    ));
     let web_entry = cfg.web_entry.clone();
     let relay = match relay_mode {
         Some(mode) => {
@@ -700,7 +698,7 @@ async fn start_inner(
         &plane.0.actions,
         &relay,
         &host_cert,
-        (web_entry, agents.workspace_stores()),
+        web_entry,
         (options.feedback_reviewer, options.shell),
     )?;
     agents

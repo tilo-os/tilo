@@ -193,6 +193,8 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core", optional = true }
 tilo-browser-peer = { path = "../../browser/tilo-browser-peer", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The host keeps its workspaces' content in directories, one per workspace.
+tilo-content = { path = "../../system/content", features = ["dir"] }
 bounded-command = { path = "../../system/bounded-command" }
 launcher = { path = "../../packaging/launcher" }
 # Installed packages and their integrity records.

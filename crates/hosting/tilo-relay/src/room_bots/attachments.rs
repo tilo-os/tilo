@@ -9,9 +9,9 @@
 //! workspace for every one it does not keep yet, on its own presence, as any
 //! member asks. A report's receipt waits for the host to keep them. The pieces members answer it with are
 //! assembled and verified as a page assembles them
-//! ([`tilo_browser_peer::content::ContentWants`]) and kept in the host's one
-//! blob store, beside what its bots fetched ([`crate::blobs::FsBlobs`]),
-//! which already answers members' requests for content the host keeps
+//! ([`tilo_browser_peer::content::ContentWants`]) and kept in the workspace's
+//! content store on this host, beside what its bots fetched ([`crate::content`]),
+//! from which the host answers members' requests for content it keeps
 //! ([`crate::workspaces::WorkspaceContent`]).
 //!
 //! What a host keeps is bounded ([`AttachmentLimits`]): a file larger than
@@ -37,8 +37,8 @@ use tilo_browser_peer::content::ContentWants;
 use tilo_lock::MutexRecover as _;
 
 use super::CHAT;
-use crate::blobs::FsBlobs;
 use crate::workspaces::{ContentKeeper, RecordWrite, Workspaces};
+use tilo_content::ContentStore;
 
 /// How long the host waits before it asks again for files nobody answered.
 const ASK_AGAIN: std::time::Duration = std::time::Duration::from_secs(90);
@@ -141,7 +141,7 @@ pub struct WorkspaceAttachments {
     /// This host's device: what its requests name, and what answers to
     /// them are addressed to.
     host: [u8; 32],
-    blobs: Arc<FsBlobs>,
+    blobs: ContentStore,
     ledger: PathBuf,
     limits: AttachmentLimits,
     state: Mutex<State>,
@@ -224,7 +224,7 @@ impl WorkspaceAttachments {
         workspaces: Workspaces,
         workspace: String,
         host: [u8; 32],
-        blobs: Arc<FsBlobs>,
+        blobs: ContentStore,
         ledger: PathBuf,
         limits: AttachmentLimits,
     ) -> Arc<Self> {
@@ -409,7 +409,7 @@ impl WorkspaceAttachments {
         tilo_content::valid_hash(&file.hash)
             && file.size.is_none_or(|size| size <= self.limits.file_bytes)
             && !state.ledger.let_go.contains(&file.hash)
-            && !self.blobs.contains(&file.hash)
+            && !self.blobs.has(&file.hash)
     }
 
     /// Keep `bytes`, the whole and verified file `hash` `member` posted,
@@ -418,10 +418,10 @@ impl WorkspaceAttachments {
         let Ok(size) = u64::try_from(bytes.len()) else {
             return;
         };
-        if size > self.limits.file_bytes || self.blobs.contains(hash) {
+        if size > self.limits.file_bytes || self.blobs.has(hash) {
             return;
         }
-        if let Err(error) = tilo_connector::BlobAccess::store(&*self.blobs, bytes) {
+        if let Err(error) = self.blobs.put(bytes) {
             tracing::warn!(workspace = %self.workspace, %error, "could not keep a member's file");
             return;
         }
@@ -457,7 +457,7 @@ impl WorkspaceAttachments {
     fn let_go(&self, state: &mut State, hash: &str) {
         state.ledger.kept.remove(hash);
         state.ledger.let_go.insert(hash.to_owned());
-        if let Err(error) = self.blobs.remove(hash) {
+        if let Err(error) = self.blobs.release(hash) {
             tracing::warn!(workspace = %self.workspace, %error, "could not let a member's file go");
         }
     }

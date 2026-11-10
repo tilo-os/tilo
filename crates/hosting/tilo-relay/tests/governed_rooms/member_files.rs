@@ -3,8 +3,6 @@
 //! attachment quotas, not the visitor's hourly content budget, which is far
 //! smaller than the largest file the host keeps.
 use super::*;
-use std::sync::Arc;
-use tilo_relay::blobs::FsBlobs;
 use tilo_relay::room_bots::attachments::{AttachmentLimits, Referenced, WorkspaceAttachments};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -43,13 +41,11 @@ async fn a_visitors_file_as_large_as_the_host_keeps_reaches_it() {
         .unwrap();
 
     let workspaces = relay.workspaces().unwrap().clone();
-    let blobs = Arc::new(FsBlobs::new(state.path().join("blobs"), None).unwrap());
-    workspaces.serve_content(blobs.clone());
     let keeper = WorkspaceAttachments::new(
         workspaces.clone(),
         room.workspace.clone(),
         host.device_pubkey(),
-        blobs,
+        relay.content().get(&room.workspace).unwrap(),
         state.path().join("attachments.json"),
         limits,
     );

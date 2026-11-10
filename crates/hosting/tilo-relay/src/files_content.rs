@@ -28,27 +28,18 @@
 //! of the trees it happened to read at the right moment would keep none of a
 //! workspace's files.
 //!
-//! What it keeps goes into the host's one blob store
-//! ([`crate::blobs::FsBlobs`], beside what its bots fetched and the files its
-//! members posted), from where the host already answers members asking their
+//! What it keeps goes into the workspace's content store on this host
+//! ([`crate::content`], beside the workspace's uploads, what its apps made and
+//! what its bots fetched), from where the host answers members asking their
 //! workspace for content ([`Workspaces::content_answer`]): a member that joins
 //! after the writer left hydrates the same bytes from this host.
 //!
-//! # What it keeps, and how much
+//! # What it keeps
 //!
 //! Everything the governed workspaces' current trees reference: each file's
-//! manifest and its chunks. A file dropped from a tree is no longer asked for,
-//! but the blobs of it stay in the store — nothing collects them yet, and the
-//! same bytes may still serve another workspace, a bot or a member's post —
-//! which is the one way this grows.
-//!
-//! To keep that from growing without bound, what a workspace's files take up
-//! here is bounded by [`FilesLimits::workspace_bytes`]. A pass counts the
-//! files whose content is wholly here, and past the bound it asks for no more:
-//! the files it reaches for first are the ones the tree names first, and a
-//! file past the bound stays with the members that wrote it, as it was before
-//! this host kept anything. The host says so in the log when a workspace
-//! starts and stops being over its bound, rather than silently keeping less.
+//! manifest and its chunks, however much that is: what bounds it is the
+//! disk the store is on. A blob of a file dropped from a tree stays in the
+//! store.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -60,8 +51,8 @@ use fs_protocol::tree::{TREE_KIND, Tree};
 use neighbour_wire::content::ContentWants;
 use tilo_lock::MutexRecover as _;
 
-use crate::blobs::FsBlobs;
-use crate::workspaces::{ContentKeeper, RecordWrite, WorkspaceContent, Workspaces};
+use crate::workspaces::{ContentKeeper, RecordWrite, Workspaces};
+use tilo_content::WorkspaceStores;
 
 /// The app whose record a workspace's tree is.
 const FILES_APP: &str = fs::tree_record::FILES_APP;
@@ -75,23 +66,6 @@ const ASK_AGAIN: Duration = Duration::from_secs(90);
 const RETRY_FIRST: Duration = Duration::from_secs(1);
 /// The longest wait between two reads of a tree that does not open.
 const RETRY_LONGEST: Duration = Duration::from_secs(60);
-
-/// How much of a workspace's files this host keeps.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FilesLimits {
-    /// What the files it keeps whole for one workspace may take together.
-    /// Past it, it asks for no more of that workspace's files, and the rest
-    /// stay with their members.
-    pub workspace_bytes: u64,
-}
-
-impl Default for FilesLimits {
-    fn default() -> Self {
-        Self {
-            workspace_bytes: 2 * 1024 * 1024 * 1024,
-        }
-    }
-}
 
 /// When a tree the host could not read is read again, and how long it will
 /// wait after the next read that does not open either.
@@ -116,9 +90,6 @@ struct State {
     /// keys of a record a workspace seals arrive after its host joins the
     /// channel that seals it.
     reopened: BTreeMap<String, Retry>,
-    /// Workspaces whose files are past what this host keeps of them, so its
-    /// log names each one once.
-    over: BTreeSet<String>,
 }
 
 /// A governed workspace's files, kept by the host that governs it.
@@ -127,17 +98,8 @@ pub struct FilesContent {
     /// This host's device: what its requests name, and what the answers to
     /// them are addressed to.
     host: [u8; 32],
-    store: Arc<FsBlobs>,
-    limits: FilesLimits,
+    store: Arc<WorkspaceStores>,
     state: Mutex<State>,
-}
-
-/// One file of a tree the host keeps the content of.
-struct Referenced {
-    /// The content id, lowercase BLAKE3 hex: the file's manifest.
-    hash: String,
-    /// How many bytes the tree says the file is.
-    bytes: u64,
 }
 
 /// The record a workspace's tree is, as the device that publishes it names it.
@@ -151,19 +113,13 @@ fn now_ms() -> u64 {
 
 impl FilesContent {
     /// A host that keeps the files of `workspaces`, whose device is `host`,
-    /// in `store`, within `limits`.
+    /// in each workspace's store of `store`.
     #[must_use]
-    pub fn new(
-        workspaces: Workspaces,
-        host: [u8; 32],
-        store: Arc<FsBlobs>,
-        limits: FilesLimits,
-    ) -> Arc<Self> {
+    pub fn new(workspaces: Workspaces, host: [u8; 32], store: Arc<WorkspaceStores>) -> Arc<Self> {
         Arc::new(Self {
             workspaces,
             host,
             store,
-            limits,
             state: Mutex::default(),
         })
     }
@@ -172,8 +128,6 @@ impl FilesContent {
     /// the trees hold already, then each tree as it changes, until the
     /// workspaces are no longer governed here.
     pub async fn run(self: Arc<Self>) {
-        let store: Arc<dyn WorkspaceContent> = self.store.clone();
-        self.workspaces.serve_content(store);
         self.workspaces.keep_content(self.clone());
         // Subscribed before the first read, so a write that lands while the
         // trees are read is read too.
@@ -315,30 +269,16 @@ impl FilesContent {
         }
     }
 
-    /// The requests the host sends for the content of `tree`'s files it lacks,
-    /// within what a workspace may keep and not asked for lately.
+    /// The requests the host sends for the content of `tree`'s files it lacks
+    /// and has not asked for lately.
     fn asks(&self, workspace: &str, tree: &Tree) -> Vec<Vec<u8>> {
         let files = referenced(tree);
         let mut state = self.state.lock_recover();
-        let mut kept = 0_u64;
-        let mut wanted = 0_u64;
         let mut asks = Vec::new();
-        let mut bounded = false;
         let mut unanswered = false;
         for file in files {
-            let missing = self.missing(&file.hash);
-            if missing.is_empty() {
-                kept = kept.saturating_add(file.bytes);
-                continue;
-            }
-            if kept.saturating_add(wanted).saturating_add(file.bytes) > self.limits.workspace_bytes
-            {
-                bounded = true;
+            for hash in self.missing(workspace, &file) {
                 unanswered = true;
-                continue;
-            }
-            let mut asked = false;
-            for hash in missing {
                 if let Some(ask) = state.wants.ask(
                     &self.host,
                     workspace.to_owned(),
@@ -347,25 +287,11 @@ impl FilesContent {
                     now_ms(),
                 ) {
                     asks.push(ask);
-                    asked = true;
                 }
             }
-            if asked {
-                wanted = wanted.saturating_add(file.bytes);
-            }
-            unanswered = true;
         }
         if unanswered {
             state.unanswered.insert(workspace.to_owned());
-        }
-        if bounded && state.over.insert(workspace.to_owned()) {
-            tracing::info!(
-                workspace,
-                limit = self.limits.workspace_bytes,
-                "a workspace's files are past what this host keeps of them; the rest stay with its members"
-            );
-        } else if !bounded {
-            state.over.remove(workspace);
         }
         drop(state);
         asks
@@ -374,8 +300,11 @@ impl FilesContent {
     /// The blobs of the file whose content is `manifest` that this host does
     /// not keep: the manifest itself, or, when it keeps that, the chunks the
     /// manifest lists.
-    fn missing(&self, manifest: &str) -> Vec<String> {
-        let Some(bytes) = self.store.read(manifest) else {
+    fn missing(&self, workspace: &str, manifest: &str) -> Vec<String> {
+        let Ok(store) = self.store.get(workspace) else {
+            return Vec::new();
+        };
+        let Some(bytes) = store.read(manifest) else {
             return vec![manifest.to_owned()];
         };
         let Ok(decoded) = Manifest::decode(&bytes) else {
@@ -388,18 +317,22 @@ impl FilesContent {
             .chunks()
             .iter()
             .map(|chunk| hex::encode(chunk.hash))
-            .filter(|chunk| !self.store.contains(chunk))
+            .filter(|chunk| !store.has(chunk))
             .collect()
     }
 }
 
 impl ContentKeeper for FilesContent {
-    fn piece(&self, _workspace: &str, _from: [u8; 32], frame: &[u8]) {
+    fn piece(&self, workspace: &str, _from: [u8; 32], frame: &[u8]) {
         let mut state = self.state.lock_recover();
         let Some(arrived) = state.wants.piece(&self.host, frame) else {
             return;
         };
-        if let Err(error) = self.store.keep(&arrived.bytes) {
+        let kept = self
+            .store
+            .get(workspace)
+            .and_then(|store| store.put(&arrived.bytes).map_err(|error| error.to_string()));
+        if let Err(error) = kept {
             tracing::warn!(hash = %arrived.hash, %error, "a file's content could not be kept");
             return;
         }
@@ -413,19 +346,15 @@ impl ContentKeeper for FilesContent {
     }
 }
 
-/// The files `tree` holds the content of, in the order the tree names them:
-/// every node that is a file with content, unless it is in the trash.
-fn referenced(tree: &Tree) -> Vec<Referenced> {
+/// The content of the files `tree` holds, in the order the tree names them:
+/// each file's manifest, lowercase BLAKE3 hex, for every node that is a file
+/// with content, unless it is in the trash.
+fn referenced(tree: &Tree) -> Vec<String> {
     tree.nodes
         .iter()
         .filter(|(id, _)| !tree.trashed(id))
         .filter(|(_, node)| node.kind == FileNodeKind::File)
-        .filter_map(|(_, node)| {
-            Some(Referenced {
-                hash: node.hash.as_ref()?.to_ascii_lowercase(),
-                bytes: node.size,
-            })
-        })
+        .filter_map(|(_, node)| Some(node.hash.as_ref()?.to_ascii_lowercase()))
         .collect()
 }
 
@@ -474,15 +403,7 @@ mod tests {
             ("build.bin", &build, 3_145_728, ROOT_ID),
         ]);
         let files = referenced(&Tree::of_record(&record).unwrap());
-        assert_eq!(files.len(), 2);
-        assert_eq!(
-            (files[0].hash.as_str(), files[0].bytes),
-            (report.as_str(), 300_000)
-        );
-        assert_eq!(
-            (files[1].hash.as_str(), files[1].bytes),
-            (build.as_str(), 3_145_728)
-        );
+        assert_eq!(files, [report, build]);
     }
 
     #[test]

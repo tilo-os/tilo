@@ -509,6 +509,17 @@ impl ContentBackend for DirBackend {
     }
 
     fn collect_unreferenced(&self, live: &BTreeSet<String>) -> Result<Collected, ContentError> {
+        self.remove_where(|hash| !live.contains(hash))
+    }
+
+    fn release(&self, hash: &str) -> Result<Collected, ContentError> {
+        self.remove_where(|kept| kept == hash)
+    }
+}
+
+impl DirBackend {
+    /// Remove every item whose address `gone` names.
+    fn remove_where(&self, gone: impl Fn(&str) -> bool) -> Result<Collected, ContentError> {
         let mut index = self
             .state
             .lock()
@@ -519,7 +530,7 @@ impl ContentBackend for DirBackend {
         let stale: Vec<(String, usize)> = index
             .entries
             .iter()
-            .filter(|(hash, _)| !live.contains(*hash))
+            .filter(|(hash, _)| gone(hash))
             .map(|(hash, len)| (hash.clone(), *len))
             .collect();
         let mut collected = Collected::default();

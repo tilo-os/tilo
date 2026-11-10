@@ -160,6 +160,8 @@ pub struct Relay {
     web: Box<WebContext>,
     /// The workspaces this relay governs; absent when it hosts no workspace authority.
     workspaces: Option<crate::workspaces::Workspaces>,
+    /// What this host keeps for each workspace it serves.
+    content: Arc<tilo_content::WorkspaceStores>,
     /// This device's part in the channels of the workspaces it governs:
     /// absent when its certificate does not let it own workspaces, and so it
     /// holds no channel keys.
@@ -442,6 +444,13 @@ impl Relay {
             app_serving,
             shell_payloads,
         } = planes;
+        // The host's one content store per workspace: the app-serving plane's
+        // when it brings one (its uploads and app workers keep there), so
+        // everything this host keeps for a workspace is in one place.
+        let content = app_serving
+            .as_ref()
+            .and_then(|plane| plane.content())
+            .unwrap_or_else(|| crate::content::stores(&cfg.state_root));
         validate_additional_protocols(&additional_protocols)?;
         import_home_peer(&mut cfg)?;
         validate_relay_identity(&identity)?;
@@ -607,26 +616,20 @@ impl Relay {
             let mut tasks = lock_background_tasks(&background_tasks);
             tasks.extend(plane.tasks().into_iter().map(AbortOnDrop));
         }
-        // The files of the workspaces this host governs, kept in its blob
-        // store so a member that comes up after the one that wrote them left
-        // reads the same bytes from this host alone.
+        // Members read what this host keeps for their workspace from its
+        // content, and the files of the workspaces it governs are kept there
+        // so a member that comes up after the one that wrote them left reads
+        // the same bytes from this host alone.
         if let Some(governed) = &governed {
-            match crate::blobs::FsBlobs::new(cfg.state_root.join(crate::blobs::DIRECTORY), None) {
-                Ok(blobs) => {
-                    let files = crate::files_content::FilesContent::new(
-                        governed.clone(),
-                        identity.device_cert.device_public_key,
-                        Arc::new(blobs),
-                        crate::files_content::FilesLimits::default(),
-                    );
-                    push_background_task(&background_tasks, tokio::spawn(files.run()));
-                }
-                Err(error) => tracing::warn!(
-                    path = %cfg.state_root.join(crate::blobs::DIRECTORY).display(),
-                    %error,
-                    "the host's files are not kept: its blob store cannot be opened"
-                ),
-            }
+            governed.serve_content(Arc::new(crate::content::StoresContent(Arc::clone(
+                &content,
+            ))));
+            let files = crate::files_content::FilesContent::new(
+                governed.clone(),
+                identity.device_cert.device_public_key,
+                Arc::clone(&content),
+            );
+            push_background_task(&background_tasks, tokio::spawn(files.run()));
         }
         // The host is a member of every workspace it holds: its own device is on
         // those rosters, so it reads and serves them as any participant does.
@@ -649,6 +652,7 @@ impl Relay {
             full_replica: full_replica.clone(),
             web,
             workspaces: governed,
+            content,
             _channels: channels,
             packet_server: packet_relay,
             #[cfg(feature = "web")]
@@ -800,6 +804,13 @@ impl Relay {
     #[must_use]
     pub const fn workspaces(&self) -> Option<&crate::workspaces::Workspaces> {
         self.workspaces.as_ref()
+    }
+
+    /// What this host keeps for each workspace it serves: its one content
+    /// store per workspace.
+    #[must_use]
+    pub fn content(&self) -> Arc<tilo_content::WorkspaceStores> {
+        Arc::clone(&self.content)
     }
 
     /// Where this relay keeps its state.

@@ -39,6 +39,8 @@ mod dir;
 #[cfg(feature = "dir")]
 mod files;
 mod memory;
+#[cfg(feature = "dir")]
+mod workspaces;
 
 #[cfg(feature = "dir")]
 pub use dir::DirBackend;
@@ -49,6 +51,8 @@ pub use tilo_content_types::{
     ContentMeta, DocumentFormat, ImageFormat, RECORDING, RECORDING_MAGIC, document_format,
     image_format, image_size, opened_as, opened_by, sniff, valid_hash,
 };
+#[cfg(feature = "dir")]
+pub use workspaces::WorkspaceStores;
 
 /// The app-files owner of a page's content store (see [`ContentStore::local_for_app`]).
 #[cfg(feature = "dir")]
@@ -201,6 +205,19 @@ pub trait ContentBackend: Send + Sync {
         Err(ContentError::CollectionUnsupported)
     }
 
+    /// Remove the item `hash`, when the one who keeps it here knows nothing it is responsible
+    /// for references it any longer (a quota letting the oldest item go). Content kept for
+    /// another reason under the same address goes with it, so a caller sharing a store removes
+    /// only what it alone keeps.
+    ///
+    /// # Errors
+    /// [`ContentError::CollectionUnsupported`] for backends whose retention is governed elsewhere,
+    /// or an I/O failure.
+    fn release(&self, hash: &str) -> Result<Collected, ContentError> {
+        let _ = hash;
+        Err(ContentError::CollectionUnsupported)
+    }
+
     /// Whether content stored here reaches beyond this device's own copy: the device content
     /// store serves it to the app's other devices and collaborators. A document may then refer
     /// to content by address alone; with a store that is not shared, a collaborator would be left
@@ -241,6 +258,10 @@ impl ContentBackend for OneWorkspace {
 
     fn collect_unreferenced(&self, live: &BTreeSet<String>) -> Result<Collected, ContentError> {
         self.0.collect_unreferenced(live)
+    }
+
+    fn release(&self, hash: &str) -> Result<Collected, ContentError> {
+        self.0.release(hash)
     }
 
     fn shared(&self) -> bool {
@@ -437,6 +458,14 @@ impl ContentStore {
     /// See [`ContentBackend::collect_unreferenced`].
     pub fn collect_unreferenced(&self, live: &BTreeSet<String>) -> Result<Collected, ContentError> {
         self.backend.collect_unreferenced(live)
+    }
+
+    /// Remove the item `hash` ([`ContentBackend::release`]).
+    ///
+    /// # Errors
+    /// As [`ContentBackend::release`].
+    pub fn release(&self, hash: &str) -> Result<Collected, ContentError> {
+        self.backend.release(hash)
     }
 }
 

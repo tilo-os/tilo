@@ -81,6 +81,17 @@ impl ContentBackend for MemoryBackend {
     }
 
     fn collect_unreferenced(&self, live: &BTreeSet<String>) -> Result<Collected, ContentError> {
+        self.remove_where(|hash| !live.contains(hash))
+    }
+
+    fn release(&self, hash: &str) -> Result<Collected, ContentError> {
+        self.remove_where(|kept| kept == hash)
+    }
+}
+
+impl MemoryBackend {
+    /// Remove every item whose address `gone` names.
+    fn remove_where(&self, gone: impl Fn(&str) -> bool) -> Result<Collected, ContentError> {
         let mut state = self
             .inner
             .write()
@@ -88,7 +99,7 @@ impl ContentBackend for MemoryBackend {
         let unreferenced: Vec<String> = state
             .entries
             .keys()
-            .filter(|hash| !live.contains(*hash))
+            .filter(|hash| gone(hash))
             .cloned()
             .collect();
         let mut collected = Collected::default();
