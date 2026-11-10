@@ -383,11 +383,6 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   static constexpr int kMaxScrollTurns=64;
   // The most wheel events one turn goes out as.
   static constexpr int kMaxWheelPieces=64;
-  // When the wheel was last turned, and how soon after it a turn still
-  // belongs to the same run of wheel events, and how long after it that run
-  // is well over (Chromium ends it at half a second).
-  double last_wheel_=0;
-  static constexpr double kWheelWithinMs=300,kWheelAfterMs=700;
   // The refusals still to be met by the tab's copy of the request.
   static constexpr size_t kMaxRefused=256;
   // A scroll answers inside the time an action is waited for, however much
@@ -1024,7 +1019,6 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // A turn the page has not shown yet is waited for, not made again: the
     // page says so, and is asked once more what is left.
     const bool wait=value->GetType("wait")==VTYPE_BOOL && value->GetBool("wait");
-    int64_t hold=0;
     if(!wait) {
       const auto turn=std::max(-kMaxScrollTurn,std::min(kMaxScrollTurn,scroll_.left));
       scroll_.left-=turn;++scroll_.turns;
@@ -1036,42 +1030,21 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       // moves a short list one page and stops.
       const double said=Number(value,"page");
       const double page=said>=1?said:kMaxScrollTurn;
-      // Chromium takes wheel events that follow one another within half a
-      // second as one run, and ends the run when that half second passes.
-      // On Linux a turn whose first event came as the run before it was
-      // ending was seen to carry its box one page and no further, and the
-      // turns sent after it nothing at all for a while. So a turn begins
-      // well inside the run before it, or once that run is well over.
-      // After a turn the box did not show in full though it had room to go
-      // on, the next waits for that run to be over wherever it falls: the
-      // turns sent on its heels were seen to carry nothing.
-      const bool rest=value->GetType("rest")==VTYPE_BOOL && value->GetBool("rest");
-      const double since=Now()-last_wheel_;
-      if(last_wheel_>0 && since<kWheelAfterMs && (rest || since>kWheelWithinMs)) hold=static_cast<int64_t>(kWheelAfterMs-since);
-      // The wheel turns at a point of the page: a point of a frame's
-      // document is moved by where the frame sits.
-      const double x=scroll_.x+world_frame_.x,y=scroll_.y+world_frame_.y;
-      if(!hold) TurnWheel(x,y,turn,page);
-      else CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,uint64_t token,double x,double y,double turn,double page) {
-        if(self->pending_ && self->pending_->token==token) self->TurnWheel(x,y,turn,page);
-      },CefRefPtr<PageAutomation>(this),pending_->token,x,y,turn,page),hold);
+      double sent=0;
+      for(int pieces=0;(pieces==0 || std::abs(turn-sent)>=0.5) && pieces<kMaxWheelPieces;++pieces) {
+        const double piece=std::max(-page,std::min(page,turn-sent));
+        // The wheel turns at a point of the page: a point of a frame's
+        // document is moved by where the frame sits.
+        wheel_(scroll_.x+world_frame_.x,scroll_.y+world_frame_.y,-piece);
+        sent+=piece;
+      }
     }
     auto command=CefDictionaryValue::Create();
     command->SetString("action","scroll_left");command->SetInt("doc",document_);
     // The page is asked what is left after the frame the wheel moved it in.
     CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,CefRefPtr<CefDictionaryValue> command,uint64_t token) {
       self->ScrollCall(command,token);
-    },CefRefPtr<PageAutomation>(this),command,pending_->token),kScrollWheelMs+hold);
-  }
-  // One turn, as wheel events of at most `page` each, one behind the other.
-  void TurnWheel(double x,double y,double turn,double page) {
-    double sent=0;
-    for(int pieces=0;(pieces==0 || std::abs(turn-sent)>=0.5) && pieces<kMaxWheelPieces;++pieces) {
-      const double piece=std::max(-page,std::min(page,turn-sent));
-      wheel_(x,y,-piece);
-      sent+=piece;
-    }
-    last_wheel_=Now();
+    },CefRefPtr<PageAutomation>(this),command,pending_->token),kScrollWheelMs);
   }
   // What the page shows once the wheel has stopped, read like any other
   // action: the outline lines the turn added and removed.

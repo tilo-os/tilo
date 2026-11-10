@@ -432,13 +432,7 @@ go, is as far as a turn goes there, and the turns after it are that long. Each
 turn is made over the box where the page has it then: a page that grew above
 the box while the wheel turned has moved it, and a box moved out of view is
 turned no further, which the answer says (`the page moved the box out of view
-while the wheel turned, so it stopped there`). Chromium takes wheel events
-within half a second of one another as one run; on Linux a turn whose first
-event came as the run before it was ending was seen to carry its box one page
-and the turns after it nothing for a while, so a turn begins within 300 ms of
-the wheel event before it or is held until 700 ms after it, and the turn
-after one the box did not show in full, with room left to go, is always held
-that long. On a page
+while the wheel turned, so it stopped there`). On a page
 its caller has not read, a scroll says so in place of the changes and does not
 answer with the page.
 
