@@ -477,7 +477,7 @@ impl Session {
         // between. The broker the apps reach is the one the channel service
         // gates, so a sealed record opens before any of it reaches an app.
         let channels_broker = std::sync::Arc::new(std::sync::Mutex::new(
-            tilo_action_broker::collab_core::BrokerChannels::default(),
+            tilo_broker_core::collab_core::BrokerChannels::default(),
         ));
         // What the broker shows the apps that hold a record's route open: the
         // collaboration plane hands it what another device wrote, so a record

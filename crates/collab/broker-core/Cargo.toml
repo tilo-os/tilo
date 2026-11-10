@@ -26,11 +26,20 @@ runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", def
 tracing.workspace = true
 # The wall clock a policy question is decided at, as every host reads it.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+# The channels a workspace's records are sealed in: the gate a governance state keeps.
+tilo-channels = { version = "0.1.0", path = "../channels" }
+channel-crypto = { version = "0.1.0", path = "../channel-crypto" }
+# A record id, as the document history names it.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 uuid.workspace = true
 ed25519-dalek.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true
+# A stored history record's envelope.
+postcard = { workspace = true, features = ["alloc", "use-std"] }
+# Where a device keeps the history its records' ops are scrolled back from.
+tilo-paths.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "rt"] }
 
 [dev-dependencies]
@@ -42,6 +51,7 @@ automerge.workspace = true
 tilo-peer-state = { version = "0.1.0", path = "../tilo-peer-state", features = [
     "test-support",
 ] }
+tempfile.workspace = true
 
 [lints]
 workspace = true

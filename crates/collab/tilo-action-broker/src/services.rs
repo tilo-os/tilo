@@ -163,9 +163,8 @@ pub trait WorkspaceMemberships: Send + Sync {
     ) -> tilo_peer_state::owner_commit::CommitFuture;
 }
 
-/// Host-retained original custody for one exact observed application launch.
-/// No public constructor or wire representation exists. It never grants rights:
-/// the canonical membership action independently checks current administration.
+/// Host-retained original custody for one exact observed launch: no public constructor or wire
+/// form, and it never grants rights.
 #[derive(Clone)]
 pub struct ObservedApplicationLaunch {
     workspace: String,
@@ -353,8 +352,8 @@ pub trait LauncherServices: Send + Sync {
         }))
     }
 
-    /// Admit kernel-attested executing custody only beneath this exact launch.
-    /// This grants no new identity or filesystem permissions.
+    /// Admit kernel-attested executing custody only beneath this exact launch; it grants no new
+    /// identity or filesystem permissions.
     #[cfg(target_os = "linux")]
     fn attest_executing_process(
         &self,
@@ -447,7 +446,7 @@ pub use tilo_broker_core::steps::{
 pub type ControlAnswer<'a, T> =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, String>> + 'a>>;
 
-/// One open workspace control session; it lives on the broker `LocalSet`.
+/// One open workspace control session, on the broker's `LocalSet`.
 pub trait WorkspaceControlSession {
     /// The session's next event.
     fn read(&self) -> ControlAnswer<'_, runtime_collab::WorkspaceControlEvent>;
@@ -515,9 +514,8 @@ impl RealtimeRequestContext {
     }
 }
 
-/// Native realtime continuity remains host-owned because it binds portal
-/// capture leases and certified device-fabric state. The shared broker owns
-/// admission, exact route binding, wire bounds, and disconnect cleanup.
+/// Native realtime continuity: the host binds portal capture leases and certified device-fabric
+/// state, while the broker owns admission, route binding, wire bounds and disconnect cleanup.
 pub trait RealtimeServices: Send + Sync {
     /// Runs one realtime continuity command.
     fn command(
@@ -534,8 +532,8 @@ pub trait RealtimeServices: Send + Sync {
 
     fn disconnect(&self, peer_id: u64);
 }
-/// The host's speaker groups: the broker admits only the certified Settings
-/// route, bounds and validates the command, and hands it here.
+/// The host's speaker groups: the broker admits only the certified Settings route, then hands it
+/// the validated command.
 pub trait SpeakerServices: Send + Sync {
     /// Runs one validated speaker-group command.
     fn command(&self, command: runtime_collab::SpeakerCommand) -> runtime_collab::SpeakerReply;
@@ -556,9 +554,8 @@ pub trait SpeakerServices: Send + Sync {
 /// returns it.
 pub type SpeakerChange = NearbyTransferChange;
 
-/// The host's drives, as the tools service lists them to Files. The broker
-/// admits only the certified Files route to wait on them; the list itself
-/// is asked of the tools service, which answers as it always does.
+/// The host's drives, as Files lists them: the broker admits only the certified Files route to
+/// wait on them.
 pub trait DriveServices: Send + Sync {
     /// Resolves once the drive list may have changed since `after` (0 at
     /// first, then the value the previous wait returned), with the value to
@@ -572,9 +569,8 @@ pub trait DriveServices: Send + Sync {
 /// returns it.
 pub type DriveChange = NearbyTransferChange;
 
-/// The person's apps, as the tools service lists them to Files. The broker
-/// admits only the certified Files route to wait on them; the list itself is
-/// asked of the tools service, which answers as it always does.
+/// The person's apps, as Files lists them: the broker admits only the certified Files route to
+/// wait on them.
 pub trait ApplicationServices: Send + Sync {
     /// Resolves once the app list may have changed since `after` (0 at first,
     /// then the value the previous wait returned), with the value to wait
@@ -587,9 +583,8 @@ pub trait ApplicationServices: Send + Sync {
 /// A wait for the app list's next change, as
 /// [`ApplicationServices::changed`] returns it.
 pub type ApplicationChange = NearbyTransferChange;
-/// The host's Wi-Fi credential continuity across the person's devices: the
-/// broker admits only the certified Settings route, bounds and validates the
-/// command, and hands it here. A host without Wi-Fi radios installs none.
+/// The host's Wi-Fi credential continuity across the person's devices: the broker admits only the
+/// certified Settings route. A host without radios installs none.
 pub trait WifiContinuityServices: Send + Sync {
     /// Runs one validated Wi-Fi continuity command.
     fn command(
@@ -598,9 +593,8 @@ pub trait WifiContinuityServices: Send + Sync {
     ) -> runtime_collab::WifiContinuityReply;
 }
 
-/// The broker-authenticated connection a Nearby Send command came from.
-/// Every handle the host issues is bound to this peer and channel, never to
-/// anything the caller claims.
+/// The broker-authenticated connection a Nearby Send command came from: every handle the host
+/// issues is bound to this peer and channel, never to what the caller claims.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NearbyTransferRequestContext {
     peer_id: u64,
@@ -677,10 +671,8 @@ impl NearbyTransferRequestContext {
     }
 }
 
-/// The host's Nearby Send between the person's devices: the broker admits
-/// only the certified Files route, bounds and validates the command and the
-/// reply, and drops a connection's handles when it goes away. A host without
-/// nearby radios installs none.
+/// The host's Nearby Send between the person's devices: the broker admits only the certified Files
+/// route and drops a connection's handles when it goes away.
 pub trait NearbyTransferServices: Send + Sync {
     /// Runs one validated Nearby Send command for `context`.
     fn command(
@@ -793,8 +785,8 @@ pub type NearbyTransferChange =
 pub(crate) type SelectedDescriptorSource =
     Arc<dyn Fn(u32) -> Result<std::fs::File, String> + Send + Sync>;
 
-/// Sealed local Files admission. Its callback rechecks the original caller,
-/// live connection and existing workspace policy, never a JSON-claimed actor.
+/// Sealed local Files admission: its callback rechecks the original caller, live connection and
+/// workspace policy, never a JSON-claimed actor.
 #[derive(Clone)]
 pub struct FileClipboardContext {
     pub(crate) peer: u64,
@@ -892,7 +884,7 @@ pub trait AppActionGrants: Send + Sync {
     /// its call was decided.
     fn revoke(&self, workspace: &str, grant: &str);
 }
-/// Identity of an exact private Settings worker, derived by the broker.
+/// The identity of an exact private Settings worker, derived by the broker.
 #[derive(Clone, Debug)]
 pub struct DisplayControlContext {
     pub(crate) workspace: String,
@@ -919,94 +911,76 @@ pub trait DisplayControlServices: Send + Sync {
 pub struct HostServices {
     /// Fixed project-host registrations, unavailable unless actual enforcement is configured.
     pub approved_checks: Option<Arc<dyn crate::collab_app_broker::ApprovedCheckServices>>,
-    /// Read-only existing-resource discovery, absent unless the native host
-    /// can carry it over its current authenticated workspace connection.
+    /// Read-only existing-resource discovery, absent unless the host can carry it.
     pub resource_views: Option<Arc<dyn NativeResourceViews>>,
     pub committed_documents: Option<Arc<dyn NativeDocumentReads>>,
     pub native_media: Option<Arc<dyn NativeMediaServices>>,
     pub audio_output: Option<Arc<dyn AudioOutputServices>>,
     pub workspace_memberships: Option<Arc<dyn WorkspaceMemberships>>,
-    /// The Tasks app's tracker, whose issues assigned to an agent are its
-    /// runs. Without it agents run no tasks.
+    /// The Tasks app's tracker, whose issues assigned to an agent are its runs; without it agents
+    /// run no tasks.
     pub tracker_runs: Option<Arc<dyn TrackerRuns>>,
-    /// The workspaces' agents, as their records name them: what the broker
-    /// admits an agent's session with. Without it no agent joins.
+    /// The workspaces' agents, as their records name them; without it no agent joins.
     pub agents: Option<Arc<dyn AgentRoster>>,
     pub native_certificates: Option<Arc<dyn crate::certificate_authority::CertificateAuthority>>,
     pub local_person: Option<Arc<dyn LocalPersonServices>>,
     pub record_changes: Option<Arc<dyn RecordChangeServices>>,
     pub legacy_workspace: Option<Arc<dyn LegacyWorkspaceProjection>>,
     pub launcher: Option<Arc<dyn LauncherServices>>,
-    /// The resources this session's services publish, which the apps it
-    /// admits read, watch and invoke. Without it those calls are refused:
-    /// a host that publishes nothing serves its apps no resources.
+    /// The resources this session's services publish, which its apps read, watch and invoke;
+    /// without it those calls are refused.
     pub published: Option<Arc<dyn PublishedResources>>,
     pub workspace_governance: Option<Arc<dyn WorkspaceGovernanceServices>>,
     pub shortcut_library: Option<Arc<dyn ShortcutLibraryServices>>,
-    /// The device's keyboard shortcuts on the action door. Without it
-    /// they are not offered.
+    /// The device's keyboard shortcuts on the action door; without it they are not offered.
     pub keyboard_shortcuts: Option<Arc<dyn KeyboardShortcutServices>>,
-    /// The steps the host runs itself, each service under its own
-    /// provider. No door offers a step whose service is not installed.
+    /// The steps the host runs itself, each under its own provider.
     pub host_steps: Vec<Arc<dyn HostStepServices>>,
     pub continuations: Option<Arc<dyn ContinuationServices>>,
-    /// The session's persistent search index of applications' content.
-    /// Without it apps' content is findable only while they run.
+    /// The session's persistent search index; without it apps' content is findable only while
+    /// they run.
     pub search_index: Option<Arc<dyn SearchIndexServices>>,
-    /// What the session hears of a record changing, so search reads it again
-    /// without the app's window.
+    /// What the session hears of a record changing, so search reads it again.
     pub record_index_changes: Option<Arc<dyn RecordIndexChanges>>,
-    /// The device content store content puts go to. Without it the content
-    /// put door is not offered.
+    /// The device content store content puts go to; without it that door is not offered.
     pub content_store: Option<Arc<dyn ContentStoreServices>>,
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
     pub realtime: Option<Arc<dyn RealtimeServices>>,
     pub speakers: Option<Arc<dyn SpeakerServices>>,
-    /// The drives the tools service lists to Files, which tell the certified
-    /// Files route when they change (`drivesChanged`). Without it Files is
-    /// never told, and lists no drives.
+    /// The drives Files lists, which tell its certified route when they change
+    /// (`drivesChanged`); without it Files lists none.
     pub drives: Option<Arc<dyn DriveServices>>,
-    /// The person's apps the tools service lists to Files, which tell the
-    /// certified Files route when they change (`applicationsChanged`).
-    /// Without it Files is never told, and its Applications place asks on a
-    /// timer while it is open.
+    /// The person's apps Files lists, which tell its certified route when they change
+    /// (`applicationsChanged`); without it its Applications place asks on a timer.
     pub applications: Option<Arc<dyn ApplicationServices>>,
-    /// The session's settings, of which each app reaches its own entries
-    /// and the shared sections (`settings_store::app_scope`). Without it
-    /// apps have no settings beyond their own process.
+    /// The session's settings (`settings_store::app_scope`); without it apps have none beyond
+    /// their own process.
     pub settings: Option<Arc<dyn settings_store::SettingsSource>>,
     pub display_control: Option<Arc<dyn DisplayControlServices>>,
-    /// Every app's live activity, as the host presents it. Without it no
-    /// app shows anything outside its windows.
+    /// Every app's live activity, as the host presents it; without it no app shows anything
+    /// outside its windows.
     pub live_activities: Option<Arc<runtime_collab::LiveActivities>>,
     pub wifi_continuity: Option<Arc<dyn WifiContinuityServices>>,
     pub browser_service_sessions: Option<Arc<dyn BrowserServiceSessionServices>>,
     pub nearby_transfer: Option<Arc<dyn NearbyTransferServices>>,
     pub file_clipboard: Option<Arc<dyn FileClipboardServices>>,
-    /// What each application declared it may do on the action door under
-    /// its own identity. Without it no application declared anything.
+    /// What each application declared it may do on the door; without it none declared anything.
     pub app_action_access: Option<crate::app_actions::AppActionAccessResolver>,
-    /// Records grants people give applications for other apps' actions.
-    /// Without it an app is never offered a grant question.
+    /// Records grants people give apps for other apps' actions; without it no grant is asked.
     pub app_action_grants: Option<Arc<dyn AppActionGrants>>,
-    /// Where the launchable action catalogue survives a restart. Without it
-    /// closed apps' actions are retained for this broker's lifetime only.
+    /// Where the launchable action catalogue survives a restart; without it it lives as long as
+    /// this broker.
     pub launchable_catalogue: Option<std::path::PathBuf>,
-    /// Content records reference, kept on this device and asked of each
-    /// record's route (`offerBlob`, `wantBlob`, `subscribeBlobs`). Without
-    /// it apps' content stays in their own process.
+    /// Content records reference, kept here and asked of its route; without it apps' content stays
+    /// in their own process.
     pub record_content: Option<Arc<crate::record_content::RouteContent>>,
-    /// This device's channel encryption service, which tells each route's
-    /// endpoint when its channel keys changed (`channelKeysChanged`).
-    /// Without it endpoints ask the identity service on a timer.
+    /// This device's channel encryption service, which tells each route's endpoint when its
+    /// channel keys changed (`channelKeysChanged`).
     pub channel_keys: Option<crate::channel_encryption::ChannelKeyProvider>,
-    /// Where an admitted invocation of an offloadable action runs: on the
-    /// person's best-placed device when another is
-    /// (`tilo_actions::offload`). Without it every one runs here, through
-    /// the app's own handler.
+    /// Where an admitted offloadable action runs (`tilo_actions::offload`); without it every one
+    /// runs here.
     pub action_offload: Option<Arc<dyn tilo_actions::offload::ActionOffload>>,
-    /// Carries an application's action to another of the person's own
-    /// devices. Without it no app reaches another device's actions.
+    /// Carries an application's action to another of the person's devices; without it none does.
     pub own_device: Option<Arc<dyn OwnDeviceActions>>,
     /// Asks the workspace a node of its tree is in to share it, end a share of
     /// it, or say what the person may do there. Without it no app's share
@@ -1019,12 +993,8 @@ pub struct HostServices {
 }
 
 impl HostServices {
-    /// The seams of these services, by name, in the order the struct declares
-    /// them: what a host's list of decisions is checked against, so a seam it
-    /// stops deciding is found here rather than by an app.
-    ///
-    /// A field added above belongs here too: a host must name its decision for
-    /// every seam, and its own test compares its list to this one.
+    /// The seams of these services, by name, in the order the struct declares them: a field added
+    /// above belongs here too, and a host's own test compares its decisions to this list.
     pub const SEAMS: &[&str] = &[
         "approved_checks",
         "resource_views",

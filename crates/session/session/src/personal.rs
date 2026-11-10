@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use tilo_action_broker::collab_broker::FanoutState;
-use tilo_action_broker::collab_core::BrokerChannels;
 use tilo_action_broker::personal::{self, Door, Person};
+use tilo_broker_core::collab_core::BrokerChannels;
 use tilo_network_actor::HostIdentity;
 use tilo_peer_state::{PeerPersonal, PersonalSync};
 

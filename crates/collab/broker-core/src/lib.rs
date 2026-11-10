@@ -10,13 +10,14 @@
 
 pub mod access;
 pub mod actor;
+pub mod collab_core;
+pub mod collab_history;
 pub mod custody;
 pub mod published;
 pub mod route;
 pub mod services;
 pub mod steps;
 
-pub use access::{AppActionAccess, AppActionAccessResolver};
 pub use actor::{BrokerActor, RunFacts, principal_id_for_root};
 pub use published::{
     PublishedAction, PublishedInput, PublishedSurface, validate_published_surface,

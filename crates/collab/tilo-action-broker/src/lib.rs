@@ -11,8 +11,8 @@ pub use tilo_channels as channel_encryption;
 pub use tilo_channels::schedule as policy_schedule;
 pub mod collab_app_broker;
 pub mod collab_broker;
-pub mod collab_core;
-pub mod collab_history;
+/// The workspaces' governance state and their durable op history, held on every host.
+pub use tilo_broker_core::{collab_core, collab_history};
 pub mod collab_inbound;
 pub mod collab_outbound;
 pub mod collab_presence;

@@ -30,7 +30,7 @@ use crate::platform::plane::{Cmd, RosterDevice, Topic, topic_of};
 use collab_types::{ChannelId, ChannelRoute, Ed25519PublicKey};
 use neighbour_wire::NeighbourMsg;
 #[cfg(target_os = "linux")]
-use tilo_action_broker::collab_core::{BrokerChannels, BrokerGates};
+use tilo_broker_core::collab_core::{BrokerChannels, BrokerGates};
 use tilo_channels::{
     ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelGates, ChannelKeyAccess,
     GovernancePark, GovernancePump, GovernanceTransport, InboundChannelGovernance,

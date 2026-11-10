@@ -62,10 +62,8 @@ pub trait WorkspaceAuthority: Send + Sync {
     /// A message when the committed authority cannot be read; `read` is then not called.
     fn with_tree(&self, read: &mut dyn FnMut(&DesktopTree)) -> Result<(), String>;
 
-    /// Run `read` once against the committed workspace of exactly `workspace`
-    /// (`None` when this host has no such workspace). Same rules as
-    /// [`Self::with_tree`]; a host whose workspaces are not one tree overrides it
-    /// to look up only the requested workspace.
+    /// As [`Self::with_tree`], for exactly `workspace` (`None` when this host has none). A host
+    /// whose workspaces are not one tree overrides it to look up only that one.
     fn with_workspace(
         &self,
         workspace: &str,
@@ -185,36 +183,29 @@ pub struct LaunchableApplication {
     /// A host application Tilo did not package: it runs outside every Tilo
     /// sandbox, with the user's own files, and publishes no typed actions.
     pub unconfined: bool,
-    /// What its signed manifest offers while it is not running
-    /// (`[[offers]]`): listed in a workspace where it has published nothing
-    /// yet. Invoking one launches it, and its published action admits the
-    /// invocation.
+    /// What its signed manifest offers while it is not running (`[[offers]]`); invoking one
+    /// launches it and its published action admits the invocation.
     pub offers: Vec<tilo_app_package::manifest::OfferedAction>,
-    /// The host capabilities its signed manifest declares (`[capabilities]`)
-    /// that the host decides grants on, such as
-    /// `settings_store::app_scope::SYSTEM_SETTINGS_CAPABILITY`; a producer
-    /// that decides none leaves it empty.
+    /// The host capabilities its signed manifest declares (`[capabilities]`) that the host
+    /// decides grants on (`settings_store::app_scope::SYSTEM_SETTINGS_CAPABILITY`).
     pub capabilities: Vec<String>,
 }
-/// The application a launcher-authenticated connection belongs to, and the
-/// workspace it was launched into. Launch content is only ever read through
-/// this scope: holding a hash is not access.
+/// The application a launcher-authenticated connection belongs to, and its workspace: launch
+/// content is read only through this scope, since holding a hash is not access.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LaunchScope {
     pub app_id: String,
     pub workspace_id: String,
 }
 
-/// What a launch opens: the lowercase BLAKE3 `hash` of content-addressed
-/// bytes (empty for a plain launch) and the application that asked, whose
-/// scope the bytes are read through.
+/// What a launch opens: the lowercase BLAKE3 `hash` of content-addressed bytes (empty for a
+/// plain launch) and the application that asked, whose scope the bytes are read through.
 #[derive(Clone, Copy, Debug)]
 pub struct LaunchContent<'a> {
     pub hash: &'a str,
     pub caller: Option<&'a LaunchScope>,
-    /// The person who opened the app, when they may change the workspace:
-    /// the host records them granting it authorship, so it launches as an
-    /// author of the space rather than a viewer. `None` launches a viewer.
+    /// The person who opened the app, when they may change the workspace: the host records them
+    /// granting it authorship. `None` launches a viewer.
     pub author: Option<&'a str>,
 }
 
@@ -242,9 +233,8 @@ impl ApplicationCreationEvidence {
     }
 }
 
-/// One admitted launch's actual startup observation. Dropping an unanswered
-/// observation retires its host-side subscription; enqueueing a worker is
-/// never sufficient to produce this receipt.
+/// One admitted launch's actual startup observation. Dropping an unanswered one retires its
+/// host-side subscription; enqueueing a worker is never sufficient for this receipt.
 pub struct LaunchReadiness {
     receiver: tokio::sync::oneshot::Receiver<Result<(), String>>,
     adoption: Option<tokio::sync::oneshot::Receiver<Option<LaunchAdoption>>>,
@@ -385,27 +375,22 @@ impl Drop for LaunchReadiness {
 pub struct AuthenticatedApplicationLaunch {
     pub creation: Option<ApplicationCreationEvidence>,
     pub continuation_instance: Option<u64>,
-    /// The ticket [`LauncherServices::launch_content`] answered for the
-    /// launch that started this process ([`Launched::Started`]), read from
-    /// the host's own launch record. Correlation only, never authority.
+    /// The ticket that launch answered ([`Launched::Started`]), from the host's own launch
+    /// record. Correlation only, never authority.
     pub launch_ticket: Option<u64>,
-    /// The host made this connection for an instance of the app with no
-    /// window ([`LauncherServices::windowless`]): it takes the app's actions
-    /// on its records, and never an `open`, which shows something.
+    /// The host made this connection for an instance with no window: it takes the app's actions
+    /// on its records, never an `open`, which shows something.
     pub windowless: bool,
 }
 
 /// What [`LauncherServices::launch_content`] started.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Launched {
-    /// A new instance, whose collaboration connection presents `ticket`
-    /// when it is authenticated
-    /// ([`AuthenticatedApplicationLaunch::launch_ticket`]): the launch can
-    /// name the instance it started without guessing.
+    /// A new instance whose connection presents `ticket` when authenticated, so the launch names
+    /// the instance it started without guessing.
     Started { ticket: u64 },
-    /// Something the host cannot tie to a connection: an app another device
-    /// opens (a governed workspace), a host application, a launcher keeping no
-    /// tickets.
+    /// Something no connection names: an app another device opens, a host application, a launcher
+    /// keeping no tickets.
     Unconfirmed,
 }
 
@@ -422,14 +407,12 @@ pub enum ExecutingBindingPhase {
     Abandoned,
 }
 
-/// How the start of an instance of an app with no window ends
-/// ([`LauncherServices::windowless`]): `Ok` once it runs, why it could not
-/// otherwise. Its sender dropped unsent is a host that stopped starting it.
+/// How the start of a windowless instance ends: `Ok` once it runs, why not otherwise; a sender
+/// dropped unsent is a host that stopped starting it.
 pub type WindowlessStart = tokio::sync::oneshot::Receiver<Result<(), String>>;
 
-/// One host-owned workspace governance action, already admitted to the
-/// remote-action vocabulary. The broker mints `invocation`; the service
-/// validates the caller's authority and applies the action.
+/// One host-owned workspace governance action, already admitted to the remote-action vocabulary:
+/// the broker mints `invocation`, the service checks the caller's authority and applies it.
 pub struct WorkspaceGovernanceRequest<'a> {
     /// Direct local origin, excluding a Shortcut or an on-behalf-of run.
     /// Installed by the broker, never decoded from action arguments.
@@ -451,9 +434,8 @@ pub struct WorkspaceGovernanceRequest<'a> {
 pub type WorkspaceGovernanceOutcome =
     Result<tilo_actions::ActionOutput, Box<tilo_actions::ActionFailure>>;
 
-/// Workspace governance (permission profiles) owned by a host that holds the
-/// workspace's capability authority. Its actions are offered through the
-/// broker's remote-action catalogue under the workspace provider.
+/// The workspace governance (permission profiles) of a host that holds the workspace's
+/// capability authority, offered under the workspace provider.
 pub trait WorkspaceGovernanceServices: Send + Sync {
     /// The application id governance actions are checked against.
     fn app_id(&self) -> &str;
@@ -462,9 +444,8 @@ pub trait WorkspaceGovernanceServices: Send + Sync {
     /// Every governance action of `workspace`, before the caller's
     /// permission check.
     fn descriptors(&self, workspace: &Workspace) -> Vec<tilo_actions::ActionDescriptor>;
-    /// Whether this owner action requires canonical descriptor admission and
-    /// broker-checked confirmation. Existing governance services retain their
-    /// own admission semantics unless they explicitly opt in.
+    /// Whether this owner action takes canonical descriptor admission and broker-checked
+    /// confirmation; a service keeps its own semantics unless it opts in.
     fn requires_descriptor_admission(&self, _action: &str) -> bool {
         false
     }
@@ -518,15 +499,12 @@ pub trait KeyboardShortcutServices: Send + Sync {
 /// `ui::search::index_publication::MAX_DELTA_BYTES` publishers chunk to.
 pub const MAX_SEARCH_INDEX_DELTA_BYTES: usize = 512 * 1024;
 
-/// The session's persistent search index of applications' content. An app
-/// publishes changes to its entries over its certified route; the index
-/// keeps them after the app closes, so what the app holds stays findable
-/// whether or not it runs.
+/// The session's persistent search index of applications' content, kept after an app closes so
+/// what it holds stays findable whether or not it runs.
 pub trait SearchIndexServices: Send + Sync {
-    /// Apply one change to the entries `app` published in `workspace` from its
-    /// record `record`. `delta` is an encoded
-    /// `ui::search::index_publication::IndexDelta`, at most
-    /// [`MAX_SEARCH_INDEX_DELTA_BYTES`]; the host decodes and bounds it.
+    /// Apply one change to the entries `app` published in `workspace` from `record`. `delta` is an
+    /// encoded `ui::search::index_publication::IndexDelta` of at most
+    /// [`MAX_SEARCH_INDEX_DELTA_BYTES`], which the host decodes and bounds.
     fn publish(
         &self,
         workspace: WorkspaceId,

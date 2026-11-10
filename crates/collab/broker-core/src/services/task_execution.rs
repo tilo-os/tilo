@@ -280,20 +280,17 @@ pub fn is_tracker_issue(task_id: &str) -> bool {
     task_id.starts_with(TRACKER_ISSUE_PREFIX)
 }
 
-/// The prefix of a run that answers a person's message in a conversation
-/// (`crates/session/session/src/conversations.rs`): Chat's record, the
-/// conversation's id, and the message the agent answers. A run's task id is
-/// that address, so an agent's own invocations on the turn are its actions,
-/// not a task of the Tasks tracker.
+/// The prefix of a run that answers a person's message in a conversation: Chat's record, the
+/// conversation's id and the message answered. A run's task id is that address, so an agent's own
+/// invocations on the turn are its actions, not a task of the Tasks tracker.
 pub const CONVERSATION_RUN_PREFIX: &str = "chat.workspace/channels/";
 /// What separates a conversation's address from the message it answers in a
 /// run's task id.
 const CONVERSATION_MESSAGE: &str = "/messages/";
 
-/// Whether `task_id` names a conversation turn's message: a conversation of
-/// Chat's record and one message in it, each a plain id (`chat.workspace/\
-/// channels/<conversation>/messages/<message>`). A run whose task id is that
-/// is the answer to a person's message, and the turn is its work.
+/// Whether `task_id` names a conversation turn's message
+/// (`chat.workspace/channels/<conversation>/messages/<message>`): the answer to a person's
+/// message, whose turn is the run's work.
 #[must_use]
 pub fn is_conversation_turn(task_id: &str) -> bool {
     let Some(rest) = task_id.strip_prefix(CONVERSATION_RUN_PREFIX) else {
@@ -356,10 +353,8 @@ pub struct TrackerQuestion {
     pub arguments_digest: String,
     /// The [`tilo_actions::Draft`] the person was shown.
     pub draft: serde_json::Value,
-    /// The change the step makes, before and after, where it previews one
-    /// ([`Preview`]): the person decides on the difference rather than on
-    /// the end state alone. Carried as the app recorded it beside the draft,
-    /// so what the sheet puts up is what the run wrote.
+    /// The change the step makes, before and after, where it previews one ([`Preview`]): the
+    /// person decides on the difference, on what the run wrote beside the draft.
     pub before: Option<serde_json::Value>,
     pub answer: TrackerAnswer,
 }
@@ -374,10 +369,8 @@ pub struct PreviewSide {
     pub spoken: String,
 }
 
-/// The change a step makes, in tree form: the resource as it stands and as
-/// it will stand. A person approving a bulk move sees what it becomes
-/// before any of it happens; a script or a screen reader reads the same two
-/// sides as text.
+/// The change a step makes in tree form, before and after: a person approving a bulk move sees
+/// what it becomes, and a script or screen reader reads the same two sides as text.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Preview {
@@ -473,10 +466,8 @@ pub struct TrackerRun {
     /// conversation it takes part in. Every op the run makes carries it; a
     /// run whose causing message the receiver does not hold yet waits for it.
     pub turn: Option<tilo_action_policy::turn::Turn>,
-    /// The task delegation the asking device signed for a task agent's run,
-    /// encoded (`TaskDelegation::encode`), or why what the run carries is
-    /// none; `None` for a collaborator's run, whose membership is its
-    /// certification. Read through [`Self::delegation`].
+    /// The delegation the asking device signed for a task agent's run, encoded, or why what the
+    /// run carries is none; `None` for a collaborator's run. Read through [`Self::delegation`].
     pub delegation: Option<Result<Vec<u8>, String>>,
 }
 

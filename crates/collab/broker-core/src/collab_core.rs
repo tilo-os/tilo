@@ -1,8 +1,6 @@
-//! Transport-neutral collaboration governance state.
-//!
-//! Both the native service and the peer-network drain validate against this
-//! state. It deliberately contains no socket, framing, RPC, or UI request
-//! types, so transport retirement cannot fork authorization and audit behavior.
+//! Transport-neutral collaboration governance state: both the desktop service and the peer
+//! network's drain validate against it, so no socket, framing or RPC type appears here and a
+//! transport change cannot fork authorization and audit behavior.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -12,7 +10,7 @@ use collab_types::{
     ValidationError, parse_redact_payload,
 };
 
-use super::collab_history::Unsynced;
+use crate::collab_history::Unsynced;
 
 const AUDIT_LOG_RING_CAPACITY: usize = 256;
 
@@ -20,7 +18,7 @@ const AUDIT_LOG_RING_CAPACITY: usize = 256;
 pub struct AuditEntry {
     pub envelope: Box<SignedOp>,
     pub rejection: Option<ValidationError>,
-    pub at: std::time::SystemTime,
+    pub at: tilo_clock::SystemTime,
 }
 
 #[derive(Default)]
@@ -52,7 +50,7 @@ pub struct RedactionRecord {
     pub target_op_hash: [u8; 32],
     pub redactor_pk: Ed25519PublicKey,
     pub reason: String,
-    pub redacted_at: std::time::SystemTime,
+    pub redacted_at: tilo_clock::SystemTime,
 }
 
 #[derive(Default)]
@@ -89,7 +87,7 @@ pub struct BrokerChannels {
     pub gates: tilo_channels::Gates,
     /// Durable history of content-key ciphertext, so members (including
     /// ones added later) can page back past the in-memory window.
-    pub history: Option<super::collab_history::CollabHistoryStore>,
+    pub history: Option<crate::collab_history::CollabHistoryStore>,
     /// History pages this device asked its peers for, by artifact: the
     /// `before_seq` bound and when the request left. Answers are accepted
     /// only while a request is outstanding.
@@ -180,7 +178,7 @@ impl BrokerChannels {
             return Unsynced::default();
         };
         let mut unsynced = Unsynced::default();
-        if super::collab_history::CollabHistoryStore::retains(op) {
+        if crate::collab_history::CollabHistoryStore::retains(op) {
             match history.bind_record(
                 op.artifact,
                 &route.cluster_id,
@@ -360,7 +358,7 @@ impl BrokerChannels {
             .filter(|op| {
                 op.artifact == artifact
                     && op.seq < bound
-                    && super::collab_history::CollabHistoryStore::retains(op)
+                    && crate::collab_history::CollabHistoryStore::retains(op)
                     && collab_types::verify_op(op).is_ok()
             })
             .collect();

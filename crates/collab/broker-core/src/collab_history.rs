@@ -1,20 +1,13 @@
 //! Durable history of encrypted document ops, served page by page.
 //!
-//! The broker's in-memory op log keeps only the most recent ops of each
-//! artifact. Content-key ciphertext (encryption scheme version 2) is
-//! readable by every member of the channel, including members added later,
-//! so it is worth keeping all of it: this store appends every such op to a
-//! per-artifact log on disk and answers scrollback pages from it, however
-//! far back a member scrolls. The broker never holds a content key; the
-//! store only ever sees signed ciphertext and its clear routing metadata.
+//! Scheme-2 ciphertext is readable by every member a channel adds, so every op is worth keeping:
+//! this appends each one to a per-artifact log on disk and answers scrollback pages from it. It
+//! holds no content key, only signed ciphertext and its clear routing metadata.
 //!
-//! Layout: `<root>/<artifact uuid>.ops`, a sequence of records
-//! `len (u32 LE) || postcard(SignedOp)`. The index (seq → offset) is rebuilt
-//! by scanning on first use; a torn final record from a crash is cut off.
-//! Beside each log, `<artifact uuid>.workspace` names the workspace whose members may
-//! page through it, and `<artifact uuid>.record` the record it is: workspace, app
-//! and record id, one per line, so a later session still knows which
-//! records of an app this device holds in a workspace.
+//! Layout: `<root>/<artifact uuid>.ops`, records of `len (u32 LE) || postcard(SignedOp)`, indexed
+//! by scanning on first use (a torn final record is cut off) beside `<uuid>.workspace` and
+//! `<uuid>.record`, which name the workspace whose members may page through it and the record it
+//! is.
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};

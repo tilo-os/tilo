@@ -17,7 +17,7 @@ use collab_types::presence::{Availability, Payload, Presence};
 use collab_types::{ChannelRoute, Ed25519PublicKey};
 use iroh::EndpointId;
 use runtime_collab::native_media::{Command, Request, State};
-use tilo_action_broker::collab_core::BrokerChannels;
+use tilo_broker_core::collab_core::BrokerChannels;
 use tilo_channels::{
     ChannelAccess, ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
     ChannelKeyProvider, GovernanceTransport, InboundChannelGovernance,
@@ -167,7 +167,7 @@ impl ChannelDirectory for Directory {
 /// someone founds them.
 fn keys(device: u8, vault: u8, admitted: &[u8]) -> (ChannelKeyProvider, tempfile::TempDir) {
     let directory = tempfile::tempdir().expect("a directory to keep channel state in");
-    let gates = Arc::new(tilo_action_broker::collab_core::BrokerGates(Arc::new(
+    let gates = Arc::new(tilo_broker_core::collab_core::BrokerGates(Arc::new(
         Mutex::new(BrokerChannels::default()),
     )));
     let encryption = ChannelEncryption::open(
