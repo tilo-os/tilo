@@ -256,6 +256,9 @@ pub struct ReceiveOutcome {
     /// workspace's host to replay what it retains, so that message is decided
     /// again.
     pub replay_wanted: bool,
+    /// The input left a workspace change or record write waiting for history
+    /// this peer lacks: its sender is asked for its state (`SyncReq`).
+    pub lacks_history: bool,
 }
 /// Authenticated carrier inputs. A native publication requires the embedding
 /// adapter's actual pinned owner/session/cursor proof, not an inert event tag.
@@ -2039,6 +2042,7 @@ impl StatePeer {
                 .workspace_doc
                 .as_deref()
                 .is_none_or(|doc| doc.base_heads() != candidate.base_heads());
+        let lacks_history = self.newly_waiting(&candidate);
         if let Some(policy) = &media {
             self.validate_media_bindings(policy, false)?;
         }
@@ -2052,6 +2056,7 @@ impl StatePeer {
         let mut report = AdmissionReport::metadata(ReceiveOutcome {
             changed,
             metadata_changed,
+            lacks_history,
             ..Default::default()
         });
         self.retry_held(&mut report, now, strict_report)?;

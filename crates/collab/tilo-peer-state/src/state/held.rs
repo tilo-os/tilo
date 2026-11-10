@@ -106,12 +106,20 @@ impl StatePeer {
             now,
         } = held;
         let bytes = crate::postcard_sink::encoded_len(&message, usize::MAX).map_err(err)?;
-        let deferred = |dropped| {
+        // A write held for the changes or the checkpoint its record builds on
+        // waits for history: its sender holds it, and is asked for it. Held
+        // already, it was asked for when it first came.
+        let lacks_history = matches!(
+            prerequisite,
+            MissingPrerequisite::CausalDependencies | MissingPrerequisite::RecordCheckpoint
+        );
+        let deferred = |dropped, lacks_history| {
             AdmissionReport::new(
                 InputDisposition::RetryLater(prerequisite.clone()),
                 ReceiveOutcome {
                     deferred: true,
                     dropped,
+                    lacks_history,
                     ..Default::default()
                 },
             )
@@ -119,7 +127,7 @@ impl StatePeer {
         if self.core.pending.iter().any(|(key, prior, replayed)| {
             key == &source && *prior == message && *replayed == retained_replay
         }) {
-            return Ok(deferred(Vec::new()));
+            return Ok(deferred(Vec::new(), false));
         }
         let full = |held: usize, held_bytes: usize| {
             held >= MAX_HELD_INPUTS || held_bytes.saturating_add(bytes) > MAX_HELD_BYTES
@@ -139,7 +147,7 @@ impl StatePeer {
                 DropReason::TooLarge,
             );
             self.remember_missed(&input);
-            let mut report = deferred(vec![input]);
+            let mut report = deferred(vec![input], lacks_history);
             report.summary.deferred = false;
             return Ok(report);
         }
@@ -167,7 +175,7 @@ impl StatePeer {
         self.core
             .pending
             .push_back((source, message, retained_replay));
-        let mut report = deferred(dropped);
+        let mut report = deferred(dropped, lacks_history);
         report.settled.extend(settled);
         report.released = released;
         Ok(report)

@@ -347,7 +347,9 @@ pub enum NeighbourMsg {
     /// `room` is the workspace id as text that scopes the
     /// answer — an empty/unparseable value names no workspace (not a wildcard) and gets
     /// no document back. The transport emits one on peer-join, before it knows
-    /// what workspace the peer is in.
+    /// what workspace the peer is in. A device on a direct link sends one when
+    /// a frame the link brought leaves a change it cannot apply, and the other
+    /// end answers on that link with the state it holds.
     SyncReq {
         since: Vec<u8>,
         room: String,

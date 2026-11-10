@@ -35,4 +35,21 @@ impl StatePeer {
             .as_deref()
             .is_some_and(|workspace| workspace.get_change_by_hash(hash).is_some())
     }
+
+    /// Whether `candidate`, the workspace document an input made, holds a
+    /// change waiting for parents no change held before waited for: it came
+    /// ahead of what it builds on, or what it builds on never came. Nothing
+    /// here can apply it, so its sender is asked for the state it holds.
+    pub(super) fn newly_waiting(&self, candidate: &automerge::AutoCommit) -> bool {
+        let waited: std::collections::BTreeSet<automerge::ChangeHash> = self
+            .core
+            .workspace_doc
+            .as_deref()
+            .map(|doc| doc.get_missing_deps(&[]).into_iter().collect())
+            .unwrap_or_default();
+        candidate
+            .get_missing_deps(&[])
+            .iter()
+            .any(|missing| !waited.contains(missing))
+    }
 }
