@@ -945,10 +945,7 @@ fn rows_tell_the_readers_changes_from_a_collaborators_and_an_agents() {
     assert_eq!(
         rows,
         [
-            (
-                "claude · Software, for you".to_owned(),
-                AuthorRelation::Software
-            ),
+            ("claude for you".to_owned(), AuthorRelation::Software),
             ("ada".to_owned(), AuthorRelation::Person),
             ("You".to_owned(), AuthorRelation::Reader),
         ]
@@ -982,7 +979,7 @@ fn an_agents_change_reads_as_the_agent_on_behalf_of_its_person() {
     let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
     let author = &entries.last().unwrap().author;
     assert_eq!(author.name, "claude");
-    assert_eq!(crate::author_line(author), "claude · Software, for ada");
+    assert_eq!(crate::author_line(author), "claude for ada");
     assert_eq!(author.relation, AuthorRelation::Software);
     assert_eq!(
         author.attribution,
@@ -1019,7 +1016,7 @@ fn an_agents_change_reads_as_the_agent_on_behalf_of_its_person() {
         .entries(&mut doc);
     let author = &entries.last().unwrap().author;
     assert_eq!(author.name, "Scribe");
-    assert_eq!(crate::author_line(author), "Scribe · Software, for Ada");
+    assert_eq!(crate::author_line(author), "Scribe for Ada");
     assert_eq!(author.relation, AuthorRelation::Software);
     assert_eq!(author.rgb(), (10, 20, 30), "the agent's presence colour");
     assert_eq!(
@@ -1036,7 +1033,7 @@ fn an_agents_change_reads_as_the_agent_on_behalf_of_its_person() {
     let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
     assert_eq!(
         crate::author_line(&entries.last().unwrap().author),
-        "Scribe · Software, for you"
+        "Scribe for you"
     );
 }
 
@@ -1383,18 +1380,12 @@ fn a_wire_author_reads_as_one_line() {
         on_behalf_of: Some("ada".into()),
         ..wire::Author::default()
     };
-    assert_eq!(
-        crate::wire_author_line(&agent),
-        "claude · Software, for ada"
-    );
+    assert_eq!(crate::wire_author_line(&agent), "claude for ada");
     let software = wire::Author {
         for_reader: true,
         ..agent
     };
-    assert_eq!(
-        crate::wire_author_line(&software),
-        "claude · Software, for you"
-    );
+    assert_eq!(crate::wire_author_line(&software), "claude for you");
     let reader = wire::Author {
         name: "Ada".into(),
         relation: wire::Relation::Reader,

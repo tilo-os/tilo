@@ -47,6 +47,8 @@ fn agent(name: &str, person: &str) -> wire::Author {
         relation: wire::Relation::Software,
         kind: ui::tilo_actions::ActorKind::Agent,
         on_behalf_of: Some(person.to_owned()),
+        // It acted for the person reading this history.
+        for_reader: true,
         ..wire::Author::default()
     }
 }

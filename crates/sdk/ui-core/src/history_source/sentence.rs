@@ -3,7 +3,6 @@
 //! of the actions it publishes.
 
 use tilo_actions::ActionContext;
-use tilo_actions::ActorKind;
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_history::{FluentArgs, Messages, Reader};
 
@@ -36,20 +35,18 @@ pub fn sentence(entry: &ActionContext) -> String {
 }
 
 /// An author as one line names them, in this thread's words: "You", "Ada",
-/// "claude · Software, for Ada", "Ada via task ‘Prepare Q3 financials’".
+/// "claude for Ada", "Ada via task ‘Prepare Q3 financials’".
 ///
 /// The one place a history row, a pill or an app's list says who made a
 /// change: the name it carries is a name, and whom software acted for is
 /// said here once.
 pub fn author_line(author: &HistoryAuthor) -> String {
-    let (kind, for_person) = author.attribution.as_ref().map_or_else(
-        || (ActorKind::Person, None),
-        |attribution| (attribution.kind, attribution.on_behalf_of_name.as_deref()),
-    );
     actor_line(
         &author.name,
-        kind,
-        for_person,
+        author
+            .attribution
+            .as_ref()
+            .and_then(|attribution| attribution.on_behalf_of_name.as_deref()),
         author.for_reader,
         author.relation == AuthorRelation::Reader,
         author.task.as_deref(),
@@ -60,7 +57,6 @@ pub fn author_line(author: &HistoryAuthor) -> String {
 pub fn wire_author_line(author: &wire::Author) -> String {
     actor_line(
         &author.name,
-        author.kind,
         author.on_behalf_of.as_deref(),
         author.for_reader,
         author.relation == wire::Relation::Reader,
@@ -70,7 +66,6 @@ pub fn wire_author_line(author: &wire::Author) -> String {
 
 fn actor_line(
     name: &str,
-    kind: ActorKind,
     for_person: Option<&str>,
     for_reader: bool,
     is_reader: bool,
@@ -85,7 +80,6 @@ fn actor_line(
     with_reader(|reader| {
         reader.actor(&tilo_history::Who {
             actor,
-            kind,
             for_person,
             for_reader,
             is_reader,

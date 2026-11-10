@@ -108,17 +108,15 @@ fn resume_section(provider: &Provider, resume: &wire::Resume) -> Element {
             ("when", ago(resume.at_ms).into()),
         ],
     );
+    let row = ListRow::new("activity-resume", resume.target.label.clone())
+        .subtitle(context)
+        .trailing(Box::new(
+            Button::new("activity-resume-open", "activity-resume-button")
+                .on_view(move || open.ask(wire::OPEN, &target)),
+        ));
     Box::new(Section::titled(
         tr("activity-resume-heading"),
-        vec![Box::new(
-            ListRow::new("activity-resume", resume.target.label.clone())
-                .subtitle(context)
-                .avatar(resume.author.name.clone(), resume.author.identity.clone())
-                .trailing(Box::new(
-                    Button::new("activity-resume-open", "activity-resume-button")
-                        .on_view(move || open.ask(wire::OPEN, &target)),
-                )),
-        )],
+        vec![Box::new(ui::author_face(row, &resume.author))],
     ))
 }
 
@@ -228,15 +226,13 @@ fn brief_body(index: usize, brief: &wire::Brief) -> Element {
         .with_intrinsic_height()
         .with_rhythm(ui::tokens::Rhythm::Tight);
     for (at, action) in brief.actions.iter().enumerate() {
-        column = column.push(Box::new(
-            ListRow::new(
-                format!("activity-brief-{index}-action-{at}"),
-                action.summary.clone(),
-            )
-            .secondary(ui::wire_author_line(&action.author))
-            .meta(ago(action.at_ms))
-            .avatar(action.author.name.clone(), action.author.identity.clone()),
-        ));
+        let row = ListRow::new(
+            format!("activity-brief-{index}-action-{at}"),
+            action.summary.clone(),
+        )
+        .secondary(ui::wire_author_line(&action.author))
+        .meta(ago(action.at_ms));
+        column = column.push(Box::new(ui::author_face(row, &action.author)));
     }
     Box::new(column)
 }

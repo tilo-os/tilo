@@ -85,12 +85,8 @@ history-value-empty = nothing
 ## no separate agents): $person via $task, "Ada via task 'Prepare Q3
 ## financials'".
 history-actor-via-task = { $person } via task ‘{ $task }’
-history-actor-for = { $actor }, for { $for }
+history-actor-for = { $actor } for { $for }
 history-actor-you = You
 history-actor-you-for = You, for { $for }
 history-actor-unknown = Someone
-history-actor-agent = { $actor } · Software
-history-actor-shortcut = { $actor } · Shortcut
-history-actor-app = { $actor } · App
-history-actor-bot = { $actor } · Bot
 history-actor-for-you = you

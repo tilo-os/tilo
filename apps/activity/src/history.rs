@@ -407,8 +407,8 @@ fn entry_row(
     )
     .subtitle(who)
     .meta(ago(entry.at_ms))
-    .avatar(entry.author.name.clone(), entry.author.identity.clone())
     .selected(selected);
+    row = ui::author_face(row, &entry.author);
     if !place.is_empty() {
         row = row.secondary(place.join(", "));
     }

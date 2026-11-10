@@ -11,6 +11,7 @@
 use crate::time::SystemTime;
 
 use collab_types::ArtifactKind;
+use tilo_actions::remote::workspace_activity as wire;
 use tilo_actions::{ActionContext, ActionFacet};
 
 pub use collab_types::history::HistoryEntryId;
@@ -633,4 +634,19 @@ mod tests {
         format_relative_time_thresholds();
         hue_to_rgb_covers_every_sextant();
     }
+}
+
+/// A row led by an author's face: a person's round face in their colour, or
+/// the agent mark for software acting for someone — which is where what an
+/// author is shows, never words in the line beside it.
+#[must_use]
+pub fn author_face(
+    mut row: crate::widget::ListRow,
+    author: &wire::Author,
+) -> crate::widget::ListRow {
+    row = row.avatar(author.name.clone(), author.identity.clone());
+    if author.relation == wire::Relation::Software {
+        row = row.square().avatar_glyph(crate::icons::Icon::Bot);
+    }
+    row
 }

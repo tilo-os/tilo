@@ -561,6 +561,7 @@ pub use live_collaboration::{
     Availability, CallPresence, IDLE_AFTER, INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS,
     PresenceVisibility, StatusOrigin, StatusSharing,
 };
+pub use widget::history::author_face;
 // Undoing a run of changes that never reached anybody's undo stack — a
 // remote author's, an agent's.
 pub use gesture::{DragSelect, Granularity};

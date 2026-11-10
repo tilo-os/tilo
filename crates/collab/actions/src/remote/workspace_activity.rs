@@ -173,8 +173,8 @@ pub struct Author {
     /// A short fragment of their key, telling apart two of the same name.
     pub identity: String,
     pub relation: Relation,
-    /// What acted: a person, an agent, a Shortcut, an app or a bot. The line
-    /// that names a software author words it after its name ("· Software").
+    /// What acted: a person, an agent, a Shortcut, an app or a bot. The row's
+    /// face shows it; the line that names the author never words it.
     pub kind: ActorKind,
     /// For software: who it acted for, as a sentence names them.
     #[serde(skip_serializing_if = "Option::is_none")]

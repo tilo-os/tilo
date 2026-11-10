@@ -928,10 +928,7 @@ mod tests {
         assert_eq!(rows[0].author.name, "Ada");
         assert_eq!(rows[0].author.attribution, None);
         assert_eq!(rows[1].author.name, "Scribe");
-        assert_eq!(
-            crate::author_line(&rows[1].author),
-            "Scribe · Software, for Ada"
-        );
+        assert_eq!(crate::author_line(&rows[1].author), "Scribe for Ada");
         assert_eq!(rows[1].author.relation, AuthorRelation::Software);
         assert_eq!(rows[1].author.rgb(), (10, 20, 30));
         assert_eq!(
@@ -959,10 +956,7 @@ mod tests {
         files.attributions = [(version(4, ada, ada_laptop).id, through_session)].into();
         let rows = file_timeline_entries(&files);
         assert_eq!(rows[0].author.name, "Courier");
-        assert_eq!(
-            crate::author_line(&rows[0].author),
-            "Courier · Software, for Ada"
-        );
+        assert_eq!(crate::author_line(&rows[0].author), "Courier for Ada");
         assert_eq!(rows[0].author.rgb(), (40, 50, 60));
         assert_eq!(
             rows[0].author.attribution,

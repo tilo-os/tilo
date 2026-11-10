@@ -4296,10 +4296,7 @@ mod command_path_tests {
             panic!("Files hands the selected version to Workspace Activity");
         };
         assert_eq!(entry.author.name, "Scribe");
-        assert_eq!(
-            ui::author_line(&entry.author),
-            "Scribe · Software, for Ada Lovelace"
-        );
+        assert_eq!(ui::author_line(&entry.author), "Scribe for Ada Lovelace");
         assert_eq!(entry.author.relation, ui::widget::AuthorRelation::Software);
         let attribution = entry.author.attribution.expect("who acted for whom");
         assert_eq!(attribution.actor, "agent:scribe");

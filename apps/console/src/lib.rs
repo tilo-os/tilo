@@ -281,16 +281,10 @@ pub(crate) fn ago(at_ms: i64) -> String {
 /// square one with the agent mark, so the two are never mistaken, tinted by
 /// the client it is an agent of.
 pub(crate) fn faced(row: ListRow, author: &wire::Author) -> ListRow {
-    let row = row.avatar(author.name.clone(), author.identity.clone());
-    match author.relation {
-        wire::Relation::Software => {
-            let row = row.square().avatar_glyph(ui::icons::Icon::Bot);
-            match client::of(&author.name).hue() {
-                Some(hue) => row.avatar_hue(hue),
-                None => row,
-            }
-        }
-        wire::Relation::Reader | wire::Relation::Person => row,
+    let row = ui::author_face(row, author);
+    match (author.relation, client::of(&author.name).hue()) {
+        (wire::Relation::Software, Some(hue)) => row.avatar_hue(hue),
+        _ => row,
     }
 }
 
