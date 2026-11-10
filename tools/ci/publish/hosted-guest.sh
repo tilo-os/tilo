@@ -68,15 +68,16 @@ inputs_digest() {
 }
 
 # Everything that ends up in the browser guest image: the recipe it shares with
-# the workspace guest, what arranges a session and an app store, and the engine
-# version its Browser requires.
+# the workspace guest, what arranges a session and an app store, the sources of
+# the components it builds and the engine version its Browser requires.
 browser_inputs_digest() {
   find os/Containerfile.hosted-guest os/hosted-guest os/hosted-browser-guest \
-    os/components.toml os/scripts/install-components.py os/scripts/pack-apps.sh \
+    crates/session crates/packaging os/components.toml \
+    os/scripts/install-components.py os/scripts/pack-apps.sh \
     os/scripts/signed-records.py os/scripts/collect-runtime-dependencies.py \
     os/scripts/verify-runtime-bundle-closure.sh os/etc/containers/policy.json \
-    apps/browser/tilo-app.toml crates/sdk/ui-core/src/webview/chromium/runtime.rs \
-    tools/font-catalog.py crates/sdk/ui-core/assets/fonts/manifest.toml \
+    apps/browser crates/sdk/ui-core/src/webview/chromium crates/sdk/ui-core/assets/fonts \
+    tools/font-catalog.py tools/apps tools/perf/tapp-size-budget \
     tools/ci/publish/hosted-guest.sh -type f -print0 \
     | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1
 }
