@@ -514,6 +514,60 @@ pub fn seeded_session(root: &Path) -> Session {
     seeded_session_at(root, vec![program], None)
 }
 
+/// Install the app `app` — named `name` — in `home` 's own app store: a package whose entrypoint is
+/// the launcher's to start, and whose provider scheme is its own.
+///
+/// # Panics
+/// The store, its manifest or its row cannot be written.
+pub fn probe_app(home: &mut tilo_test_env::TestHome, app: &str, name: &str) {
+    let store = home.data().join("tilo-apps");
+    let payload = store.join("payload").join(app);
+    std::fs::create_dir_all(payload.join("bin")).expect("the app's payload");
+    let manifest = payload.join("manifest.toml");
+    std::fs::write(
+        &manifest,
+        format!(
+            "[package]\n\
+             id = \"{app}\"\n\
+             version = \"1.0.0\"\n\
+             kind = \"app\"\n\
+             name = \"{name}\"\n\
+             \n\
+             [publisher]\n\
+             identity = \"ed25519:{key}\"\n\
+             signature = \"\"\n\
+             \n\
+             [sandbox]\n\
+             namespaces = [\"user\"]\n\
+             seccomp = \"tilo-default\"\n\
+             landlock = \"strict\"\n\
+             \n\
+             [sandbox.net]\n\
+             mode = \"off\"\n\
+             \n\
+             [entrypoint]\n\
+             bin = \"bin/app\"\n\
+             type = \"gui\"\n\
+             \n\
+             [providers]\n\
+             schemes = [\"probe\"]\n",
+            key = "11".repeat(32),
+        ),
+    )
+    .expect("the app's manifest");
+    std::fs::write(
+        store.join("registry.toml"),
+        format!(
+            "[[entry]]\nid = \"{app}\"\nversion = \"1.0.0\"\n\
+             payload_root = \"{payload}\"\nmanifest_path = \"{manifest}\"\n",
+            payload = payload.display(),
+            manifest = manifest.display(),
+        ),
+    )
+    .expect("the app's row");
+    home.env().set("TILO_APPS_DATA_DIR", &store);
+}
+
 /// The app store this test process's tilolang apps are installed in, built the first time it is
 /// asked for: [`dev_apps::install`] builds each app from this tree into a signed `.tapp` and
 /// puts it in the store, the way a device has them. Every session a test starts reads that

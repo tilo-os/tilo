@@ -20,16 +20,18 @@
 //! Reading happens away from the session's loop: the indexes are small files
 //! in the stores of apps this process does not own, and one of them being
 //! slow to read must not hold up a frame. A worker reads them once and again
-//! whenever an index directory changes, and the loop takes what it last read.
+//! whenever the change stream says a record of this device moved — this
+//! session naming one in an index writes the store that feeds the stream — and
+//! the loop takes what it last read.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::platform::Store;
-use crate::platform::watched::Watched;
+use crate::platform::records::{Reading, Watch};
 use app_state::DocStore;
 use durable_store::{DurableStore, StorageKey};
 use tilo_desktop_search::providers::records::HeldRecord;
@@ -57,19 +59,13 @@ pub struct Records {
     store: Store,
     /// The one stream of record changes this device's store feeds.
     changes: crate::platform::records::Changes,
-    /// The indexes as last read.
-    reading: Reading,
+    /// The indexes as last read, read again whenever the change stream says a record of this
+    /// device moved: the one watcher there is.
+    reading: Reading<Vec<Held>>,
     /// The name the desk gives each workspace, as of its last frame: a record held elsewhere is
     /// offered under the name of the workspace that holds it, and a workspace id alone names
     /// nothing a person knows.
     names: RefCell<Vec<(String, String)>>,
-}
-
-/// The indexes as last read, read again whenever the change stream says a workspace's records
-/// moved: the store every writer of the records lands in is the one watcher there is.
-enum Reading {
-    Followed(Watched<Vec<Held>>),
-    Once(Arc<Vec<Held>>),
 }
 
 impl Records {
@@ -91,41 +87,9 @@ impl Records {
         #[cfg(not(target_os = "linux"))]
         let plain: Store = std::rc::Rc::new(app_state::FsStore::new(&root));
         let store = crate::platform::records::noting(plain, changes.clone());
-        let indexes = store.workspace_indexes().unwrap_or_else(|error| {
-            tracing::warn!(%error, "the workspace indexes of this device are not listed");
-            Vec::new()
-        });
-        // The index directories the reader follows: a record written into one of them reads the
-        // list again. A workspace made after this session started keeps its index in a directory
-        // nothing watches yet, so the directory of workspaces holding them is followed too.
-        let mut directories: BTreeSet<PathBuf> = BTreeSet::new();
-        for (package, workspace) in &indexes {
-            match app_state::workspace_index_directory(&root, package, workspace) {
-                Ok(directory) => {
-                    if let Some(holding) = directory.parent() {
-                        directories.insert(holding.to_path_buf());
-                    }
-                    directories.insert(directory);
-                }
-                Err(error) => tracing::warn!(
-                    %error,
-                    package,
-                    %workspace,
-                    "a workspace's index is not watched"
-                ),
-            }
-        }
-        let reading = match Watched::start(
-            "tilo-search-records",
-            directories.into_iter().collect(),
-            reader(root.clone()),
-        ) {
-            Ok(watched) => Reading::Followed(watched),
-            Err(error) => {
-                tracing::warn!(%error, "the record indexes are not followed");
-                Reading::Once(Arc::new(read_indexes(&root)))
-            }
-        };
+        // What the indexes name is read again whenever a record of this device moves: an app of a
+        // workspace naming one writes the store this stream hears, and so does this session.
+        let reading = reading(store.clone(), &changes);
         Self {
             root,
             store,
@@ -225,10 +189,7 @@ impl Records {
 
     /// The indexes as last read.
     fn latest(&self) -> Arc<Vec<Held>> {
-        match &self.reading {
-            Reading::Followed(watched) => watched.get(),
-            Reading::Once(held) => Arc::clone(held),
-        }
+        self.reading.following(&self.changes, &Watch::Any)
     }
 }
 
@@ -257,15 +218,28 @@ fn name_in(root: &Path, workspace: &str, package: &str, record: RecordCheckout) 
     }
 }
 
-/// `read` over `root` : the indexes the worker reads.
-fn reader(root: PathBuf) -> impl Fn() -> Vec<Held> + Send + Sync + 'static {
-    move || read_indexes(&root)
+/// The indexes in `store` , read now and again whenever the records of this device move.
+fn reading(store: Store, changes: &crate::platform::records::Changes) -> Reading<Vec<Held>> {
+    #[cfg(target_os = "linux")]
+    {
+        let reading = store;
+        Reading::start(
+            "tilo-search-records",
+            changes.clone(),
+            Watch::Any,
+            move || read_indexes(reading.as_ref()),
+            || {},
+        )
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Reading::read(changes, &Watch::Any, move || read_indexes(store.as_ref()))
+    }
 }
 
-/// Every record the indexes under `root` name, by id, with the workspaces that name it. A record
+/// Every record the indexes in `store` name, by id, with the workspaces that name it. A record
 /// two workspaces hold is one entry here: it is one record.
-fn read_indexes(root: &Path) -> Vec<Held> {
-    let store: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(root));
+fn read_indexes(store: &dyn DurableStore) -> Vec<Held> {
     let indexes = match store.workspace_indexes() {
         Ok(indexes) => indexes,
         Err(error) => {
@@ -275,7 +249,7 @@ fn read_indexes(root: &Path) -> Vec<Held> {
     };
     let mut held: BTreeMap<String, Held> = BTreeMap::new();
     for (package, workspace) in indexes {
-        for record in named_in(store.as_ref(), &package, &workspace) {
+        for record in named_in(store, &package, &workspace) {
             let entry = held
                 .entry(record.id.as_str().to_owned())
                 .or_insert_with(|| Held {
@@ -296,4 +270,87 @@ fn read_indexes(root: &Path) -> Vec<Held> {
 /// a writer, since an app of the workspace owns the index.
 fn named_in(store: &dyn DurableStore, package: &str, workspace: &str) -> Vec<RecordCheckout> {
     crate::platform::records::checkouts(store, package, workspace).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use automerge::AutoCommit;
+    use durable_store::WriteOp;
+    use ui::record::{RecordId, RecordKind};
+
+    const NOTES: &str = "so.tilo.notes";
+    const WORKSPACE: &str = "6d1c1f36-0000-4000-8000-000000000001";
+    const NOTE: &str = "tab:00000000000000a1";
+
+    /// A record an app names in its workspace index and writes is one search offers: the list
+    /// follows the change stream every write of the records lands in, not a directory of its own.
+    #[test]
+    fn a_record_an_app_writes_through_the_store_is_one_search_finds() {
+        let dir = tempfile::tempdir().expect("a store");
+        let records = Records::of(dir.path().to_path_buf());
+        let store = records.store();
+        assert!(
+            records.held(WORKSPACE).is_empty(),
+            "the list starts as the store holds it"
+        );
+
+        // The app names its record in the workspace's index, and writes the record.
+        let (id, kind) = (
+            RecordId::parse(NOTE).expect("a record id"),
+            RecordKind::new("notes.notebook"),
+        );
+        let mut index = AutoCommit::new();
+        assert!(ui::record::index::reference(&mut index, &id, &kind));
+        index.commit();
+        write(
+            &store,
+            &StorageKey::workspace_index(NOTES, WORKSPACE),
+            &mut index,
+        );
+        let mut note = AutoCommit::new();
+        ui::record::init(&mut note, &id, &kind, WORKSPACE);
+        write(
+            &store,
+            &StorageKey::record(NOTES, WORKSPACE, id.storage_key()),
+            &mut note,
+        );
+
+        // The list is read again on its worker, off the change the writes made: search finds the
+        // record by the name its index gave it.
+        let found = wait_for(&records, |records| !records.held(WORKSPACE).is_empty());
+        let row = found.first().expect("search offers the record");
+        assert_eq!(row.id, NOTE, "{found:?}");
+        assert_eq!(row.kind, "notes.notebook");
+        assert_eq!(row.package, NOTES);
+        assert!(row.here, "the workspace in front holds it: {found:?}");
+    }
+
+    /// The list `read` answers once it shows what the test waits for, or what it last showed.
+    fn wait_for(
+        records: &Records,
+        done: impl Fn(&Records) -> bool,
+    ) -> Vec<tilo_desktop_search::providers::records::HeldRecord> {
+        let until = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(2))
+            .expect("the wait's bound fits in an Instant");
+        loop {
+            let held = records.held(WORKSPACE);
+            if done(records) || std::time::Instant::now() > until {
+                return held;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    /// Write `doc` at `key` through `store`, as an app of the workspace does.
+    fn write(store: &Store, key: &StorageKey, doc: &mut AutoCommit) {
+        let lease = store.lease(key).expect("the key is this test's");
+        let bytes = doc.save();
+        store
+            .write(key, WriteOp::Replace(bytes), None)
+            .expect("the document is written");
+        store.flush(Some(key)).expect("the document is kept");
+        drop(lease);
+    }
 }

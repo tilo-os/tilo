@@ -158,56 +158,6 @@ impl Opens {
     }
 }
 
-/// Install [`PROBE`] in `home` 's own app store: an app this device has.
-fn installed_probe(home: &tilo_test_env::TestHome) {
-    let store = home.data().join("tilo-apps");
-    let payload = store.join("payload").join(PROBE);
-    fs::create_dir_all(payload.join("bin")).unwrap();
-    let manifest = payload.join("manifest.toml");
-    fs::write(
-        &manifest,
-        format!(
-            "[package]\n\
-             id = \"{PROBE}\"\n\
-             version = \"1.0.0\"\n\
-             kind = \"app\"\n\
-             name = \"Probe\"\n\
-             \n\
-             [publisher]\n\
-             identity = \"ed25519:{key}\"\n\
-             signature = \"\"\n\
-             \n\
-             [sandbox]\n\
-             namespaces = [\"user\"]\n\
-             seccomp = \"tilo-default\"\n\
-             landlock = \"strict\"\n\
-             \n\
-             [sandbox.net]\n\
-             mode = \"off\"\n\
-             \n\
-             [entrypoint]\n\
-             bin = \"bin/app\"\n\
-             type = \"gui\"\n\
-             \n\
-             [providers]\n\
-             schemes = [\"probe\"]\n",
-            key = "11".repeat(32),
-        ),
-    )
-    .unwrap();
-    fs::write(
-        store.join("registry.toml"),
-        format!(
-            "[[entry]]\nid = \"{PROBE}\"\nversion = \"1.0.0\"\n\
-             payload_root = \"{payload}\"\nmanifest_path = \"{manifest}\"\n",
-            payload = payload.display(),
-            manifest = manifest.display(),
-        ),
-    )
-    .unwrap();
-    tilo_test_env::pin("TILO_APPS_DATA_DIR", &store);
-}
-
 /// What the session asked of its apps when the person chose the notice: the record's app, in the
 /// workspace that holds it, on the record and at the place the notice named.
 fn opening_in(
@@ -257,7 +207,7 @@ fn home_with_an_identity() -> tilo_test_env::TestHome {
         tilo_identity_host::provisioning::IdentityStorage::Files,
     )
     .expect("the throwaway identity");
-    installed_probe(&home);
+    crate::common::probe_app(&mut home, PROBE, "Probe");
     home
 }
 

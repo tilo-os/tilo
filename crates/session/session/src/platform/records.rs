@@ -153,6 +153,138 @@ impl Changes {
     }
 }
 
+/// What a value read of the records follows: the records of one workspace, or every record.
+#[derive(Clone, Debug)]
+pub enum Watch {
+    /// The records of this workspace, by its id.
+    Workspace(String),
+    /// Every record of every workspace: a value read across the device's records.
+    Any,
+}
+
+impl Watch {
+    /// Whether a change noted in `workspace` is one this watch follows.
+    fn follows(&self, workspace: &str) -> bool {
+        match self {
+            Self::Workspace(watched) => watched == workspace,
+            Self::Any => true,
+        }
+    }
+
+    /// How often what this watch follows moved.
+    fn moved(&self, changes: &Changes) -> u64 {
+        match self {
+            Self::Workspace(workspace) => changes.moved_in(workspace),
+            Self::Any => changes.moved(),
+        }
+    }
+}
+
+/// A value read of the workspaces' records, kept current by the change stream: read when it is
+/// started, and again whenever what it follows moves — on a worker of its own where this host has
+/// threads, so a read never holds up a frame, and on the one thread the page has where it has one.
+pub struct Reading<T> {
+    #[cfg(target_os = "linux")]
+    held: Arc<Mutex<(u64, Arc<T>)>>,
+    #[cfg(target_os = "linux")]
+    landed: Arc<AtomicU64>,
+    #[cfg(not(target_os = "linux"))]
+    held: std::cell::RefCell<(u64, Arc<T>)>,
+    #[cfg(not(target_os = "linux"))]
+    read: Box<dyn Fn() -> T>,
+}
+
+#[cfg(target_os = "linux")]
+impl<T: Send + Sync + 'static> Reading<T> {
+    /// Read `read` now, and again on a worker whenever `changes` says what `watch` follows moved,
+    /// telling `moved` so the frame that shows it is drawn.
+    pub fn start(
+        name: &str,
+        changes: Changes,
+        watch: Watch,
+        read: impl Fn() -> T + Send + Sync + 'static,
+        moved: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        let at = watch.moved(&changes);
+        let held = Arc::new(Mutex::new((at, Arc::new(read()))));
+        let landed = Arc::new(AtomicU64::new(1));
+        let reader = changes.reader();
+        let (shared, counted) = (Arc::clone(&held), Arc::clone(&landed));
+        let worker = std::thread::Builder::new()
+            .name(name.to_owned())
+            .spawn(move || {
+                // Ends when the stream does: the session is gone.
+                while let Ok(moved_workspace) = reader.recv() {
+                    // A burst of changes is read once.
+                    let mut mine = watch.follows(&moved_workspace);
+                    while let Ok(other) = reader.try_recv() {
+                        mine |= watch.follows(&other);
+                    }
+                    if !mine {
+                        continue;
+                    }
+                    let at = watch.moved(&changes);
+                    let fresh = Arc::new((read)());
+                    *shared.lock().unwrap_or_else(PoisonError::into_inner) = (at, fresh);
+                    counted.fetch_add(1, Ordering::AcqRel);
+                    moved();
+                }
+            });
+        if let Err(error) = worker {
+            tracing::warn!(%error, "a value read of the records is not followed");
+        }
+        Self { held, landed }
+    }
+
+    /// The value as this host last read it: the worker keeps it current.
+    pub fn get(&self) -> Arc<T> {
+        Arc::clone(&self.held.lock().unwrap_or_else(PoisonError::into_inner).1)
+    }
+
+    /// [`Self::get`] for a caller that also reads a thread with one: the same value here.
+    pub fn following(&self, _changes: &Changes, _watch: &Watch) -> Arc<T> {
+        self.get()
+    }
+
+    /// How many reads landed: what a caller hashes to hear that a read changed the value.
+    pub fn reads(&self) -> u64 {
+        self.landed.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl<T: 'static> Reading<T> {
+    /// Read `read` now: this host has one thread, and reads the records on it.
+    pub fn read(changes: &Changes, watch: &Watch, read: impl Fn() -> T + 'static) -> Self {
+        Self {
+            held: std::cell::RefCell::new((watch.moved(changes), Arc::new(read()))),
+            read: Box::new(read),
+        }
+    }
+
+    /// The value, read again where the stream says what `watch` follows moved: this host has one
+    /// thread, and nothing may hold it.
+    pub fn following(&self, changes: &Changes, watch: &Watch) -> Arc<T> {
+        let at = watch.moved(changes);
+        let mut held = self.held.borrow_mut();
+        if held.0 != at {
+            held.0 = at;
+            held.1 = Arc::new((self.read)());
+        }
+        Arc::clone(&held.1)
+    }
+
+    /// The value as last read.
+    pub fn get(&self) -> Arc<T> {
+        Arc::clone(&self.held.borrow().1)
+    }
+
+    /// How often what `watch` follows moved when this was last read.
+    pub fn reads(&self) -> u64 {
+        self.held.borrow().0
+    }
+}
+
 /// What a host reads of its records.
 pub trait Records {
     /// The records a change reached since this was last taken.

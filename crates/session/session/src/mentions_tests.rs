@@ -9,6 +9,7 @@ use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _};
 
 use super::*;
+use crate::platform::records::Changes;
 use ui::mentions::{MARK, reading_nothing};
 use ui::record::{RecordId, RecordKind};
 
@@ -28,58 +29,105 @@ fn name(id: &str) -> String {
     }
 }
 
-/// The records a host reads: the documents it holds, the kinds their apps keep, and what changed.
-#[derive(Default)]
-struct Recorder {
-    changed: RefCell<Vec<Changed>>,
-    docs: RefCell<BTreeMap<(String, String), AutoCommit>>,
-    kinds: RefCell<BTreeMap<String, String>>,
+/// A device's records: the store they are kept in, the one stream their writes land in, and the
+/// reader the role looks at them through — what a session hands its mentions.
+struct Device {
+    dir: tempfile::TempDir,
+    store: Store,
+    changes: Changes,
 }
 
-impl Recorder {
-    fn holding(docs: &[(&str, &str, &AutoCommit)]) -> Rc<Self> {
-        let held = Rc::new(Self::default());
+impl Device {
+    /// A device holding `docs` as `app`'s records of [`WORKSPACE`], each written as its app writes
+    /// it: what the person is told of is what this device's store holds.
+    fn holding(docs: &[(&str, &str, &AutoCommit)]) -> Self {
+        let held = Self::empty();
         for (app, route, doc) in docs {
-            held.docs
-                .borrow_mut()
-                .insert((app.to_string(), route.to_string()), AutoCommit::clone(doc));
+            held.writes(app, route, &mut AutoCommit::clone(doc));
         }
         held
     }
 
-    /// A change reached `record` of `app`; `replayed` for one the workspace already held when this
-    /// device first followed it.
-    fn reached(&self, app: &str, record: &str, replayed: bool) {
-        self.changed.borrow_mut().push(Changed {
-            workspace: WORKSPACE.to_owned(),
-            app: app.to_owned(),
-            record: record.to_owned(),
-            replayed,
-        });
+    /// A device whose store holds nothing yet.
+    fn empty() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let changes = Changes::default();
+        let store = crate::platform::records::noting(
+            std::sync::Arc::new(app_state::FsStore::new(dir.path())) as Store,
+            changes.clone(),
+        );
+        Self {
+            dir,
+            store,
+            changes,
+        }
     }
 
-    fn holds(&self, app: &str, record: &str, doc: &AutoCommit) {
-        self.docs
-            .borrow_mut()
-            .insert((app.to_owned(), record.to_owned()), AutoCommit::clone(doc));
-    }
-}
-
-impl Records for Recorder {
-    fn take_changed(&self) -> Vec<Changed> {
-        std::mem::take(&mut *self.changed.borrow_mut())
+    /// Write `doc` as `app`'s record `route` of the workspace: the write its app makes, noted in
+    /// the stream as it lands.
+    fn writes(&self, app: &str, route: &str, doc: &mut AutoCommit) {
+        Self::write_through(&self.store, app, route, doc);
     }
 
-    fn document(&self, app: &str, workspace: &str, record: &str) -> Option<AutoCommit> {
-        assert_eq!(workspace, WORKSPACE);
-        self.docs
-            .borrow()
-            .get(&(app.to_owned(), record.to_owned()))
-            .cloned()
+    /// The workspace held `doc` before this device followed it: written where the store keeps it,
+    /// and noted as what the device already had rather than as news.
+    fn already_held(&self, app: &str, route: &str, doc: &mut AutoCommit) {
+        let plain: Store = std::sync::Arc::new(app_state::FsStore::new(self.dir.path()));
+        Self::write_through(&plain, app, route, doc);
+        self.changes.note(WORKSPACE, app, route, true);
     }
 
-    fn kind(&self, app: &str, _workspace: &str) -> String {
-        self.kinds.borrow().get(app).cloned().unwrap_or_default()
+    /// `app`'s index names `route` as a record of `kind`, as its app writes it.
+    fn kind(&self, app: &str, route: &str, kind: &str) {
+        let mut doc = AutoCommit::new();
+        let named = ui::record::index::reference(
+            &mut doc,
+            &RecordId::parse(route).expect("a record id"),
+            &RecordKind::new(kind),
+        );
+        assert!(named, "{route} is named in {app}'s index");
+        doc.commit();
+        Self::write_doc(
+            &self.store,
+            &StorageKey::workspace_index(app, WORKSPACE),
+            &mut doc,
+        );
+    }
+
+    fn write_through(store: &Store, app: &str, route: &str, doc: &mut AutoCommit) {
+        Self::write_doc(store, &StorageKey::record(app, WORKSPACE, route), doc);
+    }
+
+    /// Write `doc` at `key` through `store`, as a writer of it does.
+    fn write_doc(store: &Store, key: &StorageKey, doc: &mut AutoCommit) {
+        let lease = store.lease(key).expect("the key is this test's");
+        let bytes = doc.save();
+        let actor: Vec<u8> = doc.get_actor().to_bytes().to_vec();
+        store
+            .write(key, WriteOp::Replace(bytes), Some(&actor))
+            .expect("the document is written");
+        store.flush(Some(key)).expect("the document is kept");
+        drop(lease);
+    }
+
+    /// The role over these records, telling the person `shown`, who is Bea.
+    fn role(&self, shown: &Rc<Shown>) -> Mentions {
+        self.role_as(BEA, shown)
+    }
+
+    /// The role over these records for `person`, telling them through `shown`.
+    fn role_as(&self, person: &str, shown: &Rc<Shown>) -> Mentions {
+        Mentions::over(Given {
+            person: vec![person.to_owned()],
+            store: Some(self.store.clone()),
+            records: Some(Rc::new(crate::platform::records::Linked::over(
+                self.store.clone(),
+                self.changes.clone(),
+            )) as Rc<dyn Records>),
+            notices: Some(Rc::clone(shown) as Rc<dyn Notices>),
+            name: Rc::new(name),
+            wake: None,
+        })
     }
 }
 
@@ -106,28 +154,10 @@ impl Notices for Shown {
     }
 }
 
-fn role(records: &Rc<Recorder>, shown: &Rc<Shown>, store: Store) -> Mentions {
-    Mentions::over(Given {
-        person: vec![BEA.to_owned()],
-        store: Some(store),
-        records: Some(Rc::clone(records) as Rc<dyn Records>),
-        notices: Some(Rc::clone(shown) as Rc<dyn Notices>),
-        name: Rc::new(name),
-        wake: None,
-    })
-}
-
 /// Look again, past the pause the role keeps between two looks.
 fn look_again(mentions: &Mentions) {
     let after = ui::time::now().checked_add(ui::time::Duration::from_secs(1));
     mentions.step_at(after.expect("a second after now"));
-}
-
-/// A device's store to keep what was told in.
-fn kept_store() -> (tempfile::TempDir, Store) {
-    let dir = tempfile::tempdir().unwrap();
-    let store = std::sync::Arc::new(app_state::FsStore::new(dir.path())) as Store;
-    (dir, store)
 }
 
 /// A notebook as `tilo_resource::Collection` keeps it: one page, its title and a paragraph whose
@@ -182,21 +212,19 @@ fn notebook_block(doc: &AutoCommit) -> ObjId {
         .unwrap()
 }
 
-/// The role over a notebook that mentions Bea, and the notices it told.
-fn beas_notebook() -> (Rc<Recorder>, Rc<Shown>, Mentions, Store, tempfile::TempDir) {
+/// The device holding a notebook that mentions Bea, the notices it told, and the role.
+fn beas_notebook() -> (Device, Rc<Shown>, Mentions) {
     let written = notebook("Ask @Bea about the date", Some((4, 8, BEA)), ADA);
-    let records = Recorder::holding(&[(NOTES, NOTE, &written)]);
+    let device = Device::holding(&[(NOTES, NOTE, &written)]);
     let shown = Rc::new(Shown::default());
-    let (dir, store) = kept_store();
-    let mentions = role(&records, &shown, store.clone());
-    records.reached(NOTES, NOTE, false);
+    let mentions = device.role(&shown);
     mentions.step();
-    (records, shown, mentions, store, dir)
+    (device, shown, mentions)
 }
 
 #[test]
 fn a_mention_in_a_record_is_one_notice_for_the_reader_it_names() {
-    let (_records, shown, _mentions, _store, _dir) = beas_notebook();
+    let (_held, shown, _mentions) = beas_notebook();
     let up = shown.up.borrow();
     assert_eq!(up.len(), 1, "{up:?}");
     let notice = up.values().next().unwrap();
@@ -218,35 +246,26 @@ fn a_mention_in_a_record_is_one_notice_for_the_reader_it_names() {
 #[test]
 fn nobody_else_in_the_workspace_is_told() {
     let written = notebook("Ask @Bea about the date", Some((4, 8, BEA)), ADA);
-    let records = Recorder::holding(&[(NOTES, NOTE, &written)]);
     for other in [CAI, ADA] {
+        let device = Device::holding(&[(NOTES, NOTE, &written)]);
         let theirs = Rc::new(Shown::default());
-        let (_dir, store) = kept_store();
-        let mentions = Mentions::over(Given {
-            person: vec![other.to_owned()],
-            store: Some(store),
-            records: Some(Rc::clone(&records) as Rc<dyn Records>),
-            notices: Some(Rc::clone(&theirs) as Rc<dyn Notices>),
-            name: Rc::new(name),
-            wake: None,
-        });
-        records.reached(NOTES, NOTE, false);
-        mentions.step();
+        device.role_as(other, &theirs).step();
         assert!(theirs.up.borrow().is_empty(), "{other}");
     }
 }
 
 #[test]
 fn reopening_or_reloading_tells_nothing_again() {
-    let (records, shown, mentions, store, _dir) = beas_notebook();
-    records.reached(NOTES, NOTE, false);
+    let (device, shown, mentions) = beas_notebook();
+    let mut written = notebook("Ask @Bea about the date", Some((4, 8, BEA)), ADA);
+    device.writes(NOTES, NOTE, &mut written);
     look_again(&mentions);
     assert_eq!(shown.up.borrow().len(), 1, "nothing is told twice");
 
     // The device restarted: what it told is kept in its store.
     let after = Rc::new(Shown::default());
-    let restarted = role(&records, &after, store);
-    records.reached(NOTES, NOTE, false);
+    let restarted = device.role(&after);
+    device.writes(NOTES, NOTE, &mut written);
     restarted.step();
     assert!(
         after.up.borrow().is_empty(),
@@ -257,11 +276,9 @@ fn reopening_or_reloading_tells_nothing_again() {
 #[test]
 fn a_mention_edited_away_is_withdrawn() {
     let mut written = notebook("Ask @Bea", Some((4, 8, BEA)), ADA);
-    let records = Recorder::holding(&[(NOTES, NOTE, &written)]);
+    let device = Device::holding(&[(NOTES, NOTE, &written)]);
     let shown = Rc::new(Shown::default());
-    let (_dir, store) = kept_store();
-    let mentions = role(&records, &shown, store);
-    records.reached(NOTES, NOTE, false);
+    let mentions = device.role(&shown);
     mentions.step();
     assert_eq!(shown.up.borrow().len(), 1);
 
@@ -270,8 +287,7 @@ fn a_mention_edited_away_is_withdrawn() {
         .unmark(&block, MARK, 0, 8, ExpandMark::None)
         .unwrap();
     written.commit();
-    records.holds(NOTES, NOTE, &written);
-    records.reached(NOTES, NOTE, false);
+    device.writes(NOTES, NOTE, &mut written);
     look_again(&mentions);
     assert!(
         shown.up.borrow().is_empty(),
@@ -281,29 +297,26 @@ fn a_mention_edited_away_is_withdrawn() {
 
 #[test]
 fn a_mention_the_workspace_held_before_this_device_followed_it_is_not_news() {
-    let written = notebook("Ask @Bea", Some((4, 8, BEA)), ADA);
-    let records = Recorder::holding(&[(NOTES, NOTE, &written)]);
+    let mut written = notebook("Ask @Bea", Some((4, 8, BEA)), ADA);
+    let device = Device::empty();
+    device.already_held(NOTES, NOTE, &mut written);
     let shown = Rc::new(Shown::default());
-    let (_dir, store) = kept_store();
-    let mentions = role(&records, &shown, store);
-    records.reached(NOTES, NOTE, true);
+    let mentions = device.role(&shown);
     mentions.step();
     assert!(shown.up.borrow().is_empty(), "{:?}", shown.up.borrow());
 
     // The record changes again: the same mention is not told twice.
-    let mut changed = written;
-    let block = notebook_block(&changed);
-    changed.splice_text(&block, 0, 0, "Please ").unwrap();
-    changed.commit();
-    records.holds(NOTES, NOTE, &changed);
-    records.reached(NOTES, NOTE, false);
+    let block = notebook_block(&written);
+    written.splice_text(&block, 0, 0, "Please ").unwrap();
+    written.commit();
+    device.writes(NOTES, NOTE, &mut written);
     look_again(&mentions);
     assert!(shown.up.borrow().is_empty());
 }
 
 #[test]
 fn choosing_a_notice_gives_the_place_the_host_opens() {
-    let (_records, shown, mentions, _store, _dir) = beas_notebook();
+    let (_held, shown, mentions) = beas_notebook();
     let place = shown
         .up
         .borrow()
@@ -319,22 +332,19 @@ fn choosing_a_notice_gives_the_place_the_host_opens() {
 
 #[test]
 fn changes_arriving_in_a_burst_are_looked_at_together() {
-    let written = notebook("Ask @Bea", Some((4, 8, BEA)), ADA);
-    let records = Recorder::holding(&[(NOTES, NOTE, &written)]);
+    let device = Device::empty();
     let shown = Rc::new(Shown::default());
-    let (_dir, store) = kept_store();
-    let mentions = role(&records, &shown, store);
+    let mentions = device.role(&shown);
     let first = ui::time::now();
-    records.reached(NOTES, NOTE, false);
+    let mut written = notebook("Ask @Bea", Some((4, 8, BEA)), ADA);
+    device.writes(NOTES, NOTE, &mut written);
     mentions.step_at(first);
     assert_eq!(shown.up.borrow().len(), 1);
 
-    let mut changed = written;
-    let block = notebook_block(&changed);
-    changed.splice_text(&block, 0, 0, "Please ").unwrap();
-    changed.commit();
-    records.holds(NOTES, NOTE, &changed);
-    records.reached(NOTES, NOTE, false);
+    let block = notebook_block(&written);
+    written.splice_text(&block, 0, 0, "Please ").unwrap();
+    written.commit();
+    device.writes(NOTES, NOTE, &mut written);
     mentions.step_at(first + ui::time::Duration::from_millis(10));
     mentions.step_at(first + ui::time::Duration::from_millis(LOOK_EVERY_MS));
     assert_eq!(shown.up.borrow().len(), 1, "one record, one notice");
@@ -352,7 +362,13 @@ fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
     chat.put(&channel, "name", "general").unwrap();
 
     let mut part = AutoCommit::new();
-    let part_route = RecordId::package_primary().part(0).as_str().to_owned();
+    // The chat's own record, and the part of it a page of messages is kept in.
+    let chat_route = "tab:00000000000000c1".to_owned();
+    let part_route = RecordId::parse(&chat_route)
+        .expect("a record id")
+        .part(0)
+        .as_str()
+        .to_owned();
     let messages = part.put_object(ROOT, "messages", ObjType::Map).unwrap();
     let entry = part.put_object(&messages, "m1", ObjType::Map).unwrap();
     let message = part.put_object(&entry, "v", ObjType::Map).unwrap();
@@ -368,16 +384,15 @@ fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
     part.put(&span, "name", MARK).unwrap();
     write_value(&mut part, &span);
 
-    let records = Recorder::holding(&[(CHAT, &part_route, &part), (CHAT, "", &chat)]);
-    records
-        .kinds
-        .borrow_mut()
-        .insert(CHAT.to_owned(), "chat.workspace".to_owned());
+    let device = Device::holding(&[
+        (CHAT, &part_route, &part),
+        (CHAT, &chat_route, &chat),
+        (CHAT, &part_route, &part),
+    ]);
+    // The kind a part does not name itself: its app's index names the records it keeps.
+    device.kind(CHAT, &chat_route, "chat.workspace");
     let shown = Rc::new(Shown::default());
-    let (_dir, store) = kept_store();
-    let mentions = role(&records, &shown, store);
-    records.reached(CHAT, &part_route, false);
-    mentions.step();
+    device.role(&shown).step();
 
     let up = shown.up.borrow();
     assert_eq!(up.len(), 1, "{up:?}");
@@ -388,7 +403,7 @@ fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
         notice.place.clone().expect("it opens what it names"),
         Place {
             app: CHAT.into(),
-            record: String::new(),
+            record: chat_route,
             resource: "chat.workspace/messages/m1".into(),
         }
     );

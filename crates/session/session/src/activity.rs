@@ -8,8 +8,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::rc::Rc;
-#[cfg(target_os = "linux")]
-use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -117,7 +115,8 @@ struct Inner {
     undos: crate::task_undo::Undos,
     /// The records each workspace holds, read on a worker of its own, told by the change stream
     /// when one of them moved.
-    records: RefCell<HashMap<String, Rc<Reading>>>,
+    records:
+        RefCell<HashMap<String, Rc<crate::platform::records::Reading<Vec<DetachedRecordHistory>>>>>,
     store: Option<Store>,
     /// The one stream of record changes: what tells this session a workspace's records moved.
     changes: crate::platform::records::Changes,
@@ -497,9 +496,10 @@ impl Activity {
             return Vec::new();
         };
         let key = workspace_id.to_string();
+        let watch = crate::platform::records::Watch::Workspace(key.clone());
         if let Some(known) = self.0.records.borrow().get(&key) {
             let known = Rc::clone(known);
-            return known.following(&self.0.changes, &key).as_ref().clone();
+            return known.following(&self.0.changes, &watch).as_ref().clone();
         }
         let reading = store.clone();
         let by_workspace = key.clone();
@@ -509,10 +509,10 @@ impl Activity {
         });
         let read = move || read_workspace_records(reading.as_ref(), &by_workspace, &noted);
         #[cfg(target_os = "linux")]
-        let known = Rc::new(Reading::start(
+        let known = Rc::new(crate::platform::records::Reading::start(
             "tilo-activity-records",
             self.0.changes.clone(),
-            key.clone(),
+            crate::platform::records::Watch::Workspace(key.clone()),
             read,
             {
                 let woken = Arc::clone(&self.0.woken);
@@ -521,7 +521,11 @@ impl Activity {
             },
         ));
         #[cfg(not(target_os = "linux"))]
-        let known = Rc::new(Reading::read(&self.0.changes, &key, read));
+        let known = Rc::new(crate::platform::records::Reading::read(
+            &self.0.changes,
+            &watch,
+            read,
+        ));
         let value = known.get().as_ref().clone();
         self.0.records.borrow_mut().insert(key, Rc::clone(&known));
         value
@@ -536,125 +540,6 @@ impl Activity {
             .values()
             .map(|known| known.reads())
             .sum()
-    }
-}
-
-/// The records one workspace holds, as this session last read them: kept current by a worker
-/// where the host has threads, and read where the change stream says they moved where it has one.
-struct Reading {
-    #[cfg(target_os = "linux")]
-    held: Arc<Mutex<(u64, Arc<Vec<DetachedRecordHistory>>)>>,
-    #[cfg(target_os = "linux")]
-    landed: Arc<AtomicU64>,
-    #[cfg(not(target_os = "linux"))]
-    held: RefCell<(u64, Arc<Vec<DetachedRecordHistory>>)>,
-    #[cfg(not(target_os = "linux"))]
-    read: Box<dyn Fn() -> Vec<DetachedRecordHistory>>,
-}
-
-#[cfg(target_os = "linux")]
-impl Reading {
-    /// Read `read` now, and again on a worker whenever `changes` says the records of `workspace`
-    /// moved, telling `moved` so the frame that shows them is drawn.
-    fn start(
-        name: &str,
-        changes: crate::platform::records::Changes,
-        workspace: String,
-        read: impl Fn() -> Vec<DetachedRecordHistory> + Send + Sync + 'static,
-        moved: impl Fn() + Send + Sync + 'static,
-    ) -> Self {
-        let held = Arc::new(Mutex::new((changes.moved_in(&workspace), Arc::new(read()))));
-        let landed = Arc::new(AtomicU64::new(1));
-        let reader = changes.reader();
-        let (shared, counted) = (Arc::clone(&held), Arc::clone(&landed));
-        let worker = std::thread::Builder::new()
-            .name(name.to_owned())
-            .spawn(move || {
-                // Ends when the stream does: the session is gone.
-                while let Ok(moved_workspace) = reader.recv() {
-                    // A burst of changes is read once.
-                    let mut mine = moved_workspace == workspace;
-                    while let Ok(other) = reader.try_recv() {
-                        mine |= other == workspace;
-                    }
-                    if !mine {
-                        continue;
-                    }
-                    let at = changes.moved_in(&workspace);
-                    let fresh = Arc::new((read)());
-                    *shared
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = (at, fresh);
-                    counted.fetch_add(1, Ordering::AcqRel);
-                    moved();
-                }
-            });
-        if let Err(error) = worker {
-            tracing::warn!(%error, "a workspace's records are not followed");
-        }
-        Self { held, landed }
-    }
-
-    fn get(&self) -> Arc<Vec<DetachedRecordHistory>> {
-        Arc::clone(
-            &self
-                .held
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .1,
-        )
-    }
-
-    /// The records as this session last read them: the worker keeps them current.
-    fn following(
-        &self,
-        _changes: &crate::platform::records::Changes,
-        _workspace: &str,
-    ) -> Arc<Vec<DetachedRecordHistory>> {
-        self.get()
-    }
-
-    fn reads(&self) -> u64 {
-        self.landed.load(Ordering::Acquire)
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-impl Reading {
-    /// Read `read` now: this host has one thread, and reads the records on it.
-    fn read(
-        changes: &crate::platform::records::Changes,
-        workspace: &str,
-        read: impl Fn() -> Vec<DetachedRecordHistory> + 'static,
-    ) -> Self {
-        Self {
-            held: RefCell::new((changes.moved_in(workspace), Arc::new(read()))),
-            read: Box::new(read),
-        }
-    }
-
-    fn get(&self) -> Arc<Vec<DetachedRecordHistory>> {
-        Arc::clone(&self.held.borrow().1)
-    }
-
-    /// The records of `workspace`, read again where the stream says they moved: this host has one
-    /// thread, and nothing may hold it.
-    fn following(
-        &self,
-        changes: &crate::platform::records::Changes,
-        workspace: &str,
-    ) -> Arc<Vec<DetachedRecordHistory>> {
-        let at = changes.moved_in(workspace);
-        let mut held = self.held.borrow_mut();
-        if held.0 != at {
-            held.0 = at;
-            held.1 = Arc::new((self.read)());
-        }
-        Arc::clone(&held.1)
-    }
-
-    fn reads(&self) -> u64 {
-        self.held.borrow().0
     }
 }
 
