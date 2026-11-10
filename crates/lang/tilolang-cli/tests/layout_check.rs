@@ -439,13 +439,12 @@ fn a_phone_layout_shows_what_a_tapped_row_opens() {
     use tilo_test_env::SpawnUnderEnvLock as _;
 
     for (app, shows) in [
-        // Notes holds its tree over the note's page as a drawer at this width: the window's
-        // sidebar toggle brings the tree forward, and a row of it opens its note with the
-        // drawer behind.
-        ("notes", ", then the sidebar at 390×844"),
+        // Notes is a tree and the note it opens: at this width the tree is the window's first
+        // screen and a row of it pushes the note in front, with the way back to the tree.
+        ("notes", ", then a notebook in front at 390×844"),
         (
             "notes",
-            ", then the sidebar, then the row tapped at 390×844",
+            ", then Back pressed, then a notebook in front at 390×844",
         ),
         // A board keeps no detail of its own: the card a finger taps is the page that shows.
         ("board", "then a card_page in front at 390×844"),

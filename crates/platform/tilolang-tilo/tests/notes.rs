@@ -331,6 +331,17 @@ fn a_pressed_row_shows_the_note_beside_the_tree() {
         [groceries.id_string()],
         "the row the person pressed is the one the page shows"
     );
+    // A link or a breadcrumb that shows a note in this window moves the tree's choice to it,
+    // rather than pressing a second page over the tree.
+    window.show(&groceries).unwrap();
+    assert_eq!(
+        chosen(&mut window)
+            .iter()
+            .map(ResourceRef::id_string)
+            .collect::<Vec<_>>(),
+        [groceries.id_string()],
+        "the note the window shows is the one the tree highlights"
+    );
 }
 
 /// The first node of `kind` in `tree`.

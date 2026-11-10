@@ -1576,6 +1576,10 @@ impl AppCheck<'_> {
             let Some(resource) = resource_of(&listed, &named, &ty.id) else {
                 continue;
             };
+            // The window shows the item first, as a person's path does (a list's choice, a
+            // link): a named view opened over a window showing another item stages a screen
+            // nobody reaches, its list naming one thing and its page another.
+            staged.open(resource.clone());
             staged.open_with(&resource, &view.id);
             self.run(staged, &format!("{title}, then {} shown", view.name))?;
         }
@@ -1589,6 +1593,10 @@ impl AppCheck<'_> {
             let Some(resource) = resource_of(&listed, &named, &ty.id) else {
                 continue;
             };
+            // The window shows the item first, as a person's path does (a list's choice, a
+            // link): a named view opened over a window showing another item stages a screen
+            // nobody reaches, its list naming one thing and its page another.
+            staged.open(resource.clone());
             staged.open_with(&resource, &view.id);
             self.run(staged, &format!("{title}, then {} shown", view.name))?;
         }
@@ -2062,6 +2070,11 @@ impl AppCheck<'_> {
             viewport,
             &declared,
             ui::chrome::disclosure_gutter(&layout.theme()),
+            bar.controls
+                .iter()
+                .find(|control| control.id == "window-toolbar-location")
+                .map(|control| control.name.as_str())
+                .filter(|name| !name.trim().is_empty()),
         ));
         problems.extend(mixed_language());
         // The bar the harness offers is the one bar of one app window, over its frame: what its

@@ -7353,6 +7353,13 @@
           "type": "bool"
         },
         {
+          "name": "navigates",
+          "doc": "Whether activating the row opens the item it stands for in the window's own page, as a list's row does. `Some(false)` where the window draws the open item itself — a tree beside its page — and answers the activation: the row reports its events and opens nothing of the host's own, so the page the tree shows is the only one.",
+          "type": {
+            "option": "bool"
+          }
+        },
+        {
           "name": "progress",
           "doc": "How far the branch got while it is folded (\"1/3\"), which the owner counts of its own children: the same count names a list row and an outline node, so both say one thing. The row's own [`TreeViewRowProps::progress`] says it instead where the row gives one.",
           "type": {

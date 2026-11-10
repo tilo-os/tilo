@@ -112,11 +112,15 @@ d-tmqqtkeb = Notizen
 
 d-akcqjax3 = Notizbuch
 
+d-x4im3xs5 = Notizbuchkopf
+
 d-qrsfr4a5 = Notizbuchmenü
     .w-file = Datei
     .w-import-markdown = Markdown importieren…
     .w-import-a-zip-of-markdown = Ein Zip aus Markdown importieren…
     .w-export-the-notebook = Das Notizbuch exportieren…
+    .w-insert-an-image = Ein Bild einfügen…
+    .w-export-this-note = Diese Notiz exportieren…
 
 d-xqxkoqbj = Notizzeile
 
@@ -128,7 +132,3 @@ d-nki6assy = Notizangaben
     .w-1-word = 1 Wort
     .w-words = { $count } Wörter
 
-d-x7x7sbtj = Notizmenü
-    .w-file = Datei
-    .w-insert-an-image = Ein Bild einfügen…
-    .w-export = Exportieren…

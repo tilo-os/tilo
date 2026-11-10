@@ -106,11 +106,15 @@ d-7in2x6ql = Move after~present
 
 d-akcqjax3 = Notebook
 
+d-x4im3xs5 = Notebook head
+
 d-qrsfr4a5 = Notebook menu
     .w-file = File
     .w-import-markdown = Import Markdown…
     .w-import-a-zip-of-markdown = Import a zip of Markdown…
     .w-export-the-notebook = Export the notebook…
+    .w-insert-an-image = Insert an image…
+    .w-export-this-note = Export this note…
 
 d-ojfhuiuf = Add child
     .w-new-sub-note = New sub-note
@@ -129,8 +133,3 @@ d-nki6assy = Note details
     .w-edited = Edited
     .w-1-word = 1 word
     .w-words = { $count } words
-
-d-x7x7sbtj = Note menu
-    .w-file = File
-    .w-insert-an-image = Insert an image…
-    .w-export = Export…

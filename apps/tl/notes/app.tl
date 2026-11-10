@@ -343,9 +343,14 @@ action import_archive(nb: Notebook, file: File) (icon: .file_plus, did: "importe
 
 /// The notebook's window: the notes as a tree in the sidebar, the one chosen beside it.
 view notebook(nb: Notebook) {
+    // The note the window shows, kept by the window: the first note until a person chooses
+    // another, and the one a link, a breadcrumb or a search shows.
+    state open_note: Option<Note> = nb.notes.first()
+    on show(x: Note): set(open_note, x)
     std.tree(
         nb,
         nb.notes,
+        opened: open_note,
         parent: n -> n.parent,
         depth: n -> .some(depth_of(n)),
         branch: n -> holds_any(nb, n),
@@ -355,9 +360,8 @@ view notebook(nb: Notebook) {
         add: add_child,
         path: n -> meta(n).title,
         doc: note_page,
-        head: open -> notebook_head(nb, open),
+        head: notebook_head,
     ) { n ->
-        // The bar's controls, and — while a note is open — the note's own file commands.
         // A note with no title yet is called what its type calls it, as in every list of it.
         note_node(n)
     }
@@ -365,9 +369,9 @@ view notebook(nb: Notebook) {
 
 /// The notebook's controls in the window's bar: the one that makes a note, and the file commands
 /// — the notebook's own, and those of the note open beside the tree.
-view notebook_head(nb: Notebook, open: Option<Note>) {
+view notebook_head(open: Option<Note>) {
+    let nb = root Notebook
     row(gap: .related) {
-        button(new_note(nb))
         notebook_menu(nb, open)
     }
 }
@@ -433,34 +437,38 @@ view note_page(n: Note) {
     let nb = root Notebook
     state linking: Bool = false
     state link_text: Text = ""
-    // The title, where the note stands and what it holds are one header: the page's blocks
-    // under it stand a group gutter apart.
-    stack(gap: .related) {
-        ui.TextInput(bind: n.title, title: true)
-        note_details(n)
-        if not n.tags.is_empty() {
-            row(gap: .related, wrap: true) {
-                for t in n.tags {
-                    ui.Chip(t) {
-                        on remove: untag(n, t)
+    // The page's blocks are groups of their own, a group gutter apart: the head, the body, what
+    // links here, the discussion and the history. The title, where the note stands and what it
+    // holds are one head, closer together.
+    stack(gap: .group) {
+        stack(gap: .related) {
+            ui.TextInput(bind: n.title, title: true)
+            note_details(n)
+            if not n.tags.is_empty() {
+                row(gap: .related, wrap: true) {
+                    for t in n.tags {
+                        ui.Chip(t) {
+                            on remove: untag(n, t)
+                        }
                     }
                 }
             }
         }
+        // What `[[` offers: the notebook's notes that hold what is typed in it, asked of the
+        // store as it is typed and handed a page at a time, and none at all while the picker is
+        // closed.
+        ui.BlockEditor(
+            bind: n.body,
+            placeholder: "Write something",
+            links: if linking { nb.notes.matching(link_text).take(48) } else { [] },
+        ) {
+            on links_open(open): set(linking, open)
+            on links_query(text): set(link_text, text)
+        }
+        std.linked(n, compact: true)
+        discussion.thread(n)
+        std.history(n)
     }
-    // What `[[` offers: the notebook's notes that hold what is typed in it, asked of the store
-    // as it is typed and handed a page at a time, and none at all while the picker is closed.
-    ui.BlockEditor(
-        bind: n.body,
-        placeholder: "Write something",
-        links: if linking { nb.notes.matching(link_text).take(48) } else { [] },
-    ) {
-        on links_open(open): set(linking, open)
-        on links_query(text): set(link_text, text)
-    }
-    std.linked(n, compact: true)
-    discussion.thread(n)
-    std.history(n)
 }
 
 /// What a note says of itself, as one quiet line under its title: the notes it stands under,

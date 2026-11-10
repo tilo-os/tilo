@@ -492,10 +492,14 @@ template view tree_rows<T>(
 }
 
 /// A window that is a tree of items: the tree down its sidebar and the item open beside it, as
-/// the page `doc` draws, with `head` the controls standing in the sidebar's header — the one
-/// that makes a new item, where what a person adds then stands, so the window's bar does not
-/// offer it again, and what can be done with the item open (`head(opened)`), so a page's own
-/// commands stand in the header at every width rather than on a line of the page.
+/// the page `doc` draws — one stack of blocks at the page's rhythm — with `head` the controls
+/// standing in the sidebar's header, given the item open (or none), so what can be done with it
+/// stands in the window's bar at every width rather than on a line of the page.
+///
+/// The window keeps which item it shows itself (`opened`): a view that answers `on show` with
+/// the item passes its own state here (`opened: open`), so a link, a breadcrumb or a search that
+/// shows an item moves the tree's choice to it and the page the window shows stays the tree's
+/// own, never a second page pressed over it.
 /// The bar over the page names where the open item stands (`path`: "Plans / Meetings", nothing
 /// at the top level) and keeps the window's own actions.
 ///
@@ -591,13 +595,11 @@ template view tree<R, T>(
         content: {
             if let x = opened {
                 ui.Scroll {
+                    // The page is the view's: `doc` gives its blocks as one stack at the page's
+                    // own rhythm, so a heading keeps its content a step under it and more room
+                    // under the block over it.
                     page {
-                        // A page's blocks are groups of their own: the gutter between groups
-                        // stands over each section's heading, which keeps its own content a
-                        // step under it, so a heading reads with what it opens.
-                        stack(gap: .group) {
-                            doc(x)
-                        }
+                        doc(x)
                     }
                 }
             } else {

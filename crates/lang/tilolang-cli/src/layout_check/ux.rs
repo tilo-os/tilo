@@ -94,6 +94,7 @@ pub fn inspect(
     viewport: (u32, u32),
     declared: &Declared,
     step: f64,
+    title: Option<&str>,
 ) -> Vec<Problem> {
     let mut out = Vec::new();
     columns(root, &mut out);
@@ -109,6 +110,9 @@ pub fn inspect(
     repeated_row_titles(root, &mut Vec::new(), &mut out);
     let mut titled = Vec::new();
     headings(root, &mut titled);
+    if let Some(title) = title.map(one_line).filter(|title| !title.is_empty()) {
+        titled.push((title, Rect::new(0.0, 0.0, 0.0, 0.0)));
+    }
     listed_detail(&titled, root, &mut Vec::new(), &mut out);
     gutter(root, f64::from(viewport.0), &mut Vec::new(), &mut out);
     out
@@ -734,9 +738,19 @@ fn listed_detail(
         let selected: Vec<&(String, bool)> = rows.iter().filter(|(_, chosen)| *chosen).collect();
         if let [chosen] = selected.as_slice() {
             let boxed = rect(node);
-            if let Some((words, _)) = titled.iter().find(|(words, at)| {
-                at.x0 >= boxed.x1 - SLACK && rows.iter().any(|(name, _)| name == words)
-            }) && words != &chosen.0
+            // The page's title is the heading over it, the topmost one naming a row of the list:
+            // a heading further down its page is a section's, and says nothing of which row is
+            // open.
+            let beside = titled
+                .iter()
+                .filter(|(words, at)| {
+                    // The bar's own title stands over the page whatever column it is drawn in.
+                    let bar = *at == Rect::new(0.0, 0.0, 0.0, 0.0);
+                    (bar || at.x0 >= boxed.x1 - SLACK) && rows.iter().any(|(name, _)| name == words)
+                })
+                .min_by(|(_, one), (_, other)| one.y0.total_cmp(&other.y0));
+            if let Some((words, _)) = beside
+                && words != &chosen.0
             {
                 push(
                     out,
@@ -1225,6 +1239,25 @@ mod tests {
         found_as(kind, root, viewport, &Declared::default())
     }
 
+    /// What `root` holds wrong of `kind`, with `title` the words the window's bar says it shows.
+    fn found_beside(
+        kind: Kind,
+        root: &InspectionNode,
+        viewport: (u32, u32),
+        title: &str,
+    ) -> Vec<Problem> {
+        inspect(
+            root,
+            viewport,
+            &Declared::default(),
+            TOOLKIT_STEP,
+            Some(title),
+        )
+        .into_iter()
+        .filter(|problem| problem.kind == kind)
+        .collect()
+    }
+
     /// What `root` holds wrong of `kind`, as `declared` says what its controls do.
     fn found_as(
         kind: Kind,
@@ -1232,7 +1265,7 @@ mod tests {
         viewport: (u32, u32),
         declared: &Declared,
     ) -> Vec<Problem> {
-        inspect(root, viewport, declared, TOOLKIT_STEP)
+        inspect(root, viewport, declared, TOOLKIT_STEP, None)
             .into_iter()
             .filter(|problem| problem.kind == kind)
             .collect()
@@ -2067,6 +2100,23 @@ mod tests {
             )
             .is_empty(),
             "a list of several chosen rows says a choice of its own"
+        );
+        // A window bar paints its own title: it names the page where no heading does.
+        let untitled = {
+            let mut list = tree(vec![("Q3 plan", true), ("Groceries", false)]);
+            list.children.clear();
+            list
+        };
+        let problems = found_beside(
+            Kind::DetailRowNotChosen,
+            &untitled,
+            (1280, 800),
+            "Groceries",
+        );
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            found_beside(Kind::DetailRowNotChosen, &untitled, (1280, 800), "Q3 plan").is_empty(),
+            "the bar names the row the tree highlights"
         );
     }
 

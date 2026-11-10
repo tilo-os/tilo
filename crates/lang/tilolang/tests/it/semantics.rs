@@ -389,4 +389,13 @@ fn a_view_answers_a_request_to_show_an_item_of_a_type_it_lists() {
     let unnamed = "type Note {\n    title: Text\n}\naction ping(n: Note) {\n    n.title = \"p\"\n}\n\
                     view v(n: Note) {\n    on show: ping(n)\n    text(\"the list\")\n}";
     assert_eq!(codes(unnamed), vec!["E063"]);
+    // The view's state is the live view's to start: a default that reads the view's own
+    // parameter is no part of the frame that answers with the item.
+    let held = compile(
+        "type Note {\n    title: Text\n}\ntype Book {\n    notes: Collection<Note>\n}\n\
+         root Book\ndefault view book for Book\n\
+         view book(b: Book) {\n    state opened: Option<Note> = b.notes.first()\n    \
+         on show(x: Note): set(opened, x)\n    text(\"the list\")\n}",
+    );
+    crate::common::validate(&held.wasm);
 }

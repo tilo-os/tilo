@@ -855,7 +855,7 @@ fn a_heading_keeps_more_room_over_it_than_over_its_content() {
             vec![header, item],
         );
         holding(
-            node("Stack", "page", [304.0, 100.0, 320.0, 600.0], None),
+            node("Page", "page", [304.0, 100.0, 320.0, 600.0], None),
             vec![
                 node("Text", "body", [304.0, 150.0, 320.0, 50.0], None),
                 section,
@@ -878,7 +878,7 @@ fn a_heading_keeps_more_room_over_it_than_over_its_content() {
     );
     // A heading first in its box has nothing over it to stand apart from.
     let first = holding(
-        node("Stack", "page", [304.0, 100.0, 320.0, 600.0], None),
+        node("Page", "page", [304.0, 100.0, 320.0, 600.0], None),
         vec![holding(
             node("Section", "section", [304.0, 100.0, 320.0, 100.0], None),
             vec![

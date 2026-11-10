@@ -611,7 +611,8 @@ impl Staged {
 
     /// The resource the window shows where a person holding it is looking: nothing while the
     /// sidebar stands in front, and the page the window pushed in front of its list (or opened
-    /// over it) once that does.
+    /// over it) once that does. A window whose page is its own — a tree and the item it opens,
+    /// drawn by one view — shows the item its list stands on.
     pub fn front_target(&mut self) -> Option<ResourceRef> {
         let window = self.window()?;
         let sidebar = matches!(
@@ -621,10 +622,24 @@ impl Staged {
         if sidebar {
             return None;
         }
-        window
-            .detail_target()
-            .or_else(|| window.root_target())
-            .cloned()
+        if let Some(detail) = window.detail_target() {
+            return Some(detail.clone());
+        }
+        let chosen = window.composed().and_then(Self::chosen_in);
+        chosen.or_else(|| window.root_target().cloned())
+    }
+
+    /// The resource the lists of `tree` stand on: the item a list of a window whose page is its
+    /// own shows, by the list's own selection.
+    fn chosen_in(tree: &tilo_ui_host::UiNode) -> Option<ResourceRef> {
+        let chosen = match tree.props.get("selection") {
+            Some(Value::List(items)) => items.iter().find_map(|item| match item {
+                Value::Ref(reference) => Some(reference.clone()),
+                _ => None,
+            }),
+            _ => None,
+        };
+        chosen.or_else(|| tree.children.iter().find_map(Self::chosen_in))
     }
 
     /// The tree the window composed from what the app sent, as sent: every view that ran is in

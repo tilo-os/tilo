@@ -14,6 +14,13 @@ impl Checker<'_> {
     /// Lowers the `state` declarations at the top of a view body: each reads its slot, or its
     /// default while the slot is empty, into a local of its name. Returns the rest of the body.
     pub(super) fn view_state(&mut self, view: &str, body: &[UiStmt]) -> Vec<UiStmt> {
+        self.state_slots(view, body, true)
+    }
+
+    /// [`Self::view_state`], with `defaults` off for a frame that runs over a live view — an
+    /// `on show` handler reads the state the view holds and has no view around it to compute a
+    /// default from.
+    fn state_slots(&mut self, view: &str, body: &[UiStmt], defaults: bool) -> Vec<UiStmt> {
         let mut rest = Vec::new();
         for s in body {
             let UiKind::State(d) = &s.kind else {
@@ -30,8 +37,8 @@ impl Checker<'_> {
                 continue;
             };
             let fallback = match &d.default {
-                Some(e) => self.expr_as(e, &info.ty),
-                None => self.zero_of(&info.ty, d.name.span),
+                Some(e) if defaults => self.expr_as(e, &info.ty),
+                _ => self.zero_of(&info.ty, d.name.span),
             };
             // The slot's value, or the default while it is empty; scalars travel boxed.
             let args = vec![Ex::str(&info.id), Self::handle_of(fallback)];
@@ -187,8 +194,9 @@ impl Checker<'_> {
         self.st.ns.clone_from(&outer.ns);
         self.st.types.clone_from(&outer.types);
         self.at = self.outer_at;
-        // The state the view declares, as its own render reads it.
-        self.view_state(name, body);
+        // The state the view declares, read from its slots: this frame has the item and no view
+        // around it, so a default is not its to compute.
+        self.state_slots(name, body, false);
         if !ty.is_error() {
             let act = self.expr_as(action, &Ty::Action);
             self.emit(Stmt::Return(Some(act)));

@@ -1071,6 +1071,11 @@ impl Walk<'_> {
     /// block it stands below than over its own content. The gaps are the layout's own, whatever
     /// boxes hold them.
     fn heading_rhythm(&mut self, node: &InspectionNode, keys: &[String]) {
+        // A page's blocks read at the page's rhythm; a section inside a card or a panel is the
+        // box's to space.
+        if self.page.is_none() {
+            return;
+        }
         let standing: Vec<&InspectionNode> = node
             .children
             .iter()
