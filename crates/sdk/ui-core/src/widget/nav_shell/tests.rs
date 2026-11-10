@@ -300,6 +300,39 @@ fn the_minimum_window_width_is_the_compact_layouts() {
     }
 }
 
+/// A window in a strip is a window of its own: the shell decides from the window's width, never
+/// the display's. Narrower than a column of content beside it, the sidebar folds behind the bar's
+/// toggle and the list takes the window; wider, it docks and leaves the content a column.
+#[test]
+fn a_window_in_a_strip_folds_its_sidebar_rather_than_squeeze_the_list() {
+    let theme = Theme::dark();
+    let m = Metrics::resolve(&theme);
+    let at = |width: u32| {
+        let mut h = harness(files_shell(), width, 700, theme.clone());
+        settle(&mut h, width, 700);
+        (geometry(&h).sidebar, child_rect(&h, "content"))
+    };
+    let (sidebar, content) = at(616);
+    assert_eq!(
+        sidebar,
+        SidebarPlacement::Screen,
+        "a 616-wide place folds its sidebar: a list squeezed beside it is a phone's screen"
+    );
+    assert_eq!(
+        content.map(|r| r.width()),
+        Some(616.0),
+        "the list takes the whole window"
+    );
+    let (sidebar, content) = at(720);
+    assert_eq!(sidebar, SidebarPlacement::Docked);
+    let content = content.expect("the content stands beside the sidebar");
+    assert!(
+        content.width() >= m.beside_sidebar_min(ContentKind::List) - 0.5,
+        "the content keeps a column ({} wide)",
+        content.width()
+    );
+}
+
 /// A window resized near a threshold does not flicker: back to docked only
 /// `layout_hysteresis` past it.
 #[test]
