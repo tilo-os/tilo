@@ -21,7 +21,7 @@ use serde_json::Value as Json;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::origin::{Origin, OriginCx, OriginType, Polled, origin_types};
 use tilolang_tilo::runtime::RuntimeError;
-use tilolang_tilo::runtime::origin::{OriginChange, OriginWrite};
+use tilolang_tilo::runtime::origin::{OriginChange, OriginWrite, Unwritten};
 use tilolang_tilo::runtime::store::{FieldKey, Store as _};
 use tilolang_tilo::runtime::{Delivery, ResourceRef, Value};
 
@@ -108,7 +108,7 @@ enum Sending {
 
 /// A step of the sync the workspace could not take, kept to be written again by the next poll:
 /// what a server said is not lost with the poll that could not keep it.
-enum Unwritten {
+enum Step {
     /// What a server said changed in an account.
     In(Changes),
     /// A message's fields put back as the server holds them, after the server refused them.
@@ -124,12 +124,34 @@ enum Unwritten {
     },
 }
 
-impl Unwritten {
+impl Step {
     fn account(&self) -> &str {
         match self {
             Self::In(changes) => &changes.account,
             Self::Back { account, .. } | Self::Summaries { account, .. } => account,
         }
+    }
+}
+
+/// What the workspace made of one step of the sync.
+enum Taken {
+    /// It was written.
+    Wrote,
+    /// There was nothing left to write: the step is done with.
+    Nothing,
+    /// The workspace could not take it: it waits for the next poll, and the account says why.
+    Refused,
+}
+
+impl Taken {
+    /// Whether it is done with, waiting for no poll.
+    fn done(&self) -> bool {
+        !matches!(self, Self::Refused)
+    }
+
+    /// Whether the step wrote: a refused one leaves the account's reason to be written too.
+    fn wrote(&self) -> bool {
+        !matches!(self, Self::Nothing)
     }
 }
 
@@ -148,7 +170,7 @@ pub struct ImapOrigin {
     /// Why each account's mail could not be written into the workspace, until it can be.
     unsaved: HashMap<String, String>,
     /// The steps the workspace could not take, oldest first.
-    unwritten: Vec<Unwritten>,
+    unwritten: Unwritten<Step>,
     /// Accounts whose changes to take in, with the mailboxes to ask for.
     due: Vec<(String, String)>,
     /// Set when the device came online again: servers that could not be reached are asked
@@ -169,7 +191,7 @@ impl ImapOrigin {
             sends: HashMap::new(),
             trouble: HashMap::new(),
             unsaved: HashMap::new(),
-            unwritten: Vec::new(),
+            unwritten: Unwritten::new(),
             due: Vec::new(),
             reconnected: Arc::default(),
         }
@@ -196,7 +218,7 @@ impl ImapOrigin {
             match event {
                 Event::Changes(changes) => {
                     self.trouble.remove(&changes.account);
-                    polled.wrote |= self.take_step(host, now, changes);
+                    polled.wrote |= self.take_changes(host, now, changes).wrote();
                 }
                 Event::Found { account, messages } => {
                     let changes = Changes {
@@ -205,7 +227,7 @@ impl ImapOrigin {
                         messages,
                         flags: Vec::new(),
                     };
-                    polled.wrote |= self.take_step(host, now, changes);
+                    polled.wrote |= self.take_changes(host, now, changes).wrote();
                 }
                 Event::Arrived { account } => {
                     if self.connector.changes(&account, "inbox").is_none() {
@@ -233,8 +255,7 @@ impl ImapOrigin {
                         before,
                     }) => {
                         self.trouble.insert(account.clone(), reason);
-                        self.put_back(host, now, &account, &key, &before);
-                        polled.wrote = true;
+                        polled.wrote |= self.write_back(host, now, account, key, before);
                     }
                     None => {}
                 },
@@ -249,8 +270,7 @@ impl ImapOrigin {
                         before,
                     }) => {
                         self.trouble.insert(account.clone(), reason);
-                        self.put_back(host, now, &account, &key, &before);
-                        polled.wrote = true;
+                        polled.wrote |= self.write_back(host, now, account, key, before);
                     }
                     None => {}
                 },
@@ -523,11 +543,11 @@ impl ImapOrigin {
 
     /// What a server said, taken in, or kept for the next poll with the account saying why it
     /// could not be: a step is never dropped because the workspace would not take it.
-    fn take_step(&mut self, host: &Host, now: &str, changes: Changes) -> bool {
-        match self.take_in(host, now, &changes) {
+    fn take_step(&mut self, host: &Host, now: &str, changes: &Changes) -> Taken {
+        match self.take_in(host, now, changes) {
             Ok(wrote) => {
                 self.settled(&changes.account);
-                wrote
+                if wrote { Taken::Wrote } else { Taken::Nothing }
             }
             Err(error) => {
                 tracing::warn!(account = %changes.account, %error, "what a mail server said could not be written");
@@ -535,21 +555,30 @@ impl ImapOrigin {
                     changes.account.clone(),
                     format!("The mail could not be saved: {error}"),
                 );
-                self.keep(changes);
-                true
+                Taken::Refused
             }
         }
+    }
+
+    /// What a server said changed, written if the workspace takes it, and kept — behind what the
+    /// server said before — if it does not.
+    fn take_changes(&mut self, host: &Host, now: &str, changes: Changes) -> Taken {
+        let taken = self.take_step(host, now, &changes);
+        if !taken.done() {
+            self.keep(changes);
+        }
+        taken
     }
 
     /// Keep what a server said for the next poll: one step waits per account, holding what the
     /// server said before it too, so the mail is taken in in the order the server gave it.
     fn keep(&mut self, changes: Changes) {
-        let held = self.unwritten.iter_mut().find_map(|step| match step {
-            Unwritten::In(held) if held.account == changes.account => Some(held),
-            _ => None,
-        });
-        let Some(held) = held else {
-            self.unwritten.push(Unwritten::In(changes));
+        let account = changes.account.clone();
+        let Some(Step::In(held)) = self
+            .unwritten
+            .waiting_mut(|step| matches!(step, Step::In(held) if held.account == account))
+        else {
+            self.unwritten.keep(Step::In(changes));
             return;
         };
         for message in changes.messages {
@@ -566,7 +595,7 @@ impl ImapOrigin {
 
     /// The account's mail is written: while no step of it waits, the account says nothing.
     fn settled(&mut self, account: &str) {
-        if !self.unwritten.iter().any(|step| step.account() == account) {
+        if !self.unwritten.waits(|step| step.account() == account) {
             self.unsaved.remove(account);
         }
     }
@@ -575,42 +604,52 @@ impl ImapOrigin {
     /// what is not stays for the next poll, its account saying why.
     fn take_again(&mut self, host: &Host, now: &str) -> bool {
         let mut wrote = false;
-        for step in std::mem::take(&mut self.unwritten) {
-            match step {
-                Unwritten::In(changes) => wrote |= self.take_step(host, now, changes),
-                Unwritten::Back {
-                    account,
-                    key,
-                    before,
-                } => self.put_back(host, now, &account, &key, &before),
-                Unwritten::Summaries { account, threads } => {
-                    wrote |= self.write_summaries(host, now, &account, threads);
-                }
-            }
-        }
+        let mut unwritten = std::mem::take(&mut self.unwritten);
+        unwritten.take_again(|step| {
+            let taken = self.write_step(host, now, step);
+            wrote |= taken.wrote();
+            taken.done()
+        });
+        self.unwritten = unwritten;
         wrote
     }
 
-    /// What `threads` of `account` add up to, written. Not written, it waits for the next poll,
-    /// and the account says why.
+    /// One step of the sync, written as one change of the origin: a step the workspace does not
+    /// take leaves nothing of itself behind, and says on its account why the mail is not saved.
+    fn write_step(&mut self, host: &Host, now: &str, step: &mut Step) -> Taken {
+        match step {
+            Step::In(changes) => self.take_step(host, now, changes),
+            Step::Back {
+                account,
+                key,
+                before,
+            } => self.put_back(host, now, account, key, before),
+            Step::Summaries { account, threads } => {
+                self.write_summaries(host, now, account, threads)
+            }
+        }
+    }
+
+    /// What `threads` of `account` add up to, written. Not written, the account says why and the
+    /// step waits for the next poll.
     fn write_summaries(
         &mut self,
         host: &Host,
         now: &str,
         account: &str,
-        threads: BTreeSet<String>,
-    ) -> bool {
+        threads: &BTreeSet<String>,
+    ) -> Taken {
         let writes = {
             let Some(state) = self.state.as_ref() else {
-                return false;
+                return Taken::Nothing;
             };
             let Some(acct) = state.accounts.get(account) else {
-                return false;
+                return Taken::Nothing;
             };
-            summarize(host, &state.types, acct, &threads)
+            summarize(host, &state.types, acct, threads)
         };
         if writes.is_empty() {
-            return false;
+            return Taken::Nothing;
         }
         match host
             .runtime()
@@ -618,7 +657,7 @@ impl ImapOrigin {
         {
             Ok(_) => {
                 self.settled(account);
-                true
+                Taken::Wrote
             }
             Err(error) => {
                 tracing::warn!(account, %error, "what a conversation adds up to was not written");
@@ -626,11 +665,7 @@ impl ImapOrigin {
                     account.to_owned(),
                     format!("What the mail adds up to could not be saved: {error}"),
                 );
-                self.unwritten.push(Unwritten::Summaries {
-                    account: account.to_owned(),
-                    threads,
-                });
-                false
+                Taken::Refused
             }
         }
     }
@@ -711,24 +746,56 @@ impl ImapOrigin {
         };
         let mut wrote = false;
         for (account, threads) in touched {
-            wrote |= self.write_summaries(host, now, &account, threads);
+            let taken = self.write_summaries(host, now, &account, &threads);
+            if !taken.done() {
+                self.unwritten.keep(Step::Summaries { account, threads });
+            }
+            wrote |= taken.wrote();
         }
         wrote
     }
 
+    /// A write the server refused or could not be reached for: the message is put back as the
+    /// server holds it, and the step waits for the next poll if the workspace cannot take it.
+    fn write_back(
+        &mut self,
+        host: &Host,
+        now: &str,
+        account: String,
+        key: String,
+        before: People,
+    ) -> bool {
+        let taken = self.put_back(host, now, &account, &key, &before);
+        if !taken.done() {
+            self.unwritten.keep(Step::Back {
+                account,
+                key,
+                before,
+            });
+        }
+        taken.wrote()
+    }
+
     /// A write the server refused: the message is put back as the server holds it. A workspace
-    /// that cannot take it keeps the step for the next poll, and the account says why.
-    fn put_back(&mut self, host: &Host, now: &str, account: &str, key: &str, before: &People) {
+    /// that cannot take it says why on the account, and the step waits for the next poll.
+    fn put_back(
+        &mut self,
+        host: &Host,
+        now: &str,
+        account: &str,
+        key: &str,
+        before: &People,
+    ) -> Taken {
         let writes = {
             let Some(state) = self.state.as_mut() else {
-                return;
+                return Taken::Nothing;
             };
             let t = &state.types;
             let Some(acct) = state.accounts.get_mut(account) else {
-                return;
+                return Taken::Nothing;
             };
             let Some(held) = acct.messages.get_mut(key) else {
-                return;
+                return Taken::Nothing;
             };
             held.confirmed = before.clone();
             let mut writes = vec![people_write(t, &held.record, before)];
@@ -740,18 +807,17 @@ impl ImapOrigin {
             .runtime()
             .apply_origin("imap", writes, Some(now.to_owned()))
         {
-            Ok(_) => self.settled(account),
+            Ok(_) => {
+                self.settled(account);
+                Taken::Wrote
+            }
             Err(error) => {
                 tracing::warn!(account, key, %error, "what the server refused was not put back");
                 self.unsaved.insert(
                     account.to_owned(),
                     format!("A message could not be put back as the server holds it: {error}"),
                 );
-                self.unwritten.push(Unwritten::Back {
-                    account: account.to_owned(),
-                    key: key.to_owned(),
-                    before: before.clone(),
-                });
+                Taken::Refused
             }
         }
     }

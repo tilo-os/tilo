@@ -133,6 +133,11 @@ type YouTube {
     feed_state: Text = ""
     /// Why the feed could not be fetched; empty while it went through.
     feed_trouble: Text = ""
+    /// Why the client is not in step now: YouTube cannot be reached, or what it said could not
+    /// be saved; empty while it is.
+    trouble: Text = ""
+    /// Whether YouTube answered the last time it was asked.
+    online: Bool = true
 }
 
 root YouTube

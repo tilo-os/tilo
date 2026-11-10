@@ -252,6 +252,44 @@ fn text_of(host: &tilolang_tilo::host::Host, name: &str) -> String {
     }
 }
 
+/// The root's flag `name`, as the app reads it.
+fn flag_of(host: &tilolang_tilo::host::Host, name: &str) -> bool {
+    let packages = host.packages();
+    let package = packages
+        .iter()
+        .find(|package| package.meta.app == TUBE)
+        .expect("the client");
+    let (_, root_ty) = package.main().expect("the client's root");
+    let field = package
+        .meta
+        .types
+        .iter()
+        .find(|t| t.id == root_ty)
+        .and_then(|root| root.fields.iter().find(|f| f.name == name))
+        .expect("the root's field")
+        .id
+        .clone();
+    let root = host.root_of(TUBE).expect("the root");
+    matches!(
+        host.runtime().read(&root, &field),
+        Ok(tilolang_tilo::runtime::Value::Bool(true))
+    )
+}
+
+/// The type id of the client's kind `kind` (`youtube.video`), as a commit names it.
+fn kind_id(host: &tilolang_tilo::host::Host, kind: &str) -> String {
+    let packages = host.packages();
+    let package = packages
+        .iter()
+        .find(|package| package.meta.app == TUBE)
+        .expect("the client");
+    tilolang_tilo::origin::origin_types(&package.meta, "youtube")
+        .into_iter()
+        .find(|t| t.kind == kind)
+        .expect("the client's kind")
+        .ty
+}
+
 #[test]
 fn a_channel_writes_its_page_and_its_newest_videos() {
     let host = workspace();
@@ -294,6 +332,53 @@ fn a_second_answer_keeps_one_video_and_the_person_s_like() {
     let after = keys(&host, "video");
     assert_eq!(before.len(), after.len(), "the same videos, not twice");
     assert_eq!(before.len(), 2, "the channel's two videos");
+}
+
+// USER REQUIREMENT: an answer the workspace cannot keep is not lost: nothing of it stays, the
+// client says what could not be saved, and the next poll takes the answer in — once.
+#[test]
+fn an_answer_the_workspace_cannot_keep_is_taken_in_again_by_the_next_poll() {
+    let host = workspace();
+    // The change a video is made by is refused, as a record that cannot take it is.
+    host.store()
+        .fail_commits_adding(&kind_id(&host, "youtube.video"));
+    let origin = tilolang_youtube::origin(Arc::new(script()), Arc::new(AtomicBool::new(false)));
+    origin
+        .borrow_mut()
+        .deliver("youtube.search", &serde_json::json!("phone reviews"));
+    poll(&origin, &host);
+    assert!(
+        keys(&host, "video").is_empty(),
+        "nothing of the answer is kept: {:?}",
+        keys(&host, "video")
+    );
+    assert!(
+        keys(&host, "channel").is_empty() && keys(&host, "playlist").is_empty(),
+        "no part of the answer is kept"
+    );
+    assert!(
+        !text_of(&host, "trouble").is_empty(),
+        "the client says what could not be saved"
+    );
+    assert!(
+        flag_of(&host, "online"),
+        "YouTube answered: it is the workspace that could not take what it said"
+    );
+    assert_eq!(
+        text_of(&host, "search_state"),
+        "",
+        "the search does not settle as done while its answer stands unwritten"
+    );
+
+    // The workspace takes changes again: the next poll takes the answer in, and the client says
+    // nothing more.
+    host.store().take_commits();
+    poll(&origin, &host);
+    assert_eq!(keys(&host, "video"), ["v-phone"], "the answer waits once");
+    assert_eq!(keys(&host, "channel"), ["UCmkbhd"]);
+    assert_eq!(keys(&host, "playlist"), ["pl-phones"]);
+    assert_eq!(text_of(&host, "trouble"), "", "and the client is in step");
+    assert_eq!(text_of(&host, "search_state"), "done");
 }
 
 /// What the origin does with an answer it did not get: nothing, and no write.

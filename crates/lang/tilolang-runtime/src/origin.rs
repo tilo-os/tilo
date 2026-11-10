@@ -6,7 +6,9 @@
 //! removed. They are one change, made by the origin rather than by package code, so history
 //! shows it as the service's and undo never takes it back as someone's edit. A step of a sync
 //! that takes several writes — a conversation, the messages it read, what they add up to — is
-//! written as one change too, so it is kept whole or not at all.
+//! written as one change too, so it is kept whole or not at all. A change the store does not
+//! take leaves nothing behind, and what the service said waits in [`Unwritten`] until the next
+//! poll writes it.
 
 use crate::error::RuntimeError;
 use crate::host_res::to_scalar;
@@ -37,6 +39,75 @@ pub enum OriginWrite {
         field: String,
         item: ResourceRef,
     },
+}
+
+/// What a service said that the workspace could not take, kept until it can: every step is
+/// written again by the origin's next poll, before anything newer, so an answer is never lost
+/// with the change that could not keep it.
+///
+/// An origin holds one of these beside the rest of its state, because taking a step again is the
+/// origin's own writing: it takes the queue into [`Unwritten::take_again`], which gives it back
+/// once the steps are written.
+pub struct Unwritten<T> {
+    steps: Vec<T>,
+}
+
+impl<T> Default for Unwritten<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> Unwritten<T> {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { steps: Vec::new() }
+    }
+
+    /// Whether anything waits to be written.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.steps.is_empty()
+    }
+
+    /// The steps that wait, oldest first.
+    #[must_use]
+    pub fn steps(&self) -> &[T] {
+        &self.steps
+    }
+
+    /// Keep `step` for the next poll, behind the steps kept before it: what a service said is
+    /// taken in in the order it gave it.
+    pub fn keep(&mut self, step: T) {
+        self.steps.push(step);
+    }
+
+    /// The step that waits and `matches`, when one does: a newer answer about the same thing is
+    /// taken in with it rather than behind it.
+    pub fn waiting_mut(&mut self, mut matches: impl FnMut(&T) -> bool) -> Option<&mut T> {
+        self.steps.iter_mut().find(|step| matches(*step))
+    }
+
+    /// Whether a step that waits matches `matches`.
+    #[must_use]
+    pub fn waits(&self, matches: impl FnMut(&T) -> bool) -> bool {
+        self.steps.iter().any(matches)
+    }
+
+    /// Write each step that waits again, oldest first, by `write`, which says whether the step is
+    /// done with: one that is no longer waits, and one that is not keeps its place for the next
+    /// poll. While `write` runs the origin holds no steps, so it keeps none — a step it did not
+    /// write is kept by giving `false`.
+    pub fn take_again(&mut self, mut write: impl FnMut(&mut T) -> bool) {
+        let steps = std::mem::take(&mut self.steps);
+        let mut left = Vec::with_capacity(steps.len());
+        for mut step in steps {
+            if !write(&mut step) {
+                left.push(step);
+            }
+        }
+        self.steps = left;
+    }
 }
 
 /// One change of an origin as it is being written: what an origin makes of one answer of a

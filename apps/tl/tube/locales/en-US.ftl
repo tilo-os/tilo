@@ -171,6 +171,14 @@ d-nnvco6w3 = Feed state
 d-hycswkws = Feed trouble
     .doc = Why the feed could not be fetched; empty while it went through.
 
+d-r3ksw6bn = Trouble
+    .doc = Why the client is not in step now: YouTube cannot be reached, or what it said could not be saved; empty while it is.
+
+d-qv7t2mza = Online
+    .doc = Whether YouTube answered the last time it was asked.
+
+d-thwdswkk-filter-online = Online
+
 d-tmam46un = Subscribe
     .doc = Subscribes to the channel, or unsubscribes: the button says which it will do.
 
