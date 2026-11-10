@@ -170,14 +170,14 @@ impl Shared {
         if chosen.is_empty() {
             return;
         }
-        let Some(apps) = &self.launch else {
+        let Some(apps) = &self.apps else {
             return;
         };
         let workspace = self.active_workspace_id();
         for place in chosen {
             let target = crate::platform::notice::open_target(&workspace, &place);
             if let Err(error) =
-                crate::search::AppActions::invoke(apps.as_ref(), target, serde_json::Map::new())
+                crate::search::AppActions::invoke(&**apps, target, serde_json::Map::new())
             {
                 tracing::warn!(%error, app = %place.app, "a mention was not opened");
             }

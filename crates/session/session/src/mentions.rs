@@ -233,7 +233,7 @@ struct Inner {
     held: RefCell<Held>,
     lease: RefCell<Option<durable_store::Lease>>,
     /// The records a change reached since the last look.
-    pending: RefCell<BTreeMap<Changed, ()>>,
+    pending: RefCell<BTreeSet<Changed>>,
     /// The places the person chose and the host has not opened yet.
     chosen: RefCell<Vec<Place>>,
     /// When the records were last looked at.
@@ -287,7 +287,7 @@ impl Mentions {
             return;
         };
         for record in records.take_changed() {
-            self.0.pending.borrow_mut().insert(record, ());
+            self.0.pending.borrow_mut().insert(record);
         }
         if self.0.pending.borrow().is_empty() {
             return;
@@ -306,7 +306,7 @@ impl Mentions {
         self.0.looked_at.set(Some(now));
         let pending = std::mem::take(&mut *self.0.pending.borrow_mut());
         let mut kept = false;
-        for (changed, ()) in pending {
+        for changed in pending {
             let Some(doc) = records.document(&changed.app, &changed.workspace, &changed.record)
             else {
                 continue;

@@ -1209,6 +1209,8 @@ impl Session {
         }
         // The apps search lists are this device's lists, the same ones the action door lists and
         // names apps from: an app a person sees is one app, whoever reads it.
+        // What the session opens an app through, kept for the notices that name a place too.
+        let action_apps = options.apps.clone();
         let search = Rc::new(SessionSearch::new(
             search_options,
             Some(Arc::new(options.lists.clone()) as Arc<dyn crate::platform::apps::Apps>),
@@ -1288,6 +1290,7 @@ impl Session {
             earlier: seat.earlier,
             search,
             launch: options.launch,
+            apps: action_apps,
             restore: RefCell::new(restore),
             drives: options.drives,
             asks,

@@ -279,6 +279,9 @@ pub(crate) struct Shared {
     /// The person's mentions in the workspaces' records, and what they chose of them.
     #[cfg(target_os = "linux")]
     pub(crate) mentions: Option<crate::mentions::Mentions>,
+    /// What the session opens an app through: a search row, a link, the place a notice names.
+    #[cfg(target_os = "linux")]
+    pub(crate) apps: Option<Rc<dyn crate::search::AppActions>>,
     /// What the services ask the person, on the sheets.
     #[cfg(target_os = "linux")]
     pub(crate) asker: crate::questions::Asker,

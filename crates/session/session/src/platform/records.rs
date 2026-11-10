@@ -259,7 +259,7 @@ impl Noted {
             } => self.changes.note(workspace, package, record, false),
             // The workspace's list of an app's records moved: a record appeared in it or left.
             StorageKey::WorkspaceIndex { package, workspace } => {
-                self.changes.note(workspace, package, "", false)
+                self.changes.note(workspace, package, "", false);
             }
             _ => {}
         }
