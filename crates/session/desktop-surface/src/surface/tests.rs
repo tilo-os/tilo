@@ -2299,3 +2299,199 @@ fn a_windows_own_icon_is_on_its_tab() {
     frame.relayout();
     assert_eq!(magenta(&frame), 0, "and gone when the window's icon is");
 }
+
+/// A two-finger sideways swipe as the gate's browser sends it: seven wheel
+/// events, a trackpad's lead-in and tail, 96 px over the whole gesture.
+const BRIEF_SWIPE: [f64; 7] = [6.0, 12.0, 18.0, 24.0, 18.0, 12.0, 6.0];
+
+/// A swipe a hand carries across more than a window: 1680 px in seven events.
+const LONG_SWIPE: [f64; 7] = [105.0, 210.0, 315.0, 420.0, 315.0, 210.0, 105.0];
+
+/// A swipe thrown past everything the strip has: 2800 px in seven events.
+const FAR_SWIPE: [f64; 7] = [175.0, 350.0, 525.0, 700.0, 525.0, 350.0, 175.0];
+
+/// The wheel travel one event's `part` asks for when the fingers go
+/// `forward` (positive toward later windows).
+fn swipe_travel(forward: bool, part: f64) -> f64 {
+    if forward { part } else { -part }
+}
+
+/// Swipe the shown strip by `steps`, `forward` or back, one wheel event a
+/// frame, and hand back where the strip stood after each event. The app of the
+/// window under the fingers leaves every event to the strip, as an app with no
+/// sideways scroll of its own does, so this is the path a swipe takes over
+/// such a window.
+fn swipe_the_strip(
+    frame: &mut ui::headless::FrameHarness,
+    handle: &DesktopHandle,
+    windows: usize,
+    steps: &[f64],
+    forward: bool,
+) -> Vec<f64> {
+    let shown = frame
+        .root::<DesktopSurface>()
+        .shown_row_ref()
+        .unwrap()
+        .groups[0]
+        .active_tab_id();
+    let mut offsets = Vec::new();
+    for &part in steps {
+        handle.sideways_wheel(shown, swipe_travel(forward, part));
+        frame.relayout();
+        assert!(
+            frame.settle_for_capture(Duration::from_secs(1)),
+            "{windows}"
+        );
+        offsets.push(
+            frame
+                .root::<DesktopSurface>()
+                .shown_row_ref()
+                .unwrap()
+                .scroll_x(),
+        );
+    }
+    offsets
+}
+
+/// Rest the strip after the swipe's fingers lifted: the wheel gesture is over
+/// once it pauses, and what it left behind is where the strip stays.
+fn rest_the_strip(frame: &mut ui::headless::FrameHarness) -> f64 {
+    frame
+        .root_mut::<DesktopSurface>()
+        .end_idle_swipe(ms(ui::time::now(), 250));
+    assert!(frame.settle_for_capture(Duration::from_secs(3)));
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    frame
+        .root::<DesktopSurface>()
+        .shown_row_ref()
+        .unwrap()
+        .scroll_x()
+}
+
+/// A sideways swipe moves the strip with the fingers, a pixel of travel a
+/// pixel of strip, and leaves it where they stopped: a brief swipe and a long
+/// one, each way, on a strip of six windows and on one of forty.
+#[test]
+fn a_sideways_swipe_pans_the_strip_with_the_fingers_and_rests_where_they_stopped() {
+    for windows in [6usize, 40] {
+        for (what, steps) in [
+            ("a brief swipe", &BRIEF_SWIPE[..]),
+            ("a long swipe", &LONG_SWIPE[..]),
+        ] {
+            for forward in [true, false] {
+                let (mut frame, handle) = laid_out(windows);
+                // Somewhere the whole swipe has room: home going on, the far
+                // end coming back.
+                let max = frame
+                    .root::<DesktopSurface>()
+                    .shown_row_ref()
+                    .unwrap()
+                    .pan_max_scroll_x();
+                let start = if forward { 0.0 } else { max };
+                frame
+                    .root_mut::<DesktopSurface>()
+                    .shown_row()
+                    .unwrap()
+                    .set_scroll_x_for_test(start);
+                for _ in 0..4 {
+                    frame.relayout();
+                }
+                let travel: f64 = steps.iter().sum();
+                assert!(
+                    travel <= max - start + 0.5 || !forward,
+                    "{windows} windows: {what} has room to pan on from {start} of {max}"
+                );
+                let offsets = swipe_the_strip(&mut frame, &handle, windows, steps, forward);
+                // Every event moves the strip by its own travel, the fingers'
+                // way: never against them, never standing still while they move.
+                let mut asked = start;
+                for (index, (&part, &offset)) in steps.iter().zip(offsets.iter()).enumerate() {
+                    asked += swipe_travel(forward, part);
+                    let want = asked.clamp(0.0, max);
+                    assert!(
+                        (offset - want).abs() < 0.5,
+                        "{windows} windows, {what}, {}: event {} left the strip at {offset}, not {want}",
+                        if forward { "forward" } else { "back" },
+                        index + 1
+                    );
+                }
+                let rest = rest_the_strip(&mut frame);
+                let want = (start + if forward { travel } else { -travel }).clamp(0.0, max);
+                assert!(
+                    (rest - want).abs() < 0.5,
+                    "{windows} windows, {what}, {}: the strip rested at {rest}, not {want}: a swipe is not snapped back",
+                    if forward { "forward" } else { "back" }
+                );
+            }
+        }
+    }
+}
+
+/// A strip only a little wider than the screen, as a desk of a few wide
+/// windows is: a swipe asked for more than the strip has stops at its end the
+/// fingers' way and stays there, and one asked for where the strip has none
+/// moves nothing at all. Neither turns the strip around.
+#[test]
+fn a_swipe_on_a_strip_that_barely_overflows_stops_at_its_end_and_never_turns_back() {
+    // Six windows, on a screen a little narrower than they need.
+    let (frame, _) = laid_out(6);
+    let content = frame
+        .root::<DesktopSurface>()
+        .shown_row_ref()
+        .unwrap()
+        .content_width();
+    drop(frame);
+    let width = u32::try_from((content - 120.0).round() as i64).unwrap();
+    let build = |width: u32| {
+        let (surface, handle) = desktop(6);
+        let mut frame = ui::headless::FrameHarness::for_root_with(
+            ui::state::State::new(),
+            surface,
+            (width, 800),
+            ui::headless::FrameOptions::default(),
+        );
+        for _ in 0..4 {
+            frame.relayout();
+        }
+        (frame, handle)
+    };
+
+    // Forward, and further than the strip can go.
+    let (mut frame, handle) = build(width);
+    let max = frame
+        .root::<DesktopSurface>()
+        .shown_row_ref()
+        .unwrap()
+        .pan_max_scroll_x();
+    // The strip's own overflow, plus the glimpse of canvas its end keeps.
+    assert!(
+        max > 0.0 && max < 1500.0,
+        "the strip barely overflows: {max} px"
+    );
+    let offsets = swipe_the_strip(&mut frame, &handle, 6, &FAR_SWIPE, true);
+    assert!(
+        offsets.windows(2).all(|pair| pair[1] >= pair[0] - 0.5),
+        "a forward swipe never turns the strip back: {offsets:?}"
+    );
+    let rest = rest_the_strip(&mut frame);
+    assert!(
+        (rest - max).abs() < 0.5,
+        "asked for more than it has, the strip stops at its end {max}, not {rest}"
+    );
+
+    // And back from home, where it has nothing: the strip gives against its
+    // rubber band the fingers' way, never the other way, and springs back.
+    let (mut frame, handle) = build(width);
+    let offsets = swipe_the_strip(&mut frame, &handle, 6, &BRIEF_SWIPE, false);
+    assert!(
+        offsets.iter().all(|&offset| offset <= 0.5),
+        "a swipe back from home only gives past its start, never the fingers' way: {offsets:?}"
+    );
+    let rest = rest_the_strip(&mut frame);
+    assert!(
+        rest.abs() < 0.5,
+        "a strip at home springs back home: {rest}"
+    );
+}
