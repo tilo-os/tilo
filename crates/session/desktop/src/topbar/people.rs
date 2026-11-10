@@ -579,6 +579,90 @@ mod tests {
         }
     }
 
+    /// Following someone never costs the bar the people beside them: while the banner that says
+    /// whose view this is stands in the middle lane, the people button, the workspace's name and
+    /// the faces keep their room either side of it, and Stop stands in the banner at every width.
+    #[test]
+    fn following_keeps_the_people_beside_it_on_a_phone() {
+        let mut tree = desk(&[("ada", "Ada Lovelace"), ("cc", "Claude Code")]);
+        tree.workspaces[0].collaborators[1].role_id = Some("agent".into());
+        tree.workspaces[0].collaborators[1].following = true;
+        let theme = Theme::default();
+        for width in [390.0f32, 360.0] {
+            let (mut bar, _chrome) = bar_over(&tree, true);
+            super::super::tests::lay_out_and_draw(&mut bar, width);
+            assert!(bar.following, "the bar knows this view is not its own");
+            let lane = crate::follow_banner::lane_width(f64::from(width));
+            assert!(
+                (bar.center_lane.width() - lane).abs() < 0.5,
+                "the middle lane is the banner's, where the clock stood: {:?} at {width}",
+                bar.center_lane
+            );
+            assert!(
+                bar.center_rect.is_zero_area(),
+                "and the clock stands aside at {width}"
+            );
+            // The banner as it stands on this bar: their face and Stop in the lane.
+            let bar_rect = bar.bar_rect();
+            let mut text = TextRenderer::new();
+            let card = crate::follow_banner::rects(
+                &mut text,
+                &theme,
+                (
+                    &t_args("follow-label", &[("person", "Claude Code".into())]),
+                    &t("follow-stop"),
+                ),
+                crate::follow_banner::BannerFrame {
+                    work_area: Rect::new(0.0, bar_rect.y1, f64::from(width), bar_rect.y1 + 760.0),
+                    bar: bar_rect,
+                    cursor: None,
+                    motion: theme.motion(),
+                },
+                true,
+            );
+            let (chip, stop) = (card.chip, card.stop);
+            assert!(!chip.is_zero_area(), "the banner stands at {width}");
+            assert!(
+                chip.width() >= f64::from(theme.tokens.metrics.avatar_inline),
+                "with their face at {width}: {chip:?}"
+            );
+            assert!(!stop.is_zero_area(), "and Stop at {width}: {chip:?}");
+            let people = bar.control_rect(TopBarChrome::CONTROL_COLLABORATORS);
+            assert!(
+                !people.is_zero_area(),
+                "the people button stands at {width}"
+            );
+            let mut beside: Vec<(&str, Rect)> = vec![
+                ("the workspace's name", bar.ws_pill_rect),
+                ("the people button", people),
+                ("the invite button", bar.invite_rect),
+                ("the notifications", bar.tray_hit_rect),
+            ];
+            beside.extend(bar.face_rects.iter().map(|rect| ("a face", *rect)));
+            for (what, rect) in beside.into_iter().filter(|(_, rect)| !rect.is_zero_area()) {
+                assert!(
+                    chip.intersect(rect).is_zero_area(),
+                    "the banner covers no {what} at {width}: {chip:?} over {rect:?}"
+                );
+                assert!(
+                    stop.intersect(rect).is_zero_area(),
+                    "nor Stop over {what} at {width}: {stop:?} over {rect:?}"
+                );
+            }
+            assert!(
+                bar.ws_pill_rect.x1 <= bar.center_lane.x0,
+                "the workspace keeps its name and chevron at {width}: {:?}",
+                bar.ws_pill_rect
+            );
+            // Everyone here is either a face or counted: following never hides anyone.
+            assert_eq!(
+                bar.faces_shown + bar.collaborator_overflow(),
+                2,
+                "both people are accounted for at {width}"
+            );
+        }
+    }
+
     /// Where the bar stands only some of the faces, the one this person follows is always among
     /// them, and everyone else is counted.
     #[test]

@@ -22,6 +22,11 @@ impl TopBarChrome {
     /// below that point. The lower bound still leaves enough room for the clock and its three
     /// position dots at the large-text setting.
     pub(super) fn center_band_width(&self, theme: &Theme, text: &mut TextRenderer) -> f64 {
+        // While this person follows someone the lane is the banner's, at the width the banner asks
+        // for it: the clock yields the seat rather than standing under a card about someone else.
+        if self.following {
+            return crate::follow_banner::lane_width(self.rect.width());
+        }
         let text_headroom = (f64::from(theme.text_scale) - 1.0).max(0.0) * 16.0;
         if self.rect.width() < NARROW_MENU_BAR_PX {
             // A phone-wide bar keeps the time and gives the rest of the lane to the workspace name
@@ -306,6 +311,21 @@ impl TopBarChrome {
         text_renderer: &mut TextRenderer,
         center_y: f64,
     ) {
+        if self.following {
+            // The banner that says whose view this is stands in this lane, in the frame drawn over
+            // the bar: the lane is kept, and nothing of the bar's own is drawn in it.
+            let lane = crate::follow_banner::lane_width(self.rect.width());
+            let center = f64::midpoint(self.rect.x0, self.rect.x1);
+            let half = BAR_CONTROL_PX / 2.0;
+            self.center_rect = Rect::ZERO;
+            self.center_lane = Rect::new(
+                center - lane / 2.0,
+                center_y - half,
+                center + lane / 2.0,
+                center_y + half,
+            );
+            return;
+        }
         let content_cx = self.draw_center_band(scene, transform, theme, text_renderer, center_y);
         // The time and a live activity cross-fade in place.
         let now = ui::time::now();

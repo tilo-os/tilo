@@ -178,6 +178,8 @@ struct CacheFingerprint {
     activity_headline: Option<String>,
     activity_unread: usize,
     activity_visible: bool,
+    /// Whether the middle lane is the following banner's rather than the clock's.
+    following: bool,
     time_bucket: u64,
     /// Quantised, not [`SystemStatus`] itself — it carries an `f32` volume that would never match
     /// frame to frame at full precision.
@@ -374,6 +376,10 @@ pub struct TopBarChrome {
     /// How many of the people present the last draw stood a face for: the rest the "+N" badge
     /// counts. The bar stands as many as it has room for, the one this person follows first.
     faces_shown: usize,
+    /// Whether this person's view follows someone here: the bar's middle lane then belongs to the
+    /// banner that says whose view it is and offers Stop, so the clock stands aside rather than
+    /// under it.
+    following: bool,
     /// Same index as `collaborator_initials` : how each face looks now, read from presence at each
     /// draw.
     face_looks: Vec<FaceLook>,
@@ -517,6 +523,7 @@ impl TopBarChrome {
             call_since: None,
             collaborator_overflow: 0,
             faces_shown: 0,
+            following: false,
             status: crate::chrome::SystemStatus::default(),
             chrome: None,
             clock: ClockSnapshot::default(),
@@ -607,6 +614,7 @@ impl TopBarChrome {
             activity_headline: self.activity_headline.clone(),
             activity_unread: self.activity_unread,
             activity_visible,
+            following: self.following,
             time_bucket,
             status_key: self.status_key(),
             media_key: self.media_signature.clone(),
@@ -963,6 +971,7 @@ impl TopBarChrome {
         let mut here: Vec<&tilo_desktop_model::Collaborator> =
             roster.iter().filter(present).collect();
         here.sort_by_key(|c| !c.following);
+        self.following = here.iter().any(|c| c.following);
         let peer_count = here.len();
         // How many of them could stand at all, before the bar knows its width: a draw folds this
         // further into what the bar has room for.
@@ -1460,14 +1469,17 @@ impl Widget for TopBarChrome {
                 node
             })
             .collect();
-        // The time: read, not pressed.
-        children.push(
-            AccessNode::new(Role::StaticText)
-                .with_hashed_key("topbar-clock-reading")
-                .with_name(self.clock_widget_text())
-                .with_description(self.date_description())
-                .with_bounds(self.center_rect),
-        );
+        // The time: read, not pressed. While following, the middle lane is the banner's and no
+        // time stands in it, so a reader is not told one the person cannot see.
+        if !self.following {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_hashed_key("topbar-clock-reading")
+                    .with_name(self.clock_widget_text())
+                    .with_description(self.date_description())
+                    .with_bounds(self.center_rect),
+            );
+        }
         children.extend(self.workspace_rename_accessibility());
         children.extend(self.arrival_accessibility());
         Some(
