@@ -657,6 +657,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/voice-video.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice.test.mjs",
   "crates/browser/tilo-browser-runtime/web/runtime-surface.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/agent-questions.test.mjs",
 ]
 
 [[group]]
