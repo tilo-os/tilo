@@ -65,17 +65,33 @@ pub fn client_config() -> Result<ClientConfig, rustls::Error> {
 }
 
 /// A client config that verifies servers as [`client_config`] does, and also
-/// trusts each of `extra` (DER): as a root a server's chain may lead to, and
-/// as that exact server certificate, for a self-signed server certificate
-/// that is its own issuer (which a chain check does not take as its own
-/// root). Verification stays on: a server must still present one of these
-/// or a chain to a trusted root, for its name, and hold its key.
+/// trusts each of `extra` (DER), as [`server_verifier_also_trusting`] does.
 ///
 /// For a test that runs servers under its own certificates; production
 /// trust is [`client_config`] alone.
 pub fn client_config_also_trusting(
     extra: Vec<CertificateDer<'static>>,
 ) -> Result<ClientConfig, rustls::Error> {
+    Ok(ClientConfig::builder_with_provider(crypto_provider())
+        .with_safe_default_protocol_versions()?
+        .dangerous()
+        .with_custom_certificate_verifier(server_verifier_also_trusting(extra)?)
+        .with_no_client_auth())
+}
+
+/// A verifier that checks servers as [`client_config`] does, and also
+/// trusts each of `extra` (DER): as a root a server's chain may lead to, and
+/// as that exact server certificate, for a self-signed server certificate
+/// that is its own issuer (which a chain check does not take as its own
+/// root). Verification stays on: a server must still present one of these
+/// or a chain to a trusted root, for its name, and hold its key.
+///
+/// The verifier form of [`client_config_also_trusting`], for a client that
+/// takes a verifier rather than a config (an iroh endpoint's
+/// `CaTlsConfig::custom_server_cert_verifier`).
+pub fn server_verifier_also_trusting(
+    extra: Vec<CertificateDer<'static>>,
+) -> Result<Arc<dyn ServerCertVerifier>, rustls::Error> {
     let provider = crypto_provider();
     // A certificate no chain check takes as a root (a leaf) is still pinned.
     let roots: Vec<CertificateDer<'static>> = extra
@@ -84,15 +100,11 @@ pub fn client_config_also_trusting(
         .cloned()
         .collect();
     let chain = chain_verifier(roots, Arc::clone(&provider))?;
-    Ok(ClientConfig::builder_with_provider(Arc::clone(&provider))
-        .with_safe_default_protocol_versions()?
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(AlsoTrusting {
-            pinned: extra,
-            chain,
-            provider,
-        }))
-        .with_no_client_auth())
+    Ok(Arc::new(AlsoTrusting {
+        pinned: extra,
+        chain,
+        provider,
+    }))
 }
 
 #[cfg(not(target_os = "android"))]

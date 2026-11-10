@@ -2,12 +2,12 @@
 
 crates.io `iroh` 1.0.3, verbatim (archive SHA-256
 `460de6bc52163b41b1646931f2897e5ab986f0966ade444467fec25024751a72`, upstream
-commit `f2eb930dda3779c6d852b72f3712aacd6e573ab1`) but for the six changes
+commit `f2eb930dda3779c6d852b72f3712aacd6e573ab1`) but for the changes
 below, each marked `TILO PATCH` in the source, and its `[lib]` building an
-`rlib` only (last section). iroh 1.3.0, the newest release
+`rlib` only. iroh 1.3.0, the newest release
 when this was written, has the same code in every place patched. Pinned by
-`crates/system/fs/tests/iroh_idle.rs` and tilo-fs's
-`sync::keep_alive_tests`.
+`crates/system/fs/tests/iroh_idle.rs` and
+`crates/platform/tilo-net/tests/iroh_trust.rs`.
 
 Tilo binds every endpoint with an empty relay map until someone could need to
 dial the device, and empties it again five minutes after the last
@@ -98,6 +98,27 @@ datagrams in flight while it dialed again. A connection without a local
 address is now pinged instead; a dead one still ends through the ping
 timeout. Native connections always have a local address and keep the check.
 `test_check_connection_without_local_addr_pings` pins it.
+
+## Relays are trusted through the system store (`src/endpoint.rs`, `src/tls/system_store.rs`, `Cargo.toml`)
+
+An endpoint built without `Builder::ca_tls_config` verified relays (the relay
+connection and the net report's HTTPS probe), pkarr servers and
+DNS-over-HTTPS resolvers against `webpki_roots`, a compiled-in copy of
+Mozilla's roots. Every other Tilo client trusts the system store
+(`tilo_net::client_config`): Tilo's bundle at
+`/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem` on Linux, read by the
+platform verifier through `crates/system/tilo-native-certs`. So a relay
+whose packet relay is served under a CA installed in that bundle, as a local
+stack's is, failed its own probe with `UnknownIssuer` and never got a home
+relay. Unset, the trust is now that store: the platform verifier
+(`rustls-platform-verifier`, the one tilo-net uses), and on Android, where
+it needs a JVM context, Android's system roots through
+`rustls-native-certs`, as `tilo_net::client_config` does there. A store that
+cannot be read leaves the endpoint bound with a verifier that refuses every
+server, so direct connections still work and no relay is trusted. In a
+browser the browser does the TLS, and the default is unchanged.
+`tilo-net`'s `iroh_trust` tests pin it: a relay under a local CA is
+refused at the default, and reached once the CA is in the store.
 
 ## Upstream
 

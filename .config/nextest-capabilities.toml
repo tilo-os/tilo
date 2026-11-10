@@ -42,7 +42,8 @@ filter = """\
 (package(runtime-bundle) and test(/component_pins::/)) \
 or (package(tilo-runtime) and test(/mcp_process_tests::/)) \
 or (package(ush) and (test(/^helper_runtime::/) or test(/^network::/) or test(/^serve_handoff::/) or test(/^runtime_dir::/))) \
-or (package(settings) and test(/keyboard_preview::/))"""
+or (package(settings) and test(/keyboard_preview::/)) \
+or (package(tilo-net) and test(=a_ca_installed_in_the_store_is_trusted_by_default))"""
 
 [capabilities.NetworkTunnel]
 variable = "TILO_REQUIRE_TUN"
