@@ -3639,8 +3639,8 @@ mod dismissal;
 pub(crate) mod view_choice;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use activation::NATIVE_INVOKE;
-pub(crate) use activation::take_presses;
 pub use activation::{Interaction, PaintedTargets, paint_disabled, paint_focus_ring};
+pub(crate) use activation::{press_waiting, take_presses};
 pub mod media_card;
 mod media_grid_component;
 pub use media_card::{

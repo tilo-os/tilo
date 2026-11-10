@@ -2139,6 +2139,28 @@ impl Instance {
                 .is_some_and(|publication| publication.pending())
     }
 
+    /// Whether a frame has work the window has not seen: a change no sync has sent it yet
+    /// (`moved`: the record moved, an index was taken in), a commit the door answered
+    /// (`door_work`), an invocation the window handed the host (`outgoing`), a write the record's
+    /// outbox owes ([`Self::settle_owed`]), or work under way off the frame
+    /// ([`Self::pending`]). A frame taken while any of it holds shows what the workspace held
+    /// before it, so a window that owes one syncs — and the host runs what it is owed — before it
+    /// rests.
+    #[must_use]
+    pub fn owes_a_frame(&self) -> bool {
+        self.moved
+            || self.settle_owed()
+            || self.door_work.get()
+            || !self.outgoing.borrow().is_empty()
+            || self.pending()
+    }
+
+    /// Whether the record's outbox owes a settlement a frame would take in: only a live window
+    /// settles it, and only once it reads the record.
+    fn settle_owed(&self) -> bool {
+        self.settle_due && !self.opening && self.mode == Mode::Live
+    }
+
     /// Wait for the work under way off the frame and take it in, so that what the window shows
     /// next is read from indexes and a publication that cover the record: for an embedder with
     /// no frame to take them in on. Whether what the window shows may have moved.

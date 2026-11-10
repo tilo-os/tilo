@@ -975,9 +975,11 @@ impl Host {
         self.inner.store.poll_index()
     }
 
-    /// Whether the store still owes an index: one is being built off the frame, or waits for
-    /// the record it is built from (see [`TiloStore::index_pending`]). A window read before then
-    /// shows the part of the workspace the index has read so far.
+    /// Whether a sync would take in work that changes what a window reads: an index being built
+    /// off the frame, one waiting for the record it is built from, one built anew, or a chunk of
+    /// the record the indexes do not reflect yet, which the store reads (see
+    /// [`TiloStore::index_pending`]). A window read before then shows the part of the workspace
+    /// the index has read so far.
     #[must_use]
     pub fn index_pending(&self) -> bool {
         self.inner.store.index_pending()

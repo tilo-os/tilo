@@ -2185,6 +2185,11 @@ impl FrameHarness {
             .is_some_and(|witness| witness.local_epoch == self.local_epoch)
             && self.bound_invocations.is_empty()
             && self.pending_control_invocations.is_empty()
+            // A press a control's answer left for the host is the tick's to run.
+            && !crate::widget::press_waiting()
+            // A window whose sync still has work to do owes the host what it queued for it as
+            // well: the invocation it handed over is run before the sync that shows the change.
+            && !self.root.needs_idle_sync()
             && self.acting_for.is_empty()
             && !self.owner_service_layout_retired
             && !self.has_pending_owner_models()
@@ -2619,6 +2624,8 @@ impl FrameHarness {
             || self.search_pending
             || !self.bound_invocations.is_empty()
             || !self.pending_control_invocations.is_empty()
+            // A press a control's answer left for the host to run is a frame to come.
+            || crate::widget::press_waiting()
             || self
                 .session_door
                 .as_ref()
@@ -2628,6 +2635,9 @@ impl FrameHarness {
         let queued_work = queued_work || slots_declared;
         let now = crate::time::now();
         self.with_schedule_roots(|roots| {
+            // A widget whose sync still has work to do asked for that frame
+            // ([`Widget::needs_idle_sync`]): what its store owes shows then.
+            let queued_work = queued_work || roots.iter().any(|root| root.needs_idle_sync());
             let next_wake_deadline = roots
                 .iter()
                 .filter_map(|root| root.next_wake_deadline())
@@ -3369,10 +3379,20 @@ impl FrameHarness {
         // As the live App syncs only when something set `needs_sync`: a
         // frame whose widgets noticed nothing of their own, after nothing
         // the witness follows moved, has nothing new to sync or publish.
+        // What the next tick owes: a widget whose sync still has work to do — what its record's
+        // store owes shape the rows it shows — asked for that sync however still the frame is
+        // besides ([`Widget::needs_idle_sync`]), as the live App honours it, and a control's
+        // answer that chose a row the way a person does left a press for the host to run.
+        let mut owes = self.root.needs_idle_sync() || crate::widget::press_waiting();
         let quiet = history_at_rest.is_some()
             && synced
             && !updated
             && !structure_changed
+            && !owes
+            // A control invocation the next tick runs, or one a component queued, changes what
+            // the frame shows through its answer: the frame it waits for is this one.
+            && self.bound_invocations.is_empty()
+            && self.pending_control_invocations.is_empty()
             && !crate::widget::controls::has_pending_control_invocation(self.root.as_ref());
         // A deadline the widgets asked for is served as the live window
         // serves it: the frame syncs and publishes only when serving it
@@ -3381,7 +3401,14 @@ impl FrameHarness {
         let deadline_served = quiet
             && self.root.next_wake_deadline().is_some_and(|due| due <= now)
             && self.root.serve_deadline(now);
-        let quiet = quiet && !deadline_served;
+        // Serving a deadline runs a widget's own work, which may leave the frame owing a sync
+        // after all (a view that read the record again): the frame that would rest asks once
+        // more, last, and rests only if nothing is owed by then either.
+        let owed_late = quiet
+            && !deadline_served
+            && (self.root.needs_idle_sync() || crate::widget::press_waiting());
+        owes |= owed_late;
+        let quiet = quiet && !deadline_served && !owed_late;
         if deadline_served {
             self.local_changes = self.local_changes.wrapping_add(1);
         }
@@ -3402,6 +3429,8 @@ impl FrameHarness {
                     "ui.loud.deadline"
                 } else if structure_changed {
                     "ui.loud.structure"
+                } else if owes {
+                    "ui.loud.owed"
                 } else {
                     "ui.loud.control"
                 }),

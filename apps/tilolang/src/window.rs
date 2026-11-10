@@ -750,6 +750,14 @@ impl Widget for Window {
     fn needs_redraw(&self) -> bool {
         ui::widget::redraw_or_children(self.dirty, self)
     }
+
+    /// Whether this window's sync still has work to do on an idle frame: what its instance owes
+    /// — an index the store is deriving or waits for the record of, a change no sync has sent —
+    /// changes what its views show, so the frame that says so syncs and the change is shown then
+    /// (see [`tilolang_tilo::instance::Instance::owes_a_frame`]).
+    fn needs_idle_sync(&self) -> bool {
+        self.instance.owes_a_frame() || ui::widget::Widget::needs_idle_sync(&self.view)
+    }
     fn mark_drawn(&mut self) {
         self.dirty = false;
         ui::widget::Widget::mark_children_drawn(self);

@@ -155,14 +155,35 @@ impl TiloStore {
         self.held().apps.values().all(AppIndex::answers)
     }
 
-    /// Whether the store still owes an index: one is being derived off the frame, or waits for
-    /// the record it is built from. Until it has them, the rows, counts and lists a window reads
-    /// are of the part of the workspace read so far, so a frame taken then is not the frame of
-    /// the workspace the record holds.
+    /// Whether a sync would take in work that changes what a view reads: an index being derived
+    /// off the frame, an index waiting for the record it is built from, an index a read found
+    /// corrupt that is built anew, or a chunk of the record no index read from reflects, which
+    /// the store reads before its rows can be listed. Until it has them, the rows, counts and
+    /// lists a window reads are of the part of the workspace read so far, so a frame taken then
+    /// is not the frame of the workspace the record holds.
+    ///
+    /// A window whose store owes one syncs before it rests, whatever else is still
+    /// ([`crate::host::Host::index_pending`]). An index derived off the frame wakes the window
+    /// when it lands (`TiloStore::set_waker`), and what a frame reads in is read within it, so
+    /// nothing polls for either.
     #[must_use]
     pub fn index_pending(&self) -> bool {
         let held = self.held();
-        held.chunks.has_record() && held.apps.values().any(|held| !held.ready())
+        if !held.chunks.has_record() {
+            return false;
+        }
+        // An index that is not read from is built, or waits for the chunks it is built from,
+        // and an index a read found corrupt is built anew off the frame.
+        if held
+            .apps
+            .values()
+            .any(|held| !held.ready() || held.index.stats().is_corrupt())
+        {
+            return true;
+        }
+        // Every index answers rows, so a chunk the manifest names that none reflects is read
+        // now, in this frame ([`TiloStore::load_short`]).
+        held.answers_all() && !held.chunks_to_read().is_empty()
     }
 
     /// Whether every index read from covers the record: it is read from, every chunk the
@@ -311,28 +332,12 @@ impl TiloStore {
     pub fn load_short(&self) -> bool {
         let short: Vec<ChunkNo> = {
             let held = self.held();
-            let reflected: BTreeSet<ChunkNo> = held
-                .apps
-                .values()
-                .filter(|app| app.answers())
-                .flat_map(|app| app.heads.keys().copied())
-                .collect();
-            if held.chunk_loader.is_none() || !held.chunks.has_record() {
-                Vec::new()
+            if held.answers_all() {
+                held.chunks_to_read()
             } else {
-                let placed = held.chunks.placement().chunks();
-                let missing = placed
-                    .iter()
-                    .copied()
-                    .filter(|chunk| !reflected.contains(chunk));
-                if held.apps.values().all(AppIndex::answers) {
-                    missing.collect()
-                } else {
-                    missing
-                        .filter(|chunk| held.chunks.mirror(*chunk).is_none())
-                        .take(1)
-                        .collect()
-                }
+                // An index that answers no row yet is building its first step: the chunk that
+                // step derives is read first, and the rest of the record after them.
+                held.chunks_to_read().into_iter().take(1).collect()
             }
         };
         let mut loaded = false;
@@ -466,6 +471,33 @@ impl Inner {
             .collect();
         chunks.sort_unstable();
         chunks
+    }
+
+    /// Whether every index read from answers rows.
+    fn answers_all(&self) -> bool {
+        self.apps.values().all(AppIndex::answers)
+    }
+
+    /// The chunks the manifest names that no index read from reflects, and that the store does
+    /// not hold: what it reads to cover the record ([`TiloStore::load_short`]). Empty when it
+    /// cannot read chunks: its indexes are what the record's manifest was read into.
+    fn chunks_to_read(&self) -> Vec<ChunkNo> {
+        if self.chunk_loader.is_none() || !self.chunks.has_record() {
+            return Vec::new();
+        }
+        let reflected: BTreeSet<ChunkNo> = self
+            .apps
+            .values()
+            .filter(|held| held.answers())
+            .flat_map(|held| held.heads.keys().copied())
+            .collect();
+        self.chunks
+            .placement()
+            .chunks()
+            .iter()
+            .copied()
+            .filter(|chunk| !reflected.contains(chunk) && self.chunks.mirror(*chunk).is_none())
+            .collect()
     }
 
     /// Whether every index read from covers the record: none is being built, every chunk the
