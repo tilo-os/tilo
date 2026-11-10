@@ -1057,18 +1057,31 @@ impl Workspaces {
         {
             return Ok(GovernanceCompletion { generation });
         }
-        let mut candidate = workspace.peer().clone();
-        change(&mut candidate)?;
-        let mut state = workspace.collaboration().clone();
-        state.record_administration(
-            request_id,
-            digest,
-            workspace.record.generation.saturating_add(1),
-        );
-        let generation =
-            workspace.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
-                Ok(state)
-            })?;
+        // Staged from the replica held until the change commits: a member's
+        // write its link takes in meanwhile waits, rather than landing between
+        // the copy the change was made on and the commit, which then refused
+        // the change for dropping that write.
+        let generation = {
+            let shared = workspace.peer.shared();
+            let mut replica = shared.lock();
+            let mut candidate = replica.clone();
+            change(&mut candidate)?;
+            let mut state = workspace.collaboration().clone();
+            state.record_administration(
+                request_id,
+                digest,
+                workspace.record.generation.saturating_add(1),
+            );
+            let committed = workspace.commit_held(
+                &mut replica,
+                candidate,
+                (&self.inner.host.key, system_time(now)),
+                super::Change::Other,
+                |_, _| Ok(state),
+            );
+            drop(replica);
+            committed?
+        };
         self.settle(workspace).await?;
         Ok(GovernanceCompletion { generation })
     }
