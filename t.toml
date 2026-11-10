@@ -616,6 +616,24 @@ name = "sdk-types"
 run = "cargo run --locked -q -p tilo-cli -- sdk gen --lang python --out sdk/python/src/tilo/types --check\ncargo run --locked -q -p tilo-cli -- sdk gen --lang ts --out sdk/typescript/src/types --check\n"
 fix = "cargo run --locked -q -p tilo-cli -- sdk gen --lang python --out sdk/python/src/tilo/types\ncargo run --locked -q -p tilo-cli -- sdk gen --lang ts --out sdk/typescript/src/types\n"
 
+# The SDKs' suites need their ecosystems' tools and locked dependencies, which no other check's
+# image carries: uv with the Python SDK's environment from sdk/python/uv.lock, bun with the
+# TypeScript SDK's packages from sdk/typescript/bun.lock, both baked into the image this check
+# builds. They run offline. That image is built for these checks and not published, so the
+# dependencies a suite runs against are always the tree's locks: a bump changes the image's
+# inputs and with it the image.
+[[check]]
+name = "sdk-python"
+run = "bash tools/ci/sdk-python.sh"
+image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
+requires = ["arch=x86_64"]
+
+[[check]]
+name = "sdk-typescript"
+run = "bash tools/ci/sdk-typescript.sh"
+image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
+requires = ["arch=x86_64"]
+
 [[check]]
 name = "sdk-policy"
 run = "python3 tools/policy/check_app_capabilities.py\npython3 tools/web/generate_web_desktop.py --check\npython3 tools/apps/generate_catalogue_fleet.py --check\npython3 tools/sdk/publish_check.py --report-only\n"
@@ -1831,6 +1849,13 @@ outputs = ["/target/source-date/ci-fast"]
 default = false
 
 [[check]]
+name = "source-date-ci-sdk"
+run = "bash tools/ci/publish/source-date.sh /target/source-date/ci-sdk os/Containerfile.ci-sdk sdk/python/pyproject.toml sdk/python/uv.lock sdk/python/src sdk/typescript/package.json sdk/typescript/bun.lock"
+git = true
+outputs = ["/target/source-date/ci-sdk"]
+default = false
+
+[[check]]
 name = "source-date-release-tools"
 run = "bash tools/ci/publish/source-date.sh /target/source-date/release-tools os/Containerfile.release-tools"
 git = true
@@ -1862,6 +1887,16 @@ image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a
 outputs = ["/target/publish/ci-fast/receipt.json"]
 on = ["main", "dispatch"]
 id_token = ["registry.tilo.so"]
+
+[[check]]
+name = "image-ci-sdk"
+run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/ci-sdk)\nexport SOURCE_DATE_EPOCH\n# The SDKs' locks and the Python SDK's sources are the image's context: the pins and the\n# dependencies they name are baked in, so this context is the only thing the build reads.\ncontext=$TMPDIR/ci-sdk-context\nrm -rf \"$context\"\nmkdir -p \"$context/sdk/python\" \"$context/sdk/typescript\"\ncp sdk/python/pyproject.toml sdk/python/uv.lock sdk/python/README.md \"$context/sdk/python/\"\ncp -a sdk/python/src \"$context/sdk/python/src\"\ncp sdk/typescript/package.json sdk/typescript/bun.lock \"$context/sdk/typescript/\"\nbash tools/ci/publish/oci-build.sh \"$context\" os/Containerfile.ci-sdk /target/publish/ci-sdk\n"
+needs = ["source-date-ci-sdk"]
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+requires = ["arch=x86_64"]
+isolation = "vm"
+outputs = ["/target/publish/ci-sdk/image.oci.tar", "/target/publish/ci-sdk/digest"]
+default = false
 
 [[check]]
 name = "image-release-tools-{arch}"

@@ -8,7 +8,9 @@
 #   * a [[group]] below: a cheap, hermetic suite (no root-only host state, KVM,
 #     built image or network) that check.yml runs whenever
 #     a changed path matches one of the group's inputs or the suite itself;
-#   * a [[covered]] entry: exercised by the named, already gated suite; or
+#   * a [[covered]] entry: exercised by the named, already gated suite, or,
+#     with `check = "<name>"`, by the named t check, which runs it in its own
+#     image; or
 #   * an [[unrequired]] entry with the reason it cannot be a required check.
 #
 # `tools/ci/suites.py check` (part of tools/policy/run.sh) rejects a
@@ -2114,29 +2116,32 @@ package = "tilo-front-door"
 inputs = ["crates/system/tilo-cli/src/mcp_presence.rs"]
 readers = ["crates/hosting/tilo-front-door/src/session.rs"]
 
-[[unrequired]]
+# The Python SDK's suite runs as `uv run --frozen --offline pytest` in the ci-sdk image by the
+# sdk-python check, which carries uv and the SDK's locked dependencies. The integration test is
+# gated with it and skips unless a front door is named by TILO_TEST_DOOR and TILO_TEST_KEY.
+[[covered]]
 suite = "sdk/python/tests/test_integration.py"
-reason = "talks to a real front door named by TILO_TEST_DOOR and TILO_TEST_KEY, and skips without them; it needs the SDK's own dependencies (httpx, pytest-asyncio) the ci-fast image lacks"
+check = "sdk-python"
 
-[[unrequired]]
+[[covered]]
 suite = "sdk/python/tests/test_keys.py"
-reason = "the Python SDK's suite: it imports httpx and pytest-asyncio, which the ci-fast image lacks, and runs as `uv run --extra dev pytest` in sdk/python"
+check = "sdk-python"
 
-[[unrequired]]
+[[covered]]
 suite = "sdk/python/tests/test_session.py"
-reason = "the Python SDK's suite: it imports httpx and pytest-asyncio, which the ci-fast image lacks, and runs as `uv run --extra dev pytest` in sdk/python"
+check = "sdk-python"
 
-[[unrequired]]
+[[covered]]
 suite = "sdk/python/tests/test_sync.py"
-reason = "the Python SDK's suite: it imports httpx and pytest-asyncio, which the ci-fast image lacks, and runs as `uv run --extra dev pytest` in sdk/python"
+check = "sdk-python"
 
-[[unrequired]]
+[[covered]]
 suite = "sdk/python/tests/test_types.py"
-reason = "the Python SDK's suite: it imports httpx and pytest-asyncio, which the ci-fast image lacks, and runs as `uv run --extra dev pytest` in sdk/python"
+check = "sdk-python"
 
-[[unrequired]]
+[[covered]]
 suite = "sdk/python/tests/test_workspace.py"
-reason = "the Python SDK's suite: it imports httpx and pytest-asyncio, which the ci-fast image lacks, and runs as `uv run --extra dev pytest` in sdk/python"
+check = "sdk-python"
 
 [[unrequired]]
 suite = "sdk/python/src/tilo/types/speed_test.py"

@@ -74,6 +74,9 @@ class Manifest:
     groups: tuple[Group, ...]
     covered: dict[str, str]
     unrequired: dict[str, str]
+    # Suites a required t check runs in its own image, which the hermetic groups' image
+    # cannot: suite -> the check's name in t.toml.
+    checks: dict[str, str] = field(default_factory=dict)
     cargo: tuple[CargoReader, ...] = ()
     cargo_exempt: dict[str, str] = field(default_factory=dict)
 
@@ -125,12 +128,19 @@ def parse(text: str) -> Manifest:
             claim(suite, f"group {name}")
         groups.append(Group(name, inputs, suites))
     covered: dict[str, str] = {}
+    checks: dict[str, str] = {}
     for entry in data.get("covered", []):
-        if not isinstance(entry, dict) or set(entry) != {"suite", "by"}:
-            raise ValueError("covered entries must have exactly suite and by")
+        if not isinstance(entry, dict) or set(entry) not in ({"suite", "by"}, {"suite", "check"}):
+            raise ValueError("covered entries must be exactly suite and by, or suite and check")
         suite = _path(entry["suite"], "covered suite")
         claim(suite, "covered")
-        covered[suite] = _path(entry["by"], f"{suite} covering suite")
+        if "by" in entry:
+            covered[suite] = _path(entry["by"], f"{suite} covering suite")
+        else:
+            check = entry["check"]
+            if not isinstance(check, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", check):
+                raise ValueError(f"{suite}: covering check must name a t.toml check")
+            checks[suite] = check
     unrequired: dict[str, str] = {}
     for entry in data.get("unrequired", []):
         if not isinstance(entry, dict) or not {"suite", "reason"} <= set(entry) <= {"suite", "reason", "workflow"}:
@@ -184,7 +194,7 @@ def parse(text: str) -> Manifest:
             raise ValueError(f"{path}: cargo-exempt entries need a reason")
         claim(path, "cargo-exempt")
         cargo_exempt[path] = reason
-    return Manifest(tuple(groups), covered, unrequired, tuple(cargo), cargo_exempt)
+    return Manifest(tuple(groups), covered, unrequired, checks, tuple(cargo), cargo_exempt)
 
 
 def load(root: Path = ROOT) -> Manifest:
@@ -340,6 +350,18 @@ def always_run(root: Path) -> set[str]:
     return gated
 
 
+def change_checks(root: Path) -> set[str]:
+    """The checks t.toml runs for a change: its default ones and those it names `default = true`.
+
+    A check that only names an `on` runs there and when asked, so it gates no change.
+    """
+    declared = tomllib.loads((root / "t.toml").read_text(encoding="utf-8")).get("check", [])
+    return {
+        check["name"] for check in declared
+        if isinstance(check.get("name"), str) and check.get("default", "on" not in check) is not False
+    }
+
+
 def audit(root: Path, tracked: list[str], manifest: Manifest | None = None) -> list[str]:
     """Return policy violations for the manifest against the tracked tree."""
     manifest = manifest or load(root)
@@ -351,11 +373,17 @@ def audit(root: Path, tracked: list[str], manifest: Manifest | None = None) -> l
         and fnmatch.fnmatchcase(path.rpartition("/")[2], "test_*.py")
     }
     required = set(manifest.suites())
-    for suite in sorted(required | set(manifest.covered) | set(manifest.unrequired)):
+    for suite in sorted(required | set(manifest.covered) | set(manifest.unrequired) | set(manifest.checks)):
         if suite not in tracked_set:
             problems.append(f"{suite}: listed in {MANIFEST} but not a tracked file")
         elif suite in gated:
             problems.append(f"{suite}: already runs on every change; remove it from {MANIFEST}")
+    if manifest.checks:
+        check_gates = change_checks(root)
+        for suite, check in sorted(manifest.checks.items()):
+            if check not in check_gates:
+                problems.append(
+                    f"{suite}: covering check {check} is not a check t.toml runs for a change")
     for suite in sorted(required & tracked_set):
         if suite.endswith(".py"):
             text = (root / suite).read_text(encoding="utf-8")
@@ -385,7 +413,7 @@ def audit(root: Path, tracked: list[str], manifest: Manifest | None = None) -> l
         elif not re.search(
                 rf"\b{re.escape(Path(suite).stem)}\b", (root / by).read_text(encoding="utf-8")):
             problems.append(f"{suite}: {by} does not reference it")
-    classified = gated | required | set(manifest.covered) | set(manifest.unrequired)
+    classified = gated | required | set(manifest.covered) | set(manifest.unrequired) | set(manifest.checks)
     for path in sorted(tracked):
         if in_scope(path) and path not in classified:
             problems.append(
