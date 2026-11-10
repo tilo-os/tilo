@@ -44,10 +44,16 @@
 //! Mesa's GLVND vendor ship together, NVIDIA's likewise.
 //!
 //! If exactly one ICD claims the node, it's pinned. If none does, the
-//! variable is **not set** and every ICD's answer is recorded in
+//! selection pins **no** driver and every ICD's answer is recorded in
 //! [`GpuSelection::notes`] — a wrong pin strands the app on a driver
-//! that can't drive its GPU, while no pin merely leaves the loader's
-//! own default in place, the strictly smaller failure.
+//! that can't drive its GPU, and a GPU with only an OpenGL driver still
+//! draws through its EGL. A compositor that found no render node at all
+//! hands its apps a display's primary node instead (a virtual display, as
+//! in a VM without 3D), which nothing renders on: it draws with lavapipe
+//! there, and a launch onto such a node that no driver claims is given the
+//! same software pin ([`unclaimed_node_pin`]) rather than the loader's
+//! default, which loads every installed driver and Mesa's device-select
+//! layer into the app and crashed Chat in such a VM.
 
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
@@ -274,6 +280,11 @@ pub struct GpuSelection {
     /// which is every native GPU, so the environment is unchanged there.
     #[serde(default)]
     pub site_integration: Option<SiteIntegration>,
+    /// Every installed Vulkan driver answered and none reported this node as
+    /// its render node: no GPU drives it ([`unclaimed_node_pin`]). False when
+    /// one claimed it, several did, or the drivers could not be asked.
+    #[serde(default)]
+    pub unclaimed: bool,
     /// Human-readable record of everything that was *not* pinned and why —
     /// otherwise invisible until a tile renders black.
     pub notes: Vec<String>,
@@ -528,6 +539,7 @@ pub fn select_for_node(node: &Path, search: &IcdSearch) -> GpuSelection {
             vulkan_device: None,
             pipeline_seed: None,
             site_integration: None,
+            unclaimed: false,
             notes: vec![format!(
                 "asking the installed Vulkan drivers about {} failed: {why}; leaving the \
                  EGL/Vulkan loaders at their own defaults",
@@ -542,6 +554,7 @@ pub fn select_for_node(node: &Path, search: &IcdSearch) -> GpuSelection {
             vulkan_device: None,
             pipeline_seed: None,
             site_integration: None,
+            unclaimed: false,
             notes: vec![format!(
                 "cannot stat {}: {error}; leaving the EGL/Vulkan loaders at their own defaults",
                 node.display()
@@ -652,6 +665,7 @@ pub fn inherited_selection(node: &Path) -> Option<GpuSelection> {
         vulkan_device: None,
         pipeline_seed: None,
         site_integration: None,
+        unclaimed: false,
         notes: Vec::new(),
     })
 }
@@ -701,6 +715,29 @@ impl SoftwarePin {
             .cloned()
             .collect()
     }
+}
+
+/// The pin a launch onto `selection` runs with when its node is a display's
+/// primary node (`card*`, no render node) that no Vulkan driver claims: no
+/// GPU renders on it, so the app renders as the compositor does, with
+/// lavapipe — the pin the compositor handed down (`inherited`), else the one
+/// installed under `search`. `None` for a render node (a GPU, if only with an
+/// OpenGL driver), a node a driver claims or several do, or no lavapipe.
+#[must_use]
+pub fn unclaimed_node_pin(
+    selection: &GpuSelection,
+    inherited: Option<SoftwarePin>,
+    search: &IcdSearch,
+) -> Option<SoftwarePin> {
+    let render_node = selection
+        .node
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("renderD"));
+    if render_node || !selection.unclaimed || !selection.is_empty() {
+        return None;
+    }
+    inherited.or_else(|| software_pin(search).ok())
 }
 
 /// The software pin from the manifests installed under `search`, or why
@@ -791,10 +828,12 @@ pub fn select_for_device(
     probe: &impl IcdProbe,
 ) -> GpuSelection {
     let mut notes = Vec::new();
+    let mut unclaimed = false;
     let claim = match claim_for(node, numbers, search, probe) {
         Ok(claim) => Some(claim),
-        Err(why) => {
+        Err(Unclaimed { nobody, why }) => {
             notes.push(format!("{VK_DRIVER_FILES_ENV} not set: {why}"));
+            unclaimed = nobody;
             None
         }
     };
@@ -817,6 +856,7 @@ pub fn select_for_device(
         vulkan_device,
         pipeline_seed: None,
         site_integration,
+        unclaimed,
         notes,
     }
 }
@@ -850,7 +890,7 @@ fn claim_for(
     numbers: (u64, u64),
     search: &IcdSearch,
     probe: &impl IcdProbe,
-) -> Result<Claim, String> {
+) -> Result<Claim, Unclaimed> {
     let mut claims = Vec::new();
     let mut answers = Vec::new();
     for manifest in manifests_in(&search.vulkan_icd_dirs) {
@@ -889,14 +929,17 @@ fn claim_for(
     }
     match claims.len() {
         1 => Ok(claims.remove(0)),
-        0 => Err(format!(
-            "no Vulkan driver reports {} ({}:{}) as its render node [{}]",
-            node.display(),
-            numbers.0,
-            numbers.1,
-            answers.join("; ")
-        )),
-        n => Err(format!(
+        0 => Err(Unclaimed {
+            nobody: true,
+            why: format!(
+                "no Vulkan driver reports {} ({}:{}) as its render node [{}]",
+                node.display(),
+                numbers.0,
+                numbers.1,
+                answers.join("; ")
+            ),
+        }),
+        n => Err(Unclaimed::because(format!(
             "{n} Vulkan drivers claim {} ({}) — refusing to guess",
             node.display(),
             claims
@@ -904,7 +947,20 @@ fn claim_for(
                 .map(|c| format!("{} = {}", c.manifest.display(), c.device))
                 .collect::<Vec<_>>()
                 .join(", ")
-        )),
+        ))),
+    }
+}
+
+/// Why no single driver was pinned for a node: `nobody` when every driver answered and none
+/// reported the node, rather than several claiming it.
+struct Unclaimed {
+    nobody: bool,
+    why: String,
+}
+
+impl Unclaimed {
+    fn because(why: String) -> Self {
+        Self { nobody: false, why }
     }
 }
 
@@ -1262,6 +1318,7 @@ mod tests {
             vulkan_device: None,
             pipeline_seed: None,
             site_integration: None,
+            unclaimed: false,
             notes: Vec::new(),
         };
         assert!(
@@ -1336,6 +1393,79 @@ mod tests {
             &[(&host_icd_name("radeon"), "libvulkan_radeon.so")],
         );
         assert!(software_pin(&search).is_err(), "no lavapipe, no pin");
+    }
+
+    #[test]
+    fn a_node_no_driver_claims_renders_as_the_compositor_does_with_lavapipe() {
+        let tmp = tempfile::tempdir().unwrap();
+        let search = fixture(
+            tmp.path(),
+            &[("50_mesa.json", "libEGL_mesa.so.0")],
+            &[
+                (&host_icd_name("radeon"), "libvulkan_radeon.so"),
+                (&host_icd_name("lvp"), "libvulkan_lvp.so"),
+            ],
+        );
+        let unclaimed = GpuSelection {
+            node: PathBuf::from("/dev/dri/card1"),
+            driver: Some("faux_driver".into()),
+            egl_vendor_json: None,
+            vulkan_icd_json: None,
+            vulkan_device: None,
+            pipeline_seed: None,
+            site_integration: None,
+            unclaimed: true,
+            notes: vec!["no Vulkan driver reports /dev/dri/card1".into()],
+        };
+        let pin = unclaimed_node_pin(&unclaimed, None, &search).expect("lavapipe is installed");
+        assert!(pin.vulkan_icd_json.ends_with(host_icd_name("lvp")));
+        assert!(
+            pin.env().contains(&(NO_DEVICE_SELECT_ENV, "1".to_owned())),
+            "the device-select layer stays out of the app"
+        );
+        let handed_down = SoftwarePin {
+            vulkan_icd_json: tmp.path().join("handed-down.json"),
+            egl_vendor_json: None,
+        };
+        assert_eq!(
+            unclaimed_node_pin(&unclaimed, Some(handed_down.clone()), &search),
+            Some(handed_down),
+            "the compositor's own pin comes first"
+        );
+        let claimed = GpuSelection {
+            vulkan_icd_json: Some(search.vulkan_icd_dirs[0].join(host_icd_name("radeon"))),
+            ..unclaimed.clone()
+        };
+        assert_eq!(
+            unclaimed_node_pin(&claimed, None, &search),
+            None,
+            "a node a driver claims keeps that driver"
+        );
+        let without = tempfile::tempdir().unwrap();
+        let bare = fixture(
+            without.path(),
+            &[],
+            &[(&host_icd_name("radeon"), "libvulkan_radeon.so")],
+        );
+        assert_eq!(unclaimed_node_pin(&unclaimed, None, &bare), None);
+        let gl_only = GpuSelection {
+            node: PathBuf::from("/dev/dri/renderD128"),
+            ..unclaimed.clone()
+        };
+        assert_eq!(
+            unclaimed_node_pin(&gl_only, None, &search),
+            None,
+            "a render node no Vulkan driver claims is a GPU with only an OpenGL driver"
+        );
+        let ambiguous = GpuSelection {
+            unclaimed: false,
+            ..unclaimed
+        };
+        assert_eq!(
+            unclaimed_node_pin(&ambiguous, None, &search),
+            None,
+            "several drivers claiming a node is no machine without a GPU"
+        );
     }
 
     const RENDER_D128: (u64, u64) = (226, 128);
@@ -1503,6 +1633,7 @@ mod tests {
         ]));
         let sel = select(&search, RENDER_D128, &probe);
         assert!(sel.is_empty());
+        assert!(sel.unclaimed, "every driver answered and none claimed it");
         assert!(sel.env().is_empty());
         let notes = sel.notes.join("\n");
         assert!(notes.contains("AMD Radeon on 226:129"), "{notes}");
@@ -1523,6 +1654,7 @@ mod tests {
         ]));
         let sel = select(&search, RENDER_D128, &probe);
         assert_eq!(sel.vulkan_icd_json, None);
+        assert!(!sel.unclaimed, "claimed twice");
         assert!(
             sel.notes.iter().any(|n| n.contains("refusing to guess")),
             "{:?}",

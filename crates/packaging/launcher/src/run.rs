@@ -2291,6 +2291,22 @@ fn splice_gpu(
         let entry = pop_entry(argv)?;
         // The device nodes were just bound: narrow them to the node.
         crate::sandbox::push_gpu_selection(argv, sel, true);
+        // No driver claims the node: no GPU drives it, and the app renders as the
+        // compositor does, with lavapipe.
+        #[cfg(target_os = "linux")]
+        if let Some(pin) = crate::gpu::unclaimed_node_pin(
+            sel,
+            crate::gpu::inherited_software_pin(),
+            &crate::gpu::IcdSearch::default(),
+        ) {
+            tracing::info!(
+                target: "tilo_launcher::gpu",
+                package = %manifest.package_id,
+                vulkan = %pin.vulkan_icd_json.display(),
+                "no driver claims the compositor's render node: the app renders with lavapipe",
+            );
+            crate::sandbox::push_software_pin(argv, &pin);
+        }
         argv.push(entry);
     } else if opts.render_node.is_none()
         && let Some(pin) = crate::gpu::inherited_software_pin()

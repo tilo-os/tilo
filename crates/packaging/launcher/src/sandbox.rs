@@ -2349,6 +2349,7 @@ mod tests {
             vulkan_device: None,
             pipeline_seed: Some(PathBuf::from("/run/user/1000/tilo/pipeline-seed")),
             site_integration: None,
+            unclaimed: false,
             notes: Vec::new(),
         };
         let mut argv = Vec::new();
@@ -2394,6 +2395,7 @@ mod tests {
                 vulkan_device: None,
                 pipeline_seed: None,
                 site_integration: None,
+                unclaimed: false,
                 notes: Vec::new(),
             };
             let mut argv = Vec::new();
@@ -2460,6 +2462,7 @@ mod tests {
                 vulkan_device: None,
                 pipeline_seed: None,
                 site_integration: None,
+                unclaimed: false,
                 notes: Vec::new(),
             };
             let mut argv = Vec::new();
