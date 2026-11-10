@@ -685,6 +685,18 @@ def own_workspace(ctx, res):
         raise CheckFailed("; ".join(problems))
 
 
+def settled(agent: Agent, reply: dict, within: float = 90.0) -> dict:
+    """`reply`, or, where it says the action is still `pending <id>`, what `tilo_status` answers
+    for it once it settled: the outcome the agent reads back, as an agent waiting on it does."""
+    deadline = time.monotonic() + within
+    while True:
+        pending = re.match(r"pending ([0-9a-f-]{36})", text_of(reply))
+        if pending is None or time.monotonic() > deadline:
+            return reply
+        time.sleep(2)
+        reply = agent.tool("tilo_status", {"invocation_id": pending.group(1)})
+
+
 def closed_app(agent: Agent) -> str | None:
     """An app installed in the agent's workspace that is not running, as its `tilo_ls` lists the
     apps (`name  Label  installed`), the plainest first; None when every one runs."""
@@ -714,8 +726,9 @@ def own_change(ctx, res):
         if closed is None:
             raise Unobservable(f"{e['name']}: the agent's workspace lists no installed app that is "
                                "not running, to open")
-        opened, _ = tool_answering(ctx, agent, "tilo_do", {"path": f"{closed}#open"},
+        opened, _ = tool_answering(ctx, agent, "tilo_do", {"path": f"{closed}#open", "wait_ms": 30000},
                                    f"{e['name']}-open")
+        opened = settled(agent, opened)
         e["opened_app"] = closed
         made, asked = tool_answering(
             ctx, agent, "tilo_do", {"path": "notes#new-note", "args": {"title": titles[e["name"]]}},
