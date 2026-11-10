@@ -1150,9 +1150,12 @@ impl Workspaces {
                 .await
                 .map_err(|e| format!("settle: {e}"))?;
             tracing::info!("settled");
-            this.name_own_host(&mut workspace)
-                .await
-                .map_err(|e| format!("hosts: {e}"))?;
+            // Where members reach the host is advice: a workspace whose
+            // governance does not take this host's new address keeps the one
+            // it names, and is served all the same.
+            if let Err(error) = this.name_own_host(&mut workspace).await {
+                tracing::error!(workspace = %workspace.workspace(), %error, "the host's address is not named in the workspace's governance");
+            }
             this.recall(&mut workspace)
                 .await
                 .map_err(|e| format!("recall: {e}"))?;
