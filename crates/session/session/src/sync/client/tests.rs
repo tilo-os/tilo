@@ -237,7 +237,7 @@ fn a_transport_another_host_brings_carries_the_same_words() {
     let (_landed, enrolled) = std::sync::mpsc::channel();
     let sync = Client::over(
         Transport {
-            outgoing: Rc::new(outgoing),
+            outgoing: Arc::new(outgoing),
             arrived,
             enrolled,
             saying: None,
@@ -1116,7 +1116,7 @@ fn a_host_that_names_its_workspaces_says_and_pumps_each_of_them() {
     let (_landed, enrolled) = std::sync::mpsc::channel();
     let sync = Client::over(
         Transport {
-            outgoing: Rc::new(outgoing),
+            outgoing: Arc::new(outgoing),
             arrived,
             enrolled,
             saying: None,

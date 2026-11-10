@@ -278,10 +278,10 @@ pub(crate) fn register(
     let (_landed, enrolled) = std::sync::mpsc::channel();
     let client = Rc::new(Client::over(
         Transport {
-            outgoing: Rc::new(NoCarrier),
+            outgoing: std::sync::Arc::new(NoCarrier),
             arrived,
             enrolled,
-            saying: Some(Rc::new(PagePlane {
+            saying: Some(std::sync::Arc::new(PagePlane {
                 handle: handle.clone(),
             })),
         },

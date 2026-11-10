@@ -969,7 +969,7 @@ pub struct Client {
     hosting: Rc<Hosting>,
     /// Where this client says its own commands, beside the client's.
     #[cfg(target_os = "linux")]
-    outgoing: Rc<dyn Outbox>,
+    outgoing: Arc<dyn Outbox>,
     /// The thread running the peer actor, stopped when this drops.
     #[cfg(target_os = "linux")]
     thread: Option<std::thread::JoinHandle<()>>,
@@ -1050,7 +1050,7 @@ impl Client {
         let host_outbox = HostOutbox {
             commands: commands.clone(),
         };
-        let outgoing: Rc<dyn Outbox> = Rc::new(host_outbox.clone());
+        let outgoing: Arc<dyn Outbox> = Arc::new(host_outbox.clone());
         let link_outbox = host_outbox.clone();
         let fabric = restored_fabric(identity.as_ref(), host_outbox, entry.continuity);
         // What the actor serves is installed before it starts: every actor built after answers it.
@@ -1098,10 +1098,10 @@ impl Client {
         }
         let saying = live
             .as_ref()
-            .map(|live| Rc::new(live.saying()) as Rc<dyn SayPresence>);
+            .map(|live| Arc::new(live.saying()) as Arc<dyn SayPresence>);
         let inner = SessionClient::over(
             Transport {
-                outgoing: Rc::clone(&outgoing),
+                outgoing: Arc::clone(&outgoing),
                 arrived,
                 enrolled,
                 saying,
@@ -1157,7 +1157,7 @@ impl Client {
             Rc::new(Seat::bare(commands, host_arrived))
         };
         #[cfg(target_os = "linux")]
-        let outgoing = Rc::clone(&plane.outgoing);
+        let outgoing = std::sync::Arc::clone(&plane.outgoing);
         let inner = SessionClient::over(plane, device, own);
         let hosting = Rc::new(Hosting {
             roster: Rc::new(Roster::new()),
@@ -1207,10 +1207,10 @@ impl Client {
         let (_unlanded, enrolled) = std::sync::mpsc::channel();
         let (commands, _host_commands) = tokio::sync::mpsc::unbounded_channel();
         let (_host_events, host_arrived) = std::sync::mpsc::channel();
-        let outbox: Rc<dyn Outbox> = Rc::new(outgoing);
+        let outbox: Arc<dyn Outbox> = Arc::new(outgoing);
         let inner = SessionClient::over(
             Transport {
-                outgoing: Rc::clone(&outbox),
+                outgoing: Arc::clone(&outbox),
                 arrived,
                 enrolled,
                 saying: None,

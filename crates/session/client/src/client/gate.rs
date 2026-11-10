@@ -29,18 +29,10 @@ impl Client {
         // stand-in plane has no policy to be held to.
         self.person()?;
         let required: WorkspaceAction = gate::required_workspace_action(msg)?;
-        let (workspace, known) = {
-            let plane = self.plane.borrow();
-            if *peer == plane.publisher {
-                return None;
-            }
-            let workspace = plane.workspaces.iter().find(|held| held.ws == *ws)?;
-            let known = workspace
-                .board
-                .member(*peer.as_bytes())
-                .and_then(|known| known.user.clone());
-            (workspace.id.clone(), known)
-        };
+        if *peer == self.publisher() {
+            return None;
+        }
+        let (workspace, known) = self.heard_member(*ws, *peer)?;
         // Who the device is: the certificate it said here, or, for a member that announces none — a
         // browser of the workspace — the identity the workspace's governance admitted its device
         // as.

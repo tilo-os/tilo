@@ -22,7 +22,7 @@ pub mod membership;
 pub mod plane;
 pub mod presence;
 
-pub use client::Client;
+pub use client::{Client, Presence};
 pub use plane::{
     Cmd, Device, Event, Outbox, RosterDevice, SayPresence, Topic, Transport, topic_of,
 };

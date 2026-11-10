@@ -11,14 +11,14 @@ use neighbour_wire::{NeighbourMsg, PeerId};
 /// of what it asked a host for, and the transport holds the other ends.
 pub struct Transport {
     /// What the client says to the plane.
-    pub outgoing: std::rc::Rc<dyn Outbox>,
+    pub outgoing: std::sync::Arc<dyn Outbox>,
     /// What the plane heard, as the client reads it.
     pub arrived: std::sync::mpsc::Receiver<Event>,
     /// What became of the enrollments and entries asked for since the last call.
     pub enrolled: std::sync::mpsc::Receiver<crate::Enrolled>,
     /// The workspace presence tracks this host says on: this desktop's live plane, or a page's own
     /// endpoint. `None` where the host says presence nowhere.
-    pub saying: Option<std::rc::Rc<dyn SayPresence>>,
+    pub saying: Option<std::sync::Arc<dyn SayPresence>>,
 }
 
 /// Where a client says what it says to the plane.
@@ -41,7 +41,7 @@ impl Outbox for std::sync::Arc<tokio::sync::mpsc::UnboundedSender<Cmd>> {
 
 /// Where a client's presence frames go: one host's live plane. Presence is ephemeral, so a frame
 /// that finds no plane is dropped rather than held.
-pub trait SayPresence: std::fmt::Debug {
+pub trait SayPresence: std::fmt::Debug + collab_types::signer::MaybeSendSync {
     /// Say `frame` as object `sequence` of `workspace`'s presence track.
     ///
     /// # Errors
