@@ -9,7 +9,7 @@
 //! workspace for every one it does not keep yet, on its own presence, as any
 //! member asks. A report's receipt waits for the host to keep them. The pieces members answer it with are
 //! assembled and verified as a page assembles them
-//! ([`tilo_browser_peer::content::ContentWants`]) and kept in the host's one
+//! ([`neighbour_wire::content::ContentWants`]) and kept in the host's one
 //! blob store, beside what its bots fetched ([`crate::blobs::FsBlobs`]),
 //! which already answers members' requests for content the host keeps
 //! ([`crate::workspaces::WorkspaceContent`]).
@@ -32,8 +32,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use automerge::AutoCommit;
+use neighbour_wire::content::ContentWants;
 use serde::{Deserialize, Serialize};
-use tilo_browser_peer::content::ContentWants;
 use tilo_lock::MutexRecover as _;
 
 use super::CHAT;

@@ -5,7 +5,7 @@
 //! made it, and a record keeps the version it was started with. A page
 //! reading a record an older version started therefore holds its changes
 //! until it has that version's surface: it asks its workspaces for it by
-//! hash, as it asks for a picture a record references ([`crate::content`]),
+//! hash, as it asks for a picture a record references ([`neighbour_wire::content`]),
 //! keeps what answers hash to the address asked for, and decides the changes
 //! it held the moment it arrives. What it runs an app with is its own
 //! surface, read from the app rather than fetched.

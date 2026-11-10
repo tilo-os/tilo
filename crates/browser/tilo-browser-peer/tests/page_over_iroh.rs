@@ -20,11 +20,12 @@ tilo_automerge_isolate::test_worker!();
 
 use std::sync::Arc;
 
+use channel_crypto::ChannelContentKeys;
 use channel_crypto::{ChannelGroup, MemberKey};
 use collab_types::presence::Presence;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_browser_peer::{ChannelContentKeys, PeerEvent, PeerHandle, certify};
+use tilo_browser_peer::{PeerEvent, PeerHandle, certify};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, UserIdentity};
 

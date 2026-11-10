@@ -34,7 +34,6 @@
 
 mod channels;
 mod clock;
-pub use neighbour_wire::content;
 pub mod custody;
 pub mod document;
 pub mod health;
@@ -57,7 +56,6 @@ pub mod sign_in;
 pub mod surfaces;
 pub mod voice;
 
-pub use channel_crypto::ChannelContentKeys;
 pub use channels::{document_admission, document_history_admission};
 pub use custody::{
     CertifyError, IssuedRole, MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore, answer_pairing,
@@ -72,7 +70,6 @@ pub use session::{
     TransportPhase,
 };
 pub use sign_in::{encode, grant_label, sign_in_proof};
-pub use tilo_live::live::Track;
 /// The record a session's [`PeerHandle::open_route`] takes part in.
 pub use tilo_peer_state::document_frame::DocumentRoute;
 pub use tilo_relay_client::LinkError;

@@ -69,7 +69,7 @@ fn heard(browser: &mut Browser) -> (Vec<collab_types::presence::Presence>, Vec<N
         }
         if let tilo_browser_peer::PeerEvent::LivePlane {
             workspace_id,
-            track: tilo_browser_peer::Track::Presence,
+            track: tilo_live::live::Track::Presence,
             body,
             ..
         } = &event

@@ -74,7 +74,7 @@ async fn a_visitors_file_as_large_as_the_host_keeps_reaches_it() {
     assert_eq!(asks.len(), 1, "the host asks for the file");
     let bob_session = session(&relay, &phone, room.workspace_id).await;
     crate::common::wait_until_subscribed(&relay, room.workspace_id, &phone.device_pubkey()).await;
-    let pieces = tilo_browser_peer::content::answer(
+    let pieces = neighbour_wire::content::answer(
         &phone.device_pubkey(),
         &host.device_pubkey(),
         &asks[0],

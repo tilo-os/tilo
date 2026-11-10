@@ -10,9 +10,7 @@ use std::sync::Arc;
 use ed25519_dalek::SigningKey;
 use tilo_actions::ActionOutput;
 use tilo_actions::door::{ActionAddress, DoorError};
-use tilo_browser_peer::{
-    LiveState, MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle,
-};
+use tilo_browser_peer::{MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::delegation::Delegation;
 use tilo_relay_protocol::live::LiveRecord;
@@ -61,9 +59,9 @@ pub struct BotParticipant {
     replicas: BTreeMap<DocumentRoute, ConfinedReplica>,
     /// Records of watched apps not held yet, each merged as it changes.
     pending: Unopened,
-    live: LiveState,
     /// This bot's view count, so members order its views.
-    presence_seq: u32,
+    /// Who is here and what each of them says of themselves, as every host keeps it.
+    presence: tilo_live::presence::Board,
     /// The host admitted the workspace; everything it replayed has arrived.
     ready: bool,
 }
@@ -97,6 +95,10 @@ impl BotParticipant {
         );
         let events = peer.events();
         peer.join(workspace_id)?;
+        let presence = tilo_live::presence::Board::new(
+            config.workspace.clone(),
+            identity.cert.device_public_key,
+        );
         Ok(Self {
             pending: Unopened::new(&config.workspace),
             identity,
@@ -108,8 +110,7 @@ impl BotParticipant {
             watched,
             actor,
             replicas: BTreeMap::new(),
-            live: LiveState::starting_now(),
-            presence_seq: 0,
+            presence,
             ready: false,
         })
     }
@@ -122,9 +123,8 @@ impl BotParticipant {
     /// Take in what the session delivered and hold the watched records it
     /// named. Whether the workspace has been replayed, so catch-up may begin.
     pub fn pump(&mut self) -> bool {
-        let now = tilo_clock::unix_now_ms();
         for event in self.events.drain() {
-            self.receive(event, now);
+            self.receive(event);
         }
         self.pending.settle();
         if self.ready {
@@ -133,7 +133,7 @@ impl BotParticipant {
         self.ready
     }
 
-    fn receive(&mut self, event: PeerEvent, now: u64) {
+    fn receive(&mut self, event: PeerEvent) {
         match event {
             PeerEvent::Ready { workspace_id } if workspace_id == self.workspace_id => {
                 self.ready = true;
@@ -155,13 +155,6 @@ impl BotParticipant {
                     | collab_types::DocumentMutation::Incremental(bytes)) = mutation;
                     self.pending.receive(route, bytes);
                 }
-            }
-            PeerEvent::Live {
-                workspace_id,
-                from,
-                frame,
-            } if workspace_id == self.workspace_id => {
-                self.live.receive(from, &frame, now);
             }
             _ => {}
         }
@@ -308,22 +301,19 @@ impl BotParticipant {
 
     /// Show the bot in the workspace, at `focus` when it acts there.
     pub fn publish_presence(&mut self, focus: Option<&DocumentRoute>, activity: Option<String>) {
-        let now = tilo_clock::unix_now_ms();
-        self.presence_seq = self.presence_seq.wrapping_add(1);
         let focus = focus.map(|route| LiveRecord {
             app: route.app_id.clone(),
             record: route.record.clone(),
         });
         let view = crate::presence::shell(
-            self.presence_seq,
-            now,
             &self.identity.delegation.label,
             self.identity.delegation.color,
-            activity.map(|activity| bounded(&activity)),
+            activity.map(|activity| crate::presence::activity(&activity)),
             focus.as_ref(),
             None,
         );
-        crate::presence::say(&self.peer, &self.workspace, self.workspace_id, view);
+        let own = crate::presence::own(&self.identity.cert, &self.identity.delegation.label, view);
+        crate::presence::say(&mut self.presence, &self.peer, self.workspace_id, &own);
     }
 
     /// The bot's device key.
@@ -407,16 +397,6 @@ impl super::door::DoorParticipant for BotParticipant {
             app.read_history(|doc| super::door::queued_by_step(doc, step, actor, field))
         })
     }
-}
-
-fn bounded(activity: &str) -> String {
-    let mut end = activity
-        .len()
-        .min(collab_types::presence::MAX_ACTIVITY_BYTES);
-    while !activity.is_char_boundary(end) {
-        end = end.saturating_sub(1);
-    }
-    activity.get(..end).unwrap_or_default().to_owned()
 }
 
 // The runner's door holds the participant behind a mutex shared with its

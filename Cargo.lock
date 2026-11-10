@@ -17177,6 +17177,7 @@ dependencies = [
  "tilo-doc-codecs",
  "tilo-feedback-transport",
  "tilo-front-door",
+ "tilo-live",
  "tilo-lock",
  "tilo-model-gateway",
  "tilo-net",

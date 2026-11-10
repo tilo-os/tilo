@@ -201,7 +201,7 @@ pub trait WorkspaceRecordsLink: Send + Sync {
         &self,
         _route: &DocumentRoute,
         _create: bool,
-    ) -> Option<Result<tilo_browser_peer::ChannelContentKeys, String>> {
+    ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
         None
     }
     /// The listener-owned public locator; absence cannot mint a browser link.

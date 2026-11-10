@@ -90,6 +90,9 @@ collab-types = { path = "../../collab/collab-types" }
 # An agent's presence is the workspace's own ([`neighbour_wire`]): the same
 # frames a browser and a native shell say theirs in.
 neighbour-wire = { path = "../../collab/neighbour-wire" }
+# The keys a workspace's sealed record is opened with, and the live track a presence frame took.
+channel-crypto = { path = "../../collab/channel-crypto" }
+tilo-live = { path = "../../collab/tilo-live" }
 postcard = { workspace = true, features = ["use-std"] }
 automerge.workspace = true
 tilo-automerge.workspace = true
@@ -171,7 +174,6 @@ sha2.workspace = true
 bytes.workspace = true
 tilo-test-env = { path = "../../dev/test-env", features = ["tokio"] }
 tokio = { workspace = true, features = ["full"] }
-channel-crypto = { path = "../../collab/channel-crypto" }
 # Reads the links the host mints back the way a page does.
 tilo-reference = { path = "../../collab/reference" }
 # Writes the Word files an agent uploads, and reads Writer's documents.
@@ -182,7 +184,7 @@ tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 
 [package.metadata.cargo-machete]
 # Used by tilo-browser-peer's test support, which the tests include by path.
-ignored = ["bytes", "channel-crypto", "http-body-util", "hyper", "hyper-util", "rustls", "sha2", "tilo-net", "tokio-rustls"]
+ignored = ["bytes", "http-body-util", "hyper", "hyper-util", "rustls", "sha2", "tilo-net", "tokio-rustls"]
 
 [lints]
 workspace = true

@@ -1,19 +1,17 @@
-//! An agent's presence in a workspace: who it shows itself as and where it
-//! acts, said on the workspace's presence track
-//! ([`collab_types::presence::Presence`]) the way every device says its own,
-//! so every desktop draws it beside the people.
+//! An agent's presence in a workspace: who it shows itself as and where it acts, said on the
+//! workspace's presence track by the board every host keeps ([`tilo_live::presence::Board`]), so
+//! every desktop draws it beside the people.
 
-use collab_types::PeerPresencePayload;
-use collab_types::presence::{DESKTOP_APP, Presence, ShellPresence, ShellSelection, ShellWindow};
+use collab_types::presence::{Presence, ShellPresence, ShellSelection, ShellWindow};
 use tilo_browser_peer::PeerHandle;
+use tilo_live::presence::{Board, Own};
 use tilo_relay_protocol::live::{LiveAnchor, LiveRecord};
+use tilo_user_identity::DeviceCert;
 
-/// The view an agent states: its face, what it is doing, and the record it
-/// acts in with its caret where its last operation left it.
+/// The view an agent states: its face, what it is doing, and the record it acts in with its caret
+/// where its last operation left it. The board numbers it as it says it.
 #[must_use]
 pub fn shell(
-    seq: u32,
-    sent_at_ms: u64,
     label: &str,
     colour: [u8; 3],
     activity: Option<String>,
@@ -21,8 +19,8 @@ pub fn shell(
     selection: Option<&(LiveAnchor, LiveAnchor)>,
 ) -> ShellPresence {
     ShellPresence {
-        seq,
-        sent_at_ms,
+        seq: 0,
+        sent_at_ms: tilo_clock::unix_now_ms(),
         label: label.to_owned(),
         agent: true,
         colour: format!("#{:02x}{:02x}{:02x}", colour[0], colour[1], colour[2]),
@@ -41,8 +39,8 @@ pub fn shell(
     }
 }
 
-/// The window showing `focus`, by the record's short digest: what a
-/// receiver matches against its own windows.
+/// The window showing `focus`, by the record's short digest: what a receiver matches against its
+/// own windows.
 fn window(focus: &LiveRecord) -> ShellWindow {
     ShellWindow {
         app: focus.app.clone(),
@@ -52,27 +50,50 @@ fn window(focus: &LiveRecord) -> ShellWindow {
     }
 }
 
-/// Say `view` in `workspace` on `peer`'s session, as the device that session
-/// is: one presence frame on the workspace's plane, the way every device
-/// says its own.
-pub fn say(peer: &PeerHandle, workspace: &str, workspace_id: u64, view: ShellPresence) {
-    let frame = Presence::desktop(workspace, PeerPresencePayload::Shell(Box::new(view)));
-    if let Err(error) = peer.publish_presence(workspace_id, vec![frame]) {
-        tracing::warn!(%error, "agent: its presence did not reach the workspace");
+/// What a member says it is doing, cut to what a presence frame carries, on a character edge.
+#[must_use]
+pub fn activity(activity: &str) -> String {
+    let mut end = activity
+        .len()
+        .min(collab_types::presence::MAX_ACTIVITY_BYTES);
+    while !activity.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    activity.get(..end).unwrap_or_default().to_owned()
+}
+
+/// The word a device certified to `label` says of itself, with `view` for the record it acts in.
+#[must_use]
+pub fn own(cert: &DeviceCert, label: &str, view: ShellPresence) -> Own {
+    Own {
+        label: label.to_owned(),
+        device: cert.device_label.clone(),
+        user: Some(hex::encode(cert.user_public_key)),
+        shell: Some(Box::new(view)),
+        ..Own::default()
     }
 }
 
-/// Another member's view of itself, when `body` is the shell's presence of
-/// `workspace`.
-#[must_use]
-pub fn heard(workspace: &str, body: &[u8]) -> Option<ShellPresence> {
-    let frame = Presence::decode(body)?;
-    if frame.app != DESKTOP_APP || frame.cluster != workspace {
-        return None;
-    }
-    match frame.payload {
-        PeerPresencePayload::Shell(shell) => Some(*shell),
-        _ => None,
+/// Say `own` on `board`, and what the board owes on `peer`'s session.
+pub fn say(board: &mut Board, peer: &PeerHandle, workspace_id: u64, own: &Own) {
+    board.say(own);
+    due(board, peer, workspace_id);
+}
+
+/// Say the frames `board` owes now on `peer`'s session: a change since the last word, one lost,
+/// or the restatement a member who came in later needs.
+pub fn due(board: &mut Board, peer: &PeerHandle, workspace_id: u64) {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "milliseconds since the epoch are exact in an f64 for the life of a session"
+    )]
+    let now = tilo_clock::unix_now_ms() as f64;
+    let Some(frames) = board.due(now) else {
+        return;
+    };
+    let said: Vec<Presence> = frames.into_iter().map(|(_, frame)| frame).collect();
+    if let Err(error) = peer.publish_presence(workspace_id, said) {
+        tracing::warn!(%error, "agent: its presence did not reach the workspace");
     }
 }
 
@@ -86,48 +107,64 @@ mod tests {
     )]
 
     use super::*;
+    use tilo_live::presence::{Board, Own};
 
     const WORKSPACE: &str = "6b3f9a10-0000-4000-8000-00000000000c";
 
-    fn view(label: &str) -> ShellPresence {
-        ShellPresence {
-            seq: 1,
-            sent_at_ms: 1,
-            label: label.to_owned(),
-            agent: true,
-            colour: "#7c3aed".into(),
-            activity: Some("New note".into()),
-            place: None,
-            size: [1440, 900],
-            windows: Vec::new(),
-            selection: None,
-            chat: None,
-            reaction: None,
-        }
-    }
-
-    /// The view an agent says of itself is a desktop presence frame, and the
-    /// frame a member hears is that view: the agent speaks the same presence
-    /// a person's devices do.
+    /// The agent's own word, heard by the person's board: the same presence a person's devices
+    /// speak, from a device that says it is an agent.
     #[test]
-    fn an_agents_view_reads_back_from_its_frame() {
-        let said = view("Writer helper");
-        let frame = Presence::desktop(
-            WORKSPACE,
-            PeerPresencePayload::Shell(Box::new(said.clone())),
+    fn an_agents_word_is_heard_as_an_agents_view_of_itself() {
+        let agent = Board::new(WORKSPACE, [7_u8; 32]);
+        let mut person = Board::new(WORKSPACE, [9_u8; 32]);
+        let mut agent = agent;
+        let focus = LiveRecord {
+            app: "so.tilo.notes".into(),
+            record: "file:/workspace/Notes/brief.md".into(),
+        };
+        let view = shell(
+            "Writer helper",
+            [0x7c, 0x3a, 0xed],
+            Some("New note".into()),
+            Some(&focus),
+            None,
         );
-        let body = frame.encode().expect("a presence frame encodes");
-        assert_eq!(heard(WORKSPACE, &body), Some(said));
-        assert_eq!(heard("07848ffe-1898-4f72-8419-0b54c93e6dad", &body), None);
+        let own = Own {
+            label: "Writer helper".into(),
+            device: "writer".into(),
+            user: Some(hex::encode([3_u8; 32])),
+            shell: Some(Box::new(view)),
+            ..Own::default()
+        };
+        agent.say(&own);
+        let frames = agent.flush(1_000.0);
+        assert!(!frames.is_empty(), "the board said nothing");
+        for (_, frame) in &frames {
+            let body = frame.encode().expect("a presence frame encodes");
+            person.heard([7_u8; 32], &body, 1_000.0);
+        }
+        let heard = person
+            .member([7_u8; 32])
+            .and_then(|member| member.shell.as_deref())
+            .expect("the agent's view reached the person's board");
+        assert_eq!(heard.label, "Writer helper");
+        assert!(heard.agent, "an agent says it is one");
+        assert_eq!(heard.activity.as_deref(), Some("New note"));
+        assert_eq!(heard.windows.len(), 1, "the record it works in");
     }
 
-    /// A person's pointer on a workspace is not a view of a desk: the agent
-    /// reads no shell out of it.
+    /// A person's pointer on a workspace is not a view of a desk.
     #[test]
     fn a_pointer_is_not_a_view_of_a_desk() {
+        let mut person = Board::new(WORKSPACE, [9_u8; 32]);
         let body = Presence::pointing(WORKSPACE, 3, 1.0, 2.0)
             .encode()
             .expect("a presence frame encodes");
-        assert_eq!(heard(WORKSPACE, &body), None);
+        assert!(person.heard([7_u8; 32], &body, 1_000.0));
+        assert!(
+            person
+                .member([7_u8; 32])
+                .is_some_and(|member| member.shell.is_none())
+        );
     }
 }

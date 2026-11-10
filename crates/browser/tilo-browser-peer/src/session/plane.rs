@@ -28,7 +28,7 @@ use tilo_live::scope::Scope;
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::{Command, PeerEvent, Task, lock};
-use crate::ChannelContentKeys;
+use channel_crypto::ChannelContentKeys;
 
 /// The message a page shows in its members' place when its live plane cannot
 /// be joined: the page keeps asking quietly, and nobody is listed from the

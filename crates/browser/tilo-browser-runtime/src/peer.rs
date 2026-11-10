@@ -30,9 +30,10 @@ use js_sys::{Function, Promise, Reflect, Uint8Array};
 use serde::{Deserialize, Serialize};
 use tilo_browser_peer::{
     DeviceSigner, FailureSubject, Host, HttpClient, HttpFuture, LocalState, PeerConfig, PeerEvent,
-    PeerEvents, PeerHandle, PeerRecord, PeerSnapshot, PeerStore, SignError, SignFuture, Track,
+    PeerEvents, PeerHandle, PeerRecord, PeerSnapshot, PeerStore, SignError, SignFuture,
 };
 use tilo_channels::VAULT_SECRET_APP as CHANNEL_VAULT_APP;
+use tilo_live::live::Track;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveRecord, OpsFrame, PreviewOp};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList, RevocationReason};

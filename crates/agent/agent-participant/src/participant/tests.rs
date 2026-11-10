@@ -1327,7 +1327,7 @@ fn a_step_brief_leaves_inlined_pictures_out() {
 /// for. Content of another workspace, or none, is word that it is not here.
 #[test]
 fn a_member_asking_for_workspace_content_is_answered_from_the_workspaces_store() {
-    use tilo_browser_peer::content::ContentWants;
+    use neighbour_wire::content::ContentWants;
 
     const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
     let (agent, person) = ([7_u8; 32], [9_u8; 32]);

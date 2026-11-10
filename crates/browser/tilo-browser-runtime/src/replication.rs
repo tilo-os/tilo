@@ -38,8 +38,8 @@ use tilo_sort::CompactSort as _;
 
 use collab_types::DocumentMutation;
 use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
+use neighbour_wire::content::ContentWants;
 use tilo_automerge::ApplyIncoming as _;
-use tilo_browser_peer::content::ContentWants;
 use tilo_browser_peer::{PeerEvent, PeerEvents, PeerHandle};
 use tilo_peer_state::document_frame::DocumentRoute;
 use ui::automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
@@ -1022,7 +1022,7 @@ impl Joined {
         let device = self.peer.status().device;
         let apps: BTreeSet<String> = self.open_records().map(|(app, _)| app).collect();
         let pieces =
-            tilo_browser_peer::content::answer(&device, &from, request, |app, workspace, hash| {
+            neighbour_wire::content::answer(&device, &from, request, |app, workspace, hash| {
                 if workspace != self.uuid {
                     return None;
                 }

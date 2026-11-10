@@ -48,7 +48,7 @@ pub(super) fn answer(
     workspace: &str,
     content: &ContentStore,
 ) -> Vec<Vec<u8>> {
-    tilo_browser_peer::content::answer(device, asker, request, |_app, cluster, hash| {
+    neighbour_wire::content::answer(device, asker, request, |_app, cluster, hash| {
         cluster
             .eq_ignore_ascii_case(workspace)
             .then(|| content.read(hash))

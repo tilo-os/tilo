@@ -797,7 +797,7 @@ impl PeerHandle {
             opened: BTreeMap::new(),
             refused: (0, String::new()),
             held_inbound: BTreeMap::new(),
-            surface_wants: crate::content::ContentWants::default(),
+            surface_wants: neighbour_wire::content::ContentWants::default(),
             surfaces_arrived: false,
             owed_replays: BTreeMap::new(),
             held_live: crate::held_live::HeldLive::new(),
@@ -1309,7 +1309,7 @@ struct Task {
     held_inbound: BTreeMap<DocumentRoute, InboundHold<HeldFrame>>,
     /// App surfaces this page asked its workspaces for, by the route whose
     /// writes named them: they arrive as pieces of record content.
-    surface_wants: crate::content::ContentWants<()>,
+    surface_wants: neighbour_wire::content::ContentWants<()>,
     /// Whether an app surface arrived since the session last decided what it
     /// held for one.
     surfaces_arrived: bool,
