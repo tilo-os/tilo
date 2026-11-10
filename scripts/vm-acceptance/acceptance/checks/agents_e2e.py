@@ -813,6 +813,14 @@ def asked_change(ctx, res):
         if is_error(e["new_file"]) is not False:
             # What the agent sees of Terminal, so a refusal says what it was refused against.
             seen = text_of(agents[e["name"]].tool("tilo_ls", {"path": "terminal"}))
+            agent = agents[e["name"]]
+            for name, args in (("tilo_ls", {}), ("tilo_ls", {"path": "terminal", "kind": "actions"}),
+                               ("tilo_find", {"query": "run a command", "app": "terminal"})):
+                print(f"--- {e['name']}: the agent's {name} {args} ---", flush=True)
+                print(text_of(agent.tool(name, args))[:3000], flush=True)
+            rows = terminal_rows(ctx)
+            if rows:
+                print(f"--- one Terminal row whole ---\n{json.dumps(rows[0])[:3000]}", flush=True)
             print(f"--- {e['name']}: the person's Terminal rows ---", flush=True)
             for row in terminal_rows(ctx)[:20]:
                 print(json.dumps({k: row.get(k) for k in ("application", "room", "provider", "record",
