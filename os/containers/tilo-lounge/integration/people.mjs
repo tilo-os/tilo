@@ -1181,7 +1181,20 @@ try {
 
     // The window menu, from a secondary click in the window's own bar: what the
     // desktop can do to that window, and choosing a row does it.
-    const barRow = JSON.parse(await find(a.tab, 'Maximize')) ?? JSON.parse(await find(a.tab, 'Close'));
+    // A window bar on screen: with every app open, the first Maximize in the
+    // tree can be a window the strip has scrolled out of view.
+    const shownRow = name => a.tab.evaluate(`(() => {
+      const found = [];
+      const box = b => Array.isArray(b) ? b : [b.x0 ?? b.x, b.y0 ?? b.y, b.x1 ?? b.x + b.width, b.y1 ?? b.y + b.height];
+      const node = n => { const b = n.bounds ?? n.rect; if (n.name === ${JSON.stringify(name)} && b) found.push(box(b)); (n.children || []).forEach(node); };
+      const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
+      const root = globalThis.tiloMount?.state()?.semantics?.root;
+      if (root) walk(root);
+      const r = globalThis.tiloMount.canvas.getBoundingClientRect();
+      const shown = found.find(([x0, y0, x1, y1]) => x0 >= 0 && y0 >= 0 && x1 <= r.width && y1 <= r.height);
+      return JSON.stringify(shown ? {bounds: shown} : null);
+    })()`).then(JSON.parse);
+    const barRow = await shownRow('Maximize') ?? await shownRow('Close');
     const bar = {x: centre.corner.x + 400, y: centre.corner.y + 40};
     if (barRow) {
       const [x0, y0, x1, y1] = Array.isArray(barRow.bounds)
@@ -1194,8 +1207,15 @@ try {
     }
     const wasMaximized = (await nav(a.tab))?.maximized;
     await rightClick(a.tab, bar.x, bar.y);
-    const menuRow = await choose(a.tab, /^(Fill the strip|Give the strip back)$/);
-    if (!menuRow) failed('a secondary click in the window bar opens no window menu');
+    // The menu is the frame after the click's, and a busy desk draws a few a
+    // second: its rows are read until they are there.
+    let menuRow = null;
+    for (const deadline = Date.now() + 15_000; !menuRow && Date.now() < deadline;) {
+      menuRow = await choose(a.tab, /^(Fill the strip|Give the strip back)$/);
+    }
+    if (!menuRow) {
+      failed(`a secondary click in the window bar opens no window menu: at ${JSON.stringify(bar)} over ${JSON.stringify(await namesAt(a.tab, bar.x, bar.y))}; shown: ${JSON.stringify((await namesOf(a.tab)).slice(0, 40))}`);
+    }
     await settle(a.tab, 1);
     const nowMaximized = (await nav(a.tab))?.maximized;
     if (nowMaximized === wasMaximized) failed(`the window menu's row changed nothing: ${JSON.stringify({menuRow, wasMaximized})}`);
