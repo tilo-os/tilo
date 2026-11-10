@@ -81,13 +81,19 @@ pub struct Site {
 
 impl Drop for Site {
     fn drop(&mut self) {
-        if let Some(relay) = self.relay.take() {
-            self.runtime.block_on(relay.shutdown());
-        }
+        self.stop();
     }
 }
 
 impl Site {
+    /// Stop the site's host, as a site that went away: what its people's devices hold of the
+    /// workspace, they read of their own.
+    pub fn stop(&mut self) {
+        if let Some(relay) = self.relay.take() {
+            self.runtime.block_on(relay.shutdown());
+        }
+    }
+
     /// `owner`'s site: a relay of this machine governing the workspace `name`,
     /// listening on loopback with its directory and door served over HTTP.
     pub fn start(owner: &Person, name: &str) -> Self {
@@ -1323,20 +1329,6 @@ impl Device {
         )
     }
 
-    /// Everything this device logged, session and apps alike: what a step that compares devices
-    /// reads when they disagree.
-    pub fn every_log(&self) -> String {
-        let mut all = format!("{} session:\n{}\n", self.label, self.log());
-        if let Ok(entries) = std::fs::read_dir(self.logs_dir()) {
-            for entry in entries.flatten() {
-                let text =
-                    std::fs::read_to_string(entry.path()).unwrap_or_else(|error| error.to_string());
-                let _ = writeln!(all, "{} {}:\n{text}", self.label, entry.path().display());
-            }
-        }
-        all
-    }
-
     /// Run this device's session: its own home, its own identity root, its own state and its own
     /// control socket, as a device's session runs.
     fn spawn(&mut self, invitation: Option<&str>) {
@@ -1532,27 +1524,31 @@ impl Device {
         self.home.path().join("data/tilo-apps")
     }
 
-    /// Install Chat in this device's store, as a device with the app installed has it: the app this
-    /// run built, under its own manifest, in the registry the session launches installed apps from.
-    /// The manifest is the app's own (`apps/chat/tilo-app.toml`), except for the runtime bundle it
-    /// names: an app of this build runs on the machine it was built on, and the bundle an installed
-    /// desktop carries is not here. The runtime host is the build's own, beside the app, as
-    /// `runtime_portal::native` looks for it before the installed one.
-    pub fn install_chat(&self) {
-        let payload = chat_payload().to_path_buf();
-        let manifest = payload.join("manifest.toml");
+    /// Install the app `app` in this device's store from `payload` , as a device that carries the
+    /// app has it: one row after another in the registry the session launches installed apps from.
+    /// `package` is the digest of the payload's signed root, for an app the session reads the
+    /// person's records of before it ever runs.
+    fn install(&self, app: &str, (payload, package): &(PathBuf, String)) {
         let store = self.store();
         std::fs::create_dir_all(&store).expect("the device's store");
-        std::fs::write(
-            store.join("registry.toml"),
-            format!(
-                "[[entry]]\nid = \"so.tilo.chat\"\nversion = \"0.1.0\"\n\
-                 payload_root = \"{payload}\"\nmanifest_path = \"{manifest}\"\n",
-                payload = payload.display(),
-                manifest = manifest.display(),
-            ),
+        let registry = store.join("registry.toml");
+        let mut rows = std::fs::read_to_string(&registry).unwrap_or_default();
+        writeln!(
+            rows,
+            "[[entry]]\nid = \"{app}\"\nversion = \"0.1.0\"\n\
+             payload_root = \"{payload}\"\nmanifest_path = \"{manifest}\"\n\
+             package_id_hex = \"{package}\"",
+            payload = payload.display(),
+            manifest = payload.join("manifest.toml").display(),
         )
-        .expect("the store's registry");
+        .expect("the registry is a string");
+        std::fs::write(&registry, rows).expect("the store's registry");
+    }
+
+    /// Install Chat in this device's store, as a device with the app installed has it: the app this
+    /// run built, under its own manifest and surface.
+    pub fn install_chat(&self) {
+        self.install("so.tilo.chat", chat_install());
     }
 
     /// Install the Files app in this device's store as a desktop that carries it has it: the surface
@@ -1561,23 +1557,7 @@ impl Device {
     /// device's trees is that app's endpoint: a session serves no tree record for an app it cannot
     /// read as installed.
     pub fn install_files(&self) {
-        let payload = files_payload();
-        let manifest = payload.join("manifest.toml");
-        let store = self.store();
-        std::fs::create_dir_all(&store).expect("the device's store");
-        let registry = store.join("registry.toml");
-        let mut rows = std::fs::read_to_string(&registry).unwrap_or_default();
-        writeln!(
-            rows,
-            "[[entry]]\nid = \"so.tilo.file-explorer\"\nversion = \"0.1.0\"\n\
-             payload_root = \"{payload}\"\nmanifest_path = \"{manifest}\"\n\
-             package_id_hex = \"{package}\"",
-            payload = payload.display(),
-            manifest = manifest.display(),
-            package = files_package(),
-        )
-        .expect("the registry is a string");
-        std::fs::write(&registry, rows).expect("the store's registry");
+        self.install("so.tilo.file-explorer", files_install());
     }
 
     /// The actions this device publishes now.
@@ -1980,86 +1960,82 @@ impl Drop for Device {
     }
 }
 
-/// The payload every device of this test installs Chat from: the app and the runtime host the run
-/// built, beside each other as an installed payload keeps them, with Chat's manifest. Staged once
-/// per test process, in the build's own directory, so the two programs are hardlinks of what the
-/// run built and no device pays for a copy of a debug binary.
-fn chat_payload() -> &'static Path {
-    static PAYLOAD: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    PAYLOAD.get_or_init(|| {
-        let binary = tilo_test_env::sibling_binary("chat", "chat");
-        let host = tilo_test_env::sibling_binary("tilo-runtime", "tilo-runtime");
-        let build = binary.parent().expect("the build's own directory");
-        let payload = build.join(format!("chat-payload-{}", std::process::id()));
-        std::fs::create_dir_all(payload.join("bin")).expect("the package's payload");
-        for (from, name) in [(binary, "chat"), (host, "tilo-runtime")] {
-            let to = payload.join("bin").join(name);
-            let _ = std::fs::remove_file(&to);
-            std::fs::hard_link(&from, &to).expect("the program this run built");
-        }
-        std::fs::write(payload.join("manifest.toml"), manifest_of("chat"))
-            .expect("the app's manifest");
-        payload
-    })
-}
-
-/// The payload the Files app is installed from: Files' own manifest and the surface its package
-/// ships, with the signed root and collection an install leaves beside them, so a session reads
-/// them as the records the app keeps of the person's. Staged once per test process, in the build's
-/// own directory.
-fn files_payload() -> &'static Path {
-    &files_install().0
-}
-
-/// The digest of [`files_payload`]'s signed root: the package the store's registry names.
-fn files_package() -> &'static str {
-    &files_install().1
-}
-
-/// [`files_payload`] with the digest of its signed root.
-fn files_install() -> &'static (PathBuf, String) {
+/// The payload Chat is installed from here ([`stage`]), with the digest of its signed root.
+fn chat_install() -> &'static (PathBuf, String) {
     static INSTALL: std::sync::OnceLock<(PathBuf, String)> = std::sync::OnceLock::new();
     INSTALL.get_or_init(|| {
-        use ed25519_dalek::Signer as _;
-        use tilo_app_package::blobs::{BlobHash, Collection};
-        use tilo_app_package::signed::SignedRoot;
-
-        let build = std::env::current_exe()
-            .expect("the test's own binary")
-            .parent()
-            .and_then(Path::parent)
-            .expect("the build's own directory")
-            .to_path_buf();
-        let payload = build.join(format!("file-explorer-payload-{}", std::process::id()));
-        std::fs::create_dir_all(&payload).expect("the package's payload");
-        let manifest = manifest_of("file-explorer").into_bytes();
-        let surface_path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/file-explorer/surface.toml");
-        let surface = std::fs::read(&surface_path).unwrap_or_else(|error| {
-            panic!("Files' surface at {}: {error}", surface_path.display())
-        });
-        std::fs::write(payload.join("manifest.toml"), &manifest).expect("the app's manifest");
-        std::fs::write(payload.join("surface.toml"), &surface).expect("the app's surface");
-        let collection =
-            Collection::from_entries([("surface.toml".to_string(), BlobHash::of(&surface))]);
-        let collection_bytes = collection.encode();
-        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[19_u8; 32]);
-        let mut signed = SignedRoot::unsigned(
-            BlobHash::of(&manifest),
-            BlobHash::of(&collection_bytes),
-            signing_key.verifying_key().to_bytes(),
-        );
-        // What the root's bytes sign says whether a signature is there, so one is placed before
-        // signing: an installed package's root is signed, and the store reads it as such.
-        signed.signature = Some([0; 64]);
-        signed.signature = Some(signing_key.sign(&signed.signing_bytes()).to_bytes());
-        let signed_bytes = signed.encode();
-        let package = BlobHash::of(&signed_bytes).to_hex();
-        std::fs::write(payload.join("signed-root"), signed_bytes).expect("the package's root");
-        std::fs::write(payload.join("collection.qcl"), &collection_bytes)
-            .expect("the package's collection");
-        (payload, package)
+        stage(
+            "chat",
+            &[
+                (tilo_test_env::sibling_binary("chat", "chat"), "chat"),
+                (
+                    tilo_test_env::sibling_binary("tilo-runtime", "tilo-runtime"),
+                    "tilo-runtime",
+                ),
+            ],
+        )
     })
+}
+
+/// The payload Files is installed from here ([`stage`]), with the digest of its signed root.
+fn files_install() -> &'static (PathBuf, String) {
+    static INSTALL: std::sync::OnceLock<(PathBuf, String)> = std::sync::OnceLock::new();
+    INSTALL.get_or_init(|| stage("file-explorer", &[]))
+}
+
+/// `app`'s payload staged in the build's own directory, as an install leaves a package: its
+/// manifest and the surface its package ships, the signed root and collection an install writes
+/// beside them, and each of `programs` the run built, hardlinked under `bin/` so a device pays for
+/// no copy of a debug binary. The session reads a package's surface, and with it the records and
+/// person records the app keeps, only from a payload whose signature covers it: a payload staged
+/// without one is no install of the app at all.
+fn stage(app: &str, programs: &[(PathBuf, &str)]) -> (PathBuf, String) {
+    use ed25519_dalek::Signer as _;
+    use tilo_app_package::blobs::{BlobHash, Collection};
+    use tilo_app_package::signed::SignedRoot;
+
+    let exe = std::env::current_exe().expect("the test's own binary");
+    let build = programs
+        .first()
+        .and_then(|(program, _)| program.parent())
+        .unwrap_or_else(|| {
+            exe.parent()
+                .and_then(Path::parent)
+                .expect("the build's own directory")
+        });
+    let payload = build.join(format!("{app}-payload-{}", std::process::id()));
+    std::fs::create_dir_all(payload.join("bin")).expect("the package's payload");
+    for (from, name) in programs {
+        let to = payload.join("bin").join(name);
+        let _ = std::fs::remove_file(&to);
+        std::fs::hard_link(from, &to).expect("the program this run built");
+    }
+    let manifest = manifest_of(app).into_bytes();
+    let surface_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../../apps/{app}/surface.toml"));
+    let surface = std::fs::read(&surface_path)
+        .unwrap_or_else(|error| panic!("{app}'s surface at {}: {error}", surface_path.display()));
+    std::fs::write(payload.join("manifest.toml"), &manifest).expect("the app's manifest");
+    std::fs::write(payload.join("surface.toml"), &surface).expect("the app's surface");
+    let collection =
+        Collection::from_entries([("surface.toml".to_string(), BlobHash::of(&surface))]);
+    let collection_bytes = collection.encode();
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&[19_u8; 32]);
+    let mut signed = SignedRoot::unsigned(
+        BlobHash::of(&manifest),
+        BlobHash::of(&collection_bytes),
+        signing_key.verifying_key().to_bytes(),
+    );
+    // What the root's bytes sign says whether a signature is there, so one is placed before
+    // signing: an installed package's root is signed, and the store reads it as such.
+    signed.signature = Some([0; 64]);
+    signed.signature = Some(signing_key.sign(&signed.signing_bytes()).to_bytes());
+    let signed_bytes = signed.encode();
+    let package = BlobHash::of(&signed_bytes).to_hex();
+    std::fs::write(payload.join("signed-root"), signed_bytes).expect("the package's root");
+    std::fs::write(payload.join("collection.qcl"), &collection_bytes)
+        .expect("the package's collection");
+    (payload, package)
 }
 
 /// The manifest an app of this repository is installed from as one of this machine's stores
