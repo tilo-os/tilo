@@ -249,7 +249,7 @@ fn only_an_attributed_app_is_named_and_a_person_needs_a_name() {
     );
     assert_eq!(handle_only.app_id.as_deref(), Some("so.tilo.chat"));
     assert_eq!(handle_only.from, None, "a handle alone names no one");
-    assert_eq!(handle_only.addressed, None, "a call needs its caller");
+    assert!(!handle_only.rings, "a call needs its caller");
 
     message.sender_name = Some("Ada".into());
     let named = shown(message, 0, None);
@@ -260,7 +260,7 @@ fn only_an_attributed_app_is_named_and_a_person_needs_a_name() {
             identity: "mailto:ada@example.org".into(),
         })
     );
-    assert_eq!(named.addressed, Some(Addressed::IncomingCall));
+    assert!(named.rings, "a call rings");
 }
 
 /// A program the session proved with no installed app behind it is named by the name it gives

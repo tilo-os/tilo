@@ -22,7 +22,7 @@ use settings_store::notification_policy::{EffectiveNotificationPolicy, Notificat
 use settings_store::system_sounds::{QuietState, SystemSoundEvent};
 use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
 use tilo_desktop_surface::notifications::{
-    self, Addressed, BannerAsk, ContinuityNotificationId, Notification, NotificationIconKind,
+    self, BannerAsk, ContinuityNotificationId, Notification, NotificationIconKind,
     NotificationPerson, QuietReason, RemoteNotificationRoute, ScheduledNotificationTarget,
 };
 use tilo_desktop_surface::{DesktopNotifications, NotificationOutcome};
@@ -243,7 +243,7 @@ pub(crate) fn shown(
         .map(|(name, identity)| NotificationPerson { name, identity });
     // A call rings for the person it is from; the category alone is only the app's word.
     if sent.incoming_call && notification.from.is_some() {
-        notification.addressed = Some(Addressed::IncomingCall);
+        notification.rings = true;
     }
     notification.machine_wide = sent.machine_wide;
     let alarm = sent
@@ -409,24 +409,16 @@ pub(crate) struct SessionNotifications {
     /// The person's notification policy, kept current by the session's settings watch: what each
     /// arrival is judged by.
     policy: Arc<Mutex<NotificationPolicy>>,
-    /// The event sounds arrivals make, judged by the same policy.
     sounds: SystemSounds,
     /// Each attributed app's latest unread count where its sender said one,
     /// kept even while this person has its badges off, so turning them back
     /// on shows the number now rather than the last one painted.
     badges: BTreeMap<String, u32>,
-    /// What the bar reads each frame.
     signals: Rc<NoticeSignals>,
-    /// What choosing a scheduled notification opens.
     opened: Opened,
-    /// The kept notifications the person chose to open, waiting for the loop that opens their apps.
     opening: RefCell<Vec<u64>>,
-    /// The senders whose notification the person chose, waiting to be answered with an activation
-    /// token.
     chosen: Chosen,
-    /// The desktop's notification for each daemon notification it shows.
     by_sender: BTreeMap<u32, u64>,
-    /// The daemon notifications whose banner was up at the last look.
     up: BTreeSet<u32>,
     /// The desk's banners that were up at the last look: a new one is something the person was told
     /// since then.
@@ -445,15 +437,12 @@ pub(crate) struct SessionNotifications {
     history: Option<std::path::PathBuf>,
     /// What continues on the person's other devices, and what they showed here.
     mirror: Rc<mirror::Mirroring>,
-    /// Where each of a role's notices opens, by the desk's notification showing it.
     noted: Noted,
-    /// What the person chose of them since it was last taken.
     places_chosen: PlacesChosen,
     /// The actions the person chose on them since it was last taken, by the notice's tag.
     actions_chosen: ActionsChosen,
     /// The notification showing each notice a role told, by its tag.
     showing: RefCell<BTreeMap<String, u32>>,
-    /// The notices that closed since the host last took them, each with why.
     closed: ClosedTags,
     /// The notice each notification the session told carries, by its id, until the desk shows it:
     /// what only the telling knows of it.
@@ -849,8 +838,7 @@ impl SessionNotifications {
             self.sounds.play(event, self.quiet_state(), true);
         }
         self.withdraw_notice(&notice.tag);
-        let id = self.daemon.alloc_id();
-        self.daemon.push(served(notice, id));
+        let id = tell_daemon(notice, &self.daemon);
         self.told.borrow_mut().insert(id, notice.clone());
         self.showing.borrow_mut().insert(notice.tag.clone(), id);
     }

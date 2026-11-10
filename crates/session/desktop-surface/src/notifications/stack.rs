@@ -27,9 +27,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use super::NotificationHost;
 use super::history::relative_time;
-use super::model::{
-    Addressed, INLINE_REPLY, Notification, NotificationSeverity, lock_suppressed_label,
-};
+use super::model::{INLINE_REPLY, Notification, NotificationSeverity, lock_suppressed_label};
 use crate::i18n::{t, t_args};
 use ui::TextRole;
 use ui::widget::toast::Dwell;
@@ -134,11 +132,7 @@ impl BannerFeed {
     /// A call rings now: an incoming-call banner is up and the session is unlocked. Its card is on
     /// the display in use; the other displays show a quiet edge.
     pub fn call_ringing(&self) -> bool {
-        !self.locked
-            && self
-                .banners
-                .iter()
-                .any(|banner| banner.notification.addressed() == Some(Addressed::IncomingCall))
+        !self.locked && self.banners.iter().any(|banner| banner.notification.rings)
     }
 
     /// Age the banners as the host does for the same report ([`super::NotificationLog::present`]).

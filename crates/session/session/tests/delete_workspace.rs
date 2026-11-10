@@ -195,13 +195,11 @@ fn delete_sheet_open(session: &Session) -> bool {
         .is_some_and(|seat| seat.presentation().is_open())
 }
 
-/// Whether the desk is asking the person to delete anything on a banner.
+/// Whether the desk is asking the person anything on a banner.
 fn asking_on_a_banner(session: &Session) -> bool {
     let centre = session.notifications();
     let log = centre.log();
-    log.active()
-        .iter()
-        .any(|notice| notice.addressed == Some(tilo_desktop_surface::notifications::Addressed::Ask))
+    log.active().iter().any(tilo_desktop_surface::is_host_offer)
 }
 
 /// The session keeps the workspace until the person says yes.

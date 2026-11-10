@@ -33,7 +33,7 @@ pub use model::INLINE_REPLY;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub use model::ScheduledNotificationTarget;
 pub use model::{
-    Addressed, ContinuityNotificationId, DEFAULT_DISMISS_AFTER, MAX_HISTORY, MAX_NOTIFICATIONS,
+    ContinuityNotificationId, DEFAULT_DISMISS_AFTER, MAX_HISTORY, MAX_NOTIFICATIONS,
     NOT_NOW_ACTION, Notification, NotificationIconKind, NotificationPerson, NotificationSeverity,
     PERSISTENT_DISMISS, RemoteNotificationRoute, lock_suppressed_label,
 };

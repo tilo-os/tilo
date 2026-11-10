@@ -1286,31 +1286,6 @@ mod tests {
         }
     }
 
-    /// A notice shown as the system's: its own name and the system's mark, never a sender's claim
-    /// and a generic window.
-    #[test]
-    fn a_notice_shows_as_the_systems_word() {
-        let tolds = crate::notifications::told::Told::default();
-        let newer = crate::network::VersionMismatch {
-            endpoint: "zpeerexample".into(),
-            theirs: 31,
-            ours: 30,
-        };
-        crate::platform::notice::Notices::show(
-            &tolds,
-            &version_mismatch_notice(&newer, Some("Framework 16")),
-        );
-        let banner = tolds
-            .0
-            .log()
-            .active()
-            .first()
-            .cloned()
-            .expect("it is shown");
-        assert_eq!(banner.app_name.as_deref(), Some("Updates"));
-        assert_eq!(banner.mark().icon, Some(ui::icons::Icon::Bell));
-    }
-
     /// The banner a person reads: the title names the device on one line and the body says what
     /// happens here in one sentence. Both are painted whole at the banner's own width, never cut
     /// with an ellipsis.

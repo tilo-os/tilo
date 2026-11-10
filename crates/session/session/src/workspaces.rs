@@ -262,20 +262,28 @@ fn join_listed(
     seat.show(directory::view(directory, handle));
 }
 
-/// Say the person joined `name` , where they are now: a note that the workspace is theirs, its
-/// windows open there.
-fn joined_notice(notices: &dyn Notices, name: &str) {
+/// Say the workspace `name` is theirs now, or no longer, in `words`' own: marked as the
+/// workspace's news.
+fn workspace_notice(notices: &dyn Notices, words: (&str, &str), name: &str) {
+    let (title, body) = words;
     notices.show(
         &Notice::new(
             String::new(),
             1,
-            tilo_desktop_surface::i18n::t_args(
-                "session-joined-workspace",
-                &[("name", name.into())],
-            ),
-            tilo_desktop_surface::i18n::t("session-joined-workspace-body"),
+            tilo_desktop_surface::i18n::t_args(title, &[("name", name.into())]),
+            tilo_desktop_surface::i18n::t(body),
         )
         .about(NotificationIconKind::Workspace),
+    );
+}
+
+/// Say the person joined `name` , where they are now: a note that the workspace is theirs, its
+/// windows open there.
+fn joined_notice(notices: &dyn Notices, name: &str) {
+    workspace_notice(
+        notices,
+        ("session-joined-workspace", "session-joined-workspace-body"),
+        name,
     );
 }
 
@@ -300,14 +308,10 @@ fn typed_site(text: &str) -> Option<String> {
 
 /// Say the person left the workspace `name` , and what became of its windows.
 pub(crate) fn left_workspace(notices: &dyn Notices, name: &str) {
-    notices.show(
-        &Notice::new(
-            String::new(),
-            1,
-            tilo_desktop_surface::i18n::t_args("session-left-workspace", &[("name", name.into())]),
-            tilo_desktop_surface::i18n::t("session-left-workspace-body"),
-        )
-        .about(NotificationIconKind::Workspace),
+    workspace_notice(
+        notices,
+        ("session-left-workspace", "session-left-workspace-body"),
+        name,
     );
 }
 
