@@ -457,6 +457,9 @@ name = "lockfile"
 run = "find . \\( -name target -o -path ./vendor -o -path ./fuzz \\) -prune -o -name Cargo.lock -print | sort | while read -r lock; do\n  cargo metadata --locked --format-version 1 --manifest-path \"${lock%.lock}.toml\" >/dev/null || exit 1\ndone\n"
 fix = "find . \\( -name target -o -path ./vendor -o -path ./fuzz \\) -prune -o -name Cargo.lock -print | sort | while read -r lock; do\n  cargo metadata --format-version 1 --manifest-path \"${lock%.lock}.toml\" >/dev/null || exit 1\ndone\n"
 
+# Resolves every nested lockfile afresh, beyond what the state's root Cargo.lock names, so it
+# needs cargo's network; t turns it off where it hands a job the state's crates.
+env = { CARGO_NET_OFFLINE = "false" }
 [[check]]
 name = "deny"
 run = "cargo deny --workspace check --hide-inclusion-graph"
@@ -595,6 +598,9 @@ needs = ["signing-tools"]
 [[check]]
 name = "vendored"
 run = "bash tools/ci/test-vendored-crates.sh"
+# Tests vendored crates with their dev-dependencies resolved afresh, beyond the root lockfile,
+# so it needs cargo's network; t turns it off where it hands a job the state's crates.
+env = { CARGO_NET_OFFLINE = "false" }
 
 [[check]]
 name = "example-scenarios"
