@@ -1443,6 +1443,22 @@ class PageActions(unittest.TestCase):
         self.assertEqual([(field['name'], field['how'], field['question']) for field in told['fields']],
                          [('Month', 'input', 'Date of birth: Month')])
 
+    def test_what_a_gesture_of_pointer_steps_edits_is_the_gesture_s_own(self):
+        # A box ticked by the steps of a gesture is ticked by that gesture:
+        # the review says so, and the record holds the gesture once, with no
+        # person's input beside it.
+        self.h.navigate(self.url + '/finds')
+        box = self.ref(self.ok('outline', actor='ada')['outline'], 'checkbox "Newsletter"')
+        self.ok('pointer', button='left', actor='ada', steps=[dict(kind='move', element=box, x=4, y=4),
+                                                             dict(kind='down', element=box, x=4, y=4),
+                                                             dict(kind='up', element=box, x=4, y=4)])
+        self.h.settle(1.6)
+        fields = {field['name']: field for field in self.ok('fields')['data']['fields']}
+        self.assertEqual((fields['Newsletter']['value'], fields['Newsletter']['set']),
+                         ('checked', {'how': 'action', 'by': 'ada', 'seq': 1}))
+        self.assertEqual([(entry.get('action'), entry.get('how')) for entry in self.ok('ledger', since=0)['data']['entries']],
+                         [('pointer', None)])
+
     def test_outline_lists_structure_with_refs_and_hides_secrets(self):
         self.h.navigate(self.url + '/form')
         outline = self.outline()

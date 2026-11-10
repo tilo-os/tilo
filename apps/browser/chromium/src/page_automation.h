@@ -748,6 +748,15 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // made in the document the tree names.
     if(!tree_ || tree_generation_!=generation_) { CallInt(Gesture(GestureStage::Tree),"Page.getFrameTree",CefRefPtr<CefDictionaryValue>());return; }
     if(!world_) { BeginGestureWorld();return; }
+    // The page hears that the gesture began, so the edits its steps cause
+    // (a box its click ticks) are the gesture's, not a person's typing.
+    if(!pending_->acting_told) {
+      pending_->acting_told=true;
+      auto command=CefDictionaryValue::Create();
+      command->SetString("action","acting");command->SetInt("doc",document_);Mark(command);
+      Ask(std::string(),"Runtime.evaluate",PointerEvaluate(command,world_),[this](bool,CefRefPtr<CefDictionaryValue>) { AdvancePointer(); });
+      return;
+    }
     if(pointer_index_>=steps->GetSize()) { SettlePointer();return; }
     auto step=steps->GetDictionary(pointer_index_);
     if(!step) { Fail("invalid_request","A gesture step is not an object");return; }
@@ -775,7 +784,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     SetGesture(0,0);
     auto command=CefDictionaryValue::Create();
     command->SetString("action","locate_box");command->SetInt("doc",document_);
-    command->SetString("element",ref);
+    command->SetString("element",ref);Mark(command);
     CallInt(Gesture(GestureStage::Locate),"Runtime.evaluate",PointerEvaluate(command,world_));
   }
   // The world the gesture's own steps run in, made from the page's document.
@@ -793,7 +802,8 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       if(held==docs_.end()) { Fail("frame_gone","The frame left the page during the gesture");return; }
       SetGesture(place.x,place.y);
       auto command=CefDictionaryValue::Create();
-      command->SetString("action","locate_box");command->SetInt("doc",number);command->SetString("element",ref);
+      command->SetString("action","locate_box");command->SetInt("doc",number);command->SetString("element",ref);Mark(command);
+      if(held->second.handle) command->SetString("frame",std::to_string(held->second.handle));
       Ask(held->second.session,"Runtime.evaluate",PointerEvaluate(command,held->second.context),[this,number](bool success,CefRefPtr<CefDictionaryValue> result) {
         auto value=Said(success,result);
         if(!value) { Forget(number);Fail("stale_element","That element's frame moved on to another document during the gesture; read the page again");return; }
