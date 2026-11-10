@@ -288,9 +288,18 @@ impl Workspace {
     }
 }
 
+/// Frames until the account's server's mail is in the workspace as a person sees it: its
+/// conversations, filed in the inbox, with the messages the sync read. A sync makes a
+/// conversation before it fetches its messages and files it, so the conversations standing in
+/// the account are not the sync's end.
 fn synced(workspace: &mut Workspace) {
     workspace.until("the inbox to sync", |workspace| {
-        workspace.threads().len() == 2
+        let threads = workspace.threads();
+        threads.len() == 2
+            && threads.iter().all(|thread| {
+                matches!(workspace.read(thread, "boxes"), RtValue::List(boxes)
+                    if boxes.contains(&RtValue::text("inbox")))
+            })
     });
 }
 
@@ -1047,14 +1056,26 @@ fn conversation_titles(workspace: &Workspace, of: &ResourceRef) -> Vec<String> {
     texts
 }
 
-/// How many conversations the account's window says its inbox holds now: what its own filter
-/// counts, as its header shows it.
-fn inbox_count(workspace: &Workspace, account: &ResourceRef) -> Option<i64> {
-    let view = workspace
+/// How many conversations the account's window lists in the sidebar's place `place`: the place
+/// is chosen first, as a person clicks it, because a window opens on the place it was left at.
+fn place_count(workspace: &Workspace, account: &ResourceRef, place: &str) -> Option<i64> {
+    let mut view = workspace
         .host()
         .open_resource(account, None)
         .expect("the account's window opens");
+    let item = find_kind(view.tree(), "ui.NavItem", "label", place)
+        .expect("the sidebar offers the place")
+        .key
+        .clone();
+    view.fire(&item, "select").expect("the place opens");
+    view.poll_patches().expect("the window shows the place");
     count_in(view.tree(), "ui.NavShell")
+}
+
+/// How many conversations the account's window says its inbox holds now: what its own filter
+/// counts, as its header shows it.
+fn inbox_count(workspace: &Workspace, account: &ResourceRef) -> Option<i64> {
+    place_count(workspace, account, "Inbox")
 }
 
 /// The `overview_count` prop of the first node of `kind`.
@@ -1183,18 +1204,8 @@ fn a_label_is_given_taken_away_and_lists_its_own_conversations() {
 
     // Its place narrows the window to the conversation that carries it.
     let account = workspace.accounts().remove(0);
-    let mut view = workspace
-        .host()
-        .open_resource(&account, None)
-        .expect("the account's window opens");
-    let item = find_kind(view.tree(), "ui.NavItem", "label", "Work")
-        .expect("the sidebar offers the label")
-        .key
-        .clone();
-    view.fire(&item, "select").expect("the label's place opens");
-    view.poll_patches().expect("the window shows the label");
     assert_eq!(
-        count_in(view.tree(), "ui.NavShell"),
+        place_count(&workspace, &account, "Work"),
         Some(1),
         "only the conversation with the label is listed"
     );
@@ -1262,28 +1273,11 @@ fn muting_keeps_a_conversation_out_of_the_inbox_until_it_is_brought_back() {
         "the muted conversation stays out of the inbox while it is answered"
     );
     // Its place of its own lists it, so it is not lost.
-    let mut view = workspace
-        .host()
-        .open_resource(&account, None)
-        .expect("the account's window opens");
-    let muted = find_kind(view.tree(), "ui.NavItem", "label", "Muted")
-        .expect("the sidebar offers Muted")
-        .key
-        .clone();
-    view.fire(&muted, "select").expect("Muted opens");
-    view.poll_patches().expect("the window shows Muted");
     assert_eq!(
-        count_in(view.tree(), "ui.NavShell"),
+        place_count(&workspace, &account, "Muted"),
         Some(1),
         "Muted lists the muted conversation"
     );
-    // The place the window went to is the window's, so it goes back to the inbox before the
-    // list is read again.
-    let inbox = find_kind(view.tree(), "ui.NavItem", "label", "Inbox")
-        .expect("the sidebar offers the inbox")
-        .key
-        .clone();
-    view.fire(&inbox, "select").expect("the inbox opens");
     // Bringing it back unmutes it: it is in the inbox again.
     workspace.press("to_inbox", vec![RtValue::resource(&plan)]);
     assert!(!workspace.flag(&plan, "muted"));
