@@ -146,12 +146,14 @@ pub struct IrohWorkspaceHostHintV1 {
 /// addressing of the network the host stands in, to everyone the link reached,
 /// and a device that dialled it reached nothing. So a link carries the relay
 /// the host is reached through and the addresses anyone can dial
-/// ([`reachable_at`]), and nothing else.
+/// ([`reachable_at`]), and nothing else — a relay of the host's own network
+/// no more a stranger's than the addresses beside it ([`reachable_relay`]).
 ///
 /// A host with no such address at all — a desktop on a home network with no
-/// relay — keeps the addresses it has: it is the only way into the workspace,
-/// and whoever the person hands the link to is on that network or gets nothing
-/// either way. Nothing is published in that case that a stranger could use.
+/// relay, or one whose relay is a server of its own network — keeps the
+/// addresses it has: it is the only way into the workspace, and whoever the
+/// person hands the link to is on that network or gets nothing either way.
+/// Nothing is published in that case that a stranger could use.
 #[must_use]
 pub fn reachable(endpoint: &iroh_base::EndpointAddr) -> iroh_base::EndpointAddr {
     let kept: std::collections::BTreeSet<iroh_base::TransportAddr> = endpoint
@@ -159,8 +161,9 @@ pub fn reachable(endpoint: &iroh_base::EndpointAddr) -> iroh_base::EndpointAddr 
         .iter()
         .filter(|address| match address {
             iroh_base::TransportAddr::Ip(socket) => reachable_at(*socket),
-            // A relay is reached from anywhere; a transport this build does not
-            // know is not a network address to judge.
+            iroh_base::TransportAddr::Relay(url) => reachable_relay(url),
+            // A transport this build does not know is not a network address to
+            // judge.
             _ => true,
         })
         .cloned()
@@ -169,6 +172,29 @@ pub fn reachable(endpoint: &iroh_base::EndpointAddr) -> iroh_base::EndpointAddr 
         return endpoint.clone();
     }
     iroh_base::EndpointAddr::from_parts(endpoint.id, kept)
+}
+
+/// Whether a stranger can reach the relay `url` names.
+///
+/// A relay is reached from anywhere only when it stands somewhere anyone can
+/// dial: one listening on a loopback, private or link-local address is the
+/// host's own network's way in, no more a stranger's than the host's own
+/// address beside it. A name is whoever runs it to say where it resolves.
+#[must_use]
+pub fn reachable_relay(url: &iroh_base::RelayUrl) -> bool {
+    let Some(host) = url.host_str() else {
+        return true;
+    };
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    match bare.parse::<std::net::IpAddr>() {
+        Ok(address) => reachable_ip(address),
+        // A name stands for an address this link cannot know, and a relay
+        // named by one is reached the way any other name is.
+        Err(_) => true,
+    }
 }
 
 /// Whether a stranger can dial `address`: whether it is a global unicast
@@ -182,7 +208,12 @@ pub fn reachable(endpoint: &iroh_base::EndpointAddr) -> iroh_base::EndpointAddr 
 /// (`::ffff:10.0.0.1`).
 #[must_use]
 pub fn reachable_at(address: std::net::SocketAddr) -> bool {
-    let global = match address.ip() {
+    reachable_ip(address.ip()) && address.port() != 0
+}
+
+/// [`reachable_at`] of an address without one to dial it at.
+fn reachable_ip(address: std::net::IpAddr) -> bool {
+    match address {
         std::net::IpAddr::V4(v4) => {
             let octets = v4.octets();
             !(v4.is_unspecified()
@@ -203,7 +234,7 @@ pub fn reachable_at(address: std::net::SocketAddr) -> bool {
                 || octets[0] >= 240)
         }
         std::net::IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
-            Some(v4) => reachable_at(std::net::SocketAddr::new(v4.into(), address.port())),
+            Some(v4) => reachable_ip(v4.into()),
             None => {
                 !(v6.is_unspecified()
                     || v6.is_loopback()
@@ -212,8 +243,7 @@ pub fn reachable_at(address: std::net::SocketAddr) -> bool {
                     || v6.is_unicast_link_local())
             }
         },
-    };
-    global && address.port() != 0
+    }
 }
 
 /// A signed hint as an earlier build wrote it: it also named the device
@@ -521,6 +551,48 @@ mod tests {
         assert_eq!(reachable(&home), home);
         let alone = with(&[]);
         assert_eq!(reachable(&alone), alone, "an endpoint names what it has");
+    }
+
+    #[test]
+    fn a_relay_inside_the_network_is_no_strangers_way_in() {
+        // A host running its own packet relay on the network it stands in:
+        // the relay's address is that network's, so a link carrying only it
+        // names nothing a device elsewhere can dial, and it keeps the
+        // addresses beside it that its neighbours read.
+        let inside = with(&[
+            "http://127.0.0.1:37975/",
+            "http://10.244.1.179:37975/",
+            "10.244.1.179:54307",
+        ]);
+        assert_eq!(reachable(&inside), inside, "{:?}", reachable(&inside));
+        // Reached through a relay anyone can dial, the same host's link names
+        // that relay and drops the network it stands in.
+        let outside = with(&["https://relay.example./", "10.244.1.179:54307"]);
+        assert_eq!(
+            reachable(&outside).addrs,
+            with(&["https://relay.example./"]).addrs
+        );
+    }
+
+    #[test]
+    fn a_stranger_can_dial_no_relay_their_network_alone_reaches() {
+        for url in [
+            "http://127.0.0.1:7704/",
+            "http://[::1]:7704/",
+            "http://10.75.1.15:7704/",
+            "http://192.168.1.9:7704/",
+            "http://[fd12:3456::1]:7704/",
+        ] {
+            assert!(!reachable_relay(&url.parse().unwrap()), "{url}");
+        }
+        for url in [
+            "https://relay.example./",
+            "https://relay.tilo.so/",
+            "https://93.184.216.34:7704/",
+            "https://[2606:2800:220:1::1]/",
+        ] {
+            assert!(reachable_relay(&url.parse().unwrap()), "{url}");
+        }
     }
 
     #[test]
