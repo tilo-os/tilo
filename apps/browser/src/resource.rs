@@ -41,6 +41,11 @@ pub struct Browser {
     /// site changes them.
     #[model(readonly)]
     pub site_exceptions: Set<String>,
+    /// Forms remembered of the sites that asked them, by site and
+    /// signature: their shape, never what a field held. Only reading or
+    /// answering a page's forms changes them.
+    #[model(readonly)]
+    pub site_forms: std::collections::BTreeMap<String, crate::site_memory::RememberedForm>,
 }
 
 #[resource(
@@ -109,6 +114,21 @@ impl Browser {
             self.site_exceptions.insert(origin);
         }
         Ok(())
+    }
+
+    /// Remember the forms a page asks.
+    #[action(housekeeping)]
+    pub fn remember_forms(
+        &mut self,
+        #[param("The site's exact origin, such as https://example.org")] origin: String,
+        #[param("The page's path on the site")] page: String,
+        #[param("The forms read on the page, by their shape")] forms: Vec<
+            crate::site_memory::RememberedForm,
+        >,
+        #[param("Whether they are every form the page asks now")] whole: bool,
+        #[param("When they were read, in Unix seconds")] at: u64,
+    ) -> Result<(), Refusal> {
+        crate::site_memory::remember(&mut self.site_forms, &origin, &page, forms, whole, at)
     }
 }
 

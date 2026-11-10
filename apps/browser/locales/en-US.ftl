@@ -5,6 +5,7 @@ browser-set-site-protection = { $enabled ->
     [true] Turned tracker protection on for { $origin }
    *[false] Turned tracker protection off for { $origin }
 }
+browser-remember-forms = Remembered the forms of { $origin }
 browser-browser-bookmarks = Changed the bookmarks
 browser-bookmark-title = Renamed the bookmark { $item }
 browser-settings-adblock-enabled = { $new ->

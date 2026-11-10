@@ -88,6 +88,7 @@ pub mod service_profiles;
 pub(crate) mod service_sessions;
 pub mod settings;
 pub mod site_controls;
+pub mod site_memory;
 pub mod storage;
 pub mod web_store;
 pub use service_sessions::service_session_capability;

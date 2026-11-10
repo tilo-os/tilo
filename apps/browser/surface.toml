@@ -14,6 +14,7 @@ fields = [
   { path = "preferences.search_engine", type = "text" },
   { path = "preferences.homepage", type = "text" },
   { path = "site_exceptions", type = { set = "text" }, readonly = true },
+  { path = "site_forms", type = { map = { named = "RememberedForm" } }, readonly = true },
 ]
 
 [[resources.verbs]]
@@ -39,11 +40,45 @@ params = [
   { name = "enabled", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
+[[resources.verbs]]
+id = "remember-forms"
+kind = "undoable"
+params = [
+  { name = "origin", type = "text", required = true, schema = { type = "string" } },
+  { name = "page", type = "text", required = true, schema = { type = "string" } },
+  { name = "forms", type = { list = { named = "RememberedForm" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { follows = { type = "string" }, grew_from = { type = "string" }, label = { type = "string" }, pages = { type = "array", items = { type = "string" } }, questions = { type = "array", items = { type = "object", additionalProperties = false, properties = { choices = { type = "array", items = { type = "string" } }, fallback = { type = "string" }, kind = { type = "string" }, name = { type = "string" }, required = { type = "boolean" } } } }, seen = { type = "integer", minimum = 0 }, signature = { type = "string" }, submit = { type = "array", items = { type = "string" } } } } } },
+  { name = "whole", type = "bool", required = true, schema = { type = "boolean" } },
+  { name = "at", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
 [[resources.types]]
 name = "Bookmark"
 fields = [
   { name = "url", type = "text" },
   { name = "title", type = "text" },
+]
+
+[[resources.types]]
+name = "RememberedForm"
+fields = [
+  { name = "signature", type = "text" },
+  { name = "label", type = "text" },
+  { name = "pages", type = { list = "text" } },
+  { name = "questions", type = { list = { named = "RememberedQuestion" } } },
+  { name = "submit", type = { list = "text" } },
+  { name = "follows", type = "text" },
+  { name = "grew_from", type = "text" },
+  { name = "seen", type = "int" },
+]
+
+[[resources.types]]
+name = "RememberedQuestion"
+fields = [
+  { name = "name", type = "text" },
+  { name = "kind", type = "text" },
+  { name = "choices", type = { list = "text" } },
+  { name = "required", type = "bool" },
+  { name = "fallback", type = "text" },
 ]
 
 [[resources.types]]
