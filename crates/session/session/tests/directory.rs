@@ -1227,6 +1227,9 @@ impl Lounge {
     /// enrollment that follows. That is the join that reached a host which no longer admits the
     /// invitation it answered with, so no workspace is ever held.
     fn start_with(person: [u8; 32], written: &str, withdraw_invitation: bool) -> Self {
+        // The lounge's host and page run in this test's process: what they did with a join is only
+        // said in its log.
+        common::people::install_log();
         let state = tempfile::tempdir().expect("a directory for the lounge's host");
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)

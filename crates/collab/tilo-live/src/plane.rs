@@ -219,7 +219,7 @@ pub(crate) struct Shared {
     roster: Mutex<Roster>,
     /// How many readers each device the roster named has running now: a
     /// device is read by exactly one set of them.
-    reading: Mutex<BTreeMap<[u8; 32], usize>>,
+    reading: Mutex<BTreeSet<[u8; 32]>>,
     published: Mutex<std::collections::BTreeMap<String, moq_net::track::Producer>>,
     /// This device's broadcast, kept for as long as the plane lives: dropping
     /// it withdraws the announcement its subscribers are reading.
@@ -290,7 +290,7 @@ impl Shared {
             opener: Mutex::new(Opener::new(join.keys.clone(), join.roster.clone())),
             keys: Mutex::new(join.keys.clone()),
             roster: Mutex::new(join.roster.clone()),
-            reading: Mutex::new(BTreeMap::new()),
+            reading: Mutex::new(BTreeSet::new()),
             join: join.clone(),
             incoming: incoming.clone(),
             published: Mutex::new(published),
@@ -415,27 +415,13 @@ impl Shared {
         let roster = self.roster.lock_recover();
         roster.admits(device)
     }
-    /// Take the first reader's hold on `device`: `false` when one already
-    /// reads it.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the entry and its count are one update of the map, and the hold is that update"
-    )]
+    /// Take the readers' hold on `device`: `false` when they already read it.
     fn claim(&self, device: [u8; 32]) -> bool {
-        let mut reading = self.reading.lock_recover();
-        let readers = reading.entry(device).or_default();
-        *readers = readers.saturating_add(1);
-        *readers == 1
+        self.reading.lock_recover().insert(device)
     }
-    /// Let go of one reader's hold on `device`: the last one frees it.
+    /// Let go of the readers' hold on `device`.
     fn release(&self, device: [u8; 32]) {
-        let mut reading = self.reading.lock_recover();
-        if let Some(readers) = reading.get_mut(&device) {
-            *readers = readers.saturating_sub(1);
-            if *readers == 0 {
-                reading.remove(&device);
-            }
-        }
+        self.reading.lock_recover().remove(&device);
     }
     fn open(&self, sender: [u8; 32], track: Track, frame: &[u8]) -> Result<Vec<u8>, Refusal> {
         let name = live::track(track);
@@ -454,8 +440,9 @@ fn read_roster(shared: &Arc<Shared>, readers: &mut Vec<Task>) {
         if device == shared.join.device || !shared.claim(device) {
             continue;
         }
+        let guard = Arc::new(ReadGuard(shared.clone(), device));
         for track in TRACKS {
-            let (guard, shared) = (ReadGuard(shared.clone(), device), shared.clone());
+            let (guard, shared) = (Arc::clone(&guard), shared.clone());
             readers.push(Task::spawn(async move {
                 let _held = guard;
                 receive(shared, device, track).await;
@@ -464,8 +451,9 @@ fn read_roster(shared: &Arc<Shared>, readers: &mut Vec<Task>) {
     }
 }
 
-/// Holds one device while its readers run: the last one to end releases the
-/// device, so the next roster that names it starts readers again.
+/// Holds one device while its readers run, shared by them: the last one to
+/// end releases the device, so the next roster that names it starts readers
+/// again.
 struct ReadGuard(Arc<Shared>, [u8; 32]);
 
 impl Drop for ReadGuard {
@@ -1036,13 +1024,14 @@ fn open_picture(
     Some((sequence, body))
 }
 
-/// The wait a picture track nobody reads may stay accepted: a reader
-/// attaches just after its request, and a track ended in that gap would take
-/// the keyframe asked for with it.
-const UNUSED_GRACE: Duration = Duration::from_secs(2);
+/// The wait a track nobody reads may stay accepted: a reader attaches just
+/// after its request (a picture's keyframe, a relay session's SUBSCRIBE
+/// exchanging consumer handles), and a track ended in that gap would take
+/// what it was asked for with it.
+pub(crate) const UNUSED_GRACE: Duration = Duration::from_secs(2);
 
 /// Wait until `track` is unread for longer than [`UNUSED_GRACE`].
-async fn unused(track: &moq_net::track::Producer) {
+pub(crate) async fn unused(track: &moq_net::track::Producer) {
     loop {
         if track.unused().await.is_err() {
             return;
@@ -1056,7 +1045,9 @@ async fn unused(track: &moq_net::track::Producer) {
 
 /// Read `track` of `device`'s broadcast for as long as the plane lives.
 ///
-/// A device's broadcast ends when its plane does — it left the workspace and
+/// One subscription per broadcast, held while the device publishes: a frame
+/// this plane cannot open yet is passed over, and the next opens once
+/// [`Plane::set_keys`] caught up. A device's broadcast ends when its plane does — it left the workspace and
 /// came back, or a page reloaded — and is announced again under the same
 /// namespace by the session that took its place. This reader waits for that
 /// announcement and reads the track again, so the device is heard here
@@ -1076,71 +1067,56 @@ async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
         else {
             return;
         };
-        let Ok(producer) = broadcast.track(name.as_str()) else {
-            // The broadcast went away between the route and its tracks: the
-            // same wait the loop's next pass does.
-            n0_future::time::sleep(REJOIN).await;
-            continue;
-        };
         // A reader that attaches late starts at the newest group the track
         // holds: the presence a peer said before it joined is what it draws,
         // instead of waiting out the heartbeat.
-        let newest = producer.latest();
-        let Ok(mut subscriber) = producer
-            .subscribe(
-                moq_net::track::Subscription::default()
-                    .with_max_age(retain(track))
-                    .with_start(newest.map(moq_net::track::Position::group)),
-            )
-            .await
-        else {
-            n0_future::time::sleep(REJOIN).await;
-            continue;
+        let subscribed = match broadcast.track(name.as_str()) {
+            Ok(producer) => {
+                let newest = producer.latest();
+                producer
+                    .subscribe(
+                        moq_net::track::Subscription::default()
+                            .with_max_age(retain(track))
+                            .with_start(newest.map(moq_net::track::Position::group)),
+                    )
+                    .await
+                    .ok()
+            }
+            Err(_) => None,
         };
-        // The newest audio object played: a bundle carries earlier objects
-        // again, and one already played is not played twice.
-        let mut played: Option<u64> = None;
-        // Whether the read delivered anything before it ended: a track that
-        // is announced but already finished ends at once, and asking for it
-        // again in a spin would starve the plane's other reads.
-        let mut heard_any = false;
-        // A read that stops because the epoch or the roster moved, or the
-        // peer's broadcast went away, is read again: the loop's next pass
-        // ends this reader only when the plane is over or the device is no
-        // longer a member.
-        let ended = read(
-            &shared,
-            device,
-            track,
-            &mut subscriber,
-            &mut played,
-            &mut heard_any,
-        )
-        .await;
-        // The device's broadcast went away with its session: whoever drew it from its presence
-        // takes it down now, rather than once it has been silent long enough. A device that comes
-        // back says itself again on the broadcast that takes its place.
-        if ended && track == Track::Presence && heard_any && !shared.ended() {
+        if let Some(mut subscriber) = subscribed
+            && read(&shared, device, track, &mut subscriber).await
+            && !shared.ended()
+        {
+            // The device's broadcast went away with its session after it said
+            // itself: whoever drew it takes it down now, rather than once it
+            // has been silent long enough. A device that comes back says itself
+            // again on the broadcast that takes its place.
             shared.deliver(Heard::left(device));
         }
-        if !heard_any {
-            n0_future::time::sleep(REJOIN).await;
-        }
+        // The subscription ended with the broadcast: the one that takes its
+        // place is read once announced.
+        let _ = broadcast.closed().await;
     }
 }
 
-/// Read one subscription of `track` until it ends: the peer's broadcast went
-/// away (`true`), or its objects can no longer be opened here. Either way the
-/// caller attaches again, unless the plane is over or the device left the
-/// roster.
+/// Read one subscription of `track` until it ends, the plane is over or the
+/// device left the roster: `true` when a presence track that delivered a
+/// frame ended with its broadcast. A frame this plane cannot open is counted
+/// ([`Plane::refusals`]) and passed over: the subscription stays, and the
+/// device's next frame is opened under whatever keys and roster the plane
+/// holds by then.
 async fn read(
     shared: &Shared,
     device: [u8; 32],
     track: Track,
     subscriber: &mut moq_net::track::Subscriber,
-    played: &mut Option<u64>,
-    heard_any: &mut bool,
 ) -> bool {
+    // Whether a presence frame of this subscription was delivered.
+    let mut said = false;
+    // The newest audio object played: a bundle carries earlier objects again,
+    // and one already played is not played twice.
+    let mut played: Option<u64> = None;
     loop {
         match next(subscriber).await {
             Next::Datagram(datagram) => {
@@ -1162,11 +1138,9 @@ async fn read(
                     if shared.ended() || !shared.admits(device) {
                         return false;
                     }
-                    if !hear_voice(shared, device, &object) {
-                        return false;
+                    if hear_voice(shared, device, &object) {
+                        played = Some(object.sequence);
                     }
-                    *heard_any = true;
-                    *played = Some(object.sequence);
                 }
             }
             Next::Group(mut group) => {
@@ -1179,21 +1153,19 @@ async fn read(
                         // Group lanes carry one voice object per frame: the
                         // same object the datagram lane carries.
                         let Ok(object) = VoiceObject::decode(&frame.payload) else {
-                            return false;
+                            continue;
                         };
                         if played.is_some_and(|seen| object.sequence <= seen) {
                             continue;
                         }
-                        if !hear_voice(shared, device, &object) {
-                            return false;
+                        if hear_voice(shared, device, &object) {
+                            played = Some(object.sequence);
                         }
-                        *heard_any = true;
-                        *played = Some(object.sequence);
                         continue;
                     }
                     match shared.open(device, track, &frame.payload) {
                         Ok(body) => {
-                            *heard_any = true;
+                            said |= track == Track::Presence;
                             shared.deliver(Heard {
                                 sender: device,
                                 track,
@@ -1201,16 +1173,11 @@ async fn read(
                                 body,
                             });
                         }
-                        // A frame this device may not open is not one to keep
-                        // reading the track for: the epoch or the roster moved.
-                        Err(refusal) => {
-                            shared.refused(&refusal);
-                            return false;
-                        }
+                        Err(refusal) => shared.refused(&refusal),
                     }
                 }
             }
-            Next::End => return true,
+            Next::End => return said,
         }
     }
 }
@@ -1218,8 +1185,12 @@ async fn read(
 /// Open one voice object's payload and deliver the object: `false` when the
 /// epoch or the roster no longer opens it, which ends the read.
 fn hear_voice(shared: &Shared, device: [u8; 32], object: &VoiceObject) -> bool {
-    let Ok(opened) = shared.open(device, Track::Audio, &object.payload) else {
-        return false;
+    let opened = match shared.open(device, Track::Audio, &object.payload) {
+        Ok(opened) => opened,
+        Err(refusal) => {
+            shared.refused(&refusal);
+            return false;
+        }
     };
     let Ok(body) = (VoiceObject {
         payload: opened,
@@ -1237,8 +1208,9 @@ fn hear_voice(shared: &Shared, device: [u8; 32], object: &VoiceObject) -> bool {
     true
 }
 
-/// What a plane's reader sees next on one of a peer's tracks.
-enum Next {
+/// What a plane's reader, or the relay's copy, sees next on a subscribed
+/// track.
+pub(crate) enum Next {
     Datagram(moq_net::Datagram),
     Group(Box<moq_net::group::Consumer>),
     End,
@@ -1246,7 +1218,7 @@ enum Next {
 
 /// The next object on `track`, from either lane. A lane that ends or breaks
 /// ends the read: the carrier reconnects.
-async fn next(track: &mut moq_net::track::Subscriber) -> Next {
+pub(crate) async fn next(track: &mut moq_net::track::Subscriber) -> Next {
     moq_net::kio::wait(|waiter| {
         let datagram = track.poll_recv_datagram(waiter);
         match datagram {

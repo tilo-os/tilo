@@ -225,6 +225,17 @@ pub trait ChannelDirectory: collab_types::signer::MaybeSendSync {
     fn announce_at(&self, at: u64) {
         tilo_identity_host::policy_change::wake_at(at.saturating_mul(1_000_000_000));
     }
+    /// Whether this device holds `workspace`'s channel governance as the
+    /// workspace keeps it: `false` while a device that joined a workspace
+    /// hosted elsewhere has not had its host's history replayed yet. Such a
+    /// device creates no group ([`ChannelEncryption::found`]) until it does:
+    /// the history may hold the channel's genesis already, and a second one
+    /// would split the channel under the members already in it. `true` (the
+    /// default) where there is no history to wait for.
+    fn history_held(&self, workspace: WorkspaceId) -> bool {
+        let _ = workspace;
+        true
+    }
 }
 
 /// The platform secret store's namespace holding a device's channel vault
@@ -1796,7 +1807,8 @@ impl ChannelEncryption {
         Ok(true)
     }
 
-    /// Create `channel`'s group when this device waited its while and no
+    /// Create `channel`'s group when this device waited its while, holds the
+    /// workspace's history ([`ChannelDirectory::history_held`]) and no
     /// genesis of the channel arrived, and the policy lets it read the
     /// channel. A device that has seen a genesis never creates one.
     fn found(&mut self, channel: ChannelId, now: Instant, wall: u64) {
@@ -1807,6 +1819,9 @@ impl ChannelEncryption {
             return;
         }
         let (workspace, route) = (entry.workspace, entry.route.clone());
+        if !self.directory.history_held(workspace) {
+            return;
+        }
         let reads = self
             .directory
             .allowed_devices(workspace, channel, route.as_ref(), wall)

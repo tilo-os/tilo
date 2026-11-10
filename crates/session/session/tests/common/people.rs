@@ -844,7 +844,7 @@ fn door_responder(
 /// The log of what runs in this test's own process — the site's relay above all — as `RUST_LOG`
 /// asks for it, warnings and worse by default: what the host did with a change a device published
 /// is only said there.
-fn install_log() {
+pub fn install_log() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let filter = tracing_subscriber::EnvFilter::try_from_default_env()

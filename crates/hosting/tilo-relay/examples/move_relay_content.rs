@@ -564,13 +564,62 @@ mod tests {
         super::sharded_path(store, hash)
     }
 
-    /// Each blob of the flat store goes to the workspaces whose records name
-    /// it and to no other; one nothing names goes where nothing serves it.
-    #[test]
+    /// A relay host at `state` with two workspaces, the lounge's notes naming
+    /// `picture` and `earlier`; it is shut down again before the move runs.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the host is open until its workspaces are made"
     )]
+    fn two_workspaces(
+        state: &Path,
+        relay_root: &Path,
+        root: &SigningKey,
+        host: &SigningKey,
+        picture: &str,
+        earlier: &str,
+    ) -> (String, String) {
+        tilo_rt::app()
+            .block_on(Box::pin(async {
+                let relay = tilo_relay::Relay::start(
+                    tilo_relay::RelayConfig {
+                        state_root: relay_root.to_path_buf(),
+                        identity_root: state.join("identity"),
+                        full_replica_status: state.join("status.json"),
+                        home_peer_bundle: state.join("home-peer.toml"),
+                        ..Default::default()
+                    },
+                    tilo_relay::daemon::RelayIdentity {
+                        user_public_key: root.verifying_key().to_bytes(),
+                        device_signing_key: host.clone(),
+                        // As `tilo-relay room --persistent lounge` signs it.
+                        device_cert: host_cert(root, host, "lounge").unwrap(),
+                        revocations: RevocationList::new(),
+                    },
+                )
+                .await
+                .unwrap();
+                let workspaces = relay.workspaces().unwrap().clone();
+                let lounge = workspaces.create("Lounge").await.unwrap().workspace;
+                let other = workspaces.create("Elsewhere").await.unwrap().workspace;
+                let governor = workspaces.serving_certificate().clone();
+                workspaces
+                    .author_room_record(&lounge, &governor, ("so.tilo.notes", ""), |doc| {
+                        doc.put(automerge::ROOT, "picture", picture)
+                            .map_err(|error| error.to_string())?;
+                        doc.put(automerge::ROOT, "avatar", earlier)
+                            .map_err(|error| error.to_string())
+                    })
+                    .await
+                    .unwrap();
+                relay.shutdown().await;
+                (lounge, other)
+            }))
+            .unwrap()
+    }
+
+    /// Each blob of the flat store goes to the workspaces whose records name
+    /// it and to no other; one nothing names goes where nothing serves it.
+    #[test]
     fn a_blob_goes_only_to_the_workspaces_that_name_it() {
         let state = tempfile::tempdir().unwrap();
         let root = SigningKey::from_bytes(&[71; 32]);
@@ -587,43 +636,8 @@ mod tests {
             &state.path().join(BLOBS),
             b"an avatar an earlier build kept",
         );
-        let (lounge, other) = tilo_rt::app()
-            .block_on(Box::pin(async {
-                let relay = tilo_relay::Relay::start(
-                    tilo_relay::RelayConfig {
-                        state_root: relay_root.clone(),
-                        identity_root: state.path().join("identity"),
-                        full_replica_status: state.path().join("status.json"),
-                        home_peer_bundle: state.path().join("home-peer.toml"),
-                        ..Default::default()
-                    },
-                    tilo_relay::daemon::RelayIdentity {
-                        user_public_key: root.verifying_key().to_bytes(),
-                        device_signing_key: host.clone(),
-                        // As `tilo-relay room --persistent lounge` signs it.
-                        device_cert: host_cert(&root, &host, "lounge").unwrap(),
-                        revocations: RevocationList::new(),
-                    },
-                )
-                .await
-                .unwrap();
-                let workspaces = relay.workspaces().unwrap().clone();
-                let lounge = workspaces.create("Lounge").await.unwrap().workspace;
-                let other = workspaces.create("Elsewhere").await.unwrap().workspace;
-                let governor = workspaces.serving_certificate().clone();
-                workspaces
-                    .author_room_record(&lounge, &governor, ("so.tilo.notes", ""), |doc| {
-                        doc.put(automerge::ROOT, "picture", picture.as_str())
-                            .map_err(|error| error.to_string())?;
-                        doc.put(automerge::ROOT, "avatar", earlier.as_str())
-                            .map_err(|error| error.to_string())
-                    })
-                    .await
-                    .unwrap();
-                relay.shutdown().await;
-                (lounge, other)
-            }))
-            .unwrap();
+        let (lounge, other) =
+            two_workspaces(state.path(), &relay_root, &root, &host, &picture, &earlier);
         // An item of a workspace's own store sits in its shard.
         let upload_bytes = b"what an app of the other workspace kept";
         let upload_hash = blake3::hash(upload_bytes).to_hex().to_string();

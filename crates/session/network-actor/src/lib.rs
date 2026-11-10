@@ -4229,22 +4229,27 @@ fn spawn_direct_pump(
         tokio::pin!(waiting);
         let mut announced = false;
         loop {
+            // The catch-up's frames are told before it is said to be over: a channel service
+            // founds no group before then.
             tokio::select! {
-                result = &mut running => {
-                    if let Err(reason) = result {
-                        tracing::debug!(ws, %reason, "a workspace's link ended");
-                    }
-                    break;
-                }
+                biased;
                 received = heard.recv() => match received {
                     Ok(heard) => {
                         if tx.send(InternalEvent::NativeHeard { ws, heard }).await.is_err() {
                             return;
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Lagged(missed)) => {
+                        tracing::warn!(ws, missed, "frames a workspace's link admitted were not told here");
+                    }
                     Err(broadcast::error::RecvError::Closed) => break,
                 },
+                result = &mut running => {
+                    if let Err(reason) = result {
+                        tracing::debug!(ws, %reason, "a workspace's link ended");
+                    }
+                    break;
+                }
                 () = &mut waiting, if !announced => {
                     announced = true;
                     if tx.send(InternalEvent::NativeReady { ws }).await.is_err() {

@@ -103,6 +103,9 @@ pub struct Policy {
     /// Channels whose record no grant names: without a route the
     /// directory cannot tell who reads them.
     pub unnamed: Arc<Mutex<std::collections::HashSet<ChannelId>>>,
+    /// The workspace's history has not reached the device yet
+    /// ([`ChannelDirectory::history_held`]).
+    pub history_unheld: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The epoch a test [`Directory`] reports as its
@@ -160,6 +163,9 @@ impl ChannelDirectory for Directory {
         _: u64,
     ) -> Option<ChannelId> {
         Some(route.channel(&workspace.to_string()))
+    }
+    fn history_held(&self, _: WorkspaceId) -> bool {
+        !self.policy.history_unheld.load(Ordering::SeqCst)
     }
     fn policy_epoch(&self) -> Option<u64> {
         match &*self.policy.announces.lock().unwrap() {

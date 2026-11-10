@@ -95,7 +95,10 @@ impl Channels {
         link: Arc<ChannelLink>,
         broker: Arc<Mutex<BrokerChannels>>,
     ) -> std::io::Result<Self> {
-        let directory = Box::new(OwnerDirectory::participant(engine.owner().clone()));
+        let directory = Box::new(OwnerDirectory::participant(
+            engine.owner().clone(),
+            Arc::clone(&link),
+        ));
         let gates: Arc<dyn ChannelGates> = Arc::new(BrokerGates(broker));
         let service = match MlsVault::open_for_session() {
             Ok(vault) => ChannelEncryption::open(
@@ -359,6 +362,9 @@ impl ChannelLink {
         self.replayed.lock_recover().insert(ws);
         self.opens
             .send_modify(|count| *count = count.wrapping_add(1));
+        // A group this device waited on the history to found is founded now, if the history held
+        // no genesis of it.
+        self.park.poke();
     }
 
     /// Whether `workspace`'s host finished replaying what it retains to this device.
@@ -502,15 +508,20 @@ pub struct OwnerDirectory {
     /// A reader also follows what the host it joined a workspace through and it itself sign: the
     /// host vouched for the workspace it was let into.
     reader: bool,
+    /// The plane whose hosts say when they replayed a workspace's history to this device: a
+    /// participant founds no group of a workspace it entered before then.
+    link: Option<Arc<ChannelLink>>,
 }
 
 impl OwnerDirectory {
-    /// The directory of a device that settles its groups.
+    /// The directory of a device that settles its groups, its workspaces' histories arriving over
+    /// `link`.
     #[must_use]
-    pub fn participant(owner: NativeWorkspaceOwner) -> Self {
+    pub fn participant(owner: NativeWorkspaceOwner, link: Arc<ChannelLink>) -> Self {
         Self {
             owner,
             reader: false,
+            link: Some(link),
         }
     }
 
@@ -520,6 +531,7 @@ impl OwnerDirectory {
         Self {
             owner,
             reader: true,
+            link: None,
         }
     }
 }
@@ -578,6 +590,20 @@ impl ChannelDirectory for OwnerDirectory {
                 view.peer().governance().unit_scope(at, route)
             })
             .ok()
+    }
+
+    /// A workspace this device entered while it was hosted elsewhere holds the channel governance
+    /// its members wrote once its host replayed the history to this device; one founded or hosted
+    /// here has none to wait for.
+    fn history_held(&self, workspace: ModelWorkspaceId) -> bool {
+        let Some(link) = &self.link else {
+            return true;
+        };
+        let entered_elsewhere = self
+            .owner
+            .with_current(workspace, |view| Ok(view.entered() && !view.hosted_here()))
+            .unwrap_or(false);
+        !entered_elsewhere || link.has_replayed(workspace)
     }
 
     /// Announced whenever a workspace's governance moves, so a group re-checks on the change itself

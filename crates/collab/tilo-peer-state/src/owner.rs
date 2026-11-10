@@ -249,6 +249,14 @@ impl NativeCommittedView {
     pub fn hosted_here(&self) -> bool {
         self.record.device == self.record.workspace_host
     }
+    /// Whether this device entered a workspace that existed before it: it
+    /// redeemed an invitation, or a host vouched for it as a further device of
+    /// its person. What the workspace holds reaches it from the workspace's
+    /// host.
+    #[must_use]
+    pub fn entered(&self) -> bool {
+        self.record.enrollment.is_some() || self.record.vouched.is_some()
+    }
     /// The signed invitation this device enrolled with.
     pub fn enrollment_invitation(&self) -> Result<&[u8], String> {
         Ok(&self.enrollment()?.invitation)

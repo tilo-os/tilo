@@ -79,3 +79,41 @@ fn a_genesis_is_kept_for_the_policy_that_names_its_signer_later() {
         "no keys of its own: the group it holds is the founder's"
     );
 }
+
+/// A device that entered a workspace hosted elsewhere founds none of its
+/// channels before the workspace's history reached it, however long that
+/// takes: the history may hold the channel's genesis, and a second one would
+/// split the channel under the members already in it. Once the history is
+/// here and holds no genesis, the device founds the group itself.
+#[test]
+fn a_device_founds_no_channel_before_the_workspaces_history_reached_it() {
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    let channel = ChannelId::new();
+    let policy = Policy::readers([1]);
+    policy
+        .history_unheld
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let dir = tempfile::tempdir().unwrap();
+    let mut entered = device(&workspace, workspace_id, 0, 1, &policy, dir.path());
+    let mut now = Instant::now();
+
+    assert!(matches!(
+        entered.service.access(workspace_id, channel, now),
+        ChannelAccess::Waiting
+    ));
+    run(&mut [&mut entered], &mut now, 30);
+    assert!(
+        !entered.service.peers[&channel].peer.knows_group(),
+        "no group is founded while the workspace's history is on its way"
+    );
+
+    policy
+        .history_unheld
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    run(&mut [&mut entered], &mut now, 1);
+    assert!(
+        ready_epoch(&entered.service.access(workspace_id, channel, now)).is_some(),
+        "a history that holds no genesis leaves the channel to this device to found"
+    );
+}
