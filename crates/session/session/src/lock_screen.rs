@@ -54,6 +54,10 @@ impl LockView {
     }
 }
 
+/// The tag the person is told under that the session draws the lock itself: telling it again
+/// replaces what was told, so one notice says it however many times a lock's screen is chosen.
+const DREW_THE_LOCK: &str = "lock-screen-failed";
+
 /// What shows the lock while the session is locked: the lock screen's app, or the session's own
 /// view when that app cannot show it at all.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -251,14 +255,18 @@ impl crate::Session {
                 "the lock screen cannot show the lock, and the session has no view of its own: the lock stays"
             );
         }
-        self.shared
-            .telling()
-            .show(&crate::platform::notice::Notice::new(
+        // What shows a lock is chosen where the person asked for the lock and again when the
+        // compositor says it locked, and a later lock may find the same: told under one tag, the
+        // notice stands on the desk once, however often that is.
+        self.shared.telling().show(
+            &crate::platform::notice::Notice::new(
                 String::new(),
                 2,
                 crate::i18n::t("lock-screen-failed-title"),
                 crate::i18n::t("lock-screen-failed-body"),
-            ));
+            )
+            .tagged(DREW_THE_LOCK),
+        );
     }
 
     /// Start the lock screen, if it does not run: a locked session is shown by its screen, whoever
