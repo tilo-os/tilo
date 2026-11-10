@@ -468,6 +468,8 @@ pub(crate) struct BrowserShell {
     invitable: Rc<Cell<bool>>,
     /// The layers the session placed over the page, drawn in it.
     layers: crate::layers::Layers,
+    /// Alt+Shift+Tab's walk over the desk's windows, the session's own, whose panel the bar draws.
+    walk: tilo_session::switcher::WindowWalk,
     /// Whom this page follows, and what of their place it already showed: the same machine a native
     /// session runs.
     follow: RefCell<tilo_session_core::presence::Follow>,
@@ -618,7 +620,7 @@ impl BrowserShell {
         .with_cards();
         // The desktop's shortcut table keeps the native defaults: the page
         // keeps no device settings to rebind them in.
-        let top = DesktopChrome::new(
+        let mut top = DesktopChrome::new(
             handle.clone(),
             generation,
             source.clone(),
@@ -626,6 +628,8 @@ impl BrowserShell {
             tilo_menu,
             offers.mac,
         );
+        let walk = tilo_session::switcher::WindowWalk::new(handle.clone());
+        top.set_switcher(walk.panel());
         // The page's directory: over the desk, from this page's own site,
         // person and workspaces (`mountDesktop({directory})`).
         let directory = crate::over_page::OverPage::new(crate::directory::PageDirectory::new(
@@ -657,6 +661,7 @@ impl BrowserShell {
         Self {
             desk,
             top,
+            walk,
             drawn_minute: Cell::new(i64::MIN),
             rect: Rect::ZERO,
             chrome,
@@ -1205,8 +1210,6 @@ impl BrowserShell {
                 // machine that runs it. A window that stopped answering is
                 // waited for or quit where the compositor runs, which a page
                 // has none of.
-                // No Alt+Tab panel is up on a page's desk — nothing here sets
-                // the walk's switcher — so no card of one is under its pointer.
                 DesktopAsk::Shortcut(_)
                 | DesktopAsk::LeftWorkspace(_)
                 | DesktopAsk::BranchWorkspace { .. }
@@ -1214,8 +1217,8 @@ impl BrowserShell {
                 | DesktopAsk::DeletedWorkspace { .. }
                 | DesktopAsk::Music(_)
                 | DesktopAsk::WaitWindow(_)
-                | DesktopAsk::ForceQuitApp(_)
-                | DesktopAsk::Switcher(_) => {}
+                | DesktopAsk::ForceQuitApp(_) => {}
+                DesktopAsk::Switcher(ask) => self.walk.ask(ask),
             }
         }
         changed
@@ -1630,6 +1633,7 @@ impl Widget for BrowserShell {
         }
         changed |= self.desk.update(state, path);
         changed |= self.follow_asks();
+        changed |= self.walk.follow();
         changed |= self.invite.follow();
         changed |= self.directory.follow();
         changed |= self.guide.follow();
@@ -1771,6 +1775,14 @@ impl Widget for BrowserShell {
             *ctx.handled =
                 self.picker
                     .handle_event(event, self.cursor, modifiers, self.desk.area(), &windows);
+            return;
+        }
+        // Alt+Shift+Tab's walk comes before anything on the page, as Alt+Tab's does on a desktop:
+        // while it is up every key is its own.
+        if let WindowEvent::KeyboardInput { event: key, .. } = event
+            && self.walk.key(key, ctx.modifiers.state(), self.offers.mac)
+        {
+            *ctx.handled = true;
             return;
         }
         // The invite sheet, like the directory: it takes what it covers, the
@@ -1940,6 +1952,7 @@ impl Widget for BrowserShell {
             .into_iter()
             .filter_map(Widget::next_wake_deadline)
             .chain(self.linking.due())
+            .chain(self.walk.deadline())
             .min()
     }
 

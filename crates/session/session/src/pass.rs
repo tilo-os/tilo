@@ -240,14 +240,32 @@ impl Session {
     /// What the desk's walk reached this pass, handed to the panel that shows it: whether the
     /// session is locked, and where each of the desk's windows stands.
     fn follow_switcher(&self) {
-        let windows: Vec<_> = self
+        // Each window's size in logical pixels, as the desk lays it out: the shape a card of the
+        // panel takes, so the window's picture fills it.
+        let sizes = self
             .compositor
             .windows()
             .into_iter()
-            .map(|(window, rect)| (window.id, rect))
+            .filter_map(|(window, (_, _, width, height))| {
+                Some((
+                    window.id,
+                    (u32::try_from(width).ok()?, u32::try_from(height).ok()?),
+                ))
+            })
+            .filter(|(_, (width, height))| *width > 0 && *height > 0)
             .collect();
-        self.shared
-            .follow_switcher(&self.shared.desktop, self.compositor.locked(), &windows);
+        let shared = &self.shared;
+        if crate::switcher::show(
+            &shared.handle,
+            &shared.desk_overlays,
+            &shared.switcher,
+            self.compositor.locked(),
+            &sizes,
+        ) {
+            // The panel stands over the desk's windows: the chrome lays itself out again for what
+            // it now shows, as it does for any surface of the desk's going up or down.
+            crate::platform::surfaces::Desk::relayout(&shared.desktop);
+        }
     }
 
     /// The desk's input a tool handed the loop since the last pass, served where a device's input

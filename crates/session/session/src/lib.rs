@@ -339,7 +339,7 @@ pub mod startup;
 mod status;
 #[cfg(target_os = "linux")]
 pub mod surfaces;
-mod switcher;
+pub mod switcher;
 pub mod sync;
 #[cfg(target_os = "linux")]
 mod system_sounds;

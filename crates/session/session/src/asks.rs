@@ -341,24 +341,17 @@ impl Shared {
     /// a press on one goes there and closes the walk, and a press away from
     /// the panel leaves the person where they were.
     fn switcher_ask(&self, ask: tilo_desktop::window_switcher::SwitcherAsk) {
-        use tilo_desktop::window_switcher::SwitcherAsk;
         // The walk is the session desk's, as the keys reach it: the panel's presses ask for the
         // same verbs.
-        use tilo_session_core::shell::DESK_RESOURCE as SESSION_DESK;
-        let select = |at: usize| {
-            let at = i64::try_from(at).unwrap_or(i64::MAX);
-            Invocation::new(SESSION_DESK, "select-switcher").with("at", at)
-        };
-        let mut invocations = self.invocations.borrow_mut();
-        match ask {
-            SwitcherAsk::Hover(at) => invocations.push(select(at)),
-            SwitcherAsk::Choose(at) => {
-                invocations.push(select(at));
-                invocations.push(Invocation::new(SESSION_DESK, "commit-switcher"));
-            }
-            SwitcherAsk::Dismiss => invocations
-                .push(Invocation::new(SESSION_DESK, "close-surface").with("surface", "switcher")),
-        }
+        let walking = self
+            .desk_overlays
+            .is_up()
+            .then(|| self.desk_overlays.scope());
+        self.invocations.borrow_mut().extend(
+            crate::keys::SwitcherKey::of_panel(ask)
+                .into_iter()
+                .filter_map(|key| key.asks(walking)),
+        );
     }
 
     /// Hand a click on the tray icon at `key` to the application that owns it, as the click reached

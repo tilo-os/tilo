@@ -2,11 +2,6 @@
 //! the one in front first, with where each stands and what may be pictured of it. The desk's
 //! resource publishes these readings, and the switcher's panel shows the walk over them.
 
-#![cfg_attr(
-    target_arch = "wasm32",
-    allow(dead_code, reason = "the page mounts this with the chrome")
-)]
-
 use tilo_desktop_model::{DesktopTree, Strip, Tab, WindowGroup, Workspace};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_session_core::shell;
