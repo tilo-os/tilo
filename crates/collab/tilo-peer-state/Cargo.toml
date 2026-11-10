@@ -108,6 +108,10 @@ name = "renewed_membership"
 required-features = ["test-support"]
 
 [[test]]
+name = "direct_content"
+required-features = ["test-support"]
+
+[[test]]
 name = "three_devices"
 required-features = ["test-support"]
 

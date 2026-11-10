@@ -2141,6 +2141,17 @@ impl ActorState {
             );
             return;
         }
+        // The device that asked is the workspace's host on this device's link: the
+        // ask came over that link, so the answer goes back the same way.
+        if let Some(target) = target
+            && let Some(link) = self.native_links.get(&ws)
+            && link.scope.host().host.device_public_key == *target.as_bytes()
+        {
+            if let Err(error) = link.link.send(msg) {
+                tracing::debug!(ws, %error, "a record's content waits for the workspace's next link");
+            }
+            return;
+        }
         let msg = match target {
             Some(target) if self.is_surface_member(ws, target) => {
                 match self.publish_direct(ws, target, msg) {

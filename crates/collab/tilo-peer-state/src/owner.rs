@@ -854,6 +854,13 @@ impl NativeWorkspaceOwner {
         .ok()
     }
     /// Decide one input into the workspace's live replica: refused, it changes nothing.
+    ///
+    /// A workspace's devices send each other more than its state over the same
+    /// link: a member's ask or answer about a record's content rides it too,
+    /// and the replica decides that as a family it keeps none of
+    /// ([`crate::InputDisposition::UnsupportedFamily`]), the same answer a
+    /// device syncing the replica alone gives it. So nothing is turned away
+    /// here for not being state.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the whole admission is one turn on the replica"
@@ -865,14 +872,6 @@ impl NativeWorkspaceOwner {
         now: SystemTime,
     ) -> Result<AdmissionReport, String> {
         let workspace = candidate.workspace_id();
-        if !matches!(
-            message,
-            NeighbourMsg::SyncResp { .. }
-                | NeighbourMsg::AppDocument { .. }
-                | NeighbourMsg::IdentityHello { .. }
-        ) {
-            return Err("native owner admits only workspace state messages".into());
-        }
         let mut live = candidate.live();
         if matches!(&message, NeighbourMsg::AppDocument { .. })
             && !matches!(origin, TransportOrigin::RetainedNativePublication { .. })

@@ -168,8 +168,9 @@ impl Drop for NativeLink {
 pub(super) enum Carried {
     /// Over the link itself, as this device's own: a sealed write, which the
     /// workspace's governor never admits and its host keeps for the record's
-    /// channel members, and the workspace's channel governance, which the
-    /// host takes in and sends on to the other members.
+    /// channel members, the workspace's channel governance, which the host
+    /// takes in and sends on to the other members, and an ask for a record's
+    /// content, which the host answers or hands to the member keeping it.
     Link,
     /// In the workspace's own publication: a cleartext write, which the
     /// device's engine published already and the link publishes in order.
@@ -185,7 +186,7 @@ pub(super) fn carried(msg: &NeighbourMsg) -> Option<Carried> {
         NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some() => {
             Some(Carried::Link)
         }
-        _ if is_channel_governance(msg) => Some(Carried::Link),
+        _ if is_channel_governance(msg) || is_record_content(msg) => Some(Carried::Link),
         NeighbourMsg::AppDocument { .. } => Some(Carried::Publication),
         NeighbourMsg::SyncReq { .. } | NeighbourMsg::SyncResp { .. } => Some(Carried::Nowhere),
         _ => None,
@@ -201,6 +202,41 @@ pub(super) fn is_channel_governance(msg: &NeighbourMsg) -> bool {
             | NeighbourMsg::MlsAccessRequest { .. }
             | NeighbourMsg::MlsRoutedAccessRequest { .. }
     )
+}
+
+/// Whether `msg` is about a record's content: a member asking the workspace
+/// for the bytes a record names, or a device answering with the pieces it keeps
+/// or with word that it keeps none. It is live traffic between the workspace's
+/// members, never their state, and travels as such.
+pub(super) fn is_record_content(msg: &NeighbourMsg) -> bool {
+    matches!(
+        msg,
+        NeighbourMsg::RecordContentWant { .. }
+            | NeighbourMsg::RecordContentPiece { .. }
+            | NeighbourMsg::RecordContentLacks { .. }
+    )
+}
+
+/// The message event `heard`, a frame a workspace's link brought, is for this
+/// device's apps when it is about a record's content: an ask or an answer
+/// reaches them as the same frame sent on the workspace's topic does, from the
+/// device that authored it. `None` for everything else, which is the
+/// workspace's state the link admitted.
+pub(super) fn content_message(
+    ws: u64,
+    heard: &tilo_peer_state::direct::Heard,
+) -> Option<super::NetEvent> {
+    if !is_record_content(&heard.message) {
+        return None;
+    }
+    let peer = iroh::EndpointId::from_bytes(&heard.author).ok()?;
+    Some(super::NetEvent::Msg {
+        ws,
+        peer,
+        membership_epoch: None,
+        replayed: heard.retained,
+        msg: heard.message.clone(),
+    })
 }
 
 impl ActorState {
@@ -248,6 +284,14 @@ impl ActorState {
         let Some(link) = self.native_links.get(&ws) else {
             return;
         };
+        // A record's content is the workspace's members' own traffic, never its
+        // state: an ask or an answer reaches this device's apps as one sent on
+        // the workspace's topic does, so the content service keeping what its
+        // records name hears it.
+        if is_record_content(&heard.message) {
+            self.deliver_content(ws, &heard).await;
+            return;
+        }
         // The devices that take part through this one hear the rest of the
         // workspace through it alone. Its channels' governance goes to them
         // with the rest of what the channel service hears.
@@ -258,6 +302,18 @@ impl ActorState {
             members.carry(link.scope.workspace(), heard.author, heard.message.clone());
         }
         self.deliver(ws, heard).await;
+    }
+
+    /// Hand `heard`, a frame of the workspace on topic `ws` about a record's
+    /// content, to this device's apps as the message its author sent, as one
+    /// arriving on the workspace's topic is: the content service keeps the
+    /// ask or answer, and the workspace's state keeps none of it.
+    async fn deliver_content(&self, ws: u64, heard: &tilo_peer_state::direct::Heard) {
+        let Some(message) = content_message(ws, heard) else {
+            return;
+        };
+        self.tally.note(heard.message.kind());
+        self.publish_to_subscriber(ws, message).await;
     }
 
     /// Hand `heard`, a frame of the workspace on topic `ws` that this
@@ -303,7 +359,9 @@ impl ActorState {
     /// already sent it to this device's other members. The channels'
     /// governance takes its own path, through the channel service.
     pub(super) async fn member_heard(&self, ws: u64, heard: tilo_peer_state::direct::Heard) {
-        if heard.report.is_err() || is_channel_governance(&heard.message) {
+        if (heard.report.is_err() && !is_record_content(&heard.message))
+            || is_channel_governance(&heard.message)
+        {
             return;
         }
         let Some(link) = self.native_links.get(&ws) else {
@@ -313,12 +371,19 @@ impl ActorState {
             );
             return;
         };
-        if matches!(heard.message, NeighbourMsg::AppDocument { .. })
+        // A record's content a member asks for or answers reaches the workspace's
+        // host over this device's link as its writes do.
+        let content = is_record_content(&heard.message);
+        if (content || matches!(heard.message, NeighbourMsg::AppDocument { .. }))
             && let Err(error) = link.link.send(heard.message.clone())
         {
             tracing::debug!(ws, %error, "a member's write waits for the workspace's next link");
         }
-        self.deliver(ws, heard).await;
+        if content {
+            self.deliver_content(ws, &heard).await;
+        } else {
+            self.deliver(ws, heard).await;
+        }
     }
 
     /// Send `msg`, a write this device publishes, to the devices that take
@@ -592,11 +657,58 @@ fn drop_unpinned(
         links.remove(&ws);
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::{Carried, NeighbourMsg, carried};
     use collab_types::{ChannelId, MlsAccessRequestV1, MlsGovernanceAction, MlsGovernanceFrame};
+
+    /// A host asks a linked member for the surface a change names; the member's
+    /// session hears it as a member's message, which its content service keeps,
+    /// never as workspace state, which the owner has no use for.
+    #[test]
+    fn a_record_contents_ask_heard_on_a_link_reaches_the_session_as_a_message() {
+        let device = ed25519_dalek::SigningKey::from_bytes(&[5; 32])
+            .verifying_key()
+            .to_bytes();
+        let want = NeighbourMsg::RecordContentWant {
+            requester: 9,
+            app_id: "so.tilo.chat".into(),
+            cluster_id: "workspace".into(),
+            hash: "ab".repeat(32),
+        };
+        let heard = |message: NeighbourMsg| tilo_peer_state::direct::Heard {
+            author: device,
+            message,
+            landed: false,
+            retained: false,
+            report: Err("the workspace keeps no state of it".into()),
+            fresh: true,
+        };
+        let Some(super::super::NetEvent::Msg {
+            ws,
+            peer,
+            replayed,
+            msg,
+            ..
+        }) = super::content_message(7, &heard(want.clone()))
+        else {
+            panic!("a record's content heard on a link is a message");
+        };
+        assert_eq!((ws, replayed), (7, false));
+        assert_eq!(peer.as_bytes(), &device);
+        assert_eq!(msg, want);
+        assert!(
+            super::content_message(
+                7,
+                &heard(NeighbourMsg::SyncResp {
+                    changes: Vec::new(),
+                    room: "workspace".into(),
+                })
+            )
+            .is_none(),
+            "the workspace's state is what the link admitted, not a message"
+        );
+    }
 
     /// A workspace a device takes part in over its host's link has no other
     /// path to its host: channel governance kept off the link left every
@@ -626,7 +738,15 @@ mod tests {
             route: Box::new(collab_types::ChannelRoute::new("app", "record")),
             delivery: 0,
         };
-        for message in [genesis, asking, routed] {
+        // A member's ask for a record's content reaches its host the same way:
+        // the host answers it, or hands it to the member keeping it.
+        let want = NeighbourMsg::RecordContentWant {
+            requester: 9,
+            app_id: "so.tilo.notes".into(),
+            cluster_id: "workspace".into(),
+            hash: "ab".repeat(32),
+        };
+        for message in [genesis, asking, routed, want] {
             assert_eq!(carried(&message), Some(Carried::Link), "{}", message.kind());
         }
     }
