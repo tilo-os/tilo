@@ -4,6 +4,15 @@ import {WORKSPACE_DOCUMENT_WAIT_MS, boot, chosenRoute, configureFeedback, initia
 import {UNAVAILABLE, openTarget, untilSnapshot, untilViewable, viewInvocation} from './open-target.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 
+/** The runtime's way in (tilo-session-host's `way_in`, tested there),
+ * answering the ways this page's scenario takes, in turn and again for each
+ * entry. */
+const entering = (...ways) => {
+  let next = 0;
+  const way = () => ways[next++ % ways.length];
+  return {wayIn: way, wayInAfter: way, admittedAsAsked: () => true};
+};
+
 const message = {kind: 'chat.message', id: 'chat.message:1'};
 const views = [
   {kind: 'read', address: {resource: message.id, action: 'reveal'}, view: {id: 'message', open_action: 'reveal', primary: true,
@@ -157,6 +166,7 @@ test('the catalogue is never read before admission', async () => {
   const runtime = runtimeFake({
     parseLink: () => JSON.stringify({mode: 'app', target}),
     formatLink: () => 'https://tilo.so/app/#/@h.example/w/r/so.tilo.chat/-/chat.message:1',
+    ...entering('accounts', 'member'),
   });
   const peer = {
     whenReady: async () => order.push('ready'),
@@ -188,6 +198,7 @@ test('the home workspace opens through its host door under its listed name, and 
   const runtime = runtimeFake({
     parseLink: () => { throw Object.assign(new Error('no route'), {code: 'no-route'}); },
     formatLink: route => { formatted.push(JSON.parse(route)); return 'https://rooms.example/open/#/@rooms.example/w/WORKSPACE'; },
+    ...entering('door'),
   });
   const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
   const mounts = [];
@@ -236,6 +247,7 @@ test('the page hears the peer the host let in before its desktop mounts, so a fa
   const runtime = runtimeFake({
     parseLink: () => { throw Object.assign(new Error('no route'), {code: 'no-route'}); },
     formatLink: () => 'https://rooms.example/#/@rooms.example/w/WORKSPACE',
+    ...entering('door'),
   });
   const heard = [];
   const peer = {workspace: 'WORKSPACE', workspaceName: 'Kaffeeküche', whenReady: async () => {},
@@ -281,7 +293,8 @@ test('the entry offers only the web About links the host set', async () => {
 
 test('the desktop gets the entry’s About links, no host pill on the person’s own desktop, and the tab its workspace name', async () => {
   const about = {source: 'https://example.org/source'};
-  const runtime = runtimeFake({parseLink: () => JSON.stringify({mode: 'desktop', target: {scope: {kind: 'own'}}}), formatLink: () => ''});
+  const runtime = runtimeFake({parseLink: () => JSON.stringify({mode: 'desktop', target: {scope: {kind: 'own'}}}), formatLink: () => '',
+    ...entering('own-desktop')});
   const mounts = [];
   const forwarded = [];
   const window = {
@@ -334,6 +347,7 @@ test('a sealed link admits through the site’s shelf and opens the workspace it
   const runtime = runtimeFake({
     parseLink: () => { parsed = true; throw new Error('a sealed link names no route'); },
     formatLink: route => { formatted.push(JSON.parse(route)); return `${site}/#/@rooms.example/w/WORKSPACE`; },
+    ...entering('sealed-invitation'),
   });
   const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
   const offer = {room: 'WORKSPACE', workspaceName: 'Lounge', role: 'commenter', members: 4,
@@ -382,7 +396,7 @@ test('a workspace mount keeps its invite sheet alongside host, About and title f
   };
   const statuses = [];
   const page = await boot({mode: 'desktop', window, diagnostics: {onStatus: status => statuses.push(status)}, deps: {
-    loadRuntime: async () => runtimeFake({formatLink: () => 'https://rooms.example/open/#/WORKSPACE'}),
+    loadRuntime: async () => runtimeFake({formatLink: () => 'https://rooms.example/open/#/WORKSPACE', ...entering('door')}),
     fetch: async () => ({ok: true, json: async () => ({home, about})}),
     enterViaHost: async () => peer,
     // The invite sheet this page's desktop shows, made through the workspace's host.
@@ -400,13 +414,14 @@ test('a workspace mount keeps its invite sheet alongside host, About and title f
   page.router.stop();
 });
 
-test('a bare entry under a home workspace asks the host’s door while the runtime still loads', async () => {
+test('a bare entry under a home workspace asks the host’s door once the runtime says that is the way in', async () => {
   const home = {name: 'Commons', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
   const order = [];
   let loaded;
   const runtime = runtimeFake({
     parseLink: () => { throw new Error('a home entry needs no grammar to be admitted'); },
     formatLink: () => 'https://rooms.example/open/#/@rooms.example/w/WORKSPACE',
+    ...entering('door'),
   });
   const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
   const peer = {workspace: 'WORKSPACE', whenReady: async () => {}, mountDesktop: async () => { order.push('mount'); return {navigation}; }};
@@ -418,17 +433,15 @@ test('a bare entry under a home workspace asks the host’s door while the runti
   };
   const deps = {
     loadRuntime: () => new Promise(resolve => { loaded = () => { order.push('runtime'); resolve(runtime); }; }),
-    fetch: async () => ({ok: true, json: async () => ({home})}),
+    fetch: async () => { loaded(); return {ok: true, json: async () => ({home})}; },
     enterViaHost: async () => {
       order.push('door');
-      // The door's own wait for the runtime, before its first certificate.
-      loaded();
       return peer;
     },
   };
   const page = await boot({mode: 'desktop', window, deps});
   // The router then keeps the address canonical as it goes.
-  assert.deepEqual(order.slice(0, 4), ['door', 'runtime', 'canonical', 'mount']);
+  assert.deepEqual(order.slice(0, 4), ['runtime', 'door', 'canonical', 'mount']);
   page.router.stop?.();
 });
 
@@ -437,6 +450,7 @@ test('any other link waits for the runtime’s grammar before admission', async 
   const runtime = runtimeFake({
     parseLink: () => { order.push('parse'); return JSON.stringify({mode: 'desktop', target: {scope: {kind: 'own'}}}); },
     formatLink: () => 'https://tilo.so/#/me',
+    ...entering('own-desktop'),
   });
   const window = {
     __tiloLinkSecrets: Object.freeze({}),
@@ -466,17 +480,17 @@ test('the home workspace’s app in front is fetched once admitted, never before
       addEventListener() {}, removeEventListener() {},
     };
     const deps = {
-      loadRuntime: () => new Promise(() => {}),
+      loadRuntime: async () => runtimeFake({...entering('door')}),
       prefetchApplication: app => order.push(`prefetch ${app}`),
       fetch: async () => ({ok: true, json: async () => ({home})}),
       enterViaHost: async () => { order.push('door'); return enterViaHost(); },
     };
-    // An admitted boot goes on to wait for the runtime, which never loads here.
+    // An admitted boot goes on past what this asks of it.
     void boot({mode: 'desktop', window, deps}).catch(error => order.push(error.message));
     await new Promise(resolve => setTimeout(resolve, 10));
     return order;
   };
-  assert.deepEqual(await run(async () => ({workspace: 'r1'})), ['door', 'prefetch so.tilo.chat']);
+  assert.deepEqual((await run(async () => ({workspace: 'r1'}))).slice(0, 2), ['door', 'prefetch so.tilo.chat']);
   assert.deepEqual(await run(async () => { throw new Error('closed'); }), ['door', 'closed']);
 });
 
@@ -507,7 +521,8 @@ function workspacePage({href, hash, parse}) {
     addEventListener: (type, listener) => { listeners[type] = listener; },
     removeEventListener() {},
   };
-  const runtime = runtimeFake({parseLink: url => JSON.stringify(parse(url)), formatLink: () => window.location.href});
+  const runtime = runtimeFake({parseLink: url => JSON.stringify(parse(url)), formatLink: () => window.location.href,
+    ...entering('accounts', 'member')});
   return {window, listeners, calls, runtime, navigation};
 }
 
@@ -560,6 +575,7 @@ test('once admitted, the page names its host’s fetch proxy for the apps', asyn
   const runtime = runtimeFake({
     parseLink: () => { throw Object.assign(new Error('no route'), {code: 'no-route'}); },
     formatLink: () => 'https://app.example/#/@rooms.example/w/WORKSPACE',
+    ...entering('door'),
   });
   const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
   let session = 'feed';

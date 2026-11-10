@@ -54,6 +54,7 @@ pub mod session;
 pub use tilo_session_core::remote as session_actions;
 pub mod surfaces;
 pub mod voice;
+pub mod way_in;
 
 pub use custody::{MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore};
 pub use document::{document_admission, document_history_admission};

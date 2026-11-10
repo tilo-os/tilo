@@ -297,9 +297,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // in and reads no route from the address.
   const sealed = sealedLink({location: window.location, secrets});
   // The runtime (most of the page's download) loads while the entry is read
-  // and, for a bare entry under a home workspace, while admission starts:
-  // a host's door is asked, and the person and device keys opened, before
-  // anything needs the runtime. Each door waits for it where it does.
+  // and the route chosen; admission waits for it, as the way in is its to say.
   const loaded = deps.loadRuntime();
   const entry = await readEntry({mode, location: window.location, fetch: deps.fetch});
   const linked = loaded.then(runtime => grammar(runtime, entry));
@@ -320,7 +318,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // The page hears which workspace it is getting into, under which entry, before admission.
   deps.onScope?.({scope: route.target.scope, entry});
   const {peer, idle} = await admit({
-    scope: route.target.scope, secrets, tickets: entry.tickets,
+    scope: route.target.scope, secrets, tickets: entry.tickets, runtime: await loaded,
     home: entry.home ? workspaceAt(workspaces, entry.home.host?.origin) ?? entry.home : null,
     deps: {...deps, workspaceAt: origin => workspaceAt(workspaces, origin)},
     onProgress: event => {

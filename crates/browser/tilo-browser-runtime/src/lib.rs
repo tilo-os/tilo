@@ -229,6 +229,7 @@ mod rooms;
 // The workspaces this browser entered, by the rules every device keeps them by.
 #[cfg(target_arch = "wasm32")]
 mod entered;
+// Which way the page takes into the workspace a link names, by the rules every device takes.
 #[cfg(target_arch = "wasm32")]
 #[cfg(target_arch = "wasm32")]
 mod semantics_status;
@@ -242,6 +243,8 @@ mod storage;
 mod throttle;
 #[cfg(target_arch = "wasm32")]
 mod video_pictures;
+#[cfg(target_arch = "wasm32")]
+mod way_in;
 #[cfg(target_arch = "wasm32")]
 mod workspace_records;
 // When graphics start-up is said to stall: its tests run on the host too.
