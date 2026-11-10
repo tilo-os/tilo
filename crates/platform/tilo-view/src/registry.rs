@@ -6,7 +6,8 @@
 //! and the view the place names, or the type's default view ([`ViewRegistry::default_for`]).
 //!
 //! The registry is filled once, when the app's code is loaded: every view of the crate that
-//! declares it is here, whatever module it lives in.
+//! declares it is here, whatever module it lives in. A web page's registry is empty: nothing on
+//! it draws a Rust app's view, and each app's code arrives in a module of its own.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;

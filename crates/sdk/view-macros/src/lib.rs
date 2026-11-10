@@ -61,9 +61,18 @@ fn expand(attr: &Tokens, function: &ItemFn) -> syn::Result<Tokens> {
     let name_text = name.to_string();
     let adapter = format_ident!("__view_{}", name);
 
+    // A page registers no view: nothing on it draws a Rust app's view, and a
+    // registration is a constructor the page runs at start, which would carry
+    // every app's views into the module it downloads first instead of the
+    // app's own.
     Ok(quote! {
+        #[cfg_attr(
+            target_arch = "wasm32",
+            allow(dead_code, reason = "a page registers no view")
+        )]
         #function
 
+        #[cfg(not(target_arch = "wasm32"))]
         #[allow(
             non_snake_case,
             reason = "the registration is named for the view it stands beside"
@@ -83,6 +92,7 @@ fn expand(attr: &Tokens, function: &ItemFn) -> syn::Result<Tokens> {
             #name(&resource, cx)
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
         ::tilo_view::inventory::submit! {
             ::tilo_view::View {
                 name: #name_text,
