@@ -1,9 +1,17 @@
 //! The content the page's windows hold: the pictures and attachments their
-//! records reference, by hash, in the page's memory. Every window of the
+//! records reference, by hash, in the profile's app files. Every window of the
 //! page shares it, so content one fetched is there for the others; the
 //! framework joins it to each window's record route, so content a record
 //! references and the page lacks is asked of the workspace, and its pieces are
 //! verified before they are kept here.
+//!
+//! It is the profile's store, not the tab's, because a page keeps what it
+//! stores for the records of this device: a file a window uploaded stays
+//! until a record the page can read names it — an attachment a private draft
+//! names is still here when the draft is sent days later, and the page can
+//! answer a workspace asking for it. Nothing collects it on its own, and the
+//! store's bounds refuse a new item rather than drop one it has. A page whose
+//! app files are not loaded keeps content in memory, as a tab alone can.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -14,14 +22,24 @@ use tilo_content::{ContentLimits, ContentStore, MemoryBackend};
 /// How an app names an image by its content address.
 const BLOB_SCHEME: &str = "tilo-blob://";
 
-/// Most the page keeps: a tab is not a disk.
-const MAX_TOTAL_BYTES: usize = 256 * 1024 * 1024;
+/// Most the page keeps in memory when its app files are not loaded.
+const MAX_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 
 thread_local! {
-    static PAGE_CONTENT: ContentStore = ContentStore::new(MemoryBackend::new(ContentLimits {
-        max_total_bytes: MAX_TOTAL_BYTES,
+    static PAGE_CONTENT: ContentStore = page_store();
+}
+
+/// The store the page keeps content in: the profile's app files, which
+/// outlive the page (`tilo_content`'s store for a host whose files have no
+/// native path), or memory when the host loaded none.
+fn page_store() -> ContentStore {
+    if tilo_files::web::is_mirrored(&tilo_paths::default_profile()) {
+        return ContentStore::local_for_app();
+    }
+    ContentStore::new(MemoryBackend::new(ContentLimits {
+        max_total_bytes: MAX_MEMORY_BYTES,
         ..ContentLimits::default()
-    }));
+    }))
 }
 
 /// The page's content store, lent to each window it opens.

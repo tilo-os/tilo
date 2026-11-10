@@ -57,9 +57,11 @@ pub use workspaces::WorkspaceStores;
 /// The app-files owner of a page's content store (see [`ContentStore::local_for_app`]).
 #[cfg(feature = "dir")]
 const PAGE_STORE_OWNER: &str = "so.tilo.content";
-/// A page's largest content item and whole store: the page holds its app files in memory.
+/// A page's largest content item: the largest a device keeps of a record's
+/// content, which a page holds whole while it stores it.
 #[cfg(feature = "dir")]
-const PAGE_MAX_ITEM_BYTES: usize = 32 * 1024 * 1024;
+const PAGE_MAX_ITEM_BYTES: usize = 64 * 1024 * 1024;
+/// Largest whole store a page keeps: the page holds its app files in memory.
 #[cfg(feature = "dir")]
 const PAGE_MAX_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 
@@ -345,9 +347,10 @@ impl ContentStore {
     }
 
     /// Where files have no native path (a browser page): content in the profile's app files,
-    /// which outlive the page. Every app of the profile shares the one store, as native apps
-    /// share `tilo/content`. The page holds those files in memory, so the store is kept
-    /// smaller than a native one.
+    /// which outlive the page, so an upload a page stored is still here after a reload. Every
+    /// app of the profile shares the one store, as native apps share `tilo/content`. The page
+    /// holds those files in memory, so the store is bounded: an item or store past the bound is
+    /// refused, never dropped, and nothing collects what the page stored on its own.
     #[cfg(feature = "dir")]
     fn in_page_files() -> Self {
         let Ok(content) = tilo_files::VPath::new("content") else {
