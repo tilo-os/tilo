@@ -689,13 +689,17 @@ impl DesktopSearch {
         let mut rows = Vec::new();
         let mut more_rows = Vec::new();
         let entries = self.fitted(groups, browsing, &mut rows, &mut more_rows);
-        // A source that answered re-ranks the same query, and a card not yet
-        // given its room lists nothing: for that frame the plan has no row,
-        // while the card on screen still shows the rows of the plan before.
-        // Keeping them is what the person sees, and what their Enter acts
-        // on; an empty plan would leave the key naming nothing, and the
-        // press would go nowhere. The search says it is still filling in.
-        let refilling = rows.is_empty()
+        // A source that answered re-ranks the same query, and the plan of the
+        // frame it starts in is not the query's answer yet: the sources after
+        // the one that answered have not been asked, and a card not yet given
+        // its room cuts the rows to a guess. That plan can hold fewer rows
+        // than the frame before, while the card on screen still shows those.
+        // They stay — what the person sees, and what their Enter acts on: a
+        // plan short of them would leave the key naming a row that is not
+        // there, or none at all, and the press would go nowhere. The search
+        // says it is still filling in.
+        let unfitted = rows.len() < self.rows.len();
+        let refilling = unfitted
             && !self.rows.is_empty()
             && self.shown_query.as_deref() == Some(query)
             && (pending || self.waiting() || self.answering());
