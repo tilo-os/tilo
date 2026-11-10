@@ -154,6 +154,9 @@ terminal = { path = "../../../apps/terminal" }
 
 
 [dev-dependencies]
+# The desktop broker's admission, which the host's decisions are held to.
+tilo-broker-core = { path = "../../collab/broker-core" }
+tilo-action-policy = { path = "../../collab/action-policy" }
 # The demo workspace and the helpers that write a chat as its people would.
 chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 tilo-crypto = { path = "../../system/tilo-crypto", features = ["tls-fixture"] }

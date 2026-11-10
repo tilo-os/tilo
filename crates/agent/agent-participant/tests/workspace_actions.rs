@@ -68,6 +68,9 @@ mod own_agent;
 #[path = "workspace_actions/resource_support.rs"]
 mod resource_support;
 #[cfg(test)]
+#[path = "workspace_actions/route_parity.rs"]
+mod route_parity;
+#[cfg(test)]
 #[path = "workspace_actions/share_link.rs"]
 mod share_link;
 
