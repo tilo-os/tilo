@@ -1989,15 +1989,22 @@ impl Inner {
         self.committed.push_back(Committed { ticket, action });
     }
 
-    /// The type the index names the resource `at` to be, on the index's answer alone: the type
-    /// of a document it lists, or of an item whose row it holds. `None` where the index names
-    /// the resource nowhere, which is where the record is read for it.
-    fn named_type(&self, at: &ResourceRef) -> Option<TypeId> {
+    /// The type the workspace holds the resource `at` to be: the one its package's index names
+    /// it ([`View::type_of`]) — a document's from the docs the index lists, an item's from its
+    /// row — or, for a document the index has not derived yet, the one the store's writes named
+    /// it. `None` when neither names it: the writes took it away, and it is not here.
+    fn held_type(&self, at: &ResourceRef) -> Option<TypeId> {
+        let resource = at.id_string();
+        // The writes are newer than the index: what one named of the resource, or took away,
+        // stands until the index derives it.
+        if let Some(named) = self.overlay.text(&resource, idx::TYPE) {
+            return named;
+        }
         let (app, ty) = self.locate(at).ok()?;
         if at.item.is_none() {
             return Some(ty);
         }
-        self.view(&app)?.type_of(&at.id_string()).ok().flatten()
+        self.view(&app)?.type_of(&resource).ok().flatten()
     }
 
     fn locate(&self, at: &ResourceRef) -> Result<(AppId, TypeId), StoreError> {

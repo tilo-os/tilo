@@ -687,3 +687,49 @@ fn concurrent_moves_into_each_other_hold_the_later_back() {
     );
     assert!(refused.is_err(), "{refused:?}");
 }
+
+#[test]
+fn a_card_removed_with_its_column_has_no_type_in_either_copy() {
+    let mut r = workspace();
+    let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
+    let stays = r.card("ada", &todo, "stays");
+    let leaves = r.card("ada", &todo, "leaves");
+    r.file("ada", &doing, &leaves);
+    r.sync();
+    let card = r
+        .meta
+        .types
+        .iter()
+        .find(|t| t.name == "Card")
+        .unwrap()
+        .id
+        .clone();
+    let at = |r: &Workspace, id: &str| ResourceRef::parse_id(&r.at(id), card.clone()).unwrap();
+    assert_eq!(r.ada.host.store().type_of(&at(&r, &stays)).unwrap(), card);
+    let root = r.root.clone();
+    let todo_at = r.at(&todo);
+    r.act(
+        "ada",
+        ("Board", &root),
+        "drop_column",
+        json!({ "c": todo_at }),
+    );
+    assert!(
+        r.ada.host.store().type_of(&at(&r, &stays)).is_err(),
+        "the card went with its column: its window says it is gone"
+    );
+    assert_eq!(
+        r.ada.host.store().type_of(&at(&r, &leaves)).unwrap(),
+        card,
+        "the card moved out before it is the one that stayed"
+    );
+    r.sync();
+    assert!(
+        r.grace.host.store().type_of(&at(&r, &stays)).is_err(),
+        "and it is gone for the other copy too"
+    );
+    assert_eq!(
+        r.grace.host.store().type_of(&at(&r, &leaves)).unwrap(),
+        card
+    );
+}

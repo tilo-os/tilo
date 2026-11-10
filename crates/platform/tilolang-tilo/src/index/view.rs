@@ -175,17 +175,12 @@ impl View<'_> {
             .is_some_and(|held| held == in_of(resource, field))
     }
 
-    /// The type of `resource`, if the index holds it.
+    /// The type the workspace holds `resource` to be: the one the index derived, or the one the
+    /// store's writes named — a record they made or moved, which the index derives at its next
+    /// step. `None` when neither names it: the writes took it away, or it was never here, and
+    /// the record answers for no resource the workspace does not hold.
     pub fn type_of(&self, resource: &str) -> Result<Option<String>, IndexError> {
         self.text(resource, TYPE)
-    }
-
-    /// Whether the store's writes name `resource`: they made it or moved it, and the index has
-    /// not derived that yet. A record they removed, and one they never held, is named by
-    /// neither — the index names every record the workspace holds.
-    #[must_use]
-    pub fn named_by_writes(&self, resource: &str) -> bool {
-        matches!(self.overlay.text(resource, TYPE), Some(Some(_)))
     }
 
     /// The schema of `resource`: its stored type's, else `fallback`'s.

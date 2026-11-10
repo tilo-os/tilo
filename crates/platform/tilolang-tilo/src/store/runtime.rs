@@ -60,20 +60,22 @@ impl Store for TiloStore {
     }
 
     fn type_of(&self, at: &ResourceRef) -> Result<TypeId, StoreError> {
-        // An index that names the resource answers its type: a window opens over what the index
-        // holds, and reads the record only for a resource it does not name.
-        if let Some(ty) = self.held().named_type(at) {
+        // The index names the type of what it holds, and a write names the one it just made
+        // before the index derives it: a window opens over either without reading the record.
+        if let Some(ty) = self.held().held_type(at) {
             return Ok(ty);
         }
         let _ = self.load_at(at);
         let inner = self.held();
         let (app, ty) = inner.locate(at)?;
-        if let Some(view) = inner.view(&app) {
-            return view
-                .type_of(&at.id_string())
-                .map_err(backend)?
-                .ok_or_else(|| not_found(format!("resource {}", at.id_string())));
+        // An index names every record the workspace holds of its package: one it names nowhere,
+        // which no write holds in the place it wrote, is gone — the card that went with its
+        // column — and its window says so, as a read of its fields does.
+        if inner.view(&app).is_some() {
+            return Err(not_found(format!("resource {}", at.id_string())));
         }
+        // Its package's index is not read yet: the record answers for what it holds, and a
+        // resource it no longer holds is gone.
         let mirror = inner.held_doc(&at.doc)?;
         let located = locate_ref(mirror, Some(&inner.chunks), (&app, &ty), at, &inner.nested)?;
         let source = inner.chunks.mirror(located.chunk).unwrap_or(mirror);
@@ -853,16 +855,10 @@ impl TiloStore {
         };
         let resource = at.id_string();
         let Some(stored) = view.type_of(&resource).map_err(backend)? else {
-            // A record the index cannot name: a write (an origin's, a window's own) is derived
-            // into the record before the next derivation names it, and the overlay holds what
-            // the write wrote. A field it did not write is the record's own, not gone because
-            // the index lags — but only for a record the writes hold in a place. A record they
-            // took away, or never named, is not in the workspace: the index names every record
-            // it holds, so one it names nowhere and no write made is gone.
-            if !view.named_by_writes(&resource) {
-                return Err(not_found(format!("resource {resource}")));
-            }
-            return Ok(view.field(&resource, &field.id).ok().flatten());
+            // The index names it nowhere and no write holds it: the writes took it away — it
+            // went with its column — and the record answers nothing of it, as it answers the
+            // type of no resource the workspace does not hold.
+            return Err(not_found(format!("resource {resource}")));
         };
         let schema = lookup(&stored).ok_or_else(|| not_found(format!("type {stored}")))?;
         let spec = schema
