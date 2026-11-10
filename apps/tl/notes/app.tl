@@ -181,8 +181,54 @@ action export_note(n: Note) -> File (icon: .download) {
 /// shape the import reads, so the notebook comes back as the tree it is, titles, bodies and
 /// pictures alike.
 action export_notebook(nb: Notebook) -> File (icon: .download) {
-    let files: List<File> = nb.notes.flat_map(n -> page_files(nb, n))
-    File.zip("Notes.zip", files)
+    File.zip("Notes.zip", files_under(nb, .none, ""))
+}
+
+/// The files of the notes under `parent`, each at `folder`: a note's own, then — at the folder
+/// its own name adds — the files of the notes under it. The tree is walked once from the notes
+/// that stand at the top, so a notebook of ten thousand notes costs its notes, and not a walk of
+/// the whole notebook for each of them.
+fn files_under(nb: Notebook, parent: Option<Note>, folder: Text) -> List<File> {
+    // The notes under it, in the order the notebook keeps them, and the name each takes there.
+    let kids = kids_of(nb, parent)
+    let names = kids.map(x -> file_name(x))
+    kids.flat_map(kid -> files_of(nb, kids, names, folder, kid))
+}
+
+/// The notes that stand under `parent`, in the order the notebook keeps them: asked of the
+/// store's index of the parent each note names, never by walking the notes beside them.
+fn kids_of(nb: Notebook, parent: Option<Note>) -> List<Note> {
+    if let p = parent {
+        nb.notes.descendants(p, .parent).filter(x -> x.parent == parent)
+    } else { nb.notes.filter(x -> x.parent == parent) }
+}
+
+/// The files one note of the notebook's export holds at `folder`: its own Markdown and pictures,
+/// then the notes under it, at the folder the name it takes among `kids` adds.
+fn files_of(
+    nb: Notebook,
+    kids: List<Note>,
+    names: List<Text>,
+    folder: Text,
+    n: Note,
+) -> List<File> {
+    let name = name_among(kids, names, n)
+    let under = "{folder}{name}"
+    [note_files(n, name, folder), files_under(nb, .some(n), "{under}/")].flat_map(files -> files)
+}
+
+/// The name a note's file takes among the notes of `kids` it stands with: its title's file name,
+/// and — while a note of that name stands before it under the same note — its place among them
+/// (`Monday`, `Monday (2)`), so two notes of one title are two files.
+fn name_among(kids: List<Note>, names: List<Text>, n: Note) -> Text {
+    let name = file_name(n)
+    // The note of a name no other takes beside it keeps it, as every note of a usual notebook
+    // does: what it costs is one walk of the names, never a place among them.
+    if (kids.at(names.index_of(name) ?? 0) ?? n) == n {
+        return name
+    }
+    let at = kids.index_of(n) ?? 0
+    "{name} ({names.take(at).filter(x -> x == name).len() + 1})"
 }
 
 /// Imports a Markdown file as a note at the top of the tree, or opens the note that file already
@@ -430,11 +476,6 @@ fn note_files(n: Note, name: Text, folder: Text) -> List<File> {
     [[page], pictures].flat_map(files -> files)
 }
 
-/// The files one note of the notebook's export holds, where the tree puts it.
-fn page_files(nb: Notebook, n: Note) -> List<File> {
-    note_files(n, note_name(nb.notes, n), note_folder(nb.notes, n))
-}
-
 /// A note as Markdown: its title, then its body, each picture it shows standing under `name`'s own
 /// `images` folder — a path relative to the note, as a reader of the file follows it.
 fn note_markdown(n: Note, name: Text) -> Text {
@@ -468,25 +509,6 @@ fn picture_name(n: Note, address: Text) -> Text {
     } else {
         "{stem_of(name)}-{same.len() + 1}{extension_of(name)}"
     }
-}
-
-/// Where a note's own file stands in the notebook's export, without the extension: the folder of
-/// each note it is under, and its own name last (`Q3 plan/Standups/Monday`).
-fn note_path(items: List<Note>, n: Note) -> Text {
-    "{note_folder(items, n)}{note_name(items, n)}"
-}
-
-/// The folder a note's own file stands in: what the export calls the note it is under.
-fn note_folder(items: List<Note>, n: Note) -> Text {
-    if let p = n.parent { "{note_path(items, p)}/" } else { "" }
-}
-
-/// The name a note's file takes: its title, and the place it holds among the notes of one title
-/// under the same note (`Monday`, `Monday (2)`), so two notes of one title are two files.
-fn note_name(items: List<Note>, n: Note) -> Text {
-    let titled = items.filter(x -> x.parent == n.parent and file_name(x) == file_name(n))
-    let at = titled.index_of(n) ?? 0
-    if at == 0 { file_name(n) } else { "{file_name(n)} ({at + 1})" }
 }
 
 fn within(items: List<Note>, place: Option<Note>, top: Note) -> Bool {

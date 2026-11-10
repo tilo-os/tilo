@@ -18,10 +18,21 @@
 
 #![allow(clippy::panic, reason = "test assertions")]
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use tilolang_tilo::bench::{BenchConfig, CountingAlloc, EngineWorkloads, Env, Record, Work, run};
+use tilolang::Compiled;
+use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
+use tilolang_runtime::{InvokeOutcome, Principal, Value};
+use tilolang_tilo::bench::{
+    BenchConfig, CountingAlloc, EngineWorkloads, Env, Record, Work, compile, run, seeded_record,
+};
+use tilolang_tilo::host::Host;
+
+/// The notes app, whose notebook's export the gate holds.
+const NOTES: &str = "so.tilo.lang.notes";
 
 /// Counted, so the records hold the allocations each scenario made.
 #[global_allocator]
@@ -366,6 +377,137 @@ fn a_keystroke_is_one_cheap_change() {
                     "{size}: a keystroke read the workspace: {name} {count}"
                 ));
             }
+        }
+    }
+    assert!(misses.is_empty(), "{}", misses.join("\n"));
+}
+
+/// The files an export writes, kept as they were handed in: the address of the content is the
+/// content's own, as a device's content store keeps one file once.
+#[derive(Default)]
+struct Kept {
+    content: RefCell<HashMap<String, Vec<u8>>>,
+}
+
+impl BlobHost for Kept {
+    fn read(&self, hash: &str) -> Option<Vec<u8>> {
+        self.content.borrow().get(hash).cloned()
+    }
+
+    fn choose(&self, _request: &FileRequest) -> Result<Option<FileValue>, String> {
+        Err("this test chooses no files".to_owned())
+    }
+
+    fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
+        Err("this test writes no files out".to_owned())
+    }
+
+    fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
+        let mut digest = 0xcbf2_9ce4_8422_2325_u64;
+        for byte in bytes {
+            digest = (digest ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        let hash = format!("k{digest:x}");
+        self.content
+            .borrow_mut()
+            .insert(hash.clone(), bytes.to_vec());
+        Ok(FileValue::new(
+            name,
+            media,
+            i64::try_from(bytes.len()).unwrap_or(i64::MAX),
+            hash,
+        ))
+    }
+}
+
+/// What one export read of the workspace, in the runtime's own counts.
+#[derive(Clone, Copy, Debug, Default)]
+struct Read {
+    /// Resources found by walking the record, and the field values it read.
+    located: u64,
+    fields: u64,
+    /// The items a filter was evaluated on one by one, which an index's column answers.
+    evaluated: u64,
+    /// References to collection items built.
+    items: u64,
+}
+
+/// What the notebook's export of `n` notes reads of the workspace, from the moment it opens.
+fn export_work(packages: &[Compiled], n: usize) -> Read {
+    let doc = seeded_record(packages, n).unwrap_or_else(|e| panic!("{n} notes: {e}"));
+    let host = Host::new(&doc, Principal::new("ada"), || None)
+        .unwrap_or_else(|e| panic!("a host over {n} notes: {e}"));
+    for compiled in packages {
+        host.load_wasm(&compiled.wasm)
+            .unwrap_or_else(|e| panic!("{} loads: {e}", compiled.meta.app));
+    }
+    host.runtime().set_blobs(Kept::default());
+    let nb = host
+        .root_of(NOTES)
+        .unwrap_or_else(|e| panic!("the notebook of {n} notes: {e}"));
+    let package = host
+        .package(NOTES)
+        .unwrap_or_else(|| panic!("the notes package"));
+    let export = package
+        .meta
+        .actions
+        .iter()
+        .find(|action| action.name == "export_notebook")
+        .map_or_else(
+            || panic!("the notebook's export"),
+            |action| action.id.clone(),
+        );
+    let who = Principal::new("ada");
+    let export_once = || match host
+        .runtime()
+        .invoke_action(&who, (export.as_str(), vec![Value::resource(&nb)]))
+    {
+        Ok(InvokeOutcome::Done(Value::File(file))) if file.name == "Notes.zip" => (),
+        other => panic!("an export of {n} notes answered {other:?}"),
+    };
+    export_once();
+    let after = host.store().read_stats();
+    Read {
+        located: after.doc.located,
+        fields: after.doc.fields,
+        evaluated: after.evaluated,
+        items: host.runtime().items_built(),
+    }
+}
+
+/// The counts of one export, in the order the gate reads them.
+fn counts(read: Read) -> [(&'static str, u64); 4] {
+    [
+        ("located", read.located),
+        ("fields", read.fields),
+        ("evaluated", read.evaluated),
+        ("items", read.items),
+    ]
+}
+
+/// Exporting a notebook reads each of its notes once: what the export costs per note is the same
+/// whether the notebook holds a thousand or four thousand, in the runtime's counts and in what
+/// the index answers. Walking the whole notebook for every note instead grows with its square,
+/// which is minutes for a notebook a person has been writing in for a year.
+#[test]
+fn exporting_a_notebook_costs_its_notes() {
+    const MANY: usize = 4_000;
+    let packages = compile(&apps().join("notes")).unwrap_or_else(|e| panic!("notes: {e}"));
+    let small = export_work(&packages, SMALL);
+    let large = export_work(&packages, MANY);
+    // Each count crossed with the other notebook's size: what four thousand notes cost is four
+    // times what a thousand do, and no more.
+    let (at_small, at_large) = (
+        u128::try_from(SMALL).unwrap_or(u128::MAX),
+        u128::try_from(MANY).unwrap_or(u128::MAX),
+    );
+    let mut misses = Vec::new();
+    for ((name, many), (_, some)) in counts(large).into_iter().zip(counts(small)) {
+        if u128::from(many) * at_small > u128::from(some) * at_large {
+            misses.push(format!(
+                "{name}: {many} at {MANY} notes, {some} at {SMALL}: exporting reads the notebook \
+                 again for each note"
+            ));
         }
     }
     assert!(misses.is_empty(), "{}", misses.join("\n"));

@@ -659,3 +659,45 @@ fn a_note_exports_as_markdown_and_its_pictures_go_with_it() {
     );
     assert_eq!(entry(&files, "Groceries/images/fox.png"), PIXELS);
 }
+
+/// Two notes of one title under one note are two files: the first keeps the title, the one after
+/// it takes its place among the notes of that title, and each title a file name cannot keep is
+/// named the same way, so no file of a folder stands over another.
+#[test]
+fn two_notes_of_one_title_are_two_files() {
+    let device = Device::default();
+    let (mut ada, _loaded) = notebook(&device);
+    let plan = note(&mut ada, None, "Q3 plan");
+    let monday = note(&mut ada, Some(&plan), "Monday");
+    let _tuesday = note(&mut ada, Some(&plan), "Tuesday");
+    let again = note(&mut ada, Some(&plan), "Monday");
+    // Two titles that a file name cannot tell apart, `/` standing for `-`.
+    let _slash = note(&mut ada, Some(&plan), "a/b");
+    let _dash = note(&mut ada, Some(&plan), "a-b");
+    picture_in(&mut ada, &device, &monday, "fox.png", PIXELS);
+    picture_in(&mut ada, &device, &again, "fox.png", ARCH);
+
+    let exported = notebook_export(&ada, &device);
+    let names: Vec<&str> = exported.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "Q3 plan.md",
+            "Q3 plan/Monday.md",
+            "Q3 plan/Monday/images/fox.png",
+            "Q3 plan/Tuesday.md",
+            "Q3 plan/Monday (2).md",
+            "Q3 plan/Monday (2)/images/fox.png",
+            "Q3 plan/a-b.md",
+            "Q3 plan/a-b (2).md",
+        ],
+        "a note of a title another takes under the same note is offered as its place among them"
+    );
+    // Each note reaches its own picture by the folder its own name gives it.
+    assert!(
+        entry_text(&exported, "Q3 plan/Monday (2).md").contains("](Monday (2)/images/fox.png)"),
+        "{}",
+        entry_text(&exported, "Q3 plan/Monday (2).md")
+    );
+    assert_eq!(entry(&exported, "Q3 plan/Monday (2)/images/fox.png"), ARCH);
+}

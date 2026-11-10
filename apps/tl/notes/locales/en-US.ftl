@@ -56,6 +56,9 @@ d-qhmjwgei = Pin
 d-7jhaq3a5 = Move to
     .doc = Moves a note to a place in the tree: at the end of `parent`'s own, or where `before` stands.
 
+d-ai4sxgvt = Move to
+    .doc = Moves a note to just after `n` and every note under it: the place a drop after a row asks for, which names the row it lands after rather than the row after that one.
+
 d-c34rzynx = Duplicate
     .doc = Copies a note, with every note under it, just after the one it copies.
 
@@ -98,6 +101,8 @@ d-h3zczsen = Import archive
 d-m6rqg3kf = Pin~present
 
 d-cn43mwee = Move to~present
+
+d-7in2x6ql = Move after~present
 
 d-akcqjax3 = Notebook
 
