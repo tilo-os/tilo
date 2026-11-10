@@ -13,6 +13,7 @@ mod access_audit;
 mod actions;
 mod admin;
 mod admission;
+mod agent_run;
 mod checkpoint;
 mod commit;
 mod compaction;
@@ -21,7 +22,6 @@ mod dispatch;
 mod fanout;
 mod fetch;
 mod hello;
-mod here;
 mod live;
 mod records;
 mod replay;
@@ -69,6 +69,7 @@ use access::{
 };
 use actions::{RemoteActionRoute, handle_host_action, handle_remote_action};
 use admin::handle_workspaces;
+use agent_run::handle_agent_run;
 use commit::{commit_run_key, handle_commit, handle_commit_run, over_change_limit, over_storage};
 use compaction::handle_compaction;
 #[cfg(test)]
@@ -76,8 +77,6 @@ use dispatch::handle_inbound_frame;
 use dispatch::{handle_envelope, unserved_private};
 pub use fetch::FetchGrants;
 use hello::handle_host_hello;
-pub use here::HereBoard;
-use here::handle_here;
 use live::{
     handle_content_want, handle_live_join, handle_presence, handle_voice, route_record_content,
 };
@@ -207,9 +206,6 @@ pub struct PeerContext {
     /// The governance a device administers its workspaces through, set once
     /// when the host governs them; `None` administers nothing.
     pub admin: Option<Arc<crate::workspaces::Workspaces>>,
-    /// What a device's session answers when it asks who is here; `None`
-    /// keeps no such account.
-    pub here: Option<Arc<dyn HereBoard>>,
     /// The token a session takes for the host's fetch proxy, and gives back
     /// when its connection ends; `None` serves no proxy.
     pub fetch: Option<Arc<dyn FetchGrants>>,
@@ -255,7 +251,7 @@ struct SessionCtx<'a> {
     /// This connection's resume log per resumed workspace.
     resumes: &'a std::sync::Mutex<HashMap<u64, ResumeLog>>,
     /// The agent this connection is a run of, once its device said so
-    /// ([`tilo_relay_protocol::web::HereRequest::agent`]): every request the
+    /// ([`Envelope::AgentRun`]): every request the
     /// connection makes from then on is that agent's, acting for the device's
     /// person, as the session's caller. Said once, it stays: a session
     /// handed to an agent is never handed back.
@@ -271,8 +267,6 @@ struct SessionCtx<'a> {
     /// What a device administers its workspaces through; `None` administers
     /// nothing.
     admin: Option<&'a crate::workspaces::Workspaces>,
-    /// Who is here, as the host accounts for it; `None` keeps no such account.
-    here: Option<&'a dyn HereBoard>,
     /// The host's fetch proxy, which this session takes a token from; `None`
     /// serves no proxy.
     fetch: Option<&'a dyn FetchGrants>,

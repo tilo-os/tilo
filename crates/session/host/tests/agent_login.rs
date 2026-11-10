@@ -3,8 +3,8 @@
 //! computer makes a device key of its own and asks the workspace's host to
 //! have the person's root certify it (`login::sign_in`), the tab approves
 //! the one request naming its invite, and the computer enters the workspace
-//! as that person (`login::enter`), where the tab sees the agent present,
-//! by its name, with what it did. The root never leaves the tab.
+//! as that person (`login::enter`), its session the agent's run. The root
+//! never leaves the tab.
 
 #![allow(
     clippy::unwrap_used,
@@ -25,12 +25,12 @@ use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_session_host::invite::guest_certificate;
-use tilo_relay_client::login::{Door, sign_in};
-use tilo_session_host::device::{Device, action, say_here};
-use tilo_session_host::{CertifyError, answer_pairing, pending_pairings};
 use tilo_relay_client::login::PairingLink;
+use tilo_relay_client::login::{Door, sign_in};
 use tilo_relay_protocol::web::API_PREFIX;
+use tilo_session_host::device::{Device, run_as_agent};
+use tilo_session_host::invite::guest_certificate;
+use tilo_session_host::{CertifyError, answer_pairing, pending_pairings};
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
 use support::{door, enrol, enter as enter_as, start_workspace_host, wait_for};
@@ -170,9 +170,8 @@ async fn an_agent_logs_in_with_the_tabs_code_and_shows_in_the_workspace_as_the_p
     );
     assert_eq!(signed.host_cert, host_device.cert);
 
-    // It enters the Lounge as Bob, through the door as the page would, and
-    // says the agent signed in; the tab sees it there, by the agent's name,
-    // with that action.
+    // It enters the Lounge as Bob, through the door as the page would, its
+    // session the agent's run.
     let door = Door {
         client: &*https,
         path: format!("{API_PREFIX}/directory/{}/join", lounge.workspace),
@@ -180,43 +179,16 @@ async fn an_agent_logs_in_with_the_tabs_code_and_shows_in_the_workspace_as_the_p
     let agent = Device::enter(&*https, Some(&door), &signed, Arc::new(cli_key.clone()))
         .await
         .unwrap();
-    let seen = wait_for("the tab to see the agent", || async {
-        let reply = say_here(&tab, lounge.workspace_id, "Bob", Vec::new(), false)
-            .await
-            .ok()?;
-        reply
-            .people
-            .into_iter()
-            .find(|person| person.device == cli_key.verifying_key().to_bytes())
-    })
-    .await;
-    assert_eq!(seen.user, user, "the agent is Bob's, not a second person");
-    assert_eq!(seen.label, "Claude Code");
-    assert!(
-        seen.agent,
-        "the device's own word that it runs an agent reaches the person's page: {seen:?}"
+    assert_eq!(agent.workspace_id(), lounge.workspace_id);
+    assert_eq!(
+        run_as_agent(agent.session(), "Claude Code").await,
+        Ok(()),
+        "its session is already the agent's run, and says so again"
     );
-    assert!(seen.recent.contains("Signed in"), "{seen:?}");
-
-    // What it does next shows the same way.
-    agent
-        .say_here(
-            lounge.workspace_id,
-            "Claude Code",
-            vec![action("Listed", "Workspaces", "Tilo CLI")],
-            true,
-        )
-        .await
-        .unwrap();
-    wait_for("the tab to see the agent's next action", || async {
-        let reply = say_here(&tab, lounge.workspace_id, "Bob", Vec::new(), false)
-            .await
-            .ok()?;
-        reply.people.into_iter().find(|person| {
-            person.device == cli_key.verifying_key().to_bytes() && person.recent.contains("Listed")
-        })
-    })
-    .await;
+    assert!(
+        run_as_agent(agent.session(), "Codex").await.is_err(),
+        "a session handed to one agent is never another's"
+    );
 
     // A code naming a root this host serves nobody under logs nothing in:
     // the host turns the request away, and Bob's tab never sees it.

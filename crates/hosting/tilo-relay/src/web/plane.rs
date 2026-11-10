@@ -148,28 +148,6 @@ impl Authority {
         self.members.lock_recover().values().cloned().collect()
     }
 
-    /// The devices the plane carries in `workspace` now, each with the person
-    /// it is certified as: who a page there pairs with before anyone speaks.
-    pub(crate) fn persons_in(&self, workspace: u64) -> Vec<([u8; 32], [u8; 32])> {
-        let mut persons: Vec<([u8; 32], [u8; 32])> = self
-            .carried()
-            .into_iter()
-            .filter(|grant| grant.admitted() && grant.workspace == workspace)
-            .map(|grant| (grant.peer.device_public_key, grant.peer.user_public_key))
-            .collect();
-        persons.sort_unstable();
-        persons.dedup();
-        persons
-    }
-
-    /// Whether the workspace lets `peer`s device be a page in its plane now: a
-    /// page asks who is here over its session, which no session token names, so
-    /// the answer comes from the workspace itself.
-    pub(crate) async fn admits_page(&self, peer: &AuthenticatedPeer, workspace: u64) -> bool {
-        self.admits_as(peer, workspace, WorkspaceOperation::Live)
-            .await
-    }
-
     /// Re-answer every participant: does its workspace admit its device now?
     /// Called on each relay-wide authority change, never on a timer.
     async fn refresh(&self) {

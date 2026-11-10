@@ -127,8 +127,10 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::HostAction { .. }
         | Envelope::WorkspacesRequest { .. }
         | Envelope::WorkspacesReply { .. }
-        | Envelope::HereRequest { .. }
-        | Envelope::HereReply { .. }
+        | Envelope::RetiredHereRequest { .. }
+        | Envelope::RetiredHereReply { .. }
+        | Envelope::AgentRun { .. }
+        | Envelope::AgentRunAnswer { .. }
         | Envelope::FetchGrant { .. } => false,
     }
 }

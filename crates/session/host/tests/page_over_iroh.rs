@@ -25,44 +25,14 @@ use channel_crypto::{ChannelGroup, MemberKey};
 use collab_types::presence::Presence;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_session_host::{PeerEvent, PeerHandle, certify};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, UserIdentity};
+use tilo_session_host::{PeerEvent, certify};
+use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{
     WORKSPACE, approve_one, enrol, in_workspace, place, start_host, start_page, start_peer,
     wait_for,
 };
-
-/// The page asks its host who is here over its session, and every device in
-/// `here` answers it: the account the HTTPS route answers with, and no HTTPS
-/// session named the asker.
-async fn assert_here(page: &PeerHandle, page_cert: &DeviceCert, device_cert: &DeviceCert) {
-    let (reply, answer) = tokio::sync::oneshot::channel();
-    page.here_then(
-        tilo_relay_protocol::web::HereRequest {
-            workspace_id: support::workspace(),
-            label: "Ada on the page".into(),
-            window: Some(7),
-            actions: Vec::new(),
-            agent: false,
-        },
-        Box::new(move |result| {
-            let _ = reply.send(result);
-        }),
-    )
-    .unwrap();
-    let reply = tilo_test_env::within("the page asks who is here", answer)
-        .await
-        .unwrap()
-        .unwrap();
-    for device in [page_cert.device_public_key, device_cert.device_public_key] {
-        assert!(
-            reply.people.iter().any(|person| person.device == device),
-            "{device:02x?} is here"
-        );
-    }
-}
 
 /// The workspace scope's record: its channel keys seal the plane's tracks.
 fn plane_route() -> DocumentRoute {
@@ -195,8 +165,4 @@ async fn a_page_dials_its_host_from_an_endpoint_its_device_delegated() {
         None,
         "the page joined its plane over iroh"
     );
-
-    // The page asks its host who is here over the same session: the account the
-    // HTTPS route answers with, but with no HTTPS session to name the asker.
-    assert_here(&page, &browser_cert, &laptop.cert).await;
 }

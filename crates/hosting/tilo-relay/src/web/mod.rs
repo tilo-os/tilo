@@ -13,7 +13,6 @@
 
 mod envelopes;
 mod fetch;
-mod here;
 pub mod install;
 mod login_codes;
 mod page_errors;
@@ -115,55 +114,6 @@ impl Drop for WebHandle {
     }
 }
 
-/// The relay's answer to a session asking who is here: the same account its
-/// HTTPS route answers with, read from the live plane and the summaries the
-/// route keeps.
-struct Board {
-    here: Arc<here::Here>,
-    /// Weak: the plane's authority holds the relay's handler, which holds
-    /// this board, so a strong reference would keep the handler — and the
-    /// endpoint and socket it holds — alive after the relay shuts down.
-    presence: std::sync::Weak<plane::Authority>,
-    profiles: Arc<envelopes::Envelopes>,
-}
-
-impl crate::peer::HereBoard for Board {
-    fn answer<'a>(
-        &'a self,
-        peer: &'a crate::auth::AuthenticatedPeer,
-        request: protocol::HereRequest,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<protocol::HereReply, String>> + Send + 'a>>
-    {
-        Box::pin(async move {
-            request.validate().map_err(ToString::to_string)?;
-            let presence = self
-                .presence
-                .upgrade()
-                .ok_or_else(|| "this host is shutting down".to_string())?;
-            if !presence.admits_page(peer, request.workspace_id).await {
-                return Err("not admitted to this workspace".into());
-            }
-            let members = presence.persons_in(request.workspace_id);
-            drop(presence);
-            let (mut reply, job) = self.here.post(
-                request,
-                peer.device_public_key,
-                peer.user_public_key,
-                std::time::Instant::now(),
-                tilo_clock::unix_now_ms(),
-            );
-            here::pair_members(&mut reply, &members);
-            for person in &mut reply.people {
-                person.profile_ms = self.profiles.issued_at(&person.user).unwrap_or(0);
-            }
-            if let Some(job) = job {
-                tokio::spawn(self.here.clone().summarize(job));
-            }
-            Ok(reply)
-        })
-    }
-}
-
 struct Web {
     context: WebContext,
     host_info: HostInfo,
@@ -172,11 +122,8 @@ struct Web {
     workspaces: Option<crate::workspaces::Workspaces>,
     /// Members' root envelopes, for `/envelope`.
     envelopes: envelopes::Envelopes,
-    /// Members' profiles, for `/profile`, and for the profile age a session's
-    /// answer to who is here carries.
+    /// Members' profiles, for `/profile`.
     profiles: Arc<envelopes::Envelopes>,
-    /// Who is here and what they are doing, for `/here`.
-    here: Arc<here::Here>,
     /// The fetch proxy, when [`WebConfig::fetch_proxy`] asked for one, and the
     /// tokens its pages' sessions take for it.
     fetch: Option<tilo_net::proxy::host::FetchProxy>,
@@ -343,7 +290,6 @@ impl Relay {
                 envelopes::Record::Profile,
                 self.state_root().join("profiles"),
             )),
-            here: Arc::new(here::Here::new(here::from_env())),
             fetch: fetch.proxy,
             grants: Arc::default(),
             presence: plane.authority(),
@@ -353,13 +299,6 @@ impl Relay {
             stand_ins: Arc::new(stand_in::StandIns::new(self.state_root().join("stand-ins"))),
         });
         web.serve_stand_ins();
-        // Sessions ask who is here over their own carrier; the relay answers
-        // with the one account its HTTPS route keeps.
-        let _ = context.relay.here.set(Arc::new(Board {
-            here: Arc::clone(&web.here),
-            presence: Arc::downgrade(&web.presence),
-            profiles: Arc::clone(&web.profiles),
-        }));
         // A page's fetch proxy token is minted on the session it fetched from.
         if web.fetch.is_some() {
             let grants: Arc<dyn crate::peer::FetchGrants> = web.grants.clone();

@@ -21,7 +21,7 @@ test-support = ["tilo-room-host/test-support"]
 # (tilo-agent-participant, which links every web app) as the app-serving
 # plane. Needs the browser listener for steering from pages.
 agents = ["web", "tilo-room-host/agents", "dep:tilo-agent-participant", "dep:tilo-session-host", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:tilo-workspace-emoji", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:ush", "dep:legacy-vm"]
-web = ["tilo-room-host/web", "dep:tilo-live", "dep:tilo-net", "dep:agent-provider-config", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes"]
+web = ["tilo-room-host/web", "dep:tilo-live", "dep:tilo-net", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes"]
 
 [[bin]]
 name = "tilo-relay"
@@ -160,10 +160,8 @@ bytes = { workspace = true, optional = true }
 tilo-live = { path = "../../collab/tilo-live", features = ["relay", "iroh"], optional = true }
 # SHA-256 of the live listener's certificate, which a page pins.
 sha2 = { workspace = true, optional = true }
-# Who-is-here lines may be summarised by a model provider the operator
-# configures, in the dialects shared with the model gateway.
+# The fetch proxy a page's apps reach the web through.
 tilo-net = { path = "../../platform/tilo-net", features = ["http", "proxy-host"], optional = true }
-agent-provider-config = { path = "../../agent/provider-config", optional = true }
 tilo-agent-participant = { path = "../../agent/agent-participant", optional = true }
 # The workspaces' shells a host serving their records runs: ush's own
 # commands here, Linux programs in the workspace's hosted VM.

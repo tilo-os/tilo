@@ -4,8 +4,8 @@
 
 use super::{
     Arc, AuthenticatedPeer, Envelope, EnvelopeV2, PeerError, RemoteActionRoute, ReplayCatchup,
-    ReplayHandle, ReplayTicket, SessionCtx, Subscription, handle_commit, handle_compaction,
-    handle_content_want, handle_delta, handle_here, handle_host_action, handle_host_hello,
+    ReplayHandle, ReplayTicket, SessionCtx, Subscription, handle_agent_run, handle_commit,
+    handle_compaction, handle_content_want, handle_delta, handle_host_action, handle_host_hello,
     handle_live_join, handle_open_record, handle_presence, handle_remote_action, handle_subscribe,
     handle_sync_request, handle_unsubscribe, handle_voice, handle_workspaces, route_record_content,
 };
@@ -146,8 +146,8 @@ pub(super) async fn handle_envelope(
         Envelope::WorkspacesRequest { request_id, frame } => {
             handle_workspaces(peer, session, request_id, &frame).await
         }
-        Envelope::HereRequest { request_id, frame } => {
-            handle_here(peer, session, request_id, &frame).await
+        Envelope::AgentRun { request_id, label } => {
+            Ok(Some(handle_agent_run(peer, session, request_id, &label)))
         }
         // Envelopes the relay only *sends*, never receives; ignore
         // silently so a peer bug doesn't wedge the connection.
@@ -170,7 +170,11 @@ pub(super) async fn handle_envelope(
         | Envelope::RecordOpened { .. }
         | Envelope::WorkspaceBootstrap { .. }
         | Envelope::WorkspacesReply { .. }
-        | Envelope::HereReply { .. }
+        | Envelope::AgentRunAnswer { .. }
+        // Who is here is the live plane's alone: a device that still asks the host
+        // is answered by nobody.
+        | Envelope::RetiredHereRequest { .. }
+        | Envelope::RetiredHereReply { .. }
         | Envelope::FetchGrant { .. } => Ok(None),
     }
 }

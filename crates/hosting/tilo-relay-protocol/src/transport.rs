@@ -596,23 +596,19 @@ pub enum Envelope {
         frame: Vec<u8>,
     },
 
-    /// A device asks the host it is joined to who is here in a workspace: the
-    /// postcard-encoded [`HereRequest`], answered through [`Self::HereReply`]
-    /// with the asker's `request_id`. The connection says who asks; the host
-    /// checks that device's place in the workspace as it does for any other
-    /// frame.
-    ///
-    /// [`HereRequest`]: crate::web::HereRequest
-    HereRequest {
+    /// Retired: a device asked the host it is joined to who is here, and the
+    /// host answered ([`Self::RetiredHereReply`]). Who is here is the live
+    /// plane alone now; nothing sends it, and it stays only so every later
+    /// variant keeps its postcard position.
+    RetiredHereRequest {
         request_id: u64,
         #[serde(with = "serde_bytes")]
         frame: Vec<u8>,
     },
 
-    /// The host's answer to [`Self::HereRequest`] with the same `request_id`:
-    /// the postcard-encoded `Result<`[`HereReply`](crate::web::HereReply)`,`
-    /// `String>` — a host that cannot answer says why.
-    HereReply {
+    /// Retired: the host's answer to [`Self::RetiredHereRequest`]. Nothing
+    /// sends it; it keeps its postcard position.
+    RetiredHereReply {
         request_id: u64,
         #[serde(with = "serde_bytes")]
         frame: Vec<u8>,
@@ -628,6 +624,21 @@ pub enum Envelope {
     FetchGrant {
         /// What names this connection to the host.
         token: [u8; 32],
+    },
+
+    /// A device says this session is one run of the agent `label` names (as
+    /// History names its runs), answered through [`Self::AgentRunAnswer`]
+    /// with the asker's `request_id`. Said before anything else: every
+    /// request the session makes from then on is the agent's, for the person,
+    /// within what bounds an agent, and the person's agent door lists the run
+    /// while the session lasts.
+    AgentRun { request_id: u64, label: String },
+
+    /// The host's answer to [`Self::AgentRun`] with the same `request_id`:
+    /// `None` once the session is that agent's run, else why not.
+    AgentRunAnswer {
+        request_id: u64,
+        refusal: Option<String>,
     },
 }
 
@@ -681,9 +692,11 @@ impl Envelope {
             Self::RecordContentWant { .. } => "RecordContentWant",
             Self::WorkspacesRequest { .. } => "WorkspacesRequest",
             Self::WorkspacesReply { .. } => "WorkspacesReply",
-            Self::HereRequest { .. } => "HereRequest",
-            Self::HereReply { .. } => "HereReply",
+            Self::RetiredHereRequest { .. } => "HereRequest",
+            Self::RetiredHereReply { .. } => "HereReply",
             Self::FetchGrant { .. } => "FetchGrant",
+            Self::AgentRun { .. } => "AgentRun",
+            Self::AgentRunAnswer { .. } => "AgentRunAnswer",
         }
     }
 
@@ -737,12 +750,17 @@ impl Envelope {
             | Self::HostAction { .. }
             | Self::WorkspacesRequest { .. }
             | Self::WorkspacesReply { .. }
-            | Self::HereRequest { .. }
-            | Self::HereReply { .. }
+            | Self::RetiredHereRequest { .. }
+            | Self::RetiredHereReply { .. }
+            | Self::AgentRun { .. }
+            | Self::AgentRunAnswer { .. }
             | Self::FetchGrant { .. } => None,
         }
     }
 }
+
+/// Bound, in characters, of the agent name an [`Envelope::AgentRun`] carries.
+pub const MAX_AGENT_LABEL_CHARS: usize = 32;
 
 /// Largest [`Envelope::RecordContent`] frame a relay routes.
 pub const MAX_RECORD_CONTENT_FRAME_BYTES: usize = 256 * 1024;

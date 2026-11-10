@@ -1,9 +1,9 @@
 //! The agent door of the host's own person: the devices they run an agent on
 //! (`tilo login`, then `tilo mcp`), and each session of one open now.
 //!
-//! A device says it runs an agent when it posts who is here
-//! ([`tilo_relay_protocol::web::HereRequest::agent`]), naming the agent as
-//! History names its runs; the host keeps that only for a device of its own
+//! A device says it runs an agent when its session opens
+//! ([`tilo_relay_protocol::transport::Envelope::AgentRun`]), naming the agent
+//! as History names its runs; the host keeps that only for a device of its own
 //! person. Each of the device's sessions is one run, ended at once by
 //! [`AgentDoor::stop`] while the device stays the person's, so the agent can
 //! come back. A revoked device leaves the door ([`AgentDoor::forget`]); its

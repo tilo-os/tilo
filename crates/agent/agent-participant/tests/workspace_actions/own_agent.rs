@@ -105,14 +105,7 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
     // The agent's computer enters as a device of the person's and says, as
     // `tilo login` makes it, that its session runs the agent.
     let agent = Browser::open(&hosted, &computer, &host).await;
-    let _ = tilo_session_host::device::say_here(
-        &agent.peer,
-        agent.workspace,
-        "Claude Code",
-        Vec::new(),
-        true,
-    )
-    .await;
+    let _ = tilo_session_host::device::run_as_agent(&agent.peer, "Claude Code").await;
     let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
         collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
     ) else {
@@ -380,14 +373,7 @@ async fn a_persons_own_agent_starts_a_stopped_app_writes_and_reads_as_one_run() 
     let _participant = participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let agent = Browser::open(&hosted, &computer, &host).await;
-    let _ = tilo_session_host::device::say_here(
-        &agent.peer,
-        agent.workspace,
-        "Claude Code",
-        Vec::new(),
-        true,
-    )
-    .await;
+    let _ = tilo_session_host::device::run_as_agent(&agent.peer, "Claude Code").await;
     let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
         collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
     ) else {

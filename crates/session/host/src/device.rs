@@ -11,16 +11,13 @@ use tilo_relay_client::login::redeem;
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_relay_client::login::{Door, SignIn, through_door};
 use tilo_relay_client::{CertifyError, DeviceSigner, HttpClient};
-use tilo_relay_protocol::web::{
-    HereAction, HereReply, HereRequest, MAX_HERE_FIELD_CHARS, MAX_HERE_LABEL_CHARS, kept,
-};
 use tilo_relay_session::workspaces::{
     CREATE_OWN_ROOM, CreatedWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, WorkspaceListing,
 };
 use tilo_user_identity::DeviceCert;
 use web_time::{Duration as Wait, Instant};
 
-use crate::session::{HereCompletion, PeerConfig, PeerHandle, TransportPhase};
+use crate::session::{AgentRunCompletion, PeerConfig, PeerHandle, TransportPhase};
 use crate::session_actions::SessionActions;
 use crate::{MemoryPeerStore, PeerStore};
 
@@ -151,15 +148,8 @@ impl Device {
             workspace_id: entered,
             ..device
         };
-        // The person's tab shows the computer where it just came in.
-        let _ = say_here(
-            &device.peer,
-            entered,
-            &sign_in.agent,
-            vec![action("Signed in", &sign_in.label, "Tilo CLI")],
-            true,
-        )
-        .await;
+        // The session is the agent's run: the person's agent door lists it while it lasts.
+        let _ = run_as_agent(&device.peer, &sign_in.agent).await;
         Ok(device)
     }
 
@@ -345,20 +335,6 @@ impl Device {
         SessionActions::new(&self.peer, workspace_id, self.host_cert.device_public_key)
     }
 
-    /// Say this device is here in `workspace_id`, doing `actions`.
-    ///
-    /// # Errors
-    /// The request is past what a host keeps, the session is closed, or the host did not answer.
-    pub async fn say_here(
-        &self,
-        workspace_id: u64,
-        label: &str,
-        actions: Vec<HereAction>,
-        agent: bool,
-    ) -> Result<HereReply, String> {
-        say_here(&self.peer, workspace_id, label, actions, agent).await
-    }
-
     /// Close the session: it says this device left, and stops.
     pub fn close(&self) {
         self.peer.close();
@@ -374,43 +350,19 @@ fn refused(error: CertifyError, refusal: &str) -> CertifyError {
     }
 }
 
-/// Post what this device is doing in the workspace, and ask who is here.
+/// Say `peer`'s session is one run of the agent `label` names: every request it makes from then on
+/// is the agent's, for the device's person, and the person's agent door lists the run while the
+/// session lasts.
 ///
 /// # Errors
-/// The request is past what a host keeps, the session is closed, or the host did not answer.
-pub async fn say_here(
-    peer: &PeerHandle,
-    workspace_id: u64,
-    label: &str,
-    actions: Vec<HereAction>,
-    agent: bool,
-) -> Result<HereReply, String> {
-    let request = HereRequest {
-        workspace_id,
-        label: kept(label, MAX_HERE_LABEL_CHARS),
-        window: None,
-        actions,
-        agent,
-    };
-    request.validate().map_err(str::to_owned)?;
+/// The session is already another agent's run, the session is closed, or the host did not answer.
+pub async fn run_as_agent(peer: &PeerHandle, label: &str) -> Result<(), String> {
     let (send, receive) = tokio::sync::oneshot::channel();
-    let done: HereCompletion = Box::new(move |reply| {
-        let _ = send.send(reply);
+    let done: AgentRunCompletion = Box::new(move |answer| {
+        let _ = send.send(answer);
     });
-    peer.here_then(request, done)?;
+    peer.run_as_agent_then(label, done)?;
     receive
         .await
         .map_err(|_| "the session ended before the host answered".to_owned())?
-}
-
-/// One thing this device did, as the workspace shows it.
-#[must_use]
-pub fn action(title: &str, resource: &str, app: &str) -> HereAction {
-    HereAction {
-        id: rand::random(),
-        action: kept(title, MAX_HERE_FIELD_CHARS),
-        resource: kept(resource, MAX_HERE_FIELD_CHARS),
-        app: kept(app, MAX_HERE_FIELD_CHARS),
-        at_ms: tilo_clock::unix_now_ms(),
-    }
 }

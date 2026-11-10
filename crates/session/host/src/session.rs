@@ -562,7 +562,7 @@ enum Command {
         tilo_relay_protocol::workspaces::WorkspacesRequest,
         RoomsCompletion,
     ),
-    Here(tilo_relay_protocol::web::HereRequest, HereCompletion),
+    AgentRun(String, AgentRunCompletion),
     Compact([u8; 16], Vec<u8>),
     Reconnect,
     /// The network is back: a session waiting out its backoff tries again
@@ -626,9 +626,9 @@ pub type Completion = Box<dyn FnOnce(Result<(), String>) + Send>;
 /// keys, or `None` when this device holds none; see
 /// [`PeerHandle::seal_live_then`].
 pub type LiveCompletion = Box<dyn FnOnce(Option<Vec<u8>>) + Send>;
-/// Called once with who is here, see [`PeerHandle::here_then`].
-pub type HereCompletion =
-    Box<dyn FnOnce(Result<tilo_relay_protocol::web::HereReply, String>) + Send>;
+/// Called once with whether the session is now the agent's run, see
+/// [`PeerHandle::run_as_agent_then`].
+pub type AgentRunCompletion = Box<dyn FnOnce(Result<(), String>) + Send>;
 /// Called once with the host's answer, see [`PeerHandle::rooms_then`].
 pub type RoomsCompletion =
     Box<dyn FnOnce(Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>) + Send>;
@@ -817,8 +817,8 @@ impl PeerHandle {
             voice: crate::voice::Participations::default(),
             rooms_pending: BTreeMap::new(),
             rooms_next: 0,
-            here_pending: BTreeMap::new(),
-            here_next: 0,
+            agent_runs_pending: BTreeMap::new(),
+            agent_runs_next: 0,
         };
         task.update(|status| {
             status.outgoing_pending = task.outbox.len();
@@ -1040,13 +1040,16 @@ impl PeerHandle {
         self.send(Command::Barrier(done))
     }
 
-    /// Post this person's own actions and ask who is here; `done` gets the answer.
-    pub fn here_then(
-        &self,
-        request: tilo_relay_protocol::web::HereRequest,
-        done: HereCompletion,
-    ) -> Result<(), String> {
-        self.send(Command::Here(request, done))
+    /// Say this session is one run of the agent `label` names: from then on every request it makes
+    /// is the agent's, for this device's person, and the person's agent door lists the run while
+    /// the session lasts. `done` gets the host's answer.
+    pub fn run_as_agent_then(&self, label: &str, done: AgentRunCompletion) -> Result<(), String> {
+        let label: String = label
+            .chars()
+            .filter(|character| !character.is_control())
+            .take(tilo_relay_protocol::transport::MAX_AGENT_LABEL_CHARS)
+            .collect();
+        self.send(Command::AgentRun(label, done))
     }
 
     /// Ask the host's workspace administration `request`; `done` gets the answer.
@@ -1360,11 +1363,11 @@ struct Task {
     rooms_pending: BTreeMap<u64, RoomsCompletion>,
     /// The id the next administration request is asked with.
     rooms_next: u64,
-    /// The sessions asked their host who is here and not answered yet, by the
+    /// The agent runs this session declared and the host has not answered yet, by the
     /// id they asked with.
-    here_pending: BTreeMap<u64, HereCompletion>,
-    /// The id the next question about who is here is asked with.
-    here_next: u64,
+    agent_runs_pending: BTreeMap<u64, AgentRunCompletion>,
+    /// The id the next agent run is declared with.
+    agent_runs_next: u64,
 }
 
 /// An open compaction request: workspace, route and the entries it covers.
@@ -2102,7 +2105,7 @@ impl Task {
                 self.publish_call_audio(workspace_id, frames);
                 true
             }
-            Command::Here(request, done) => self.request_here(&request, done, client),
+            Command::AgentRun(label, done) => self.run_as_agent(label, done, client),
             Command::VoiceCalls(workspace_id) => self.voice_calls(workspace_id, client),
             Command::VoiceCall(workspace, request, op) => {
                 self.voice_call(workspace, request, op, client)
@@ -2250,40 +2253,40 @@ impl Task {
     }
 
     /// Always `true`: the session takes it whatever the answer.
-    fn request_here(
+    fn run_as_agent(
         &mut self,
-        request: &tilo_relay_protocol::web::HereRequest,
-        done: HereCompletion,
+        label: String,
+        done: AgentRunCompletion,
         client: Option<&RelayClient>,
     ) -> bool {
         let Some(client) = client else {
             done(Err("not connected to the host".into()));
             return true;
         };
-        let request_id = self.here_next;
-        self.here_next = self.here_next.wrapping_add(1);
-        let frame = match postcard::to_stdvec(request) {
-            Ok(frame) => frame,
-            Err(error) => {
-                done(Err(format!("the request does not encode: {error}")));
-                return true;
-            }
-        };
-        self.here_pending.insert(request_id, done);
+        let request_id = self.agent_runs_next;
+        self.agent_runs_next = self.agent_runs_next.wrapping_add(1);
+        self.agent_runs_pending.insert(request_id, done);
         if client
-            .send(Envelope::HereRequest { request_id, frame })
+            .send(Envelope::AgentRun { request_id, label })
             .is_err()
-            && let Some(done) = self.here_pending.remove(&request_id)
+            && let Some(done) = self.agent_runs_pending.remove(&request_id)
         {
             done(Err("the host's session closed".into()));
         }
         true
     }
 
-    /// The host answered who is here for request `request_id`.
-    fn here_reply(&mut self, request_id: u64, frame: &[u8]) {
-        if let Some(done) = self.here_pending.remove(&request_id) {
-            done(answered::<Result<_, String>>(frame).and_then(std::convert::identity));
+    /// The host answered an agent run this session declared.
+    fn agent_run_answered(&mut self, answer: Envelope) {
+        let Envelope::AgentRunAnswer {
+            request_id,
+            refusal,
+        } = answer
+        else {
+            return;
+        };
+        if let Some(done) = self.agent_runs_pending.remove(&request_id) {
+            done(refusal.map_or(Ok(()), Err));
         }
     }
 
@@ -2330,7 +2333,7 @@ impl Task {
         for (_, done) in std::mem::take(&mut self.rooms_pending) {
             done(Err("the session ended before the host answered".into()));
         }
-        for (_, done) in std::mem::take(&mut self.here_pending) {
+        for (_, done) in std::mem::take(&mut self.agent_runs_pending) {
             done(Err("the session ended before the host answered".into()));
         }
     }
@@ -2700,7 +2703,7 @@ impl Task {
                 },
             ),
             Envelope::WorkspacesReply { request_id, frame } => self.rooms_reply(request_id, &frame),
-            Envelope::HereReply { request_id, frame } => self.here_reply(request_id, &frame),
+            answer @ Envelope::AgentRunAnswer { .. } => self.agent_run_answered(answer),
             Envelope::Committed { op, seq, .. } => self.acknowledge(op, Ok(seq)),
             Envelope::CommitRefused { op, reason, .. } => {
                 self.fail("protocol-rejected", reason.clone());

@@ -27,7 +27,7 @@ use tilo_actions::remote::{
     ActionHost as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, UpdateMark, settle_with,
 };
 use tilo_session_host::PeerHandle;
-use tilo_session_host::device::say_here;
+use tilo_session_host::device::run_as_agent;
 use tilo_session_host::revoke_device;
 use tilo_session_host::session_actions::SessionActions;
 use tilo_user_identity::RevocationReason::Retired;
@@ -115,10 +115,8 @@ fn stop(grant: &str) -> InvokeArgument {
     })
 }
 
-async fn agent_says_here(agent: &PeerHandle) -> bool {
-    say_here(agent, support::workspace(), "Claude Code", Vec::new(), true)
-        .await
-        .is_ok()
+async fn agent_says_its_run(agent: &PeerHandle) -> bool {
+    run_as_agent(agent, "Claude Code").await.is_ok()
 }
 
 /// Someone else (`other`) reads nothing of the door and stops nothing of
@@ -136,7 +134,7 @@ async fn nobody_else_reaches(
     assert!(!ask(&others, agent_door::STOP, stop(&grant)).1);
     let own = SessionActions::new(agent, workspace, host_key);
     assert!(!ask(&own, agent_door::STOP, stop(&grant)).1);
-    let still = say_here(agent, workspace, "Claude Code", Vec::new(), true).await;
+    let still = run_as_agent(agent, "Claude Code").await;
     assert!(
         still.is_ok(),
         "the agent is still in: {still:?} {:?}",
@@ -183,7 +181,7 @@ async fn revoked_by_someone_else(
         "nothing names the computer: {logged:?}"
     );
     assert!(agent.status().authenticated, "the agent's session goes on");
-    assert!(agent_says_here(agent).await, "and it is still let in");
+    assert!(agent_says_its_run(agent).await, "and it is still let in");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -229,11 +227,8 @@ async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses()
     let host_key = host_device.cert.device_public_key;
     let grant = hex::encode(computer.cert.device_public_key);
 
-    // The tab says who is here as a person; the computer as the agent it runs.
-    say_here(&page, workspace, "Ada", Vec::new(), false)
-        .await
-        .unwrap();
-    assert!(agent_says_here(&agent).await);
+    // The computer says its session is the agent it runs; the tab says nothing of the kind.
+    assert!(agent_says_its_run(&agent).await);
     let door = SessionActions::new(&page, workspace, host_key);
     let (read, taken) = ask(&door, agent_door::DOOR, InvokeArgument::None);
     assert!(taken, "the person reads their own door");
@@ -260,7 +255,7 @@ async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses()
     .await;
     in_workspace(&agent, workspace).await;
     wait_for("the agent to come back", || async {
-        agent_says_here(&agent).await.then_some(())
+        agent_says_its_run(&agent).await.then_some(())
     })
     .await;
     door_until("the agent's new run", &door, &read, |door| {
@@ -291,7 +286,7 @@ async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses()
     })
     .await;
     assert!(
-        !agent_says_here(&agent).await,
+        !agent_says_its_run(&agent).await,
         "a revoked computer is not let in"
     );
 }

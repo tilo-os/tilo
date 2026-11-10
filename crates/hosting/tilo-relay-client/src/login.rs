@@ -16,7 +16,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_reference::link::{Link, Mode, Scope, WebEntries, WebEntry};
 use tilo_relay_protocol::directory::{DoorAnswer, DoorJoin};
-use tilo_relay_protocol::web::{MAX_HERE_LABEL_CHARS, kept};
+use tilo_relay_protocol::web::{MAX_DISPLAY_NAME_CHARS, kept};
 use tilo_user_identity::DeviceCert;
 #[cfg(not(target_arch = "wasm32"))]
 use uuid::Uuid;
@@ -381,7 +381,7 @@ async fn ask_door(
     use base64::Engine as _;
     let join = DoorJoin {
         user_public_key: hex::encode(cert.user_public_key),
-        display_name: kept(name, MAX_HERE_LABEL_CHARS),
+        display_name: kept(name, MAX_DISPLAY_NAME_CHARS),
     };
     let body =
         serde_json::to_vec(&join).map_err(|error| CertifyError::Request(error.to_string()))?;

@@ -27,23 +27,21 @@ mod support;
 // This binary re-execs as the automerge worker (a governed workspace uses it).
 tilo_automerge_isolate::test_worker!();
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use collab_types::DocumentMutation;
 use ed25519_dalek::{Signer as _, SigningKey};
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_session_host::invite::guest_certificate;
-use tilo_session_host::{
-    CertifyError, Host, HttpClient, LinkError, MemoryPeerStore, PeerHandle, PeerStore as _,
-    answer_pairing, certify, pending_pairings,
-};
 use tilo_relay_client::CertificationOutcome;
 use tilo_relay_client::https as carrier;
 use tilo_relay_protocol::certify::{
     ApproverDecision, ApproverReply, ApproverRequest, MemberApproval, PendingCertification,
 };
-use tilo_relay_protocol::web::HereRequest;
+use tilo_session_host::invite::guest_certificate;
+use tilo_session_host::{
+    CertifyError, Host, HttpClient, LinkError, MemoryPeerStore, PeerStore as _, answer_pairing,
+    certify, pending_pairings,
+};
 use tilo_user_identity::{
     CERTIFICATION_SCHEMA_VERSION, CertificationPolicy, CertificationRequest, DeviceCapabilities,
     DeviceCert, RevocationList, UserIdentity,
@@ -52,7 +50,7 @@ use tokio::task::JoinHandle;
 
 use support::{
     door, enrol, enter, in_workspace, next_document, ready, redeem, route, start_host, start_peer,
-    start_peer_with_store, start_workspace_host, wait_for, workspace,
+    start_peer_with_store, start_workspace_host, wait_for,
 };
 
 fn new_key() -> SigningKey {
@@ -128,49 +126,6 @@ async fn approve(https: &dyn HttpClient, approval: &MemberApproval) -> ApproverR
 
 fn refused(reply: &ApproverReply) -> bool {
     matches!(reply, ApproverReply::Refused { .. })
-}
-
-/// Who `peer` sees in `workspace_id` after it says it is here.
-async fn here(peer: &PeerHandle, workspace_id: u64, label: &str) -> Vec<([u8; 32], [u8; 32])> {
-    let (send, recv) = tokio::sync::oneshot::channel();
-    peer.here_then(
-        HereRequest {
-            workspace_id,
-            label: label.into(),
-            window: None,
-            actions: Vec::new(),
-            agent: false,
-        },
-        Box::new(move |reply| {
-            let _ = send.send(reply);
-        }),
-    )
-    .unwrap();
-    tilo_test_env::within("who is here", recv)
-        .await
-        .unwrap()
-        .unwrap()
-        .people
-        .into_iter()
-        .map(|person| (person.user, person.device))
-        .collect()
-}
-
-/// Both devices say they are here; `peer` then sees two devices of one
-/// person, never a second person.
-async fn one_person_on_two_devices(
-    workspace_id: u64,
-    first: &PeerHandle,
-    second: &PeerHandle,
-    person: [u8; 32],
-    devices: [[u8; 32]; 2],
-) {
-    here(first, workspace_id, "Laptop").await;
-    let seen = here(second, workspace_id, "Phone").await;
-    let people: BTreeSet<_> = seen.iter().map(|(user, _)| *user).collect();
-    let shown: BTreeSet<_> = seen.iter().map(|(_, device)| *device).collect();
-    assert_eq!(people, BTreeSet::from([person]), "{seen:?}");
-    assert_eq!(shown, BTreeSet::from(devices), "{seen:?}");
 }
 
 /// Check what `certify` handed back: a browser of `person` for exactly the
@@ -259,14 +214,6 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
     laptop_peer.publish(route(), &snapshot).unwrap();
     let mut events = Vec::new();
     assert_eq!(next_document(&phone_peer, &mut events).await, snapshot);
-    one_person_on_two_devices(
-        workspace(),
-        &laptop_peer,
-        &phone_peer,
-        user,
-        [laptop.cert.device_public_key, cert.device_public_key],
-    )
-    .await;
 
     // It reconnects as the same device and still follows the workspace.
     phone_peer.reconnect().unwrap();
@@ -717,14 +664,6 @@ async fn a_device_paired_through_the_door_enters_the_workspace_as_the_person() {
             bobs[0]
         );
     }
-    one_person_on_two_devices(
-        workspace.workspace_id,
-        &laptop,
-        &phone_peer,
-        user,
-        [laptop_cert.device_public_key, cert.device_public_key],
-    )
-    .await;
 
     // The phone reconnects and is let in again, still as Bob.
     phone_peer.reconnect().unwrap();
