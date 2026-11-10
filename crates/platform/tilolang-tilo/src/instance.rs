@@ -1468,9 +1468,7 @@ impl Instance {
             | ToApp::EditRich { .. }) => self.edit_event(edit),
             ToApp::Resolve { lane, key, approve } => self.resolve(lane, &key, approve),
             ToApp::Open { resource } => {
-                if let Some(target) = wire::runtime_resource(&resource) {
-                    self.show_in_window(&target, Some(ui::Front::Input));
-                }
+                self.show_now(&resource);
                 Ok(())
             }
             ToApp::OpenReference { reference } => {
@@ -1552,6 +1550,13 @@ impl Instance {
         if self.ran != self.fired_told {
             self.fired_told = self.ran;
             self.out.push(ToUi::Took { fired: self.ran });
+        }
+    }
+
+    /// Show the resource `resource` a component was activated for, in front of the window.
+    fn show_now(&mut self, resource: &tilo_render_protocol::patch::ResourceRef) {
+        if let Some(target) = wire::runtime_resource(resource) {
+            self.show_in_window(&target, Some(ui::Front::Input));
         }
     }
 

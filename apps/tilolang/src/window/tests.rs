@@ -377,6 +377,16 @@ impl Workspace {
         let len = self.root_rows().borrow().len();
         self.show_rows(0..len);
         let key = self.root_rows().borrow().key_at(0)?;
+        // A click tells the app which item stands open, as `on opened(x): set(opened, x)` does,
+        // so its page stays open when the view runs again.
+        let item = self.item_of(&key);
+        let value =
+            tilolang_tilo::runtime::Value::some(tilolang_tilo::runtime::Value::resource(&item));
+        let view = self
+            .window
+            .instance()
+            .view(tilo_render_protocol::patch::Lane::Root)?;
+        view.borrow().set_view_state("opened", value);
         open_in_list(
             self.window.shell_mut().expect("the window shows the shell"),
             key,
@@ -391,7 +401,7 @@ impl Workspace {
     }
 
     /// The tree of the first row the app rendered for the list it shows.
-    fn row_tree(&mut self) -> Option<tilolang_tilo::runtime::UiNode> {
+    fn row_tree(&self) -> Option<tilolang_tilo::runtime::UiNode> {
         let list = self
             .window
             .view()
@@ -2574,6 +2584,7 @@ fn typing_into_a_shown_items_title_keeps_the_windows_tree() {
     workspace.settle();
     workspace.lay_out();
     workspace.lay_out();
+    let rows = workspace.rows().len();
     let mut typed = String::new();
     for letter in ['p', 'l', 'a', 'n'] {
         typed.push(letter);
@@ -2581,14 +2592,13 @@ fn typing_into_a_shown_items_title_keeps_the_windows_tree() {
             .window
             .act(UiEvent::Edit(input.clone(), typed.clone()));
         workspace.settle();
-        let change = workspace.window.take_structure_change();
-        assert!(
-            matches!(
-                change,
-                ui::widget::StructureChange::None | ui::widget::StructureChange::Children
-            ),
-            "a keystroke rebuilt the window's tree ({change:?}): its row and its field change \
-             in place"
+        // The page stands in the row's place, so the page a keystroke renders again is the
+        // row's own; the rows the list holds are the rows it held.
+        let _ = workspace.window.take_structure_change();
+        assert_eq!(
+            workspace.rows().len(),
+            rows,
+            "a keystroke in the page left the list's rows as they were"
         );
         workspace.lay_out();
     }

@@ -822,17 +822,6 @@ impl Session {
         out
     }
 
-    /// The texts the window's content lane shows: the page of the row a person opened, where
-    /// the overview keeps its empty state for the next time nothing is chosen.
-    fn page(&mut self) -> Vec<String> {
-        let view = self.hosted().view().expect("the window is connected");
-        let mut out = Vec::new();
-        if let Some(tree) = view.detail_tree() {
-            texts(&tree, &mut out);
-        }
-        out
-    }
-
     /// The titles of the notebook's notes, as its list shows them.
     fn titles(&mut self) -> Vec<String> {
         let view = self.hosted().view().expect("the window is connected");
