@@ -439,7 +439,14 @@ fn working_in_line(row: &RosterRow) -> (String, Option<String>) {
 fn under_height(row: &RosterRow, screen: Option<&Screen>, mirror_h: f64, theme: &Theme) -> f64 {
     let line = f64::from(theme.tokens.metrics.bar_control_height);
     if row.is_agent {
-        return if row.working_in.is_some() { line } else { 0.0 };
+        // Its line under the row names the window it works in, or, with none, says whole what it
+        // is doing: in the row's own column beside Follow it would be cut to "Editing Launch…".
+        let doing = doing_line(row).is_some_and(|now| !now.trim().is_empty());
+        return if row.working_in.is_some() || doing {
+            line
+        } else {
+            0.0
+        };
     }
     if sharing(row, screen) {
         mirror_h
@@ -772,7 +779,7 @@ impl CollaboratorsOverlay {
                     // it works in, which pressing brings forward.
                     if sharing(row, screen_of(model, row)) {
                         self.mirrors.push((index, strip));
-                    } else if row.is_agent {
+                    } else if row.is_agent && row.working_in.is_some() {
                         place.working_in = strip;
                     } else {
                         // The line stands in the column their name does, under it.
@@ -1110,6 +1117,7 @@ impl CollaboratorsOverlay {
             // person reading "Reading Launch notes in…" has been told nothing.
             if let Some(doing) = &lines.1
                 && place.working_in.area() <= 0.0
+                && place.said.area() <= 0.0
             {
                 face = face.secondary(doing);
             }
@@ -1281,8 +1289,13 @@ impl CollaboratorsOverlay {
             }
             if place.said.area() > 0.0 {
                 // Why their screen is not drawn here, in one quiet line under their name: the card
-                // says it without holding a picture of nothing.
-                let line = screen_line(screen_of(model, row));
+                // says it without holding a picture of nothing. Software with no window to name
+                // says there what it is doing, whole.
+                let line = if row.is_agent {
+                    doing_line(row).unwrap_or_default()
+                } else {
+                    screen_line(screen_of(model, row))
+                };
                 let style = theme.text(TextRole::Caption);
                 ui::widget::TextLineFace::styled(&line, &style, TextRole::Caption)
                     .start()
@@ -2359,6 +2372,47 @@ mod tests {
             said.contains("Launch notes"),
             "a reader is told the record too: {said}"
         );
+    }
+
+    /// An agent with no window to name still says whole what it is doing, under its name: beside
+    /// Follow, in the row's own column, it read "Reading Launch notes in…" even on a wide panel,
+    /// and a phone's panel has less room still.
+    #[test]
+    fn an_agents_doing_line_is_never_cut_short() {
+        let mut agent = row("claude", "Claude Code");
+        agent.is_agent = true;
+        agent.activity = None;
+        let doing = "Editing Launch notes in Notes";
+        agent.status = Some(RosterStatus {
+            text: doing.into(),
+            source: LineSource::Observed,
+        });
+        let rows = vec![agent];
+        let theme = Theme::default();
+        for width in [1400.0, 390.0, 360.0] {
+            let mut overlay = CollaboratorsOverlay::default();
+            paint_in(&mut overlay, &rows, None, Rect::new(0.0, 0.0, width, 900.0));
+            let place = overlay.rows[0].clone();
+            assert!(
+                place.said.area() > 0.0 && place.said.y0 >= place.rect.y1,
+                "the line stands under the agent's name at {width}: {place:?}"
+            );
+            let mut text = TextRenderer::new();
+            let needs = f64::from(
+                text.measure_style(doing, None, &theme.text(TextRole::Caption))
+                    .0,
+            );
+            assert!(
+                needs <= place.said.width(),
+                "and holds the words whole at {width}: {needs} in {:?}",
+                place.said
+            );
+            assert_ne!(
+                overlay.hit_test(place.said.center()),
+                CollaboratorsHit::OpenTab(0),
+                "with no window, the line opens none"
+            );
+        }
     }
 
     /// A kept roster draws people's screens and never a screen for software: an agent's row names
