@@ -1494,6 +1494,7 @@ mod action_host;
 mod admission_memo;
 mod app_consent;
 mod app_open_door;
+mod conversation_ask;
 mod foreign_ask;
 mod host_action_admission;
 mod host_steps;
@@ -2952,6 +2953,9 @@ pub struct AppBrokerState {
     app_action_consent: RwLock<Option<Arc<dyn crate::app_actions::AppActionConsentPrompter>>>,
     /// The notices of runs' questions given, by handle, with their workspace.
     run_question_notices: Mutex<HashMap<String, String>>,
+    /// A conversation turn's questions, waiting for the person's answer on
+    /// the system's sheet ([`conversation_ask`]).
+    conversation_asks: std::sync::Arc<conversation_ask::ConversationAsks>,
     /// Applications with a grant question on screen, by workspace: one at a
     /// time each, so an app cannot bury the person in sheets.
     app_action_consent_pending: Mutex<std::collections::HashSet<(String, String)>>,
@@ -3708,6 +3712,9 @@ impl AppBrokerState {
                 ),
                 app_action_consent: RwLock::new(None),
                 run_question_notices: Mutex::new(HashMap::new()),
+                conversation_asks: std::sync::Arc::new(
+                    conversation_ask::ConversationAsks::default(),
+                ),
                 app_action_consent_pending: Mutex::new(std::collections::HashSet::new()),
                 invocation_generation: tokio::sync::watch::Sender::new(0),
                 execution_activity: ActivityBus::default(),

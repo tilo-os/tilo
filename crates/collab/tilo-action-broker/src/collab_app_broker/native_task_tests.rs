@@ -20,6 +20,8 @@ use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 mod closed_app;
 #[path = "native_task_confirmation_tests.rs"]
 mod confirmation;
+#[path = "conversation_ask_tests.rs"]
+mod conversation_ask;
 #[path = "native_task_cross_app_tests.rs"]
 mod cross_app;
 #[path = "native_store_witness_tests.rs"]

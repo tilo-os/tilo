@@ -1,12 +1,12 @@
 //! A step whose operation asks the person before it acts.
 //!
 //! An operation that asks first is shown to the person by its own app, on
-//! the record the operation acts on; a conversation has no place to put that
-//! question yet, so the turn cannot wait for it. The step ends with the
-//! reason and the model plans around it: it says so in the reply and
-//! continues, or ends the turn.
-
-use super::{TaskAction, TaskActionStop};
+//! the record the operation acts on; a conversation's step asks on the
+//! system's own sheet, and the host holds the step until they answer there
+//! (`tilo_action_broker`'s `conversation_ask`, and the session's
+//! `turn_questions`). The step is followed like any other child, and its
+//! follow waits on that answer: no deadline of the step's own cuts the
+//! person's deciding short (`native_task::deadline_of`).
 
 /// Whether the host's `error` says the step waits for the person.
 pub(super) fn is_awaiting(error: &str) -> bool {
@@ -30,15 +30,6 @@ pub(super) fn step_failure(error: String) -> String {
         }
         None => error,
     }
-}
-
-/// Why a step that asks the person cannot go on in a conversation.
-pub(super) fn cannot_ask(action: &TaskAction) -> TaskActionStop {
-    TaskActionStop::Failed(format!(
-        "{} asks the person to confirm it first, and this conversation cannot show that \
-         question: say in your reply that it is apart, and continue without it or end the turn",
-        action.label
-    ))
 }
 
 #[cfg(test)]

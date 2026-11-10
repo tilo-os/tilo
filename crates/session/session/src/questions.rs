@@ -36,8 +36,8 @@ use tilo_portal::wallpaper::WallpaperQuestion;
 use tilo_service::{Answer, Question, Questions, Services};
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerSeat, FileRequest, FileType};
 use tilo_sheets::portal::{
-    Body, Device, Dialog, Field, PortalEffect, PortalSeat, Prompt, PromptField, PromptKind,
-    Remember, Shortcut,
+    Body, Device, Dialog, DraftRow, DraftValue, Field, PortalEffect, PortalSeat, Prompt,
+    PromptField, PromptKind, Remember, Shortcut,
 };
 use tilo_sheets::{Seat as _, word, words};
 
@@ -753,6 +753,7 @@ fn compose(question: &Question) -> Option<Composed> {
         crate::agent_door::KIND => admitted(&question.handle, &who, details)?,
         crate::network::AGENT_QUESTION => agent_question(&question.handle, &who, details)?,
         crate::network::DEVICE_UNLOCK => device_unlock(&question.handle, details)?,
+        crate::turn_questions::KIND => turn_question(&question.handle, details)?,
         _ => return None,
     };
     Some(Composed {
@@ -928,6 +929,62 @@ fn device_unlock(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
     );
     dialog.code = Some(asked.approval_code);
     dialog.confirm_label = word("network-device-unlock-allow");
+    Some((dialog, Plan::Confirm))
+}
+
+/// An agent's step inside a conversation turn, asking the person before it
+/// runs: the draft they review, row by row, and the one confirmation that
+/// answers it (`docs/designs/app-language/shell.md` §1, "Trust stays
+/// system-drawn"). The conversation points at this sheet; it never draws the
+/// question.
+fn turn_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
+    let asked: crate::turn_questions::TurnDetails = serde_json::from_value(details).ok()?;
+    let mut rows = Vec::new();
+    for field in &asked.draft.fields {
+        // A value the sheet shows but does not edit (a list, a resource, a
+        // withheld secret) is one the person confirms as it is.
+        let value = match &field.value {
+            tilo_actions::draft::DraftValue::Text { text }
+            | tilo_actions::draft::DraftValue::Number { text } => DraftValue::Text {
+                text: text.clone(),
+                multiline: field.multiline,
+                number: matches!(field.value, tilo_actions::draft::DraftValue::Number { .. }),
+                withheld: false,
+            },
+            tilo_actions::draft::DraftValue::Flag { on } => DraftValue::Flag(*on),
+            tilo_actions::draft::DraftValue::List { .. }
+            | tilo_actions::draft::DraftValue::Resource { .. }
+            | tilo_actions::draft::DraftValue::Withheld => DraftValue::Text {
+                text: field.value.line(),
+                multiline: false,
+                number: false,
+                withheld: matches!(field.value, tilo_actions::draft::DraftValue::Withheld),
+            },
+        };
+        rows.push(DraftRow {
+            index: rows.len(),
+            label: field.label.clone(),
+            value,
+            editable: field.editable,
+        });
+    }
+    let mut dialog = review(
+        handle,
+        words("turn-question-title", &[("action", &asked.action_label)]),
+        asked.resource_label.clone(),
+        words(
+            "turn-question-detail",
+            &[
+                ("action", &asked.action_label),
+                ("resource", &asked.resource_label),
+            ],
+        ),
+    );
+    dialog.confirm_label = word("portal-allow-once");
+    dialog.body = Body::Draft {
+        rows,
+        choices: Vec::new(),
+    };
     Some((dialog, Plan::Confirm))
 }
 
@@ -1684,5 +1741,60 @@ mod tests {
         assert!(shown.dialog.detail.contains("abcd:0"));
         assert!(!shown.dialog.detail.contains("network-device"));
         assert!(matches!(shown.plan, Plan::Confirm));
+    }
+
+    /// A step an agent takes inside a conversation asks on the system's
+    /// sheet: the draft the person reviews, row by row, and one confirm that
+    /// answers it (`shell.md` §1, "Trust stays system-drawn"; §8.1).
+    #[test]
+    fn an_agents_step_in_a_conversation_asks_on_the_system_sheet() {
+        let draft = tilo_actions::Draft {
+            action_label: "Retitle".into(),
+            resource_label: "Groceries".into(),
+            fields: vec![tilo_actions::draft::DraftField {
+                path: vec!["title".into()],
+                label: "Title".into(),
+                value: tilo_actions::draft::DraftValue::Text {
+                    text: "Groceries".into(),
+                },
+                editable: true,
+                multiline: false,
+                role: None,
+            }],
+            ..tilo_actions::Draft::default()
+        };
+        let shown = sheet(
+            crate::turn_questions::KIND,
+            serde_json::to_value(crate::turn_questions::TurnDetails {
+                resource_label: "Groceries".into(),
+                action_label: "Retitle".into(),
+                draft,
+            })
+            .unwrap(),
+        );
+        // The words are the session's own catalogue's (`turn-question-*`);
+        // a unit test has none loaded, so it reads the key standing for them,
+        // and the data that fills them: what the step acts on, by its name.
+        assert!(
+            shown.dialog.title.contains("turn-question-title")
+                || shown.dialog.title.contains("Retitle"),
+            "{:?}",
+            shown.dialog
+        );
+        assert!(
+            shown.dialog.detail.contains("turn-question-detail")
+                || shown.dialog.detail.contains("Groceries"),
+            "{:?}",
+            shown.dialog
+        );
+        assert_eq!(shown.dialog.heading, "Groceries", "{:?}", shown.dialog);
+        assert!(matches!(shown.plan, Plan::Confirm));
+        let Body::Draft { rows, choices } = &shown.dialog.body else {
+            panic!("the sheet shows the step's draft: {:?}", shown.dialog.body);
+        };
+        assert_eq!(rows.len(), 1, "one row per field: {rows:?}");
+        assert_eq!(rows[0].label, "Title");
+        assert!(rows[0].editable, "the person may change it");
+        assert!(choices.is_empty(), "one confirmation answers it");
     }
 }
