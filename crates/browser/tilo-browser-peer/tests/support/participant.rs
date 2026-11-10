@@ -51,7 +51,7 @@ impl Channels {
         self.peers.entry(channel).or_insert_with(|| {
             let dir = self.dir.path().join(hex::encode(channel.0));
             std::fs::create_dir_all(&dir).unwrap();
-            let states = std::sync::Arc::new(channel_crypto::Files::new(dir.clone()));
+            let states = std::sync::Arc::new(channel_crypto::Files::new(dir));
             ChannelPeer::open(
                 Some(states.clone()),
                 channel,
