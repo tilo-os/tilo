@@ -154,6 +154,29 @@ and not the other's. E09 is one that asks first, a file through `terminal#run`: 
 question to the person on the desk's sheet (Allow once, Always allow the agent, Deny), the harness
 allows it once by its named control, and the file lands in the agent's own workspace's tree.
 
+### A workspace branched (WB01-WB06, `e2e-ws-branch`)
+
+WB01-WB06 (`checks/ws_branch_e2e.py`) prove that a workspace set up once branches into
+workspaces that start with everything the person set up and then change apart: a research
+workspace branched per question, a development workspace per customer. They run only when named,
+as E01-E09 do: t's dispatch-only `e2e-ws-branch` check (`tools/ci/vm-acceptance.sh
+e2e-ws-branch`, `t test e2e-ws-branch`; `--test hold` keeps a failed run's VM up an hour).
+
+The person makes a workspace, a note in it through Notes, a Terminal environment, and from its
+shell a question, a tool in `~/.local/bin` and a git checkout where the environment has git;
+a few hundred megabytes of data go into its tree beside them (WB01). They branch it twice
+through the desk's `workspace.branch` and once with `tilo workspace branch`; each branch is
+timed to its data in its own tree while a thread times the desk's answers, and an answer slower
+than `DESK_STALL_S` fails the branch as blocking the desk (WB02). Each branch holds the note, the
+files, the environment (opened from Terminal there, the tool runs, the checkout reads, and
+`TILO_WORKSPACE`, `TILO_ENVIRONMENT` and `~` are the branch's own), the desk's windows; its owner
+is its only member and the source's chat stayed behind (WB03). An edit in the first branch (a
+note, a line and a file in its tree, its tool, a new environment) shows neither in the source nor
+the second branch, and one in the source not in the branches (WB04), also after the session
+restarts (WB05). An agent started in the first branch's environment (`guest/mcp_agent.sh`) is
+admitted there, finds that branch's notes and not the source's later one, and its environment
+reads neither the source's nor the sibling's tree (WB06).
+
 `TILO_ACCEPTANCE_HOLD_S=N` keeps a run's VM up N seconds after a check failed, to reach it
 (`t vm ssh`, then `tilo-vm` as the run's user) before it goes.
 

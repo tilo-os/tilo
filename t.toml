@@ -1712,6 +1712,25 @@ timeout_secs = 5400
 on = ["dispatch"]
 
 [[check]]
+name = "e2e-ws-branch"
+# A workspace set up once on one booted tilo box (a note, files, a Terminal environment with a
+# tool in it, a window on its desk) and branched twice through `workspace.branch` and once
+# through `tilo workspace branch`: each branch starts with all of it and only its owner, no
+# chat, and from then on changes apart from its source and its sibling, also after the session
+# restarts; an agent in a branch's environment acts there alone
+# (scripts/vm-acceptance/acceptance/checks/ws_branch_e2e.py).
+run = "bash tools/ci/install-packages.sh tools/ci/packages/vm-acceptance.txt && bash tools/ci/vm-acceptance.sh e2e-ws-branch"
+needs = ["os-dev-disk-lean-x86_64", "tilo-vm-binary-x86_64"]
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/e2e-ws-branch/report/**"]
+cache = false
+git = true
+timeout_secs = 5400
+on = ["dispatch"]
+dispatch_inputs = { hold = "0" }
+
+[[check]]
 # An agent on one of the person's Tilo boxes steering another of their boxes over MCP, on real
 # VMs: two boxes branched from one set-up box, a third of another person, on one local network.
 name = "e2e-remote"
