@@ -67,16 +67,21 @@ const DESKTOP_RECORD: &str = "desktop";
 /// Chat's app.
 const CHAT_APP: &str = "so.tilo.chat";
 
-/// The Lounge image's own entrypoint in this checkout.
+/// The Lounge image's own entrypoint in this checkout: found from the crate's own sources, which
+/// the run built from, then from the test binary's place. A build whose `target/` sits outside the
+/// checkout (a builder's container) has the sources only where the crate was compiled.
 fn entrypoint() -> std::path::PathBuf {
     let built = std::env::current_exe().expect("the test binary's own path");
-    built
+    let sources = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    sources
         .ancestors()
+        .chain(built.ancestors())
         .map(|dir| dir.join("os/containers/tilo-lounge/entrypoint.sh"))
         .find(|entrypoint| entrypoint.is_file())
         .unwrap_or_else(|| {
             panic!(
-                "no Lounge image entrypoint in any directory above {}",
+                "no Lounge image entrypoint above {} or {}",
+                sources.display(),
                 built.display()
             )
         })

@@ -214,19 +214,21 @@ impl Room {
     }
 }
 
-/// The Lounge image's own entrypoint in this checkout, found from the test binary's place: the
-/// source tree is the one the run built from, wherever that build ran.
+/// The Lounge image's own entrypoint in this checkout: found from the crate's own sources, which
+/// the run built from, then from the test binary's place. A build whose `target/` sits outside the
+/// checkout (a builder's container) has the sources only where the crate was compiled.
 fn entrypoint() -> std::path::PathBuf {
     let built = std::env::current_exe().expect("the test binary's own path");
-    // The checkout is the nearest ancestor of the binary holding the image's entrypoint: the binary
-    // sits under `target/` , however deep the profile and the builder's artifact directory put it.
-    built
+    let sources = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    sources
         .ancestors()
+        .chain(built.ancestors())
         .map(|dir| dir.join("os/containers/tilo-lounge/entrypoint.sh"))
         .find(|entrypoint| entrypoint.is_file())
         .unwrap_or_else(|| {
             panic!(
-                "no Lounge image entrypoint in any directory above {}",
+                "no Lounge image entrypoint above {} or {}",
+                sources.display(),
                 built.display()
             )
         })
