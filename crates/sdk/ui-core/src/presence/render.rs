@@ -2027,7 +2027,7 @@ mod tests {
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
             let user = UserId("charlie".to_string());
-            // Caret bar from y=40..60 at x=30..32. The chip sits above y=40.
+            // Caret bar from y=60..80 at x=30..32. The chip sits a line above it.
             ctx.draw_peer_caret_labeled(
                 &mut scene,
                 &theme,
@@ -2035,21 +2035,21 @@ mod tests {
                 Affine::IDENTITY,
                 &user,
                 "Charlie",
-                Rect::new(30.0, 40.0, 32.0, 60.0),
+                Rect::new(30.0, 60.0, 32.0, 80.0),
             );
 
             let mut r = OffscreenRenderer::new(120, 120);
             let rgba = r.render(&scene, Color::BLACK);
 
-            // The caret bar itself, at (30, 50).
-            let (br, bg, bb, _a) = OffscreenRenderer::sample(&rgba, 120, 30, 50);
+            // The caret bar itself, at (30, 70).
+            let (br, bg, bb, _a) = OffscreenRenderer::sample(&rgba, 120, 30, 70);
             assert!(
                 bg > br && bg > bb && bg > 100,
                 "caret bar should be emerald, got ({br},{bg},{bb})"
             );
 
-            // The chip fill, a few pixels above the caret top (y ~ 33).
-            let (cr, cg, cb, ca) = OffscreenRenderer::sample(&rgba, 120, 31, 33);
+            // The chip fill, a line above the caret top (y ~ 28).
+            let (cr, cg, cb, ca) = OffscreenRenderer::sample(&rgba, 120, 31, 28);
             assert!(
                 ca > 0,
                 "expected an opaque chip above the caret, got alpha {ca}"
@@ -2083,9 +2083,10 @@ mod tests {
             let mut r = OffscreenRenderer::new(160, 160);
             let rgba = r.render(&scene, Color::WHITE);
 
-            // The chip's own top edge is at caret.y0 - h - 2; a pixel just under
-            // its bottom edge should be the shadow, darker than the white ground.
-            let top = 60.0 - h - 2.0;
+            // The chip's own top edge is a line box above the caret, less its height and a
+            // gap; a pixel just under its bottom edge should be the shadow, darker than the
+            // white ground.
+            let top = 60.0 - 20.0 - h - 2.0;
             // `top + h + 1.0` collapses to a fixed in-bounds sample row (59) on
             // the 160px-tall offscreen canvas, regardless of the chip height it
             // was derived from.

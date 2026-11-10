@@ -35,10 +35,17 @@ impl LabeledCaret {
 
     /// Where a `w` by `h` name chip goes: above the caret, or below it when
     /// above would cross [`Self::top`].
+    ///
+    /// Above the caret is one line box clear of it, not the caret's own top:
+    /// an editor draws the caret from the baseline down, and the line's words
+    /// rise above it — a chip pinned to the caret's top sat across them, which
+    /// is what the person following an agent saw it hide ("…ing me puts this
+    /// windo…").
     #[must_use]
     pub fn chip_rect(&self, w: f64, h: f64) -> Rect {
         let x = self.rect.x0;
-        let above = self.rect.y0 - h - CARET_CHIP_GAP;
+        let line = self.rect.height().max(0.0);
+        let above = self.rect.y0 - line - h - CARET_CHIP_GAP;
         let y = if above < self.top {
             self.rect.y1 + CARET_CHIP_GAP
         } else {
@@ -135,8 +142,10 @@ mod tests {
     fn a_chip_rises_above_its_caret_while_there_is_room() {
         let caret = LabeledCaret::within(Rect::new(30.0, 100.0, 32.0, 120.0), 40.0);
         let chip = caret.chip_rect(80.0, 20.0);
-        assert!(chip.y1 <= caret.rect.y0, "above the caret: {chip:?}");
-        assert!(chip.y0 >= caret.top, "inside the text: {chip:?}");
+        assert!(
+            chip.y1 <= caret.rect.y0 - caret.rect.height(),
+            "a line above the caret, clear of its words: {chip:?}"
+        );
     }
 
     #[test]
@@ -150,7 +159,7 @@ mod tests {
     #[test]
     fn a_caret_with_no_top_keeps_its_chip_above() {
         let caret = LabeledCaret::new(Rect::new(30.0, 4.0, 32.0, 24.0));
-        assert!(caret.chip_rect(80.0, 20.0).y1 <= 4.0);
+        assert!(caret.chip_rect(80.0, 20.0).y1 <= 4.0 - 20.0);
     }
 
     #[test]
