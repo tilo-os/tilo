@@ -343,7 +343,7 @@ d-o2brvdoa = Source
 d-exu5jg4p-filter-at = At
 
 d-wb23plj7 = Shell parts
-    .doc = The parts the shell is made of, as a view places them: a bar or a dock's body, a run of items a person reorders by dragging one, and the divider a conversation marks its first unread line with.
+    .doc = The parts the shell is made of, as a view places them: a bar or a dock's body, a run of items a person reorders by dragging one, a view picked up and dragged to another, the target that takes it, and the divider a conversation marks its first unread line with.
     .noun = { $count ->
         [one] shell parts
        *[other] shell partses
@@ -391,6 +391,9 @@ d-k6l4ki75 = Seek to
 
 d-gv3ymzbk = Mark moved
     .doc = Note the item moved, in the window's last answer.
+
+d-256inp7w = Dropped
+    .doc = Note what a drop target took, in the window's last answer.
 
 d-wjo4okew = Gallery
     .w-groups = Groups
@@ -625,5 +628,9 @@ d-rygoropv = Shell parts
     .w-a-run-of-items = A run of items
     .w-pinned = Pinned
     .w-pinned-standing = Pinned, standing
+    .w-dragging-one-view-to-another = Dragging one view to another
+    .w-a-view-a-person-picks-up = A view a person picks up and drags to a target in the same window, and the target that takes what it carried.
+    .w-a-drop-target = A drop target
+    .w-a-pinned-app-let-go-over = A pinned app let go over this card is taken here.
     .w-unread = Unread
     .w-the-line-above-marks-where-a = The line above marks where a reader's unread messages start.
