@@ -796,7 +796,11 @@ pub fn agent_turn(workspace: &str, agent: &str, person: &str, bound: &[Rule]) ->
         lifetime: Lifetime::UntilRevoked,
         granted_by: granted_by.clone(),
     }));
-    crate::Bound { subject, grants }
+    crate::Bound {
+        subject,
+        grants,
+        also: Vec::new(),
+    }
 }
 
 /// The grant making application `app` an author of its own records in

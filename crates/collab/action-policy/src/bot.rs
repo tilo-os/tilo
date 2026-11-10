@@ -118,6 +118,7 @@ pub fn bound(installation: &str) -> Bound {
     Bound {
         subject: Subject::bot(installation),
         grants: Vec::new(),
+        also: Vec::new(),
     }
 }
 
