@@ -348,13 +348,18 @@ export function keepOwnedHost({origin, userPublicKey}, memberships = globalThis.
  * Remember that this browser is in `workspace` at the host at `origin` as
  * `userPublicKey`, whose root it holds (joined through an invitation, or a
  * workspace it created on a host it owns), so a later visit reconnects
- * (`hostToReconnect`).
+ * (`hostToReconnect`). The workspace kept is the first this person entered
+ * at that host, the one its door let them into (`listedAt` names the host's
+ * listed workspace by it): joining another of the host's workspaces, by an
+ * invitation or by making one, adds that one to the entered workspaces
+ * (`rememberEntered`) and leaves it as it is.
  */
 export function keepJoinedHost({origin, room, userPublicKey}, memberships = globalThis.localStorage) {
   const host = {host: {origin}};
   const kept = keptMembership(host, memberships);
-  const owner = Boolean(kept?.owner && kept.userPublicKey === userPublicKey);
-  keepMembership(memberships, host, {origin: originOf(origin), room, userPublicKey, ...(owner ? {owner} : {})});
+  const same = kept?.userPublicKey === userPublicKey;
+  const owner = Boolean(kept?.owner && same);
+  keepMembership(memberships, host, {origin: originOf(origin), room: (same && kept.room) || room, userPublicKey, ...(owner ? {owner} : {})});
 }
 
 /** The origins of the hosts this browser set up for `userPublicKey`. */

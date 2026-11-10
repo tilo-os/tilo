@@ -948,9 +948,9 @@ export async function startEntryPage({mode}) {
       }
       const peer = await withCustody(custody, () => connectPeer({origin, workspace: room, identity, runtime, displayName, custody}));
       // What is kept names the workspace the host's door let this browser
-      // into (`listedAt`): reconnecting to another of the host's workspaces,
-      // such as the person's own, leaves it as it is.
-      if (!kept.room) keepJoinedHost({origin, room, userPublicKey: identity.userPublicKey});
+      // into (`keepJoinedHost`): reconnecting to another of the host's
+      // workspaces, such as the person's own, leaves it as it is.
+      keepJoinedHost({origin, room, userPublicKey: identity.userPublicKey});
       return peer;
     },
     // An embed lists no host actions, so it has nothing to invite with:

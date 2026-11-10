@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneWorkspaces, heldWorkspaces, HostAdmissionError, joinGranted, hostDeviceOf, joinViaHost, keptMembership, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, defaultDisplayName, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedWorkspace, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneWorkspaces, heldWorkspaces, HostAdmissionError, joinGranted, hostDeviceOf, joinViaHost, keepJoinedHost, keptMembership, listedAt, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, defaultDisplayName, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedWorkspace, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {CustodyError} from './device-custody.mjs';
 import {HOST_CHANGED} from './peer.mjs';
 
@@ -680,4 +680,25 @@ test('a join the directory was granted is made with its invitation and token, th
 test('a grant that carries no invitation joins nothing', async () => {
   await assert.rejects(() => joinGranted({origin: 'https://rooms.example', invitation: ''}, {join: async () => {}}), TypeError);
   await assert.rejects(() => joinGranted({origin: '', invitation: 'INV'}, {join: async () => {}}), TypeError);
+});
+
+test('an invitation to another workspace on the home\'s host leaves the home its own name and choice', () => {
+  const store = memoryStore();
+  const home = {name: 'Lounge', host: {origin: 'https://lounge.example'}};
+  const person = 'cd'.repeat(32);
+  // The home's door let this browser into its workspace.
+  keepJoinedHost({origin: 'https://lounge.example', room: 'lounge', userPublicKey: person}, store);
+  // Then the person accepts an invitation to a customer's workspace on the same host.
+  keepJoinedHost({origin: 'https://lounge.example/', room: 'customer', userPublicKey: person}, store);
+  assert.equal(keptMembership(home, store).room, 'lounge');
+  const scope = room => ({kind: 'room', host: 'https://lounge.example', room});
+  assert.equal(listedAt([home], scope('customer'), null, store), null, 'the customer\'s workspace is not named Lounge');
+  assert.equal(listedAt([home], scope('lounge'), null, store), home);
+  const choices = workspaceChoices({home, homeWorkspace: keptMembership(home, store).room,
+    entered: [{origin: 'https://lounge.example', room: 'customer', name: 'Applicant: Jane Doe', unavailable: false}],
+    current: scope('customer')});
+  assert.deepEqual(choices.map(choice => [choice.name, choice.room]), [['Lounge', null]], 'the home stays one to go back to');
+  // Another person on this browser joins as themselves.
+  keepJoinedHost({origin: 'https://lounge.example', room: 'customer', userPublicKey: 'ef'.repeat(32)}, store);
+  assert.equal(keptMembership(home, store).room, 'customer');
 });
