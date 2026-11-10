@@ -728,6 +728,112 @@ fn a_window_alone_on_the_desk_takes_the_desk() {
     bar_and_content_in(frames[0], window);
 }
 
+#[test]
+fn a_place_the_desk_has_shows_its_app() {
+    // A place is made from the resource it shows (`session.Arrangement`'s `record`), so a place
+    // whose app the desk has draws that app's views, that app's header row and, with nothing in
+    // it yet, that app's empty state. A well is where another app's window shows — a terminal, a
+    // legacy surface — and a place of an app the desk has must never stand in one: that window
+    // would be blank, saying nothing of what it is for and offering nothing to start.
+    tilo_ui_host::i18n::ensure();
+    let (app, packages) = packages();
+    let staged = stage::Staged::over(
+        &app,
+        &packages,
+        "a desk of places",
+        (1280, 800),
+        ui::Theme::light(),
+        None,
+        &[],
+    )
+    .expect("the scenario stages");
+    let desk = staged.places();
+    assert!(!desk.is_empty(), "the staged desk holds its places");
+    // The apps the desk's own build has: a place that shows one of them is drawn by it.
+    let known: Vec<&str> = packages
+        .0
+        .iter()
+        .map(|held| held.meta.app.as_str())
+        .collect();
+    let wells: Vec<&str> = named(staged.harness().root_widget(), "WindowWell")
+        .iter()
+        .filter_map(|well| well.test_id())
+        .collect();
+    for key in &wells {
+        let place = desk
+            .iter()
+            .find(|place| place.key == *key)
+            .unwrap_or_else(|| panic!("the well {key} stands for a place of the desk: {desk:?}"));
+        assert!(
+            !known.contains(&place.shows.as_str()),
+            "the place {key} shows {}, whose views the desk has, so its window draws them: it \
+             stands in a well instead, blank",
+            place.shows
+        );
+    }
+    // The same holds for every place the desk draws as a window of its own, whatever it holds:
+    // a place with no resource is another shell's window, and only that stands in a well.
+    for place in &desk {
+        if !place.record.is_empty() || known.contains(&place.shows.as_str()) {
+            assert!(
+                !wells.contains(&place.key.as_str()),
+                "the place {} shows a resource and stands in a well",
+                place.key
+            );
+        }
+    }
+}
+
+#[test]
+fn a_window_bar_keeps_one_overflow_menu() {
+    // One bar, one "…": the window's decorations in their floating pill, the app's own controls
+    // in its header row, and one door between them for what does not fit. Two doors side by side
+    // are one menu too many, and a person cannot tell which holds what.
+    tilo_ui_host::i18n::ensure();
+    let (app, packages) = packages();
+    let staged = stage::Staged::over(
+        &app,
+        &packages,
+        "a desk of places",
+        (1280, 800),
+        ui::Theme::light(),
+        None,
+        &[],
+    )
+    .expect("the scenario stages");
+    let root = staged.harness().root_widget();
+    let frames = named(root, "WindowFrame");
+    assert!(!frames.is_empty(), "the desk draws windows");
+    for frame in frames {
+        let window = frame.get_rect();
+        // The bar's band: the frame's top edge, one bar tall.
+        let band = ui::kurbo::Rect::new(
+            window.x0,
+            window.y0,
+            window.x1,
+            window.y0 + 56.0_f64.min(window.height()),
+        );
+        // A door: an overflow button, or a menu button, drawn in the bar.
+        let doors: Vec<&dyn Widget> = ["OverflowDoor", "MenuButton"]
+            .iter()
+            .flat_map(|name| named(frame, name))
+            .filter(|door| {
+                let rect = door.get_rect();
+                rect.width() > 0.0 && rect.center().y >= band.y0 && rect.center().y <= band.y1
+            })
+            .collect();
+        assert!(
+            doors.len() <= 1,
+            "the window at {window:?} shows {} doors in its one bar: {:?}",
+            doors.len(),
+            doors
+                .iter()
+                .map(|door| (door.name(), door.get_rect()))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
 /// A window is a window: it fills its strip's whole room, and every window of the desk
 /// shares that height, as the chrome's groups do. A card is a few hundred pixels tall with
 /// a sliver of its app under it.

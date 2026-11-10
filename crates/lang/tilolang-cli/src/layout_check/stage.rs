@@ -124,10 +124,25 @@ impl Platform for Packages {
 
 /// One window of the app, laid out by one frame pipeline that every configuration reuses.
 pub struct Staged {
+    /// The app the window shows, as the session names it.
+    #[cfg(test)]
+    app: String,
     instance: Instance,
     harness: FrameHarness,
     /// What the window has cost so far, as [`Self::take_work`] reports it since the last call.
     work: Work,
+}
+
+/// One place of a staged desk, as the shell's arrangement holds it.
+#[cfg(test)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PlaceShown {
+    /// Its key where it stands: what a well names it by.
+    pub key: String,
+    /// The app it shows, by its canonical id.
+    pub shows: String,
+    /// The record it shows; empty for a place another shell made showing a surface of its own.
+    pub record: String,
 }
 
 /// What laying a window out cost, in the toolkit's own units rather than in time: frames laid
@@ -329,6 +344,8 @@ impl Staged {
         let harness =
             FrameHarness::new_with_theme(ui::State::new(), Box::new(window), viewport, theme);
         let mut staged = Self {
+            #[cfg(test)]
+            app: app.to_owned(),
             instance,
             harness,
             work: Work::default(),
@@ -415,6 +432,68 @@ impl Staged {
 
     pub fn harness(&self) -> &FrameHarness {
         &self.harness
+    }
+
+    /// The places the staged desk holds, as the shell's own arrangement has them: each the app
+    /// it shows and the record it shows. Empty for a package that is no shell.
+    #[cfg(test)]
+    pub fn places(&self) -> Vec<PlaceShown> {
+        let Some(host) = self.instance.host() else {
+            return Vec::new();
+        };
+        let Some(meta) = host.package(&self.app).map(|package| package.meta) else {
+            return Vec::new();
+        };
+        // The fields the arrangement and its places keep, by the names the shell declared them
+        // under: a record is stored by the field's id.
+        let field = |ty: &str, name: &str| -> Option<String> {
+            meta.types
+                .iter()
+                .find(|held| held.name == ty)?
+                .fields
+                .iter()
+                .find(|held| held.name == name)
+                .map(|held| held.id.clone())
+        };
+        let (Some(places), Some(key), Some(shows), Some(record)) = (
+            field("Arrangement", "places"),
+            field("ArrangementPlace", "key"),
+            field("ArrangementPlace", "shows"),
+            field("ArrangementPlace", "record"),
+        ) else {
+            return Vec::new();
+        };
+        let layer = tilolang_tilo::host::RootView {
+            root: Some("Arrangement".to_owned()),
+            view: None,
+        };
+        let Ok(root) = host.root_of_layer(&self.app, &layer) else {
+            return Vec::new();
+        };
+        let Ok(held) = host.store().record(&root.doc) else {
+            return Vec::new();
+        };
+        let Some(tilolang_tilo::DynValue::Collection(items)) = held.get(&places) else {
+            return Vec::new();
+        };
+        // A place's fields are registers, read as the text they hold.
+        let text = |item: &tilolang_tilo::DynRecord, id: &str| -> String {
+            match item.get(id) {
+                Some(tilolang_tilo::DynValue::Text(said)) => said.clone(),
+                Some(tilolang_tilo::DynValue::Register(serde_json::Value::String(said))) => {
+                    said.clone()
+                }
+                _ => String::new(),
+            }
+        };
+        items
+            .iter()
+            .map(|(_, item)| PlaceShown {
+                key: text(item, &key),
+                shows: text(item, &shows),
+                record: text(item, &record),
+            })
+            .collect()
     }
 
     /// What laying the window out has cost since the last call: frames laid out, layout nodes

@@ -2060,7 +2060,15 @@ impl AppCheck<'_> {
             ui::chrome::disclosure_gutter(&layout.theme()),
         ));
         problems.extend(mixed_language());
-        problems.extend(audit::bar(bar));
+        // The bar the harness offers is the one bar of one app window, over its frame: what its
+        // app declares for it. A desk lays out other apps' places, each in a window with a bar
+        // of its own that the shell draws, so the slots a place's view declares are not the
+        // desk window's and its bar says nothing of them: the shell's own checks hold those
+        // bars (windows.rs), and the app's bar is held where the app is laid out alone.
+        let one_window = self.meta.roots.len() <= 1 && self.meta.named_roots.is_empty();
+        if one_window {
+            problems.extend(audit::bar(bar));
+        }
         let (bar_height, _) = staged.harness().frame_extent(viewport);
         // The words the bar paints itself stand over the frame's own, which is laid out under
         // the bar: both are read where the window shows them.
@@ -2077,10 +2085,12 @@ impl AppCheck<'_> {
         ));
         // The bar's primary action is read off the slots this window declared, never the
         // process's: windows laid out side by side in one process keep their bars apart.
-        problems.extend(audit::bar_primary(
-            staged.harness().window_toolbar().as_ref(),
-            bar,
-        ));
+        if one_window {
+            problems.extend(audit::bar_primary(
+                staged.harness().window_toolbar().as_ref(),
+                bar,
+            ));
+        }
         for problem in &mut problems {
             // A list draws a row as one widget keyed by the row: what it is about is the row
             // view's node, the deepest the row's tree holds.

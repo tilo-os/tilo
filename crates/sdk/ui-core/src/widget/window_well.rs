@@ -281,6 +281,12 @@ impl Widget for WindowWell {
         self.rect
     }
 
+    /// The well is found by the place it stands for, as the window it holds its place for is:
+    /// a reader of the tree knows which window shows where, without the layout's wells.
+    fn test_id(&self) -> Option<&str> {
+        (!self.place.is_empty()).then_some(self.place.as_str())
+    }
+
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
