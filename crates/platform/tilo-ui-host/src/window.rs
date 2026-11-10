@@ -860,11 +860,17 @@ impl AppWindow {
     }
 
     fn show_content(&mut self, source: MotionSource) {
+        // The shell reports the columns its own front moves, and owes the frame that slides
+        // them; a window whose content already stood in front — a press on what the person was
+        // reading — changed nothing its layout is built for.
+        let already_in_front = self.front == Some(NavPane::Content);
         if let Some(shell) = self.shell() {
             shell.show_from(NavPane::Content, source);
         }
         self.front = Some(NavPane::Content);
-        self.structure_dirty = true;
+        if !already_in_front {
+            self.structure_dirty = true;
+        }
     }
 
     fn set_body_slot(&mut self, index: usize, element: Element, fit: Fit) {

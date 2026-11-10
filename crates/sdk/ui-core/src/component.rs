@@ -1139,7 +1139,13 @@ pub fn entry<W: Described>() -> Entry {
     fn build<W: Described>(source: &mut dyn Source) -> Result<Element, Error> {
         let key = source.key().to_owned();
         let props = W::Props::from_source(source)?;
-        Ok(Box::new(W::from_props(&key, props)))
+        let mut widget = W::from_props(&key, props);
+        // A widget just built owes the host no structure change: its props are read before the
+        // host builds its layout, so the build realises what they set. A flag left over from
+        // building it would rebuild the host's whole layout tree — a row's document opening
+        // into its list, a note opened beside its tree, mounted where it stands.
+        widget.take_structure_dirty();
+        Ok(Box::new(widget))
     }
     fn update<W: Described>(widget: &mut Element, source: &mut dyn Source) -> Result<bool, Error> {
         let Some(widget) = widget.as_any_mut().and_then(|any| any.downcast_mut::<W>()) else {

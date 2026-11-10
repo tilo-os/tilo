@@ -2261,3 +2261,86 @@ fn a_window_at_rest_asks_its_host_for_no_frame() {
     );
     assert_eq!(schedule.next_wake_deadline, None);
 }
+
+/// Opening a row's page mounts the task's document where the row stands: the frame that shows it
+/// adds the document's widgets to the retained layout tree and measures those, and no frame
+/// composes the window's whole layout tree again for it. Rows open all day, and the window's
+/// composition is the work none of them may cost — the row's document is a slot mount.
+#[test]
+fn opening_a_rows_page_mounts_the_document_where_the_row_stands() {
+    let _motion = ui::motion::testing::settled();
+    let chunks = seeded_tasks(SMALL);
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut session = on_the_frame_clock(Session::tasks_over_in(&route, chunks, None));
+    session.settle();
+    let title = top_title(&mut session);
+    let (x, y) = shown_at(&mut session, &title);
+    let before = Lay::of(&mut session);
+    let drawn = session.window.harness().drawn_commands();
+    session.window.click_at(x, y);
+    let rest = at_rest(&mut session, drawn);
+    let after = Lay::of(&mut session);
+    let page = opened_title_field(&mut session)
+        .unwrap_or_else(|| panic!("the row a person opened shows the page of {title}"));
+    assert!(
+        !page.is_empty(),
+        "the page of {title} stands where the row did"
+    );
+    // The frame that showed it mounted the document and measured it; the window's own
+    // composition stood, as it does for a row coming into view.
+    assert_eq!(
+        after.rebuilt,
+        before.rebuilt,
+        "opening the page of {title} composed the window's layout tree {} time(s) in the {} \
+         rounds that showed it: the document mounts where its row stands",
+        after.rebuilt - before.rebuilt,
+        rest.rounds
+    );
+    // One frame placed every widget — the one that mounted the document. A window laid out
+    // twice for one row is the cost a person waits on.
+    assert_eq!(
+        rest.full, 1,
+        "the step placed every widget of the window {} times in {} rounds: one mounts the \
+         document and the rest move what they show",
+        rest.full, rest.rounds
+    );
+    assert_eq!(
+        rest.full_unasked, 0,
+        "a frame placed the whole window with nothing composed or measured"
+    );
+}
+
+/// Choosing a note in the tree shows it beside the tree, and pressing the note the window is
+/// already reading shows what is there: the content column's document stands, reconciled in
+/// place, and no frame composes the window's layout tree again for a press on it.
+#[test]
+fn choosing_a_note_in_the_tree_opens_it_without_composing_the_window() {
+    let mut session = Session::rich();
+    let plus = session.new_note_button();
+    for round in 0..3 {
+        session.window.click_at(plus.0, plus.1);
+        session.settle();
+        let title = session.field("Untitled");
+        session.window.click_at(title.0, title.1);
+        session.window.type_text(&format!("Note {round}"));
+        session.settle();
+    }
+    let titles = session.titles();
+    assert_eq!(titles.len(), 3, "the tree shows the notes made: {titles:?}");
+    session.settle();
+    for title in titles {
+        let (x, y) = shown_at(&mut session, &title);
+        // The first press chooses it; the one after it presses the note the window reads.
+        session.window.click_at(x, y);
+        session.settle();
+        let before = Lay::of(&mut session);
+        session.window.click_at(x, y);
+        session.settle();
+        let after = Lay::of(&mut session);
+        assert_eq!(
+            after.rebuilt, before.rebuilt,
+            "pressing {title} again composed the window's layout tree: the note stands beside \
+             the tree already"
+        );
+    }
+}
