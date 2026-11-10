@@ -449,7 +449,6 @@ impl AdmittedJoinIdentity {
         workspace_id: &str,
         decide: impl FnOnce(&Authority<'_>) -> T,
     ) -> Result<T, String> {
-        let bound = roles::foreign_device_bound();
         if (self.agent_id.is_none() || self.session_delegated)
             && self.verified.owns_personal_cluster(workspace_id)
         {
@@ -457,15 +456,8 @@ impl AdmittedJoinIdentity {
             // held to the foreign-device bound there as anywhere, and an
             // agent one of them was handed to, to that delegation too.
             let policy = WorkspacePolicy::new(workspace_id, self.principal_id.clone());
-            let authority =
-                policy.person_on_device(&self.principal_id, self.verified.capped, &bound);
-            let actor = self.broker_actor();
-            let carried = actor.session_grants(workspace_id, &self.principal_id);
-            let authority = match actor.delegate() {
-                Some(delegate) => authority.bounded_by(actor.party(&[], delegate, &carried)),
-                None => authority,
-            };
-            return Ok(decide(&authority));
+            let invoker = self.broker_actor().invoker(workspace_id);
+            return Ok(decide(&invoker.authority(&policy)));
         }
         let workspace = tree
             .ok_or("the identity has no workspace authority")?
@@ -473,9 +465,7 @@ impl AdmittedJoinIdentity {
             .iter()
             .find(|workspace| workspace.id().to_string() == workspace_id)
             .ok_or("the identity's workspace is no longer hosted")?;
-        Ok(self
-            .broker_actor()
-            .with_authority_in(workspace, &bound, decide))
+        Ok(self.broker_actor().with_authority_in(workspace, decide))
     }
 }
 

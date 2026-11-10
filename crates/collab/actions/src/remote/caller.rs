@@ -399,6 +399,51 @@ impl Caller {
         }
     }
 
+    /// Who an action this caller invokes in `workspace` is decided for: the
+    /// one reading of a caller every route that runs actions takes
+    /// ([`tilo_action_policy::Invoker`]).
+    ///
+    /// - A person acts as themselves.
+    /// - An agent a person's own device handed its session to
+    ///   ([`Self::delegated_to`]) carries the delegation a device gives its
+    ///   agents, within that person's standing.
+    /// - An agent admitted as acting for a person ([`Self::acting_for`]),
+    ///   or a delegated agent device acting for the person its certificate
+    ///   chains to, does what both the person and the workspace's grants
+    ///   for it allow.
+    /// - A bot acts for its installer within the workspace's grants for it.
+    /// - An application, or an agent acting for nobody, does only what the
+    ///   workspace grants it.
+    ///
+    /// Whether the person works from a device that is not theirs is the
+    /// host's to say ([`tilo_action_policy::Invoker::on_foreign_device`]).
+    #[must_use]
+    pub fn invoker(&self, workspace: &str) -> tilo_action_policy::Invoker {
+        use tilo_action_policy::{Invoker, Subject};
+        let root = || self.user_public_key.map(hex::encode);
+        match &self.principal {
+            CallerPrincipal::Person(person) => Invoker::person(person.clone()),
+            CallerPrincipal::Agent(agent) => match self.acting_for.clone() {
+                Some(person) if self.session_delegated => {
+                    Invoker::session_agent(workspace, agent, person)
+                }
+                Some(person) => Invoker::delegated(Subject::agent(agent), person, Vec::new()),
+                None => match root() {
+                    Some(person) => Invoker::delegated(Subject::agent(agent), person, Vec::new()),
+                    None => Invoker::own(Subject::agent(agent)),
+                },
+            },
+            CallerPrincipal::App(app) => Invoker::own(Subject::App(app.clone())),
+            // A bot nobody installed has no authority to borrow: acting for
+            // nobody's standing, it gets nothing.
+            CallerPrincipal::Bot(bot) => Invoker::delegated(
+                Subject::bot(bot),
+                self.acting_for.clone().or_else(root).unwrap_or_default(),
+                Vec::new(),
+            ),
+        }
+    }
+
     /// Confine the caller to one workspace: the connection was admitted to that
     /// workspace only, so nothing outside it is offered or reachable.
     #[must_use]
