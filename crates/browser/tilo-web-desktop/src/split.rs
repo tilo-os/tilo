@@ -152,7 +152,7 @@ macro_rules! lazy_exports {
 // (`loadRuntime` of `web/host.mjs`).
 lazy_exports!("peer":
     "hostRefusal", "hostInfo", "certifyDevice", "channelVault", "issueDeviceCert",
-    "sealedInvitationLink", "redeemInvitation", "inspectInvitation", "reconnectCertificate",
+    "redeemInvitation", "inspectInvitation", "reconnectCertificate",
     "acceptInvitation", "enterThroughDoor", "deviceCertCanonical", "certifyWithRoot",
     "createLoginCode", "followLoginCode", "keepStandIn", "retireStandIn", "revokeDevice",
     "wasmpeer_*", "__wbg_wasmpeer_*", "pairinghost_*", "__wbg_pairinghost_*",
