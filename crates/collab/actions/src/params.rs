@@ -1195,9 +1195,8 @@ fn validate_string_schema(
             .ok_or_else(|| "has a non-string schema format".to_string())?;
         let valid = match format {
             "date-time" => looks_like_rfc3339(text),
-            "date" => {
-                text.len() == 10 && chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").is_ok()
-            }
+            // RFC 3339's full-date is the date of a date-time.
+            "date" => text.len() == 10 && looks_like_rfc3339(&format!("{text}T00:00:00Z")),
             "uuid" => uuid::Uuid::parse_str(text).is_ok(),
             "uri" => text.split_once(':').is_some_and(|(scheme, rest)| {
                 !scheme.is_empty()
