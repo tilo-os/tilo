@@ -764,11 +764,13 @@ impl DirectSync {
         member.admits(theirs)?;
         let live_mine = member.0.outgoing.subscribe();
         let live_theirs = host.0.outgoing.subscribe();
+        // Each side's catch-up is history, however old what it carries: it is
+        // judged as retained, never as a late live frame.
         for authored in host.catch_up()? {
-            member.admit(authored.from, authored.message, false)?;
+            member.admit(authored.from, authored.message, true)?;
         }
         for authored in member.catch_up()? {
-            host.admit(authored.from, authored.message, false)?;
+            host.admit(authored.from, authored.message, true)?;
         }
         member.replay_from(host)?;
         if member.0.store.is_none() {
@@ -793,7 +795,7 @@ impl DirectSync {
                     .ok_or("the store replayed a message that is not a document frame")?;
                 if self.admit(author, message.clone(), true)? {
                     for state in host.answer_state_request() {
-                        self.admit(state.from, state.message, false)?;
+                        self.admit(state.from, state.message, true)?;
                     }
                 }
             }
@@ -857,7 +859,15 @@ impl DirectSync {
         // Taken after the catch-up, which the caller subscribed before: a
         // change published in between reaches the link after the history
         // rather than not at all.
-        let mut catch_up = self.catch_up()?;
+        // The device that accepted the dial hands its replica's catch-up with
+        // the history the other one asks for ([`Self::answer_store`]), where it
+        // is judged as history: on the live stream, what it carries that was
+        // written more than the live window ago was refused as a late frame.
+        let mut catch_up = if dialing {
+            self.catch_up()?
+        } else {
+            Vec::new()
+        };
         if let Some(channels) = &self.0.channels {
             catch_up.extend(
                 channels()
@@ -877,18 +887,32 @@ impl DirectSync {
         // What this link alone carries, besides what every link does: this
         // device's asks for the other's state, and its answers to the other's.
         let (own, only_here) = tokio::sync::mpsc::unbounded_channel();
-        let sending = send_authored(self, send, remote, catch_up, live, only_here);
+        // The accepting device's live frames follow the first history it
+        // answers, which carries the governance they are judged against.
+        let (answered, first_answer) = watch::channel(dialing);
+        let sending = send_authored(
+            self,
+            send,
+            Sending {
+                remote,
+                dialing,
+                catch_up,
+                first_answer,
+            },
+            live,
+            only_here,
+        );
         let receiving = self.receive_all(connection, remote, &own);
         let history = async {
             let mut control = control;
             if !dialing {
                 // The other device asks for the history as the link starts,
                 // and again whenever it wants what it let go.
-                self.answer_store(&mut control).await?;
+                self.answer_store(&mut control, &answered).await?;
                 self.0.caught_up.send_replace(true);
                 return std::future::pending().await;
             }
-            self.ask_store(&mut control, &own).await?;
+            self.ask_store(&mut control, remote).await?;
             // The history is in hand: the frames from here on are the live
             // ones the link brings. A write this device let go unapplied
             // waits in the other device's history; once what it waited for
@@ -900,7 +924,7 @@ impl DirectSync {
             *self.0.other_store.lock_recover() = Some(OtherStore::Dialled(asks));
             loop {
                 tokio::select! {
-                    () = self.0.replay.notified() => self.ask_store(&mut control, &own).await?,
+                    () = self.0.replay.notified() => self.ask_store(&mut control, remote).await?,
                     Some((cursors, answer)) = asked.recv() => {
                         let fetched = Self::fetch_history(&mut control, cursors).await;
                         let failed = fetched.as_ref().err().cloned();
@@ -919,29 +943,22 @@ impl DirectSync {
         }
     }
 
-    /// Ask the other device's store for the frames this device lacks, round
-    /// by round while it says more are left, and return once it says no more
-    /// are: the history is in hand. A frame that leaves something waiting for
-    /// history asks the other device for its state, on `link`.
-    async fn ask_store(
-        &self,
-        control: &mut Control,
-        link: &tokio::sync::mpsc::UnboundedSender<OnlyHere>,
-    ) -> Result<(), String> {
-        let mut lacks_history = false;
+    /// Ask the other device for the history this device lacks, round by round
+    /// while it says more are left, and return once it says no more are: the
+    /// history is in hand. Each ask's first round opens with the other
+    /// device's state, its catch-up ([`Self::catch_up`]), which names `remote`
+    /// where a frame of it names no author; the frames its store keeps follow.
+    /// A frame still waiting for history after that waits for what the other
+    /// device lacks too: asking again would bring nothing.
+    async fn ask_store(&self, control: &mut Control, remote: [u8; 32]) -> Result<(), String> {
         fetch_store(control, self.cursors(), |frames| {
             for message in frames {
-                let author = store::author_of(message)
-                    .ok_or("the store replayed a message that is not a document frame")?;
-                lacks_history |= self.admit(author, message.clone(), true)?;
+                let author = store::author_of(message).unwrap_or(remote);
+                self.admit(author, message.clone(), true)?;
             }
             Ok(())
         })
-        .await?;
-        if lacks_history {
-            let _ = link.send(OnlyHere::Ask);
-        }
-        Ok(())
+        .await
     }
 
     /// The frames the other device's store holds after `cursors`, read over
@@ -963,7 +980,16 @@ impl DirectSync {
     /// Answer the dialling device's cursors from this device's store, for as
     /// long as it asks: the history is in its hands once the first answer
     /// with no more left is sent, and it asks again for what it let go.
-    async fn answer_store(&self, control: &mut Control) -> Result<(), String> {
+    ///
+    /// Each ask's first round opens with this device's state, its catch-up
+    /// ([`Self::catch_up`]): history, which the other device judges as such
+    /// however old what it carries. `answered` is set once the first round is
+    /// written.
+    async fn answer_store(
+        &self,
+        control: &mut Control,
+        answered: &watch::Sender<bool>,
+    ) -> Result<(), String> {
         // The history this answers is decided by the other device against the
         // governance it has not been sent yet: it arrives with the catch-up,
         // and the frames asked for before it are the ones it cannot admit.
@@ -975,12 +1001,24 @@ impl DirectSync {
                 return Ok(());
             }
         }
+        let mut opens_an_ask = true;
         while let Some(frame) = read_link(&mut control.recv, MAX_FRAME_BYTES).await? {
             let LinkFrame::Cursors(cursors) = frame else {
                 return Err("the device asked for something else than retained frames".into());
             };
-            let (frames, more) = self.replay(&cursors)?;
+            let (kept, more) = self.replay(&cursors)?;
+            let mut frames = Vec::new();
+            if opens_an_ask {
+                frames.extend(
+                    self.answer_state_request()
+                        .into_iter()
+                        .map(|state| state.message),
+                );
+            }
+            frames.extend(kept);
             write_link(&mut control.send, &LinkFrame::Frames { frames, more }).await?;
+            answered.send_replace(true);
+            opens_an_ask = !more;
             if !more {
                 self.0.caught_up.send_replace(true);
             }
@@ -1667,7 +1705,7 @@ async fn forward(
                     for state in sender.answer_state_request() {
                         // What still waits after the answer waits for history
                         // the sender lacks too: asking again brings nothing.
-                        device.admit(state.from, state.message, false)?;
+                        device.admit(state.from, state.message, true)?;
                     }
                 }
             }
@@ -1708,23 +1746,47 @@ fn already_theirs(authored: &Authored, remote: [u8; 32], own: [u8; 32]) -> bool 
     !authored.published && remote != own && from_device(&authored.message, remote)
 }
 
-/// Write `catch_up`, then every frame published live, to `send`, under the
-/// name of the device that authored each, until the workspace removes
-/// `remote`: the governance that removes it is the last frame it is sent,
-/// and the link ends there.
+/// What one link's live stream sends besides the frames published live.
+struct Sending {
+    /// The device on the other end.
+    remote: [u8; 32],
+    /// Whether this device dialled: the device that did asks the other one
+    /// for its state over the link's control stream, with its history.
+    dialing: bool,
+    /// What this stream opens with.
+    catch_up: Vec<Authored>,
+    /// Set once the first history this device answers is written: its live
+    /// frames follow it.
+    first_answer: watch::Receiver<bool>,
+}
+
+/// Write `sending`'s catch-up, then every frame published live, to `send`,
+/// under the name of the device that authored each, until the workspace
+/// removes the device on the other end: the governance that removes it is
+/// the last frame it is sent, and the link ends there.
 async fn send_authored(
     link: &DirectSync,
     mut send: SendStream,
-    remote: [u8; 32],
-    catch_up: Vec<Authored>,
+    sending: Sending,
     mut live: broadcast::Receiver<Authored>,
     mut only_here: tokio::sync::mpsc::UnboundedReceiver<OnlyHere>,
 ) -> Result<(), String> {
+    let Sending {
+        remote,
+        dialing,
+        catch_up,
+        mut first_answer,
+    } = sending;
     let own = link.device();
     for authored in &catch_up {
         write_authored(&mut send, authored).await?;
     }
     link.0.catch_up_written.send_replace(true);
+    while !*first_answer.borrow_and_update() {
+        if first_answer.changed().await.is_err() {
+            return Ok(());
+        }
+    }
     loop {
         let next = tokio::select! {
             Some(first) = only_here.recv() => {
@@ -1735,8 +1797,15 @@ async fn send_authored(
                 while let Ok(more) = only_here.try_recv() {
                     waiting.push(more);
                 }
+                // The device that dialled reads the other one's state with its
+                // history, judged as history; the one that accepted asks on
+                // this stream.
                 if waiting.contains(&OnlyHere::Ask) {
-                    write_authored(&mut send, &link.state_request()).await?;
+                    if dialing {
+                        link.ask_replay();
+                    } else {
+                        write_authored(&mut send, &link.state_request()).await?;
+                    }
                 }
                 if waiting.contains(&OnlyHere::Answer) {
                     for state in link.answer_state_request() {

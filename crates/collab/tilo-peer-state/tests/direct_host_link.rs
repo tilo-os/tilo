@@ -78,6 +78,17 @@ async fn until(sync: &DirectSync, step: &str, done: impl Fn(&StatePeer) -> bool 
 /// One edit of `key`, sealed under the record's content keys: what a store
 /// keeps and only a key holder reads.
 fn sealed(key: &SigningKey, keys: &ChannelContentKeys, text: &str) -> NeighbourMsg {
+    sealed_at(key, keys, text, web_time::SystemTime::now(), 1)
+}
+
+/// [`sealed`], written at `when` as the author's `seq`th op.
+fn sealed_at(
+    key: &SigningKey,
+    keys: &ChannelContentKeys,
+    text: &str,
+    when: web_time::SystemTime,
+    seq: u64,
+) -> NeighbourMsg {
     // The plaintext a sealed edit carries: an incremental of the record.
     let mut edit = AutoCommit::new();
     edit.put(ROOT, "value", text).unwrap();
@@ -98,8 +109,8 @@ fn sealed(key: &SigningKey, keys: &ChannelContentKeys, text: &str) -> NeighbourM
         Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
         document_attestation_id(APP, WORKSPACE, RECORD),
         OpKind::Change,
-        web_time::SystemTime::now(),
-        1,
+        when,
+        seq,
     );
     op.encryption = Some(metadata);
     sign_op(&mut op, key).unwrap();
@@ -687,4 +698,108 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     host_endpoint.close().await;
     b_endpoint.close().await;
     c_endpoint.close().await;
+}
+
+/// What the host wrote long before a member links reaches the member as history, however old:
+/// the host's catch-up travels with the history the member asks for, never as a late live
+/// frame. Judged live, a sealed edit written more than the live clock-skew window ago was
+/// refused, and the refusal filed back to its author ("will not take your change" on
+/// e2e-branch's box, after both boxes rebooted).
+#[tokio::test(flavor = "multi_thread")]
+async fn what_the_host_wrote_long_ago_reaches_a_member_that_links_later() {
+    let root = SigningKey::from_bytes(&[2; 32]);
+    let (host_key, host_cert) = common::device_with(&root, 6, DeviceCapabilities::host());
+    let (a_key, a_cert) = device(&root, 7);
+    let now = SystemTime::now();
+    let devices = vec![host_cert.clone(), a_cert.clone()];
+    let mut govern = StatePeer::new(
+        WORKSPACE,
+        host_cert.clone(),
+        devices.clone(),
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    govern.select_admission_v5().unwrap();
+    let mut document = AutoCommit::new();
+    document.put(ROOT, "value", "from the host").unwrap();
+    document.commit_edit("fixture", "value");
+    govern
+        .install_seed(
+            SeedState {
+                workspace_changes: seed_workspace(WORKSPACE, &host_cert, &devices).unwrap(),
+                documents: vec![SeedDocument {
+                    app_id: APP.into(),
+                    record_id: RECORD.into(),
+                    kind: "test".into(),
+                    bytes: document.save(),
+                }],
+            },
+            &host_key,
+            now,
+        )
+        .unwrap();
+    let host = DirectSync::new(govern, host_key.clone());
+    let keys = ChannelGroup::create(channel(), MemberKey::generate("owner").unwrap())
+        .unwrap()
+        .content_keys()
+        .unwrap();
+    // Ten minutes before the member links: twice the live window.
+    let old = sealed_at(
+        &host_key,
+        &keys,
+        "written long ago",
+        now - Duration::from_secs(600),
+        1_000,
+    );
+    // The host holds it as one of its own sealed publications, which its catch-up carries.
+    let host_device = host_key.verifying_key().to_bytes();
+    host.publish(|peer, _, now| {
+        peer.receive_from_report(
+            tilo_peer_state::TransportOrigin::RetainedRelayDelta(host_device),
+            old.clone(),
+            now,
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        Ok(old.clone())
+    })
+    .unwrap();
+
+    let host_endpoint = localhost_endpoint(&host_key).await;
+    let router = Router::builder(host_endpoint.clone())
+        .accept(DIRECT_ALPN, host.clone())
+        .spawn();
+    let a = StatePeer::from_join(WORKSPACE, host_cert.clone(), devices, &[], now).unwrap();
+    let a = DirectSync::new(a, a_key.clone());
+    let mut heard = a.heard();
+    let a_endpoint = localhost_endpoint(&a_key).await;
+    let link = tokio::spawn({
+        let a = a.clone();
+        let a_endpoint = a_endpoint.clone();
+        let host_addr = addr(&host_endpoint);
+        async move { a.connect(&a_endpoint, host_addr).await }
+    });
+    let taken = tokio::time::timeout(Duration::from_secs(30), async {
+        let mut refused = Vec::new();
+        loop {
+            match heard.recv().await {
+                Ok(frame) if frame.message == old => match frame.report {
+                    Ok(_) => return Ok(()),
+                    Err(reason) => refused.push(reason),
+                },
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(error) => return Err(format!("the link closed: {error}; refused {refused:?}")),
+            }
+        }
+    })
+    .await;
+    assert!(
+        matches!(taken, Ok(Ok(()))),
+        "the member takes in the host's old write as history: {taken:?}"
+    );
+
+    link.abort();
+    router.shutdown().await.unwrap();
+    host_endpoint.close().await;
+    a_endpoint.close().await;
 }
