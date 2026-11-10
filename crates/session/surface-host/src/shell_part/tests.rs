@@ -78,7 +78,7 @@ fn type_into(part: &mut ShellPart, text: &str) {
                 text: pressed.then(|| letter.to_string()),
                 modifiers: tilo_session_core::surface::KeyModifiers::default(),
             };
-            tilo_compositor::SurfaceHost::key(part, &key);
+            tilo_session_core::surface::SurfaceHost::key(part, &key);
             part.prepare_frame();
         }
     }
@@ -1009,7 +1009,7 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
                 text: pressed.then(|| letter.to_string()),
                 modifiers: tilo_session_core::surface::KeyModifiers::default(),
             };
-            tilo_compositor::SurfaceHost::key(&mut part, &key);
+            tilo_session_core::surface::SurfaceHost::key(&mut part, &key);
             part.prepare_frame();
         }
     }
@@ -1157,7 +1157,7 @@ fn the_switcher_pictures_each_window_above_its_own_title() {
         part.prepare_frame();
         part.draw();
     }
-    let pictures = tilo_compositor::SurfaceHost::window_pictures(&part);
+    let pictures = tilo_session_core::surface::SurfaceHost::window_pictures(&part);
     let picture = pictures
         .first()
         .unwrap_or_else(|| panic!("the switcher pictures the window it may: {pictures:?}"));

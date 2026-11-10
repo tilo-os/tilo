@@ -7,8 +7,9 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
-use tilo_compositor::{HostLayer, OutputInfo, SurfaceHost};
+use tilo_compositor::OutputInfo;
 use tilo_session_core::surface::HostKey;
+use tilo_session_core::surface::{HostLayer, SurfaceHost};
 
 use tilo_desktop::topbar::TOPBAR_HEIGHT_PX;
 use tilo_session_core::door::Published;

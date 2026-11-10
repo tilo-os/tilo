@@ -42,18 +42,18 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use smithay::backend::allocator::Fourcc;
-use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
-use smithay::utils::{Logical, Point, Rectangle, Transform};
+use smithay::utils::{Logical, Point, Rectangle};
 use tilo_compositor::{
-    Arrangement, Compositor, GestureEvent, HostDrag, HostFrame, HostIme, HostLayer, HostTextInput,
-    IconArtwork, InputEvent, KeyboardLayout, LayoutPoint, LayoutRect, OutputConfig, PadAction,
-    StackPolicy, SurfaceHost, Switch, TabletEvent, TabletPadEvent, TabletPhase, TextField,
-    TextFieldRefusal, TextInsertion, WindowEffect, WindowFrame, WindowIcon, WindowInfo,
-    WindowPolicy,
+    Arrangement, Compositor, GestureEvent, IconArtwork, InputEvent, KeyboardLayout, LayoutPoint,
+    LayoutRect, OutputConfig, PadAction, StackPolicy, Switch, TabletEvent, TabletPadEvent,
+    TabletPhase, TextField, TextFieldRefusal, TextInsertion, WindowEffect, WindowFrame, WindowIcon,
+    WindowInfo, WindowPolicy,
 };
 use tilo_session_core::surface::{
     BackdropImage, BackdropRequest, HostKey, KeyClaim, WindowPicture,
+};
+use tilo_session_core::surface::{
+    HostDrag, HostFrame, HostIme, HostLayer, HostTextInput, SurfaceHost,
 };
 use wayland_client::Connection;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
@@ -487,26 +487,18 @@ struct HostLog {
 /// A hosted surface: one square of one colour.
 struct Square {
     rect: (i32, i32, i32, i32),
-    buffer: MemoryRenderBuffer,
+    pixels: Vec<u8>,
     log: Rc<RefCell<HostLog>>,
     below: bool,
 }
 
 impl Square {
     fn new(rect: (i32, i32, i32, i32), rgba: [u8; 4], log: Rc<RefCell<HostLog>>) -> Self {
-        let pixel = [rgba[2], rgba[1], rgba[0], rgba[3]];
-        let bytes = pixel.repeat(usize::try_from(rect.2 * rect.3).unwrap());
-        let buffer = MemoryRenderBuffer::from_slice(
-            &bytes,
-            Fourcc::Argb8888,
-            (rect.2, rect.3),
-            1,
-            Transform::Normal,
-            None,
-        );
+        let pixel = [rgba[0], rgba[1], rgba[2], rgba[3]];
+        let pixels = pixel.repeat(usize::try_from(rect.2 * rect.3).unwrap());
         Self {
             rect,
-            buffer,
+            pixels,
             log,
             below: false,
         }
@@ -524,12 +516,12 @@ impl SurfaceHost for Square {
         vec![HostLayer {
             location: (self.rect.0, self.rect.1),
             size: (self.rect.2, self.rect.3),
-            frame: HostFrame::from_buffer(
-                self.buffer.clone(),
+            frame: HostFrame::from_pixels(
                 (
                     u32::try_from(self.rect.2).expect("a whole number of pixels"),
                     u32::try_from(self.rect.3).expect("a whole number of pixels"),
                 ),
+                self.pixels.clone(),
             ),
         }]
     }
@@ -721,18 +713,7 @@ fn a_hosted_apps_drag_carries_its_icon_under_the_pointer() {
     assert_eq!(shown(&mut compositor, 10, 10), Some([0, 255, 0, 255]));
 
     // A 20x20 icon, its hotspot two pixels in from its top left.
-    let bytes = [0, 255, 255, 255].repeat(20 * 20);
-    let icon = HostFrame::from_buffer(
-        MemoryRenderBuffer::from_slice(
-            &bytes,
-            Fourcc::Argb8888,
-            (20, 20),
-            1,
-            Transform::Normal,
-            None,
-        ),
-        (20, 20),
-    );
+    let icon = HostFrame::from_pixels((20, 20), [0, 255, 255, 255].repeat(20 * 20));
     compositor
         .input(InputEvent::PointerMotion { x: 5.0, y: 5.0 })
         .unwrap();
@@ -740,7 +721,7 @@ fn a_hosted_apps_drag_carries_its_icon_under_the_pointer() {
         compositor
             .start_host_drag(HostDrag {
                 offer: vec![("text/plain".into(), b"dragged".to_vec())],
-                icon: Some((icon, Point::from((2, 2)))),
+                icon: Some((icon, (2, 2))),
             })
             .unwrap(),
         "the hosted app's drag starts"

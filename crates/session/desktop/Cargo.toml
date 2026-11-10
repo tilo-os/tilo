@@ -75,6 +75,7 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 tilo-surface-host = { path = "../surface-host" }
 tilo-compositor = { path = "../compositor" }
+tilo-session-core = { path = "../core" }
 
 [lints]
 workspace = true

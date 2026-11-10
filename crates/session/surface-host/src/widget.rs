@@ -3,8 +3,8 @@
 //! window bars). The toolkit's portable host runs it (input in, frames out)
 //! and the frame is drawn as an app's is.
 
-use tilo_compositor::{HostIme, HostLayer, HostTextInput, SurfaceHost};
 use tilo_session_core::surface::WindowPicture;
+use tilo_session_core::surface::{HostIme, HostLayer, HostTextInput, SurfaceHost};
 
 use ui::headless::FrameHarness;
 use ui::retained_raster::{Repaint, RetainedFrames, TargetKey};

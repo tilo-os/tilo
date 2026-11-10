@@ -4,7 +4,12 @@
 //! A host draws the surfaces and hands them their input; the roles above the seam only speak the
 //! vocabulary here, so the same role runs on the Linux desktop's compositor and on the page.
 
+mod host;
+
 pub use cursor_icon::CursorIcon;
+pub use host::{
+    Changed, FrameWatch, HostDrag, HostFrame, HostIme, HostLayer, HostTextInput, SurfaceHost,
+};
 
 /// The rectangle a layer is shown on, in the host's logical layout, and the
 /// scale it is drawn at.

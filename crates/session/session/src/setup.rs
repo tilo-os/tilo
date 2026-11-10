@@ -12,8 +12,8 @@ use std::task::Waker;
 
 use crate::platform::surfaces::{Placement, WidgetHost};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
-use tilo_compositor::{HostLayer, SurfaceHost};
 use tilo_session_core::surface::HostKey;
+use tilo_session_core::surface::{HostLayer, SurfaceHost};
 
 use tilo_onboarding_host::view::OnboardingView;
 use tilo_session_core::door::{Published, through_door};

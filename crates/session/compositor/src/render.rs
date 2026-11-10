@@ -25,8 +25,10 @@ use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size};
 
 use crate::a11y::{self, MagnifierView};
 use crate::effects::WindowEffect;
-use crate::host::HostLayer;
 use crate::state::State;
+use crate::uploads::Uploads;
+
+use tilo_session_core::surface::HostLayer;
 
 /// The colour behind every window: the desktop's background before a wallpaper surface covers it.
 pub const BACKGROUND: [f32; 4] = [0.102, 0.106, 0.149, 1.0];
@@ -235,6 +237,7 @@ where
 /// the layer shows nothing there is to draw.
 fn hosted_layer<R>(
     renderer: &mut R,
+    uploads: &Uploads,
     layer: &HostLayer,
     location: Point<f64, Physical>,
     scale: f64,
@@ -268,10 +271,13 @@ where
     let dst = Size::from((drawn.w.max(1), drawn.h.max(1)));
     let at = location
         + Point::from((f64::from(shown.x) * across, f64::from(shown.y) * down)).to_physical(scale);
+    let Some(buffer) = uploads.draw(&layer.frame) else {
+        return Ok(None);
+    };
     MemoryRenderBufferRenderElement::from_buffer(
         renderer,
         at,
-        layer.frame.buffer(),
+        &buffer,
         None,
         Some(src),
         Some(dst),
@@ -303,7 +309,7 @@ where
         for layer in below.layers().into_iter().rev() {
             let location =
                 (Point::<i32, Logical>::from(layer.location).to_f64() - origin).to_physical(scale);
-            match hosted_layer(renderer, &layer, location, scale) {
+            match hosted_layer(renderer, &state.uploads, &layer, location, scale) {
                 Ok(Some(element)) => elements.push(OutputRenderElement::Memory(element)),
                 Ok(None) => {}
                 Err(error) => tracing::warn!(?error, "hosted layer: buffer not imported"),
@@ -549,7 +555,13 @@ where
             for layer in host.layers().into_iter().rev() {
                 let location: Point<i32, Physical> =
                     (Point::from(layer.location) - geometry.loc).to_physical_precise_round(scale);
-                match hosted_layer(renderer, &layer, location.to_f64(), output_scale) {
+                match hosted_layer(
+                    renderer,
+                    &state.uploads,
+                    &layer,
+                    location.to_f64(),
+                    output_scale,
+                ) {
                     Ok(Some(element)) => elements.push(OutputRenderElement::Memory(element)),
                     Ok(None) => {}
                     Err(error) => tracing::warn!(?error, "hosted layer: buffer not imported"),

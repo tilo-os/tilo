@@ -18,12 +18,8 @@ use std::os::fd::AsFd as _;
 use std::rc::Rc;
 use std::time::Duration;
 
-use smithay::backend::allocator::Fourcc;
-use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
-use smithay::utils::Transform;
-use tilo_compositor::{
-    Compositor, HostFrame, HostLayer, InputEvent, OutputConfig, StackPolicy, SurfaceHost,
-};
+use tilo_compositor::{Compositor, InputEvent, OutputConfig, StackPolicy};
+use tilo_session_core::surface::{HostFrame, HostLayer, SurfaceHost};
 use wayland_client::protocol::wl_data_device_manager::DndAction;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_data_device, wl_data_device::WlDataDevice,
@@ -226,7 +222,7 @@ struct DropLog {
 
 /// A hosted surface at (500, 20, 100, 100) that takes file lists.
 struct DropZone {
-    buffer: MemoryRenderBuffer,
+    pixels: Vec<u8>,
     log: Rc<RefCell<DropLog>>,
 }
 
@@ -234,15 +230,10 @@ impl DropZone {
     const RECT: (f64, f64, f64, f64) = (500.0, 20.0, 100.0, 100.0);
 
     fn new(log: Rc<RefCell<DropLog>>) -> Self {
-        let buffer = MemoryRenderBuffer::from_slice(
-            &[0, 255, 0, 255].repeat(100 * 100),
-            Fourcc::Argb8888,
-            (100, 100),
-            1,
-            Transform::Normal,
-            None,
-        );
-        Self { buffer, log }
+        Self {
+            pixels: [0, 255, 0, 255].repeat(100 * 100),
+            log,
+        }
     }
 }
 
@@ -251,7 +242,7 @@ impl SurfaceHost for DropZone {
         vec![HostLayer {
             location: (500, 20),
             size: (100, 100),
-            frame: HostFrame::from_buffer(self.buffer.clone(), (100, 100)),
+            frame: HostFrame::from_pixels((100, 100), self.pixels.clone()),
         }]
     }
 

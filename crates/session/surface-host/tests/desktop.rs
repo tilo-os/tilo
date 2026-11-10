@@ -10,12 +10,11 @@
 )]
 
 use std::time::Duration;
-use tilo_compositor::{
-    Compositor, LayoutRect, OutputConfig, SurfaceHost as _, WindowInfo, WindowPolicy as _,
-};
+use tilo_compositor::{Compositor, LayoutRect, OutputConfig, WindowInfo, WindowPolicy as _};
 
 use tilo_desktop_model::TileContent;
 use tilo_desktop_policy::DesktopPolicy;
+use tilo_session_core::surface::SurfaceHost as _;
 use tilo_surface_host::{DesktopHost, desktop};
 
 fn output() -> Vec<LayoutRect> {

@@ -10,8 +10,8 @@ use crate::platform::surfaces::{SessionLink, ShellPart, ShellWork};
 use serde_json::{Map, Value};
 use tilo_actions::ActionAddress;
 use tilo_compositor::Compositor;
-use tilo_compositor::{HostLayer, SurfaceHost};
 use tilo_session_core::surface::{CursorIcon, HostKey, KeyClaim};
+use tilo_session_core::surface::{HostLayer, SurfaceHost};
 
 use tilo_service::Services;
 use tilo_session_core::door::Doors;
@@ -1705,8 +1705,8 @@ mod tests {
         outputs: u32,
     }
 
-    impl tilo_compositor::SurfaceHost for Asked {
-        fn layers(&self) -> Vec<tilo_compositor::HostLayer> {
+    impl tilo_session_core::surface::SurfaceHost for Asked {
+        fn layers(&self) -> Vec<tilo_session_core::surface::HostLayer> {
             Vec::new()
         }
 
@@ -1746,7 +1746,7 @@ mod tests {
     /// pointer: what it hears still reaches it, so it follows the displays the shell is on.
     #[test]
     fn the_desktop_aside_prepares_draws_and_takes_nothing() {
-        use tilo_compositor::SurfaceHost as _;
+        use tilo_session_core::surface::SurfaceHost as _;
         let key = tilo_session_core::surface::HostKey {
             keycode: 0,
             pressed: true,

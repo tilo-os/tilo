@@ -18377,6 +18377,7 @@ dependencies = [
  "tilo-emoji-catalogue",
  "tilo-feedback-transport",
  "tilo-resource",
+ "tilo-session-core",
  "tilo-sort",
  "tilo-surface-host",
  "tilo-system-stats",

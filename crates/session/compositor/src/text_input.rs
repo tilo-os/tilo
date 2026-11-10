@@ -31,10 +31,10 @@ use smithay::wayland::input_method::{
 use smithay::wayland::text_input::{CommittedState, TextInputManagerState, TextInputSeat};
 use smithay::wayland::virtual_keyboard::{VirtualKeyboardHandler, VirtualKeyboardManagerState};
 
-use crate::host::{HostIme, HostTextInput};
 use crate::input::{InputEvent, Switch};
 use crate::render::OutputRenderElement;
 use crate::state::{ClientState, State};
+use tilo_session_core::surface::{HostIme, HostTextInput};
 
 fn trusted(client: &Client) -> bool {
     client

@@ -4,9 +4,9 @@
 //! made of a material that shows a blur of what lies behind it. A hosted
 //! app cannot see behind itself: the windows and the surfaces below are the
 //! compositor's. So a hosted surface names the regions it draws the material
-//! in ([`BackdropRequest`], from [`crate::SurfaceHost::backdrops`]) and the
+//! in ([`BackdropRequest`], from [`SurfaceHost::backdrops`](tilo_session_core::surface::SurfaceHost::backdrops)) and the
 //! compositor hands back, after each frame, a blurred image of what lies
-//! below each ([`BackdropImage`], [`crate::SurfaceHost::set_backdrops`]),
+//! below each ([`BackdropImage`], [`SurfaceHost::set_backdrops`](tilo_session_core::surface::SurfaceHost::set_backdrops)),
 //! drawn at the request's texel size, only when what lies below changed.
 //! The app draws it in its material, under its tint, the next frame.
 //!

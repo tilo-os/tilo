@@ -9,8 +9,8 @@ pub(crate) mod mount;
 
 use crate::platform::surfaces::{AppHost, Placement};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
-use tilo_compositor::{HostLayer, SurfaceHost};
 use tilo_session_core::surface::{HostKey, KeyClaim};
+use tilo_session_core::surface::{HostLayer, SurfaceHost};
 
 use tilo_session_core::door::Published;
 use tilo_sheets::Seat;

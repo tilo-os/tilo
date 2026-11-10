@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 
 use crate::platform::surfaces::DeskGesture;
 use tilo_actions::{ActionAddress, DoorError};
-use tilo_compositor::{HostLayer, SurfaceHost};
 use tilo_session_core::surface::{HostKey, KeyClaim};
+use tilo_session_core::surface::{HostLayer, SurfaceHost};
 
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_desktop::desk_widgets::DeskFold;

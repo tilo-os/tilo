@@ -14,10 +14,10 @@ use tilo_compositor::gestures::{
     GestureAction, GestureConfig, GestureTracker, SWIPE_THRESHOLD, claims,
 };
 use tilo_compositor::{
-    Arrangement, GestureEvent, HostIme, HostLayer, HostTextInput, LayoutPoint, LayoutRect,
-    SurfaceHost, TouchSample, WindowInfo, WindowPolicy, WindowRequest,
+    Arrangement, GestureEvent, LayoutPoint, LayoutRect, TouchSample, WindowInfo, WindowPolicy,
+    WindowRequest,
 };
-use tilo_session_core::surface::HostKey;
+use tilo_session_core::surface::{HostIme, HostKey, HostLayer, HostTextInput, SurfaceHost};
 
 use tilo_desktop_policy::displays::Output;
 use tilo_desktop_policy::floating::centred;
@@ -288,13 +288,12 @@ fn round(value: f64) -> i32 {
 
 /// `rect` of the surface, as it stands in the logical layout where the desk's origin is
 /// `(ox, oy)`.
-fn placed(rect: ui::kurbo::Rect, (ox, oy): (i32, i32)) -> LayoutRect {
-    LayoutRect::new(
-        LayoutPoint::from((
-            ox.saturating_add(round(rect.x0)),
-            oy.saturating_add(round(rect.y0)),
-        )),
-        (round(rect.width()).max(1), round(rect.height()).max(1)).into(),
+fn placed(rect: ui::kurbo::Rect, (ox, oy): (i32, i32)) -> (i32, i32, i32, i32) {
+    (
+        ox.saturating_add(round(rect.x0)),
+        oy.saturating_add(round(rect.y0)),
+        round(rect.width()).max(1),
+        round(rect.height()).max(1),
     )
 }
 
@@ -734,7 +733,7 @@ impl SurfaceHost for DesktopHost {
         true
     }
 
-    fn drawn_over_windows(&self) -> Vec<(u64, LayoutRect)> {
+    fn drawn_over_windows(&self) -> Vec<(u64, (i32, i32, i32, i32))> {
         // The desk draws a floating window's bar and lift itself, under the windows, so the windows
         // it covers are drawn around it.
         let desk = self.desk.borrow();
@@ -742,7 +741,10 @@ impl SurfaceHost for DesktopHost {
         desk.policy
             .float_covers()
             .into_iter()
-            .map(|(window, cover)| (window, placed(cover, (ox, oy))))
+            .map(|(window, cover)| {
+                let (x, y, width, height) = placed(cover, (ox, oy));
+                (window, (x, y, width, height))
+            })
             .collect()
     }
 

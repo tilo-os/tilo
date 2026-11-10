@@ -42,7 +42,6 @@ pub mod gestures;
 mod gpu_health;
 mod hdr;
 pub mod heap_trim;
-pub mod host;
 pub mod idle;
 pub mod input;
 pub mod keys;
@@ -74,6 +73,7 @@ mod text_input;
 mod toplevel_icon;
 mod touch;
 mod typing;
+mod uploads;
 mod window_frame;
 mod x11;
 mod x11_windows;
@@ -109,7 +109,7 @@ pub use config::{Hdr, KeyboardLayout, Settings};
 pub use dim::Backlight;
 pub use display_change::{CONFIRM_FOR, DisplayEvent};
 pub use effects::WindowEffect;
-pub use host::{HostDrag, HostFrame, HostIme, HostLayer, HostTextInput, SurfaceHost};
+
 pub use idle::{IdleConfig, LockedBy, SessionTransition};
 pub use input::{
     GestureEvent, InputEvent, ObservedInput, PadAction, Switch, TabletEvent, TabletPadEvent,
@@ -149,9 +149,10 @@ pub use share_stream::ShareStream;
 pub use smithay::utils::Transform;
 pub use state::State;
 
+use smithay::utils::{Point, Rectangle};
 pub use switch_scan::{Scan, SwitchConfig, SwitchPair};
 pub use text_input::{TextCaret, TextEntry, TextField, TextFieldRefusal, TextInsertion};
-use tilo_session_core::surface::LayerPose;
+use tilo_session_core::surface::{HostDrag, LayerPose, SurfaceHost};
 pub use toplevel_icon::{IconArtwork, IconImage, WindowIcon};
 pub use window_frame::{Edge, Shadow, WindowFrame};
 pub use x11::X11Displays;
@@ -1399,7 +1400,10 @@ impl Compositor {
     /// [`Compositor::start_drag`] with an icon under the pointer, or a drag that follows the finger
     /// holding the app when a touch holds it.
     pub fn start_host_drag(&mut self, drag: HostDrag) -> Result<bool, Error> {
-        let started = self.data.state.start_host_drag(drag.offer, drag.icon);
+        let icon = drag
+            .icon
+            .map(|(frame, (x, y))| (frame, Point::from((x, y))));
+        let started = self.data.state.start_host_drag(drag.offer, icon);
         self.display.flush_clients()?;
         Ok(started)
     }
@@ -1414,7 +1418,10 @@ impl Compositor {
             .filter_map(|host| host.take_drag())
             .collect();
         for drag in asked {
-            if !self.data.state.start_host_drag(drag.offer, drag.icon) {
+            let icon = drag
+                .icon
+                .map(|(frame, (x, y))| (frame, Point::from((x, y))));
+            if !self.data.state.start_host_drag(drag.offer, icon) {
                 tracing::debug!("a hosted app's drag could not start");
             }
         }
@@ -1858,8 +1865,11 @@ impl Compositor {
         // with for it, and a press there is the desk's.
         let mut covers = std::collections::BTreeMap::new();
         for host in &self.data.state.hosts {
-            for (window, cover) in host.drawn_over_windows() {
-                covers.insert(window, cover);
+            for (window, (x, y, width, height)) in host.drawn_over_windows() {
+                covers.insert(
+                    window,
+                    Rectangle::new((x, y).into(), (width, height).into()),
+                );
             }
         }
         if self.data.state.covers != covers {

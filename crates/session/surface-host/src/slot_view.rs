@@ -27,8 +27,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use serde_json::Value as Json;
-use tilo_compositor::{HostIme, HostLayer, HostTextInput, SurfaceHost};
 use tilo_session_core::surface::{CursorIcon, HostKey};
+use tilo_session_core::surface::{HostIme, HostLayer, HostTextInput, SurfaceHost};
 
 use tilo_render_protocol::patch::local::pair;
 use tilo_ui_host::AppWindow;

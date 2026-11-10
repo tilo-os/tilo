@@ -4,7 +4,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_compositor::{Compositor, HostLayer, SurfaceHost};
+use tilo_compositor::Compositor;
+use tilo_session_core::surface::{HostDrag, HostLayer, SurfaceHost};
 use tilo_session_core::surface::{HostKey, KeyClaim};
 
 use tilo_session_core::door::{Doors, Published};
@@ -216,7 +217,7 @@ impl<T: SurfaceHost> SurfaceHost for Held<T> {
         self.0.borrow_mut().drop_data(mime, data);
     }
 
-    fn take_drag(&mut self) -> Option<tilo_compositor::HostDrag> {
+    fn take_drag(&mut self) -> Option<HostDrag> {
         self.0.borrow_mut().take_drag()
     }
 

@@ -26,8 +26,10 @@ pub use widget::WidgetHost;
 
 use std::cell::Cell;
 
-use tilo_compositor::{HostDrag, HostIme, HostLayer, HostTextInput, SurfaceHost};
-use tilo_session_core::surface::{BackdropImage, BackdropRequest, CursorIcon, HostKey};
+use tilo_session_core::surface::{
+    BackdropImage, BackdropRequest, CursorIcon, HostDrag, HostIme, HostKey, HostLayer,
+    HostTextInput, SurfaceHost,
+};
 
 use ui::App;
 use ui::app::{AppSurface, SurfaceDamage};

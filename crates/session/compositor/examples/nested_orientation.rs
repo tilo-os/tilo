@@ -33,13 +33,10 @@ mod nested {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
-    use smithay::backend::allocator::Fourcc;
-    use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
-    use smithay::utils::Transform;
     use tilo_compositor::{
-        Compositor, HostFrame, HostLayer, NestedBackend, NestedConfig, OutputConfig, Screenshot,
-        StackPolicy, SurfaceHost,
+        Compositor, NestedBackend, NestedConfig, OutputConfig, Screenshot, StackPolicy,
     };
+    use tilo_session_core::surface::{HostFrame, HostLayer, SurfaceHost};
 
     const WIDTH: i32 = 320;
     const HEIGHT: i32 = 200;
@@ -49,12 +46,12 @@ mod nested {
 
     /// A layer as tall as the output: red on top, blue below.
     struct Marker {
-        buffer: MemoryRenderBuffer,
+        pixels: Vec<u8>,
     }
 
     impl Marker {
         fn new() -> Self {
-            // Rows top first; ABGR8888 is R, G, B, A in memory.
+            // Rows top first, premultiplied R, G, B, A.
             let mut bytes = Vec::with_capacity(usize::try_from(WIDTH * HEIGHT * 4).unwrap());
             for row in 0..HEIGHT {
                 let pixel = if row < HEIGHT / 2 {
@@ -66,16 +63,7 @@ mod nested {
                     bytes.extend_from_slice(&pixel);
                 }
             }
-            Self {
-                buffer: MemoryRenderBuffer::from_slice(
-                    &bytes,
-                    Fourcc::Abgr8888,
-                    (WIDTH, HEIGHT),
-                    1,
-                    Transform::Normal,
-                    None,
-                ),
-            }
+            Self { pixels: bytes }
         }
     }
 
@@ -84,7 +72,7 @@ mod nested {
             vec![HostLayer {
                 location: (0, 0),
                 size: (WIDTH, HEIGHT),
-                frame: HostFrame::from_buffer(self.buffer.clone(), (WIDTH as u32, HEIGHT as u32)),
+                frame: HostFrame::from_pixels((WIDTH as u32, HEIGHT as u32), self.pixels.clone()),
             }]
         }
 

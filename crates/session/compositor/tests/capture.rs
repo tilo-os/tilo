@@ -17,12 +17,8 @@
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::time::Duration;
 
-use smithay::backend::allocator::Fourcc;
-use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
-use smithay::utils::Transform;
-use tilo_compositor::{
-    Compositor, HostFrame, HostLayer, InputEvent, OutputConfig, StackPolicy, SurfaceHost,
-};
+use tilo_compositor::{Compositor, InputEvent, OutputConfig, StackPolicy};
+use tilo_session_core::surface::{HostFrame, HostLayer, SurfaceHost};
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_output::WlOutput, wl_pointer::WlPointer,
     wl_registry, wl_registry::WlRegistry, wl_seat::WlSeat, wl_shm, wl_shm::WlShm,
@@ -199,22 +195,16 @@ fn pump(compositor: &mut Compositor, tool: &mut Tool, done: impl FnMut(&Seen) ->
 /// A hosted surface: one square of one colour.
 struct Square {
     rect: (i32, i32, i32, i32),
-    buffer: MemoryRenderBuffer,
+    pixels: Vec<u8>,
 }
 
 impl Square {
     fn new(rect: (i32, i32, i32, i32), bgr: [u8; 3]) -> Self {
-        let pixel = [bgr[0], bgr[1], bgr[2], 255];
-        let bytes = pixel.repeat(usize::try_from(rect.2 * rect.3).unwrap());
-        let buffer = MemoryRenderBuffer::from_slice(
-            &bytes,
-            Fourcc::Argb8888,
-            (rect.2, rect.3),
-            1,
-            Transform::Normal,
-            None,
-        );
-        Self { rect, buffer }
+        let pixel = [bgr[2], bgr[1], bgr[0], 255];
+        Self {
+            rect,
+            pixels: pixel.repeat(usize::try_from(rect.2 * rect.3).unwrap()),
+        }
     }
 }
 
@@ -223,12 +213,12 @@ impl SurfaceHost for Square {
         vec![HostLayer {
             location: (self.rect.0, self.rect.1),
             size: (self.rect.2, self.rect.3),
-            frame: HostFrame::from_buffer(
-                self.buffer.clone(),
+            frame: HostFrame::from_pixels(
                 (
                     u32::try_from(self.rect.2).expect("a whole number of pixels"),
                     u32::try_from(self.rect.3).expect("a whole number of pixels"),
                 ),
+                self.pixels.clone(),
             ),
         }]
     }

@@ -14,8 +14,8 @@
     reason = "a fixture's pixels are small whole numbers it laid out itself"
 )]
 
-use tilo_compositor::{Compositor, HostFrame, HostLayer, OutputConfig, StackPolicy, SurfaceHost};
-use tilo_session_core::surface::Region;
+use tilo_compositor::{Compositor, OutputConfig, StackPolicy};
+use tilo_session_core::surface::{HostFrame, HostLayer, Region, SurfaceHost};
 
 /// A hosted surface whose host fills its frame row by row, the way a toolkit app draws into one:
 /// red above the middle, blue below.
@@ -30,7 +30,7 @@ impl Rows {
             u32::try_from(size.0).unwrap(),
             u32::try_from(size.1).unwrap(),
         );
-        let mut frame = HostFrame::new((width, height));
+        let frame = HostFrame::new((width, height));
         let mut pixels = Vec::new();
         for row in 0..size.1 {
             let pixel = if row < size.1 / 2 {
@@ -113,7 +113,7 @@ impl Bar {
                 pixels[start..start + 4].copy_from_slice(&[0, 255, 0, 255]);
             }
         }
-        let mut frame = HostFrame::new(frame);
+        let frame = HostFrame::new(frame);
         frame.set_pixels(&pixels, &[Region::new(bar.0, bar.1, bar.2, bar.3)]);
         Self {
             frame,
@@ -236,7 +236,7 @@ impl Vanishes {
                 pixels[start..start + 4].copy_from_slice(&[0, 255, 0, 255]);
             }
         }
-        let mut frame = HostFrame::new((width, height));
+        let frame = HostFrame::new((width, height));
         frame.set_pixels(&pixels, &[Region::new(bx, by, bw, bh)]);
         Self {
             frame,

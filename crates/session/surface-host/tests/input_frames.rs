@@ -12,8 +12,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use tilo_compositor::SurfaceHost as _;
-use tilo_session_core::surface::{HostKey, KeyModifiers};
+use tilo_session_core::surface::{HostKey, KeyModifiers, SurfaceHost as _};
 
 use tilo_surface_host::{Placement, WidgetHost};
 use ui::taffy::{NodeId, Style, TaffyTree};

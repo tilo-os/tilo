@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test fixtures")]
 
 use super::tests_support::{alt, grave, key, part_with, reading_with_windows, tab};
-use tilo_compositor::SurfaceHost as _;
 use tilo_session_core::surface::KeyClaim;
+use tilo_session_core::surface::SurfaceHost as _;
 
 #[test]
 fn alt_tab_asks_for_the_switcher_from_rest() {

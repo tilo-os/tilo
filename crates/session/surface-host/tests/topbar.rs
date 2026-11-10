@@ -9,7 +9,8 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-use tilo_compositor::{Compositor, OutputConfig, StackPolicy, SurfaceHost as _};
+use tilo_compositor::{Compositor, OutputConfig, StackPolicy};
+use tilo_session_core::surface::SurfaceHost as _;
 
 use tilo_surface_host::{AppHost, Placement};
 use tilo_topbar::{Link, fixture};

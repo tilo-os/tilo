@@ -26,7 +26,7 @@
 //! finger; its icon (the client's icon surface, or the image a hosted app
 //! gave) is drawn under it, in front of everything but the idle dim.
 //!
-//! [`SurfaceHost::drop_offered`]: crate::SurfaceHost::drop_offered
+//! [`SurfaceHost::drop_offered`]: tilo_session_core::surface::SurfaceHost::drop_offered
 
 use std::collections::BTreeMap;
 use std::io::Read as _;
@@ -104,7 +104,7 @@ pub(crate) enum DragIcon {
     },
     /// A hosted app's image, its hotspot (logical) on the drag's point.
     Image {
-        frame: crate::HostFrame,
+        frame: tilo_session_core::surface::HostFrame,
         hotspot: Point<i32, Logical>,
     },
 }
@@ -258,7 +258,7 @@ impl State {
     pub(crate) fn start_host_drag(
         &mut self,
         offer: Vec<(String, Vec<u8>)>,
-        icon: Option<(crate::HostFrame, Point<i32, Logical>)>,
+        icon: Option<(tilo_session_core::surface::HostFrame, Point<i32, Logical>)>,
     ) -> bool {
         let Some(values) = host_offer(offer) else {
             return false;
@@ -427,10 +427,13 @@ impl State {
             }
             DragIcon::Image { frame, hotspot } => {
                 let origin: Point<f64, Physical> = (at - hotspot.to_f64()).to_physical(scale);
+                let Some(buffer) = self.uploads.draw(frame) else {
+                    return Vec::new();
+                };
                 match MemoryRenderBufferRenderElement::from_buffer(
                     renderer,
                     origin,
-                    frame.buffer(),
+                    &buffer,
                     None,
                     None,
                     None,

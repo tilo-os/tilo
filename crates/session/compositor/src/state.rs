@@ -43,11 +43,10 @@ use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::xwayland_shell::XWaylandShellState;
 
 use crate::app_liveness;
-use crate::host::SurfaceHost;
 use crate::input::InputEvent;
 use crate::keys::HostKeys;
 use crate::policy::{WindowInfo, WindowPolicy};
-use tilo_session_core::surface::{HostKey, HostedOutput, KeyClaim, KeyModifiers};
+use tilo_session_core::surface::{HostKey, HostedOutput, KeyClaim, KeyModifiers, SurfaceHost};
 
 /// Per-client data every Wayland client carries.
 #[derive(Default)]
@@ -181,6 +180,8 @@ pub struct State {
     pub(crate) layers: crate::layer::Layers,
     pub(crate) policy: Box<dyn WindowPolicy>,
     pub(crate) hosts: Vec<Box<dyn SurfaceHost>>,
+    /// The buffers the hosted surfaces' frames are drawn from, by the frame they hold.
+    pub(crate) uploads: crate::uploads::Uploads,
     /// The outputs the hosted surfaces were last told of.
     told_outputs: Vec<HostedOutput>,
     /// The connector the person made primary, as the configuration names it, whether or not it is
@@ -359,6 +360,7 @@ impl State {
             layers: crate::layer::Layers::new(display),
             policy,
             hosts: Vec::new(),
+            uploads: crate::uploads::Uploads::default(),
             told_outputs: Vec::new(),
             primary_output: None,
             told_monitors: Vec::new(),
