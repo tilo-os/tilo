@@ -911,9 +911,17 @@ fn nametag_clearance(tip: (f64, f64), locus: Rect, height: f64) -> (f64, f64) {
     let ring_bottom = tip.1 + RING_R;
     let line = locus.height() > 0.0 && locus.height() <= 4.0 * height;
     if line {
-        (ring_top.min(locus.y0), ring_bottom.max(locus.y1))
+        // The box a caret is published in is the caret's own: an editor draws it from the
+        // baseline down, while the words it is in rise above its top. One box's height above
+        // the caret clears the line the agent is writing on, which a tag hung from the caret's
+        // top landed across — the tag covered the words it named the agent for.
+        let above_the_line = locus.y0 - locus.height();
+        (ring_top.min(above_the_line), ring_bottom.max(locus.y1))
     } else {
-        (ring_top, ring_bottom)
+        // What the frame knows of the action is a box: the pointer stands in the middle of what
+        // it acts on. A pointer in text is on a line of it, and the words of that line stand a
+        // line above the middle: one line's lift keeps the name off them.
+        (ring_top - height, ring_bottom + height)
     }
 }
 
@@ -3311,14 +3319,25 @@ mod tests {
     #[test]
     fn an_agents_name_hangs_above_the_line_its_caret_is_in() {
         // The mid-edit frame: the pointer stands on the line the agent is
-        // writing, and its name sat across that line's words.
+        // writing, and its name sat across that line's words. The box the
+        // caret publishes is its own, from the baseline down, while the words
+        // of the line rise above it.
+        let viewport = Rect::new(0.0, 40.0, 1280.0, 800.0);
+        let line = Rect::new(120.0, 260.0, 640.0, 289.0);
+        let caret = Rect::new(120.0, 272.0, 121.0, 289.0);
+        let tag = nametag((300.0, 282.0), caret, viewport);
+        assert!(tag.intersect(line).is_zero_area(), "off the line: {tag:?}");
+        assert!(tag.y1 <= line.y0, "above the line's words: {tag:?}");
+    }
+
+    #[test]
+    fn an_agents_name_keeps_one_gap_above_a_line_it_is_given_whole() {
         let viewport = Rect::new(0.0, 40.0, 1280.0, 800.0);
         let line = Rect::new(120.0, 300.0, 640.0, 324.0);
         let tag = nametag((300.0, 312.0), line, viewport);
-        assert!(tag.intersect(line).is_zero_area(), "off the line: {tag:?}");
         assert!(
-            (line.y0 - tag.y1 - PILL_GAP).abs() < 0.01,
-            "one gap above the line: {tag:?}"
+            tag.y1 <= line.y0 - PILL_GAP,
+            "at least a gap above the line: {tag:?}"
         );
     }
 
@@ -3350,7 +3369,7 @@ mod tests {
         let tag = nametag((300.0, 400.0), window, viewport);
         assert!(tag.y1 < 400.0, "above the pointer: {tag:?}");
         assert!(
-            400.0 - tag.y1 < 40.0,
+            400.0 - tag.y1 < 64.0,
             "beside it, not across the frame: {tag:?}"
         );
     }
