@@ -339,13 +339,12 @@ template view tree_rows<T>(
         on activate(x: T): set(opened, x)
         on drop(moved: T): place(moved, .none, .none)
         for x in items {
-            // The row over this one, when it is a row of the same parent: the place the actions
-            // offered on it get. None for a first child, and for a row the one over it does not
-            // stand beside — both cost the row it reads, never the rows before it.
+            // The item just before this one under the same parent: the place the actions offered
+            // on it get and the row `Tab` indents it under, whatever the window shows between
+            // them. The store's index answers the run of `p`'s own, never a walk of the rows
+            // before it: none for a first child, which costs its own row and no other.
             let p = parent(x)
-            let above: Option<T> = if let over = items.previous(x) {
-                if parent(over) == p { .some(over) } else { .none }
-            } else { .none }
+            let above: Option<T> = items.filter(y -> y.parent == p).previous(x)
             ui.TreeViewNode(
                 x,
                 label(x),

@@ -147,6 +147,19 @@ mod cases {
         }
     }
 
+    /// The note a tree node names as the one just before it under the same parent: the place
+    /// its actions get and the row `Tab` indents it under.
+    fn above_of_node(node: &UiNode) -> Option<ResourceRef> {
+        match node.props.get("above") {
+            Some(Value::Ref(r)) => Some(ResourceRef::clone(&r.target)),
+            Some(Value::Opt(Some(held))) => match &**held {
+                Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
+                other => panic!("a node's row above is a note, not {other:?}"),
+            },
+            _ => None,
+        }
+    }
+
     /// Fire the value-carrying `event` of the tree node of the note titled `title`.
     fn move_on(view: &ViewInstance, title: &str, event: &str, moved: &ResourceRef) {
         let key = node_titled(view, title).key.clone();
@@ -330,6 +343,57 @@ mod cases {
             "a note with none of its own holds none"
         );
         assert_eq!(parent_of_node(child), Some(plan));
+    }
+
+    /// The row over a note is the one beside it under the same parent, whatever the window shows
+    /// between them: a note following an expanded branch names that branch, never none — the
+    /// place its actions get and the row `Tab` indents it under.
+    #[test]
+    fn the_row_over_a_note_is_the_one_beside_it() {
+        let n = Notes::new();
+        let plan = n.titled("Q3 plan");
+        let first = n.child_of(&plan);
+        let second = n.child_of(&plan);
+        let after = n.titled("Groceries");
+        let view = n.window();
+        assert_eq!(
+            above_of_node(node_titled(&view, "Groceries")),
+            Some(plan.clone()),
+            "the row over the note after the branch is the branch itself, whose own stand \
+             between them"
+        );
+        let child = |id: &ResourceRef, title: &str| {
+            n.call("retitle", vec![Value::resource(id), Value::text(title)]);
+            id.clone()
+        };
+        child(&first, "Agenda");
+        child(&second, "Minutes");
+        let mut view = n.window();
+        assert_eq!(
+            above_of_node(node_titled(&view, "Minutes")),
+            Some(first),
+            "under the branch, the row over one note is the one before it"
+        );
+        assert_eq!(
+            above_of_node(node_titled(&view, "Agenda")),
+            None,
+            "the first of them has no row of its own over it"
+        );
+        assert_eq!(
+            above_of_node(node_titled(&view, "Q3 plan")),
+            None,
+            "and the first row at the top names none"
+        );
+
+        // What the tree reports of `Tab` on the note after the branch: the branch's first child
+        // is told it was dropped on, and the note stands at the head of the branch's own.
+        view.poll_patches().unwrap();
+        move_on(&view, "Agenda", "drop", &after);
+        assert_eq!(
+            n.parent_of(&after),
+            Some(plan),
+            "Tab under the branch makes the note one of it"
+        );
     }
 
     /// Dropping a note on a row makes it a note of that one: the tree indents it under the row
