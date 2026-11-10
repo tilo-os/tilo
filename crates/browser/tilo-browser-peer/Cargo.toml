@@ -16,6 +16,9 @@ homepage.workspace = true
 # desktop's start module large.
 tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+# Asking another device's actions through this session is the session's own role, written once for
+# every host that asks one.
+tilo-session-core = { path = "../../session/core" }
 tilo-relay-client = { version = "0.1.0", path = "../../hosting/tilo-relay-client", features = ["iroh"] }
 tilo-relay-protocol = { version = "0.1.0", path = "../../hosting/tilo-relay-protocol" }
 # The iroh session client the page and native peers reach the host with.

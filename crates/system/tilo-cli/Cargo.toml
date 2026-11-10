@@ -41,6 +41,8 @@ tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
 # it, which `main` hands over to first thing.
 tilo-automerge-isolate.workspace = true
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+# HTTPS to a site and a host, as every client of the relay makes its requests.
+tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
 # Reads the PEM certificates a test names for HTTPS to trust (`tilo login`).

@@ -31,14 +31,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tilo_browser_peer::login::{self as peer_login, Door, SignIn};
 use tilo_browser_peer::pairing_link::PairingLink;
-use tilo_browser_peer::{HttpClient, HttpFuture, PeerHandle};
+use tilo_browser_peer::{HttpClient, PeerHandle};
+use tilo_relay_client::https::Origin;
 use tilo_relay_protocol::login_code::{self, Claim, Claimed, Report, Resolve, Resolved, Step};
 use tilo_relay_protocol::web::API_PREFIX;
 
 use crate::agent::{self, Agent, Registered, Tool};
 
-/// The longest body read from a host or a site.
-const MAX_BODY: usize = 4 * 1024 * 1024;
 /// The site `tilo login` resolves codes at, unless `--site` or
 /// [`SITE_ENV`] names another.
 pub const DEFAULT_SITE: &str = "https://tilo.sh";
@@ -206,63 +205,16 @@ pub fn logged_in() -> bool {
     device_dir().is_ok_and(|dir| dir.join("key").exists())
 }
 
-/// HTTPS to one origin, as a host's and a site's routes take it.
-struct Web {
-    client: tilo_net::Client,
-    origin: String,
-}
-
-impl Web {
-    fn new(origin: &str) -> Self {
-        Self {
-            client: http(),
-            origin: origin.trim_end_matches('/').to_owned(),
-        }
-    }
-
-    async fn get(&self, path: &str) -> Result<(u16, Vec<u8>)> {
-        let response = self
-            .client
-            .get(format!("{}{path}", self.origin))
-            .send()
-            .await?;
-        let status = response.status().as_u16();
-        Ok((status, response.bytes_limited(MAX_BODY).await?.to_vec()))
-    }
-}
-
-impl HttpClient for Web {
-    fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_> {
-        let url = format!("{}{path}", self.origin);
-        Box::pin(async move {
-            let response = self
-                .client
-                .post(url)
-                .header("content-type", "application/octet-stream")
-                .body(body)
-                .send()
-                .await
-                .map_err(|error| error.to_string())?;
-            let status = response.status().as_u16();
-            let body = response
-                .bytes_limited(MAX_BODY)
-                .await
-                .map_err(|error| error.to_string())?;
-            Ok((status, body.to_vec()))
-        })
-    }
-}
-
 /// The site's door to the workspace the code names, as its `entry.json`
 /// says (`home.admission`), when it names one for that host.
-async fn door_of(site: &str, host_origin: &str) -> Option<(Web, String)> {
-    let (status, body) = Web::new(site).get("/entry.json").await.ok()?;
+async fn door_of(site: &str, host_origin: &str) -> Option<(Origin, String)> {
+    let (status, body) = Origin::new(&http(), site).get("/entry.json").await.ok()?;
     if status != 200 {
         return None;
     }
     let entry: Value = serde_json::from_slice(&body).ok()?;
     let (origin, path) = peer_login::site_door(&entry, host_origin)?;
-    Some((Web::new(&origin), path))
+    Some((Origin::new(&http(), &origin), path))
 }
 
 /// This computer's name, as a device label says it.
@@ -297,19 +249,10 @@ pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<(PeerHa
         device.user
     ))
     .map_err(|error| anyhow!(error))?;
-    let host_web = Web::new(&device.host_origin);
+    let host_web = Origin::new(&http(), &device.host_origin);
     let info = tilo_browser_peer::host_info(&host_web).await?;
-    let address = info
-        .address
+    let endpoint = tilo_relay_client::https::host_endpoint(&info)
         .context("the workspace's host takes no device connections")?;
-    let endpoint = match address
-        .relay_url
-        .as_deref()
-        .and_then(|url| url.parse().ok())
-    {
-        Some(relay) => address.endpoint_addr.with_relay_url(relay),
-        None => address.endpoint_addr,
-    };
     let (cert, host_cert) = device.certs()?;
     let signed = SignIn {
         link,
@@ -346,12 +289,12 @@ fn site_origin(flag: Option<&str>) -> Result<String> {
 }
 
 /// The site's home host, as its `entry.json` names it (`home.host.origin`).
-async fn home_host(site: &Web) -> Result<String> {
-    let unreachable = || format!("{} names no Tilo host to log in at", site.origin);
+async fn home_host(site: &Origin) -> Result<String> {
+    let unreachable = || format!("{} names no Tilo host to log in at", site.name());
     let (status, body) = site
         .get("/entry.json")
         .await
-        .with_context(|| format!("{} was not reached", site.origin))?;
+        .map_err(|error| anyhow!("{} was not reached: {error}", site.name()))?;
     if status != 200 {
         bail!("{} (HTTP {status})", unreachable());
     }
@@ -578,8 +521,8 @@ pub fn login(code: &str, agent: Option<&str>, site: Option<&str>) -> Result<Exit
     let site = site_origin(site)?;
     let runtime = runtime()?;
     runtime.block_on(async {
-        let host_origin = home_host(&Web::new(&site)).await?;
-        let host = Web::new(&host_origin);
+        let host_origin = home_host(&Origin::new(&http(), &site)).await?;
+        let host = Origin::new(&http(), &host_origin);
         let resolved = resolve(&host, &code).await?;
         let reporter = Reporter {
             host: &host,
@@ -613,7 +556,7 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
     let label = label(&agent.name, &hostname());
     let dir = device_dir()?;
     let key = SigningKey::from_bytes(&rand::random());
-    let host_web = Web::new(&link.host_origin);
+    let host_web = Origin::new(&http(), &link.host_origin);
     eprintln!("Waiting for the person's tab to approve this computer…");
     let signed = peer_login::sign_in(&host_web, &link, &agent.name, &label, &key, |_| {})
         .await
@@ -775,7 +718,7 @@ mod tests {
     }
 
     impl HttpClient for FakeHost {
-        fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_> {
+        fn post(&self, path: &str, body: Vec<u8>) -> tilo_relay_client::https::HttpFuture<'_> {
             let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
             let route = path.strip_prefix(API_PREFIX).unwrap_or(path).to_owned();
             let (status, answer) = (self.answer)(&route, &body);

@@ -26,6 +26,74 @@ pub trait HttpClient: crate::MaybeSendSync {
     fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_>;
 }
 
+/// The longest body read from a host or a site.
+const MAX_BODY: usize = 4 * 1024 * 1024;
+
+/// HTTPS to one host's or site's origin, as its routes take it: what a native peer posts through,
+/// and the `GET` a site's `entry.json` takes.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Clone)]
+pub struct Origin {
+    client: tilo_net::Client,
+    origin: String,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl Origin {
+    /// `origin` (`https://eu1.tilo.sh`), reached with `client`.
+    #[must_use]
+    pub fn new(client: &tilo_net::Client, origin: &str) -> Self {
+        Self {
+            client: client.clone(),
+            origin: origin.trim_end_matches('/').to_owned(),
+        }
+    }
+
+    /// The origin itself, as links and routes name it.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.origin
+    }
+    /// `GET` the route `path` below the origin: its status and body, when the origin answered.
+    pub async fn get(&self, path: &str) -> Result<(u16, Vec<u8>), String> {
+        let response = self
+            .client
+            .get(format!("{}{path}", self.origin))
+            .send()
+            .await
+            .map_err(|error| error.to_string())?;
+        let status = response.status().as_u16();
+        let body = response
+            .bytes_limited(MAX_BODY)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok((status, body.to_vec()))
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl HttpClient for Origin {
+    fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_> {
+        let url = format!("{}{path}", self.origin);
+        let client = self.client.clone();
+        Box::pin(async move {
+            let response = client
+                .post(url)
+                .header("content-type", "application/octet-stream")
+                .body(body)
+                .send()
+                .await
+                .map_err(|error| error.to_string())?;
+            let status = response.status().as_u16();
+            let body = response
+                .bytes_limited(MAX_BODY)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok((status, body.to_vec()))
+        })
+    }
+}
+
 fn path(route: &str) -> String {
     format!("{API_PREFIX}{route}")
 }
@@ -66,6 +134,22 @@ pub async fn host_info(
     client: &dyn HttpClient,
 ) -> Result<tilo_relay_protocol::web::HostInfo, LinkError> {
     call(client, "/host", Vec::new()).await
+}
+
+/// Where the host `info` describes published it is reachable, as a session dials it: its endpoint,
+/// with the relay it names when it names one. `None` when it takes no device connections.
+#[must_use]
+pub fn host_endpoint(info: &tilo_relay_protocol::web::HostInfo) -> Option<iroh_base::EndpointAddr> {
+    let address = info.address.as_ref()?;
+    let endpoint = match address
+        .relay_url
+        .as_deref()
+        .and_then(|url| url.parse::<iroh_base::RelayUrl>().ok())
+    {
+        Some(relay) => address.endpoint_addr.clone().with_relay_url(relay),
+        None => address.endpoint_addr.clone(),
+    };
+    Some(endpoint)
 }
 
 /// Send a member's root-signed approver command (their pending device

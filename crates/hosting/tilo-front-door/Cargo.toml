@@ -19,6 +19,8 @@ collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
 tilo-relay-protocol = { path = "../tilo-relay-protocol" }
+# HTTPS to the relay and the site, as every client of the relay makes its requests.
+tilo-relay-client = { path = "../tilo-relay-client" }
 tilo-relay-session = { path = "../tilo-relay-session" }
 tilo-runtime = { path = "../../runtime/tilo-runtime" }
 serde = { workspace = true, features = ["derive"] }

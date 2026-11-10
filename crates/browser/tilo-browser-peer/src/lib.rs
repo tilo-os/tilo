@@ -51,7 +51,8 @@ pub mod presence_anchors;
 mod previews;
 mod replica;
 pub mod session;
-pub mod session_actions;
+/// Another device's actions, asked through this device's session.
+pub use tilo_session_core::remote as session_actions;
 pub mod sign_in;
 pub mod surfaces;
 pub mod voice;

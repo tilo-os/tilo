@@ -17796,6 +17796,7 @@ dependencies = [
  "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-relay-session",
+ "tilo-session-core",
  "tilo-sort",
  "tilo-test-env",
  "tilo-ui",
@@ -18028,6 +18029,7 @@ dependencies = [
  "tilo-files",
  "tilo-net",
  "tilo-paths",
+ "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-runtime",
  "tilo-test-env",
@@ -19045,6 +19047,7 @@ dependencies = [
  "tilo-clock",
  "tilo-files",
  "tilo-net",
+ "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-relay-session",
  "tilo-runtime",
@@ -20807,6 +20810,7 @@ dependencies = [
  "serde",
  "thiserror 2.0.21",
  "tilo-clock",
+ "tilo-net",
  "tilo-relay-protocol",
  "tilo-user-identity",
  "tokio",
@@ -21538,6 +21542,7 @@ name = "tilo-session-core"
 version = "0.1.0"
 dependencies = [
  "collab-types",
+ "n0-future",
  "serde",
  "serde_json",
  "tilo-actions",
@@ -21546,7 +21551,10 @@ dependencies = [
  "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-live",
+ "tilo-lock",
  "tilo-ui",
+ "tokio",
+ "web-time",
  "workspace-hack",
 ]
 

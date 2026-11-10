@@ -19,7 +19,9 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, MutexGuard};
+
 use std::time::Duration;
+use tilo_session_core::remote::Heard;
 
 use collab_types::DocumentMutation;
 use collab_types::inbound::{InboundHold, OpKey};
@@ -3770,6 +3772,56 @@ mod tests {
              at 60000"
         );
         assert_eq!(planes.missed(7), 1, "an answer starts the count again");
+    }
+}
+
+/// This session as what asking another device's actions needs ([`Heard`]): the frames it carries
+/// to a device's key, and what it heard back. A handle is the session, so what holds one hands it
+/// over as it hands over itself.
+impl From<&PeerHandle> for Arc<dyn tilo_session_core::remote::RemoteSession> {
+    fn from(peer: &PeerHandle) -> Self {
+        Arc::new(peer.clone())
+    }
+}
+impl tilo_session_core::remote::RemoteSession for PeerHandle {
+    fn send_remote_action(
+        &self,
+        workspace_id: u64,
+        device: [u8; 32],
+        frame: Vec<u8>,
+    ) -> Result<(), String> {
+        Self::send_remote_action(self, workspace_id, device, frame)
+    }
+
+    fn take_heard(&self) -> Vec<Heard> {
+        self.drain()
+            .into_iter()
+            .filter_map(|event| match event {
+                PeerEvent::RemoteAction {
+                    workspace_id,
+                    from,
+                    frame,
+                } => Some(Heard::Action {
+                    workspace_id,
+                    from,
+                    frame,
+                }),
+                PeerEvent::RemoteActionUndeliverable {
+                    workspace_id,
+                    to,
+                    reason,
+                } => Some(Heard::Undeliverable {
+                    workspace_id,
+                    to,
+                    reason,
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn on_change(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        Self::on_change(self, wake);
     }
 }
 

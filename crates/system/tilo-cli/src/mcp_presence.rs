@@ -40,10 +40,10 @@ use tilo_actions::remote::{
     InvokeRequest, ReceiptStatus, application_action_target, application_record_target,
     settle_with,
 };
-use tilo_browser_peer::presence_anchors::{presence_anchors, read_presence_anchors};
 use tilo_browser_peer::session_actions::SessionActions;
 use tilo_browser_peer::{PeerHandle, narration};
 use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveRecord, OpsFrame};
+use tilo_relay_protocol::live::{presence_anchors, read_presence_anchors};
 use tilo_runtime::mcp::{ActedRecord, Acting};
 
 /// How often the agent restates itself between calls: the workspace's other

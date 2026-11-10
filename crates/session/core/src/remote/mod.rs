@@ -1,28 +1,12 @@
-//! Another device's actions, asked through this device's session with the
-//! workspace's host.
+//! Another device's actions, asked through this device's session with the workspace's host: an
+//! invocation frame addressed to a device's key is carried there, and its answer comes back on the
+//! same session. [`SessionActions`] is that, as an [`ActionHost`], so whatever drives a local action
+//! host drives another device's instead. The answering device authenticates the session's device
+//! and decides every request from that.
 //!
-//! A device that is a member of a workspace reaches every other device of
-//! it through the session it already holds with the workspace's host: a
-//! remote-action frame addressed to a device's key is carried there, and
-//! that device's answer comes back on the same session. The host's own
-//! device answers on its app-serving plane, which on a host that serves the
-//! workspace's records is every record's actions, whoever has it open.
-//!
-//! [`SessionActions`] is that, as an [`ActionHost`]: whatever drives a local
-//! action host (an MCP projection, a script) drives the other device's
-//! instead. Nothing is decided here. The answering device authenticates the
-//! session's device and decides every request from that and its own
-//! policy; the [`Caller`] a local host would be handed is not sent.
-//!
-//! A request whose answer does not come within [`REPLY_DEADLINE`] is
-//! answered as unavailable, as is every request waiting when the host says
-//! the device cannot be reached, so a caller always hears back.
-//!
-//! An invocation the device accepted and still runs, a live read most of
-//! all, is followed here: [`ActionHost::next_change`] asks the device to
-//! hold its answer until the invocation moves, and the state it answers is
-//! kept, so whoever waits is woken by the change itself rather than asking
-//! again. A page, whose one thread never blocks, observes only what is kept.
+//! A host brings its own session ([`RemoteSession`]): this desktop's peer actor, a page's endpoint,
+//! a grant's session with its relay. An invocation the device accepted and still runs is followed
+//! here, so whoever waits is woken by the change itself rather than asking again.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,8 +23,6 @@ use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 use web_time::Instant;
 
-use crate::session::{PeerEvent, PeerEvents, PeerHandle};
-
 #[cfg(not(target_arch = "wasm32"))]
 mod gets;
 #[cfg(not(target_arch = "wasm32"))]
@@ -52,20 +34,54 @@ pub const REPLY_DEADLINE: Duration = Duration::from_secs(30);
 /// How often requests past their deadline are answered.
 const SWEEP: Duration = Duration::from_millis(500);
 
-/// An answer to a held ask that comes sooner than this with nothing new is
-/// a device that does not hold: half of [`MAX_REMOTE_WAIT`].
+/// An answer sooner than this with nothing new is a device that does not hold.
 const HELD: Duration = Duration::from_secs(5);
 
-/// One device's actions in one workspace, asked through `peer`'s session.
-/// Cheap to clone; the last clone dropped stops listening.
+/// What a host's session heard for the asks here, since the last call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Heard {
+    /// A device answered, or another of the person's devices sent a request of its own.
+    Action {
+        workspace_id: u64,
+        from: [u8; 32],
+        frame: Vec<u8>,
+    },
+    /// The session could not carry a request to the device, and why.
+    Undeliverable {
+        workspace_id: u64,
+        to: [u8; 32],
+        reason: String,
+    },
+}
+
+/// A host's session with a workspace's host: frames to a device's key, what it heard, and a wake.
+pub trait RemoteSession: Send + Sync {
+    /// Send `frame` to the device `device` in `workspace_id`.
+    ///
+    /// # Errors
+    ///
+    /// The session cannot carry it.
+    fn send_remote_action(
+        &self,
+        workspace_id: u64,
+        device: [u8; 32],
+        frame: Vec<u8>,
+    ) -> Result<(), String>;
+    /// Take everything the session heard since the last call.
+    fn take_heard(&self) -> Vec<Heard>;
+    /// Call `wake` whenever the session heard something or its state changed.
+    fn on_change(&self, wake: Arc<dyn Fn() + Send + Sync>);
+}
+
+/// One device's actions in one workspace, asked through the session: the last clone dropped stops
+/// listening.
 #[derive(Clone)]
 pub struct SessionActions(Arc<Inner>);
 
 struct Inner {
-    peer: PeerHandle,
+    session: Arc<dyn RemoteSession>,
     workspace_id: u64,
     device: [u8; 32],
-    events: PeerEvents,
     waiting: Mutex<Waiting>,
     next_correlation: AtomicU64,
 }
@@ -103,8 +119,8 @@ struct Waiting {
 /// An invocation the device accepted, as it last answered for it.
 struct Followed {
     state: InvocationState,
-    /// Whether the device holds an answer until the invocation moves; one
-    /// that answers at once is not asked to, so nobody spins on it.
+    /// Whether the device holds an answer until the invocation moves: one that answers at once is
+    /// not asked to, so nobody spins on it.
     holds: bool,
     /// The held ask out now: when it was sent.
     asked: Option<Instant>,
@@ -112,37 +128,13 @@ struct Followed {
     waiters: Vec<Completer<()>>,
 }
 
-/// An answer to give once the lock on [`Waiting`] is released: completing
-/// one runs its caller's continuation, which may ask again.
-enum Give {
-    Catalogue(Completer<Answered<CataloguePage>>, Answered<CataloguePage>),
-    Receipt(
-        Completer<Answered<InvocationReceipt>>,
-        Answered<InvocationReceipt>,
-    ),
-    Update(Completer<Option<InvocationState>>, Option<InvocationState>),
-    Cancel(Completer<Answered<()>>, Answered<()>),
-    Put(
-        Completer<Answered<ContentPutAnswer>>,
-        Answered<ContentPutAnswer>,
-    ),
-    Get(
-        Completer<Answered<ContentGetAnswer>>,
-        Answered<ContentGetAnswer>,
-    ),
-}
+/// What to answer once the lock on [`Waiting`] is released: completing one runs its caller's
+/// continuation, which may ask again.
+type Give = Box<dyn FnOnce() + Send>;
 
-impl Give {
-    fn give(self) {
-        match self {
-            Self::Catalogue(answer, value) => answer.complete(value),
-            Self::Receipt(answer, value) => answer.complete(value),
-            Self::Update(answer, value) => answer.complete(value),
-            Self::Cancel(answer, value) => answer.complete(value),
-            Self::Put(answer, value) => answer.complete(value),
-            Self::Get(answer, value) => answer.complete(value),
-        }
-    }
+/// `asked` answered with `answer`, once the lock on [`Waiting`] is released.
+fn giving<P: Send + 'static>(asked: Asked<P>, answer: P) -> Give {
+    Box::new(move || asked.answer.complete(answer))
 }
 
 fn unavailable(reason: impl Into<String>) -> ActionHostError {
@@ -155,69 +147,45 @@ impl Waiting {
     /// Every waiting request, answered with `error`.
     fn fail_all(&mut self, error: &ActionHostError, give: &mut Vec<Give>) {
         for (_, asked) in self.catalogues.drain() {
-            give.push(Give::Catalogue(asked.answer, Err(error.clone())));
+            give.push(giving(asked, Err(error.clone())));
         }
         for asked in self.receipts.drain().flat_map(|(_, all)| all) {
-            give.push(Give::Receipt(asked.answer, Err(error.clone())));
+            give.push(giving(asked, Err(error.clone())));
         }
         for asked in self.updates.drain().flat_map(|(_, all)| all) {
-            give.push(Give::Update(asked.answer, None));
+            give.push(giving(asked, None));
         }
         for asked in self.cancels.drain().flat_map(|(_, all)| all) {
-            give.push(Give::Cancel(asked.answer, Err(error.clone())));
+            give.push(giving(asked, Err(error.clone())));
         }
         for (_, asked) in self.puts.drain() {
-            give.push(Give::Put(asked.answer, Err(error.clone())));
+            give.push(giving(asked, Err(error.clone())));
         }
         for (_, asked) in self.gets.drain() {
-            give.push(Give::Get(asked.answer, Err(error.clone())));
+            give.push(giving(asked, Err(error.clone())));
         }
     }
 
     /// The requests past their deadline, answered as unanswered.
     fn expire(&mut self, now: Instant, give: &mut Vec<Give>) {
         let late = || unavailable("the device did not answer in time");
-        let expired: Vec<u64> = self
-            .catalogues
-            .iter()
-            .filter(|(_, asked)| asked.until <= now)
-            .map(|(correlation, _)| *correlation)
-            .collect();
-        for correlation in expired {
-            if let Some(asked) = self.catalogues.remove(&correlation) {
-                give.push(Give::Catalogue(asked.answer, Err(late())));
-            }
+        for asked in expired(&mut self.catalogues, now) {
+            give.push(giving(asked, Err(late())));
         }
         for asked in split(&mut self.receipts, now) {
-            give.push(Give::Receipt(asked.answer, Err(late())));
+            give.push(giving(asked, Err(late())));
         }
         for asked in split(&mut self.updates, now) {
-            give.push(Give::Update(asked.answer, None));
+            give.push(giving(asked, None));
         }
         for asked in split(&mut self.cancels, now) {
-            give.push(Give::Cancel(asked.answer, Err(late())));
+            give.push(giving(asked, Err(late())));
         }
-        let expired: Vec<u64> = self
-            .puts
-            .iter()
-            .filter(|(_, asked)| asked.until <= now)
-            .map(|(correlation, _)| *correlation)
-            .collect();
-        for correlation in expired {
-            if let Some(asked) = self.puts.remove(&correlation) {
-                give.push(Give::Put(asked.answer, Err(late())));
-            }
+        for asked in expired(&mut self.puts, now) {
+            give.push(giving(asked, Err(late())));
         }
-        let expired: Vec<u64> = self
-            .gets
-            .iter()
-            .filter(|(_, asked)| asked.until <= now)
-            .map(|(correlation, _)| *correlation)
-            .collect();
-        for correlation in expired {
-            if let Some(asked) = self.gets.remove(&correlation) {
-                give.push(Give::Get(asked.answer, Err(late())));
-            }
+        for asked in expired(&mut self.gets, now) {
+            give.push(giving(asked, Err(late())));
         }
     }
 
@@ -238,7 +206,7 @@ impl Waiting {
                 result,
             } => {
                 if let Some(asked) = self.catalogues.remove(&correlation) {
-                    give.push(Give::Catalogue(asked.answer, result));
+                    give.push(giving(asked, result));
                 }
             }
             RemoteActionMessage::Receipt(receipt) => {
@@ -251,7 +219,7 @@ impl Waiting {
                         ReceiptStatus::Rejected { error } => Err(error.clone()),
                         _ => Ok(receipt.clone()),
                     };
-                    give.push(Give::Receipt(asked.answer, answer));
+                    give.push(giving(asked, answer));
                 }
             }
             // An update the device pushes unasked answers whoever waits for
@@ -261,12 +229,12 @@ impl Waiting {
                     followed.state = state.clone();
                 }
                 for asked in self.updates.remove(&invocation).unwrap_or_default() {
-                    give.push(Give::Update(asked.answer, state.clone()));
+                    give.push(giving(asked, state.clone()));
                 }
             }
             RemoteActionMessage::CancelResponse { invocation, result } => {
                 for asked in self.cancels.remove(&invocation).unwrap_or_default() {
-                    give.push(Give::Cancel(asked.answer, result.clone()));
+                    give.push(giving(asked, result.clone()));
                 }
             }
             RemoteActionMessage::ContentPutResponse {
@@ -274,7 +242,7 @@ impl Waiting {
                 result,
             } => {
                 if let Some(asked) = self.puts.remove(&correlation) {
-                    give.push(Give::Put(asked.answer, result));
+                    give.push(giving(asked, result));
                 }
             }
             RemoteActionMessage::ContentGetResponse {
@@ -282,12 +250,33 @@ impl Waiting {
                 result,
             } => {
                 if let Some(asked) = self.gets.remove(&correlation) {
-                    give.push(Give::Get(asked.answer, result));
+                    give.push(giving(asked, result));
                 }
             }
             _ => {}
         }
     }
+}
+
+/// `answered`'s answer, if it came within [`REPLY_DEADLINE`].
+#[cfg(not(target_arch = "wasm32"))]
+fn in_time<T>(answered: tilo_actions::remote::Pending<T>) -> Option<T> {
+    answered.wait_timeout(REPLY_DEADLINE).ok().flatten()
+}
+
+/// The requests of `all` past their deadline, taken out of it.
+fn expired<K: std::hash::Hash + Eq + Clone, T>(
+    all: &mut HashMap<K, Asked<T>>,
+    now: Instant,
+) -> Vec<Asked<T>> {
+    let late: Vec<K> = all
+        .iter()
+        .filter(|(_, asked)| asked.until <= now)
+        .map(|(key, _)| key.clone())
+        .collect();
+    late.into_iter()
+        .filter_map(|key| all.remove(&key))
+        .collect()
 }
 
 /// The requests of `all` past their deadline, taken out of it.
@@ -341,11 +330,7 @@ impl SessionActions {
             self.0.waiting.lock_recover().puts.remove(&correlation);
             return Err(error);
         }
-        answered
-            .wait_timeout(REPLY_DEADLINE)
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| Err(unavailable("the device did not answer in time")))
+        in_time(answered).unwrap_or_else(|| Err(unavailable("the device did not answer in time")))
     }
 
     /// Ask the device for a piece of `content`, waiting for its answer.
@@ -368,28 +353,26 @@ impl SessionActions {
             self.0.waiting.lock_recover().gets.remove(&correlation);
             return Err(error);
         }
-        answered
-            .wait_timeout(REPLY_DEADLINE)
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| Err(unavailable("the device did not answer in time")))
+        in_time(answered).unwrap_or_else(|| Err(unavailable("the device did not answer in time")))
     }
 
-    /// The actions of the device `device` in `workspace_id`, asked through
-    /// `peer`, a session already in that workspace.
+    /// The actions of the device `device` in `workspace_id`, asked through `session`.
     #[must_use]
-    pub fn new(peer: &PeerHandle, workspace_id: u64, device: [u8; 32]) -> Self {
-        let events = peer.events();
+    pub fn new(
+        session: impl Into<Arc<dyn RemoteSession>>,
+        workspace_id: u64,
+        device: [u8; 32],
+    ) -> Self {
+        let session: Arc<dyn RemoteSession> = session.into();
         let inner = Arc::new(Inner {
-            peer: peer.clone(),
+            session: Arc::clone(&session),
             workspace_id,
             device,
-            events,
             waiting: Mutex::default(),
             next_correlation: AtomicU64::new(1),
         });
         let woken = Arc::downgrade(&inner);
-        peer.on_change(Arc::new(move || {
+        session.on_change(Arc::new(move || {
             if let Some(inner) = woken.upgrade() {
                 inner.pump();
             }
@@ -398,8 +381,7 @@ impl SessionActions {
         Self(inner)
     }
 
-    /// The device's answer to observing `id`, waited for: callers off a
-    /// page observe from threads that may block.
+    /// The device's answer to observing `id`, waited for: callers off a page may block.
     #[cfg(not(target_arch = "wasm32"))]
     fn ask_state(&self, id: &InvocationId) -> Option<InvocationState> {
         let (answer, answered) = pending();
@@ -423,12 +405,6 @@ impl SessionActions {
             .flatten()
             .flatten()
     }
-
-    /// The device whose actions these are.
-    #[must_use]
-    pub fn device(&self) -> [u8; 32] {
-        self.0.device
-    }
 }
 
 /// Answer requests past their deadline until the actions are dropped.
@@ -449,8 +425,7 @@ fn sweep(inner: Weak<Inner>) {
     drop(spawned);
 }
 
-/// Answer requests past their deadline until the actions are dropped: on
-/// the page's own thread, between its other work.
+/// Answer requests past their deadline on the page's own thread.
 #[cfg(target_arch = "wasm32")]
 fn sweep(inner: Weak<Inner>) {
     n0_future::task::spawn(async move {
@@ -476,18 +451,19 @@ fn expire(inner: &Weak<Inner>) -> bool {
         }
         waiting.expire(Instant::now(), &mut give);
     }
-    give.into_iter().for_each(Give::give);
+    for give in give {
+        give();
+    }
     true
 }
 
 impl Inner {
-    /// Take what the session received: the device's answers, and its
-    /// unreachability.
+    /// Take what the session received: the device's answers, and its unreachability.
     fn pump(&self) {
         let mut give = Vec::new();
-        for event in self.events.drain() {
-            match event {
-                PeerEvent::RemoteAction {
+        for heard in self.session.take_heard() {
+            match heard {
+                Heard::Action {
                     workspace_id,
                     from,
                     frame,
@@ -497,7 +473,7 @@ impl Inner {
                     };
                     self.waiting.lock_recover().answer(frame.message, &mut give);
                 }
-                PeerEvent::RemoteActionUndeliverable {
+                Heard::Undeliverable {
                     workspace_id,
                     to,
                     reason,
@@ -509,11 +485,12 @@ impl Inner {
                 _ => {}
             }
         }
-        give.into_iter().for_each(Give::give);
+        for give in give {
+            give();
+        }
     }
 
-    /// What the held ask for `id`, sent having seen `seen`, answered: keep
-    /// it, and wake whoever waits for the invocation to move.
+    /// What the held ask for `id` was answered: keep it, and wake whoever waits.
     fn followed(&self, id: InvocationId, seen: UpdateMark, state: Option<InvocationState>) {
         let mut waiting = self.waiting.lock_recover();
         let Some(followed) = waiting.follows.get_mut(&id) else {
@@ -549,7 +526,7 @@ impl Inner {
                 reason: error.to_string(),
             }
         })?;
-        self.peer
+        self.session
             .send_remote_action(self.workspace_id, self.device, frame)
             .map_err(|error| unavailable(format!("the session is closed: {error}")))
     }
@@ -646,8 +623,6 @@ impl ActionHost for SessionActions {
     }
 
     /// The invocation as the device last answered for it. A followed one
-    /// whose device holds its answers is answered from what is kept; any
-    /// other is asked, and waited for, off a page.
     fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         let kept = self
             .0
@@ -666,8 +641,6 @@ impl ActionHost for SessionActions {
     }
 
     /// Ask the device to answer once the followed invocation `id` moves;
-    /// `None` for one not followed, settled, or on a device that does not
-    /// hold its answers.
     fn next_change(&self, _caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
         let (woken, change) = pending();
         let mut waiting = self.0.waiting.lock_recover();
@@ -800,7 +773,8 @@ mod tests {
         let invocation = InvocationId::new();
         let request = serde_json::json!({"Invoke": {
             "invocation": invocation,
-            "target": {"provider": "record:notes:one", "address": {"resource": "notes.note:one", "action": "open"}},
+            "target": {"provider": "record:notes:one",
+                        "address": {"resource": "notes.note:one", "action": "open"}},
         }});
         let answered = ask(&door, &caller(), &request.to_string())
             .await

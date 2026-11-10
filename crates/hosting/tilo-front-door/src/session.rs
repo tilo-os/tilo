@@ -138,15 +138,6 @@ pub fn run_label(registered: &str, initialize: &Value, number: u64) -> String {
     format!("{name} #{number}")
 }
 
-/// The person `user` is, as their workspaces name them.
-fn person(user: [u8; 32]) -> String {
-    match collab_types::Principal::person_from_key(collab_types::Ed25519PublicKey::from_bytes(user))
-    {
-        collab_types::Principal::Person(id) => id,
-        _ => hex::encode(user),
-    }
-}
-
 impl Session {
     pub(crate) fn new(
         grant: String,
@@ -162,7 +153,9 @@ impl Session {
             scope,
             label,
             run: uuid::Uuid::new_v4().simple().to_string(),
-            person: person(connection.key.cert().user_public_key),
+            person: collab_types::Principal::of_person(connection.key.cert().user_public_key)
+                .id()
+                .to_owned(),
             relay,
             connection: Arc::new(connection),
             parent: parent.map(Arc::new),

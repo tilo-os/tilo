@@ -28,12 +28,11 @@ use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tilo_browser_peer::PeerHandle;
 use tilo_browser_peer::login::{self, Door};
-use tilo_browser_peer::{HttpClient, HttpFuture, PeerHandle};
+use tilo_relay_client::https::Origin;
 use tilo_user_identity::{AgentScope, DeviceCert};
 
-/// The longest body read from the relay or the site.
-const MAX_BODY: usize = 4 * 1024 * 1024;
 /// How long entering a workspace may take.
 const ENTERING: Duration = Duration::from_secs(30);
 
@@ -79,65 +78,12 @@ impl From<tilo_browser_peer::CertifyError> for RelayError {
     }
 }
 
-/// HTTPS to one origin, as the relay's and the site's routes take it.
-#[derive(Clone)]
-pub struct Web {
-    client: tilo_net::Client,
-    origin: String,
-}
-
-impl Web {
-    #[must_use]
-    pub fn new(client: tilo_net::Client, origin: &str) -> Self {
-        Self {
-            client,
-            origin: origin.trim_end_matches('/').to_owned(),
-        }
-    }
-
-    async fn get(&self, path: &str) -> Result<(u16, Vec<u8>), String> {
-        let response = self
-            .client
-            .get(format!("{}{path}", self.origin))
-            .send()
-            .await
-            .map_err(|error| error.to_string())?;
-        let status = response.status().as_u16();
-        let body = response
-            .bytes_limited(MAX_BODY)
-            .await
-            .map_err(|error| error.to_string())?;
-        Ok((status, body.to_vec()))
-    }
-}
-
-impl HttpClient for Web {
-    fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_> {
-        let url = format!("{}{path}", self.origin);
-        Box::pin(async move {
-            let response = self
-                .client
-                .post(url)
-                .header("content-type", "application/octet-stream")
-                .body(body)
-                .send()
-                .await
-                .map_err(|error| error.to_string())?;
-            let status = response.status().as_u16();
-            let body = response
-                .bytes_limited(MAX_BODY)
-                .await
-                .map_err(|error| error.to_string())?;
-            Ok((status, body.to_vec()))
-        })
-    }
-}
-
 /// The relay the person's workspaces live on, and the site whose door lets
 /// people into its home workspace there.
 pub struct Relay {
-    host: Web,
-    site: Web,
+    client: tilo_net::Client,
+    host: Origin,
+    site: Origin,
     /// The relay's name, as hosts are named (`eu1.tilo.sh`).
     name: String,
 }
@@ -152,8 +98,9 @@ impl Relay {
             .trim_end_matches('/')
             .to_owned();
         Self {
-            host: Web::new(client.clone(), origin),
-            site: Web::new(client.clone(), site),
+            client: client.clone(),
+            host: Origin::new(client, origin),
+            site: Origin::new(client, site),
             name,
         }
     }
@@ -166,14 +113,14 @@ impl Relay {
 
     /// The site's door to its home workspace on this relay, when it names
     /// one.
-    async fn door(&self) -> Option<(Web, String)> {
+    async fn door(&self) -> Option<(Origin, String)> {
         let (status, body) = self.site.get("/entry.json").await.ok()?;
         if status != 200 {
             return None;
         }
         let entry: Value = serde_json::from_slice(&body).ok()?;
-        let (origin, path) = login::site_door(&entry, &self.host.origin)?;
-        Some((Web::new(self.host.client.clone(), &origin), path))
+        let (origin, path) = login::site_door(&entry, self.host.name())?;
+        Some((Origin::new(&self.client, &origin), path))
     }
 
     /// `key` on the relay: its session, not in any workspace yet.
@@ -184,17 +131,9 @@ impl Relay {
         let info = tilo_browser_peer::host_info(&self.host)
             .await
             .map_err(|error| RelayError::Unavailable(error.to_string()))?;
-        let address = info.address.ok_or_else(|| {
+        let endpoint = tilo_relay_client::https::host_endpoint(&info).ok_or_else(|| {
             RelayError::Unavailable("the relay takes no device sessions".to_owned())
         })?;
-        let endpoint = match address
-            .relay_url
-            .as_deref()
-            .and_then(|url| url.parse::<iroh_base::RelayUrl>().ok())
-        {
-            Some(relay) => address.endpoint_addr.with_relay_url(relay),
-            None => address.endpoint_addr,
-        };
         let peer = PeerHandle::start(
             tilo_browser_peer::PeerConfig {
                 host: tilo_browser_peer::Host::at(endpoint),
@@ -361,7 +300,7 @@ pub struct Connection {
     pub peer: PeerHandle,
     pub host_cert: DeviceCert,
     pub key: GrantKey,
-    relay: Web,
+    relay: Origin,
     host: String,
     lobby: tokio::sync::Mutex<Option<u64>>,
     /// The workspaces it entered, by id.

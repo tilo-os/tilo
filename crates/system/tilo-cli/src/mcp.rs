@@ -127,17 +127,21 @@ fn open(
     let presence = mcp_presence::Presence::new(
         &peer,
         actions.clone(),
-        person(user),
+        collab_types::Principal::of_person(user).id().to_owned(),
         (device.workspace.clone(), workspace_id),
         device.agent.clone(),
     );
     presence.arrive();
     // And see each action it takes in a record as it goes.
     let narrating = Arc::clone(&presence);
-    let server = McpServer::new(actions, device.workspace.clone(), person(user))
-        .with_surface(Surface::Agent)
-        .with_agent_run(run, device.agent.clone())
-        .with_narration(Arc::new(move |acting| narrating.acting(&acting)));
+    let server = McpServer::new(
+        actions,
+        device.workspace.clone(),
+        collab_types::Principal::of_person(user).id().to_owned(),
+    )
+    .with_surface(Surface::Agent)
+    .with_agent_run(run, device.agent.clone())
+    .with_narration(Arc::new(move |acting| narrating.acting(&acting)));
     Ok(Session {
         server,
         peer,
@@ -146,15 +150,6 @@ fn open(
         shown: Mutex::new(Vec::new()),
         presence,
     })
-}
-
-/// The person `user` is, as their workspaces name them.
-fn person(user: [u8; 32]) -> String {
-    match collab_types::Principal::person_from_key(collab_types::Ed25519PublicKey::from_bytes(user))
-    {
-        collab_types::Principal::Person(id) => id,
-        _ => hex::encode(user),
-    }
 }
 
 /// `tilo mcp`.

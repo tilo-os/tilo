@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use tilo_relay_protocol::web::{
-    HereAction, HereReply, HereRequest, HostInfo, MAX_HERE_FIELD_CHARS, MAX_HERE_LABEL_CHARS,
+    HereAction, HereReply, HereRequest, MAX_HERE_FIELD_CHARS, MAX_HERE_LABEL_CHARS,
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
 use web_time::{Duration, Instant};
@@ -180,7 +180,16 @@ pub async fn sign_in(
     signer: &dyn DeviceSigner,
     on_pending: impl FnOnce(&str),
 ) -> Result<SignIn, CertifyError> {
-    let host = host_of(host_info(client).await?)?;
+    let info = host_info(client).await?;
+    let host = match tilo_relay_client::https::host_endpoint(&info) {
+        Some(endpoint) => Host::at(endpoint),
+        None => {
+            return Err(CertifyError::Denied(
+                "This workspace's host takes no device connections, so no computer can sign in to it."
+                    .to_owned(),
+            ));
+        }
+    };
     let invite = link.invite.unwrap_or([0; 16]);
     let (cert, host_cert) = certify(
         &host,
@@ -199,25 +208,6 @@ pub async fn sign_in(
         cert,
         host_cert,
     })
-}
-
-/// Where the host published it is reachable, as a session dials it.
-fn host_of(info: HostInfo) -> Result<Host, CertifyError> {
-    let address = info.address.ok_or_else(|| {
-        CertifyError::Denied(
-            "This workspace's host takes no device connections, so no computer can sign in to it."
-                .to_owned(),
-        )
-    })?;
-    let endpoint = match address
-        .relay_url
-        .as_deref()
-        .and_then(|url| url.parse::<iroh_base::RelayUrl>().ok())
-    {
-        Some(relay) => address.endpoint_addr.with_relay_url(relay),
-        None => address.endpoint_addr,
-    };
-    Ok(Host::at(endpoint))
 }
 
 /// Enter the workspace the link names, as the certified device, then say the
