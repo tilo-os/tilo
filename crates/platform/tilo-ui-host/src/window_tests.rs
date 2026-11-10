@@ -1267,24 +1267,32 @@ fn list_page_keyed(key: &str) -> Vec<ToUi> {
 fn a_window_keeps_the_column_in_front_when_its_shell_is_built_anew() {
     let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
     let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let front = |window: &mut AppWindow| window.shell_ref().map(NavShell::front_pane);
     send(&mut app, &list_page());
     window.receive();
-    // The person taps a row: the window shows it in front of the list.
-    send(&mut app, &[ToUi::Front(wire::Front::Input)]);
-    window.receive();
-    assert_eq!(
-        window.shell_ref().map(NavShell::front_pane),
-        Some(NavPane::Content)
+    assert!(
+        !window.shell_ref().expect("the shell").has_content(),
+        "a list with nothing open lists for the whole window"
     );
+    // The person taps a row: the window shows it in front of the list.
+    send(&mut app, &opened_note("a", "Alpha"));
+    window.receive();
+    assert_eq!(front(&mut window), Some(NavPane::Content));
     // The app's views change key, so the shell is built anew.
     send(&mut app, &list_page_keyed("again"));
     window.receive();
     assert!(window.failed().is_none(), "{:?}", window.failed());
     assert_eq!(
-        window.shell_ref().map(NavShell::front_pane),
+        front(&mut window),
         Some(NavPane::Content),
         "the new shell shows the column the person is looking at, not the one a window opens on"
     );
+    // Back closes the note: the list stands alone again, and the app saying a row opened brings
+    // no column forward until one stands beside the list.
+    send(&mut app, &[ToUi::Close, ToUi::Front(wire::Front::Input)]);
+    window.receive();
+    assert!(window.failed().is_none(), "{:?}", window.failed());
+    assert_eq!(front(&mut window), Some(NavPane::Overview));
 }
 
 /// The list of the view's overview.
