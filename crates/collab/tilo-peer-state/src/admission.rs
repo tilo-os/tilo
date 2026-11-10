@@ -411,6 +411,21 @@ impl ExactAdmissions {
             self.settled_mut().extend(recent);
         }
     }
+    /// Take the entry of `key` out: the write it admitted was withdrawn.
+    pub(crate) fn withdraw(&mut self, key: &AdmissionKey) -> Result<(), AdmissionError> {
+        let Some(operation_id) = self.get(key).copied() else {
+            return Ok(());
+        };
+        let bytes = resources::entry_bytes(&DocumentAdmission {
+            key: key.clone(),
+            operation_id,
+        })?;
+        if self.recent.remove(key).is_none() {
+            self.settled_mut().remove(key);
+        }
+        self.entry_bytes = self.entry_bytes.saturating_sub(bytes);
+        Ok(())
+    }
     /// Add a decoded entry `check` measured as `bytes` to the settled or
     /// the recent entries, as the wire index placed it.
     fn add_decoded(

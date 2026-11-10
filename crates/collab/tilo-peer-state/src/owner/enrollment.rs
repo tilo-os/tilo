@@ -595,7 +595,7 @@ impl NativeWorkspaceOwner {
             .is_some();
         drop(live);
         if admitted {
-            if candidate.record.device != candidate.record.workspace_host
+            if !candidate.hosted_here()
                 && !publication::has_exact(&candidate.record, &outgoing)?
                 && !publication::retry_covered(
                     &candidate.replica().lock(),

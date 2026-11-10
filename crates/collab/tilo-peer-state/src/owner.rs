@@ -339,7 +339,7 @@ impl NativeCommittedView {
     /// Whether this device's own host orders the workspace's commits.
     #[must_use]
     pub fn hosted_here(&self) -> bool {
-        self.record.device == self.record.workspace_host
+        self.record.hosted_here()
     }
     /// Whether this device entered a workspace that existed before it: it
     /// redeemed an invitation, or a host vouched for it as a further device of

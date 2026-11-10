@@ -2289,6 +2289,13 @@ impl Task {
                 // channel's records are sealed with them, and so is a call on
                 // one of them while this device holds no channel state of its
                 // own.
+                if let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) {
+                    self.engine.hand_keys(
+                        workspace,
+                        collab_types::ChannelRoute::new(&route.app_id, &route.record),
+                        keys.clone(),
+                    );
+                }
                 self.route_keys
                     .insert(route.clone(), RouteKeys::Handed(keys.clone()));
                 self.new_keys.push((route, keys));

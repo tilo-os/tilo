@@ -1939,13 +1939,15 @@ impl AgentParticipant {
         self.ask_wanted();
     }
 
-    /// Records of the workspace the agent has seen but not opened.
+    /// Records of the workspace the agent has seen but not opened: those it reads, not those
+    /// whose keys are still on their way.
     #[must_use]
     pub fn known_records(&self) -> Vec<DocumentRoute> {
         self.unopened
             .routes()
             .into_iter()
             .filter(|route| !parts::is_part(&route.record))
+            .filter(|route| self.unopened.document(route).is_some())
             .collect()
     }
 

@@ -191,12 +191,10 @@ impl Page {
             .peer
             .engine()
             .record(&route.cluster_id, &route.app_id, &route.record);
-        match (read, author) {
-            (Ok(Some(bytes)), author) => {
-                // Keys that arrived open what the writers before them wrote.
-                let author = author
-                    .or_else(|| self.unopened.remove(&route))
-                    .unwrap_or_default();
+        // Keys that arrived open what the writers before them wrote; keys that open nothing new
+        // say nobody wrote anything.
+        match (read, author.or_else(|| self.unopened.remove(&route))) {
+            (Ok(Some(bytes)), Some(author)) => {
                 self.documents
                     .entry(route)
                     .or_default()

@@ -28,7 +28,7 @@ const GOVERNANCE_BATCH_BYTES: usize = 8 * 1024 * 1024;
 
 impl Task {
     /// Tell this device's readers that `route` changed in its replica.
-    pub(super) fn landed(&mut self, route: &DocumentRoute, author: Option<[u8; 32]>) {
+    pub(super) fn landed(&self, route: &DocumentRoute, author: Option<[u8; 32]>) {
         self.engine.arrivals().landed();
         self.emit(&PeerEvent::Landed {
             author,

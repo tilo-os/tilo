@@ -134,6 +134,18 @@ impl StatePeer {
         let Some(document) = self.core.documents.get(&route) else {
             return Ok(());
         };
+        // The write was never the workspace's: no evidence of it stays, so a read of the record
+        // does not wait for it.
+        self.core
+            .exact_admissions
+            .withdraw(&crate::admission::AdmissionKey {
+                workspace: self.core.workspace.clone(),
+                app: app.into(),
+                record: record.into(),
+                author: *envelope.author.as_bytes(),
+                sequence: envelope.seq,
+            })
+            .map_err(|error| error.to_string())?;
         if document
             .sealed
             .iter()
@@ -145,7 +157,24 @@ impl StatePeer {
                 .filter(|held| held.signature != envelope.signature)
                 .cloned()
                 .collect();
+            // The author's floor falls back to its last write the record still holds.
+            let floor = kept
+                .iter()
+                .filter(|held| held.author == envelope.author)
+                .map(|held| held.seq)
+                .max();
             if let Some(document) = self.core.documents.get_mut(&route) {
+                let watermarks = &mut document.channel.last_seq_per_author;
+                if watermarks.get(&envelope.author) == Some(&envelope.seq) {
+                    match floor {
+                        Some(floor) => {
+                            watermarks.insert(envelope.author, floor);
+                        }
+                        None => {
+                            watermarks.remove(&envelope.author);
+                        }
+                    }
+                }
                 document.sealed = kept.into();
             }
             return Ok(());

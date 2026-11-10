@@ -755,7 +755,7 @@ pub(crate) fn append_local(
     view: &mut record::StoredWorkspace,
     bytes: Vec<u8>,
 ) -> Result<(), String> {
-    if view.device != view.workspace_host {
+    if !view.hosted_here() {
         return append(view, bytes);
     }
     // The workspace's own device is its keeper: what it admits is already

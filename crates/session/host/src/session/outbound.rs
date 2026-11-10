@@ -7,7 +7,10 @@
 //! host answers them ([`Task::retire_answered`]), and a barrier completes once
 //! everything in custody when it was asked is answered.
 
-use super::*;
+use super::{
+    Answered, Arc, BTreeMap, BTreeSet, CoeditPayload, Completion, CustodyEntry, DocumentRoute,
+    Envelope, FailureSubject, PeerEvent, RelayClient, Task, route_of,
+};
 
 impl Task {
     /// Take `frames`, cleartext document frames of `route`, to commit to this device's replica

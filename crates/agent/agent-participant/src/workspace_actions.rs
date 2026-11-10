@@ -919,15 +919,22 @@ impl Workspace {
                     if room_workspace_id(&route.cluster_id).ok() != Some(workspace_id) {
                         continue;
                     }
-                    let opens = self
-                        .peer
-                        .engine()
-                        .record(&route.cluster_id, &route.app_id, &route.record)
-                        .is_ok_and(|read| read.is_some());
-                    if opens {
-                        self.undecided.remove(&route);
-                    } else {
+                    let engine = self.peer.engine();
+                    // Undecided: the replica holds the record and cannot read it yet. Keys that
+                    // arrived for a record it holds nothing of leave nothing undecided.
+                    let undecided =
+                        match engine.record(&route.cluster_id, &route.app_id, &route.record) {
+                            Ok(read) => read.is_none(),
+                            Err(_) => engine.records(&route.cluster_id).is_ok_and(|records| {
+                                records.iter().any(|(app, record)| {
+                                    *app == route.app_id && *record == route.record
+                                })
+                            }),
+                        };
+                    if undecided {
                         self.undecided.insert(route.clone());
+                    } else {
+                        self.undecided.remove(&route);
                     }
                     self.records
                         .get_or_insert_with(|| {

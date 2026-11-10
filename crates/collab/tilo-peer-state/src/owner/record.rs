@@ -125,6 +125,13 @@ pub(crate) struct StoredWorkspace {
 }
 
 impl StoredWorkspace {
+    /// Whether this device keeps the workspace's records itself: its own host orders the
+    /// workspace's commits. A replica held on a host's answer ([`Self::vouched`]) never does,
+    /// even under the host's own key: the host keeps the records and answers its writes.
+    pub(crate) fn hosted_here(&self) -> bool {
+        self.device == self.workspace_host && self.vouched.is_none()
+    }
+
     /// Whether the record says where the workspace's host is reached: the
     /// hint its enrollment carries, the one the host's answer named, or the
     /// one its own host recorded as it founded the workspace.

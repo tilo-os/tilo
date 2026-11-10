@@ -188,6 +188,14 @@ pub struct Engine {
     /// What lands here from the workspaces' other devices: what a read waiting for a record it
     /// holds none of wakes on.
     arrivals: Arc<crate::arrivals::Arrivals>,
+    /// Keys of records whose channel this device takes no part in, handed to it by the records'
+    /// host ([`Self::hand_keys`]): a sealed record they open reads with them.
+    handed: std::sync::Mutex<
+        std::collections::BTreeMap<
+            (WorkspaceId, collab_types::ChannelRoute),
+            tilo_channels::HistoryKeys,
+        >,
+    >,
 }
 
 /// How much of the workspaces' sealed history this device keeps to hand their other devices: every
@@ -247,6 +255,7 @@ impl Engine {
             #[cfg(not(target_arch = "wasm32"))]
             directed: None,
             arrivals: Arc::new(crate::arrivals::Arrivals::default()),
+            handed: std::sync::Mutex::default(),
         }
     }
 
@@ -370,18 +379,28 @@ impl Engine {
         maximum: usize,
     ) -> Result<RecordReading, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
+        let route = collab_types::ChannelRoute::new(app, record);
+        let handed = self
+            .handed
+            .lock_recover()
+            .get(&(workspace, route.clone()))
+            .cloned();
         let sealed = self.owner.with_current(workspace, |view| {
             Ok(view.peer().publication().is_sealed_record(app, record))
         })?;
-        if sealed && !self.join_channel(workspace, app, record)? {
+        if sealed && handed.is_none() && !self.join_channel(workspace, app, record)? {
             return Ok(RecordReading::Pending);
         }
         // Taken before the workspace's view is held: the channel service's pump settles the groups
         // under its own lock and reads the workspace's governance there, so a read that asked it
         // for keys while holding the view would wait on it as it waits on the view.
-        let history = self.keys.get().and_then(|keys| {
-            keys.history_keys(workspace, &collab_types::ChannelRoute::new(app, record))
-        });
+        let history = match handed {
+            Some(keys) => Some(Ok(keys)),
+            None => self
+                .keys
+                .get()
+                .and_then(|keys| keys.history_keys(workspace, &route)),
+        };
         // A sealed write the keys this device holds do not open yet — its epoch's key, or the key
         // of the branch it was sealed on, has not reached this device — is a record still
         // arriving here: it reads whole once the keys have, as the app's own channel holds such a
@@ -1200,6 +1219,19 @@ impl Engine {
 
     /// Where this session's channel service installs this device's keys: the broker, the room host
     /// and every sealed read meet here.
+    /// Read `workspace`'s record of `route` with `keys` from now on: the record's host handed them
+    /// to this device, which takes no part in the record's channel.
+    pub fn hand_keys(
+        &self,
+        workspace: WorkspaceId,
+        route: collab_types::ChannelRoute,
+        keys: channel_crypto::ChannelContentKeys,
+    ) {
+        self.handed
+            .lock_recover()
+            .insert((workspace, route), keys.into());
+    }
+
     pub fn keys(&self) -> ChannelKeyProvider {
         self.keys.clone()
     }

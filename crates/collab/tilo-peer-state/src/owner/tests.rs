@@ -266,9 +266,12 @@ fn a_write_its_relay_host_refused_leaves_the_replica_and_every_answer_is_counted
             &BTreeMap::from([(newest(owner), HostAnswer::Durable(7))]),
         )
         .unwrap();
-    owner
-        .commit_document(edit_with(owner, workspace, now, "refused"), now)
-        .unwrap();
+    let refused = edit_with(owner, workspace, now, "refused");
+    let crate::owner_commit::CommitOperation::Document { envelope, .. } = refused.operation.clone()
+    else {
+        panic!("a document write");
+    };
+    owner.commit_document(refused, now).unwrap();
     assert_eq!(topic(owner).as_deref(), Some("refused"));
     owner
         .retire_answered(
@@ -283,6 +286,17 @@ fn a_write_its_relay_host_refused_leaves_the_replica_and_every_answer_is_counted
         last_order: Some(7),
     };
     assert_eq!(topic(owner).as_deref(), Some("kept"));
+    assert!(
+        owner
+            .with_current(workspace, |view| {
+                view.peer()
+                    .lookup_exact_local_document(APP, "", &envelope, now)
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap()
+            .is_none(),
+        "no evidence of the refused write stays to wait for"
+    );
     assert_eq!(
         owner
             .record_writes(workspace)

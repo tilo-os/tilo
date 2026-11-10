@@ -19,6 +19,14 @@ use crate::encryption::{ChannelAccess, ChannelKeyAccess};
 #[derive(Clone)]
 pub struct HistoryKeys(ChannelContentKeys);
 
+impl From<ChannelContentKeys> for HistoryKeys {
+    /// Keys a reader was handed whole rather than took from its own service: the record's host
+    /// hands a device that takes no part in the record's channel the keys of a record it acts on.
+    fn from(keys: ChannelContentKeys) -> Self {
+        Self(keys)
+    }
+}
+
 impl HistoryKeys {
     /// Open `envelope`, a write of the record's history (a compaction
     /// included), under any epoch these keys carry.

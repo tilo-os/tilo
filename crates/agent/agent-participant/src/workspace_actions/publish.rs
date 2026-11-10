@@ -91,12 +91,12 @@ impl Worker {
     /// workspace, when the index names it.
     pub(super) fn record_name(&self, workspace_id: u64, route: &DocumentRoute) -> Option<String> {
         let workspace = self.workspaces.get(&workspace_id)?;
-        let checkout = ui::record::identity(&document(&workspace.peer, route, None))?;
+        let checkout = ui::record::identity(&document(&workspace.peer, route, None).0)?;
         let index = DocumentRoute {
             record: String::new(),
             ..route.clone()
         };
-        ui::record::index::name_of(&document(&workspace.peer, &index, None), &checkout.id)
+        ui::record::index::name_of(&document(&workspace.peer, &index, None).0, &checkout.id)
     }
 
     /// Name the record at `route` in its app's index of the workspace,
