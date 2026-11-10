@@ -836,6 +836,16 @@ impl CollabTransport for BrokerTransport {
             .cloned()
     }
 
+    fn document_route_joining(&self, channel: &str) -> bool {
+        self.state.is_healthy()
+            && self.state.document_reads.resolving(channel)
+            && self.route_join_failure(channel).is_none()
+    }
+
+    fn take_unpublished_route(&self, channel: &str) -> bool {
+        self.state.unpublished_routes.lock_recover().remove(channel)
+    }
+
     fn take_action_surface_failed(&mut self) -> bool {
         self.state
             .action_surface_failed
@@ -1091,6 +1101,9 @@ pub(crate) struct BridgeState {
     /// Why each route whose last join failed failed, by channel: a route
     /// that never joined says so instead of staying unready without a word.
     route_join_failures: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
+    /// The record routes whose queued changes were let go since their owner
+    /// last asked ([`CollabTransport::take_unpublished_route`]).
+    unpublished_routes: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     /// The kind each joined route's record holds, by channel: a change that
     /// arrives on a route awaiting its first join re-joins it naming the kind
     /// the owner opened the record with.
@@ -1299,6 +1312,7 @@ impl BridgeState {
             document_reads: committed_document::Reads::default(),
             commits: Arc::default(),
             route_join_failures: Arc::default(),
+            unpublished_routes: Arc::default(),
             route_record_kinds: Arc::default(),
             healthy: Arc::new(AtomicBool::new(true)),
             publication_failure: Arc::new(std::sync::Mutex::new(None)),
@@ -1381,6 +1395,19 @@ impl BridgeState {
             },
             Err,
         )
+    }
+
+    /// The record route `key` did not take what was queued for it: that
+    /// record alone is unpublished, and its owner hears so and sends it
+    /// whole once the route is open. Every other route and the app's own
+    /// carry on.
+    fn route_unpublished(&self, key: String) {
+        tracing::warn!(
+            route = key,
+            "collab: a record's route was not open for its changes; they go out once it is"
+        );
+        self.unpublished_routes.lock_recover().insert(key);
+        self.notify_events();
     }
 
     fn record_publication_failure(&self, error: DocumentPublicationError) {
@@ -3643,6 +3670,23 @@ async fn drive_shovel(
     // joined, sent as soon as one is.
     let mut unrouted_directory: Option<mpsc::SyncSender<ActionDirectoryRequest>> = None;
 
+    // How a route of this connection joins: the identity it joins as, as of
+    // the last `Hello`.
+    macro_rules! join_context {
+        () => {
+            SdkJoinContext {
+                asks_channel_keys,
+                key_signals: &key_signals,
+                client: &client,
+                presentation: &presentation,
+                person: person.as_ref(),
+                participant_handle: participant_handle.as_deref(),
+                participant_kind,
+                inbound_tx: &inbound_tx,
+                media_routes: &media_routes,
+            }
+        };
+    }
     loop {
         let timed = asks_channel_keys
             && key_fetch.is_none()
@@ -3729,17 +3773,7 @@ async fn drive_shovel(
                 // what they take. While it is pending the broker says what
                 // holds it up, which the owner shows.
                 let joined = {
-                    let context = SdkJoinContext {
-                        asks_channel_keys,
-                        key_signals: &key_signals,
-                        client: &client,
-                        presentation: &presentation,
-                        person: person.as_ref(),
-                        participant_handle: participant_handle.as_deref(),
-                        participant_kind,
-                        inbound_tx: &inbound_tx,
-                        media_routes: &media_routes,
-                    };
+                    let context = join_context!();
                     let join = ensure_sdk_route(
                         &context,
                         &mut routes,
@@ -3779,8 +3813,14 @@ async fn drive_shovel(
             }
             SdkCommand::Primary(request) => {
                 if let Some(route) = primary.as_ref().and_then(|key| routes.get_mut(key)) {
-                    published =
-                        dispatch_sdk_request(route, request, &mut signer, &inbound_tx).await;
+                    published = dispatch_sdk_request(
+                        route,
+                        request,
+                        &mut signer,
+                        &inbound_tx,
+                        RouteRole::App,
+                    )
+                    .await;
                     if !inbound_tx.state.is_healthy() {
                         break;
                     }
@@ -3800,17 +3840,7 @@ async fn drive_shovel(
             }
             SdkCommand::Join(spec, record_kind) => {
                 let joined = ensure_sdk_route(
-                    &SdkJoinContext {
-                        asks_channel_keys,
-                        key_signals: &key_signals,
-                        client: &client,
-                        presentation: &presentation,
-                        person: person.as_ref(),
-                        participant_handle: participant_handle.as_deref(),
-                        participant_kind,
-                        inbound_tx: &inbound_tx,
-                        media_routes: &media_routes,
-                    },
+                    &join_context!(),
                     &mut routes,
                     &spec,
                     record_kind.as_deref().unwrap_or(""),
@@ -3824,37 +3854,33 @@ async fn drive_shovel(
                         .document_reads
                         .join_failed(&spec.channel_id(), error.clone());
                 }
+                // The owner holding changes for the route hears it opened or
+                // will not: either ends its wait for the route.
                 note_route_join(&inbound_tx.state, &spec, joined);
+                inbound_tx.state.notify_events();
             }
             SdkCommand::ToRoute(spec, request) => {
                 let key = spec.channel_id();
-                let joined = ensure_sdk_route(
-                    &SdkJoinContext {
-                        asks_channel_keys,
-                        key_signals: &key_signals,
-                        client: &client,
-                        presentation: &presentation,
-                        person: person.as_ref(),
-                        participant_handle: participant_handle.as_deref(),
-                        participant_kind,
-                        inbound_tx: &inbound_tx,
-                        media_routes: &media_routes,
-                    },
-                    &mut routes,
-                    &spec,
-                    "",
-                )
-                .await;
+                let joined = ensure_sdk_route(&join_context!(), &mut routes, &spec, "").await;
                 let joined = note_route_join(&inbound_tx.state, &spec, joined);
                 if joined && let Some(route) = routes.get_mut(&key) {
-                    published =
-                        dispatch_sdk_request(route, request, &mut signer, &inbound_tx).await;
+                    published = dispatch_sdk_request(
+                        route,
+                        request,
+                        &mut signer,
+                        &inbound_tx,
+                        RouteRole::Record,
+                    )
+                    .await;
                     if !inbound_tx.state.is_healthy() {
                         break;
                     }
                 } else {
+                    // The record's route did not join: that record is not
+                    // shared, and says why; the app and its other records
+                    // carry on.
                     published = false;
-                    inbound_tx.state.fail_closed("document route join");
+                    inbound_tx.state.route_unpublished(key);
                 }
             }
             SdkCommand::Initialize {
@@ -3892,23 +3918,8 @@ async fn drive_shovel(
                 }));
             }
             SdkCommand::InstallEncryption { spec, group, reply } => {
-                let result = install_sdk_encryption(
-                    SdkJoinContext {
-                        asks_channel_keys,
-                        key_signals: &key_signals,
-                        client: &client,
-                        presentation: &presentation,
-                        person: person.as_ref(),
-                        participant_handle: participant_handle.as_deref(),
-                        participant_kind,
-                        inbound_tx: &inbound_tx,
-                        media_routes: &media_routes,
-                    },
-                    &mut routes,
-                    spec,
-                    *group,
-                )
-                .await;
+                let result =
+                    install_sdk_encryption(join_context!(), &mut routes, spec, *group).await;
                 let _ = reply.send(result);
             }
             SdkCommand::PublishActionDirectory { requests, .. } => {
@@ -5341,6 +5352,24 @@ async fn spawn_presence_stream(
     Some(handle)
 }
 
+/// How a queued document's wait for its route ended.
+enum PublicationWait {
+    Open,
+    /// The route did not open in time.
+    Late,
+    /// The bridge stopped meanwhile; the failure is recorded.
+    Stopped,
+}
+
+/// Which route a request travels on: the app's own, whose history every
+/// change builds on, or one record's beside it, whose failure is that
+/// record's alone.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RouteRole {
+    App,
+    Record,
+}
+
 /// Keep the accepted request and its queue byte reservation on the worker
 /// stack while hydration catches up. No later barrier or command can overtake
 /// it. Hydration runs independently on this same LocalSet.
@@ -5348,32 +5377,26 @@ async fn spawn_presence_stream(
     clippy::future_not_send,
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
-async fn wait_for_document_publication(
-    route: &SdkRoute,
-    state: &BridgeState,
-) -> Result<(), DocumentPublicationError> {
+async fn wait_for_document_publication(route: &SdkRoute, state: &BridgeState) -> PublicationWait {
     let deadline = tilo_rt::timer_now() + Duration::from_secs(3);
     let key = route.spec.channel_id();
     loop {
         // Enabled before the checks: a change between them still wakes it.
         let changed = state.document_reads.reader_wake();
         if !state.is_healthy() {
-            return Err(state.publication_failed(
+            state.publication_failed(
                 "queued document publication",
                 "worker invalidated before admission",
                 true,
-            ));
+            );
+            return PublicationWait::Stopped;
         }
-        // The deadline is terminal, even when readiness changes concurrently.
+        // The deadline is final, even when readiness changes concurrently.
         if tilo_rt::timer_now() >= deadline {
-            return Err(state.publication_failed(
-                "queued document publication",
-                "hydration did not become current before deadline",
-                true,
-            ));
+            return PublicationWait::Late;
         }
         if state.document_reads.publishable(&key) {
-            return Ok(());
+            return PublicationWait::Open;
         }
         #[cfg(test)]
         state.publication_gate_waits.fetch_add(1, Ordering::AcqRel);
@@ -5398,7 +5421,6 @@ async fn send_document_mutation(
     commit: Option<collab_types::WorkspaceCommit>,
     inbound: &InboundBridge,
 ) -> Result<(), DocumentPublicationError> {
-    wait_for_document_publication(route, &inbound.state).await?;
     if let Some(authorization) = &authorization {
         authorization
             .check(&route.spec, &mutation)
@@ -6104,15 +6126,31 @@ async fn dispatch_sdk_request(
     request: CollabRequest,
     signer: &mut LocalSdkDocumentSigner,
     inbound_tx: &InboundBridge,
+    role: RouteRole,
 ) -> bool {
     if matches!(
         request,
         CollabRequest::Document { .. } | CollabRequest::SignedOperation { .. }
-    ) && wait_for_document_publication(route, &inbound_tx.state)
-        .await
-        .is_err()
-    {
-        return false;
+    ) {
+        match wait_for_document_publication(route, &inbound_tx.state).await {
+            PublicationWait::Open => {}
+            PublicationWait::Stopped => return false,
+            // A record's route can wait on another device (its keys come
+            // from one that holds them): only that record waits, and its
+            // owner sends it whole once the route opens.
+            PublicationWait::Late if role == RouteRole::Record => {
+                inbound_tx.state.route_unpublished(route.spec.channel_id());
+                return false;
+            }
+            PublicationWait::Late => {
+                inbound_tx.state.publication_failed(
+                    "queued document publication",
+                    "hydration did not become current before deadline",
+                    true,
+                );
+                return false;
+            }
+        }
     }
     match request {
         CollabRequest::ExternalModeration {
@@ -10236,6 +10274,72 @@ mod tests {
         tilo_test_env::wait_until(
             "`state.command_bytes.0.load(Ordering::Acquire) == 0`",
             || state.command_bytes.0.load(Ordering::Acquire) == 0,
+        );
+        drop(manager);
+        thread.join().unwrap();
+    }
+
+    /// A record's route that does not open in time for its changes (a
+    /// person's second device waits for another of theirs to hand it the
+    /// keys of their own drafts) holds back that record alone: the barrier
+    /// says its change did not go, the app and its other routes stay
+    /// published, and the owner hears it should send the record whole once
+    /// the route opens. It used to stop the app's whole collaboration.
+    #[test]
+    #[cfg(unix)]
+    fn a_record_route_not_open_in_time_holds_back_only_that_record() {
+        let (fd, captures, thread) = stand_up_fake_broker(FakeBroker::default());
+        let workspace = Uuid::new_v4();
+        let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.chat", workspace);
+        let drafts = RouteSpec {
+            app_id: "so.tilo.chat".into(),
+            cluster_id: workspace,
+            record: Some("member:ada:chat.drafts".into()),
+        };
+        manager.join_route(
+            drafts.clone(),
+            crate::record::RecordKind::new("chat.drafts"),
+        );
+        eventually("the drafts route to join", || {
+            manager.document_route_publishable(&drafts)
+        });
+        // Its committed history is still to be read: the route is closed.
+        let _closed = broker_state(&manager)
+            .document_reads
+            .close_for_test(&drafts.channel_id());
+        assert!(
+            manager
+                .try_send_to_route(
+                    drafts.clone(),
+                    CollabRequest::document_incremental(b"draft".to_vec())
+                )
+                .is_ok()
+        );
+        let receipt = manager.begin_document_publication_barrier().unwrap();
+        assert!(
+            matches!(
+                receipt.wait(Some(tilo_test_env::hang_deadline())),
+                Err(DocumentPublicationError::Failed(_))
+            ),
+            "the barrier says the draft did not go"
+        );
+        assert!(
+            manager.is_connected(),
+            "one record's route stops nothing else"
+        );
+        assert!(manager.take_unpublished_route(&drafts));
+        assert!(!manager.take_unpublished_route(&drafts), "said once");
+        let before = captures.lock().unwrap().signed_ops.len();
+        assert!(manager.send(CollabRequest::document_incremental(b"own".to_vec())));
+        manager
+            .begin_document_publication_barrier()
+            .unwrap()
+            .wait(Some(tilo_test_env::hang_deadline()))
+            .unwrap();
+        assert_eq!(
+            captures.lock().unwrap().signed_ops.len(),
+            before + 1,
+            "the app's own route still publishes"
         );
         drop(manager);
         thread.join().unwrap();

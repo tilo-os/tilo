@@ -837,6 +837,8 @@ pub(crate) struct RoutedOwners {
     pub(crate) app: App,
     pub(crate) records: crate::RecordStore,
     pub(crate) bindings: Vec<crate::bound_dispatch::CallbackBinding>,
+    /// Holds the broker's next route join until the returned sender sends.
+    pub(crate) hold_join: Box<dyn Fn() -> tokio::sync::oneshot::Sender<()>>,
     _owners: crate::record::RecordOwners,
     _temp: tempfile::TempDir,
 }
@@ -887,7 +889,8 @@ impl RoutedOwners {
         state.doc.put(ROOT, "outer", "outer only").unwrap();
         state.commit_action(None, None);
         let mut app = App::new_with_controlled_inputs(state, Box::new(root));
-        app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+        let (manager, hold_join) = CollaborationManager::connected_holding_joins_for_test();
+        app.collaboration.manager = manager;
         app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
             route: crate::collaboration::RouteSpec::app(
                 "outer-shell",
@@ -902,7 +905,7 @@ impl RoutedOwners {
         while !app.document_routes.owners.iter().all(|entry| {
             app.collaboration
                 .manager
-                .document_route_publishable_for_test(&entry.route)
+                .document_route_publishable(&entry.route)
         }) {
             assert!(
                 crate::time::now() < deadline,
@@ -914,6 +917,7 @@ impl RoutedOwners {
             app,
             records,
             bindings,
+            hold_join,
             _owners: owners,
             _temp: temp,
         }

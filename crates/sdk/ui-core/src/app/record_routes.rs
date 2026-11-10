@@ -610,11 +610,12 @@ mod tests {
         let owners = [record.history_owner()];
         participant.reconcile(&owners, &automerge::AutoCommit::new());
         let deadline = tilo_test_env::hang_deadline();
-        while !participant.routes.owners.iter().all(|entry| {
-            participant
-                .manager
-                .document_route_publishable_for_test(&entry.route)
-        }) {
+        while !participant
+            .routes
+            .owners
+            .iter()
+            .all(|entry| participant.manager.document_route_publishable(&entry.route))
+        {
             assert!(
                 crate::time::now() < deadline,
                 "the record's route never opened"

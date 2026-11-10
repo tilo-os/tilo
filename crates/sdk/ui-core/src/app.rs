@@ -1315,7 +1315,7 @@ impl App {
 
     fn close_wake_scope(&mut self) {
         // Nothing lands for a closing window: what it held is answered.
-        self.send_held_answers();
+        self.send_held_answers(true);
         self.retire_semantic_root();
         if let Some(scope) = self.wake_scope.as_mut() {
             scope.close();

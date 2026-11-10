@@ -423,6 +423,9 @@ pub(super) struct ActionRuntime {
     /// Answers to broker invocations held, by wire id, until what they
     /// caused in the app has landed ([`crate::wake::WakeHandle::owe`]).
     pub(super) held_answers: Vec<(u64, tilo_actions::InvocationUpdate)>,
+    /// The held answers wait for a record's route still joining: the pass
+    /// that finds it joined asks for the sync that answers them.
+    pub(super) answers_await_route: bool,
     /// Operations started from this window rather than by the broker.
     pub(super) local_invocations: std::collections::HashMap<
         tilo_actions::InvocationId,
@@ -503,6 +506,7 @@ impl ActionRuntime {
             hosted_requests: std::collections::HashSet::new(),
             awaited_resolutions: Vec::new(),
             held_answers: Vec::new(),
+            answers_await_route: false,
             local_invocations: std::collections::HashMap::new(),
             pending_application_launches: std::collections::HashMap::new(),
             broker_requests: std::collections::HashMap::new(),

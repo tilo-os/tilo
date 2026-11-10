@@ -291,6 +291,12 @@ impl Reads {
         (instance != 0).then_some(instance)
     }
 
+    /// Whether the route of `key` has not resolved how it opens yet: no
+    /// gate, or its join still on its way.
+    pub(super) fn resolving(&self, key: &str) -> bool {
+        !self.closed() && matches!(self.0.lock_recover().get(key), None | Some(Gate::Joining))
+    }
+
     pub(super) fn joining(&self, key: &str) -> bool {
         let mut rows = self.0.lock_recover();
         let rejoin = matches!(rows.get(key), Some(Gate::Failed(_)));
@@ -1491,6 +1497,15 @@ async fn capture_using(
         assembly.revision,
     ))
 }
+/// The route of `key` is served by the app's own channel: it is open for
+/// documents now, and the owner hears so, as it does a committed read's
+/// readiness ([`set_read_ready`]).
+fn open_on_own_channel(inbound: &InboundBridge, key: &str) -> Result<(), String> {
+    inbound.state.document_reads.legacy(key)?;
+    inbound.state.notify_events();
+    Ok(())
+}
+
 // A parked owner must observe both publication readiness and its withdrawal.
 fn set_read_ready(inbound: &InboundBridge, ready: &AtomicBool, value: bool) {
     if inbound.state.document_reads.set_ready(ready, value) {
@@ -1648,7 +1663,7 @@ pub(super) async fn install(
 ) -> Result<bool, String> {
     let key = spec.channel_id();
     if !opens_committed_document(join.participant_kind.as_str()) {
-        inbound.state.document_reads.legacy(&key)?;
+        open_on_own_channel(inbound, &key)?;
         return Ok(false);
     }
     let first = channel
@@ -1658,10 +1673,13 @@ pub(super) async fn install(
         .await
         .map_err(|e| e.to_string())?;
     if first == Reply::Legacy {
-        inbound.state.document_reads.legacy(&key)?;
+        open_on_own_channel(inbound, &key)?;
         return Ok(false);
     }
     let mut ready = inbound.state.document_reads.pending(&key)?;
+    // Resolved: the route opens once its history is read and merged. An
+    // owner holding changes for it stops treating it as joining.
+    inbound.state.notify_events();
     // What the first read waits for before it Opens again, when it could
     // not be read yet: its turn in the broker's queue, or workspace here.
     let mut waiting = None;

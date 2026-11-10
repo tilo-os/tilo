@@ -12,6 +12,27 @@ use super::{
 };
 
 impl CollaborationManager {
+    /// [`Self::connected_for_lifecycle_test`] with a hold on the broker's
+    /// next route join: each call of the returned hold keeps the next join
+    /// unanswered until its sender sends (dropping it refuses the join).
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "a fixture for the toolkit's tests"
+    )]
+    pub fn connected_holding_joins_for_test()
+    -> (Self, Box<dyn Fn() -> tokio::sync::oneshot::Sender<()>>) {
+        let (fd, captures, _thread) = tests::stand_up_fake_broker(FakeBroker::default());
+        let manager = Self::from_sdk_fd_for_test(fd, "lifecycle-test", Uuid::new_v4());
+        let hold = Box::new(move || {
+            let (release, held) = tokio::sync::oneshot::channel();
+            captures.lock().unwrap().join_gates.push_back(held);
+            release
+        });
+        (manager, hold)
+    }
+
     #[allow(
         clippy::unwrap_used,
         clippy::expect_used,

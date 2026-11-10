@@ -396,22 +396,22 @@ impl App {
 
     /// Enqueue all changed live owned records. Success is queue admission, not
     /// durability: the SDK still awaits each document RPC before a terminal.
-    fn queue_owned_documents(&mut self) -> Result<(), &'static str> {
+    fn queue_owned_documents(&mut self) -> Result<Handoff, &'static str> {
         self.refresh_document_routes();
         self.queue_owned_documents_after_refresh()
     }
 
-    fn queue_owned_documents_after_refresh(&mut self) -> Result<(), &'static str> {
+    fn queue_owned_documents_after_refresh(&mut self) -> Result<Handoff, &'static str> {
         // A surface's records stay in its process: the desktop that placed
         // it gets its actions, never its document, so there is no route to
         // publish one on and none it waits for.
         if self.collaboration.manager.hosts_surface() {
-            return Ok(());
+            return Ok(Handoff::Queued);
         }
         // Every live owner must have an actual publication route.
         let current = live_document_owners(self.root_widget.as_ref());
         if current.is_empty() {
-            return Ok(());
+            return Ok(Handoff::Queued);
         }
         if self.document_routes.witness.is_none() {
             return Err("the admitted document route is unavailable");
@@ -433,17 +433,29 @@ impl App {
         if published.status_changed {
             self.layout.layout_dirty = true;
         }
-        blocked.or(published.blocked).map_or(Ok(()), Err)
+        // Answers held for a route that has joined now go out on this pass's
+        // sync, after the record's changes they cover.
+        if !published.opening && std::mem::take(&mut self.actions.answers_await_route) {
+            self.needs_sync = true;
+        }
+        blocked.or(published.blocked).map_or(
+            Ok(if published.opening {
+                Handoff::Opening
+            } else {
+                Handoff::Queued
+            }),
+            Err,
+        )
     }
 
     /// A local mutation may already exist. Suppress its terminal and retire the
     /// transport; broker disconnect/recovery retains admitted uncertainty.
-    pub(super) fn queue_documents_before_terminal(&mut self) -> bool {
+    pub(super) fn queue_documents_before_terminal(&mut self) -> Handoff {
         if self.action_publication_failure.is_some() {
-            return false;
+            return Handoff::Stopped;
         }
         match self.queue_owned_documents() {
-            Ok(()) => true,
+            Ok(handoff) => handoff,
             Err(reason) => {
                 tracing::error!(reason, "pre-terminal document publication blocked");
                 self.action_publication_failure = Some(format!(
@@ -455,7 +467,7 @@ impl App {
                 }
                 self.collaboration.manager.stop_after_publication_failure();
                 self.layout.layout_dirty = true;
-                false
+                Handoff::Stopped
             }
         }
     }
@@ -652,12 +664,27 @@ impl App {
     }
 }
 
+/// Where the changes of a window's records stand before an answer to an
+/// action that made them goes out: the answer follows its changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Handoff {
+    /// Every change is in the transport's queue.
+    Queued,
+    /// A record's route is still joining (a record the action created): its
+    /// changes go out on the pass it opens, and the answer with them.
+    Opening,
+    /// Publication failed and collaboration stopped: the answer is withheld.
+    Stopped,
+}
+
 /// What publishing a holder's records reported.
 pub(super) struct Published {
     /// Why some record's changes are not reaching peers, if any.
     pub(super) blocked: Option<&'static str>,
     /// A route's user-visible status changed.
     pub(super) status_changed: bool,
+    /// A record's route is still joining: its whole document waits for it.
+    pub(super) opening: bool,
 }
 
 /// One unit's part of a publication pass: what changed in it, and the route
@@ -750,6 +777,7 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
     ) -> Published {
         let mut blocked = None;
         let mut status_changed = false;
+        let mut opening = false;
         let mut parts = vec![];
         for entry in &mut self.owners {
             if !entry.publishes {
@@ -760,9 +788,29 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
                 // bridge instead of this record alone.
                 continue;
             }
+            if manager.take_unpublished_route(&entry.route) {
+                // The route was not open for what was queued for it: the
+                // record goes out whole once it is.
+                entry.sent = crate::state::DocumentFrontier::default();
+                entry.needs_snapshot = true;
+                entry.opening = true;
+            }
             if entry.opening {
                 if !manager.document_route_publishable(&entry.route) {
-                    // Its whole document goes out once the route opens.
+                    // Its whole document goes out once the route opens. An
+                    // answer waits for that while the route still joins (a
+                    // record the action created opens as its join ends). A
+                    // route that found history to read first waits on that,
+                    // possibly on another device, and a failed join opens on
+                    // no pass: that record alone waits, and says why.
+                    if let Some(failure) = manager.route_join_failure(&entry.route) {
+                        if entry.outbound_failure.as_ref() != Some(&failure) {
+                            entry.outbound_failure = Some(failure);
+                            status_changed = true;
+                        }
+                    } else if manager.document_route_joining(&entry.route) {
+                        opening = true;
+                    }
                     continue;
                 }
                 entry.opening = false;
@@ -853,6 +901,7 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
         Published {
             blocked,
             status_changed,
+            opening,
         }
     }
 

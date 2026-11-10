@@ -1556,6 +1556,27 @@ impl CollaborationManager {
         }
     }
 
+    /// Whether `route`'s join is still on its way: it has neither opened,
+    /// nor found its record's history to read first, nor failed. The owner
+    /// hears each of those as an event.
+    #[must_use]
+    pub fn document_route_joining(&self, route: &RouteSpec) -> bool {
+        match &self.backend {
+            Backend::Transport(transport) => transport.document_route_joining(&route.channel_id()),
+            Backend::Disabled(_) => false,
+        }
+    }
+
+    /// Whether changes queued for record `route` were let go since the last
+    /// ask, because the route was not open to take them: the owner sends
+    /// the record whole once it is.
+    pub fn take_unpublished_route(&mut self, route: &RouteSpec) -> bool {
+        match &self.backend {
+            Backend::Transport(transport) => transport.take_unpublished_route(&route.channel_id()),
+            Backend::Disabled(_) => false,
+        }
+    }
+
     /// Independently sample the existing transport read gates without admission.
     #[cfg(all(feature = "native", any(test, feature = "test-support")))]
     pub fn controlled_document_read_phase_for_test(
@@ -1578,13 +1599,6 @@ impl CollaborationManager {
             }
             Backend::Disabled(_) => false,
         }
-    }
-
-    /// Test-only: whether `route` has resolved its document mode, so a
-    /// document mutation on it would be admitted rather than refused.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn document_route_publishable_for_test(&self, route: &RouteSpec) -> bool {
-        self.document_route_publishable(route)
     }
 
     /// [`Self::send_to_route`] with the reason a request was not handed off.

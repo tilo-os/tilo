@@ -328,3 +328,33 @@ fn account_custody_taken_while_the_route_joins_answers_once_it_is_admitted() {
         "the app that keeps the account's type is released its secret"
     );
 }
+
+/// A record route that opens on the app's own channel (the next part of a
+/// chat a send just created) says so: its owner wakes, and the pass that
+/// wakes it publishes the record and answers the send. Nothing else need
+/// happen to wake the window meanwhile.
+#[test]
+fn a_record_route_opening_on_the_apps_own_channel_wakes_its_owner() {
+    let mut scope = crate::wake::WakeScope::new();
+    let wakes = wakes_of(&mut scope);
+    let workspace = Uuid::new_v4();
+    let mut manager = {
+        let _entry = scope.enter();
+        super::tests::connected_manager_for("so.tilo.chat", workspace)
+    };
+    // Its own route joined: what that woke is taken up first.
+    let _ = manager.poll();
+    while wakes.try_recv().is_ok() {}
+    let part = RouteSpec {
+        app_id: "so.tilo.chat".into(),
+        cluster_id: workspace,
+        record: Some("derived:part.0@derived:messages".into()),
+    };
+    manager.join_route(part.clone(), crate::record::RecordKind::new("chat.part"));
+    poll_on_wakes(
+        &mut manager,
+        &wakes,
+        "the part's route to open",
+        |manager, _| manager.document_route_publishable(&part),
+    );
+}

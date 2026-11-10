@@ -285,6 +285,21 @@ pub trait CollabTransport: Send {
         None
     }
 
+    /// Whether the join of `channel` is still on its way: it has neither
+    /// opened, nor found its record's history to read first, nor failed.
+    fn document_route_joining(&self, channel: &str) -> bool {
+        let _ = channel;
+        false
+    }
+
+    /// Whether changes queued for record route `channel` were let go since
+    /// the last ask, because the route was not open to take them: its
+    /// owner sends the record whole once it is.
+    fn take_unpublished_route(&self, channel: &str) -> bool {
+        let _ = channel;
+        false
+    }
+
     /// Independently sampled read phases, for bounded test diagnostics only.
     /// These observations never authorize publication or acknowledge a read.
     #[cfg(any(test, feature = "test-support"))]
