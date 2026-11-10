@@ -246,7 +246,7 @@ def work(client: Client, out: dict) -> None:
     if not introduce(client, out):
         return
     title = os.environ["E2E_TITLE"]
-    out["open_notes"] = client.tool("tilo_do", {"path": "notes#open"})
+    out["open_notes"] = do(client, "notes#open", None, 60)
     out["notes_listing"] = until(client, "tilo_ls", {"path": "notes"},
                                  lambda text: "#new-note" in text, 30)
     go = os.path.expandvars(os.environ["E2E_GO"])
@@ -255,9 +255,10 @@ def work(client: Client, out: dict) -> None:
     while not os.path.exists(go) and time.monotonic() < deadline:
         time.sleep(0.5)
     out["go"] = os.path.exists(go)
-    out["new_note"] = client.tool("tilo_do", {"path": "notes#new-note", "args": {"title": title}})
+    out["new_note"] = do(client, "notes#new-note", {"title": title}, 60)
+    # The door's "nothing matches <title>" names the title too: that is not the note.
     out["found_note"] = until(client, "tilo_find", {"query": title, "app": "notes"},
-                              lambda text: title in text, 30)
+                              lambda text: title in text and not text.startswith("nothing matches"), 30)
 
 
 def page_of(client: Client, out: dict, patience: float = 60.0) -> str | None:

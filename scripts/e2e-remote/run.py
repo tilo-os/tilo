@@ -718,7 +718,12 @@ ip -o addr show dev "$dev"
         res.facts["b_windows"] = windows
         if "so.tilo.notes" not in json.dumps(windows):
             raise Failed(f"Notes did not open on B: {json.dumps(windows)[:800]}")
-        if title not in text_of(t.get("found_note")):
+        made, found = text_of(t.get("new_note")), text_of(t.get("found_note"))
+        # An action the door could not run answers in words, and so does a search that finds
+        # nothing, which names the title it looked for: neither is the note.
+        if not made or made.startswith(("pending ", "failed")) or "did not open" in made:
+            raise Failed(f"the agent could not make its note on B: {t.get('open_notes')} / {t.get('new_note')}")
+        if title not in found or found.startswith("nothing matches"):
             raise Failed(f"the note the agent made is not found on B: {t.get('new_note')} / {t.get('found_note')}")
 
     # -- one Browser tab, several machines ---------------------------------------------
