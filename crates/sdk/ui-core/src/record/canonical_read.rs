@@ -38,7 +38,7 @@ pub(super) fn finish_created(
     } else {
         // The absence is solely in this local cache. Its content comes from
         // the already admitted remote Existing read, not a creation grant.
-        incoming.set_actor(store.actor().clone());
+        incoming.set_actor(store.actor());
         incoming
     };
     incoming_validator(&doc)

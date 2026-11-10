@@ -1164,7 +1164,7 @@ impl RecordSet {
         // The package actor belongs to its index, and a bootstrap fork actor to pre-admission
         // edits; every later canonical operation belongs to this record's original persistent
         // writer.
-        merged.set_actor(store.actor().clone());
+        merged.set_actor(store.actor());
         *doc = merged;
         let mut autosave = store.writer();
         if let Some(mut stored) = stored {
@@ -1412,7 +1412,7 @@ impl RecordSet {
                 )?
                 .ok_or(RecordOpenError::MissingRecord)?,
             };
-            doc.set_actor(owner.actor().clone());
+            doc.set_actor(owner.actor());
             if !init_scoped(&mut doc, &want.id, &want.kind, &self.home, Some(&self.home)) {
                 return Err(RecordOpenError::IdentityMismatch);
             }
@@ -3682,6 +3682,13 @@ impl RecordStore {
                 let actor = automerge::ActorId::random();
                 if let Some((cache, key)) = &portable {
                     cache.claim(key, actor.to_bytes().to_vec())?;
+                } else if let Some(writer) = autosave.as_mut() {
+                    // A device keeps the writer it saved under: restored on
+                    // the next open, it would number that open's first
+                    // changes the withdrawn ones' sequences again. Taking a
+                    // change back replaces the saved writer, as a page's
+                    // claim replaces its saved row's.
+                    writer.replace_writer(&actor)?;
                 }
                 let mut rebuilt = doc
                     .fork_at(&kept_heads)
@@ -4037,3 +4044,6 @@ mod tests;
 
 #[cfg(test)]
 mod portable_tests;
+
+#[cfg(test)]
+mod native_writer_tests;

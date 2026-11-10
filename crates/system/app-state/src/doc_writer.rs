@@ -79,7 +79,7 @@ pub struct DocOwner {
     store: Rc<dyn DurableStore>,
     key: StorageKey,
     label: PathBuf,
-    actor: ActorId,
+    actor: RefCell<ActorId>,
     actor_stored: Cell<bool>,
     accepted: RefCell<Option<Accepted>>,
     identity: Rc<()>,
@@ -190,7 +190,7 @@ impl DocOwner {
             store,
             key,
             label,
-            actor,
+            actor: RefCell::new(actor),
             actor_stored: Cell::new(actor_stored),
             accepted: RefCell::new(None),
             identity: Rc::new(()),
@@ -223,7 +223,7 @@ impl DocOwner {
     /// The actor bytes to store with the next write, until one carrying them
     /// has committed.
     pub(crate) fn unstored_writer(&self) -> Option<Vec<u8>> {
-        (!self.actor_stored.get()).then(|| self.actor.to_bytes().to_vec())
+        (!self.actor_stored.get()).then(|| self.actor.borrow().to_bytes().to_vec())
     }
 
     pub(crate) fn note_writer_stored(&self) {
@@ -256,13 +256,28 @@ impl DocOwner {
     }
 
     /// The Automerge actor every write of this document is attributed to.
-    pub fn actor(&self) -> &ActorId {
-        &self.actor
+    pub fn actor(&self) -> ActorId {
+        self.actor.borrow().clone()
     }
 
     /// A new empty document carrying this owner's actor.
     pub fn new_document(&self) -> AutoCommit {
-        AutoCommit::new().with_actor(self.actor.clone())
+        AutoCommit::new().with_actor(self.actor.borrow().clone())
+    }
+
+    /// Write this document under `actor` from here on: the next write stores
+    /// it as the document's writer in place of the one its last save was made
+    /// by, so a restart continues that writer, and never the one it replaces.
+    ///
+    /// A document keeps one writer at a time: the sequences of a writer
+    /// belong to it alone. A copy that takes back a change its workspace
+    /// refused writes on under a writer of its own, and the writer it left
+    /// behind keeps whatever it wrote that someone still holds.
+    pub fn replace_writer(&self, actor: ActorId) {
+        *self.actor.borrow_mut() = actor;
+        // A shared writer that is not the primary stores none: the primary's
+        // write would race its own for the document's one writer.
+        self.actor_stored.set(!self.primary);
     }
 
     /// Decode the stored document, dropping a torn tail into a private repair.
@@ -338,16 +353,15 @@ impl DocOwner {
                 path: self.label.clone(),
             });
         }
-        loaded.doc.set_actor(self.actor.clone());
+        loaded.doc.set_actor(self.actor.borrow().clone());
         let heads = loaded.doc.get_heads();
         let accepted = if let Some(bytes) = loaded.repair {
             let base = bytes.len();
             let writer = !self.actor_stored.get();
-            let revision = self.store.write(
-                &self.key,
-                WriteOp::Replace(bytes),
-                writer.then(|| self.actor.to_bytes()),
-            )?;
+            let stored_writer = writer.then(|| self.actor.borrow().to_bytes().to_vec());
+            let revision =
+                self.store
+                    .write(&self.key, WriteOp::Replace(bytes), stored_writer.as_deref())?;
             // Never waits on the disk: this runs on the thread that opens the
             // record. The store commits on its own thread, and the pending
             // write below is confirmed through `durability`.
@@ -466,7 +480,7 @@ impl DocWriter {
             private_history: crate::private_history::PrivateHistory::open(
                 Rc::clone(&owner.store),
                 &owner.key,
-                owner.actor.to_bytes(),
+                owner.actor.borrow().to_bytes(),
             ),
             owner: Some(Rc::clone(owner)),
             sent,
@@ -620,6 +634,29 @@ impl DocWriter {
         }
     }
 
+    /// Write this document under `actor` from here on
+    /// ([`DocOwner::replace_writer`]): the next save stores the new writer in
+    /// place of the one saved before, so a restart continues that one. What
+    /// was written under the writer it replaces stays that writer's, and its
+    /// private evidence stays in its own slot.
+    ///
+    /// # Errors
+    /// Nothing can be stored for a writer that persists nothing.
+    pub fn replace_writer(&mut self, actor: &ActorId) -> Result<(), String> {
+        let Some(owner) = &self.owner else {
+            return Err(self
+                .last_error()
+                .unwrap_or_else(|| "writer disabled".to_owned()));
+        };
+        owner.replace_writer(actor.clone());
+        self.private_history = crate::private_history::PrivateHistory::open(
+            Rc::clone(&owner.store),
+            &owner.key,
+            actor.to_bytes(),
+        );
+        Ok(())
+    }
+
     fn checkpoint_private_history(&mut self) {
         if let Ok(history) = &mut self.private_history
             && let Err(error) = history.checkpoint()
@@ -731,9 +768,10 @@ impl DocWriter {
         };
         let writer = !owner.actor_stored.get();
         let replace = op.is_replace();
+        let stored_writer = writer.then(|| owner.actor.borrow().to_bytes().to_vec());
         let revision = owner
             .store
-            .write(&owner.key, op, writer.then(|| owner.actor.to_bytes()))?;
+            .write(&owner.key, op, stored_writer.as_deref())?;
         self.progress.get_mut().inflight.push_back(InFlight {
             revision,
             heads: heads.clone(),
@@ -1197,7 +1235,7 @@ mod tests {
                     "{}",
                     subject.name
                 );
-                let actor = owner.actor().clone();
+                let actor = owner.actor();
                 drop((writer, owner));
                 let reopened = subject.reopen("burst");
                 assert_eq!(text(&reopened, "body"), "persisted", "{}", subject.name);
@@ -1512,10 +1550,10 @@ mod tests {
                 other.put(ROOT, "from", "secondary").unwrap();
                 let second = DocWriter::start_new(&secondary, &mut other).unwrap();
                 subject.flush(&second).unwrap();
-                let actor = primary.actor().clone();
+                let actor = primary.actor();
                 drop((writer, second, primary, secondary));
                 let reopened = DocOwner::acquire_shared(Rc::clone(&subject.store), key).unwrap();
-                assert_eq!(reopened.actor(), &actor, "{}", subject.name);
+                assert_eq!(reopened.actor(), actor, "{}", subject.name);
             }
         }
         // Phase `a_disabled_writer_reports_why_and_persists_nothing`.

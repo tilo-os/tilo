@@ -110,7 +110,7 @@ fn a_second_window_writes_beside_the_first_without_taking_its_author() {
     first_doc.put(automerge::ROOT, "window", "first").unwrap();
     let first = DocWriter::start_new(&first_owner, &mut first_doc).unwrap();
     first.try_flush().unwrap();
-    let author = first_owner.actor().clone();
+    let author = first_owner.actor();
 
     let second_owner =
         Rc::new(DocOwner::acquire_shared(Rc::clone(&second_instance), key.clone()).unwrap());
@@ -118,7 +118,7 @@ fn a_second_window_writes_beside_the_first_without_taking_its_author() {
         !second_owner.is_primary(),
         "a second window found the stored author taken and writes as a secondary"
     );
-    assert_ne!(second_owner.actor(), &author, "its actor is its own");
+    assert_ne!(second_owner.actor(), author, "its actor is its own");
     let mut second_doc = second_owner.new_document();
     second_doc.put(automerge::ROOT, "window", "second").unwrap();
     let second = DocWriter::start_new(&second_owner, &mut second_doc).unwrap();
@@ -126,7 +126,7 @@ fn a_second_window_writes_beside_the_first_without_taking_its_author() {
 
     // The first window is undisturbed: it holds its own value and still the
     // stored author, and the shared document merged both windows' writes.
-    assert_eq!(first_owner.actor(), &author);
+    assert_eq!(first_owner.actor(), author);
     assert!(
         first_owner
             .stored()
@@ -141,7 +141,7 @@ fn a_second_window_writes_beside_the_first_without_taking_its_author() {
     assert!(reopened.is_primary());
     assert_eq!(
         reopened.actor(),
-        &author,
+        author,
         "the stored author survived a whole second window's session"
     );
 }
