@@ -497,6 +497,9 @@ impl ListModel for PageList {
         Some(TreeRow {
             parent: self.row(index)?.parent,
             depth: None,
+            // The outline shows a note under the one it is inside; the note just over it is not
+            // read here, so nothing offers its actions a place over it.
+            above: None,
         })
     }
 
