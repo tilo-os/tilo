@@ -1,8 +1,11 @@
 //! A page's forms as the page's own actions, and site memory, as an agent
-//! meets them: Browser in its real app host over the deterministic test
-//! engine, its published actions invoked the way the host invokes them for
-//! an agent it admitted, and its document read back as the workspace keeps
-//! it.
+//! and the person meet them: Browser in its real app host over the
+//! deterministic test engine, its published actions invoked the way the host
+//! invokes them for an agent it admitted, and its document read back as the
+//! workspace keeps it.
+//!
+//! The engine's page holds what a test says it holds ([`page_holds`]): every
+//! read of its forms answers that, the window's own as an agent's.
 
 use std::sync::Arc;
 
@@ -14,6 +17,7 @@ use ui::tilo_resource::Replica;
 use ui::webview::{FormSubmit, PageNavigation, PageRecordNote, WebViewEngine as _};
 
 use super::*;
+use crate::effects::BrowserEffect;
 use crate::resource::BrowserShell;
 use crate::site_memory::{RememberedForm, RememberedQuestion};
 
@@ -72,38 +76,106 @@ fn reply(url: &str, message: &str, data: serde_json::Value) -> PageReply {
     }
 }
 
-/// A Browser window an agent opened on `url`, over an engine of its own.
-fn launch(arguments: &[&str]) -> (Arc<TestEngine>, TestApp<BrowserShell>) {
+/// The engine's page holds `forms` from now on: what every read of its
+/// forms answers, whoever reads, until the page holds others.
+fn page_holds(engine: &TestEngine, forms: &[serde_json::Value]) {
+    engine.set_page_data("forms", serde_json::json!({ "forms": forms }));
+}
+
+/// Run the window's frames until what one frame started has reached the
+/// next: an answer of the engine heard, a change of the document shown.
+fn settle(app: &mut TestApp<BrowserShell>) {
+    for _ in 0..3 {
+        app.settle();
+    }
+}
+
+/// A Browser window opened with `arguments`, over an engine of its own whose
+/// page holds `forms`.
+fn launch_on(
+    arguments: &[&str],
+    forms: &[serde_json::Value],
+) -> (Arc<TestEngine>, TestApp<BrowserShell>) {
     let engine = TestEngine::new();
+    page_holds(&engine, forms);
     crate::browser_widget::test_window_engine::install(engine.clone());
     let mut app = TestApp::<BrowserShell>::launched(arguments).expect("Browser opens");
     engine.push_event(WebViewEvent::LoadFinished);
-    app.settle();
+    settle(&mut app);
     (engine, app)
 }
 
-fn open(url: &str) -> (Arc<TestEngine>, TestApp<BrowserShell>) {
-    launch(&[ui::webview::VISITOR_WINDOW_FLAG, url])
+/// A Browser window opened with `arguments` on a page that asks nothing.
+fn launch(arguments: &[&str]) -> (Arc<TestEngine>, TestApp<BrowserShell>) {
+    launch_on(arguments, &[])
 }
 
-/// Close the window and open another on `url` over a new engine, on the
-/// same profile and document: a later visit.
-fn visit_again(app: TestApp<BrowserShell>, url: &str) -> (Arc<TestEngine>, TestApp<BrowserShell>) {
+/// A window an agent opened on `url`, whose page asks nothing yet.
+fn open(url: &str) -> (Arc<TestEngine>, TestApp<BrowserShell>) {
+    open_on(url, &[])
+}
+
+/// A window an agent opened on `url`, whose page holds `forms`.
+fn open_on(url: &str, forms: &[serde_json::Value]) -> (Arc<TestEngine>, TestApp<BrowserShell>) {
+    launch_on(&[ui::webview::VISITOR_WINDOW_FLAG, url], forms)
+}
+
+/// Close the window and open another on `url` over a new engine whose page
+/// holds `forms`, on the same profile and document: a later visit.
+fn visit_again(
+    app: TestApp<BrowserShell>,
+    url: &str,
+    forms: &[serde_json::Value],
+) -> (Arc<TestEngine>, TestApp<BrowserShell>) {
     let engine = TestEngine::new();
+    page_holds(&engine, forms);
     crate::browser_widget::test_window_engine::install(engine.clone());
     let mut app = app
         .relaunch(&[ui::webview::VISITOR_WINDOW_FLAG, url])
         .expect("Browser opens again");
     engine.push_event(WebViewEvent::LoadFinished);
-    app.settle();
+    settle(&mut app);
     // A window opened again may show the page it showed last: the visit is
     // to `url`, so it goes there as following a link does.
     if shown(&mut app) != url {
         engine.send(WebViewCommand::Navigate(url.into()));
-        app.settle();
+        settle(&mut app);
     }
     assert_eq!(shown(&mut app), url);
     (engine, app)
+}
+
+/// The window goes to `url`, whose page takes its time: the engine shows the
+/// address and has not finished loading it. Answers what the engine says
+/// once it has ([`finish_visit`]).
+fn begin_visit(
+    engine: &TestEngine,
+    app: &mut TestApp<BrowserShell>,
+    url: &str,
+) -> Vec<WebViewEvent> {
+    engine.send(WebViewCommand::Navigate(url.into()));
+    let (finished, begun): (Vec<_>, Vec<_>) =
+        engine.drain_events().into_iter().partition(|event| {
+            matches!(
+                event,
+                WebViewEvent::LoadFinished | WebViewEvent::LoadProgress(_)
+            )
+        });
+    for event in begun {
+        engine.push_event(event);
+    }
+    engine.push_event(WebViewEvent::LoadProgress(0.4));
+    settle(app);
+    assert_eq!(shown(app), url);
+    finished
+}
+
+/// The page [`begin_visit`] went to has finished loading.
+fn finish_visit(engine: &TestEngine, app: &mut TestApp<BrowserShell>, finished: Vec<WebViewEvent>) {
+    for event in finished {
+        engine.push_event(event);
+    }
+    settle(app);
 }
 
 /// The address of the page the window shows.
@@ -124,7 +196,7 @@ fn find<'a>(resources: &'a [ResourceSpec], id: &str) -> Option<&'a ResourceSpec>
 
 /// The actions the page publishes for its forms, as the host lists them.
 fn form_actions(app: &mut TestApp<BrowserShell>) -> Vec<ActionSpec> {
-    app.settle();
+    settle(app);
     let published = app.harness().resources();
     find(&published, "browser.page")
         .expect("the page is published")
@@ -247,24 +319,15 @@ fn refused_at_the_door(
         .err()
 }
 
-/// Read the page's forms as the agent does: the engine answers `forms`.
-fn read_forms(
-    engine: &TestEngine,
-    app: &mut TestApp<BrowserShell>,
-    url: &str,
-    forms: &[serde_json::Value],
-) {
-    let count = forms.len();
-    engine.push_page_reply(Ok(reply(
-        url,
-        &format!("{count} forms"),
-        serde_json::json!({ "forms": forms }),
-    )));
+/// The page comes to hold `forms`, as a page's own script draws a form
+/// after it loaded, and the agent reads the page's forms.
+fn read_forms(engine: &TestEngine, app: &mut TestApp<BrowserShell>, forms: &[serde_json::Value]) {
+    page_holds(engine, forms);
     run(app, "read-page-forms", &serde_json::json!({})).answer("the page's forms are read");
 }
 
-/// Who asked the engine for what on the page, in order.
-fn asked(engine: &TestEngine) -> Vec<(Option<String>, PageRequest)> {
+/// Every request the engine was sent for the page, with who asked it.
+fn requests(engine: &TestEngine) -> Vec<(Option<String>, PageRequest)> {
     engine
         .commands()
         .into_iter()
@@ -274,6 +337,29 @@ fn asked(engine: &TestEngine) -> Vec<(Option<String>, PageRequest)> {
             }
             _ => None,
         })
+        .collect()
+}
+
+/// The window's own read of its page's forms: the read `read-page-forms`
+/// makes, asked by nobody the tab names.
+fn own_read() -> (Option<String>, PageRequest) {
+    (None, PageRequest::Forms { frame: None })
+}
+
+/// How often the window read its page's forms itself.
+fn own_reads(engine: &TestEngine) -> usize {
+    requests(engine)
+        .into_iter()
+        .filter(|request| *request == own_read())
+        .count()
+}
+
+/// What the tab's actors asked the engine for on the page, in order: every
+/// request but the window's own reads.
+fn asked(engine: &TestEngine) -> Vec<(Option<String>, PageRequest)> {
+    requests(engine)
+        .into_iter()
+        .filter(|request| *request != own_read())
         .collect()
 }
 
@@ -310,18 +396,19 @@ fn remembered(app: &TestApp<BrowserShell>, signature: &str) -> Option<Remembered
     crate::site_memory::get(&app.state().site_forms, SITE, signature).cloned()
 }
 
-/// On a first visit nothing is known of the page. Once an agent reads its
-/// forms the form is an action of the page, named after it, with one typed
-/// parameter per question; running it answers the form through the engine
-/// under the agent's name and reports each answer as the engine did.
+/// A page that asks nothing publishes no form. Once it holds one and an
+/// agent reads its forms, the form is an action of the page, named after
+/// it, with one typed parameter per question; running it answers the form
+/// through the engine under the agent's name and reports each answer as the
+/// engine did.
 #[test]
 fn a_read_form_is_a_typed_action_of_the_page_and_running_it_answers_the_form() {
     let (engine, mut app) = open(APPLY);
     assert!(
         form_actions(&mut app).is_empty(),
-        "an unread page of an unknown site publishes no form"
+        "a page of an unknown site that asks nothing publishes no form"
     );
-    read_forms(&engine, &mut app, APPLY, &[visa_form()]);
+    read_forms(&engine, &mut app, &[visa_form()]);
     let actions = form_actions(&mut app);
     assert_eq!(ids(&actions), ["form-5f1c2a9b", "send-form-5f1c2a9b"]);
     let answer = &actions[0];
@@ -421,7 +508,7 @@ fn a_read_form_is_a_typed_action_of_the_page_and_running_it_answers_the_form() {
 #[test]
 fn a_secret_is_no_parameter_and_nothing_a_field_held_is_remembered() {
     let (engine, mut app) = open(APPLY);
-    read_forms(&engine, &mut app, APPLY, &[visa_form()]);
+    read_forms(&engine, &mut app, &[visa_form()]);
     let actions = form_actions(&mut app);
     let answer = &actions[0];
     assert!(
@@ -496,17 +583,25 @@ fn a_secret_is_no_parameter_and_nothing_a_field_held_is_remembered() {
 }
 
 /// On a later visit the form's action is published at once from memory,
-/// before anything reads the page, with the parameters the read gave it, and
-/// runs against the page by the remembered signature. Another page of the
-/// site publishes none of it, and coming back to the page does.
+/// before anything reads the page, with the parameters the first visit gave
+/// it. Once the page has loaded the window reads it and the action is the
+/// read page's own, and it runs against the page by its signature. Another
+/// page of the site publishes none of it.
 #[test]
 fn a_later_visit_publishes_the_forms_action_before_any_read() {
-    let (engine, mut app) = open(APPLY);
-    read_forms(&engine, &mut app, APPLY, &[visa_form()]);
+    let (_, mut app) = open_on(APPLY, &[visa_form()]);
     let first = form_actions(&mut app);
+    assert_eq!(ids(&first), ["form-5f1c2a9b", "send-form-5f1c2a9b"]);
 
-    let (engine, mut app) = visit_again(app, "https://visa.test/apply?returning=1");
-    assert!(asked(&engine).is_empty(), "nothing has read this page");
+    let (engine, mut app) = visit_again(app, APPLY, &[visa_form()]);
+    // The actions follow the page: another page of the site has none.
+    page_holds(&engine, &[]);
+    engine.send(WebViewCommand::Navigate("https://visa.test/help".into()));
+    assert!(form_actions(&mut app).is_empty());
+
+    // The form's page again, still loading: nothing has read it.
+    let reads = own_reads(&engine);
+    let finished = begin_visit(&engine, &mut app, "https://visa.test/apply?returning=1");
     let again = form_actions(&mut app);
     assert_eq!(ids(&again), ids(&first));
     assert_eq!(typed(&again[0]), typed(&first[0]));
@@ -517,7 +612,21 @@ fn a_later_visit_publishes_the_forms_action_before_any_read() {
         description.contains("remembered of this site") && description.contains("form_changed"),
         "{description}"
     );
-    assert!(asked(&engine).is_empty(), "publishing it read nothing");
+    assert_eq!(own_reads(&engine), reads, "publishing it read nothing");
+    assert!(asked(&engine).is_empty(), "and no agent read the page");
+
+    // The page has loaded and still holds the form: the window reads it,
+    // and the action is the read page's own.
+    page_holds(&engine, &[visa_form()]);
+    finish_visit(&engine, &mut app, finished);
+    assert_eq!(own_reads(&engine), reads + 1);
+    let read = form_actions(&mut app);
+    assert_eq!(ids(&read), ids(&first));
+    let description = read[0].description.clone().expect("a description");
+    assert!(
+        !description.contains("remembered of this site"),
+        "{description}"
+    );
 
     engine.push_page_reply(Ok(reply(
         APPLY,
@@ -530,7 +639,7 @@ fn a_later_visit_publishes_the_forms_action_before_any_read() {
         &serde_json::json!({"full_name": "Ada Lovelace", "arrival": "2027-02-03",
             "i_agree": true}),
     )
-    .answer("the remembered form is still the page's");
+    .answer("the form is still the page's");
     assert_eq!(answered["data"]["results"][2]["ok"], true);
     assert_eq!(
         asked(&engine),
@@ -541,32 +650,57 @@ fn a_later_visit_publishes_the_forms_action_before_any_read() {
             FormSubmit::No,
         )]
     );
-
-    // The actions follow the page: another page of the site has none, and
-    // the page they belong to has them again, unread.
-    engine.send(WebViewCommand::Navigate("https://visa.test/contact".into()));
-    assert!(form_actions(&mut app).is_empty());
-    engine.send(WebViewCommand::Navigate(APPLY.into()));
-    assert_eq!(ids(&form_actions(&mut app)), ids(&first));
-    assert_eq!(asked(&engine).len(), 1, "and still nothing read the page");
 }
 
-/// A remembered form the page no longer asks is refused when its action is
-/// run, with a code that says the form changed and to read the page again:
-/// nothing but the engine's own check of the signature reached the page.
-/// Reading the page then publishes the form as it is and updates memory.
+/// A site that changed its form since the last visit has the form as it is
+/// now published by the window's own read, in place of the remembered one,
+/// on the page and in memory: no agent meets the old action or reads the
+/// page.
 #[test]
-fn a_changed_form_is_refused_from_memory_and_replaced_once_the_page_is_read() {
-    let (engine, mut app) = open(APPLY);
-    read_forms(&engine, &mut app, APPLY, &[visa_form()]);
+fn a_form_the_site_changed_is_replaced_by_the_windows_own_read() {
+    let (_, app) = open_on(APPLY, &[visa_form()]);
+    assert!(remembered(&app, VISA).is_some());
 
-    let (engine, mut app) = visit_again(app, APPLY);
+    let mut changed = visa_form();
+    changed["signature"] = "0badc0de".into();
+    changed["fields"].as_array_mut().unwrap().push(
+        serde_json::json!({"name": "Purpose of visit", "kind": "text", "required": true,
+            "value": "", "element": "d1e12"}),
+    );
+    let (engine, mut app) = visit_again(app, APPLY, &[changed]);
+    let actions = form_actions(&mut app);
+    assert_eq!(ids(&actions), ["form-0badc0de", "send-form-0badc0de"]);
+    assert!(
+        typed(&actions[0]).contains(&("purpose_of_visit".to_owned(), ParamType::Text, true)),
+        "{:?}",
+        typed(&actions[0])
+    );
+    assert!(asked(&engine).is_empty(), "no agent read the page");
+    assert!(
+        remembered(&app, VISA).is_none(),
+        "the old shape is forgotten"
+    );
+    assert!(remembered(&app, "0badc0de").is_some());
+}
+
+/// A form the page's own script replaced after the page was read is not the
+/// one its action was made for. Running that action is refused with a code
+/// that says the form changed: nothing but the engine's own check of the
+/// signature reached the page. The window then reads the page again by
+/// itself and publishes the form as it is.
+#[test]
+fn a_form_that_changed_under_its_action_is_refused_and_the_page_read_again() {
+    let (engine, mut app) = open_on(APPLY, &[visa_form()]);
     assert_eq!(
         ids(&form_actions(&mut app)),
         ["form-5f1c2a9b", "send-form-5f1c2a9b"]
     );
-    // The site has changed its form since: the engine finds none of that
-    // signature and answers nothing.
+    // The page draws another form in its place. Nothing tells the window.
+    let mut changed = visa_form();
+    changed["signature"] = "0badc0de".into();
+    page_holds(&engine, &[changed]);
+    let reads = own_reads(&engine);
+    // The engine finds no form of the old signature and answers nothing.
     engine.push_page_reply(Err(PageFailure::new(
         "no_form",
         "This page has no form \"5f1c2a9b\": it has form1 \"Apply for a visitor visa\". A \
@@ -582,8 +716,9 @@ fn a_changed_form_is_refused_from_memory_and_replaced_once_the_page_is_read() {
     assert_eq!(refused.code, "browser.page.form_changed");
     assert!(
         refused.message.contains("\"Apply for a visitor visa\"")
-            && refused.message.contains("as it was remembered")
+            && refused.message.contains("as it was read")
             && refused.message.contains("Nothing was placed")
+            && refused.message.contains("reads its forms again by itself")
             && refused.message.contains("read-page-forms"),
         "{}",
         refused.message
@@ -594,42 +729,24 @@ fn a_changed_form_is_refused_from_memory_and_replaced_once_the_page_is_read() {
         1,
         "the one request named the form by the signature it had: no other form was touched"
     );
-    assert!(
-        form_actions(&mut app).is_empty(),
-        "the action of a form the page does not hold is withdrawn"
-    );
-    assert!(
-        remembered(&app, VISA).is_some(),
-        "memory is corrected by a read, not by a refusal"
-    );
 
-    // The page is read: the form as it is now replaces the remembered one,
-    // on the page and in memory.
-    let mut changed = visa_form();
-    changed["signature"] = "0badc0de".into();
-    changed["fields"].as_array_mut().unwrap().push(
-        serde_json::json!({"name": "Purpose of visit", "kind": "text", "required": true,
-            "value": "", "element": "d1e12"}),
-    );
-    read_forms(&engine, &mut app, APPLY, &[changed]);
+    // The window read the page again: the form as it is now replaces the
+    // one the action was made for, on the page and in memory.
     let actions = form_actions(&mut app);
     assert_eq!(ids(&actions), ["form-0badc0de", "send-form-0badc0de"]);
     assert!(
-        typed(&actions[0]).contains(&("purpose_of_visit".to_owned(), ParamType::Text, true)),
-        "{:?}",
-        typed(&actions[0])
+        actions
+            .iter()
+            .all(|action| action.contract.availability.is_available())
     );
-    assert!(
-        remembered(&app, VISA).is_none(),
-        "the old shape is forgotten"
-    );
-    assert!(remembered(&app, "0badc0de").is_some());
-
-    // And the next visit opens with the form as it is now.
-    let (_, mut app) = visit_again(app, APPLY);
+    assert_eq!(own_reads(&engine), reads + 1, "one read, and no agent's");
+    assert_eq!(asked(&engine).len(), 1);
+    // The page opened with the first shape and will again: memory keeps it
+    // as the shape the other one grew from.
+    assert!(remembered(&app, VISA).is_some());
     assert_eq!(
-        ids(&form_actions(&mut app)),
-        ["form-0badc0de", "send-form-0badc0de"]
+        remembered(&app, "0badc0de").map(|form| form.grew_from),
+        Some(VISA.to_owned())
     );
 }
 
@@ -638,7 +755,7 @@ fn a_changed_form_is_refused_from_memory_and_replaced_once_the_page_is_read() {
 #[test]
 fn two_forms_of_a_page_are_two_actions() {
     let (engine, mut app) = open(APPLY);
-    read_forms(&engine, &mut app, APPLY, &[visa_form(), search_form()]);
+    read_forms(&engine, &mut app, &[visa_form(), search_form()]);
     let actions = form_actions(&mut app);
     assert_eq!(
         ids(&actions),
@@ -678,13 +795,13 @@ fn two_forms_of_a_page_are_two_actions() {
 }
 
 /// Sending is the form's other action. In a flow of several pages memory
-/// keeps which form followed which: the form read on the page a sent form
-/// led to follows it, and on a later visit the first form says what the
-/// site asks next.
+/// keeps which form followed which: the form the window reads on the page a
+/// sent form led to follows it, and on a later visit the first form says
+/// what the site asks next.
 #[test]
 fn sending_is_its_own_action_and_memory_keeps_which_form_followed_which() {
     let (engine, mut app) = open(APPLY);
-    read_forms(&engine, &mut app, APPLY, &[visa_form()]);
+    read_forms(&engine, &mut app, &[visa_form()]);
     let before = asked(&engine).len();
     engine.push_page_reply(Ok(PageReply {
         navigation: PageNavigation::Possible,
@@ -703,24 +820,35 @@ fn sending_is_its_own_action_and_memory_keeps_which_form_followed_which() {
         "sending answers nothing: it sends the form as it stands, with its first button"
     );
 
-    // The site answers with its next page, which asks for the payment.
+    // The site answers with its next page, which asks for the payment. The
+    // window reads it once it has loaded: no agent has to.
     let pay = "https://visa.test/pay";
-    engine.send(WebViewCommand::Navigate(pay.into()));
-    app.settle();
     let payment = serde_json::json!({
         "form": "form1", "label": "Pay the fee", "method": "POST", "action": "/pay",
         "signature": "c0ffee00", "submit": ["Pay"],
         "fields": [{"name": "Card number", "kind": "secret", "required": true, "value": "",
             "element": "d2e2"}],
     });
-    read_forms(&engine, &mut app, pay, &[payment]);
+    let read_by_agents = asked(&engine).len();
+    page_holds(&engine, std::slice::from_ref(&payment));
+    engine.send(WebViewCommand::Navigate(pay.into()));
+    assert_eq!(
+        ids(&form_actions(&mut app)),
+        ["form-c0ffee00", "send-form-c0ffee00"]
+    );
+    assert_eq!(asked(&engine).len(), read_by_agents);
     assert_eq!(
         remembered(&app, "c0ffee00").map(|form| form.follows),
         Some(VISA.to_owned())
     );
 
-    let (engine, mut app) = visit_again(app, APPLY);
+    // A later visit: the window opens on the payment page it showed last,
+    // which asks for the payment as before, and goes back to the first form.
+    let (engine, mut app) = visit_again(app, pay, &[payment]);
+    page_holds(&engine, &[visa_form()]);
+    engine.send(WebViewCommand::Navigate(APPLY.into()));
     let actions = form_actions(&mut app);
+    assert_eq!(ids(&actions), ["form-5f1c2a9b", "send-form-5f1c2a9b"]);
     let description = actions[0].description.clone().expect("a description");
     assert!(
         description.contains("After this form was sent, the site asked: \"Pay the fee\""),
@@ -736,14 +864,24 @@ fn sending_is_its_own_action_and_memory_keeps_which_form_followed_which() {
     );
 }
 
-/// An answer that makes the form ask more withdraws its action, and says
-/// so, until the page is read; and a field the typed path refused for what
-/// it is (an editor written by typing) is no parameter from then on, on
-/// this visit and the next.
+/// An answer that makes the form ask more is answered as it always was,
+/// and the form gets its new action by itself: the window reads the page
+/// again and publishes the form as it is now, without any agent's read. A
+/// field the typed path refused for what it is (an editor written by
+/// typing) is no parameter from then on, on this visit and the next.
 #[test]
-fn what_running_a_form_teaches_changes_its_action() {
-    let (engine, mut app) = open(APPLY);
-    read_forms(&engine, &mut app, APPLY, &[visa_form()]);
+fn a_form_that_grows_gets_its_new_action_without_an_agents_read() {
+    let (engine, mut app) = open_on(APPLY, &[visa_form()]);
+    assert!(asked(&engine).is_empty(), "the window read the page");
+    // Answering "Other" makes the page ask which country: from then on it
+    // holds the form in the shape it grew into.
+    let mut grown = visa_form();
+    grown["signature"] = "0badc0de".into();
+    grown["fields"].as_array_mut().unwrap().push(
+        serde_json::json!({"name": "Which country?", "kind": "text", "required": true,
+            "value": "", "element": "d1e12"}),
+    );
+    page_holds(&engine, &[grown]);
     engine.push_page_reply(Ok(reply(
         APPLY,
         "Answered 1 of 2 questions of form1; the form now also asks \"Which country?\"",
@@ -759,6 +897,7 @@ fn what_running_a_form_teaches_changes_its_action() {
             "submitted": false, "now_asks": ["Which country?"], "unanswered": [],
         }),
     )));
+    let reads = own_reads(&engine);
     let answered = run(
         &mut app,
         "form-5f1c2a9b",
@@ -767,39 +906,52 @@ fn what_running_a_form_teaches_changes_its_action() {
     )
     .answer("one answer was placed");
     assert_eq!(answered["data"]["results"][0]["code"], "needs_typing");
+    assert_eq!(
+        answered["data"]["now_asks"],
+        serde_json::json!(["Which country?"])
+    );
     let message = answered["message"].as_str().expect("a message");
     assert!(
-        message.contains("its action is withdrawn until the page's forms are read again"),
+        message.contains("the page reads its forms again by itself"),
         "{message}"
     );
+
+    // The window read the page again by itself: the form as it is now is an
+    // action of the page, with the question the answer opened.
     let actions = form_actions(&mut app);
-    assert_eq!(ids(&actions), ["form-5f1c2a9b", "send-form-5f1c2a9b"]);
+    assert_eq!(ids(&actions), ["form-0badc0de", "send-form-0badc0de"]);
     assert!(
         actions
             .iter()
-            .all(|action| !action.contract.availability.is_available()),
-        "the form asks something else now: its actions say so until it is read"
-    );
-    let withdrawn = refused_at_the_door(
-        &mut app,
-        "form-5f1c2a9b",
-        &serde_json::json!({"arrival": "2027-02-03", "i_agree": true}),
+            .all(|action| action.contract.availability.is_available()),
+        "the grown form's actions can be run"
     );
     assert!(
-        matches!(&withdrawn, Some(DoorError::Unavailable { code, .. }) if code == "form_changed"),
-        "{withdrawn:?}"
+        typed(&actions[0]).contains(&("which_country".to_owned(), ParamType::Text, true)),
+        "{:?}",
+        typed(&actions[0])
     );
-
-    // Read again, the form has the shape it grew into; a later visit opens
-    // with the shape the page opens with, without the field that needs typing.
-    let mut grown = visa_form();
-    grown["signature"] = "0badc0de".into();
-    read_forms(&engine, &mut app, APPLY, &[grown]);
+    assert_eq!(
+        own_reads(&engine),
+        reads + 1,
+        "one read of the window's own"
+    );
+    assert_eq!(
+        asked(&engine).len(),
+        1,
+        "the agent asked the engine for its one answer and never read the page"
+    );
     assert_eq!(
         remembered(&app, "0badc0de").map(|form| form.grew_from),
         Some(VISA.to_owned())
     );
-    let (_, mut app) = visit_again(app, APPLY);
+    // Nothing reads on: the page is not read again until it has a reason.
+    settle(&mut app);
+    assert_eq!(own_reads(&engine), reads + 1);
+
+    // A later visit opens with the shape the page opens with, without the
+    // field that needs typing.
+    let (_, mut app) = visit_again(app, APPLY, &[visa_form()]);
     let actions = form_actions(&mut app);
     assert_eq!(ids(&actions), ["form-5f1c2a9b", "send-form-5f1c2a9b"]);
     assert!(
@@ -814,6 +966,10 @@ fn what_running_a_form_teaches_changes_its_action() {
         description.contains("\"Full name\" is written by typing and takes fill-page"),
         "{description}"
     );
+    assert!(
+        remembered(&app, "0badc0de").is_some(),
+        "the shape the form grows into is still remembered"
+    );
 }
 
 /// In the person's own window a page holds their sign-ins, and the answers
@@ -822,7 +978,7 @@ fn what_running_a_form_teaches_changes_its_action() {
 #[test]
 fn the_answers_a_signed_in_page_offers_are_not_remembered() {
     let (engine, mut app) = launch(&[APPLY]);
-    read_forms(&engine, &mut app, APPLY, &[visa_form()]);
+    read_forms(&engine, &mut app, &[visa_form()]);
     let actions = form_actions(&mut app);
     assert_eq!(actions[0].params()[3].choices, ["Kenya", "Other"]);
     let kept = remembered(&app, VISA).expect("the form's shape is remembered");
@@ -883,4 +1039,382 @@ fn memory_is_the_documents_and_syncs_like_the_rest_of_it() {
         known,
         ["https://visa.test aaaa1111", "https://visa.test bbbb2222"]
     );
+}
+
+/// A first visit has its forms as actions without any agent's read: the
+/// window reads the page itself once it has loaded, publishes each form as
+/// a typed action and remembers its shape. The read is the tab's unnamed
+/// actor's, and the action it publishes runs for an agent like any other.
+#[test]
+fn a_first_visit_publishes_a_forms_action_with_no_agent_read() {
+    let (engine, mut app) = open_on(APPLY, &[visa_form(), search_form()]);
+    let actions = form_actions(&mut app);
+    assert_eq!(
+        ids(&actions),
+        [
+            "form-5f1c2a9b",
+            "send-form-5f1c2a9b",
+            "form-0a11ce00",
+            "send-form-0a11ce00"
+        ]
+    );
+    assert_eq!(actions[0].label, "Apply for a visitor visa");
+    assert_eq!(
+        typed(&actions[0]),
+        [
+            ("full_name".to_owned(), ParamType::Text, true),
+            ("date_of_birth_day".to_owned(), ParamType::Number, false),
+            ("arrival".to_owned(), ParamType::Text, true),
+            ("nationality".to_owned(), ParamType::Text, false),
+            ("languages".to_owned(), ParamType::Array, false),
+            ("i_agree".to_owned(), ParamType::Boolean, true),
+        ]
+    );
+    assert_eq!(actions[0].params()[3].choices, ["Kenya", "Other"]);
+    assert!(
+        actions
+            .iter()
+            .all(|action| action.contract.availability.is_available())
+    );
+    let all = requests(&engine);
+    assert!(
+        !all.is_empty() && all.iter().all(|request| *request == own_read()),
+        "the engine was asked for the page's forms by the window alone: {all:?}"
+    );
+    assert!(asked(&engine).is_empty(), "no agent read the page");
+    assert!(remembered(&app, VISA).is_some() && remembered(&app, "0a11ce00").is_some());
+
+    engine.push_page_reply(Ok(reply(
+        APPLY,
+        "Answered 1 of 1 questions",
+        placed("0a11ce00", &["Words"], false),
+    )));
+    run(
+        &mut app,
+        "form-0a11ce00",
+        &serde_json::json!({"words": "consulate hours"}),
+    )
+    .answer("the action the window's read published answers the form");
+    assert_eq!(
+        asked(&engine),
+        [fill(
+            "0a11ce00",
+            &serde_json::json!({"Words": "consulate hours"}),
+            FormSubmit::No,
+        )]
+    );
+}
+
+/// A page without forms costs one read: the window reads it once when it
+/// has loaded and not again, however long the page stays in front.
+#[test]
+fn a_page_without_forms_is_read_once() {
+    let (engine, mut app) = open(APPLY);
+    let before = own_reads(&engine);
+    engine.send(WebViewCommand::Navigate("https://visa.test/contact".into()));
+    settle(&mut app);
+    assert_eq!(own_reads(&engine), before + 1, "read once it has loaded");
+    assert!(form_actions(&mut app).is_empty());
+    // A minute on, past every wait the window keeps for its page.
+    let later = ui::time::now() + ui::time::Duration::from_secs(60);
+    ui::time::testing::with_monotonic_time(later, || settle(&mut app));
+    settle(&mut app);
+    assert_eq!(own_reads(&engine), before + 1, "and never again");
+    assert!(app.state().site_forms.is_empty(), "nothing to remember");
+}
+
+/// A reload at the same address reads the page again: what it holds after
+/// loading anew is what it publishes.
+#[test]
+fn a_reload_at_the_same_address_reads_the_page_again() {
+    let (engine, mut app) = open_on(APPLY, &[visa_form()]);
+    assert_eq!(
+        ids(&form_actions(&mut app)),
+        ["form-5f1c2a9b", "send-form-5f1c2a9b"]
+    );
+    let reads = own_reads(&engine);
+    page_holds(&engine, &[visa_form(), search_form()]);
+    settle(&mut app);
+    assert_eq!(
+        own_reads(&engine),
+        reads,
+        "a page nothing says changed is not read again"
+    );
+    engine.send(WebViewCommand::Reload);
+    assert_eq!(
+        ids(&form_actions(&mut app)),
+        [
+            "form-5f1c2a9b",
+            "send-form-5f1c2a9b",
+            "form-0a11ce00",
+            "send-form-0a11ce00"
+        ]
+    );
+    assert_eq!(shown(&mut app), APPLY);
+    assert_eq!(own_reads(&engine), reads + 1);
+    assert!(asked(&engine).is_empty());
+}
+
+/// The window's reads take no place in the tab's record and name no actor:
+/// each is the read `read-page-forms` makes, which only observes the page,
+/// sent as the tab's unnamed actor, and the record holds nothing after
+/// them.
+#[test]
+fn the_windows_reads_take_no_place_in_the_record() {
+    let (engine, mut app) = open_on(APPLY, &[visa_form()]);
+    engine.send(WebViewCommand::Reload);
+    settle(&mut app);
+    let reads = requests(&engine);
+    assert!(reads.len() >= 2, "{reads:?}");
+    for (actor, request) in &reads {
+        assert_eq!(*actor, None, "the window reads as nobody the tab names");
+        assert_eq!(*request, PageRequest::Forms { frame: None });
+        assert!(
+            request.only_observes(),
+            "a read operates nothing, so it is never set down"
+        );
+    }
+    let record = run(&mut app, "read-page-record", &serde_json::json!({}))
+        .answer("the tab's record is read");
+    assert_eq!(record["data"]["entries"], serde_json::json!([]));
+    assert_eq!(record["data"]["next"], 0);
+}
+
+/// The test engine as a window's engine, answering page requests late while
+/// a test says so: what it answers meanwhile reaches the window only once
+/// the test lets it, after whatever else the engine said in between.
+struct SlowEngine {
+    engine: Arc<TestEngine>,
+    /// Whether answers are held back, and the ones that are.
+    held: std::sync::Mutex<(bool, Vec<WebViewEvent>)>,
+}
+
+impl SlowEngine {
+    fn over(engine: &Arc<TestEngine>) -> Arc<Self> {
+        Arc::new(Self {
+            engine: Arc::clone(engine),
+            held: std::sync::Mutex::new((false, Vec::new())),
+        })
+    }
+
+    /// Hold the engine's answers back from now on, or let them through.
+    fn hold_answers(&self, hold: bool) {
+        self.held.lock().unwrap().0 = hold;
+    }
+}
+
+impl ui::webview::WebViewEngine for SlowEngine {
+    fn create_tab(&self) -> Result<SharedEngine, String> {
+        self.engine.create_tab()
+    }
+    fn set_visible(&self, visible: bool) {
+        self.engine.set_visible(visible);
+    }
+    fn take_new_tab_requests(&self) -> Vec<(String, bool)> {
+        self.engine.take_new_tab_requests()
+    }
+    fn accept_popups(&self) {
+        self.engine.accept_popups();
+    }
+    fn accept_page_dialogs(&self) {
+        self.engine.accept_page_dialogs();
+    }
+    fn take_popups(&self) -> Vec<ui::webview::Popup> {
+        self.engine.take_popups()
+    }
+    fn adopt_popup(&self, popup: u32) -> Result<SharedEngine, String> {
+        self.engine.adopt_popup(popup)
+    }
+    fn measures_document(&self) -> bool {
+        self.engine.measures_document()
+    }
+    fn send(&self, command: WebViewCommand) {
+        self.engine.send(command);
+    }
+    fn navigate_owned(
+        &self,
+        request_id: u32,
+        command: ui::webview::NavigationCommand,
+    ) -> Result<(), String> {
+        self.engine.navigate_owned(request_id, command)
+    }
+    fn frames(&self) -> ui::webview::FrameSlot {
+        self.engine.frames()
+    }
+    fn drain_events(&self) -> Vec<WebViewEvent> {
+        let mut events = self.engine.drain_events();
+        let mut held = self.held.lock().unwrap();
+        if held.0 {
+            let (answers, others): (Vec<_>, Vec<_>) = events
+                .into_iter()
+                .partition(|event| matches!(event, WebViewEvent::PageResult { .. }));
+            held.1.extend(answers);
+            return others;
+        }
+        events.append(&mut held.1);
+        events
+    }
+    fn supports_composition(&self) -> bool {
+        self.engine.supports_composition()
+    }
+    fn text_field(&self) -> Option<ui::webview::TextField> {
+        self.engine.text_field()
+    }
+}
+
+/// The window's read is of the page it asked. An answer that arrives once
+/// the window shows another page says nothing of that page: it is dropped,
+/// published nowhere and not remembered.
+#[test]
+fn a_read_answered_after_its_page_has_gone_is_dropped() {
+    let engine = TestEngine::new();
+    let slow = SlowEngine::over(&engine);
+    crate::browser_widget::test_window_engine::install(slow.clone());
+    let mut app = TestApp::<BrowserShell>::launched(&[ui::webview::VISITOR_WINDOW_FLAG, APPLY])
+        .expect("Browser opens");
+    engine.push_event(WebViewEvent::LoadFinished);
+    settle(&mut app);
+    assert_eq!(shown(&mut app), APPLY);
+    assert!(form_actions(&mut app).is_empty());
+
+    // The page loads anew with a form. The window asks the engine for its
+    // forms, and the engine takes its time to answer.
+    page_holds(&engine, &[visa_form()]);
+    let reads = own_reads(&engine);
+    slow.hold_answers(true);
+    engine.send(WebViewCommand::Reload);
+    settle(&mut app);
+    assert_eq!(own_reads(&engine), reads + 1);
+    assert!(
+        form_actions(&mut app).is_empty(),
+        "the engine has not answered the read yet"
+    );
+
+    // The window goes on to a page that asks nothing, and only then does
+    // the answer about the page it left arrive.
+    page_holds(&engine, &[]);
+    engine.send(WebViewCommand::Navigate("https://visa.test/contact".into()));
+    slow.hold_answers(false);
+    assert!(
+        form_actions(&mut app).is_empty(),
+        "the form of the page it left is no action of this one"
+    );
+    assert_eq!(shown(&mut app), "https://visa.test/contact");
+    assert!(
+        app.state().site_forms.is_empty(),
+        "and nothing is remembered of a read that was dropped"
+    );
+    assert_eq!(
+        own_reads(&engine),
+        reads + 2,
+        "the page it went to is read once"
+    );
+
+    // An engine that answers in time is heard: the same page, loaded anew
+    // with the form, publishes it.
+    page_holds(&engine, &[visa_form()]);
+    engine.send(WebViewCommand::Navigate(APPLY.into()));
+    assert_eq!(
+        ids(&form_actions(&mut app)),
+        ["form-5f1c2a9b", "send-form-5f1c2a9b"]
+    );
+}
+
+/// A private window reads its page like any other, so the page's forms are
+/// its actions, but it writes nothing to memory and publishes nothing that
+/// was remembered.
+#[test]
+fn a_private_window_neither_publishes_from_memory_nor_writes_to_it() {
+    let help = "https://visa.test/help";
+    let engine = TestEngine::new();
+    page_holds(&engine, &[search_form()]);
+    crate::browser_widget::test_window_engine::install(engine.clone());
+    let mut app = TestApp::<BrowserShell>::launched(&["--private", help]).expect("Browser opens");
+    engine.push_event(WebViewEvent::LoadFinished);
+    settle(&mut app);
+    assert_eq!(
+        ids(&form_actions(&mut app)),
+        ["form-0a11ce00", "send-form-0a11ce00"],
+        "what the page asks is the page's action in a private window too"
+    );
+    assert!(own_reads(&engine) > 0);
+    assert!(
+        app.state().site_forms.is_empty(),
+        "a private window remembers nothing it read"
+    );
+
+    // Its document remembers a form of the site. A window that is not
+    // private publishes it while the form's page loads
+    // (`a_later_visit_publishes_the_forms_action_before_any_read`).
+    let shape = RememberedForm {
+        signature: VISA.into(),
+        label: "Apply for a visitor visa".into(),
+        questions: vec![RememberedQuestion {
+            name: "Full name".into(),
+            kind: "text".into(),
+            ..RememberedQuestion::default()
+        }],
+        submit: vec!["Send application".into()],
+        ..RememberedForm::default()
+    };
+    app.invoke(Browser::REMEMBER_FORMS.with(browser::RememberForms {
+        origin: SITE.into(),
+        page: "/apply".into(),
+        forms: vec![shape],
+        whole: true,
+        at: 1,
+    }))
+    .expect("the document remembers a form");
+    page_holds(&engine, &[]);
+    let finished = begin_visit(&engine, &mut app, APPLY);
+    assert!(
+        form_actions(&mut app).is_empty(),
+        "a private window publishes nothing that was remembered"
+    );
+    // The page has loaded and asks nothing. A window that is not private
+    // would forget the form for this page now.
+    finish_visit(&engine, &mut app, finished);
+    assert!(form_actions(&mut app).is_empty());
+    let kept = remembered(&app, VISA).expect("memory is as it was");
+    assert_eq!((kept.pages, kept.seen), (vec!["/apply".to_owned()], 1));
+    assert_eq!(app.state().site_forms.len(), 1);
+}
+
+/// A window whose history is paused publishes what its page asks and
+/// remembers none of it.
+#[test]
+fn a_window_whose_history_is_paused_remembers_no_form() {
+    let (engine, mut app) = open(APPLY);
+    app.effect_on("browser.session", &BrowserEffect::TogglePause)
+        .expect("history pauses in this window");
+    page_holds(&engine, &[visa_form()]);
+    engine.send(WebViewCommand::Reload);
+    assert_eq!(
+        ids(&form_actions(&mut app)),
+        ["form-5f1c2a9b", "send-form-5f1c2a9b"]
+    );
+    assert!(app.state().site_forms.is_empty());
+}
+
+/// In the person's own window the page may hold their sign-ins. The
+/// window's own read is nobody's the person admitted, so it publishes each
+/// question without the answers it offers, which may be the person's own;
+/// an agent the person let read the page gets them.
+#[test]
+fn the_windows_read_of_a_signed_in_page_publishes_no_offered_answers() {
+    let (engine, mut app) = launch_on(&[APPLY], &[visa_form()]);
+    let actions = form_actions(&mut app);
+    assert_eq!(ids(&actions), ["form-5f1c2a9b", "send-form-5f1c2a9b"]);
+    assert_eq!(
+        typed(&actions[0])[3],
+        ("nationality".to_owned(), ParamType::Text, false)
+    );
+    assert!(actions[0].params()[3].choices.is_empty());
+    let whole = format!("{:?}", actions[0].params());
+    for offered in ["Kenya", "Dutch"] {
+        assert!(!whole.contains(offered), "{offered} is published: {whole}");
+    }
+    read_forms(&engine, &mut app, &[visa_form()]);
+    let actions = form_actions(&mut app);
+    assert_eq!(actions[0].params()[3].choices, ["Kenya", "Other"]);
 }

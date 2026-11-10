@@ -2,12 +2,12 @@
 //!
 //! Once a page's forms are known, each is an action of `browser.page` named
 //! after the form, with one typed parameter per question, and a second
-//! action that sends it. They are known in two ways: the page was read
-//! (`read-page-forms`), or the site was read on an earlier visit and
-//! [site memory](crate::site_memory) holds what that found. Either way the
-//! action names its form by signature, and the engine answers it only while
-//! the page holds a form of that signature: one that has changed is refused
-//! and nothing is placed.
+//! action that sends it. They are known in two ways: the page was read, by
+//! its window once it had loaded or by an actor (`read-page-forms`), or the
+//! site was read on an earlier visit and [site memory](crate::site_memory)
+//! holds what that found. Either way the action names its form by
+//! signature, and the engine answers it only while the page holds a form of
+//! that signature: one that has changed is refused and nothing is placed.
 //!
 //! [`PageForms`] is what one window knows of its page's forms. It holds no
 //! answer and no field's value: a form's shape, how it is known, and what
@@ -27,10 +27,11 @@ use crate::site_memory::{self, Place, RememberedForm, RememberedQuestion};
 /// longer on the page as the action was made for it.
 pub const FORM_CHANGED: &str = "form_changed";
 
-/// What a withdrawn form action says while it stays listed.
-const WITHDRAWN: &str = "This form asks something else since its action was made; read the \
-                         page's forms again (read-page-forms) for the action of the form as \
-                         it is now";
+/// What a withdrawn form action says while it stays listed: until the
+/// window's own read of the page replaces it.
+const WITHDRAWN: &str = "This form asks something else since its action was made; the page \
+                         reads its forms again by itself and publishes the action of the form \
+                         as it is now. If none appears, read them (read-page-forms)";
 
 /// How many form actions in flight a window keeps track of.
 const MAX_RUNS: usize = 32;
@@ -256,6 +257,26 @@ pub fn read(data: &serde_json::Value) -> Vec<ReadForm> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Take the answers each question offers out of `data`, the answer of a
+/// forms read. On a page that holds a sign-in they may be the person's own
+/// (their saved addresses, their accounts), which the window does not
+/// publish for a read nobody was admitted for.
+pub fn without_offered_answers(data: &mut serde_json::Value) {
+    let forms = data
+        .get_mut("forms")
+        .and_then(serde_json::Value::as_array_mut);
+    for form in forms.into_iter().flatten() {
+        let fields = form
+            .get_mut("fields")
+            .and_then(serde_json::Value::as_array_mut);
+        for field in fields.into_iter().flatten() {
+            if let Some(field) = field.as_object_mut() {
+                field.remove("choices");
+            }
+        }
+    }
 }
 
 /// A parameter's name for the question `name`: its words in lower case
@@ -889,7 +910,8 @@ impl PageForms {
 
     /// A form action found no form `signature` on the page at `place`: the
     /// form changed, or this page never held it. Its action is withdrawn
-    /// until the page is read. Answers the form's name and how it was known.
+    /// until the page is read, which its window does next. Answers the
+    /// form's name and how it was known.
     pub fn heard_gone(&mut self, place: &Place, signature: &str) -> (String, Standing) {
         let mut label = String::new();
         let mut standing = Standing::Remembered;
@@ -984,6 +1006,37 @@ mod tests {
         // A form without a signature the engine could print is not one.
         assert!(read(&serde_json::json!({"forms": [{"signature": "no good"}]})).is_empty());
         assert!(read(&serde_json::json!({})).is_empty());
+    }
+
+    /// On a page that holds a sign-in the window's own read publishes a
+    /// form's questions without the answers they offer.
+    #[test]
+    fn a_read_without_offered_answers_keeps_every_question() {
+        let mut data = visa();
+        without_offered_answers(&mut data);
+        let forms = read(&data);
+        assert_eq!(forms[0].shape.questions.len(), 8);
+        assert!(
+            forms[0]
+                .shape
+                .questions
+                .iter()
+                .all(|question| question.choices.is_empty())
+        );
+        let mut page = PageForms::default();
+        let at = place("https://visa.test/apply");
+        page.heard_read(&at, &data);
+        let answer = &page.actions(&at)[0];
+        let nationality = answer
+            .params()
+            .iter()
+            .find(|param| param.name == "nationality")
+            .expect("the question is still a parameter");
+        assert!(nationality.choices.is_empty());
+        // Data that is no forms read is left as it is.
+        let mut other = serde_json::json!({"forms": "none"});
+        without_offered_answers(&mut other);
+        assert_eq!(other, serde_json::json!({"forms": "none"}));
     }
 
     /// A parameter is named by its question's words, and two questions
@@ -1170,7 +1223,8 @@ mod tests {
     }
 
     /// An answer that makes the form ask more withdraws its action until
-    /// the page is read, and the shape it has then grew from the one it had.
+    /// the page is read, which its window does next, and the shape it has
+    /// then grew from the one it had.
     #[test]
     fn a_form_that_asks_more_is_withdrawn_until_it_is_read_again() {
         let mut forms = PageForms::default();

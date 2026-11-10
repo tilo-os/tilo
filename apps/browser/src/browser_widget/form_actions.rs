@@ -7,11 +7,17 @@
 //! actor the action door admitted, in its turn, answered with the same
 //! result for each answer. It names its form by signature, so the engine
 //! answers it only while the page holds that form.
+//!
+//! The forms are read by the window itself once its page has loaded
+//! ([`super::forms_read`]), and by whoever runs `read-page-forms`. Either
+//! read is what the page publishes from then on.
+
+use std::collections::BTreeMap;
 
 use ui::webview::{PageActor, PageFailure, PageReply, PageRequest};
 
 use super::{BrowserWidget, PageOperation};
-use crate::page_forms::{FORM_CHANGED, FormRun, Standing, answer_id};
+use crate::page_forms::{self, FORM_CHANGED, FormRun, Standing, answer_id};
 use crate::resource::{Browser, browser};
 use crate::site_memory::{self, Place, RememberedForm};
 
@@ -29,8 +35,9 @@ fn gone_message(label: &str, standing: Standing) -> String {
     };
     format!(
         "{name} is not on this page as it was {known}: it has changed, or this page does not \
-         hold it. Nothing was placed or sent. Read the page's forms again (read-page-forms) \
-         and run the action that read publishes."
+         hold it. Nothing was placed or sent. The page reads its forms again by itself and \
+         publishes the action of each form as it is now: list the page's actions and run \
+         that one. If none appears, read the page's forms (read-page-forms)."
     )
 }
 
@@ -40,8 +47,9 @@ fn gone_message(label: &str, standing: Standing) -> String {
 fn note_run(reply: &mut PageReply, grew: bool, then: &[(String, String)]) {
     if grew {
         reply.message.push_str(
-            "; the form asks something else now, so its action is withdrawn until the page's \
-             forms are read again (read-page-forms)",
+            "; the form asks something else now, so this action is withdrawn: the page reads \
+             its forms again by itself and publishes the action of the form as it is now \
+             (read-page-forms reads them at once)",
         );
     }
     if !then.is_empty()
@@ -68,6 +76,31 @@ impl BrowserWidget {
     /// what was remembered of its site.
     pub(super) fn form_actions(&self) -> Vec<ui::tilo_actions::ActionSpec> {
         Place::of(&self.current_uri).map_or_else(Vec::new, |place| self.forms.actions(&place))
+    }
+
+    /// Follow the document's site memory. A private window follows none: it
+    /// publishes nothing that was remembered, as it remembers nothing.
+    pub(super) fn present_forms(&mut self, memory: &BTreeMap<String, RememberedForm>) {
+        if self.browsing_mode.is_private() || self.forms.memory() == memory {
+            return;
+        }
+        self.forms.present(memory);
+        // The site panel lists what is remembered of the site in front.
+        self.structure_dirty |= self.site.open;
+    }
+
+    /// The window's own read of the page at `place` answered `data`: its
+    /// forms are what the page publishes from now on, and what the site is
+    /// remembered to ask.
+    pub(super) fn heard_own_read(&mut self, place: &Place, mut data: serde_json::Value) {
+        // Nobody was admitted for this read. On a page that holds a sign-in
+        // the answers a question offers may be the person's own, so they are
+        // not published until an actor the person admitted reads the page.
+        if self.page_holds_sign_in() {
+            page_forms::without_offered_answers(&mut data);
+        }
+        let shapes = self.forms.heard_read(place, &data);
+        self.remember_forms(place, shapes, true);
     }
 
     /// Start a form action for `invocation`: the request `fill-page-form`
@@ -125,6 +158,11 @@ impl BrowserWidget {
                     if let Some((at, shape)) = heard.learned {
                         self.remember_forms(&at, vec![shape], false);
                     }
+                    if heard.grew {
+                        // The form is not the one the page publishes any
+                        // more: the window reads the page again.
+                        self.read_forms_again();
+                    }
                     if run.is_some() {
                         note_run(&mut reply, heard.grew, &heard.then);
                     }
@@ -135,6 +173,8 @@ impl BrowserWidget {
                 if run.is_some() && failure.code == "no_form" =>
             {
                 let (label, standing) = self.forms.heard_gone(&place, form);
+                // The page does not hold what it publishes: it is read again.
+                self.read_forms_again();
                 Err(PageFailure {
                     code: FORM_CHANGED.to_owned(),
                     message: gone_message(&label, standing),
@@ -149,9 +189,9 @@ impl BrowserWidget {
     /// `whole`, through the document's own action. Nothing is written when
     /// memory already says so.
     fn remember_forms(&self, place: &Place, mut forms: Vec<RememberedForm>, whole: bool) {
-        // A private window keeps nothing, and a window outside a document
-        // has nowhere to keep it.
-        if self.browsing_mode.is_private() {
+        // A private window keeps nothing, nor does one whose history is
+        // paused; a window outside a document has nowhere to keep it.
+        if self.browsing_mode.is_private() || self.history_paused() {
             return;
         }
         let Some(dispatch) = &self.dispatch else {

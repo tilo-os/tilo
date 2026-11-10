@@ -71,6 +71,7 @@ mod engine_runtime;
 mod form_actions;
 #[cfg(test)]
 mod form_actions_tests;
+mod forms_read;
 mod http_fallback;
 mod library;
 #[cfg(test)]
@@ -690,6 +691,8 @@ pub struct BrowserWidget {
     /// What the window knows of its page's forms: the actions the page
     /// publishes for them, from a read of it or from site memory.
     forms: crate::page_forms::PageForms,
+    /// The window's own reads of its page's forms.
+    forms_read: forms_read::FormsRead,
     /// The review of the page in front, while it stands in the page's
     /// place, and what the engine last answered about the page.
     page_review: page_review_view::PageReview,
@@ -1599,6 +1602,7 @@ impl BrowserWidget {
             page_record_answers: Vec::new(),
             page_record: crate::page_record::TabRecorder::default(),
             forms: crate::page_forms::PageForms::default(),
+            forms_read: forms_read::FormsRead::default(),
             page_review: page_review_view::PageReview::default(),
             pending_replies: Vec::new(),
             page_request_seq: 0,
@@ -1664,7 +1668,7 @@ impl BrowserWidget {
         }
         self.apply_preferences(state.preferences.clone());
         self.site_exceptions = state.exceptions();
-        self.forms.present(&state.site_forms);
+        self.present_forms(&state.site_forms);
         self.site
             .present_exceptions(&self.engine, &self.site_exceptions, self.bootstrap_done);
     }
@@ -2223,6 +2227,9 @@ impl BrowserWidget {
             self.accept_page_review(request_id, result);
             return;
         }
+        let Some(result) = self.take_forms_read(request_id, result) else {
+            return;
+        };
         // Another request answered: the tab's record may have moved.
         self.page_review_moved();
         let Some(operation) = self.page_operation.take_if(|operation| {
@@ -3428,6 +3435,7 @@ impl BrowserWidget {
                         self.follow_personal_bookmarks();
                     }
                     self.page_navigation_settled(None);
+                    self.read_forms_again();
                 }
                 WebViewEvent::LoadFailed { uri, error } => {
                     if self.retry_over_http(&uri, &error) {
@@ -5204,6 +5212,7 @@ impl Widget for BrowserWidget {
             .chain(feedback_expiry)
             .chain(self.credentials.deadline())
             .chain(self.page_review_deadline())
+            .chain(self.forms_read_deadline())
             .chain(waiting)
             .chain(
                 self.children()
@@ -6110,6 +6119,7 @@ impl BrowserWidget {
         self.apply_review_stage();
         self.drive_page_operation();
         self.sync_page_review();
+        self.sync_forms_read();
         self.structure_dirty |= self.capabilities.ask(self.extensions.take_questions());
         let downloads_changed = self.capabilities.downloads_changed();
         self.structure_dirty |= downloads_changed;

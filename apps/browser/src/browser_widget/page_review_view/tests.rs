@@ -212,9 +212,14 @@ fn the_review_opens_for_a_person_and_for_an_agent_and_closes_to_the_page() {
             "{id} is one of the page's actions"
         );
     }
+    // The window reads its page's forms itself once the page has loaded,
+    // for the actions the page publishes. The review reads nothing yet.
+    let before = page_asks(&engine);
     assert!(
-        page_asks(&engine).is_empty(),
-        "nothing is read of a page nobody reviews"
+        before
+            .iter()
+            .all(|ask| *ask == (None, PageRequest::Forms { frame: None })),
+        "no field and no record is read of a page nobody reviews: {before:?}"
     );
 
     let said = invoke(&mut app, None, &BrowserEffect::ReviewPage);
