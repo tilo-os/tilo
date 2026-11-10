@@ -48,8 +48,8 @@
 //             $CARGO_TARGET_DIR/agent-shell-work, which is not fetched)
 //   --build   cargo build the relay and the CLI, and build the bundle
 // Needs Chrome (CHROME, or Playwright's cache), node, and openssl. The
-// recording is the page shot on a clock and encoded in a second tab
-// (`MediaRecorder`), so no video tool has to be installed where it runs.
+// recording is Chrome's screencast, encoded by ffmpeg where it is installed
+// and otherwise by the browser itself, so no video tool has to be installed.
 // Exits non-zero when the flow breaks, saying where; what the product does not
 // do yet is listed, and does not fail the run.
 //
@@ -996,16 +996,25 @@ async function openNote(tab) {
 }
 
 // ---------------------------------------------------------------------------
-// The recording: the page shot on a clock, each frame drawn into a canvas in a
-// second tab and encoded there (`MediaRecorder`), so the run needs no video
-// tool on the machine that shot it. Frames are kept as PNGs when the browser
-// refuses to encode, so a recording that failed is still in the output.
+// The recording: Chrome's own screencast (`Page.startScreencast`), which pushes
+// a frame each time the page draws, kept as JPEGs with the time each was drawn.
+// A frame asked for on a clock (`Page.captureScreenshot`) waits behind the
+// page's own work on a loaded machine, and encoding beside the page took the
+// CPU it needed: a whole run came back with one to fourteen frames. Pushed
+// frames keep the page's pace, and they are encoded only once the scene is
+// over: with ffmpeg (VP9 WebM) where it is installed, else replayed on their
+// own timing into a canvas in a tab of their own and recorded there
+// (`MediaRecorder`, VP8 WebM), so no video tool has to be installed where the
+// run shoots.
 
-const FPS = 8;
-/** The widest a recording is drawn: what the encoder in the container keeps up with. */
-const RECORD_MAX_W = 720;
-/** Draws the frames it is given into a canvas and records it: a page of its
- * own, so nothing it does reaches the shots. */
+/** The widest a recording is drawn: a recording is watched, not read. */
+const RECORD_MAX_W = 1280;
+/** The frame rate ffmpeg writes at: each pushed frame is held until the next one came. */
+const RECORD_FPS = 25;
+/** The longest one frame is held: a page that drew nothing for longer is still that frame. */
+const RECORD_HOLD_S = 5;
+/** Draws the frames it is given into a canvas and records it: a page of its own, so nothing it
+ * does reaches the shots. */
 const RECORDING_TAB = `(() => {
   const canvas = document.createElement('canvas');
   canvas.width = 2; canvas.height = 2;
@@ -1016,17 +1025,14 @@ const RECORDING_TAB = `(() => {
   const track = stream.getVideoTracks()[0];
   let recorder = null;
   let frames = 0;
-  let size = null;
   globalThis.feed = frame => new Promise(resolve => {
     const image = new Image();
     image.onload = () => {
-      const width = size?.[0] ?? image.width;
-      const height = size?.[1] ?? image.height;
-      if (canvas.width !== width || canvas.height !== height) {
-        canvas.width = width;
-        canvas.height = height;
+      if (canvas.width !== image.width || canvas.height !== image.height) {
+        canvas.width = image.width;
+        canvas.height = image.height;
       }
-      context.drawImage(image, 0, 0, width, height);
+      context.drawImage(image, 0, 0);
       track.requestFrame();
       frames += 1;
       resolve(true);
@@ -1034,16 +1040,15 @@ const RECORDING_TAB = `(() => {
     image.onerror = () => resolve(false);
     image.src = frame;
   });
-  globalThis.begin = (bits, width, height) => {
-    size = width && height ? [width, height] : null;
+  globalThis.begin = bits => {
     recorder = new MediaRecorder(stream, {mimeType: 'video/webm;codecs=vp8', videoBitsPerSecond: bits});
     globalThis.chunks = [];
     recorder.ondataavailable = event => { if (event.data.size) globalThis.chunks.push(event.data); };
     recorder.start(1000);
-    return Boolean(recorder);
+    return true;
   };
   globalThis.finish = () => new Promise(resolve => {
-    recorder.onstop = async () => {
+    recorder.onstop = () => {
       const blob = new Blob(globalThis.chunks, {type: 'video/webm'});
       const reader = new FileReader();
       reader.onloadend = () => resolve({webm: String(reader.result).split(',')[1] ?? '', frames});
@@ -1054,68 +1059,108 @@ const RECORDING_TAB = `(() => {
   return true;
 })()`;
 
-async function record(browser, tab, name, {width, height}, body) {
-  if (!withVideo) { await body(); return null; }
-  const dir = join(videoDir, `${name}-frames`);
-  rmSync(dir, {recursive: true, force: true});
+/** Encode `frames` (each {file, hold} in seconds) with ffmpeg into `file`; false where there is
+ * no ffmpeg or it failed. */
+function encodeWithFfmpeg(frames, dir, file, name) {
+  const lines = [];
+  for (const frame of frames) lines.push(`file '${frame.file}'`, `duration ${frame.hold.toFixed(3)}`);
+  // The concat demuxer takes the last frame's duration only when it is listed again.
+  lines.push(`file '${frames.at(-1).file}'`);
+  const list = join(dir, 'frames.txt');
+  writeFileSync(list, `${lines.join('\n')}\n`);
+  const encoded = spawnSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0',
+    '-i', list, '-vf', `fps=${RECORD_FPS}`, '-c:v', 'libvpx-vp9', '-b:v', '0', '-crf', '32', '-row-mt', '1',
+    '-deadline', 'good', '-cpu-used', '4', '-an', file], {encoding: 'utf8'});
+  if (encoded.error?.code === 'ENOENT') return false;
+  if (encoded.status !== 0) {
+    log(`${name}: ffmpeg could not encode the recording (${encoded.error?.message ?? encoded.stderr?.slice(0, 400)})`);
+    return false;
+  }
+  return true;
+}
+
+/** Replay `frames` on their own timing into a canvas in a tab of its own, recorded there. */
+async function encodeInBrowser(browser, frames, file, name) {
   let recorder = null;
   try {
     recorder = await browser.tab();
     await recorder.navigate('about:blank');
     await recorder.evaluate(RECORDING_TAB);
-    // The encoder is this container's CPU too: at the page's own 1280 px it keeps up with only a
-    // frame in a second or two, which is no recording. It is watched, not read, so a wide page is
-    // drawn down to RECORD_MAX_W; a phone is under it and records at its own size.
-    const scale = Math.min(1, RECORD_MAX_W / Math.max(width, height));
-    const recorded = [Math.round(width * scale), Math.round(height * scale)];
-    await recorder.evaluate(`begin(4000000, ${recorded[0]}, ${recorded[1]})`);
-  } catch (error) {
-    log(`${name}: this browser cannot record (${error.message ?? error}); the shots are what it keeps`);
-    recorder = null;
-  }
-  // The clock the frames are shot on: the page is asked for one, drawn, and
-  // only then asked for the next, so a slow frame makes a longer step rather
-  // than a queue of stale ones.
-  const frames = [];
-  let stop = false;
-  const tick = async () => {
-    while (!stop) {
-      try {
-        // The page's pixels at its own scale: a clip with another scale makes
-        // Chromium re-emulate the page for the capture, which a shot taken
-        // alongside saw as a frame of the wrong size. The recording tab draws
-        // it down to one pixel per CSS pixel; a recording is watched, not read.
-        const shot = await tab.send('Page.captureScreenshot', {format: 'jpeg', quality: 82,
-          captureBeyondViewport: false});
-        const jpeg = shot.result?.data;
-        if (jpeg && recorder) {
-          frames.push(Date.now());
-          await recorder.evaluate(`feed("data:image/jpeg;base64,${jpeg}")`);
-        }
-      } catch { /* A page mid-navigation answers nothing: the next frame catches it. */ }
-      await sleep(Math.max(0, 1000 / FPS - 40));
+    await recorder.evaluate('begin(6000000)');
+    const started = Date.now();
+    let due = 0;
+    for (const frame of frames) {
+      const jpeg = readFileSync(frame.file).toString('base64');
+      await recorder.evaluate(`feed("data:image/jpeg;base64,${jpeg}")`);
+      due += frame.hold * 1000;
+      const wait = started + due - Date.now();
+      if (wait > 0) await sleep(wait);
     }
-  };
-  const taking = tick();
+    const {webm} = await recorder.evaluate('finish()');
+    if (!webm) return false;
+    writeFileSync(file, Buffer.from(webm, 'base64'));
+    return true;
+  } catch (error) {
+    log(`${name}: the browser could not encode the recording (${error.message ?? error})`);
+    return false;
+  } finally {
+    await recorder?.close().catch(() => {});
+  }
+}
+
+async function record(browser, tab, name, {width, height}, body) {
+  if (!withVideo) { await body(); return null; }
+  const dir = join(videoDir, `${name}-frames`);
+  rmSync(dir, {recursive: true, force: true});
+  mkdirSync(dir, {recursive: true});
+  // Each frame as Chrome drew it, with the time it was drawn (seconds, the machine's wall clock).
+  const frames = [];
+  let writing = Promise.resolve();
+  const off = browser.on(message => {
+    if (message.sessionId !== tab.sessionId || message.method !== 'Page.screencastFrame') return;
+    const {data, metadata, sessionId: frame} = message.params;
+    const file = join(dir, `${String(frames.length).padStart(5, '0')}.jpg`);
+    frames.push({file, at: metadata?.timestamp ?? Date.now() / 1000});
+    writing = writing.then(() => writeFileSync(file, Buffer.from(data, 'base64')));
+    // Chrome sends the next frame only once this one is acknowledged.
+    tab.send('Page.screencastFrameAck', {sessionId: frame}).catch(() => {});
+  });
+  const scale = Math.min(1, RECORD_MAX_W / width);
+  const started = await tab.send('Page.startScreencast', {format: 'jpeg', quality: 85,
+    maxWidth: Math.round(width * scale), maxHeight: Math.round(height * scale), everyNthFrame: 1})
+    .catch(error => ({error}));
+  if (started.error) {
+    off();
+    log(`${name}: this browser cannot screencast (${started.error.message ?? started.error}); the shots are what it keeps`);
+    await body();
+    return {frames: 0, file: null, framesDir: null};
+  }
+  const began = Date.now() / 1000;
   try {
     await body();
   } finally {
-    stop = true;
-    await taking;
+    await tab.send('Page.stopScreencast').catch(() => {});
+    off();
+    await writing;
   }
-  if (!recorder) return {frames: frames.length, file: null, framesDir: null};
-  try {
-    const {webm, frames: drawn} = await recorder.evaluate('finish()');
-    await recorder.close().catch(() => {});
-    if (!webm) return {frames: drawn ?? frames.length, file: null, framesDir: null};
-    const file = join(videoDir, `${name}.webm`);
-    writeFileSync(file, Buffer.from(webm, 'base64'));
-    return {frames: drawn ?? frames.length, bytes: statSync(file).size, file, framesDir: null};
-  } catch (error) {
-    log(`${name}: the recording could not be written (${error.message ?? error})`);
-    await recorder.close().catch(() => {});
-    return {frames: frames.length, file: null, framesDir: null};
+  const ended = Date.now() / 1000;
+  const seconds = +(ended - began).toFixed(1);
+  if (!frames.length) return {frames: 0, seconds, file: null, framesDir: dir};
+  // Each frame is held for as long as the page showed it: a page that drew nothing new for two
+  // seconds is two seconds of that frame, not a skipped stretch. The last stands until the end.
+  for (const [index, frame] of frames.entries()) {
+    const next = frames[index + 1]?.at ?? ended;
+    frame.hold = Math.min(RECORD_HOLD_S, Math.max(0.001, next - frame.at));
   }
+  const file = join(videoDir, `${name}.webm`);
+  const encoder = encodeWithFfmpeg(frames, dir, file, name) ? 'ffmpeg'
+    : await encodeInBrowser(browser, frames, file, name) ? 'browser' : null;
+  if (!encoder) {
+    log(`${name}: the recording was not encoded; its frames are in ${dir}`);
+    return {frames: frames.length, seconds, file: null, framesDir: dir};
+  }
+  rmSync(dir, {recursive: true, force: true});
+  return {frames: frames.length, seconds, encoder, bytes: statSync(file).size, file, framesDir: null};
 }
 
 // ---------------------------------------------------------------------------
@@ -1551,13 +1596,12 @@ try {
         // waiting for its word.
         await agent.close();
         const closedAt = Date.now();
-        // What the page says of the agent: its face in the bar, the banner of following it, or the
-        // row who is here lists it in. A phone-wide bar draws no faces, and the panel is the
-        // place it names who is here.
+        // What the page says of the agent: its face in the bar, or the banner of following it. A
+        // phone's bar has room for one face, and it is whoever did something last, so an agent
+        // that comes back is on the desk where the person looks, at every width.
         const present = async () => (await semantics(tab)).some(node =>
           /^claude code, agent$/i.test(node.name)
-          || /^following claude code/i.test(node.name)
-          || /^claude code$/i.test(node.name) && /^agent;\s*\S/i.test(node.description ?? ''));
+          || /^following claude code/i.test(node.name));
         const gone = await until(async () => (await present()) ? undefined : true, 30000, 250);
         const leftAfter = (Date.now() - closedAt) / 1000;
         log(`${combo}: the agent left who is here ${leftAfter.toFixed(1)} s after its tilo mcp ended`);
