@@ -2,7 +2,6 @@
 //! process on untrusted bytes, and in the caller once the worker has shown
 //! the same work to finish within its limits.
 
-#[cfg(target_os = "linux")]
 use automerge::ChangeHash;
 use automerge::{AutoCommit, LoadOptions, OnPartialLoad, VerificationMode};
 use tilo_automerge::ApplyIncoming as _;
@@ -33,6 +32,27 @@ pub(crate) fn load_validated(bytes: &[u8], hashes: &[ChangeHash]) -> Result<Auto
     }
     AutoCommit::load_with_options(bytes, strict().known_change_hashes(hashes))
         .map_err(|e| Rejected::Invalid(e.to_string()))
+}
+
+/// The hash of every change `incoming` carries, in the order it carries them,
+/// when it is exactly a run of change chunks: what a participant publishes as
+/// its own changes since the last take. `None` when it carries anything else —
+/// a document, a bundle, or a tail no chunk frames — so the caller cannot say
+/// which changes are its own.
+pub(crate) fn change_hashes(incoming: &[u8]) -> Option<Vec<ChangeHash>> {
+    let mut hashes = Vec::new();
+    let mut framed = 0usize;
+    for chunk in crate::precheck::chunks(incoming) {
+        if !matches!(
+            chunk.kind,
+            crate::precheck::CHANGE | crate::precheck::COMPRESSED_CHANGE
+        ) {
+            return None;
+        }
+        framed = framed.checked_add(chunk.bytes.len())?;
+        hashes.push(automerge::Change::try_from(chunk.bytes).ok()?.hash());
+    }
+    (framed == incoming.len() && !hashes.is_empty()).then_some(hashes)
 }
 
 /// The hash of every change of `doc`, which [`load`] built from `bytes`, in

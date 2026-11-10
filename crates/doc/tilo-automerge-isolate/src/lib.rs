@@ -243,6 +243,17 @@ pub fn load(bytes: &[u8]) -> Result<AutoCommit, Rejected> {
     Isolate::shared().load(bytes)
 }
 
+/// The hash of every change `incoming` carries, in the order it carries them,
+/// when it is exactly a run of change chunks — what a participant publishes as
+/// its own changes since the last take. `None` when it carries anything else,
+/// so the caller cannot say which changes are its own and must decide on the
+/// whole input instead. Nothing is decoded but each change's own header, and
+/// no document is touched: this only names them.
+#[must_use]
+pub fn change_hashes(incoming: &[u8]) -> Option<Vec<automerge::ChangeHash>> {
+    engine::change_hashes(incoming)
+}
+
 /// Outside Linux there are no workers yet, so none of their bounds apply:
 /// input that passes [`precheck`] is decoded in this process with no heap
 /// ceiling, deadline or sandbox, and a decoder panic or hang is the caller's.

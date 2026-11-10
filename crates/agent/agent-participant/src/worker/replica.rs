@@ -633,13 +633,22 @@ impl ConfinedReplica {
                 Ok(None)
             }
             Reply::Mutation(Some((false, bytes))) => {
-                match tilo_automerge_isolate::apply(
-                    &mut inner.mirror,
-                    &bytes,
-                    Dependencies::RequireComplete,
-                ) {
-                    Ok(Applied::Changed(_)) => Ok(Some(bytes)),
-                    Ok(Applied::MissingDependencies) => {
+                // What must be in the record is the worker's own change, not
+                // every change of the record: another participant's change
+                // that arrived before what it builds on waits in the mirror's
+                // queue, and is no reason to refuse this one. When the bytes
+                // name no single change of their own — a document, a bundle —
+                // only the whole record can be asked, as before.
+                let own = tilo_automerge_isolate::change_hashes(&bytes);
+                let dependencies = match &own {
+                    Some(_) => Dependencies::RetainOrphans,
+                    None => Dependencies::RequireComplete,
+                };
+                match tilo_automerge_isolate::apply(&mut inner.mirror, &bytes, dependencies) {
+                    Ok(Applied::Changed(_)) if holds(&mut inner.mirror, own.as_deref()) => {
+                        Ok(Some(bytes))
+                    }
+                    Ok(_) => {
                         inner.process = None;
                         Err(AppError::Merge(
                             "the worker's change builds on nothing the record holds".into(),
@@ -897,6 +906,17 @@ fn admit_incoming(doc: &mut AutoCommit, bytes: &[u8]) -> Result<(), AppError> {
         .map_err(|error| AppError::Merge(error.to_string()))
 }
 
+/// Whether `doc` holds every change `own` names: a change of the worker's
+/// that waits in `doc`'s queue for a dependency it has not got is not held,
+/// and is never published as if it were whole. Changes the bytes did not name
+/// cannot be asked after, and are the whole record's business instead.
+fn holds(doc: &mut AutoCommit, own: Option<&[automerge::ChangeHash]>) -> bool {
+    own.is_none_or(|own| {
+        own.iter()
+            .all(|hash| doc.get_change_by_hash(hash).is_some())
+    })
+}
+
 /// Most bytes of a record's history admitted in one request: well under the
 /// isolate's input ceiling, so a long history is admitted in parts rather
 /// than refused for its length.
@@ -1048,5 +1068,127 @@ fn open_error(reason: &str, app_id: &str) -> AppError {
         AppError::UnknownApp(app_id.to_owned())
     } else {
         AppError::Launch(reason.to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "in a test these are the assertion, not a hazard"
+    )]
+
+    use super::*;
+    use automerge::transaction::Transactable as _;
+
+    const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+
+    /// A replica of a new notes record, at the change that began it.
+    fn begun() -> ConfinedReplica {
+        let replica = ConfinedReplica::open(
+            &AppCatalogue::native(),
+            "so.tilo.notes",
+            WORKSPACE,
+            "maker",
+            &ReplicaActor::Agent,
+            Seed::New,
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                replica.take_mutation().unwrap(),
+                Some(DocumentMutation::Snapshot(_))
+            ),
+            "a new record's genesis is what it first publishes"
+        );
+        replica
+    }
+
+    /// Two changes of another participant's on `replica`'s record, the second
+    /// building on the first, each on its own: what arrives out of order.
+    fn another_participants_two_changes(replica: &ConfinedReplica) -> (Vec<u8>, Vec<u8>) {
+        let saved = replica.lock().mirror.save();
+        let mut doc = tilo_automerge_isolate::load(&saved).unwrap();
+        doc.set_actor(automerge::ActorId::random());
+        let began = doc.get_heads();
+        doc.put(automerge::ROOT, "theirs", "first").unwrap();
+        let first: Vec<u8> = doc
+            .get_changes(&began)
+            .iter()
+            .flat_map(|change| change.raw_bytes().to_vec())
+            .collect();
+        let after_first = doc.get_heads();
+        doc.put(automerge::ROOT, "theirs", "second").unwrap();
+        let second: Vec<u8> = doc
+            .get_changes(&after_first)
+            .iter()
+            .flat_map(|change| change.raw_bytes().to_vec())
+            .collect();
+        (first, second)
+    }
+
+    /// Whether `replica`'s record holds every change `hashes` names.
+    fn recorded(replica: &ConfinedReplica, hashes: &[automerge::ChangeHash]) -> bool {
+        let mut inner = replica.lock();
+        holds(&mut inner.mirror, Some(hashes))
+    }
+
+    /// A change of the worker's own that waits for a dependency is not
+    /// published as if it were whole, and one of another participant's that
+    /// waits is no reason to refuse it.
+    #[test]
+    fn the_workers_change_is_published_though_anothers_waits_for_what_it_builds_on() {
+        let replica = begun();
+        let (first, second) = another_participants_two_changes(&replica);
+        // The second change arrives first: it builds on the first, which the
+        // record does not hold yet, so it waits in the record's queue.
+        replica
+            .apply(&DocumentMutation::Incremental(second.clone()))
+            .unwrap();
+        let waiting = tilo_automerge_isolate::change_hashes(&second).unwrap();
+        assert!(
+            !recorded(&replica, &waiting),
+            "the change that arrived first waits, and is not held"
+        );
+
+        // The app makes a change of its own while that one waits.
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("title".into(), "Made while another waited".into());
+        replica
+            .invoke(
+                &ActionAddress::new("notes.notebook", "new-note"),
+                &arguments,
+                false,
+            )
+            .expect("the app makes a note");
+
+        let taken = replica
+            .take_mutation()
+            .expect("a change of the app's own is published though another's waits")
+            .expect("the app changed the record");
+        let DocumentMutation::Incremental(bytes) = taken else {
+            panic!("an existing record publishes its changes, not the whole of it");
+        };
+        let own = tilo_automerge_isolate::change_hashes(&bytes).unwrap();
+        assert!(
+            recorded(&replica, &own),
+            "what was published is in the record"
+        );
+        // And what waited still waits: it was never taken as whole.
+        assert!(
+            !recorded(&replica, &waiting),
+            "a change waiting for what it builds on is not published as whole"
+        );
+
+        // The change it builds on arrives: both are the record's now.
+        replica
+            .apply(&DocumentMutation::Incremental(first))
+            .unwrap();
+        assert!(
+            recorded(&replica, &waiting),
+            "the change applies once what it builds on arrives"
+        );
     }
 }
