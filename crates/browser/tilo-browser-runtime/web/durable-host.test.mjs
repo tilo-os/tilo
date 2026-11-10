@@ -4,6 +4,7 @@ import {createDurableHost} from './durable-host.mjs';
 import {createStorageAccess} from './storage.mjs';
 import {createInlineStorage} from './storage-inline.mjs';
 import {fakeIndexedDB,fakeLocks} from './testing/fake-storage.mjs';
+import {runtimeFake} from './runtime-surface.mjs';
 
 const settle=async(rounds=40)=>{for(let i=0;i<rounds;i++)await new Promise(resolve=>setImmediate(resolve));};
 const WRITER='tilo-writer:["p","d"]';
@@ -14,9 +15,7 @@ const WRITER='tilo-writer:["p","d"]';
 function fakeRuntime(){
   const stores=new Map(),log={acks:[],refreshed:0};
   const store=(profile,device)=>{const s=stores.get(JSON.stringify([profile,device]));if(!s)throw Error('unknown storage namespace');return s;};
-  return {log,
-    store,
-    write(profile,device,key,text){const s=store(profile,device);s.revision++;s.current.set(key,text);s.queued.set(key,s.revision);s.hook?.();},
+  return runtimeFake({
     refresh_storage_lease(profile,device){log.refreshed++;stores.delete(JSON.stringify([profile,device]));},
     load_storage(profile,device,rows){
       const key=JSON.stringify([profile,device]);if(stores.has(key))return;
@@ -35,7 +34,10 @@ function fakeRuntime(){
     retry_storage(profile,device){const s=store(profile,device);let queued=0;for(const key of s.failed)if(!s.queued.has(key)){s.revision++;s.queued.set(key,s.revision);queued++;}return queued;},
     storage_write_hook(profile,device,hook){store(profile,device).hook=hook??null;},
     provide_settings(profile,device,json){const s=store(profile,device);if(s.current.has('settings'))return false;s.current.set('settings',json);return true;},
-  };
+  }, {log,
+    store,
+    write(profile,device,key,text){const s=store(profile,device);s.revision++;s.current.set(key,text);s.queued.set(key,s.revision);s.hook?.();},
+  });
 }
 
 function harness(){

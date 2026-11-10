@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {createHere, PAIR_WAIT_MS, POST_EVERY_MS, TICK_MS} from './here.mjs';
+import {runtimeFake} from './runtime-surface.mjs';
 
 function fakeLayer(members = []) {
   return {
@@ -17,11 +18,11 @@ function harness({actions = [], window = 'a1', share = true} = {}) {
   const timers = [];
   let clock = 1_000_000;
   const state = {actions, window, share};
-  const runtime = {
+  const runtime = runtimeFake({
     desktop_set_people: (id, json) => calls.push(['people', JSON.parse(json)]),
     desktop_set_here: (id, json) => calls.push(['here', JSON.parse(json)]),
     desktop_here_tick: (id, since) => { calls.push(['tick', since]); return JSON.stringify(state); },
-  };
+  });
   const posts = [];
   const peer = {
     participant: {label: 'Ann', color: '#112233'},

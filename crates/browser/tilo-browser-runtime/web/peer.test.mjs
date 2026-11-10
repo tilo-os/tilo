@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, HOST_CHANGED, hostRefusal, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, renewDevice, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withCustody, withStartFields} from './peer.mjs';
+import {runtimeFake} from './runtime-surface.mjs';
 
 const WORKSPACE = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -42,9 +43,7 @@ function memoryStore() {
 function fakeRuntime({phase = 'ready'} = {}) {
   const calls = {certify: [], started: []};
   let peer;
-  const runtime = {
-    calls,
-    get peer() { return peer; },
+  const runtime = runtimeFake({
     async hostInfo(post) { calls.hostPost = post; return JSON.stringify({address: HOST_ADDRESS, hostCert: {}}); },
     async certifyDevice(user, label, invite, custody, onPairingCode) {
       calls.certify.push({user, label, invite, custody});
@@ -129,7 +128,7 @@ function fakeRuntime({phase = 'ready'} = {}) {
         return peer;
       },
     },
-  };
+  }, {calls, get peer() { return peer; }});
   return runtime;
 }
 

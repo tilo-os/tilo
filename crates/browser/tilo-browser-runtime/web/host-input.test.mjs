@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {createPanorama} from './panorama.mjs';
 import {draggingFiles,droppedFiles,pastedPicture,MAX_DROPPED_FILE,MAX_DROPPED_FILES,MAX_PASTED_PICTURE} from './host-core.mjs';
+import {runtimeFake} from './runtime-surface.mjs';
 
 // Exercise the mount's real event bindings; only WASM/GPU/storage are replaced.
 class DomEvent {
@@ -31,21 +32,20 @@ class Node {
  replaceChildren(){this.children=[];}
 }
 const tick=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
-async function fixture({standalone=false,legacy=false,models,providerManagement,app}={}){
+async function fixture({standalone=false,models,providerManagement,app}={}){
  const document=new Node('document');document.body=new Node('body');document.append(document.body);document.activeElement=document.body;document.createElement=tag=>new Node(tag);globalThis.document=document;
  Object.defineProperty(globalThis,'navigator',{configurable:true,value:{gpu:{},platform:'Mac'}});
  globalThis.KeyboardEvent=DomEvent;globalThis.FocusEvent=DomEvent;globalThis.WheelEvent=class extends DomEvent{constructor(type,init){super(type,{deltaX:0,deltaY:0,deltaMode:0,...init});}};globalThis.fetch=async url=>{
   if(String(url).endsWith('fonts.json'))return {ok:true,json:async()=>({schema:1,catalog:'host-input-fixture',assets:[{name:'NotoSans[wght].ttf',bytes:1,sha256:'4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a',startup:true}]})};
   return {ok:true,arrayBuffer:async()=>new Uint8Array([1]).buffer};
  };
- let allocated=false,ownershipReads=0;let state={sequence:'1',activation:'1',owner:'writer',ime:{x:0,y:0,height:20}};const delivered=[],deliveredOwners=[],windowFocus=[];let update;
+ let allocated=false;let state={sequence:'1',activation:'1',owner:'writer',ime:{x:0,y:0,height:20}};const delivered=[],deliveredOwners=[],windowFocus=[];let update;
  // Winit's web backend reports the canvas's own focus and blur as the window's.
- const runtime={provide_startup_font(){},mount(canvas,_config,_entries,callback){this.config=JSON.parse(_config);update=callback;for(const type of ['focus','blur'])canvas.addEventListener(type,()=>windowFocus.push(type));setTimeout(()=>{allocated=true;callback(JSON.stringify({phase:'gpu-pending'}));queueMicrotask(()=>callback(JSON.stringify({phase:'presented',frames:1})));},0);return 1;},close:()=>[],refresh_storage_lease(){},load_storage(){},mirror_files:async()=>{},load_application:async()=>true,flush_files:async()=>{},storage_write_hook(){},provide_settings:()=>false,drain_storage:()=>[],retry_storage:()=>0,acknowledge_storage(){},pending_writes:()=>[],asset_requests:()=> '[]',modifiers(){},ime:(...args)=>delivered.push(args.slice(1)),clipboard_event:(_id,kind)=>{delivered.push([kind]);return true;},
+ const runtime=runtimeFake({provide_startup_font(){},mount(canvas,_config,_entries,callback){this.config=JSON.parse(_config);update=callback;for(const type of ['focus','blur'])canvas.addEventListener(type,()=>windowFocus.push(type));setTimeout(()=>{allocated=true;callback(JSON.stringify({phase:'gpu-pending'}));queueMicrotask(()=>callback(JSON.stringify({phase:'presented',frames:1})));},0);return 1;},close:()=>[],refresh_storage_lease(){},load_storage(){},mirror_files:async()=>{},load_application:async()=>true,flush_files:async()=>{},storage_write_hook(){},provide_settings:()=>false,drain_storage:()=>[],retry_storage:()=>0,acknowledge_storage(){},pending_writes:()=>[],asset_requests:()=> '[]',modifiers(){},ime:(...args)=>delivered.push(args.slice(1)),clipboard_event:(_id,kind)=>{delivered.push([kind]);return true;},
 
-  desktop_input_ownership:()=>{ownershipReads++;if(!allocated)throw Error('Desktop disposed');if(standalone)throw Error('Desktop navigation unavailable');return JSON.stringify(state);},desktop_navigation_snapshot:()=>{if(!allocated)throw Error('Desktop disposed');return standalone?undefined:JSON.stringify({generation:'g'});},desktop_navigation_revision:()=>1,searchToggles:0,desktop_search_toggle(){this.searchToggles++;},
+  desktop_navigation_snapshot:()=>{if(!allocated)throw Error('Desktop disposed');return standalone?undefined:JSON.stringify({generation:'g'});},desktop_navigation_revision:()=>1,desktop_search_toggle(){this.searchToggles++;},
   desktop_navigate:(_id,raw)=>{const command=JSON.parse(raw);if(command.route==='bad')throw Error('rejected');state={sequence:String(Number(state.sequence)+1),activation:String(Number(state.activation)+1),owner:command.route,ime:command.route==='calculator'?null:{x:0,y:0,height:20}};},
- };
- if(legacy)delete runtime.desktop_input_ownership;
+ }, {searchToggles:0});
  const originalIme=runtime.ime;runtime.ime=(...args)=>{if(args[1]==='commit')deliveredOwners.push([state.owner,args[2]]);originalIme(...args);};
  globalThis.__hostFixture={runtime,storage:{fresh:false,hydrate:async()=>[],commit:async()=>{},release:async()=>{}}};
  let source=(await readFile(new URL('./host.mjs',import.meta.url),'utf8')).replaceAll('import.meta.url',JSON.stringify(new URL('./host.mjs',import.meta.url).href));
@@ -54,7 +54,7 @@ async function fixture({standalone=false,legacy=false,models,providerManagement,
   .replace(/from '(\.\/[^']+)'/g,(_all,path)=>`from '${new URL(path,import.meta.url).href}'`);
  const {mountDesktop}=await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// ${Math.random()}`).toString('base64')}`);
  const target=new Node('div');document.body.append(target);const host=await mountDesktop(target,{app:app??(standalone?'writer':'desktop'),models,providerManagement});await tick();
- return {host,runtime,document,delivered,deliveredOwners,windowFocus,get ownershipReads(){return ownershipReads;},disposeRuntime(){allocated=false;},get state(){return state;},set state(value){state=value;},update:state=>update(JSON.stringify(state))};
+ return {host,runtime,document,delivered,deliveredOwners,windowFocus,disposeRuntime(){allocated=false;},get state(){return state;},set state(value){state=value;},update:state=>update(JSON.stringify(state))};
 }
 test('model bootstrap stays mount scoped and forwards only its transport binding',async()=>{
  const models={endpoint:'https://models.example.test',sessionToken:'mount-one',profileId:'profile-one',modelId:'model-one',extra:'not a transport field'};
@@ -96,17 +96,6 @@ test('a standalone control-panel bootstrap preserves its exact application ID',a
  }
 });
 
-test('outside pointer press dismisses only the current system search and preserves the external click',async()=>{
- const f=await fixture();
- const keys=[];f.host.canvas.addEventListener('keydown',event=>keys.push(event.key));f.host.canvas.addEventListener('keyup',event=>keys.push(event.key));
- const outside=new Node('button');f.document.body.append(outside);
- f.state={...f.state,sequence:'2',owner:'system-search'};
- f.host.canvas.dispatchEvent(new DomEvent('pointerdown'));assert.deepEqual(keys,[]);
- const event=new DomEvent('pointerdown');outside.dispatchEvent(event);
- assert.deepEqual(keys,['Escape','Escape']);assert.equal(event.defaultPrevented,false);assert.equal(event.stopped,undefined);
- keys.length=0;f.state={...f.state,sequence:'3',owner:'writer'};
- outside.dispatchEvent(new DomEvent('pointerdown'));assert.deepEqual(keys,[]);
-});
 
 test('capture source belongs to its mount and never takes input focus',async()=>{
  const f=await fixture({standalone:true});
@@ -156,13 +145,6 @@ test('mounted dead key composes one caret and retains the following numeric inpu
  assert.deepEqual(canvasKeys,[],'the dead key is not forwarded as a Winit command');
  assert.equal(f.host.editor.value,'','the hidden editor retains no committed value');
 });
-test('Rust-internal Search selection hands off only for a local surface gesture',async()=>{
- const f=await fixture();f.host.canvas.focus();
- f.host.canvas.addEventListener('keydown',()=>{f.state={sequence:'2',activation:'2',owner:'chat',ime:{x:0,y:0,height:20}};});
- f.host.canvas.dispatchEvent(new DomEvent('keydown',{key:'Enter'}));await tick();assert.equal(f.document.activeElement,f.host.editor);
- const external=new Node('textarea');f.document.body.append(external);external.focus();
- f.state={sequence:'3',activation:'3',owner:'writer',ime:{x:0,y:0,height:20}};f.update({phase:'presented',frames:2});await tick();assert.equal(f.document.activeElement,external);
-});
 test('the hidden IME editor paints nothing over the canvas',async()=>{
  const f=await fixture();
  const invisible=editor=>{for(const rule of ['background:transparent','color:transparent','caret-color:transparent','outline:none'])assert.ok(editor.style.cssText.includes(rule),`the IME editor sets ${rule}`);};
@@ -171,26 +153,12 @@ test('the hidden IME editor paints nothing over the canvas',async()=>{
  invisible(f.host.editor.cloneNode(false));
 });
 
-test('focus moving between the canvas and its IME editor is not a window blur',async()=>{
- const f=await fixture();f.host.editor.focus();f.windowFocus.length=0;f.delivered.length=0;
- // A press on the canvas takes focus from the editor; the next status hands it back.
- f.host.canvas.focus();f.update({phase:'presented',frames:2});await tick();
- assert.equal(f.document.activeElement,f.host.editor);
- assert.deepEqual(f.windowFocus.filter(type=>type==='blur'),[],'a pointer gesture on the canvas survives the IME handoff');
- assert.deepEqual(f.delivered,[['end',''],['start','']],'the IME still ends and restarts');
- const outside=new Node('input');f.document.body.append(outside);outside.focus();
- assert.deepEqual(f.windowFocus.at(-1),'blur','leaving the surface is still a window blur');
- f.host.canvas.focus();f.windowFocus.length=0;outside.focus();
- assert.deepEqual(f.windowFocus,['blur'],'and so is leaving it from the canvas');
-});
-test('current standalone and legacy runtimes retain local text input without desktop ownership',async()=>{
- for(const config of [{standalone:true},{legacy:true}]){
-  const f=await fixture(config);f.host.editor.focus();f.host.editor.dispatchEvent(new DomEvent('beforeinput',{inputType:'insertText',data:'local'}));
-  assert.deepEqual(f.delivered.filter(([kind])=>kind==='commit'),[['commit','local']]);assert.equal(f.ownershipReads,0);
- }
+test('a standalone runtime retains local text input',async()=>{
+ const f=await fixture({standalone:true});f.host.editor.focus();f.host.editor.dispatchEvent(new DomEvent('beforeinput',{inputType:'insertText',data:'local'}));
+ assert.deepEqual(f.delivered.filter(([kind])=>kind==='commit'),[['commit','local']]);
 });
 test('the focused field\'s purpose reaches the browser editor and free text keeps its defaults',async()=>{
- const f=await fixture({legacy:true});
+ const f=await fixture();
  const hints=(inputmode,autocomplete,extra={})=>({inputmode,enterkeyhint:'',autocapitalize:'off',autocomplete,spellcheck:false,...extra});
  const field=(purpose,fieldHints)=>f.update({phase:'presented',frames:2,ime:{x:0,y:0,width:1,height:20,purpose,hints:fieldHints}});
  const editor=()=>f.host.editor;
@@ -201,16 +169,6 @@ test('the focused field\'s purpose reaches the browser editor and free text keep
  assert.deepEqual(attributes(),hints('search','off',{enterkeyhint:'search'}));
  field('Text',hints('text','off'));await tick();
  assert.deepEqual(attributes(),hints('text','off'),'free text: no capitalisation, autofill or browser spellcheck');
-});
-test('asynchronous Rust Search activation retains local gesture authority but respects later outside focus',async()=>{
- for(const outside of [false,true]){
-  const f=await fixture();const search=new Node('textarea');f.host.canvas.parentNode.append(search);search.focus();let complete;
-  search.addEventListener('keydown',()=>{complete=()=>{f.state={sequence:'2',activation:'2',owner:'chat',ime:{x:0,y:0,height:20}};f.update({phase:'presented',frames:2});};});
-  search.dispatchEvent(new DomEvent('keydown',{key:'Enter'}));await tick();
-  const external=new Node('textarea');f.document.body.append(external);if(outside)external.focus();
-  // Runtime allocation/event queues may finish after the initiating DOM turn.
-  complete();await tick();assert.equal(f.document.activeElement,outside?external:f.host.editor);
- }
 });
 test('every wheel over the surface is the runtime\'s and page-unit wheels arrive as pixels on both axes',async()=>{
  const f=await fixture();const canvas=f.host.canvas;Object.assign(canvas,{clientWidth:800,clientHeight:600});

@@ -230,8 +230,8 @@ export async function mountDesktop(target,options={}) {
   const liveLayer=()=>typeof options.live==='function'?options.live():options.peer?.live;
   const semanticPresentation=createSemanticPresentation({request:(target,observe)=>{if(active())runtime.request_component_locus(id,JSON.stringify(target),observe);},valid:()=>fontMountValid(),surfaceSize:()=>[canvas.width,canvas.height]});
   const capture=createPresentedSource({audience:JSON.stringify([config.profile,config.device,config.workspace]),app:config.app,canvas,layer:liveLayer,valid:()=>fontMountValid()});
-  let media,semantic,semanticKeys,hiddenKeys,composition,actionPalette,desktopCommands,desktopSpeculation,navigation,fontDemands,externalFocusEpoch=0,runtimeReady=false,desktopOwnership=false,localActivationGesture;
-  const inputScope=createInputScope({active,read:()=>desktopOwnership?runtime.desktop_input_ownership(id):undefined,onChange:()=>{
+  let media,semantic,semanticKeys,hiddenKeys,composition,navigation,fontDemands,externalFocusEpoch=0,runtimeReady=false,localActivationGesture;
+  const inputScope=createInputScope({active,onChange:()=>{
     hiddenKeys?.invalidate();semanticKeys?.invalidate();composition?.cancel();semantic?.revokeInput();composing=false;editor.value='';pasteShift=false;
     replaceEditor();
   }});
@@ -337,7 +337,6 @@ export async function mountDesktop(target,options={}) {
     if('liveWave' in state)liveLayer()?.publishPresence({wave:state.liveWave});
     if('liveFollowing' in state)liveLayer()?.publishPresence({following:state.liveFollowing});
     if(!runtimeReady&&['gpu-pending','presented'].includes(state.phase)){
-      desktopOwnership=Boolean(runtime.desktop_input_ownership&&runtime.desktop_navigation_snapshot?.(id));
       runtimeReady=true;
       if(options.hostActions&&runtime.desktop_set_host_actions&&runtime.desktop_navigation_snapshot?.(id))runtime.desktop_set_host_actions(id,JSON.stringify(options.hostActions));
       if(runtime.desktop_navigation_snapshot(id)){
@@ -355,11 +354,6 @@ export async function mountDesktop(target,options={}) {
     if(runtimeReady&&runtime.font_demands&&(!runtime.font_demands_pending||runtime.font_demands_pending(id))){
       const demanded=JSON.parse(runtime.font_demands(id));
       if(demanded.length)void fontDemands(demanded);
-    }
-    if(desktopCommands)void desktopCommands.pump();
-    if(actionPalette){
-      const request=runtime.take_caller_action(id);
-      if(request)void actionPalette.submit(JSON.parse(request)).catch(error=>{if(active())report({actionError:String(error)});});
     }
     // Search opened from page chrome (a Search button) takes the keyboard.
     if(state.searchOpen&&!lastState?.searchOpen&&![canvas,editor].includes(document.activeElement))canvas.focus({preventScroll:true});
@@ -478,7 +472,7 @@ export async function mountDesktop(target,options={}) {
       capture.close();semanticPresentation.close();
       crashListeners.delete(onCrash);
       if(globalThis.__tiloForgetCrashedWindow===forgetCrashed)delete globalThis.__tiloForgetCrashedWindow;
-      nativeCatalogue.dispose();media?.close();livePointer?.();livePointer=null;here?.stop();here=undefined;unsubscribeDesktopCommits?.();navigationFocus.close();navigation?.close();actionPalette?.close();desktopCommands?.close();desktopSpeculation?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
+      nativeCatalogue.dispose();media?.close();livePointer?.();livePointer=null;here?.stop();here=undefined;unsubscribeDesktopCommits?.();navigationFocus.close();navigation?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
       if(id!==undefined)closeWrites=Array.from(runtime.close(id));
       surface.remove();
     },

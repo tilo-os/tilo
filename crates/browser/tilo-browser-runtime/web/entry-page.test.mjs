@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {chooseWorkspace, chosenWorkspace, enteredWorkspaces, joinViaHost, rememberEntered} from './workspaces.mjs';
 import {AdmissionError} from './admission.mjs';
+import {runtimeFake} from './runtime-surface.mjs';
 
 const USER = 'aa'.repeat(32);
 /** The short link the page's site keeps an invitation under. */
@@ -56,7 +57,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     router: {route: {target: {scope: own ? {kind: 'own'} : {kind: 'room', host: ORIGIN, room: 'current'}}}, stop: () => calls.push('stop')},
     link: {format: route => `https://web.example/#/${route.target.scope.room}`}};
   const prepared = [];
-  const runtime = {
+  const runtime = runtimeFake({
     presenceColor: id => {
       calls.push(['colour', id]);
       return '#ffd166';
@@ -65,7 +66,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
       calls.push(['sealed', base, host, invitation]);
       return SEALED;
     },
-  };
+  });
   globalThis.__entryPageFixture = {page, runtime, mounted: [], identity: {userPublicKey: USER}, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
     joinViaHost,
     boot: async options => {

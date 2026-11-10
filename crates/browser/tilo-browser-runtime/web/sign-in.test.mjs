@@ -4,6 +4,7 @@ import {readFileSync} from 'node:fs';
 import {
   allowFields, denyFields, MAX_GRANT_LIFETIME_MS, readSignInRequest, requestWords, signInOrigin, startSignInPage,
 } from './sign-in.mjs';
+import {runtimeFake} from './runtime-surface.mjs';
 
 const NOW = 1_800_000_000_000;
 const CHALLENGE = 'a'.repeat(64);
@@ -214,14 +215,14 @@ function page({
     },
   };
   const window = {document, location: {search}};
-  const runtime = {
+  const runtime = runtimeFake({
     async signInAnswer(person, signer, ask) {
       const asked = JSON.parse(ask);
       posted.push({person, signer, ask: asked});
       // What the runtime answers: a grant only where the link asked for one.
       return JSON.stringify(asked.grantKey ? {proof: 'proof-text', grant: 'grant-text'} : {proof: 'proof-text'});
     },
-  };
+  });
   const mounted = startSignInPage({
     window,
     elements,

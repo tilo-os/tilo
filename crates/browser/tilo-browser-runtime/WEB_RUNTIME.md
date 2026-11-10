@@ -192,3 +192,30 @@ node --test crates/browser/tilo-browser-runtime/web/*.test.mjs
 # (CARGO=<any cargo drop-in> runs it through a remote builder or container)
 tools/ci/check-wasm.sh
 ```
+
+The page reaches the module as `import * as runtime from
+'./pkg/tilo_browser_runtime.js'`, and nothing on either side of that boundary
+sees the other's names: the `pkg/*.d.ts` exists only after a build, and a test
+that fakes the module answers under whatever name it was given. So a page and
+its fake can agree on a name the module never exported, and the call throws
+only in a browser, in the build that reached a person.
+
+`web/runtime-surface.test.mjs` closes that: it reads the crate's
+`#[wasm_bindgen]` items out of the Rust sources and fails, naming the file and
+the call, for every `runtime.name(…)` that names something the module does not
+export. It reads Rust rather than the generated `.d.ts` because this suite runs
+in the CI image, where nothing has been built.
+
+A test that fakes the runtime builds it with the same reading, so an invented
+name fails there too:
+
+```js
+import {runtimeFake} from './runtime-surface.mjs';
+
+const runtime = runtimeFake({channel_vault: async () => new Uint8Array(32)},
+  {calls, get peer() { return peer; }});
+```
+
+The first argument is the module's surface, held to the real exports; the
+second is the test's own scaffolding, which the module knows nothing about and
+which is therefore left alone.
