@@ -861,7 +861,10 @@ async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
 
 /// Seen on another person's host: a workspace a node someone else runs
 /// governs (a Lounge's), a member's agent through `tilo mcp`'s path is seen
-/// once, as the run that host speaks for, by the member's own page.
+/// once, named and narrated, as the run that host speaks for, by the member's
+/// own page, though the host is no member of the workspace's live plane and
+/// never holds its keys. A member device that claims the host's word for a
+/// run, on the host's track or on the plane, is not heard.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
     use tilo_peer_state::join::MemberRole;
@@ -907,23 +910,102 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
         .with_agent_run("run-guest", "Claude Code");
     let listed = super::hosted_documents::tool(&server, "tilo_ls", serde_json::json!({})).await;
 
-    let spoken_by = hex::encode(host.cert.device_public_key);
+    // The host is no member device of the workspace: its governance never
+    // makes it a reader of the workspace's scope, whose keys seal the live
+    // plane and open every member-readable record.
+    let host_key = hex::encode(host.cert.device_public_key);
+    let members = loop {
+        browser.pump();
+        let status = browser.peer.status();
+        if let Some(devices) = status.room_devices.get(&cluster)
+            && devices.contains_key(&hex::encode(page_device.cert.device_public_key))
+        {
+            break devices.clone();
+        }
+        assert!(
+            Instant::now() < tilo_test_env::hang_deadline(),
+            "the page never read the workspace's members"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(
+        !members.contains_key(&host_key),
+        "the operator's host is a member device of the workspace: {members:?}"
+    );
+
+    // A member device that says it speaks for a run, as the host would: on
+    // the host's own track (signed by itself, not the host) and on the plane.
+    let forged = collab_types::presence::Presence::desktop(
+        cluster.clone(),
+        collab_types::presence::Payload::Shell(Box::new(tilo_session_client::presence::view(
+            1,
+            tilo_clock::unix_now_ms(),
+            "Impostor",
+            [1, 2, 3],
+            Some("Looking at the apps".into()),
+            None,
+            None,
+        ))),
+    )
+    .spoken_for("agent-run:forged");
+    agent
+        .peer
+        .say_for_run(
+            agent.workspace,
+            tilo_relay_protocol::host_voice::HostWords::Presence(forged.clone()),
+        )
+        .unwrap();
+    agent
+        .peer
+        .publish_presence(agent.workspace, vec![forged])
+        .unwrap();
+
+    // The agent writes in a document: an action in a record, which the host
+    // narrates.
+    super::hosted_documents::act(&server, "word-processor#open", serde_json::json!({})).await;
+    let (opened, record) = super::hosted_documents::act(
+        &server,
+        "word-processor#append-paragraph",
+        serde_json::json!({"text": "Hello"}),
+    )
+    .await;
+    let spoken_by = host_key;
     let deadline = tilo_test_env::hang_deadline();
     loop {
         browser.pump();
         let here = browser.here();
         let agents: Vec<_> = here.iter().filter(|member| member.agent).collect();
+        let narrated = agents.first().is_some_and(|agent| {
+            browser
+                .narrated
+                .iter()
+                .any(|(_, work)| work.actor.id == agent.publisher)
+        });
         if agents.len() == 1
             && agents[0].label == "Claude Code"
             && agents[0].spoken_by.as_deref() == Some(spoken_by.as_str())
-            && agents[0].activity.as_deref() == Some("Looking at the apps")
+            && agents[0].activity.is_some()
+            && narrated
         {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "the member's agent is not seen once on the operator's host ({listed}): {here:?}"
+            "the member's agent is not seen once, named and narrated, on the operator's host \
+             (listed {listed}, opened {opened} in {record:?}): {here:?}, narrated {:?}",
+            browser.narrated
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    // The forged word was never taken, however long the page listens.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    browser.pump();
+    assert!(
+        !browser
+            .here()
+            .iter()
+            .any(|member| member.label == "Impostor"),
+        "a member device spoke in the host's place: {:?}",
+        browser.here()
+    );
 }
