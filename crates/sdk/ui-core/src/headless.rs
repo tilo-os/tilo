@@ -1971,7 +1971,8 @@ impl FrameHarness {
     }
 
     /// Frames that found nothing new to sync or publish (`FrameWitness`)
-    /// since construction.
+    /// since construction. One of them can still have drawn work the next frame takes up
+    /// ([`Self::owes_the_next_frame`]): it synced nothing, but it did not rest.
     #[must_use]
     pub fn quiet_frames(&self) -> u64 {
         self.quiet_frames
@@ -2198,6 +2199,23 @@ impl FrameHarness {
             && self.acting_for.is_empty()
             && !self.owner_service_layout_retired
             && !self.has_pending_owner_models()
+    }
+
+    /// Whether the frame, having drawn, leaves the next one work that changes what it shows: a
+    /// composition a widget rebuilt or replaced while the frame ran (a slide landing drops the
+    /// parts its last pose hid), a store whose sync still owes, a press or control answer the
+    /// host has yet to run, or an owner-service layout the next frame readmits. A widget's tick
+    /// runs after the paint, so these can arrive once the frame has decided to sync nothing, and
+    /// a frame that leaves them is no frame at rest.
+    fn owes_the_next_frame(&mut self) -> bool {
+        self.layout_requested
+            || self.owner_service_layout_retired
+            || self.root.needs_idle_sync()
+            || crate::widget::press_waiting()
+            || !self.bound_invocations.is_empty()
+            || !self.pending_control_invocations.is_empty()
+            || crate::widget::controls::has_pending_control_invocation(self.root.as_ref())
+            || self.composition_changed()
     }
 
     /// The update pass, with the workspace's presence lent as the frame's
@@ -4273,6 +4291,10 @@ impl FrameHarness {
         }
         self.check_retained_geometry_if_due();
         self.scene_capture_protected = protected_paint.finish();
+        // A frame that read nothing new but drew work into being owes the next one: it rests for
+        // what its sync and publication read, not for what it hands over
+        // ([`Self::owes_the_next_frame`]).
+        let quiet = quiet && !self.owes_the_next_frame();
         #[cfg(debug_assertions)]
         if quiet {
             self.verify_quiet_frame(history_settled);

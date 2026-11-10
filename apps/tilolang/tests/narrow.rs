@@ -12,6 +12,9 @@ use ui::tokens::MotionSource;
 
 const NARROW: (u32, u32) = (420, 860);
 
+/// A phone's own window, as a person holds it.
+const PHONE: (u32, u32) = (390, 844);
+
 /// Notes at a phone's width with the week of notes staged, as `--shots` stages it: the scenario
 /// opens its first note. A capture is photographed at rest, so this window moves on no frame.
 fn staged() -> TestApp<TlApp> {
@@ -31,6 +34,12 @@ fn driven() -> TestApp<TlApp> {
 fn mail_driven() -> TestApp<TlApp> {
     crate::support::installed("mail");
     TestApp::<TlApp>::drive_at("a busy inbox", NARROW).expect("the scenario stages")
+}
+
+/// The same week of notes in a phone's own window, a person driving it.
+fn phone_driven() -> TestApp<TlApp> {
+    crate::support::installed("notes");
+    TestApp::<TlApp>::drive_at("a week of notes", PHONE).expect("the scenario stages")
 }
 
 /// Whether the live window would take a frame: for an animation, queued work (a component's
@@ -258,6 +267,30 @@ fn the_sidebar_toggle_brings_the_tree_forward_and_a_row_of_it_opens_its_note() {
         named_control(app.harness(), "Groceries").is_none(),
         "the tree went behind the note its row opened"
     );
+}
+
+#[test]
+fn the_sidebar_toggle_in_a_driven_phone_window_shows_the_tree_in_the_frame_it_takes() {
+    let mut app = phone_driven();
+    // The window stands in the desktop's bar, where its sidebar toggle is.
+    app.harness().present_in_window_bar();
+    let motion = push_motion(app.harness());
+    assert_settles(&mut app, motion, "the staged note");
+    assert!(
+        named_control(app.harness(), "Groceries").is_none(),
+        "the tree stands behind the note's page"
+    );
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+    // The frame the press asks for shows the tree it brought forward: the toggle's own frame is
+    // never one that rested on what stood before it.
+    app.frame();
+    assert!(
+        named_control(app.harness(), "Groceries").is_some(),
+        "the frame after the press shows the tree: {}",
+        asking(app.harness())
+    );
+    assert_settles(&mut app, motion, "the drawer");
 }
 
 #[test]

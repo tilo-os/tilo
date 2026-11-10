@@ -15,6 +15,11 @@ struct Seen {
     can_undo: Rc<Cell<bool>>,
     body: Rc<std::cell::RefCell<String>>,
     actions: Rc<Cell<usize>>,
+    /// Arm the probe's next draw to ask for its tree to be built again, as a slide landing drops
+    /// the parts its last pose hid.
+    landing: Rc<Cell<bool>>,
+    /// The rebuild a draw asked for, for the frame that reads the structure change.
+    landed: Rc<Cell<bool>>,
 }
 
 /// A widget that always wants a frame (so every poll runs one), counts its
@@ -66,6 +71,22 @@ impl Widget for Probe {
     }
     fn needs_redraw(&self) -> bool {
         true
+    }
+    fn draw(
+        &mut self,
+        _: &mut Scene,
+        _: Affine,
+        _: &mut TextRenderer,
+        _: &Theme,
+        _: &PresenceCtx,
+    ) {
+        // What the frame drew asked for its parts to be laid out again.
+        if self.seen.landing.replace(false) {
+            self.seen.landed.set(true);
+        }
+    }
+    fn take_structure_dirty(&mut self) -> bool {
+        self.seen.landed.replace(false)
     }
     fn is_focusable(&self) -> bool {
         true
@@ -258,6 +279,20 @@ fn a_wheel_nothing_takes_leaves_frames_quiet() {
         frame.quiet_frames() > quiet,
         "the wheel's own frame was quiet"
     );
+    assert_eq!(polled(&mut frame, &seen), Quiet::Yes);
+}
+
+/// A frame that draws a rebuild into being hands it to the next one, which syncs for it: work a
+/// widget's tick asks for after the paint (a slide landing drops the parts its last pose hid)
+/// arrives once the frame has decided to sync nothing, so the frame that draws it does not rest.
+#[test]
+fn a_frame_that_draws_a_rebuild_into_being_hands_it_to_the_next_one() {
+    let (mut frame, seen) = probe();
+    assert_eq!(polled(&mut frame, &seen), Quiet::Yes);
+    seen.landing.set(true);
+    // The frame that drew the landing synced nothing, and the one after it rebuilds and syncs.
+    assert_eq!(polled(&mut frame, &seen), Quiet::Yes);
+    assert_eq!(polled(&mut frame, &seen), Quiet::No);
     assert_eq!(polled(&mut frame, &seen), Quiet::Yes);
 }
 
