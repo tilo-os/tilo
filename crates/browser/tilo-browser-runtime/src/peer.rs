@@ -2374,6 +2374,18 @@ impl WasmPeer {
                     hear(self.id, workspace_id, from, &body);
                     None
                 }
+                // A window's page: the display list the device hosting it publishes, drawn in the
+                // tab of that window.
+                PeerEvent::LivePlane {
+                    workspace_id,
+                    from,
+                    track: Track::Page(tab),
+                    body,
+                    ..
+                } if from != self.device_key => {
+                    crate::pages::heard(self.id, workspace_id, tab, &body);
+                    None
+                }
                 PeerEvent::Live {
                     workspace_id,
                     from,

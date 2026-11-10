@@ -23,6 +23,7 @@ pub mod navigation;
 pub mod notifications;
 pub mod now_playing;
 pub mod outcome;
+pub mod page_view;
 pub mod session;
 mod shared_tree;
 pub mod surface;
@@ -30,6 +31,7 @@ mod wake;
 pub mod warmth;
 pub mod window;
 
+pub use page_view::{PageStream, PageView};
 #[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]
 pub use surface::peer_view::{
     NeighbourMsg, PeerAction, PeerId, PeerOutcome, PeerRead, PeerStreamStart, PeerSurface,

@@ -54,6 +54,7 @@ use ui::widget::{
 };
 use ui::{TextRenderer, Theme};
 
+use crate::page_view::PageStream;
 use tilo_actions::{
     ActionOutput, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
     ResourcePresentation, ResourceSpec,
@@ -237,6 +238,8 @@ pub struct PeerRead {
     pub standing: Standing,
     /// A unit went missing and the sender has been asked for a keyframe.
     pub awaiting_keyframe: bool,
+    /// Whether the window's page is what this tile draws, rather than a picture of it.
+    pub page: bool,
     /// The newest picture's width and height, and the RGBA bytes it carries.
     pub picture: Option<(u32, u32, usize)>,
     /// The unit the newest picture came from.
@@ -336,6 +339,9 @@ pub struct PeerSurface {
     ended: bool,
     /// What the tile asks its sender to do: input and keyframe requests.
     outgoing: Vec<NeighbourMsg>,
+    /// The window's page, when its sender publishes one (`tilo-paint`): a display list drawn here
+    /// instead of a picture decoded here.
+    page: Option<Rc<RefCell<PageStream>>>,
 }
 
 impl PeerSurface {
@@ -390,6 +396,8 @@ impl PeerSurface {
             keyframe_asked: None,
             ended: false,
             outgoing: Vec::new(),
+            page: (start.codec == ui::webview::paint::stream::wire::CODEC)
+                .then(|| Rc::new(RefCell::new(PageStream::new()))),
         }
     }
 
@@ -454,6 +462,7 @@ impl PeerSurface {
             writable: self.writable,
             standing: self.standing.clone(),
             awaiting_keyframe: self.awaiting_keyframe,
+            page: self.page.is_some(),
             picture: self
                 .picture
                 .as_ref()
@@ -551,6 +560,23 @@ impl PeerSurface {
             return PeerOutcome::DecodeFailed;
         };
         self.accept(frame).unwrap_or(PeerOutcome::DecodeFailed)
+    }
+
+    /// Take one object of the window's page: the payload its publisher's engine encoded. Whether
+    /// the frame the tile draws changed.
+    pub fn push_page(&mut self, payload: &[u8]) -> bool {
+        if self.ended {
+            return false;
+        }
+        let Some(page) = &self.page else {
+            return false;
+        };
+        let changed = page.borrow_mut().apply(payload);
+        if changed {
+            self.standing = Standing::Pictured;
+            self.revision = self.revision.wrapping_add(1);
+        }
+        changed
     }
 
     /// Show the picture of an earlier unit that finished after its push returned, without waiting
@@ -751,6 +777,12 @@ impl PeerSurface {
     /// What stands in the tile's place: the newest picture as the image widget takes it, or -
     /// before one is here - the framework's arriving card naming the device the window comes from.
     fn content(&self) -> Box<dyn Widget> {
+        if let Some(page) = &self.page {
+            // The page is drawn here, not decoded: the display list its publisher sends is what
+            // this toolkit's own Vello and text stack draws, the same code the page's own window
+            // draws it with.
+            return PageStream::view(page, format!("{} on {}", self.title, self.sharer));
+        }
         match &self.picture {
             Some(picture) => Box::new(
                 Image::from_rgba(Arc::clone(&picture.rgba), picture.width, picture.height)
@@ -986,6 +1018,14 @@ impl PeerSurfaces {
         let tab = *self.streams.get(&(peer, surface))?;
         let tile = Rc::clone(self.tiles.get(&tab)?);
         Some(tile.borrow_mut().push(seq, unit))
+    }
+
+    /// Take one object of the page of the window `surface` shows. `None` for a stream this desktop
+    /// shows nowhere, and whether the frame changed for one it does.
+    pub fn push_page(&mut self, peer: PeerId, surface: SurfaceId, payload: &[u8]) -> Option<bool> {
+        let tab = *self.streams.get(&(peer, surface))?;
+        let tile = Rc::clone(self.tiles.get(&tab)?);
+        Some(tile.borrow_mut().push_page(payload))
     }
 
     /// Show every picture that came out after its unit was pushed. Whether any tile changed.
@@ -1635,6 +1675,18 @@ impl super::DesktopHandle {
         peers
             .borrow_mut()
             .push(*source_peer, *surface, *seq, encoded_h264)
+    }
+
+    /// One object of the page of `surface`'s window: the display list its publisher's engine sent,
+    /// drawn in that window's tile. `None` for a stream this desktop shows nowhere.
+    pub fn peer_surface_page(
+        &self,
+        peer: PeerId,
+        surface: SurfaceId,
+        payload: &[u8],
+    ) -> Option<bool> {
+        let peers = Rc::clone(&self.shared.borrow().peers);
+        peers.borrow_mut().push_page(peer, surface, payload)
     }
 
     /// The share of `surface` ended ([`NeighbourMsg::SurfaceStreamEnd`]), and why: its tile goes,

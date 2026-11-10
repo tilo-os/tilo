@@ -1206,6 +1206,16 @@ impl BrowserShell {
     }
 
     /// What the desktop's layers asked of the page since it last looked.
+    /// Ask the session for the pages of the windows other devices host that this desk shows, and
+    /// stop reading the ones it stopped showing. Whether what it asks changed.
+    fn follow_pages(&mut self) -> bool {
+        let shared = &self.chrome.shared;
+        match shared.peer {
+            Some(peer) => crate::pages::follow(peer, &shared.workspace, &self.handle),
+            None => false,
+        }
+    }
+
     fn follow_asks(&mut self) -> bool {
         let asks: Vec<DesktopAsk> = self
             .top
@@ -1710,6 +1720,9 @@ impl Widget for BrowserShell {
             settings_store::control_hints::LEARNED.set(learned).ok();
         }
         changed |= self.desk.update(state, path);
+        // The pages of the windows other devices host, as this pass's desk shows them: what this
+        // page asks its session for, and only what it shows.
+        changed |= self.follow_pages();
         changed |= self.follow_asks();
         changed |= self.walk.follow();
         changed |= self.invite.follow();

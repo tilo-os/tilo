@@ -185,6 +185,7 @@ mod fixed_chords;
 mod frame_metrics;
 #[cfg(target_arch = "wasm32")]
 mod page_activity;
+mod pages;
 #[cfg(target_arch = "wasm32")]
 pub use page_activity::{LoadActivity, defer_activity_pane};
 #[cfg(target_arch = "wasm32")]

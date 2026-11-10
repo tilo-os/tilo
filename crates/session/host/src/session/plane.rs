@@ -74,8 +74,37 @@ pub(crate) struct Joined {
     /// The tracks this page shows of each device in the call: what the plane
     /// asks their owners to encode.
     pub(crate) shown: BTreeMap<[u8; 32], BTreeSet<tilo_live::live::Track>>,
+    /// The windows whose pages this page draws, by the device hosting them.
+    pub(crate) pages: BTreeMap<[u8; 32], BTreeSet<tilo_live::live::Track>>,
     /// The picture demand this page last told its app.
     pub(crate) demand_at: u64,
+}
+
+impl Joined {
+    /// Every device this page reads a picture or a page of.
+    fn devices(&self) -> BTreeSet<[u8; 32]> {
+        self.shown
+            .keys()
+            .chain(self.pages.keys())
+            .copied()
+            .collect()
+    }
+
+    /// Ask each of `devices` for exactly the tracks this page shows of it — its
+    /// call's pictures and its windows' pages — and nothing more: a device
+    /// asked for an empty set stops publishing.
+    fn show_asks(&self, devices: &BTreeSet<[u8; 32]>) {
+        for device in devices {
+            let mut tracks: Vec<tilo_live::live::Track> = Vec::new();
+            if let Some(shown) = self.shown.get(device) {
+                tracks.extend(shown.iter().copied());
+            }
+            if let Some(pages) = self.pages.get(device) {
+                tracks.extend(pages.iter().copied());
+            }
+            self.plane.show(*device, &tracks);
+        }
+    }
 }
 
 /// Why this page is not in a workspace's plane, and since when.
@@ -538,6 +567,7 @@ impl Task {
                         activity_seq: 0,
                         audio_seq: 0,
                         shown: BTreeMap::new(),
+                        pages: BTreeMap::new(),
                         demand_at: u64::MAX,
                     },
                 );
@@ -626,7 +656,8 @@ impl Task {
     }
 
     /// Show the devices' `shown` layers here, and stop reading the devices
-    /// left out: the plane asks each owner for exactly these.
+    /// left out: the plane asks each owner for exactly these, and for the
+    /// pages this page draws of it.
     pub(super) fn show_call_pictures(&mut self, workspace_id: u64, shown: &[super::CallShown]) {
         use tilo_live::live::Track;
         let Some(joined) = self.planes.joined_mut(workspace_id) else {
@@ -644,21 +675,31 @@ impl Task {
                 (entry.device, tracks)
             })
             .collect();
-        let gone: Vec<[u8; 32]> = joined
-            .shown
-            .keys()
-            .filter(|device| !wanted.contains_key(*device))
-            .copied()
+        let mut devices = joined.devices();
+        joined.shown = wanted;
+        devices.extend(joined.devices());
+        joined.show_asks(&devices);
+    }
+
+    /// Show the pages of `shown` 's windows here, and stop reading the
+    /// devices left out: each owner publishes a window's page only while a
+    /// member asks for it, so this is what makes the page travel.
+    pub(super) fn show_pages(&mut self, workspace_id: u64, shown: &[super::PageShown]) {
+        use tilo_live::live::Track;
+        let Some(joined) = self.planes.joined_mut(workspace_id) else {
+            return;
+        };
+        let mut devices = joined.devices();
+        joined.pages = shown
+            .iter()
+            .map(|entry| {
+                let tracks: BTreeSet<Track> =
+                    entry.tabs.iter().map(|tab| Track::Page(*tab)).collect();
+                (entry.device, tracks)
+            })
             .collect();
-        for device in gone {
-            joined.plane.show(device, &[]);
-        }
-        for (device, tracks) in wanted {
-            joined
-                .plane
-                .show(device, &tracks.iter().copied().collect::<Vec<_>>());
-            joined.shown.insert(device, tracks);
-        }
+        devices.extend(joined.devices());
+        joined.show_asks(&devices);
     }
 
     /// Ask `device` for `source` afresh: its next picture starts a group the
@@ -673,9 +714,14 @@ impl Task {
         let Some(joined) = self.planes.joined_mut(workspace_id) else {
             return;
         };
-        let Some(tracks) = joined.shown.get(&device).cloned() else {
-            return;
-        };
+        // Every track this page shows of the device: its call's pictures and the windows' pages.
+        let mut tracks: Vec<Track> = Vec::new();
+        if let Some(shown) = joined.shown.get(&device) {
+            tracks.extend(shown.iter().copied());
+        }
+        if let Some(pages) = joined.pages.get(&device) {
+            tracks.extend(pages.iter().copied());
+        }
         let of_source = |track: &Track| {
             matches!(
                 (track, source),

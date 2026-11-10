@@ -305,6 +305,12 @@ pub(crate) fn handles_of(user: &str) -> Vec<PeerHandle> {
 
 /// The door to `workspace`'s host actions for `id`'s page, or `None` while its session has no
 /// host: one session path per workspace, whichever of the page's callers asks.
+/// The host handle of the started page `id`: what this page asks its session for over the peer it
+/// is with.
+pub(crate) fn handle_of(id: u32) -> Option<PeerHandle> {
+    PAGES.with_borrow(|pages| pages.get(&id).map(|page| page.handle.clone()))
+}
+
 pub(crate) fn actions_of(id: u32, workspace: u64) -> Option<SessionActions> {
     PAGES.with_borrow(|pages| {
         let page = pages.get(&id)?;

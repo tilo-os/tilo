@@ -398,6 +398,11 @@ pub(crate) struct Shared {
     /// Actions of apps the person chose in the desktop's own chrome (a
     /// launchpad card), for the desktop's session to deliver as theirs.
     app_actions: Rc<RefCell<Vec<tilo_desktop::launchpad::LaunchpadAppAction>>>,
+    /// The peer whose workspace this desktop shows, when it has one: what it asks its session for
+    /// the pages of the windows other devices host.
+    pub peer: Option<u32>,
+    /// The workspace it shows: whose plane those windows' pages travel.
+    pub workspace: String,
 }
 
 impl Shared {
@@ -1178,6 +1183,13 @@ impl Tiles {
 
 impl TileSource for Tiles {
     fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
+        // Another device's window whose page travels here: this page draws it, as the native desk
+        // does, with the same tile.
+        if matches!(tab.tile, TileContent::HostedWindow { .. })
+            && let Some(host) = crate::pages::tile(tab.id, &tab.title)
+        {
+            return host;
+        }
         let shared = self.shared.clone();
         let id = tab.id;
         if let Some(notice) =
@@ -1709,6 +1721,8 @@ fn shared_with_its_host(inputs: &Inputs, notify: &Arc<dyn Fn() + Send + Sync>) -
     let mut shared = Shared {
         record_actions,
         requests,
+        peer: inputs.peer,
+        workspace: inputs.workspace.clone(),
         ..Shared::default()
     };
     if inputs.peer.is_some() {

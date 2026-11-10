@@ -283,6 +283,10 @@ pub(crate) struct Seat {
     /// workspace it was heard in: what the calls playing there draw
     /// ([`Self::take_call_pictures`]).
     call_pictures: RefCell<Vec<(String, Heard)>>,
+    /// The window pages the workspaces' live planes heard since the last call, each with the
+    /// workspace it was heard in: what the desks showing those windows draw
+    /// ([`Self::take_page_objects`]).
+    page_objects: RefCell<Vec<(String, Heard)>>,
     /// This device's workspaces: `None` when the session keeps no state to hold them in.
     engine: Option<Arc<Engine>>,
     /// What the session's channels hear and say on this plane. What the engine holds, so a session
@@ -511,6 +515,14 @@ impl Seat {
         std::mem::take(&mut *self.call_pictures.borrow_mut())
     }
 
+    /// Take the window pages the workspaces' live planes heard since the last call, each with the
+    /// workspace it was heard in and already opened: what the desk showing that window draws.
+    #[must_use]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn take_page_objects(&self) -> Vec<(String, Heard)> {
+        std::mem::take(&mut *self.page_objects.borrow_mut())
+    }
+
     /// Send one message of `surface`'s stream on the topic of the workspace it is shared in, to
     /// `viewers` alone: over the authenticated route to each of them, never fanned out to the
     /// workspace.
@@ -703,6 +715,13 @@ impl Seat {
                 if object.track == Track::Audio {
                     // A call's voice, already opened: the call of that workspace plays it.
                     self.call_audio
+                        .borrow_mut()
+                        .push((workspace.clone(), object));
+                    continue;
+                }
+                if matches!(object.track, Track::Page(_)) {
+                    // A window's page, already opened: the desk showing that window draws it.
+                    self.page_objects
                         .borrow_mut()
                         .push((workspace.clone(), object));
                     continue;
@@ -1285,6 +1304,13 @@ impl Client {
         self.hosting.seat.take_call_pictures()
     }
 
+    /// Take the window pages the workspaces' live planes heard since the last call, already opened.
+    #[must_use]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn take_page_objects(&self) -> Vec<(String, Heard)> {
+        self.hosting.seat.take_page_objects()
+    }
+
     /// Send one message of `surface`'s stream on the topic of the workspace it is shared in.
     #[cfg(target_os = "linux")]
     pub(crate) fn publish_surface(
@@ -1567,6 +1593,7 @@ impl Seat {
                 surfaces: RefCell::new(Vec::new()),
                 call_audio: RefCell::new(Vec::new()),
                 call_pictures: RefCell::new(Vec::new()),
+                page_objects: RefCell::new(Vec::new()),
                 engine,
                 link,
                 versions,
@@ -1596,6 +1623,7 @@ impl Seat {
             surfaces: RefCell::new(Vec::new()),
             call_audio: RefCell::new(Vec::new()),
             call_pictures: RefCell::new(Vec::new()),
+            page_objects: RefCell::new(Vec::new()),
             engine: None,
             link: None,
             versions,

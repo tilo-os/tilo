@@ -142,6 +142,17 @@ impl PeerHandle {
         self.send(Command::CallShowing(workspace_id, shown))
     }
 
+    /// Show the pages of `shown` 's windows on the plane of `workspace_id`, and
+    /// stop reading the devices left out: an owner publishes a window's page only
+    /// while a member asks for that window's track.
+    pub fn show_pages(
+        &self,
+        workspace_id: u64,
+        shown: Vec<super::PageShown>,
+    ) -> Result<(), String> {
+        self.send(Command::ShowPages(workspace_id, shown))
+    }
+
     /// Ask `device` for `source` afresh in the plane of `workspace_id`: its
     /// next picture starts a group this page's decoder can begin at.
     pub fn restart_call_picture(

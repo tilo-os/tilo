@@ -24253,6 +24253,8 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-desktop-model",
+ "tilo-desktop-surface",
  "tilo-doc",
  "tilo-resource",
  "tilo-ui",

@@ -78,6 +78,14 @@ impl PageTracks {
         workspace.clone_into(&mut page.workspace);
     }
 
+    /// Whether the window `tab` hands over the page it draws to `workspace`'s
+    /// members: its app says it streams one there.
+    pub(crate) fn streamed(&self, tab: TabId, workspace: &str) -> bool {
+        self.offered
+            .get(&tab)
+            .is_some_and(|page| page.workspace == workspace)
+    }
+
     /// The window `tab` closed, or its app went: nothing of its page is
     /// published from here on.
     pub(crate) fn closed(&mut self, tab: TabId) {

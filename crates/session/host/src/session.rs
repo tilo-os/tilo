@@ -545,6 +545,9 @@ enum Command {
     /// What this page shows of each device in its call's plane: the layers of
     /// their camera and screen it draws.
     CallShowing(u64, Vec<CallShown>),
+    /// The windows whose pages this page draws, by the device hosting them: each
+    /// owner publishes a window's page only while a member asks for its track.
+    ShowPages(u64, Vec<PageShown>),
     /// This page needs `source` of `device` afresh: a keyframe from its next
     /// group on.
     CallPictureRestart(u64, [u8; 32], tilo_live::video::Source),
@@ -589,6 +592,15 @@ pub struct CallShown {
     pub camera: Vec<tilo_live::video::Layer>,
     /// The screen layers it draws.
     pub screen: Vec<tilo_live::video::Layer>,
+}
+
+/// The windows whose pages one device of a workspace hosts, as this page draws them.
+#[derive(Clone, Debug, Default)]
+pub struct PageShown {
+    /// The device hosting the windows.
+    pub device: [u8; 32],
+    /// The tabs the windows stand in, the same ids on every device of the workspace.
+    pub tabs: Vec<u64>,
 }
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
@@ -2194,6 +2206,10 @@ impl Task {
             }
             Command::CallShowing(workspace_id, shown) => {
                 self.show_call_pictures(workspace_id, &shown);
+                true
+            }
+            Command::ShowPages(workspace_id, shown) => {
+                self.show_pages(workspace_id, &shown);
                 true
             }
             Command::CallPictureRestart(workspace_id, device, source) => {

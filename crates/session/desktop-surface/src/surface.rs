@@ -336,6 +336,26 @@ impl DesktopHandle {
         read(&self.shared.borrow().tree)
     }
 
+    /// The windows other devices host that this desk shows, with the device hosting each: the
+    /// windows whose page a host asks the plane for.
+    #[must_use]
+    pub fn hosted_windows(&self) -> Vec<(TabId, String)> {
+        self.read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| workspace.strips.iter())
+                .flat_map(|strip| strip.window_groups.iter())
+                .flat_map(|group| group.tabs.iter())
+                .filter_map(|tab| match &tab.tile {
+                    tilo_desktop_model::TileContent::HostedWindow { host, .. } => {
+                        Some((tab.id, host.clone()))
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+    }
+
     /// Have `wake` run whenever what this handle commands or changes is waiting for the desk's next
     /// pass: the host holding the desk asks for that frame, however little of the desk shows.
     pub fn set_wake(&self, wake: Rc<dyn Fn()>) {

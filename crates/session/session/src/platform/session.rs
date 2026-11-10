@@ -681,10 +681,15 @@ impl Session {
         // A window another device shares is decoded on the same waker, so a
         // picture that comes out late lands without waiting for the next
         // frame the desk draws for something else.
+        // A hosted browser environment runs for the workspace's members: nobody sits at it, so
+        // its windows are shared the moment they open.
+        let hosted_browser =
+            std::env::var_os("TILO_HOSTED_BROWSER").is_some_and(|mark| mark == "1");
         let window_shares = crate::window_share::WindowShares::new(
             options.wake.handle(),
             options.person.clone(),
             options.salt,
+            hosted_browser,
         );
         handle.set_peer_picture_wake(Some(options.wake.handle()));
         // The emoji picker is the chrome's; the session holds its picks,
