@@ -46,7 +46,6 @@ pub mod health;
 mod held_live;
 pub mod narration;
 pub mod presence_anchors;
-mod previews;
 mod replica;
 pub mod session;
 /// Another device's actions, asked through this device's session.
@@ -57,7 +56,6 @@ pub mod voice;
 pub use channels::{document_admission, document_history_admission};
 pub use custody::{MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore};
 pub use health::{PeerSnapshot, SessionHealth};
-pub use previews::{LiveChange, LiveState, RemoteMember};
 pub use session::{
     CallFrame, CallPicture, CallShown, Completion, Failure, FailureSubject, LocalState,
     PAGE_FAILURE_CODES, PeerConfig, PeerEvent, PeerEvents, PeerHandle, PeerStatus, RoomsCompletion,

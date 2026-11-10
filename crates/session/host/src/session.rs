@@ -535,7 +535,6 @@ enum Command {
     PlaneEnded(u64),
     Live(u64, Vec<u8>),
     SealLive(u64, Vec<u8>, LiveCompletion),
-    OpenLive(u64, Vec<u8>, LiveCompletion),
     RemoteAction(u64, [u8; 32], Vec<u8>),
     WantContent(u64, Vec<u8>),
     SendContent(u64, [u8; 32], Vec<u8>),
@@ -625,7 +624,7 @@ enum Opening {
 pub type Completion = Box<dyn FnOnce(Result<(), String>) + Send>;
 /// Called once with a live frame sealed or opened with its record's channel
 /// keys, or `None` when this device holds none; see
-/// [`PeerHandle::seal_live_then`] and [`PeerHandle::open_live_then`].
+/// [`PeerHandle::seal_live_then`].
 pub type LiveCompletion = Box<dyn FnOnce(Option<Vec<u8>>) + Send>;
 /// Called once with who is here, see [`PeerHandle::here_then`].
 pub type HereCompletion =
@@ -964,18 +963,6 @@ impl PeerHandle {
         done: LiveCompletion,
     ) -> Result<(), String> {
         self.send(Command::SealLive(workspace_id, frame, done))
-    }
-
-    /// Open one sealed live frame of `workspace_id` that another carrier
-    /// delivered; `done` receives the canonical frame, or `None` when it
-    /// does not open with keys this device holds.
-    pub fn open_live_then(
-        &self,
-        workspace_id: u64,
-        frame: Vec<u8>,
-        done: LiveCompletion,
-    ) -> Result<(), String> {
-        self.send(Command::OpenLive(workspace_id, frame, done))
     }
 
     /// Send one remote-action frame to device `to` of the workspace (the host's
@@ -2051,7 +2038,7 @@ impl Task {
                 self.plane_ended(workspace_id);
                 true
             }
-            command @ (Command::Live(..) | Command::SealLive(..) | Command::OpenLive(..)) => {
+            command @ (Command::Live(..) | Command::SealLive(..)) => {
                 self.apply_live(command);
                 true
             }
@@ -2363,11 +2350,6 @@ impl Task {
                 frame,
                 done,
             },
-            Command::OpenLive(workspace_id, frame, done) => Waiting::Open {
-                workspace_id,
-                frame,
-                done,
-            },
             _ => return,
         };
         self.live_frame(waiting, true);
@@ -2443,22 +2425,6 @@ impl Task {
                     },
                 ),
                 Opening::NoKeys(_) | Opening::Dropped => {}
-            },
-            Waiting::Open {
-                workspace_id,
-                frame,
-                done,
-            } => match self.open_live(workspace_id, &frame) {
-                Opening::Opened(opened) => done(Some(opened)),
-                Opening::NoKeys(channel) if hold => self.held_live.hold_inbound(
-                    channel,
-                    Waiting::Open {
-                        workspace_id,
-                        frame,
-                        done,
-                    },
-                ),
-                Opening::NoKeys(_) | Opening::Dropped => done(None),
             },
         }
     }

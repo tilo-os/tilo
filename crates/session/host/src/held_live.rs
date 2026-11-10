@@ -34,19 +34,13 @@ pub(crate) enum Waiting {
         from: [u8; 32],
         frame: Vec<u8>,
     },
-    /// A sealed frame another carrier delivered.
-    Open {
-        workspace_id: u64,
-        frame: Vec<u8>,
-        done: LiveCompletion,
-    },
 }
 
 impl Waiting {
     /// Give up on the frame: whoever waits on it learns it is gone.
     fn drop_frame(self) {
         match self {
-            Self::Seal { done, .. } | Self::Open { done, .. } => done(None),
+            Self::Seal { done, .. } => done(None),
             Self::Send { .. } | Self::Receive { .. } => {}
         }
     }
