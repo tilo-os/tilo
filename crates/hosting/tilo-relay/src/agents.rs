@@ -564,7 +564,15 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         };
         let (completer, answer) = tilo_actions::remote::pending();
         let certification = self.certification.clone();
+        let workspaces = self.workspaces.clone();
         self.member.runtime.spawn(async move {
+            let mut pending = pending;
+            // The person reads the workspace by its name, not its id.
+            if let Some(workspaces) = workspaces
+                && let Ok(summary) = workspaces.summary(&pending.workspace).await
+            {
+                pending.workspace = summary.name;
+            }
             completer.complete(match certification.confirm_for(person, pending).await {
                 Ok(ConfirmationAnswer::AllowOnce) => {
                     Ok(tilo_actions::remote::ConfirmationReply::AllowOnce)

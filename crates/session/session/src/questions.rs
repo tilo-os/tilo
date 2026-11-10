@@ -751,7 +751,7 @@ fn compose(question: &Question) -> Option<Composed> {
         CANNOT_JOIN_KIND => cannot_join(&question.handle, details)?,
         tilo_bluetooth_agent::KIND => pairing(&question.handle, details)?,
         crate::agent_door::KIND => admitted(&question.handle, &who, details)?,
-        crate::network::AGENT_QUESTION => agent_question(&question.handle, &who, details)?,
+        crate::network::AGENT_QUESTION => agent_question(&question.handle, details)?,
         crate::run_questions::KIND => run_question(&question.handle, details)?,
         crate::network::DEVICE_UNLOCK => device_unlock(&question.handle, details)?,
         _ => return None,
@@ -880,31 +880,10 @@ fn admitted(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
     ))
 }
 
-/// An agent's question on a workspace host: what it wants to do, on what,
-/// and the person's answer for this one invocation.
-fn agent_question(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
-    let asked: crate::network::AgentQuestion = serde_json::from_value(details).ok()?;
-    let title = words(
-        "network-agent-question-title",
-        &[("agent", &asked.agent), ("action", &asked.action)],
-    );
-    let mut detail = words(
-        "network-agent-question-detail",
-        &[
-            ("resource", &asked.resource),
-            ("workspace", &asked.workspace),
-        ],
-    );
-    if !asked.risk.is_empty() {
-        detail.push('\n');
-        detail.push_str(&words(
-            "network-agent-question-risk",
-            &[("risk", &risk(&asked.risk))],
-        ));
-    }
-    let mut dialog = review(handle, title, who.to_owned(), detail);
-    dialog.confirm_label = word("network-agent-question-allow");
-    Some((dialog, Plan::Confirm))
+/// An agent's question on a workspace host, on the sheet a page shows it on too.
+fn agent_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
+    let asked: tilo_sheets::portal::AgentQuestion = serde_json::from_value(details).ok()?;
+    Some((asked.dialog(handle), Plan::Confirm))
 }
 
 /// What an agent's run asks before a step its grants leave to the person: the step, what it
@@ -929,7 +908,7 @@ fn run_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
         detail.push('\n');
         detail.push_str(&words(
             "network-agent-question-risk",
-            &[("risk", &risk(&asked.risk))],
+            &[("risk", &tilo_sheets::portal::risk_words(&asked.risk))],
         ));
     }
     let mut dialog = review(handle, title, asked.agent.clone(), detail);
@@ -946,16 +925,6 @@ fn run_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
     labels.push(word("portal-deny"));
     dialog.body = Body::Choices(labels);
     Some((dialog, Plan::Choose(choices)))
-}
-
-/// What the host says an action risks, in the person's words.
-fn risk(name: &str) -> String {
-    match name {
-        "none" | "low" | "destructive" | "privileged" | "sensitive" => {
-            word(&format!("network-agent-risk-{name}"))
-        }
-        _ => word("network-agent-risk-something"),
-    }
 }
 
 /// Another of the person's devices asks for its disk-unlock half: the code on its boot screen is
@@ -1670,7 +1639,7 @@ mod tests {
     fn agent_question() -> Composed {
         sheet(
             crate::network::AGENT_QUESTION,
-            serde_json::to_value(crate::network::AgentQuestion {
+            serde_json::to_value(tilo_sheets::portal::AgentQuestion {
                 agent: "notes-agent".into(),
                 action: "delete three notes".into(),
                 resource: "the recipes notebook".into(),
@@ -1697,7 +1666,7 @@ mod tests {
     fn a_question_whose_risk_the_host_does_not_name_shows_no_risk() {
         let shown = sheet(
             crate::network::AGENT_QUESTION,
-            serde_json::to_value(crate::network::AgentQuestion {
+            serde_json::to_value(tilo_sheets::portal::AgentQuestion {
                 agent: "notes-agent".into(),
                 action: "read a note".into(),
                 resource: "the recipes notebook".into(),

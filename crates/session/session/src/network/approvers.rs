@@ -5,16 +5,17 @@
 //! host it connects to, puts every question on the session's question sheet, and sends the answer
 //! back. A question that is withdrawn or expires takes its sheet away.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::time::Duration;
 
 use iroh::{Endpoint, EndpointAddr, EndpointId};
-use serde::{Deserialize, Serialize};
 use tilo_network_actor::HostIdentity;
 use tilo_network_actor::services::Approvers;
-use tilo_relay_client::{Approver, CertifyError};
+use tilo_relay_client::Approver;
+use tilo_relay_client::questions::{Answered, QuestionSheet, answer_questions};
 use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_service::{Question, Questions};
+use tilo_sheets::portal::AgentQuestion;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
@@ -25,21 +26,6 @@ pub(crate) const KIND: &str = "network.agent-question";
 const POLL: Duration = Duration::from_millis(250);
 /// The longest wait before an approver session that failed is opened again.
 const RETRY_MAX: Duration = Duration::from_secs(30);
-
-/// An agent's question, as the sheet shows it.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub(crate) struct AgentQuestion {
-    /// The agent, as the host names it.
-    pub agent: String,
-    /// What it wants to do.
-    pub action: String,
-    /// What it acts on.
-    pub resource: String,
-    /// What the host says the action risks.
-    pub risk: String,
-    /// The workspace it acts in.
-    pub workspace: String,
-}
 
 /// The approver sessions this device keeps, one per host.
 #[derive(Default)]
@@ -113,9 +99,18 @@ async fn answer_host(
         )
         .await;
         let error = match opened {
-            Ok(approver) => {
+            Ok(mut approver) => {
                 wait = POLL;
-                serve(approver, &questions).await
+                let (answered, mut answers) = mpsc::unbounded_channel();
+                let mut sheet = SessionSheet {
+                    questions: questions.clone(),
+                    answered,
+                    shown: HashMap::new(),
+                };
+                answer_questions(&mut approver, &mut sheet, &mut answers, || {
+                    tokio::time::sleep(POLL)
+                })
+                .await
             }
             Err(error) => error,
         };
@@ -125,92 +120,45 @@ async fn answer_host(
     }
 }
 
-/// Show every question the host lists on the sheet, once, and hand each answer back, until the
-/// session fails. Questions that are gone are withdrawn from the sheet.
-async fn serve(mut approver: Approver, questions: &Questions) -> CertifyError {
-    let (answered, mut answers) = mpsc::unbounded_channel::<([u8; 32], ConfirmationAnswer)>();
-    let mut shown: HashMap<[u8; 32], tokio::task::JoinHandle<()>> = HashMap::new();
-    // The questions the person has answered, kept until the host stops listing them: a list read
-    // while the answer is on its way does not put the question back on their sheet.
-    let mut done: HashSet<[u8; 32]> = HashSet::new();
-    loop {
-        let listed = match approver.list_confirmations().await {
-            Ok(listed) => listed,
-            Err(error) => {
-                withdraw(&mut shown);
-                return error;
-            }
-        };
-        let live: HashSet<[u8; 32]> = listed.iter().map(|question| question.id).collect();
-        done.retain(|id| live.contains(id));
-        let gone: Vec<[u8; 32]> = shown
-            .keys()
-            .filter(|id| !live.contains(*id))
-            .copied()
-            .collect();
-        for id in gone {
-            if let Some(task) = shown.remove(&id) {
-                task.abort();
-            }
-        }
-        for question in listed {
-            if shown.contains_key(&question.id) || done.contains(&question.id) {
-                continue;
-            }
-            let id = question.id;
-            let asked = questions.ask(Question {
-                handle: handle(&id),
-                kind: KIND.to_owned(),
-                app_id: None,
-                label: question.agent_label.clone(),
-                details: details(&question),
-            });
-            let answered = answered.clone();
-            let task = tokio::spawn(async move {
-                let answer = match asked.await {
-                    Some(_) => ConfirmationAnswer::AllowOnce,
-                    None => ConfirmationAnswer::Deny,
-                };
-                let _ = answered.send((id, answer));
-            });
-            shown.insert(id, task);
-        }
-        tokio::select! {
-            () = tokio::time::sleep(POLL) => {}
-            Some((id, answer)) = answers.recv() => {
-                if let Some(task) = shown.remove(&id) {
-                    task.abort();
-                }
-                done.insert(id);
-                if let Err(error) = approver.answer(id, answer).await {
-                    withdraw(&mut shown);
-                    return error;
-                }
-            }
+/// The session's question sheet, as an approver session shows its questions on it.
+struct SessionSheet {
+    questions: Questions,
+    answered: mpsc::UnboundedSender<Answered>,
+    /// The questions up, each waiting on the person's answer.
+    shown: HashMap<[u8; 32], tokio::task::JoinHandle<()>>,
+}
+
+impl QuestionSheet for SessionSheet {
+    fn ask(&mut self, question: &PendingConfirmation) {
+        let id = question.id;
+        let asked = self.questions.ask(Question {
+            handle: format!("agent-question:{}", hex::encode(id)),
+            kind: KIND.to_owned(),
+            app_id: None,
+            label: question.agent_label.clone(),
+            details: serde_json::to_value(AgentQuestion {
+                agent: question.agent_label.clone(),
+                action: question.action_label.clone(),
+                resource: question.resource_label.clone(),
+                risk: question.risk.clone(),
+                workspace: question.workspace.clone(),
+            })
+            .unwrap_or_default(),
+        });
+        let answered = self.answered.clone();
+        let task = tokio::spawn(async move {
+            let answer = match asked.await {
+                Some(_) => ConfirmationAnswer::AllowOnce,
+                None => ConfirmationAnswer::Deny,
+            };
+            let _ = answered.send((id, answer));
+        });
+        self.shown.insert(id, task);
+    }
+
+    fn withdraw(&mut self, id: [u8; 32]) {
+        if let Some(task) = self.shown.remove(&id) {
+            task.abort();
         }
     }
-}
-
-/// The question's handle on the sheet.
-fn handle(id: &[u8; 32]) -> String {
-    format!("agent-question:{}", hex::encode(id))
-}
-
-/// Withdraw every question still shown: the session that asked them ended.
-fn withdraw(shown: &mut HashMap<[u8; 32], tokio::task::JoinHandle<()>>) {
-    for (_, task) in shown.drain() {
-        task.abort();
-    }
-}
-
-/// The question as the sheet reads it.
-fn details(question: &PendingConfirmation) -> serde_json::Value {
-    serde_json::to_value(AgentQuestion {
-        agent: question.agent_label.clone(),
-        action: question.action_label.clone(),
-        resource: question.resource_label.clone(),
-        risk: question.risk.clone(),
-        workspace: question.workspace.clone(),
-    })
-    .unwrap_or_default()
 }

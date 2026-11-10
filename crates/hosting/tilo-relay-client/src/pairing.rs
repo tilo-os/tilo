@@ -256,7 +256,7 @@ pub async fn revoke_device(
 }
 
 #[cfg(feature = "iroh")]
-async fn member_approval(
+pub(crate) async fn member_approval(
     root: &dyn DeviceSigner,
     request: ApproverRequest,
 ) -> Result<MemberApproval, CertifyError> {

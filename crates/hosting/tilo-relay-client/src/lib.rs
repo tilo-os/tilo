@@ -58,6 +58,8 @@ pub mod login;
 /// A host's login codes and the person's stand-in approver, for the tab and the computer alike.
 pub mod login_code;
 pub mod pairing;
+#[cfg(feature = "iroh")]
+pub mod questions;
 pub mod sign_in;
 pub mod signer;
 

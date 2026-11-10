@@ -17,6 +17,7 @@
  * like anyone else.
  */
 import {AdmissionError} from './admission.mjs';
+import {answerAgentQuestions} from './agent-questions.mjs';
 import {doorCopy, failureMessage, inviteLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, STOPPED_DRAWING, stoppedInside} from './arrival.mjs';
 import {servedVersion, watchForUpdate} from './bundle-update.mjs';
 import {boot, grammar} from './entry.mjs';
@@ -1118,6 +1119,9 @@ export async function startEntryPage({mode}) {
         },
       }});
     identityActions = attachIdentity();
+    // A page holding the person's root is asked what their agents here
+    // need them to allow, as their native devices are.
+    answerAgentQuestions({peer: page.peer, identity: currentIdentity(), runtime});
     // The first screen (first-run.mjs) sets an agent up through this tab's
     // root and signs in with an agent, both through a login code its host
     // makes, and signs in with a passkey, once the page can.

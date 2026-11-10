@@ -257,8 +257,10 @@ pub(super) fn question(
     let context = request.context.as_ref();
     Ok(ConfirmationQuestion {
         id,
+        // An agent by the name it goes by (a run's "Visa backend #3"),
+        // else its id.
         device_label: match caller.principal() {
-            CallerPrincipal::Agent(agent) => agent.clone(),
+            CallerPrincipal::Agent(agent) => caller.agent_name().unwrap_or(agent).to_owned(),
             _ => "One of your devices".into(),
         },
         workspace: workspace.to_owned(),

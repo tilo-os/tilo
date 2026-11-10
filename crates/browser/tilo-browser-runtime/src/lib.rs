@@ -134,6 +134,9 @@ mod feedback_code;
 mod feedback_composer;
 #[cfg(target_arch = "wasm32")]
 mod feedback_crops;
+// What the person's agents on a workspace host ask them, on the page.
+#[cfg(target_arch = "wasm32")]
+mod agent_questions;
 #[cfg(target_arch = "wasm32")]
 mod guide;
 #[cfg(target_arch = "wasm32")]

@@ -33,9 +33,15 @@ use ui::widget::{Element, SecretAnswer};
 use crate::presentation::Presentation;
 use crate::t;
 
+mod agent;
 mod fixtures;
 mod keys;
 mod view;
+
+pub use agent::{AgentQuestion, risk_words};
+
+/// Where the sheet's presses go.
+pub type Ask = Rc<dyn Fn(&PortalEffect)>;
 
 /// The app the shell mounts the sheet as.
 pub const APP_ID: &str = "so.tilo.portal-sheet";
@@ -739,6 +745,59 @@ fn typed_field(dialog: &Dialog, name: &str) -> Option<Field> {
     }
 }
 
+/// The sheet for a host that draws it itself rather than mounting it as an
+/// app (a page, over its desktop): the same view and keys, every press taken
+/// by the seat as the app's door takes it ([`PortalSeat::take_asked`]).
+pub struct DrawnSheet {
+    parts: view::Parts,
+    built: Option<Shown>,
+}
+
+impl DrawnSheet {
+    /// The sheet of `seat`, which shows what the host hands the seat.
+    #[must_use]
+    pub fn new(seat: &PortalSeat) -> Self {
+        let dialog = seat.drawn();
+        let focus = dialog.as_ref().map_or(Focus::Choices, Shown::first_focus);
+        let shown = LocalState::new(Shown {
+            dialog,
+            focus,
+            typed: 0,
+        });
+        *seat.shown.borrow_mut() = Some(shown.clone());
+        let taking = seat.clone();
+        let ask: Ask = Rc::new(move |effect: &PortalEffect| {
+            // A press for a question no longer up answers nothing.
+            if taking.take(effect.clone()).is_ok() {
+                taking.presentation.wake();
+            }
+        });
+        Self {
+            parts: view::Parts {
+                ask,
+                shown,
+                seat: seat.clone(),
+            },
+            built: None,
+        }
+    }
+
+    /// The sheet built again, when what it shows moved since it was last
+    /// built or the host holds none of it (`missing`).
+    pub fn rebuilt(&mut self, missing: bool) -> Option<Element> {
+        let shown = self.parts.shown.get();
+        if !missing && self.built.as_ref() == Some(&shown) {
+            return None;
+        }
+        let content = view::sheet(&shown, &self.parts);
+        self.built = Some(shown);
+        Some(Box::new(keys::Keys {
+            content,
+            parts: self.parts.clone(),
+        }))
+    }
+}
+
 /// The sheet as an app.
 pub struct PortalApp;
 
@@ -785,8 +844,9 @@ impl ResourceApp for PortalApp {
             asking.take(effect)?;
             Ok(Effected::done())
         });
+        let dispatch = cx.dispatcher();
         let parts = view::Parts {
-            dispatch: cx.dispatcher(),
+            ask: Rc::new(move |effect: &PortalEffect| dispatch.effect(effect)),
             shown: shown.clone(),
             seat,
         };

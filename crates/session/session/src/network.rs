@@ -19,7 +19,7 @@ use tilo_service::Questions;
 mod approvers;
 mod unlock;
 
-pub(crate) use approvers::{AgentQuestion, KIND as AGENT_QUESTION};
+pub(crate) use approvers::KIND as AGENT_QUESTION;
 pub(crate) use unlock::{KIND as DEVICE_UNLOCK, UnlockQuestion, slot_name};
 
 /// A collaborator's device heard at another peer protocol version: one of the two devices must

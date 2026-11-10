@@ -462,6 +462,12 @@ pub fn set_hidden(hidden: bool) {
     BACKGROUND.with(|background| background.store(forward, Ordering::Release));
 }
 
+/// Whether notifications go to the browser's now: the page is out of view
+/// and the person allows them.
+pub(crate) fn notifies_browser() -> bool {
+    BACKGROUND.with(|background| background.load(Ordering::Acquire))
+}
+
 /// `Notification.permission`, where the page has the API.
 fn notification_permission() -> Option<String> {
     let api = js_sys::Reflect::get(&js_sys::global(), &"Notification".into()).ok()?;

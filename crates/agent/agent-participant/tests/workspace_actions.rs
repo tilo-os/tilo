@@ -41,6 +41,9 @@ mod door_links;
 #[path = "workspace_actions/door_on_relay.rs"]
 pub mod door_on_relay;
 #[cfg(test)]
+#[path = "workspace_actions/door_questions.rs"]
+mod door_questions;
+#[cfg(test)]
 #[path = "workspace_actions/encrypted_resource.rs"]
 mod encrypted_resource;
 #[cfg(test)]

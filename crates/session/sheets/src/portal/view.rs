@@ -2,7 +2,6 @@
 //! dialog, so what is drawn, what is pressed and what a reader meets are
 //! one layout.
 
-use ui::framework::Dispatcher;
 use ui::prelude::*;
 use ui::widget::{
     Button, ButtonRole, Column, Element, FieldRole, FieldSpec, ListRow, ModalDialog, SecretKind,
@@ -10,8 +9,8 @@ use ui::widget::{
 };
 
 use super::{
-    Body, Device, Dialog, DraftRow, DraftValue, Field, Focus, PortalEffect, PortalSeat,
-    PortalSheet, Prompt, PromptKind, Shortcut, Shown,
+    Ask, Body, Device, Dialog, DraftRow, DraftValue, Field, Focus, PortalEffect, PortalSeat,
+    Prompt, PromptKind, Shortcut, Shown,
 };
 use crate::presentation::presented;
 use crate::t;
@@ -24,7 +23,9 @@ pub(super) const PROMPT_ID: &str = "portal-secret-prompt";
 /// What every part of the view acts through.
 #[derive(Clone)]
 pub(super) struct Parts {
-    pub(super) dispatch: Dispatcher<PortalSheet>,
+    /// Where every press goes: the app's door, or the seat of a host that
+    /// draws the sheet itself.
+    pub(super) ask: Ask,
     pub(super) shown: LocalState<Shown>,
     pub(super) seat: PortalSeat,
 }
@@ -41,7 +42,7 @@ impl Parts {
     }
 
     fn send(&self, effect: &PortalEffect) {
-        self.dispatch.effect(effect);
+        (self.ask)(effect);
     }
 
     pub(super) fn select(&self, at: usize) {
@@ -151,7 +152,12 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
         return secret(dialog, prompt, parts);
     }
     let gap = ui::tokens::Spacing::BASE.s3;
-    let mut body = Column::new().with_gap(gap);
+    // As tall as what it says, on the dialog's own inset: a short question
+    // is a short card.
+    let mut body = Column::new()
+        .with_intrinsic_height()
+        .with_no_padding()
+        .with_gap(gap);
     if !dialog.heading.is_empty() {
         body = body.push(Box::new(
             Text::new(&dialog.heading).with_role(TextRole::Label),

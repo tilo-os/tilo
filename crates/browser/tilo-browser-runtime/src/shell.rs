@@ -30,6 +30,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::guide::PageGuide;
+use crate::over_page::OverSheet as _;
 use tilo_desktop::about::{AboutVariant, TiloMenu};
 use tilo_desktop::chrome::{ChromeIntent, DesktopChromeSource};
 use tilo_desktop::desktop_host::{DeskLayer, DesktopAsk, DesktopChrome};
@@ -496,6 +497,9 @@ pub(crate) struct BrowserShell {
     /// The shortcut guide, over the page while it is up: the session's own,
     /// explaining and changing the table this page's desk answers.
     guide: crate::over_page::OverPage<PageGuide>,
+    /// What the person's agents ask them, over everything while a question
+    /// waits: the session's own question sheet.
+    questions: crate::over_page::OverPage<crate::agent_questions::PageQuestions>,
     /// The linked accounts' revision the card last showed.
     linked_seen: Cell<u64>,
     /// Asks again while the card shows a code, until the account links.
@@ -523,6 +527,10 @@ pub(crate) struct BrowserShell {
     console: Option<console::ConsoleHold>,
 }
 
+/// How many sheets the page draws over everything, last among its children:
+/// the invite sheet, the directory, the shortcut guide and an agent's question.
+const SHEETS: usize = 4;
+
 /// What the top bar's chrome reads from the page besides the desktop tree.
 pub struct ChromeSources {
     pub here: tilo_desktop::here::Here,
@@ -547,8 +555,31 @@ impl BrowserShell {
     fn drawn_children(&self) -> Vec<&dyn Widget> {
         let mut children: Vec<&dyn Widget> = vec![&self.desk, &self.top, &self.profile];
         children.extend(self.layers.iter().map(|layer| layer as &dyn Widget));
-        children.extend([&self.invite as &dyn Widget, &self.directory, &self.guide]);
+        children.extend([
+            &self.invite as &dyn Widget,
+            &self.directory,
+            &self.guide,
+            &self.questions,
+        ]);
         children
+    }
+
+    /// An agent's question, over everything else: while it is up it holds the
+    /// keyboard and every press until the person answers it.
+    fn question_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut EventCtx<'_>,
+        node: NodeId,
+    ) -> bool {
+        if !self.questions.drawn() {
+            return false;
+        }
+        self.questions
+            .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        self.questions.follow();
+        *ctx.handled = true;
+        true
     }
 
     /// Why no hint may begin now, as only the page knows: following someone,
@@ -692,6 +723,7 @@ impl BrowserShell {
             directory,
             invite,
             guide,
+            questions: crate::over_page::OverPage::new(crate::agent_questions::PageQuestions::new()),
             linked_seen: Cell::new(0),
             linking: tilo_app::linked_accounts::LinkingRecheck::default(),
             profile_links: None,
@@ -1651,6 +1683,7 @@ impl Widget for BrowserShell {
         changed |= self.invite.follow();
         changed |= self.directory.follow();
         changed |= self.guide.follow();
+        changed |= self.questions.follow();
         // Chosen while the surface updated (search, a banner): the page
         // performs them when it reads this frame's status.
         let choices = self.handle.take_host_choices();
@@ -1687,6 +1720,7 @@ impl Widget for BrowserShell {
         let directory = self.directory.build_layout(taffy, theme, map);
         let invite = self.invite.build_layout(taffy, theme, map);
         let guide = self.guide.build_layout(taffy, theme, map);
+        let questions = self.questions.build_layout(taffy, theme, map);
         let style = Style {
             display: Display::Flex,
             flex_direction: FlexDirection::Column,
@@ -1695,7 +1729,7 @@ impl Widget for BrowserShell {
         };
         let mut children = vec![desk, top, profile];
         children.extend(layers);
-        children.extend([invite, directory, guide]);
+        children.extend([invite, directory, guide, questions]);
         taffy.widget_node(style, &children, map, self)
     }
 
@@ -1703,7 +1737,7 @@ impl Widget for BrowserShell {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
         let children = taffy.children(node).unwrap_or_default();
-        let sheets = children.len().saturating_sub(3);
+        let sheets = children.len().saturating_sub(SHEETS);
         if let (Some(&desk), Some(&top), Some(&profile)) =
             (children.first(), children.get(1), children.get(2))
         {
@@ -1721,6 +1755,7 @@ impl Widget for BrowserShell {
                 &mut self.invite as &mut dyn Widget,
                 &mut self.directory,
                 &mut self.guide,
+                &mut self.questions,
             ]
             .into_iter()
             .zip(children.get(sheets..).unwrap_or_default())
@@ -1755,6 +1790,8 @@ impl Widget for BrowserShell {
         self.directory.draw(scene, transform, text, theme, presence);
         // Over everything, while the person reads or changes the keys.
         self.guide.draw(scene, transform, text, theme, presence);
+        // Over everything, while an agent waits on the person's answer.
+        self.questions.draw(scene, transform, text, theme, presence);
         // Over everything, while picking what to report.
         self.picker.draw(scene, transform, text, theme, self.rect);
         let built = ui::time::now().saturating_duration_since(started);
@@ -1764,13 +1801,13 @@ impl Widget for BrowserShell {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
-        let sheets = children.len().saturating_sub(3);
+        let sheets = children.len().saturating_sub(SHEETS);
         let (Some(&desk), Some(&top), Some(&profile)) =
             (children.first(), children.get(1), children.get(2))
         else {
             return;
         };
-        let Some([invite, directory, guide]) = children.get(sheets..) else {
+        let Some([invite, directory, guide, questions]) = children.get(sheets..) else {
             return;
         };
         if let WindowEvent::CursorMoved { position, .. } = event {
@@ -1797,6 +1834,9 @@ impl Widget for BrowserShell {
             && self.walk.key(key, ctx.modifiers.state(), self.offers.mac)
         {
             *ctx.handled = true;
+            return;
+        }
+        if self.question_event(event, ctx, *questions) {
             return;
         }
         // The invite sheet, like the directory: it takes what it covers, the
@@ -1930,6 +1970,7 @@ impl Widget for BrowserShell {
             &mut self.invite as &mut (dyn Widget + '_),
             &mut self.directory,
             &mut self.guide,
+            &mut self.questions,
         ]);
         children
     }

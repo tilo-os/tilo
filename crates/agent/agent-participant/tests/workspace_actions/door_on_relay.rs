@@ -62,8 +62,15 @@ pub struct OnRelay {
     /// The relay's own origin, which the links to its records name.
     pub host_origin: String,
     _site: test_http::Responder,
-    _hosted: Hosted,
+    hosted: Hosted,
     _state: tempfile::TempDir,
+}
+
+impl OnRelay {
+    /// The relay as a person's devices and pages reach it over iroh.
+    pub fn relay_host(&self) -> tilo_relay_client::Host {
+        tilo_relay_client::Host::at(self.hosted.relay.node_addr())
+    }
 }
 
 /// The door at `issuer` before a relay serving its app workers.
@@ -171,7 +178,7 @@ pub async fn door_on_relay_limiting(
         web_entry,
         host_origin: hosted.web.origin.clone(),
         _site: site,
-        _hosted: hosted,
+        hosted,
         _state: state,
     }
 }

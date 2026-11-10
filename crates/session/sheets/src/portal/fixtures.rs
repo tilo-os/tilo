@@ -23,6 +23,7 @@ pub(super) const SCENARIOS: &[&str] = &[
     "cannot-join",
     "pairing",
     "allowed",
+    "agent-question",
 ];
 
 fn base(handle: &str, title: &str, heading: &str, detail: &str) -> Dialog {
@@ -309,6 +310,14 @@ pub(super) fn dialog(scenario: Option<&str>) -> Dialog {
             cancel_label: "Don't pair".to_owned(),
             ..Dialog::default()
         },
+        Some("agent-question") => super::AgentQuestion {
+            agent: "Visa backend: Applicant: Jane Doe".to_owned(),
+            action: "submit the application".to_owned(),
+            resource: "Schengen visa form".to_owned(),
+            risk: "sensitive".to_owned(),
+            workspace: "Applicant: Jane Doe".to_owned(),
+        }
+        .dialog("agent-question"),
         Some("allowed") => Dialog {
             title: "Allowed for good".to_owned(),
             heading: "Meet".to_owned(),

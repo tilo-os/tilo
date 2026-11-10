@@ -422,6 +422,13 @@ struct JsHostAddress {
     relay_url: Option<String>,
 }
 
+/// The host `address` names (`hostInfo().address`, JSON).
+pub(crate) fn host_at(address: &str) -> Result<Host, JsError> {
+    Ok(serde_json::from_str::<JsHostAddress>(address)
+        .map_err(js_error)?
+        .host())
+}
+
 impl JsHostAddress {
     /// The host as the peer dials it.
     fn host(&self) -> Host {
@@ -948,10 +955,9 @@ impl PairingHost {
     /// `address` is not a host's address.
     #[wasm_bindgen(constructor)]
     pub fn new(address: &str) -> Result<Self, JsError> {
-        let host = serde_json::from_str::<JsHostAddress>(address)
-            .map_err(js_error)?
-            .host();
-        Ok(Self(tilo_relay_client::MemberApprover::new(host)))
+        Ok(Self(tilo_relay_client::MemberApprover::new(host_at(
+            address,
+        )?)))
     }
 
     /// The new devices waiting here for the member root the page holds
