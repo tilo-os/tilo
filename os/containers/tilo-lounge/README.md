@@ -65,7 +65,7 @@ Optional, with these defaults:
 | `TILO_ROOMS_DISCORD_CLIENT_SECRET_FILE` | `/run/secrets/discord-client-secret` | its secret |
 | `TILO_ROOMS_DISCORD_REDIRECT_URL` | `$TILO_ROOMS_RELAY_ORIGIN/discord/callback` | where Discord sends the browser back |
 | `TILO_ROOMS_DISCORD_AUTHORIZE_URL` | `https://discord.com/oauth2/authorize` | Discord's consent page |
-| `TILO_ROOMS_DISCORD_API_BASE` | `https://discord.com` | where Discord's API is, for a test server |
+| `TILO_ROOMS_DISCORD_API_BASE` | `https://discord.com` | where Discord's API is, for a test server: the sign-in and the bridge's worker both reach it |
 | `TILO_ROOMS_DISCORD_TOKEN_FILE` | `/run/secrets/discord-bot-token` | the bridge's bot token, read when the file is there |
 
 `TILO_SOURCE_REVISION` is the image's own revision, which `/mode` reports;

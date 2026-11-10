@@ -224,7 +224,8 @@ pub struct PersistentArgs {
     )]
     pub discord_client_secret_file: Option<PathBuf>,
     /// Where Discord's API is (`/api/v10` is appended): Discord's own host
-    /// unless set.
+    /// unless set. The Discord bridge's worker is pointed at it too, so a
+    /// test server serves both the sign-in and the bridge.
     #[arg(long = "discord-api-base", value_name = "URL")]
     pub discord_api_base: Option<String>,
     /// The worker binary of a connector (`APP=PATH`), where it is not
@@ -1314,6 +1315,7 @@ pub(crate) async fn run(
             avatars_url: persistent.public_avatars_url.clone(),
             web_entry: args.web.web_entry.clone(),
             origin: Some(web.origin.clone()),
+            discord_api_base: persistent.discord_api_base.clone(),
         },
     );
     let (runners, discord) = start_bots(

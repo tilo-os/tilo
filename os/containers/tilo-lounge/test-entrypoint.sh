@@ -130,6 +130,7 @@ lounge \
   TILO_ROOMS_MODERATION_MODEL=claude-test \
   TILO_ROOMS_DISCORD_CLIENT_ID=1559266815148953650 \
   TILO_ROOMS_DISCORD_CLIENT_SECRET_FILE=/run/secrets/discord-client-secret \
+  TILO_ROOMS_DISCORD_API_BASE=http://127.0.0.1:9090 \
   >"$work/args" || fail "the populated deployment did not start"
 cat > "$work/want" <<'EXPECTED'
 --workspace-name
@@ -166,6 +167,7 @@ pair --discord-client-id 1559266815148953650 || fail "the Discord client id did 
 pair --discord-client-secret-file /run/secrets/discord-client-secret || fail "the Discord secret did not reach the host"
 pair --discord-redirect-url https://eu1.tilo.sh/discord/callback || fail "the Discord callback did not reach the host"
 pair --discord-authorize-url https://discord.com/oauth2/authorize || fail "the Discord consent page did not reach the host"
+pair --discord-api-base http://127.0.0.1:9090 || fail "the Discord API base did not reach the host"
 pair --inactive-after-days 7 || fail "the inactivity setting did not reach the host"
 pair --roles-file /run/tilo-rooms/roles.json || fail "the roles file did not reach the host"
 pair --person-storage-gb 10 || fail "the per-person storage did not reach the host"
@@ -178,6 +180,14 @@ grep -Fqx -- --layout "$work/args" && fail "the entrypoint still passes a layout
 grep -Fqx -- personal "$work/args" && fail "a layout setting reached the host"
 grep -Fqx -- 0.0.0.0:9780 "$work/args" && fail "the plain listener default was not replaced"
 grep -Fqx -- 127.0.0.1:9781 "$work/args" && fail "the HTTPS listener default was not replaced"
+
+# Where Discord's API is reaches the host on its own, without a sign-in set
+# up: the bridge's worker is pointed at it too, so one test server serves both.
+lounge \
+  TILO_ROOMS_DISCORD_API_BASE=http://127.0.0.1:9090 \
+  >"$work/args" || fail "a deployment naming Discord's API does not start"
+pair --discord-api-base http://127.0.0.1:9090 || fail "the Discord API base did not reach the host"
+grep -Fqx -- --discord-client-id "$work/args" && fail "an API base asked for a sign-in"
 
 # eu1's own environment, unchanged but for the image: it takes people by
 # invitation, and names no description. The workspace stays listed, its door

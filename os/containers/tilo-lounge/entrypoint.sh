@@ -232,9 +232,13 @@ if [ -n "${TILO_ROOMS_DISCORD_CLIENT_ID:-}" ]; then
     --discord-client-secret-file "${TILO_ROOMS_DISCORD_CLIENT_SECRET_FILE:-/run/secrets/discord-client-secret}" \
     --discord-redirect-url "${TILO_ROOMS_DISCORD_REDIRECT_URL:-$origin/discord/callback}" \
     --discord-authorize-url "${TILO_ROOMS_DISCORD_AUTHORIZE_URL:-https://discord.com/oauth2/authorize}"
-  if [ -n "${TILO_ROOMS_DISCORD_API_BASE:-}" ]; then
-    set -- "$@" --discord-api-base "$TILO_ROOMS_DISCORD_API_BASE"
-  fi
+fi
+
+# Where Discord's API is: Discord's own unless the deployment names another,
+# which the bridge's worker is pointed at too, so a test server serves both the
+# sign-in and the bridge.
+if [ -n "${TILO_ROOMS_DISCORD_API_BASE:-}" ]; then
+  set -- "$@" --discord-api-base "$TILO_ROOMS_DISCORD_API_BASE"
 fi
 
 # The bridge's bot token matters only while bots run; without the mounted file
