@@ -65,11 +65,15 @@ pub struct TiloDesk {
 }
 
 /// One row below the workspaces.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "a section's name and a row stand in one list; the rows are built with the desk's \
-              read and read until they change, so boxing an item would put a pointer in the way \
-              of every row for nothing"
+// The item outgrows a name only where pointers are 64 bits wide; the page's are 32.
+#[cfg_attr(
+    target_pointer_width = "64",
+    expect(
+        clippy::large_enum_variant,
+        reason = "a section's name and a row stand in one list; the rows are built with the \
+                  desk's read and read until they change, so boxing an item would put a pointer \
+                  in the way of every row for nothing"
+    )
 )]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TiloRow {
