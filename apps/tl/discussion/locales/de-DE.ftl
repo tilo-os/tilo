@@ -38,7 +38,7 @@ d-kflwfuct = Gelöscht
 
 d-upy33rnt = Thread
     .w-discussion = Diskussion
-    .w-comment-on-this = { $noun } kommentieren
+    .w-add-a-comment = Kommentar hinzufügen
     .w-send = Senden
 
 d-nsv2jvpu = Geschrieben

@@ -39,7 +39,7 @@ d-kflwfuct = Delete~present
 
 d-upy33rnt = Thread
     .w-discussion = Discussion
-    .w-comment-on-this = Comment on this { $noun }
+    .w-add-a-comment = Add a comment
     .w-send = Send
 
 d-nsv2jvpu = Written
