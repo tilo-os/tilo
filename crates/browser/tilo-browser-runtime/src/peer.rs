@@ -459,7 +459,7 @@ pub(crate) fn device_key(text: &str) -> Result<[u8; 32], JsError> {
 ///
 /// # Errors
 /// The secret store is unavailable, or the stored key is not 32 bytes.
-#[wasm_bindgen(js_name = channelVault)]
+#[wasm_bindgen]
 pub async fn channel_vault(namespace: String) -> Result<Vec<u8>, JsError> {
     let mut candidate = [0_u8; 32];
     getrandom::fill(&mut candidate).map_err(|error| js_error(error.to_string()))?;
