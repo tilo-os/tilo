@@ -135,8 +135,8 @@ impl Shared {
         self.follow_search_choices(look);
     }
 
-    /// Carry out the rows the person chose in search, and follow a row that asked the session for
-    /// something of its own: that is another round of asks.
+    /// Carry out the rows the person chose in search. A row that asks the session for something of
+    /// its own leaves it on the desk's asks, which the pass answers in its next round.
     fn follow_search_choices(&self, look: &mut tilo_surface_host::Look<'_>) {
         let refused = self.search.perform_choices(&self.handle, &mut |own| {
             self.doors
@@ -154,7 +154,6 @@ impl Shared {
                 self.answer_failed(&t("action-failed-that-row"), &error);
             }
         }
-        self.follow_asks(look);
     }
 
     /// What the bar and the desk ask of the chrome's, carried out where only the session can: quick
