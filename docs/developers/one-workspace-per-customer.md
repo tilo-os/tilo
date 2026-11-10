@@ -59,6 +59,9 @@ ws = tilo.workspace("applicant-jane-doe")
 print(ws.do("pdf-viewer#read-form-fields"))
 letter = ws.do("word-processor#export-content", format="docx")
 Path("cover-letter.docx").write_bytes(ws.files.download(letter))
+
+# The reviewer's link: it opens the filled form in PDF Viewer.
+print(ws.link("pdf-viewer/application.pdf"))
 ```
 
 The same calls are `async` on `AsyncTilo`, and `tilo sdk gen --lang python -w
@@ -75,11 +78,14 @@ claude mcp add --transport http jane https://mcp.tilo.sh/w/<workspace>/mcp \
 ```
 
 The agent sees that one workspace's apps through the same tools a person's
-agent gets: `tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_status`
+agent gets: `tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_link`, `tilo_status`
 and `tilo` (tilolang). It fills the PDF's form fields
 (`pdf-viewer/PDF Viewer#field-edit`) and writes a cover letter in Writer
 (`word-processor#append-paragraph`, then `#export-content` as docx). It
-cannot list, read or act in any other workspace.
+cannot list, read or act in any other workspace. Every call that changed a
+record answers that record's `link`, and `tilo_link {path}` answers the link
+to anything a path names, so the agent can end its work by handing a person
+the link to what it did.
 
 ## Review
 
@@ -92,7 +98,21 @@ print(await ws.members.list())  # who is in the workspace, with their roles
 ```
 
 Following the link signs them in to Tilo (with a passkey, or by approving an
-agent) and lands them in the workspace as that role. Your key invites into
+agent) and lands them in the workspace as that role. From then on, the links
+your agent hands over open straight in the record's app for them:
+
+```python
+async with ws.run("Fill Jane's application") as run:
+    ...                          # the agent's calls
+print(run.links)                 # the link to each record the run changed
+print(run.link)                  # the one link, when it changed one record
+print(await ws.link("pdf-viewer/application.pdf"))   # the link to any path
+```
+
+A record link is the one a person copies in the app (for example
+`https://tilo.sh/app/#/@eu1.tilo.sh/w/<workspace>/so.tilo.pdf-viewer/<record>`).
+It carries no secret: it opens only for the workspace's members, and anyone
+else meets the workspace's admission, so invite the reviewer first. Your key invites into
 the workspaces you administer, as an editor at most; a key minted for one
 workspace invites nobody. The reviewer then works with a key of their own:
 their account lists the workspace with the role they hold there

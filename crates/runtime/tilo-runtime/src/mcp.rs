@@ -104,6 +104,9 @@ pub struct McpServer<H> {
     /// ([`ActedRecord`]): where its agent is, for the presence its door
     /// shows the person.
     acted: std::sync::Mutex<Option<ActedRecord>>,
+    /// The record each of this session's changes still running is changing,
+    /// by invocation id: `tilo_status` answers its link once it finished.
+    changing: std::sync::Mutex<std::collections::HashMap<String, String>>,
     /// Who is told what this session's actions on records are doing as they
     /// go ([`Acting`]); `None` for a door that shows nobody its agent.
     narration: Option<Narration>,
@@ -138,7 +141,7 @@ pub enum Surface {
     /// `tilo_status`, `tilo_cancel`: a directory browsed by peer and
     /// resource id, for clients that parse it.
     Classic,
-    /// `tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_status`: apps and
+    /// `tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_link`, `tilo_status`: apps and
     /// resources addressed by name, answered as text. What an AI agent in a
     /// terminal is served.
     Agent,
@@ -148,7 +151,9 @@ pub enum Surface {
 /// step that runs a shell command in the workspace.
 const AGENT_INSTRUCTIONS: &str = "These tools act in the person's Tilo workspace, as them, and \
      History keeps what you do as your run. tilo_ls lists the workspace's apps and what is in \
-     them; tilo_read reads a resource; tilo_do runs an action. To run a shell command in the \
+     them; tilo_read reads a resource; tilo_do runs an action, and answers the link to a record \
+     it changed; tilo_link answers the link to what a path names, for the person to open it. \
+     To run a shell command in the \
      workspace (ls, git, cargo build, npm test), call tilo_do with path \"terminal#run\" and \
      args {command: \"...\"}: it answers with the command line, the directory it ran in, its \
      exit status and its output. Nothing needs opening first: the first command starts your own \
@@ -698,6 +703,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             devices: None,
             task: tokio::sync::Mutex::new(None),
             acted: std::sync::Mutex::default(),
+            changing: std::sync::Mutex::default(),
             narration: None,
             narrating: std::sync::Mutex::default(),
             runs: std::sync::Mutex::default(),

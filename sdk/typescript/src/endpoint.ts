@@ -15,29 +15,57 @@ import { Run } from "./run.ts";
 
 const storage = new AsyncLocalStorage<RunGroup>();
 
-/** A run a group of calls is attributed to: one undo step per app. */
+/**
+ * A run a group of calls is attributed to: one undo step per app.
+ *
+ * `links` are the links to every record its calls changed, each once, in the
+ * order first changed; `link` is the one link when they changed one record,
+ * else `null`: a run across several records hands over `links`. A link opens
+ * the record in its app for the workspace's members and carries no secret.
+ */
 export class RunGroup {
-  readonly link: Link;
+  readonly endpoint: Endpoint;
   readonly title: string;
   readonly id: string;
   readonly invocations: string[] = [];
+  readonly links: string[] = [];
 
-  constructor(link: Link, title: string, id: string) {
-    this.link = link;
+  constructor(endpoint: Endpoint, title: string, id: string) {
+    this.endpoint = endpoint;
     this.title = title;
     this.id = id;
   }
 
-  note(invocationId: unknown): void {
+  note(answer: Answer): void {
+    const invocationId = answer.invocation_id;
     if (typeof invocationId === "string" && invocationId !== "") {
       this.invocations.push(invocationId);
     }
+    for (const link of linksOf(answer)) {
+      if (!this.links.includes(link)) {
+        this.links.push(link);
+      }
+    }
+  }
+
+  /** The link to the one record the run changed, or `null`. */
+  get link(): string | null {
+    return this.links.length === 1 ? (this.links[0] ?? null) : null;
   }
 
   /** Take the run's changes back, each app one step at a time. */
   undo(): Promise<ProgramAnswer> {
-    return this.link.program("undo task");
+    return this.endpoint.program("undo task");
   }
+}
+
+/** The record links an answer carries: a call's `link`, a batch's `links`. */
+export function linksOf(answer: Answer): string[] {
+  const found: unknown[] = [answer.link];
+  if (Array.isArray(answer.links)) {
+    found.push(...answer.links);
+  }
+  return found.filter((link): link is string => typeof link === "string" && link !== "");
 }
 
 /** Run `body` with `group` the run every call inside is a step of. */
@@ -46,7 +74,7 @@ export function withinRun<T>(group: RunGroup, body: () => Promise<T>): Promise<T
 }
 
 /** The account's session or one workspace's, and what this call joins. */
-export class Link {
+export class Endpoint {
   readonly transport: Transport;
   readonly workspace: string | null;
 
@@ -73,7 +101,9 @@ export class Link {
     const answer = answerOf(
       await this.session.call(tool, args, grouped ? this.runMeta() : null),
     );
-    storage.getStore()?.note(answer.invocation_id);
+    if (grouped) {
+      storage.getStore()?.note(answer);
+    }
     const ask = askOf(answer, (invocationId) => this.wait(invocationId));
     if (ask !== null) {
       throw ask;

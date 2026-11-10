@@ -1102,7 +1102,7 @@ fn a_path_is_app_names_and_an_action() {
 }
 
 #[test]
-fn an_agent_is_offered_seven_small_tools_and_no_classic_ones() {
+fn an_agent_is_offered_eight_small_tools_and_no_classic_ones() {
     let host = Notes::new(true);
     run(async {
         let reply = agent(&host)
@@ -1120,6 +1120,7 @@ fn an_agent_is_offered_seven_small_tools_and_no_classic_ones() {
                 "tilo_ls",
                 "tilo_read",
                 "tilo_do",
+                "tilo_link",
                 "tilo_find",
                 "tilo",
                 "tilo_watch",
@@ -1127,7 +1128,7 @@ fn an_agent_is_offered_seven_small_tools_and_no_classic_ones() {
             ]
         );
         let size = serde_json::to_string(tools).unwrap().len();
-        assert!(size < 4_100, "the tool list is {size} bytes");
+        assert!(size < 4_500, "the tool list is {size} bytes");
         let classic = McpServer::new(host.clone(), "workspace".into(), "owner".into())
             .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
             .await

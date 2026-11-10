@@ -13,7 +13,7 @@ from tilo import (
     Run,
 )
 
-from fake_door import PDF, TODO, FakeDoor
+from fake_door import PDF, TODO, FakeDoor, link_to
 
 
 @pytest.fixture
@@ -157,6 +157,47 @@ async def test_calls_inside_a_run_carry_its_id_and_title(workspace, door):
     assert [call["run"]["id"] for call in calls] == [group.id, group.id]
     assert calls[0]["run"]["title"] == "Fill Jane's application"
     assert len(group.invocations) == 2
+
+
+async def test_a_run_hands_over_the_link_to_the_record_it_changed(workspace, door):
+    async with workspace.run("Fill Jane's application") as group:
+        await workspace.do(f"{TODO}#append-paragraph", text="Buy milk")
+        await workspace.do(f"{PDF}#read-form-fields")
+        await workspace.do(f"{TODO}#append-paragraph", text="Buy bread")
+
+    assert group.links == [link_to(TODO)]
+    assert group.link == link_to(TODO)
+
+
+async def test_a_run_across_records_hands_over_each_link_once(workspace, door):
+    async with workspace.run("Fill Jane's application") as group:
+        await workspace.do(f"{TODO}#append-paragraph", text="Buy milk")
+        await workspace.do(f"{PDF}#field-edit", edit={"path": "form_values.surname", "op": "set", "value": "Roe"})
+
+    assert group.links == [link_to(TODO), link_to(PDF)]
+    assert group.link is None
+
+
+async def test_a_finished_run_names_its_link(workspace, door):
+    door.append_pending = True
+    run = await workspace.do(f"{TODO}#append-paragraph", text="Buy milk")
+    assert isinstance(run, Run)
+    assert run.link is None
+
+    await run.result()
+
+    assert run.link == link_to(TODO)
+
+
+async def test_any_path_has_a_link_and_a_bad_one_is_refused(workspace, door):
+    assert await workspace.link(PDF) == link_to(PDF)
+    assert door.asked("tilo_link")[-1]["arguments"] == {"path": PDF}
+
+    await workspace.link(TODO, mode="desktop")
+    assert door.asked("tilo_link")[-1]["arguments"] == {"path": TODO, "mode": "desktop"}
+
+    with pytest.raises(Refused):
+        await workspace.link("notes/Nothing")
 
 
 async def test_a_run_group_is_undone_as_one_task(workspace, door):

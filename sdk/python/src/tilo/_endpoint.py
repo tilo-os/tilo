@@ -17,21 +17,38 @@ from ._wire import Session, Transport, answer_of, result_of
 
 
 class RunGroup:
-    """A run a group of calls is attributed to: one undo step per app."""
+    """A run a group of calls is attributed to: one undo step per app.
 
-    def __init__(self, link: Link, title: str, id: str) -> None:
-        self.link = link
+    `links` are the links to every record its calls changed, each once, in
+    the order first changed; `link` is the one link when they changed one
+    record, else `None`: a run across several records hands over `links`.
+    A link opens the record in its app for the workspace's members and
+    carries no secret.
+    """
+
+    def __init__(self, endpoint: Endpoint, title: str, id: str) -> None:
+        self.endpoint = endpoint
         self.title = title
         self.id = id
         self.invocations: list[str] = []
+        self.links: list[str] = []
 
-    def note(self, invocation_id: str | None) -> None:
-        if invocation_id:
+    def note(self, answer: Mapping[str, Any]) -> None:
+        invocation_id = answer.get("invocation_id")
+        if isinstance(invocation_id, str) and invocation_id:
             self.invocations.append(invocation_id)
+        for link in links_of(answer):
+            if link not in self.links:
+                self.links.append(link)
+
+    @property
+    def link(self) -> str | None:
+        """The link to the one record the run changed, or `None`."""
+        return self.links[0] if len(self.links) == 1 else None
 
     def undo(self) -> Any:
         """Take the run's changes back, each app one step at a time."""
-        return self.link.transport.handoff(self.link.program("undo task"))
+        return self.endpoint.transport.handoff(self.endpoint.program("undo task"))
 
     async def __aenter__(self) -> RunGroup:
         return self
@@ -45,7 +62,16 @@ CURRENT: contextvars.ContextVar[RunGroup | None] = contextvars.ContextVar(
 )
 
 
-class Link:
+def links_of(answer: Mapping[str, Any]) -> list[str]:
+    """The record links an answer carries: a call's `link`, a batch's `links`."""
+    found = [answer.get("link")]
+    batch = answer.get("links")
+    if isinstance(batch, list):
+        found.extend(batch)
+    return [link for link in found if isinstance(link, str) and link]
+
+
+class Endpoint:
     """The account's session or one workspace's, and what this call joins."""
 
     def __init__(self, transport: Transport, workspace: str | None = None) -> None:
@@ -76,7 +102,6 @@ class Link:
         run = self.run_meta() if grouped else None
         answer = answer_of(await self.session.call(tool, arguments or {}, run))
         status = answer.get("status")
-        invocation = answer.get("invocation_id")
         if status == "pending":
             ask = answer.get("ask")
             if isinstance(ask, Mapping):
@@ -88,10 +113,9 @@ class Link:
                     question=ask,
                     follow=lambda: self.wait(invocation_id),
                 )
-        if isinstance(invocation, str):
-            group = self.transport.run_group if self.transport.sync else CURRENT.get()
-            if group is not None:
-                group.note(invocation)
+        group = self.transport.run_group if self.transport.sync else CURRENT.get()
+        if group is not None and grouped:
+            group.note(answer)
         return answer
 
     async def outcome(self, path: str, args: Mapping[str, Any]) -> Any:
@@ -105,7 +129,7 @@ class Link:
         status = answer.get("status")
         if status == "pending":
             return Run(
-                link=self,
+                endpoint=self,
                 invocation_id=str(answer.get("invocation_id") or ""),
                 path=path,
             )

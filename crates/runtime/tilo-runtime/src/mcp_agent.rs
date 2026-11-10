@@ -1,6 +1,6 @@
-//! The agent surface: five tools an AI collaborator can drive any app with.
+//! The agent surface: the tools an AI collaborator can drive any app with.
 //!
-//! `tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find` and `tilo_status` address
+//! `tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_link` and `tilo_status` address
 //! everything by **path**: `notes/Todo/body#append-paragraph` is the app
 //! (`notes`), the resource by its title, kind or key (`Todo`, `body`) and the
 //! action after `#`. `browser@4711/page#read-page` names one window of an
@@ -32,6 +32,8 @@ use tilo_lock::MutexRecover as _;
 mod answer;
 #[path = "mcp_agent_find.rs"]
 mod find;
+#[path = "mcp_agent_link.rs"]
+mod link;
 #[path = "mcp_render.rs"]
 mod render;
 #[path = "mcp_tilo.rs"]
@@ -123,6 +125,13 @@ fn tools() -> Vec<Value> {
             json!({"path":string,"args":{"type":"object"},"calls":{"type":"array","minItems":1,"maxItems":MAX_CALLS,"items":call},"wait_ms":integer,"invocation_id":string}),
             json!([]),
             json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true}),
+        ),
+        (
+            "tilo_link",
+            "The link a person opens to see what a path names (`notes/Todo`); only the workspace's members can open it, it holds no secret. mode: app or desktop.",
+            json!({"path":string,"mode":{"enum":["app","desktop"]}}),
+            json!(["path"]),
+            read.clone(),
         ),
         (
             "tilo_find",
@@ -235,6 +244,8 @@ enum Done {
         path: String,
         descriptor: Box<ActionDescriptor>,
         app: String,
+        /// Where it ran: the record whose link a change answers.
+        provider: String,
     },
 }
 
@@ -1902,6 +1913,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 Ok(args) => self.agent_do(args, structured).await,
                 Err(error) => Err(error),
             },
+            "tilo_link" => match parse(args) {
+                Ok(args) => self.agent_link(args, structured).await,
+                Err(error) => Err(error),
+            },
             "tilo_find" => match parse(args) {
                 Ok(args) => self.agent_find(args, structured).await,
                 Err(error) => Err(error),
@@ -2380,6 +2395,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                             reply.structured = Some(json!({
                                 "status": "failed",
                                 "stopped_at": index,
+                                "links": link::step_links(&steps),
                                 "steps": steps,
                             }));
                         }
@@ -2388,7 +2404,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 }
                 let mut reply = Reply::ok(text);
                 if structured {
-                    reply.structured = Some(json!({"status":"ok","steps":steps}));
+                    // Every record the steps changed, each once: what a
+                    // person is handed to review them.
+                    let links = link::step_links(&steps);
+                    reply.structured = Some(json!({"status":"ok","steps":steps,"links":links}));
                 }
                 Ok(reply)
             }
@@ -2442,9 +2461,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                             .unwrap_or("failed"),
                     );
                 }
-                if structured {
-                    reply.structured = Some(answer_of(&value));
-                }
+                let link = self.opened_link(&value).await;
+                let typed = structured.then(|| answer_of(&value));
+                reply.structured = link::linked(&mut reply, typed, link);
                 Ok(reply)
             }
             Done::Invoked {
@@ -2452,6 +2471,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 path,
                 descriptor,
                 app,
+                provider,
             } => {
                 let mut reply = outcome(&value);
                 if reply.failed && reply.text.contains("invalid_arguments") {
@@ -2466,8 +2486,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                             .unwrap_or("failed"),
                     );
                 }
+                let link = self
+                    .invoked_link(asked.as_deref(), &value, &provider, &descriptor)
+                    .await;
+                link::tell(&mut reply, link.as_deref());
                 if structured {
                     let mut typed = answer_of(&value);
+                    link::put(&mut typed, link);
                     if let Some(fields) = typed.as_object_mut() {
                         // The path this call ran, as a caller writes one.
                         fields.insert(
@@ -2654,6 +2679,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             path: named_at,
             descriptor: Box::new(descriptor),
             app: resolved.app_id.clone(),
+            provider: resolved.provider.clone(),
         })
     }
 
@@ -2888,9 +2914,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         let value = self.status(invocation).await?;
         let mut reply = outcome(&value);
-        if structured {
-            reply.structured = Some(answer_of(&value));
-        }
+        let link = self.changed_link_of(&args.invocation_id, &value).await;
+        let typed = structured.then(|| answer_of(&value));
+        reply.structured = link::linked(&mut reply, typed, link);
         Ok(reply)
     }
 }

@@ -17,7 +17,7 @@ export { Workspace, Files, Members, WorkspaceKeys } from "./workspace.ts";
 export { resourceProxy, kebab, segments } from "./resource.ts";
 export type { Resource, Step } from "./resource.ts";
 export { Run } from "./run.ts";
-export { RunGroup, Link, withinRun } from "./link.ts";
+export { RunGroup, Endpoint, withinRun } from "./endpoint.ts";
 export { Refused, RateLimited, AskPending, ProtocolError } from "./errors.ts";
 export {
   type Event,

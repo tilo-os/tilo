@@ -949,6 +949,76 @@
           }
         }
       ]
+    },
+    {
+      "address": {
+        "resource": "test.shelf",
+        "action": "share-link"
+      },
+      "semantic_identity": {
+        "kind": "test.shelf",
+        "key": "test.shelf"
+      },
+      "resource_kind": "test.shelf",
+      "resource_label": "Shelf",
+      "action_label": "Copy link",
+      "description": "A link to this, as a URL that opens it in a browser or an installed Tilo. Anyone opening it still needs access to the workspace.",
+      "locus": "ClientLocal",
+      "kind": "Effect",
+      "contract": {
+        "availability": {
+          "state": "available"
+        },
+        "kind": "read",
+        "risk": "low",
+        "confirmation": {
+          "mode": "none"
+        },
+        "retry": "at_most_once",
+        "execution": {
+          "mode": "background",
+          "cancellable": true
+        },
+        "result": {
+          "type": "json",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "url"
+            ]
+          }
+        }
+      },
+      "input": {
+        "Text": {
+          "prompt": "Which declared view the link opens (default: the primary view)",
+          "placeholder": "Copy link",
+          "collects": "Words"
+        }
+      },
+      "params": [
+        {
+          "name": "view",
+          "ty": "text",
+          "description": "Which declared view the link opens (default: the primary view)",
+          "nullable": true
+        },
+        {
+          "name": "mode",
+          "ty": "text",
+          "description": "app opens it alone in a full browser tab, desktop on the workspace's desktop (default: app)",
+          "choices": [
+            "app",
+            "desktop"
+          ],
+          "nullable": true
+        }
+      ]
     }
   ],
   "views": 0,

@@ -61,7 +61,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         };
         let acting = {
             let mut narrating = self.narrating.lock_recover();
+            // A link changes nothing and moves no one: the person is not
+            // told the agent asked for one.
             if let Some((app, record)) = target
+                .filter(|target| target.address.action != tilo_actions::remote::SHARE_LINK_ACTION)
                 .and_then(|target| tilo_actions::remote::record_parts(&target.provider))
                 .filter(|_| !narrating.contains_key(&invocation))
                 && let Some(target) = target

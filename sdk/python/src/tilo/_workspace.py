@@ -7,7 +7,7 @@ import builtins
 from typing import Any, AsyncIterator, Mapping
 
 from ._errors import ProtocolError, Refused
-from ._link import CURRENT, Link, RunGroup
+from ._endpoint import CURRENT, Endpoint, RunGroup
 from ._models import (
     Event,
     Hit,
@@ -116,7 +116,7 @@ class RunOpening:
 
     def _begin(self) -> RunGroup:
         if self.group is None:
-            self.group = RunGroup(self.workspace._link(), self.title, _run_id(self.title))
+            self.group = RunGroup(self.workspace._endpoint(), self.title, _run_id(self.title))
         transport = self.workspace.client.transport
         if transport.sync:
             self._previous = transport.run_group
@@ -189,12 +189,12 @@ class Workspace:
     def info(self) -> Any:
         return self.client.handoff(self._resolve())
 
-    def _link(self) -> Link:
+    def _endpoint(self) -> Endpoint:
         if self._info is None:
             raise ProtocolError(
                 f"the workspace {self.ref!r} is not resolved yet: use an awaited call first"
             )
-        return Link(self.client.transport, self._info.id)
+        return Endpoint(self.client.transport, self._info.id)
 
     # -- reading ---------------------------------------------------------
 
@@ -260,7 +260,7 @@ class Workspace:
 
     async def _outcome(self, path: str, args: Mapping[str, Any]) -> Any:
         await self._resolve()
-        return await self._link().outcome(path, dict(args))
+        return await self._endpoint().outcome(path, dict(args))
 
     def status(self, invocation_id: str, cancel: bool = False) -> Any:
         """How a pending invocation went, or stop it."""
@@ -268,7 +268,7 @@ class Workspace:
 
     async def _status(self, invocation_id: str, cancel: bool) -> dict[str, Any]:
         await self._resolve()
-        return await self._link().status(invocation_id, cancel)
+        return await self._endpoint().status(invocation_id, cancel)
 
     def program(self, source: str, confirm: bool | None = None) -> Any:
         """Run a tilolang program as this run's task."""
@@ -276,7 +276,7 @@ class Workspace:
 
     async def _program(self, source: str, confirm: bool | None) -> Any:
         await self._resolve()
-        return await self._link().program(source, confirm)
+        return await self._endpoint().program(source, confirm)
 
     def watch(self, path: str | None = None, wait_ms: int | None = None) -> Any:
         """Each change, run event and presence change, the cursor kept."""
@@ -284,8 +284,27 @@ class Workspace:
 
     async def _watch(self, path: str | None, wait_ms: int | None) -> AsyncIterator[Event]:
         await self._resolve()
-        async for event in self._link().watch(path, wait_ms):
+        async for event in self._endpoint().watch(path, wait_ms):
             yield event
+
+    def link(self, path: str, *, mode: str | None = None) -> Any:
+        """The link to hand a person for what `path` names (`notes/Todo`).
+
+        It opens the record in its app for the workspace's members and
+        carries no secret: anyone else must be invited first. `mode` is
+        `app` (the app alone, the default) or `desktop`.
+        """
+        return self.client.handoff(self._link(path, mode))
+
+    async def _link(self, path: str, mode: str | None) -> str:
+        arguments: dict[str, Any] = {"path": path}
+        if mode is not None:
+            arguments["mode"] = mode
+        answer = await self._call("tilo_link", arguments)
+        link = answer.get("link")
+        if not isinstance(link, str) or not link:
+            raise ProtocolError(f"the workspace answered no link for {path}")
+        return link
 
     def run(self, title: str) -> RunOpening:
         """Group the calls inside into one run: one undo step per app."""
@@ -293,7 +312,7 @@ class Workspace:
 
     async def _call(self, tool: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         await self._resolve()
-        return await self._link().call(tool, arguments)
+        return await self._endpoint().call(tool, arguments)
 
     # -- files and keys ---------------------------------------------------
 

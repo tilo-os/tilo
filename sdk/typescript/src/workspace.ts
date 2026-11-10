@@ -1,7 +1,7 @@
 /** One workspace: what is in it, what to do there, and who is there. */
 
 import type { Tilo } from "./client.ts";
-import { Link, RunGroup, withinRun } from "./link.ts";
+import { Endpoint, RunGroup, withinRun } from "./endpoint.ts";
 import {
   hitOf,
   invitationOf,
@@ -213,19 +213,19 @@ export class Workspace {
     return (await this.info()).id;
   }
 
-  get link(): Link {
+  get endpoint(): Endpoint {
     if (this.#info === null) {
       throw new ProtocolError(
         `the workspace ${this.ref} is not resolved yet: use an awaited call first`,
       );
     }
-    return new Link(this.client.transport, this.#info.id);
+    return new Endpoint(this.client.transport, this.#info.id);
   }
 
   /** One typed call in this workspace, its session opened on first use. */
   async call(tool: string, args: Record<string, unknown>): Promise<Answer> {
     await this.info();
-    return this.link.call(tool, args);
+    return this.endpoint.call(tool, args);
   }
 
   /** The apps, an app's resources, or one resource's children and actions. */
@@ -280,27 +280,45 @@ export class Workspace {
   /** Run one action: its result, or the `Run` that follows it. */
   async do(path: string, args: Record<string, unknown> = {}): Promise<unknown> {
     await this.info();
-    return this.link.outcome(path, args);
+    return this.endpoint.outcome(path, args);
   }
 
   /** How a pending invocation went, or stop it. */
   async status(invocationId: string, cancel = false): Promise<Answer> {
     await this.info();
-    return this.link.status(invocationId, cancel);
+    return this.endpoint.status(invocationId, cancel);
   }
 
   /** Run a tilolang program as this run's task. */
   async program(source: string, confirm: boolean | null = null): Promise<ProgramAnswer> {
     await this.info();
-    return this.link.program(source, confirm);
+    return this.endpoint.program(source, confirm);
   }
 
   /** Each change, run event and presence change, the cursor kept. */
   async *watch(path: string | null = null, waitMs: number | null = null): AsyncGenerator<Event> {
     await this.info();
-    for await (const event of this.link.watch(path, waitMs)) {
+    for await (const event of this.endpoint.watch(path, waitMs)) {
       yield event;
     }
+  }
+
+  /**
+   * The link to hand a person for what `path` names (`notes/Todo`). It opens
+   * the record in its app for the workspace's members and carries no secret:
+   * anyone else must be invited first. `mode` is `app` (the app alone, the
+   * default) or `desktop`.
+   */
+  async link(path: string, options: { mode?: "app" | "desktop" | null } = {}): Promise<string> {
+    const args: Record<string, unknown> = { path };
+    if (options.mode != null) {
+      args.mode = options.mode;
+    }
+    const answer = await this.call("tilo_link", args);
+    if (typeof answer.link !== "string" || answer.link === "") {
+      throw new ProtocolError(`the workspace answered no link for ${path}`);
+    }
+    return answer.link;
   }
 
   /**
@@ -309,7 +327,7 @@ export class Workspace {
    */
   async run<T>(title: string, body: (run: RunGroup) => Promise<T>): Promise<T> {
     await this.info();
-    const group = new RunGroup(this.link, title, runId(title));
+    const group = new RunGroup(this.endpoint, title, runId(title));
     return withinRun(group, () => body(group));
   }
 

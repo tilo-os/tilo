@@ -57,8 +57,12 @@ The sync client has the same surface without `await`: `from tilo import Tilo`.
   again after the wait the host says (`retry_after_ms`), with jitter, for up
   to `retry_deadline` seconds (`AsyncTilo(retry_deadline=60)`); past it,
   `RateLimited`, a `Refused`, says when to try again.
-- **Runs group calls.** `async with ws.run("Fill Jane's application"):` puts
-  every call inside into one run: one undo step per app, named in history.
+- **Runs group calls.** `async with ws.run("Fill Jane's application") as run:`
+  puts every call inside into one run: one undo step per app, named in history.
+- **Links for people.** A run keeps the link to each record its calls changed:
+  `run.links`, and `run.link` when it changed one record. `await ws.link(path)`
+  answers the link to anything a path names. It opens the record in its app
+  for the workspace's members and carries no secret.
 - **Usage.** `await tilo.usage()` reads the person's account on the host
   with a key reaching all their workspaces: per workspace, the VM time it
   ran and what it keeps (`usage.vm_seconds`, `usage.running`).

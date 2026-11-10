@@ -13,7 +13,7 @@ second API. The design is `docs/developers/sdk.md` and the wire is
 
 Both answer the same surface, `snake_case` in Python and `camelCase` in
 TypeScript: `workspaces.list/create/delete`, `keys.list/create/mint/revoke`,
-`ws.ls/read/find/do/program/status/watch`, `ws.files.upload`,
+`ws.ls/read/find/do/link/program/status/watch`, `ws.files.upload`,
 `ws.keys.mint`, `ws.mint_mcp`, `ws.run(title)` for one undo step per app,
 `ws.resource(path)` as a typed object over `tilo_read` and `field-edit`,
 `Refused`, `AskPending` and `ProtocolError`.

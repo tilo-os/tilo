@@ -77,7 +77,7 @@ pub use confirmation::{
 };
 pub use providers::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_KIND, APPLICATION_RESOURCE_PREFIX, OWN_PROVIDER,
-    RECORD_PROVIDER, WORKSPACE_PROVIDER, is_record_provider, record_parts,
+    RECORD_PROVIDER, SHARE_LINK_ACTION, WORKSPACE_PROVIDER, is_record_provider, record_parts,
 };
 
 pub use catalogue::{

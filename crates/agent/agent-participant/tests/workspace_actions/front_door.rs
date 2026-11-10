@@ -126,7 +126,7 @@ impl Mcp<'_> {
 
 /// `PUT /w/<workspace>/content` of `body` in `mcp`'s session: the status
 /// and the reply.
-async fn upload(mcp: &Mcp<'_>, workspace: &str, body: &[u8]) -> (u16, Value) {
+pub(super) async fn upload(mcp: &Mcp<'_>, workspace: &str, body: &[u8]) -> (u16, Value) {
     let bearer = format!("Bearer {}", mcp.token);
     let mut pairs = vec![
         ("authorization", bearer.as_str()),

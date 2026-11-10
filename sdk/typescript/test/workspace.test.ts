@@ -3,7 +3,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { AskPending, Refused, Run, Tilo } from "../src/index.ts";
-import { FakeDoor, PDF, TODO } from "./fakeDoor.ts";
+import { FakeDoor, PDF, TODO, linkTo } from "./fakeDoor.ts";
 
 function door(): FakeDoor {
   return new FakeDoor();
@@ -191,6 +191,65 @@ describe("acting", () => {
     const calls = house.asked("tilo_do").slice(-2);
     expect(calls[0]?.run?.title).toBe("Fill Jane's application");
     expect(calls[1]?.run?.id).toBe(calls[0]?.run?.id);
+    await tilo.close();
+  });
+
+  it("hands over the link to the record a run changed", async () => {
+    const house = door();
+    const tilo = open(house);
+    const workspace = tilo.workspace("jane-doe");
+
+    const group = await workspace.run("Fill Jane's application", async (group) => {
+      await workspace.do(`${TODO}#append-paragraph`, { text: "Buy milk" });
+      await workspace.do(`${PDF}#read-form-fields`);
+      await workspace.do(`${TODO}#append-paragraph`, { text: "Buy bread" });
+      return group;
+    });
+
+    expect(group.links).toEqual([linkTo(TODO)]);
+    expect(group.link).toBe(linkTo(TODO));
+    await tilo.close();
+  });
+
+  it("hands over each record's link once for a run across records", async () => {
+    const house = door();
+    const tilo = open(house);
+    const workspace = tilo.workspace("jane-doe");
+
+    const group = await workspace.run("Fill Jane's application", async (group) => {
+      await workspace.do(`${TODO}#append-paragraph`, { text: "Buy milk" });
+      await workspace.do(`${PDF}#field-edit`, { edit: { path: "form_values.surname", op: "set", value: "Roe" } });
+      return group;
+    });
+
+    expect(group.links).toEqual([linkTo(TODO), linkTo(PDF)]);
+    expect(group.link).toBeNull();
+    await tilo.close();
+  });
+
+  it("names a finished run's link", async () => {
+    const house = door();
+    house.appendPending = true;
+    const tilo = open(house);
+
+    const run = (await tilo.workspace("jane-doe").do(`${TODO}#append-paragraph`, { text: "Buy milk" })) as Run;
+    expect(run.link).toBeNull();
+    await run.result();
+
+    expect(run.link).toBe(linkTo(TODO));
+    await tilo.close();
+  });
+
+  it("answers the link to any path and refuses a bad one", async () => {
+    const house = door();
+    const tilo = open(house);
+    const workspace = tilo.workspace("jane-doe");
+
+    expect(await workspace.link(PDF)).toBe(linkTo(PDF));
+    expect(house.asked("tilo_link").at(-1)?.arguments).toEqual({ path: PDF });
+    await workspace.link(TODO, { mode: "desktop" });
+    expect(house.asked("tilo_link").at(-1)?.arguments).toEqual({ path: TODO, mode: "desktop" });
+    await expect(workspace.link("notes/Nothing")).rejects.toBeInstanceOf(Refused);
     await tilo.close();
   });
 

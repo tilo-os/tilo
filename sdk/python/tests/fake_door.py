@@ -19,6 +19,12 @@ TODO = "notes/Todo"
 PDF = "pdf-viewer/application.pdf"
 
 WORKSPACE_ID = "11111111-2222-3333-4444-555555555555"
+
+
+def link_to(path: str) -> str:
+    """The link a record's host mints for the record `path` names."""
+    record = path.split("#")[0].split("/")[1]
+    return f"https://tilo.sh/app/#/@eu1.tilo.sh/w/{WORKSPACE_ID}/so.tilo.notes/{record}"
 OTHER_ID = "66666666-7777-8888-9999-aaaaaaaaaaaa"
 # A workspace another person made, which this person was invited into.
 INVITED_ID = "abcdef01-2345-6789-abcd-ef0123456789"
@@ -269,6 +275,11 @@ class FakeDoor:
             return self.do(arguments)
         if name == "tilo_status":
             return self.status(arguments)
+        if name == "tilo_link":
+            path = arguments.get("path", "")
+            if path not in self.fields:
+                return self.failed(path, "failed", f"{path} names nothing", "tilo_ls lists what there is")
+            return {"status": "ok", "path": path, "link": link_to(path)}
         if name == "tilo_watch":
             return self.watch(arguments)
         if name == "tilo":
@@ -499,13 +510,13 @@ class FakeDoor:
             resource = path.split("#")[0]
             self.edits.append({"resource": resource, "edit": edit})
             self.apply_edit(resource, edit)
-            return {"status": "ok", "path": path, "invocation_id": invocation, "result": {"edited": True}, "resources": [resource]}
+            return {"status": "ok", "path": path, "invocation_id": invocation, "result": {"edited": True}, "resources": [resource], "link": link_to(resource)}
         if path.endswith("#undo"):
             return {"status": "ok", "path": path, "invocation_id": invocation, "result": {"undone": args.get("steps", 1)}}
         if path == f"{TODO}#append-paragraph":
             if getattr(self, "append_pending", False):
                 return {"status": "pending", "path": path, "invocation_id": invocation}
-            return {"status": "ok", "path": path, "invocation_id": invocation, "result": {"appended": "c01e"}, "resources": [TODO]}
+            return {"status": "ok", "path": path, "invocation_id": invocation, "result": {"appended": "c01e"}, "resources": [TODO], "link": link_to(TODO)}
         if path == "word-processor#export-content":
             letter = b"PK cover letter"
             content = f"tilo.content:{len(letter)}"
@@ -592,6 +603,7 @@ class FakeDoor:
                 "path": "notes/Todo#append-paragraph",
                 "invocation_id": invocation,
                 "result": {"appended": "c01e"},
+                "link": link_to(TODO),
             }
         return {"status": "pending", "path": "notes/Todo#append-paragraph", "invocation_id": invocation}
 

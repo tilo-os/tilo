@@ -1665,9 +1665,9 @@ impl Worker {
             })
             .collect();
         let mut page = CataloguePage::from_rows(source.revision, rows, query);
-        if !page.rows.is_empty() {
-            page.locator = link.view_locator(&fresh.workspace, provider);
-        }
+        // Where the record opens is the caller's to know once they may read
+        // it, views or not: a record's root links to the record alone.
+        page.locator = link.view_locator(&fresh.workspace, provider);
         Ok(page)
     }
 
@@ -2093,8 +2093,9 @@ impl Worker {
         let mounted = self.mount(&route, &state).map_err(|_| unknown_action())?;
         let live = live_actions(&mounted.app);
         if target.address.action == ui::tilo_resource::share::SHARE_LINK {
+            let at = (&route, &state, live.as_slice());
             return self
-                .share_link(workspace_id, caller, &route, &live, target, arguments)
+                .share_link(workspace_id, caller, at, target, arguments)
                 .map(|output| (output, None));
         }
         if !owner {
@@ -2496,22 +2497,27 @@ impl Worker {
 impl Worker {
     /// `share-link` on a record this host runs headless. An app's root mints
     /// it where the app runs; here no root runs, so the host mints the same
-    /// link from the resource's views as `caller` may read them now (the
-    /// governed lookup a link's page makes too), under the web entry the
-    /// host announces.
+    /// link from the resource's views as `caller` (a person: an agent asks as
+    /// the person it acts for) may read them now (the governed lookup a link's
+    /// page makes too), under the web entry the host announces.
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
     )]
     fn share_link(
-        &self,
+        &mut self,
         workspace_id: u64,
         caller: &Caller,
-        route: &DocumentRoute,
-        live: &[tilo_actions::ActionDescriptor],
+        (route, state, live): (
+            &DocumentRoute,
+            &WorkspaceState,
+            &[tilo_actions::ActionDescriptor],
+        ),
         target: &tilo_actions::remote::RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<ActionOutput, Outcome> {
+        let asker = self.link_asker(workspace_id, caller, (route, state), target)?;
+        let caller = &asker;
         let failed = |message: String| {
             Outcome::Failed(ActionFailure {
                 code: "share_link".into(),
@@ -2522,13 +2528,32 @@ impl Worker {
         };
         let resource = &target.address.resource;
         // The record's own actions name the resource's kind; its views are
-        // attached where the app renders, which the lookup below runs.
-
+        // attached where the app renders, which the lookup below runs. A
+        // resource with none is a record's root: its link names the record.
         let kind = live
             .iter()
             .find(|descriptor| descriptor.address.resource == *resource)
             .map(|descriptor| descriptor.resource_kind.clone())
             .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
+        // The record itself, opened at its primary view.
+        let opened = self.holder_of(route);
+        let root = self
+            .catalogue
+            .get(&route.app_id)
+            .is_some_and(|definition| definition.record_kind.as_str() == resource.as_str());
+        let plain = ["view", "start", "end"]
+            .iter()
+            .all(|name| arguments.get(*name).is_none_or(serde_json::Value::is_null));
+        if root && plain && opened == *route {
+            let request = ui::tilo_resource::share::ShareRequest {
+                resource: resource.clone(),
+                kind,
+                views: Vec::new(),
+                invite: false,
+                args: arguments,
+            };
+            return self.record_link(workspace_id, caller, route, &request);
+        }
         let query = CatalogueQuery {
             provider: Some(record_provider(route)),
             view_resource: Some(tilo_actions::remote::ViewResourceQuery {
@@ -2571,9 +2596,78 @@ impl Worker {
         // A part of a chain opens with the record it is held beside: the
         // link's page mounts that record, whose window holds the part and
         // offers its items at the address asked for here.
-        let opened = self.holder_of(route);
         locator.provider = record_provider(&opened);
         let url = ui::framework::host_link(&request, &opened.app_id, &opened.record, &locator)
+            .map_err(failed)?;
+        Ok(ActionOutput {
+            value: Some(serde_json::json!({ "url": url })),
+            resources: Vec::new(),
+        })
+    }
+}
+
+impl Worker {
+    /// Who asks for a link on `caller`'s behalf: someone served within
+    /// bounds asks as the person they are or act for, and only for a link
+    /// their own replica offers them.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt the host records"
+    )]
+    fn link_asker(
+        &mut self,
+        workspace_id: u64,
+        caller: &Caller,
+        (route, state): (&DocumentRoute, &WorkspaceState),
+        target: &tilo_actions::remote::RemoteActionTarget,
+    ) -> Result<Caller, Outcome> {
+        let Some(who) = self.bounded(caller) else {
+            return Ok(caller.clone());
+        };
+        let offered = self
+            .bounded_actions(workspace_id, &who, route, state)
+            .map_err(Outcome::Rejected)?;
+        if offered
+            .iter()
+            .any(|descriptor| descriptor.address == target.address)
+        {
+            Ok(who.person_caller)
+        } else {
+            Err(Outcome::Rejected(ActionHostError::UnknownAction))
+        }
+    }
+
+    /// The link to the record at `route` itself, opened at its primary view:
+    /// none of its views is looked up, only that `caller` may read it now
+    /// and where it opens.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt the host records"
+    )]
+    fn record_link(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        route: &DocumentRoute,
+        request: &ui::tilo_resource::share::ShareRequest,
+    ) -> Result<ActionOutput, Outcome> {
+        let failed = |message: String| {
+            Outcome::Failed(ActionFailure {
+                code: "share_link".into(),
+                message,
+                details: None,
+                retryable: false,
+            })
+        };
+        let refused = || Outcome::Rejected(ActionHostError::UnknownAction);
+        let link = self.shared.link.get().ok_or_else(refused)?;
+        let policy = link
+            .view_read_policy(workspace_id, caller, &route.app_id, &route.record)
+            .ok_or_else(refused)?;
+        let locator = link
+            .view_locator(&policy.workspace, &record_provider(route))
+            .ok_or_else(|| failed("This workspace's host serves no web page".into()))?;
+        let url = ui::framework::host_link(request, &route.app_id, &route.record, &locator)
             .map_err(failed)?;
         Ok(ActionOutput {
             value: Some(serde_json::json!({ "url": url })),

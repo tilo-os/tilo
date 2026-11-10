@@ -1,7 +1,7 @@
 /** The client: the account's workspaces and keys, and the door it all goes to. */
 
 import { AskPending, ProtocolError, Refused } from "./errors.ts";
-import { Link } from "./link.ts";
+import { Endpoint } from "./endpoint.ts";
 import {
   keyOf,
   type Key,
@@ -231,12 +231,12 @@ export class Tilo {
     return this.transport.close();
   }
 
-  link(): Link {
-    return new Link(this.transport, null);
+  endpoint(): Endpoint {
+    return new Endpoint(this.transport, null);
   }
 
   async workspaceList(): Promise<WorkspaceList> {
-    const result = await this.link().outcome(`${ACCOUNT}/workspaces#list`, {});
+    const result = await this.endpoint().outcome(`${ACCOUNT}/workspaces#list`, {});
     this.catalog = new WorkspaceList(
       result && typeof result === "object" ? (result as Record<string, unknown>) : {},
     );
@@ -282,7 +282,7 @@ export class Tilo {
     if (host !== null) {
       args.host = host;
     }
-    const result = await this.link().outcome(`${ACCOUNT}/workspaces#create`, args);
+    const result = await this.endpoint().outcome(`${ACCOUNT}/workspaces#create`, args);
     this.catalog = null;
     const created = (result as Record<string, unknown> | null)?.workspace;
     if (!created || typeof created !== "object") {
@@ -298,7 +298,7 @@ export class Tilo {
   }
 
   async deleteWorkspace(workspace: string | Workspace): Promise<unknown> {
-    const result = await this.link().outcome(`${ACCOUNT}/workspaces#delete`, {
+    const result = await this.endpoint().outcome(`${ACCOUNT}/workspaces#delete`, {
       workspace: await this.workspaceId(workspace),
     });
     this.catalog = null;
@@ -306,7 +306,7 @@ export class Tilo {
   }
 
   async keysList(): Promise<Key[]> {
-    const result = await this.link().outcome(`${ACCOUNT}/keys#list`, {});
+    const result = await this.endpoint().outcome(`${ACCOUNT}/keys#list`, {});
     const keys = (result as Record<string, unknown> | null)?.keys;
     return Array.isArray(keys)
       ? keys.map((key) => keyOf(key as Record<string, unknown>))
@@ -325,7 +325,7 @@ export class Tilo {
     if (expiresIn !== null) {
       args.expires_in = expiresIn;
     }
-    const result = await this.link().outcome(`${ACCOUNT}/keys#mint`, args);
+    const result = await this.endpoint().outcome(`${ACCOUNT}/keys#mint`, args);
     if (!result || typeof result !== "object") {
       throw new ProtocolError("the door minted a key without naming it");
     }
@@ -333,7 +333,7 @@ export class Tilo {
   }
 
   async revokeKey(grant: string): Promise<unknown> {
-    return this.link().outcome(`${ACCOUNT}/keys#revoke`, { grant });
+    return this.endpoint().outcome(`${ACCOUNT}/keys#revoke`, { grant });
   }
 
   async keyCreate(
@@ -349,7 +349,7 @@ export class Tilo {
       args.expires_in = expiresIn;
     }
     try {
-      await this.link().call("tilo_do", { path: `${ACCOUNT}/keys#create`, args });
+      await this.endpoint().call("tilo_do", { path: `${ACCOUNT}/keys#create`, args });
     } catch (error) {
       if (error instanceof AskPending) {
         throw error.then((answer) =>
@@ -363,6 +363,6 @@ export class Tilo {
 
   /** The typed answer as it is: for callers who want `tilo_ls` on the account. */
   async accountCall(tool: string, args: Record<string, unknown>): Promise<Answer> {
-    return this.link().call(tool, args);
+    return this.endpoint().call(tool, args);
   }
 }

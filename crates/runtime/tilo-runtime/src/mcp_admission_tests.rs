@@ -121,6 +121,7 @@ fn an_agent_session_acts_as_its_admitted_agent_in_its_own_execution() {
                 "tilo_ls",
                 "tilo_read",
                 "tilo_do",
+                "tilo_link",
                 "tilo_find",
                 "tilo",
                 "tilo_watch",

@@ -11,8 +11,9 @@ of their own read what the agent did, who did it, and take it back.
 
     TILO_DOOR=https://mcp.tilo.sh TILO_API_KEY=tilo_sk_… python3 visa_proof.py
 
-The run prints the reviewer's link and asks for the key they made after
-following it; `TILO_INVITEE` instead names an endpoint that plays the
+The run prints the reviewer's invitation, then the links to the form and the
+letter the agent changed, which open them in their apps for the reviewer, and
+asks for the key the reviewer made after following the invitation; `TILO_INVITEE` instead names an endpoint that plays the
 reviewer (the `door-on-relay` harness): it is posted the link and answers
 the reviewer's key.
 
@@ -275,6 +276,9 @@ async def main() -> int:
         letter_ref = content_in(exported)
         check(letter_ref, f"Writer exports the letter as content ({letter_ref})")
     check(run.invocations, f"the run grouped the agent's {len(run.invocations)} calls")
+    form_link = await aws.link(FORM)
+    say("   links", ", ".join(run.links))
+    check(form_link in run.links, f"the run hands over the link to the form it filled ({form_link})")
     letter = await ws.files.download(letter_ref)
     check(letter.startswith(b"PK"), f"the backend downloads a Word file ({len(letter)} bytes)")
     with zipfile.ZipFile(io.BytesIO(letter)) as docx:
@@ -298,6 +302,7 @@ async def main() -> int:
     say("   invited", f"{invitation.role} via {invitation.link[:60]}… sent={invitation.sent} ({invitation.next})")
     check(invitation.link.startswith("http"), "the invitation is a link to hand over")
     check(invitation.email == REVIEWER_EMAIL and invitation.sent is False, "it names their address and says no mail went")
+    say("   for review", f"the form: {form_link}")
     accepted = await reviewer_accepts(invitation.link)
     say("   accepted", str(accepted.get("joined")))
     check((accepted.get("joined") or {}).get("role") == "editor", "the link lands them in Jane's workspace as an editor")

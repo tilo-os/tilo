@@ -35,6 +35,9 @@ mod common;
 #[cfg(test)]
 #[path = "workspace_actions/door_invites.rs"]
 mod door_invites;
+#[cfg(test)]
+#[path = "workspace_actions/door_links.rs"]
+mod door_links;
 #[path = "workspace_actions/door_on_relay.rs"]
 pub mod door_on_relay;
 #[cfg(test)]

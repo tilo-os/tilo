@@ -56,6 +56,11 @@ pub struct OnRelay {
     pub lobby: String,
     /// The relay's origin, where a page joins its workspaces.
     pub relay: String,
+    /// The site people's links open under, which the door and the relay
+    /// both announce.
+    pub web_entry: String,
+    /// The relay's own origin, which the links to its records name.
+    pub host_origin: String,
     _site: test_http::Responder,
     _hosted: Hosted,
     _state: tempfile::TempDir,
@@ -72,6 +77,35 @@ pub async fn door_on_relay_limiting(
     issuer: &str,
     member_limits: Option<tilo_relay::member_limits::MemberLimitsConfig>,
 ) -> OnRelay {
+    // The site the door and the relay hand people's links out under: its
+    // `entry.json` names the home workspace's door once the relay made it.
+    let entry = Arc::new(std::sync::OnceLock::<String>::new());
+    let answered = Arc::clone(&entry);
+    // Its shelf keeps the sealed invitations links name (`/i/<handle>`).
+    let shelf = std::sync::Mutex::new(HashMap::<String, Value>::new());
+    let site = test_http::Responder::handle(move |request| {
+        use tilo_relay_protocol::sealed_invitations::{Fetched, Stored, handle_of};
+        let reply = |body: String| {
+            test_http::Reply::status(200)
+                .header("content-type", "application/json")
+                .body(body)
+        };
+        if request.target == "/entry.json" {
+            return Some(reply(answered.get()?.clone()));
+        }
+        let handle = handle_of(&request.target)?.to_owned();
+        let mut shelf = shelf.lock().unwrap();
+        if request.method == "POST" {
+            let stored: Stored = serde_json::from_slice(&request.body).ok()?;
+            let fetched = Fetched {
+                sealed: stored.sealed,
+                host: stored.host,
+            };
+            shelf.insert(handle, serde_json::to_value(fetched).unwrap());
+            return Some(reply("{}".into()));
+        }
+        shelf.get(&handle).map(|fetched| reply(fetched.to_string()))
+    });
     // The relay, as its operator runs it.
     let (operator, _) = tilo_user_identity::UserIdentity::generate("Relay operator", 1);
     let host = enrol(
@@ -87,6 +121,7 @@ pub async fn door_on_relay_limiting(
         Options {
             plain: true,
             member_limits,
+            web_entry: Some(format!("http://127.0.0.1:{}/", site.port())),
             ..Options::offering(common::catalogue, ModelChoice::Scripted)
         },
     )
@@ -112,37 +147,16 @@ pub async fn door_on_relay_limiting(
         .await
         .unwrap();
     // The site names that door in its `entry.json`.
-    let entry = json!({"home": {"host": {"origin": relay},
-                                "admission": format!("{relay}/peer/v1/directory/{lobby}/")}});
-    // Its shelf keeps the sealed invitations links name (`/i/<handle>`).
-    let shelf = std::sync::Mutex::new(HashMap::<String, Value>::new());
-    let site = test_http::Responder::handle(move |request| {
-        use tilo_relay_protocol::sealed_invitations::{Fetched, Stored, handle_of};
-        let reply = |body: String| {
-            test_http::Reply::status(200)
-                .header("content-type", "application/json")
-                .body(body)
-        };
-        if request.target == "/entry.json" {
-            return Some(reply(entry.to_string()));
-        }
-        let handle = handle_of(&request.target)?.to_owned();
-        let mut shelf = shelf.lock().unwrap();
-        if request.method == "POST" {
-            let stored: Stored = serde_json::from_slice(&request.body).ok()?;
-            let fetched = Fetched {
-                sealed: stored.sealed,
-                host: stored.host,
-            };
-            shelf.insert(handle, serde_json::to_value(fetched).unwrap());
-            return Some(reply("{}".into()));
-        }
-        shelf.get(&handle).map(|fetched| reply(fetched.to_string()))
-    });
+    let _ = entry.set(
+        json!({"home": {"host": {"origin": relay},
+                        "admission": format!("{relay}/peer/v1/directory/{lobby}/")}})
+        .to_string(),
+    );
+    let web_entry = format!("http://127.0.0.1:{}/", site.port());
     let door = Door::new(
         &Config {
             issuer: issuer.into(),
-            web_entry: format!("http://127.0.0.1:{}", site.port()),
+            web_entry: web_entry.trim_end_matches('/').to_owned(),
             relay: relay.clone(),
         },
         Store::in_memory(),
@@ -154,6 +168,8 @@ pub async fn door_on_relay_limiting(
         issuer: issuer.to_owned(),
         lobby,
         relay,
+        web_entry,
+        host_origin: hosted.web.origin.clone(),
         _site: site,
         _hosted: hosted,
         _state: state,

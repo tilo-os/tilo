@@ -12,6 +12,12 @@ export const PDF = "pdf-viewer/application.pdf";
 export const WORKSPACE_ID = "11111111-2222-3333-4444-555555555555";
 export const OTHER_ID = "66666666-7777-8888-9999-aaaaaaaaaaaa";
 
+/** The link a record's host mints for the record `path` names. */
+export function linkTo(path: string): string {
+  const record = (path.split("#")[0] ?? "").split("/")[1] ?? "";
+  return `https://tilo.sh/app/#/@eu1.tilo.sh/w/${WORKSPACE_ID}/so.tilo.notes/${record}`;
+}
+
 export interface RecordedCall {
   tool: string;
   arguments: Record<string, any>;
@@ -264,6 +270,13 @@ export class FakeDoor {
         return this.run(String(args.path ?? ""), (args.args ?? {}) as Answer);
       case "tilo_status":
         return this.status(args);
+      case "tilo_link": {
+        const path = String(args.path ?? "");
+        if (!(path in this.fields)) {
+          return this.failed(path, "failed", `${path} names nothing`, "tilo_ls lists what there is");
+        }
+        return { status: "ok", path, link: linkTo(path) };
+      }
       case "tilo_watch":
         return this.watch(args);
       case "tilo":
@@ -452,7 +465,7 @@ export class FakeDoor {
       const resource = path.split("#")[0] as string;
       this.edits.push({ resource, edit });
       this.applyEdit(resource, edit);
-      return { status: "ok", path, invocation_id: invocation, result: { edited: true }, resources: [resource] };
+      return { status: "ok", path, invocation_id: invocation, result: { edited: true }, resources: [resource], link: linkTo(resource) };
     }
     if (path.endsWith("#undo")) {
       return { status: "ok", path, invocation_id: invocation, result: { undone: (args.steps as number) ?? 1 } };
@@ -478,7 +491,7 @@ export class FakeDoor {
       if (this.appendPending) {
         return { status: "pending", path, invocation_id: invocation };
       }
-      return { status: "ok", path, invocation_id: invocation, result: { appended: "c01e" }, resources: [TODO] };
+      return { status: "ok", path, invocation_id: invocation, result: { appended: "c01e" }, resources: [TODO], link: linkTo(TODO) };
     }
     if (path === "word-processor#export-content") {
       const letter = new TextEncoder().encode("PK cover letter");
@@ -560,6 +573,7 @@ export class FakeDoor {
         path: `${TODO}#append-paragraph`,
         invocation_id: invocation,
         result: { appended: "c01e" },
+        link: linkTo(TODO),
       };
     }
     return { status: "pending", path: `${TODO}#append-paragraph`, invocation_id: invocation };

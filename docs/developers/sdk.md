@@ -10,7 +10,7 @@ history and undo. There is no second API.
 
 | | Who uses it | What it sends | What comes back |
 |---|---|---|---|
-| MCP tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_status`, `tilo`) | agents | paths and arguments | compact text, priced per token |
+| MCP tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_link`, `tilo_status`, `tilo`) | agents | paths and arguments | compact text, priced per token |
 | SDK (Python, TypeScript) | your code | the same calls | typed values (JSON on the wire) |
 | tilolang (`tilo` tool, `tilo run`) | agents and scripts | programs | values, pasteable as input |
 | CLI (`tilo do`, `tilo files`, `tilo account …`) | shells | the same calls | text, or `--json` |
@@ -87,6 +87,15 @@ A client connection is an agent run, named for its key ("visa-backend #3"). Peop
 the workspace see it live, with its own name and colour, and it appears in each resource's
 history. `async with ws.run("Fill Jane's application") as run:` groups the steps inside into
 one run, which a person can undo as a whole, as one tilolang call is one step.
+
+## Links for people
+
+Work ends with a person looking at it, so every call that changed a record answers that
+record's link, the one a person copies in the app: `run.links` lists each record a run's calls
+changed, once each, and `run.link` is the one link when they changed one record (else
+`None`/`null`). A pending call's `Run` has `link` once it finished. `ws.link(path)` answers the
+link to anything a path names. A link opens the record in its app for the workspace's members
+and carries no secret: invite the person first (`ws.members.invite`).
 
 ## Errors
 

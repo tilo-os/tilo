@@ -3,7 +3,7 @@
 The Python and TypeScript SDKs and the `tilo` CLI talk to the same endpoints as MCP
 (`docs/developers/sdk.md`): `https://mcp.tilo.sh/mcp` for the account and
 `https://mcp.tilo.sh/w/<workspace>/mcp` for one workspace. They call the same tools agents
-call — `tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_status`, `tilo` — plus
+call — `tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_link`, `tilo_status`, `tilo` — plus
 `tilo_watch`, which a model does not need. What differs is the answer: a model reads compact
 text, a program reads typed JSON.
 
@@ -133,14 +133,18 @@ One action:
  "path": "notes/Todo#append-paragraph",
  "result": {"appended": "c01e"},
  "resources": ["notes/Todo"],
+ "link": "https://tilo.sh/app/#/@eu1.tilo.sh/w/6f1c…/so.tilo.notes/uuid:3fa2…",
  "edited_by_person": {"text": "Buy milk, buttermilk"}}
 ```
 
 `path` is the action at the resource it resolved to, as a caller writes it; `result` is the
 action's output value as the app typed it (absent when it gave none); `resources` are the
 resources the answer says it touched; `edited_by_person` is there when the person changed the
-arguments before allowing the action, and holds what actually ran. A failure also carries the
-`action` row, so a caller can see what it takes.
+arguments before allowing the action, and holds what actually ran. `link` is there when the
+action changed a record the workspace serves: the record link a person copies in the app
+(`share-link` on the record's root), which opens the record in its app for the workspace's
+members and carries no secret, so someone else must be invited first. A read answers none. A
+failure also carries the `action` row, so a caller can see what it takes.
 
 Several actions (`calls`) answer one step each, in order:
 
@@ -152,9 +156,22 @@ Several actions (`calls`) answer one step each, in order:
             "error": {"code": "unknown_action", "message": "…", "next_steps": ["…"]}}]}
 ```
 
-Steps before the failed one stay applied, as the text says.
+Steps before the failed one stay applied, as the text says. A batch also answers `links`: the
+`link` of every step that has one, each record once, in the order first changed.
 
-`tilo_status` answers the same shape for one invocation, and with `cancel: true` stops it.
+`tilo_status` answers the same shape for one invocation, `link` included once a change it
+follows finished, and with `cancel: true` stops it.
+
+### tilo_link
+
+```json
+{"status": "ok", "path": "pdf-viewer/application.pdf",
+ "link": "https://tilo.sh/app/#/@eu1.tilo.sh/w/6f1c…/so.tilo.pdf-viewer/uuid:a65e…"}
+```
+
+The link to whatever `path` names: the resource's own `share-link` when it offers one (a
+message, a range of a text), else its record's. `mode` (`app`, the default, or `desktop`)
+chooses how it opens.
 
 ### tilo_find
 

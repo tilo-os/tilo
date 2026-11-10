@@ -1153,6 +1153,8 @@ impl ResourceRoot {
                 resource = resource.with_action(spec.clone());
             }
         }
+        // A link to the record opens it in this app, views or not.
+        tilo_resource::share::offer_record(&mut resource);
         resource
     }
 

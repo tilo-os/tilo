@@ -2,10 +2,12 @@
 //! asks for to get "a link to this".
 //!
 //! Every resource that declares a view publishes both. A resource without a
-//! view has nothing a link could open, so it has no link. The specs are bound
-//! here, where the views are attached, so every way a resource is published
-//! (the resource itself, an item, a live row) offers them the same way; the
-//! framework's root answers them.
+//! view has nothing a link could open, so it has no link, except a record's
+//! root: the record itself opens in its app, so its root always offers
+//! `share-link` ([`offer_record`]). The specs are bound here, where the views
+//! are attached, so every way a resource is published (the resource itself, an
+//! item, a live row) offers them the same way; the framework's root answers
+//! them.
 
 use std::sync::Arc;
 
@@ -16,7 +18,7 @@ use tilo_actions::{
 };
 
 /// The link to the resource as a URL.
-pub const SHARE_LINK: &str = "share-link";
+pub const SHARE_LINK: &str = tilo_actions::remote::SHARE_LINK_ACTION;
 /// The link with an invitation for someone not yet in the workspace.
 pub const SHARE_INVITE_LINK: &str = "share-invite-link";
 /// `share-link` on `resource`, which `provider` publishes: how one app asks
@@ -94,6 +96,19 @@ pub fn offer(resource: &mut tilo_actions::ResourceSpec) {
         let ty = share_type(invite, &resource.kind, &views);
         resource.actions.push(ty.bind(target.clone()));
     }
+}
+
+/// Offer `share-link` on `root`, a record's root resource, even when it
+/// declares no view: the link then names the record, which opens in its app.
+/// A root with views offers both links as any resource does ([`offer`]).
+pub fn offer_record(root: &mut tilo_actions::ResourceSpec) {
+    offer(root);
+    if root.actions.iter().any(|spec| spec.id == SHARE_LINK) {
+        return;
+    }
+    let target = Target::new(root.id.as_str().to_owned());
+    root.actions
+        .push(share_type(false, &root.kind, &[]).bind(target));
 }
 
 /// Which link type: whether it invites, the kind of resource, its views.
@@ -260,6 +275,33 @@ mod tests {
             .iter()
             .map(|param| param.name.to_string())
             .collect()
+    }
+
+    #[test]
+    fn a_record_root_offers_its_link_without_a_view() {
+        let mut root = tilo_actions::ResourceSpec::new("pdf", "pdf.document", "PDF");
+        offer(&mut root);
+        assert!(
+            root.actions.is_empty(),
+            "a resource without a view has no link"
+        );
+        offer_record(&mut root);
+        let ids: Vec<_> = root.actions.iter().map(|spec| spec.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [SHARE_LINK],
+            "the record opens in its app; it invites no one"
+        );
+        assert_eq!(params(&root.actions[0]), ["view", "mode"]);
+        offer_record(&mut root);
+        assert_eq!(root.actions.len(), 1, "offered once");
+
+        let mut viewed = tilo_actions::ResourceSpec::new("notes", "notes.page", "Page").with_view(
+            tilo_actions::ResourceViewSpec::new("page", "Page", "open-page"),
+        );
+        offer_record(&mut viewed);
+        let ids: Vec<_> = viewed.actions.iter().map(|spec| spec.id.as_str()).collect();
+        assert_eq!(ids, [SHARE_LINK, SHARE_INVITE_LINK]);
     }
 
     #[test]

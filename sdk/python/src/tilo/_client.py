@@ -8,7 +8,7 @@ import uuid
 from typing import Any, Mapping
 
 from ._errors import AskPending, ProtocolError, Refused
-from ._link import Link
+from ._endpoint import Endpoint
 from ._models import Key, MintedKey, Usage, WorkspaceInfo, WorkspaceList
 from ._sync import LoopThread
 from ._wire import Transport
@@ -189,8 +189,8 @@ class AsyncTilo:
 
     # -- the account -----------------------------------------------------
 
-    def _link(self) -> Link:
-        return Link(self.transport, None)
+    def _endpoint(self) -> Endpoint:
+        return Endpoint(self.transport, None)
 
     def workspace(self, id_or_name: str) -> Any:
         """One workspace, by its id or by its name."""
@@ -199,7 +199,7 @@ class AsyncTilo:
         return Workspace(self, id_or_name)
 
     async def _workspace_list(self) -> WorkspaceList:
-        result = await self._link().outcome(f"{ACCOUNT}/workspaces#list", {})
+        result = await self._endpoint().outcome(f"{ACCOUNT}/workspaces#list", {})
         self.catalog = WorkspaceList.of(result if isinstance(result, Mapping) else {})
         return self.catalog
 
@@ -227,7 +227,7 @@ class AsyncTilo:
         arguments: dict[str, Any] = {"name": name}
         if host is not None:
             arguments["host"] = host
-        result = await self._link().outcome(f"{ACCOUNT}/workspaces#create", arguments)
+        result = await self._endpoint().outcome(f"{ACCOUNT}/workspaces#create", arguments)
         self.catalog = None
         workspace = result.get("workspace") if isinstance(result, Mapping) else None
         if not isinstance(workspace, Mapping):
@@ -246,7 +246,7 @@ class AsyncTilo:
         raise ProtocolError(f"a workspace is named by an id, a name or a Workspace, not {workspace!r}")
 
     async def _delete_workspace(self, workspace: Any) -> Any:
-        result = await self._link().outcome(
+        result = await self._endpoint().outcome(
             f"{ACCOUNT}/workspaces#delete", {"workspace": await self._workspace_id(workspace)}
         )
         self.catalog = None
@@ -258,14 +258,14 @@ class AsyncTilo:
         return self.handoff(self._usage())
 
     async def _usage(self) -> Usage:
-        answer = await self._link().call("tilo_read", {"path": f"{ACCOUNT}/usage"})
+        answer = await self._endpoint().call("tilo_read", {"path": f"{ACCOUNT}/usage"})
         fields = answer.get("fields")
         return Usage.of(fields if isinstance(fields, Mapping) else {})
 
     # -- keys ------------------------------------------------------------
 
     async def _keys_list(self) -> list[Key]:
-        result = await self._link().outcome(f"{ACCOUNT}/keys#list", {})
+        result = await self._endpoint().outcome(f"{ACCOUNT}/keys#list", {})
         keys = result.get("keys") if isinstance(result, Mapping) else None
         return [Key.of(key) for key in keys or [] if isinstance(key, Mapping)]
 
@@ -277,13 +277,13 @@ class AsyncTilo:
             arguments["name"] = name
         if expires_in is not None:
             arguments["expires_in"] = expires_in
-        result = await self._link().outcome(f"{ACCOUNT}/keys#mint", arguments)
+        result = await self._endpoint().outcome(f"{ACCOUNT}/keys#mint", arguments)
         if not isinstance(result, Mapping):
             raise ProtocolError("the door minted a key without naming it")
         return MintedKey.of(result)
 
     async def _revoke(self, grant: str) -> Any:
-        return await self._link().outcome(f"{ACCOUNT}/keys#revoke", {"grant": grant})
+        return await self._endpoint().outcome(f"{ACCOUNT}/keys#revoke", {"grant": grant})
 
     async def _key_create(
         self, name: str, workspace: Any, expires_in: int | None
@@ -294,7 +294,7 @@ class AsyncTilo:
         if expires_in is not None:
             arguments["expires_in"] = expires_in
         try:
-            await self._link().call("tilo_do", {
+            await self._endpoint().call("tilo_do", {
                 "path": f"{ACCOUNT}/keys#create",
                 "args": arguments,
             })

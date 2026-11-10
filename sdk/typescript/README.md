@@ -52,9 +52,13 @@ for await (const event of ws.watch("pdf-viewer/visa-form.pdf")) {
   again after the wait the host says (`retry_after_ms`), with jitter, for up
   to `retryDeadlineMs` (`new Tilo({ retryDeadlineMs: 60_000 })`); past it,
   `RateLimited`, a `Refused`, says when to try again.
-- **Runs group calls.** `await ws.run("Fill Jane's application", async () =>
+- **Runs group calls.** `await ws.run("Fill Jane's application", async (run) =>
   …)` puts every call inside into one run: one undo step per app, named in
   history.
+- **Links for people.** A run keeps the link to each record its calls changed:
+  `run.links`, and `run.link` when it changed one record. `await ws.link(path)`
+  answers the link to anything a path names. It opens the record in its app
+  for the workspace's members and carries no secret.
 - **Reads are snapshots, watches are live.** `await ws.read(path)` is a
   snapshot; `for await (const event of ws.watch(path))` follows changes, runs
   and presence, its cursor kept.

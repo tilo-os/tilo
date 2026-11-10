@@ -511,6 +511,9 @@ an `mcp_url` and a `token` for it; revoking this key ends every key it minted. \
 To bring another person in (a reviewer, say), `tilo_do {path: \"workspace/members#invite\", \
 args: {role, email?}, workspace}` answers a `link` that signs them in and lands them there as \
 `role` (viewer, commenter or editor); `workspace/members#list` names who is in it. \
+A call that changed a record answers its `link`, and `tilo_link {path, workspace}` answers the link \
+to anything a path names: hand it to the person reviewing your work. It opens the record in its \
+app for the workspace's members and carries no secret, so invite the person first. \
 Files go in with `tilo_put_begin`/`_append`/`_finish` (or `PUT /w/<workspace>/content`), answering \
 a `tilo.content:<hash>` an action takes; an action that makes a file (Writer's `export-content`) \
 names its `tilo.content:` in the answer's resources, and `tilo_get {content, offset}` reads it back.";

@@ -1,6 +1,6 @@
 /** A run: an invocation that has not finished, and what to do with it. */
 
-import type { Link } from "./link.ts";
+import type { Endpoint } from "./endpoint.ts";
 import { resultOf, type Answer } from "./wire.ts";
 import type { Event } from "./models.ts";
 import { ProtocolError } from "./errors.ts";
@@ -9,15 +9,17 @@ import { ProtocolError } from "./errors.ts";
  * An action still running, or one that waits for the person.
  *
  * `result()` follows it to its result, `output()` follows its events,
- * `cancel()` stops it and `undo()` takes back what it changed.
+ * `cancel()` stops it and `undo()` takes back what it changed. Once it is
+ * done, `link` is the link to the record it changed, when it changed one.
  */
 export class Run<Result = unknown> {
-  readonly link: Link;
+  readonly endpoint: Endpoint;
   readonly invocationId: string;
   path: string | null;
+  link: string | null = null;
 
-  constructor(link: Link, invocationId: string, path: string | null = null) {
-    this.link = link;
+  constructor(endpoint: Endpoint, invocationId: string, path: string | null = null) {
+    this.endpoint = endpoint;
     this.invocationId = invocationId;
     this.path = path;
   }
@@ -32,10 +34,13 @@ export class Run<Result = unknown> {
 
   /** The whole typed answer once the invocation is done. */
   async answer(timeoutMs: number | null = null): Promise<Answer> {
-    const answer = await this.link.wait(this.invocationId, timeoutMs);
+    const answer = await this.endpoint.wait(this.invocationId, timeoutMs);
     const path = answer.path;
     if (typeof path === "string" && path !== "") {
       this.path = path;
+    }
+    if (typeof answer.link === "string" && answer.link !== "") {
+      this.link = answer.link;
     }
     return answer;
   }
@@ -48,12 +53,12 @@ export class Run<Result = unknown> {
 
   /** Stop the invocation. */
   cancel(): Promise<Answer> {
-    return this.link.status(this.invocationId, true);
+    return this.endpoint.status(this.invocationId, true);
   }
 
   /** The run's events, from started to succeeded, failed or cancelled. */
   async *output(): AsyncGenerator<Event> {
-    for await (const event of this.link.watch()) {
+    for await (const event of this.endpoint.watch()) {
       if (event.kind !== "run" || event.invocationId !== this.invocationId) {
         continue;
       }
@@ -73,6 +78,6 @@ export class Run<Result = unknown> {
     if (resource === null) {
       throw new ProtocolError("this run names no resource, so there is no app step to undo");
     }
-    return this.link.outcome(`${resource}#undo`, { steps: 1 });
+    return this.endpoint.outcome(`${resource}#undo`, { steps: 1 });
   }
 }

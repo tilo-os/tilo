@@ -14,7 +14,7 @@ async with AsyncTilo() as tilo:
 
 from ._client import AccountKeys, AsyncTilo, SignIn, Tilo, Workspaces
 from ._errors import AskPending, ProtocolError, RateLimited, Refused
-from ._link import RunGroup
+from ._endpoint import RunGroup
 from ._models import (
     Event,
     Hit,
