@@ -1199,8 +1199,10 @@ impl Core {
     /// Read item by item from where the person read to, a page at most: an item is unseen when
     /// a version of it is newer than what the person has seen of `at` (its mark), and an item
     /// they wrote is one they saw. A channel the person is caught up with costs the page it
-    /// looks through. Writing a message reads nothing above it: a reply counts as neither a
-    /// mark nor a reading of what came before it.
+    /// looks through, and one they never opened costs its first page, never its whole
+    /// conversation: what a person is shown is a page, so counting it reads a page. Writing a
+    /// message reads nothing above it: a reply counts as neither a mark nor a reading of what
+    /// came before it.
     pub(crate) fn unread_items(
         &self,
         person: &str,
@@ -1209,9 +1211,9 @@ impl Core {
         item: &str,
         most: usize,
     ) -> Result<Vec<String>, crate::store::StoreError> {
-        // How many items from the end are looked through for the first unread one: one index
-        // page, which is what a listing reads to place an item.
-        const TAIL: usize = 64;
+        // How many items are looked through: one index page, which is what a listing reads to
+        // place an item, and what a transcript shows in one frame.
+        const PAGE: usize = 64;
         let mut unread = Vec::new();
         let store = self.store.borrow();
         let storage = self
@@ -1240,7 +1242,7 @@ impl Core {
         // change their mark of the channel names (a store with no channel versions names the
         // newest item it holds). It is looked for in the tail, a page deep.
         let mut read_to: Option<usize> = None;
-        for index in (len.saturating_sub(TAIL)..len).rev() {
+        for index in (len.saturating_sub(PAGE)..len).rev() {
             let Some(id) = items.get(index) else {
                 continue;
             };
@@ -1256,13 +1258,17 @@ impl Core {
         // The first item after where they read that someone changed since, oldest first: a
         // version of theirs is one they saw, so it never makes an item unread of its own. A mark
         // that named nothing in the tail is older than the page shown from it, so the page is
-        // all after it.
+        // all after it, and one who never read anything is read from the conversation's first
+        // page.
         let from = match read_to {
             Some(index) => index.saturating_add(1),
-            None if mark.is_some() => len.saturating_sub(TAIL),
+            None if mark.is_some() => len.saturating_sub(PAGE),
             None => 0,
         };
-        for index in from.min(len)..len {
+        // The items looked through are the page from there, never the conversation: an unread
+        // item beyond it is one the count says nothing of, as a transcript shows a page.
+        let upto = len.min(from.saturating_add(PAGE));
+        for index in from.min(len)..upto {
             let Some(id) = items.get(index) else {
                 break;
             };
