@@ -546,7 +546,7 @@ mod tests {
             let bar_rect = bar.bar_rect();
             let agent = bar.face_rect("cc");
             let person = bar.face_rect("ada");
-            for rect in bar.face_rects.iter() {
+            for rect in &bar.face_rects {
                 assert!(
                     rect.x0 >= bar_rect.x0 && rect.x1 <= bar_rect.x1,
                     "a face stays in the bar at {width}: {rect:?} in {bar_rect:?}"
