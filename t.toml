@@ -4606,6 +4606,9 @@ run = "bash tools/ci/publish/lounge-binaries.sh /target/publish/lounge/binaries"
 env = { CARGO_BUILD_JOBS = "8" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/lounge/binaries/**"]
+# A release build of the relay and the bridge on eight jobs: a change low in their dependencies
+# (the networking stack) rebuilds nearly all of it, longer than the default limit on a busy node.
+timeout_secs = 3600
 default = false
 
 [[check]]
