@@ -250,7 +250,7 @@ fn acting_fabric(
 /// agents, and the tools service apps reach their lists' changes through.
 pub(crate) struct Knitted {
     pub(crate) turns: Option<std::sync::Arc<crate::conversations::Runs>>,
-    pub(crate) agents: Option<std::sync::Arc<dyn tilo_action_broker::services::AgentRoster>>,
+    pub(crate) agents: Option<std::sync::Arc<dyn tilo_broker_core::services::AgentRoster>>,
     pub(crate) tools: Option<crate::tools::Handle>,
 }
 
@@ -299,7 +299,7 @@ pub(crate) fn start_action_plane(
     let actions = sync.and_then(crate::sync::Client::device_actions);
     let own_device = actions.clone().map(|actions| {
         std::sync::Arc::new(actions)
-            as std::sync::Arc<dyn tilo_action_broker::services::OwnDeviceActions>
+            as std::sync::Arc<dyn tilo_broker_core::services::OwnDeviceActions>
     });
     // An offloadable action runs where a device of its workspace would run it sooner: the round
     // asks them over that same plane, and what the device that wins produced is kept in the content

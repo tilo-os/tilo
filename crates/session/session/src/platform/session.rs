@@ -494,7 +494,7 @@ impl Session {
             )
         });
         let record_changes = record_index.clone().map(|index| {
-            index as std::sync::Arc<dyn tilo_action_broker::services::RecordIndexChanges>
+            index as std::sync::Arc<dyn tilo_broker_core::services::RecordIndexChanges>
         });
         let channels = engine.as_ref().and_then(|engine| {
             crate::channels::Channels::open(
@@ -967,7 +967,7 @@ impl Session {
         // decides against.
         if let (Some(nearby), Some(plane)) = (&nearby, &action_plane) {
             nearby.attach_authority(std::sync::Arc::clone(&plane.desk)
-                as std::sync::Arc<dyn tilo_action_broker::services::WorkspaceAuthority>);
+                as std::sync::Arc<dyn tilo_broker_core::services::WorkspaceAuthority>);
         }
         // The agent door: a program of this login asks here to work in a
         // workspace as an agent, and the person answers on their sheets. It
@@ -1905,9 +1905,7 @@ impl Session {
     /// What the windows ask of the workspace's activity and follow, as this
     /// session serves it: the same door the desk's own pane reads through.
     #[must_use]
-    pub fn conversation_runs(
-        &self,
-    ) -> std::sync::Arc<dyn tilo_action_broker::services::TrackerRuns> {
+    pub fn conversation_runs(&self) -> std::sync::Arc<dyn tilo_broker_core::services::TrackerRuns> {
         self.shared.conversations.runs()
     }
 

@@ -273,7 +273,7 @@ impl RecordIndex {
     }
 }
 
-impl tilo_action_broker::services::RecordIndexChanges for RecordIndex {
+impl tilo_broker_core::services::RecordIndexChanges for RecordIndex {
     fn changed(&self, workspace: &str, app: &str, record: &str) {
         Self::changed(self, workspace, app, record);
     }

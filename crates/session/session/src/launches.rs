@@ -20,10 +20,11 @@ use std::sync::Mutex;
 use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 
-use tilo_action_broker::services::{
-    AuthenticatedApplicationLaunch, LaunchPlace, LaunchableApplication, LauncherServices,
-};
+use tilo_action_broker::services::LauncherServices;
 use tilo_app_launch::doors::ancestry;
+use tilo_broker_core::services::{
+    AuthenticatedApplicationLaunch, LaunchPlace, LaunchableApplication,
+};
 use tilo_desktop_model::Workspace;
 use tilo_lock::MutexRecover as _;
 

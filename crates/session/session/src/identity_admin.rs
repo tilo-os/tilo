@@ -430,7 +430,7 @@ pub(crate) fn authorize(
     workspace: &str,
     person: &str,
 ) -> Result<IdentityProfile, String> {
-    use tilo_action_broker::services::WorkspaceAuthority as _;
+    use tilo_broker_core::services::WorkspaceAuthority as _;
     let now = tilo_clock::unix_now();
     let mut hosted = false;
     let mut administers = false;
@@ -538,7 +538,7 @@ pub(crate) fn bind_slot(
     ActionArgs::bind_json(params, &supplied).map_err(|error| error.to_string())
 }
 
-pub(crate) fn outcome(answer: Answer) -> tilo_action_broker::services::HostStepOutcome {
+pub(crate) fn outcome(answer: Answer) -> tilo_broker_core::steps::HostStepOutcome {
     answer
         .map(|value| tilo_actions::ActionOutput {
             value: Some(value),
@@ -562,7 +562,7 @@ pub(crate) struct BrokerDoor {
     pub(crate) admin: &'static IdentityAdmin,
 }
 
-impl tilo_action_broker::services::HostStepServices for BrokerDoor {
+impl tilo_broker_core::steps::HostStepServices for BrokerDoor {
     fn provider(&self) -> &'static str {
         tilo_actions::remote::identity_admin::PROVIDER
     }
@@ -577,8 +577,8 @@ impl tilo_action_broker::services::HostStepServices for BrokerDoor {
 
     fn start(
         &self,
-        request: &tilo_action_broker::services::HostStepRequest<'_>,
-    ) -> Result<Pending<tilo_action_broker::services::HostStepOutcome>, String> {
+        request: &tilo_broker_core::steps::HostStepRequest<'_>,
+    ) -> Result<Pending<tilo_broker_core::steps::HostStepOutcome>, String> {
         // The identity store is that person's own: an agent or an app acting for nobody never
         // administers it through here.
         let person = request

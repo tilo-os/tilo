@@ -21,17 +21,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use runtime_collab::wire::{Event, Receipt};
 use serde_json::Map;
 use tilo_action_broker::NativePeerBrokerConfig;
-use tilo_action_broker::channel_encryption::ChannelKeyProvider;
 use tilo_action_broker::collab_broker::{BrokerChannels, BrokerHandle, FanoutState};
 use tilo_action_broker::collab_outbound::PeerPublisher;
-use tilo_action_broker::services::TrackerRuns;
 use tilo_action_broker::services::{
-    ApplicationServices, BrowserServiceSessionServices, Caller, ContentStoreServices,
-    DisplayControlServices, DriveServices, Granted, HostServices, HostStepServices,
-    PublishedResources, Reading, ResourceWatch, SearchIndexServices, ShortcutLibraryRequest,
-    ShortcutLibraryServices, ShortcutStore, SpeakerChange, SpeakerServices, WifiContinuityServices,
-    WorkspaceAuthority, WorkspaceAuthorityHandle, WorkspaceMemberships,
+    ApplicationServices, BrowserServiceSessionServices, Caller, DisplayControlServices,
+    DriveServices, Granted, HostServices, PublishedResources, Reading, ResourceWatch,
+    ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore, SpeakerChange, SpeakerServices,
+    WifiContinuityServices, WorkspaceMemberships,
 };
+use tilo_broker_core::services::TrackerRuns;
+use tilo_broker_core::services::{
+    ContentStoreServices, SearchIndexServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
+};
+use tilo_broker_core::steps::HostStepServices;
+use tilo_channels::ChannelKeyProvider;
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_lock::MutexRecover as _;
 use tilo_service::{Services, Started, Wake};
@@ -328,13 +331,13 @@ pub struct Hosted {
     pub turns: Option<std::sync::Arc<crate::conversations::Runs>>,
     /// Who keeps each workspace's agents, as its record of them names them:
     /// what the broker admits an agent's session on.
-    pub agents: Option<std::sync::Arc<dyn tilo_action_broker::services::AgentRoster>>,
+    pub agents: Option<std::sync::Arc<dyn tilo_broker_core::services::AgentRoster>>,
     /// The workspaces' sealed records: what the broker gates, and where an
     /// endpoint follows a route's keys.
     pub sealed: Sealed,
     /// How an app on this device runs one of its actions on another of the
     /// person's devices: what the collaboration plane reaches them through.
-    pub own_device: Option<std::sync::Arc<dyn tilo_action_broker::services::OwnDeviceActions>>,
+    pub own_device: Option<std::sync::Arc<dyn tilo_broker_core::services::OwnDeviceActions>>,
     /// This device's workspaces, whose owner is the canonical copy of what
     /// the apps record in them: an app's write in a workspace the owner
     /// commits is committed there before anyone hears of it, and leaves for
@@ -473,7 +476,7 @@ pub(crate) fn owner_publisher(
     records: Option<std::sync::Arc<crate::record_index::RecordIndex>>,
 ) -> std::sync::Arc<PeerPublisher> {
     let records = records.map(|records| {
-        records as std::sync::Arc<dyn tilo_action_broker::services::RecordIndexChanges>
+        records as std::sync::Arc<dyn tilo_broker_core::services::RecordIndexChanges>
     });
     engine.map_or_else(PeerPublisher::disabled, |engine| {
         PeerPublisher::with_optional_owner_commit(
@@ -626,7 +629,7 @@ impl WorkspaceAuthority for DeskAuthority {
     /// make is refused elsewhere.
     fn workspace_revocations(&self, workspace: &str) -> Option<tilo_user_identity::RevocationList> {
         let tree = self.tree.lock_recover();
-        tilo_action_broker::services::workspace_in(&tree, workspace)?;
+        tilo_broker_core::services::workspace_in(&tree, workspace)?;
         Some(self.revocations.of(workspace).unwrap_or_default())
     }
 
@@ -855,7 +858,7 @@ fn seams(
         // time — rather than an app or a peer asking for it.
         local_person: Seam::served(
             std::sync::Arc::new(tilo_identity_authority::NativeLocalPerson)
-                as std::sync::Arc<dyn tilo_action_broker::services::LocalPersonServices>,
+                as std::sync::Arc<dyn tilo_broker_core::services::LocalPersonServices>,
         ),
         // A record's own origin is its app's collaboration plane route, and a
         // task's change reaches it as the app's action; the session applies
@@ -900,7 +903,7 @@ fn seams(
         // The records' content in that index, read from the records
         // themselves: a change to a workspace's record is indexed here.
         record_index_changes: Seam::when(records.map(|records| {
-            records as std::sync::Arc<dyn tilo_action_broker::services::RecordIndexChanges>
+            records as std::sync::Arc<dyn tilo_broker_core::services::RecordIndexChanges>
         })),
         // Content a record references is kept on this device beside the
         // workspace's records, and asked of the workspace's other devices.
@@ -1743,7 +1746,7 @@ mod tests {
     /// that declared nothing.
     #[test]
     fn an_apps_declared_access_is_what_this_device_read() {
-        use tilo_action_broker::app_actions::AppActionAccess;
+        use tilo_broker_core::access::AppActionAccess;
 
         let mut lists = crate::lists::AppLists::default();
         lists.declared.insert(

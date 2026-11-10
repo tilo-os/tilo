@@ -18,10 +18,10 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use tilo_action_broker::services::{NativeTaskActionRequirement, TrackerRun, TrackerRuns};
 use tilo_action_policy::WorkspacePolicy;
 use tilo_action_policy::turn::{Looked, Turn};
 use tilo_app::framework::WorkspaceRecord;
+use tilo_broker_core::services::{NativeTaskActionRequirement, TrackerRun, TrackerRuns};
 use tilo_clock::wall;
 use tilo_resource::{Id, Resource as _};
 use ui::permissions::{LivePermissions, PermissionContext, UserId};
@@ -255,7 +255,7 @@ impl TrackerRuns for Runs {
         &self,
         workspace: &str,
         issue: &str,
-        question: Option<tilo_action_broker::services::TrackerQuestion>,
+        question: Option<tilo_broker_core::services::TrackerQuestion>,
     ) -> Result<(), String> {
         self.doors.keep_question(workspace, issue, question)
     }

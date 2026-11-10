@@ -32,10 +32,10 @@ impl NativeTaskBinding {
     /// the answers the workspace keeps for the agent and the issue, never to the
     /// preset it was admitted with, which bounds only what it does on its
     /// own. Effects stay attributed to the agent.
-    pub fn actor(&self) -> Result<crate::collab_app_broker::BrokerActor, String> {
+    pub fn actor(&self) -> Result<crate::actor::BrokerActor, String> {
         let starter = self.starter.clone().ok_or("native task starter absent")?;
         Ok(
-            crate::collab_app_broker::BrokerActor::agent(format!("agent:{}", self.agent_id))
+            crate::actor::BrokerActor::agent(format!("agent:{}", self.agent_id))
                 .for_person(starter)
                 .session_delegated()
                 .on_turn(self.turn.clone())
@@ -275,16 +275,6 @@ pub const TRACKER_RESOURCE: &str = "tasks.tracker";
 /// The tracker's record: the app's one record of a workspace, its package primary.
 pub const TRACKER_RECORD: &str = "";
 
-/// A write on `route` was admitted to this device's channels. Where it is a
-/// workspace's tracker, its readers (the broker's runs, the composer following
-/// one) are told to read it again, as the owner's publication tells them in
-/// a workspace it commits: a sealed workspace's tracker changes only here.
-pub fn tracker_written(route: &crate::route::CrdtRoute) {
-    if route.app_id == TRACKER_APP && route.record_id == TRACKER_RECORD {
-        tilo_identity_host::policy_change::announce();
-    }
-}
-
 #[must_use]
 pub fn is_tracker_issue(task_id: &str) -> bool {
     task_id.starts_with(TRACKER_ISSUE_PREFIX)
@@ -430,6 +420,21 @@ pub fn confirmation_preview(question: &TrackerQuestion) -> (tilo_actions::Draft,
         }
     });
     (draft, preview)
+}
+
+/// The scope a run's question asks its person's answer under: the exact action where the step
+/// shows something for good, the whole kind where it does not.
+#[must_use]
+pub fn issue_answer_scope(
+    app: &str,
+    (kind, action): (&str, &str),
+    consequential: bool,
+) -> tilo_action_policy::agent_answers::AnswerScope {
+    if consequential {
+        tilo_action_policy::agent_answers::AnswerScope::action(app, kind, action)
+    } else {
+        tilo_action_policy::agent_answers::AnswerScope::kind(app, kind)
+    }
 }
 
 /// An agent's run of one issue, as the Tasks app's record holds it.
@@ -580,7 +585,7 @@ pub trait TrackerRuns: Send + Sync {
     }
 
     /// Whether `run` asks its person on this host's own sheet
-    /// ([`crate::app_actions::AppActionConsentPrompter`]) and keeps its
+    /// (the host's consent prompter) and keeps its
     /// question itself ([`Self::keep_question`]), rather than on its Tasks
     /// issue: a run with no issue to ask on, as an agent door connection's.
     /// Its caller is asked through [`tilo_actions::remote::ActionHost::confirm`].

@@ -35,8 +35,9 @@ use runtime_collab::{
     NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget,
 };
 use tilo_action_broker::services::{
-    NearbyTransferChange, NearbyTransferRequestContext, NearbyTransferServices, WorkspaceAuthority,
+    NearbyTransferChange, NearbyTransferRequestContext, NearbyTransferServices,
 };
+use tilo_broker_core::services::WorkspaceAuthority;
 use tilo_capture_studio::{Refusal, Sent};
 use tilo_desktop_model::capability::{Capability, FsMode};
 use tilo_device_fabric::link::{FabricLink as _, NearbySpoolOffer, SharedLink};
@@ -2309,7 +2310,7 @@ mod transfers_between_devices {
         tree: DesktopTree,
     }
 
-    impl tilo_action_broker::services::WorkspaceAuthority for Desk {
+    impl tilo_broker_core::services::WorkspaceAuthority for Desk {
         fn with_tree(&self, read: &mut dyn FnMut(&DesktopTree)) -> Result<(), String> {
             read(&self.tree);
             Ok(())

@@ -1129,8 +1129,8 @@ mod tests {
     use automerge::ReadDoc as _;
     use automerge::transaction::Transactable as _;
     use durable_store::{DurableStore as _, StorageKey};
-    use tilo_action_broker::route::CrdtRoute;
     use tilo_action_policy::Role;
+    use tilo_broker_core::route::CrdtRoute;
     use tilo_compositor::OutputConfig;
     use tilo_desktop_model::{Strip, StripId};
     use tilo_desktop_policy::Window;

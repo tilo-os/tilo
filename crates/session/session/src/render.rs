@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use tilo_action_broker::services::{WorkspaceAuthority as _, workspace_in};
+use tilo_broker_core::services::{WorkspaceAuthority as _, workspace_in};
 use tilo_lock::MutexRecover as _;
 use tilo_render_protocol::broker as wire;
 use tilo_render_protocol::channel::Channel;

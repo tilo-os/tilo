@@ -17,17 +17,19 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tilo_action_broker::channel_encryption::ChannelKeyProvider;
 use tilo_action_broker::services::{
     AppActionGrants, ApplicationServices, AudioOutputServices, BrowserServiceSessionServices,
-    ContentStoreServices, ContinuationServices, DisplayControlServices, DriveServices,
-    FileClipboardServices, HostServices, HostStepServices, KeyboardShortcutServices,
-    LauncherServices, LegacyWorkspaceProjection, LocalPersonServices, NearbyTransferServices,
-    OwnDeviceActions, PublishedResources, RealtimeServices, RecordChangeServices,
-    RecordIndexChanges, SearchIndexServices, ShortcutLibraryServices, SpeakerServices, TrackerRuns,
-    WifiContinuityServices, WorkspaceControlServices, WorkspaceGovernanceServices,
-    WorkspaceMemberships, WorkspaceNodeActions,
+    DisplayControlServices, DriveServices, FileClipboardServices, HostServices, LauncherServices,
+    NearbyTransferServices, PublishedResources, RealtimeServices, ShortcutLibraryServices,
+    SpeakerServices, WifiContinuityServices, WorkspaceControlServices, WorkspaceMemberships,
 };
+use tilo_broker_core::services::{
+    ContentStoreServices, KeyboardShortcutServices, LegacyWorkspaceProjection, LocalPersonServices,
+    OwnDeviceActions, RecordChangeServices, RecordIndexChanges, SearchIndexServices, TrackerRuns,
+    WorkspaceGovernanceServices, WorkspaceNodeActions,
+};
+use tilo_broker_core::steps::{ContinuationServices, HostStepServices};
+use tilo_channels::ChannelKeyProvider;
 
 /// What this session serves of one seam.
 pub(crate) enum Seam<T> {
@@ -83,7 +85,7 @@ pub(crate) struct Seams {
     pub(crate) audio_output: Seam<Arc<dyn AudioOutputServices>>,
     pub(crate) workspace_memberships: Seam<Arc<dyn WorkspaceMemberships>>,
     pub(crate) tracker_runs: Seam<Arc<dyn TrackerRuns>>,
-    pub(crate) agents: Seam<Arc<dyn tilo_action_broker::services::AgentRoster>>,
+    pub(crate) agents: Seam<Arc<dyn tilo_broker_core::services::AgentRoster>>,
     pub(crate) native_certificates:
         Seam<Arc<dyn tilo_action_broker::certificate_authority::CertificateAuthority>>,
     pub(crate) local_person: Seam<Arc<dyn LocalPersonServices>>,
@@ -111,7 +113,7 @@ pub(crate) struct Seams {
     pub(crate) browser_service_sessions: Seam<Arc<dyn BrowserServiceSessionServices>>,
     pub(crate) nearby_transfer: Seam<Arc<dyn NearbyTransferServices>>,
     pub(crate) file_clipboard: Seam<Arc<dyn FileClipboardServices>>,
-    pub(crate) app_action_access: Seam<tilo_action_broker::app_actions::AppActionAccessResolver>,
+    pub(crate) app_action_access: Seam<tilo_broker_core::access::AppActionAccessResolver>,
     pub(crate) app_action_grants: Seam<Arc<dyn AppActionGrants>>,
     pub(crate) launchable_catalogue: Seam<PathBuf>,
     pub(crate) record_content: Seam<Arc<tilo_action_broker::record_content::RouteContent>>,
@@ -233,7 +235,7 @@ impl Seams {
 /// a ceiling the broker decides an app's calls against, never a grant.
 pub(crate) fn declared_access(
     lists: crate::lists::Lists,
-) -> tilo_action_broker::app_actions::AppActionAccessResolver {
+) -> tilo_broker_core::access::AppActionAccessResolver {
     Arc::new(move |app_id: &str| {
         lists
             .latest()
@@ -310,7 +312,7 @@ mod tests {
     /// manifest says.
     #[test]
     fn an_apps_declared_access_is_what_its_manifest_says() {
-        use tilo_action_broker::app_actions::AppActionAccess;
+        use tilo_broker_core::access::AppActionAccess;
 
         let lists = crate::lists::Lists::fixed(crate::lists::AppLists {
             declared: [(

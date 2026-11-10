@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use iroh::{Endpoint, EndpointAddr, EndpointId};
-use tilo_action_broker::services::{OwnDeviceActions, OwnDeviceOutcome};
 use tilo_actions::offload::ActionOffload;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Confirmation,
@@ -21,6 +20,7 @@ use tilo_actions::remote::{
     Pending, own_device, pending,
 };
 use tilo_actions::{ActionFailure, InvocationId, InvocationUpdate};
+use tilo_broker_core::services::{OwnDeviceActions, OwnDeviceOutcome};
 use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::StatePeer;
@@ -464,12 +464,12 @@ mod tests {
     use iroh::{Endpoint, RelayMode, SecretKey};
     use neighbour_wire::offer::{Decline, Power, Route, Work};
     use tilo_action_broker::record_content::ContentState;
-    use tilo_action_broker::route::CrdtRoute;
     use tilo_actions::offload::{OffloadRequest, Offloaded};
     use tilo_actions::remote::{
         InvokeArgument, TestHost, application_action_target, application_provider, own_device,
     };
     use tilo_actions::{ActionAddress, ActionOutput, CONTENT_RESOURCE_KIND, Offload};
+    use tilo_broker_core::route::CrdtRoute;
     use tilo_content::hash_bytes;
     use tilo_network_actor::{HostIdentity, RecordContentDelivery};
     use tilo_peer_state::owner::testing::{self, governor::TestGovernor};

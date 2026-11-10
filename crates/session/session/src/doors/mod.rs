@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value};
 use settings_sections::network_usage::{ConnectionKind, Reading};
-use tilo_action_broker::channel_encryption::ChannelKeyProvider;
+use tilo_channels::ChannelKeyProvider;
 use tilo_identity_host::broker::{
     ChannelKeySource, IdentityBrokerHandle, PersonRecordKinds, WorkspaceMembership,
 };

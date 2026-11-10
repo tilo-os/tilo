@@ -17,11 +17,11 @@ use collab_types::presence::{Availability, Payload, Presence};
 use collab_types::{ChannelRoute, Ed25519PublicKey};
 use iroh::EndpointId;
 use runtime_collab::native_media::{Command, Request, State};
-use tilo_action_broker::channel_encryption::{
+use tilo_action_broker::collab_core::BrokerChannels;
+use tilo_channels::{
     ChannelAccess, ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
     ChannelKeyProvider, GovernanceTransport, InboundChannelGovernance,
 };
-use tilo_action_broker::collab_core::BrokerChannels;
 use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_network_actor::{HostIdentity, workspace_topic_id};

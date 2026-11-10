@@ -21,12 +21,12 @@
 use std::sync::{Arc, Mutex};
 
 use ed25519_dalek::{Signer as _, SigningKey};
-use tilo_action_broker::services::TrackerRun;
+use tilo_broker_core::services::TrackerRun;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::join::task_delegation::{MAX_TASK_DELEGATION_NS, TaskDelegation};
 
 /// The address every door connection's run is named under: no record holds it.
-pub(crate) const DOOR_RUNS: &str = tilo_action_broker::services::DOOR_RUN_PREFIX;
+pub(crate) const DOOR_RUNS: &str = tilo_broker_core::services::DOOR_RUN_PREFIX;
 
 /// One door connection's run as it goes: its workspace, the run, and the answers its person gave
 /// it for every later step like the one it asked about.
@@ -78,7 +78,7 @@ impl DoorRuns {
         &self,
         workspace: &str,
         issue: &str,
-        question: Option<tilo_action_broker::services::TrackerQuestion>,
+        question: Option<tilo_broker_core::services::TrackerQuestion>,
     ) -> Result<(), String> {
         self.with_run(workspace, issue, |going| going.run.question = question)
     }
@@ -188,8 +188,7 @@ pub(crate) fn mint(
     admitted: &Admitted<'_>,
     now_ns: u64,
 ) -> Result<Minted, String> {
-    let starter =
-        tilo_action_broker::collab_app_broker::principal_id_for_root(certificate.user_public_key);
+    let starter = tilo_broker_core::principal_id_for_root(certificate.user_public_key);
     if starter != admitted.person {
         return Err("this device's identity is not the person's who admitted the agent".into());
     }
@@ -273,8 +272,8 @@ mod tests {
         (key, cert)
     }
 
-    fn question() -> tilo_action_broker::services::TrackerQuestion {
-        tilo_action_broker::services::TrackerQuestion {
+    fn question() -> tilo_broker_core::services::TrackerQuestion {
+        tilo_broker_core::services::TrackerQuestion {
             id: "q1".into(),
             app: "so.tilo.terminal".into(),
             resource: "terminal".into(),
@@ -282,12 +281,12 @@ mod tests {
             arguments_digest: "00".into(),
             draft: serde_json::Value::Null,
             before: None,
-            answer: tilo_action_broker::services::TrackerAnswer::Waiting,
+            answer: tilo_broker_core::services::TrackerAnswer::Waiting,
         }
     }
 
     fn person(cert: &tilo_user_identity::DeviceCert) -> String {
-        tilo_action_broker::collab_app_broker::principal_id_for_root(cert.user_public_key)
+        tilo_broker_core::principal_id_for_root(cert.user_public_key)
     }
 
     /// The run a connection is minted is a task agent's of its own, delegated by this device for
@@ -308,7 +307,7 @@ mod tests {
         assert_ne!(first.run.agent, second.run.agent, "a task agent of its own");
         assert!(first.run.agent.starts_with("task-"), "{}", first.run.agent);
         assert!(
-            tilo_action_broker::services::is_door_run(&first.run.issue),
+            tilo_broker_core::services::is_door_run(&first.run.issue),
             "the broker keeps its invocations as the run's: {}",
             first.run.issue
         );

@@ -701,7 +701,7 @@ fn bind_slot(params: &[ActionParam], argument: Option<&str>) -> Result<ActionArg
     ActionArgs::bind_json(params, &supplied).map_err(|error| error.to_string())
 }
 
-fn outcome(answer: Answer) -> tilo_action_broker::services::HostStepOutcome {
+fn outcome(answer: Answer) -> tilo_broker_core::steps::HostStepOutcome {
     answer
         .map(|value| tilo_actions::ActionOutput {
             value: Some(value),
@@ -717,7 +717,7 @@ fn outcome(answer: Answer) -> tilo_action_broker::services::HostStepOutcome {
         })
 }
 
-impl tilo_action_broker::services::HostStepServices for BrokerDoor {
+impl tilo_broker_core::steps::HostStepServices for BrokerDoor {
     fn provider(&self) -> &'static str {
         tilo_actions::remote::device_pairing::PROVIDER
     }
@@ -732,8 +732,8 @@ impl tilo_action_broker::services::HostStepServices for BrokerDoor {
 
     fn start(
         &self,
-        request: &tilo_action_broker::services::HostStepRequest<'_>,
-    ) -> Result<Pending<tilo_action_broker::services::HostStepOutcome>, String> {
+        request: &tilo_broker_core::steps::HostStepRequest<'_>,
+    ) -> Result<Pending<tilo_broker_core::steps::HostStepOutcome>, String> {
         // Admitting a device to a person's identity is that person's own act: an agent or an app
         // acting for nobody never pairs through here.
         let person = request

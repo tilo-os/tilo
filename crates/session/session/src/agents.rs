@@ -3,7 +3,7 @@
 //! ([`tilo_app::tilo_workspace_agent`]) names it and names the person who keeps it. That record is
 //! the agent's admission: the session reads it every pass, as the person sitting here, and the
 //! broker admits an agent's session only for the keeper the record names
-//! ([`tilo_action_broker::services::AgentRoster`]). Nothing here keeps state of its own beyond the
+//! ([`tilo_broker_core::services::AgentRoster`]). Nothing here keeps state of its own beyond the
 //! record this device has open: who works here is the record's.
 //! The person who keeps an agent runs it: the pass hands the agents kept here to the session's
 //! launches ([`Kept`]), which start each one's process — the record is who works, and whose device
@@ -51,7 +51,7 @@ pub(crate) struct Roster {
     spend: Mutex<BTreeMap<(String, String), runtime_collab::TaskRunSpend>>,
 }
 
-impl tilo_action_broker::services::AgentRoster for Roster {
+impl tilo_broker_core::services::AgentRoster for Roster {
     fn keeper(&self, workspace: &str, agent: &str) -> Option<String> {
         self.keepers
             .lock()

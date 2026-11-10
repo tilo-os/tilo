@@ -23,8 +23,8 @@ use tilo_action_broker::record_content::{
     ContentPeer, ContentPeers, ContentPiece, ContentScope, ContentShelf, ContentSources,
     ContentState, MAX_CONTENT_BYTES, RouteContent,
 };
-use tilo_action_broker::route::CrdtRoute;
-use tilo_action_broker::services::{CONTENT_PUT_SCOPE, ContentSink, ContentStoreServices};
+use tilo_broker_core::route::CrdtRoute;
+use tilo_broker_core::services::{CONTENT_PUT_SCOPE, ContentSink, ContentStoreServices};
 use tilo_content::{ContentStore, hash_bytes};
 use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
 use tilo_lock::MutexRecover as _;

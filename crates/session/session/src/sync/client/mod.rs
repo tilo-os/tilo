@@ -1944,7 +1944,7 @@ pub struct PeerDocuments {
     channels: Arc<std::sync::Mutex<tilo_action_broker::collab_core::BrokerChannels>>,
     fanout: Arc<tilo_action_broker::collab_broker::FanoutState>,
     /// What search reads again of a record a peer wrote.
-    changes: Option<Arc<dyn tilo_action_broker::services::RecordIndexChanges>>,
+    changes: Option<Arc<dyn tilo_broker_core::services::RecordIndexChanges>>,
 }
 
 #[cfg(target_os = "linux")]
@@ -1955,7 +1955,7 @@ impl PeerDocuments {
     pub fn new(
         channels: Arc<std::sync::Mutex<tilo_action_broker::collab_core::BrokerChannels>>,
         fanout: Arc<tilo_action_broker::collab_broker::FanoutState>,
-        changes: Option<Arc<dyn tilo_action_broker::services::RecordIndexChanges>>,
+        changes: Option<Arc<dyn tilo_broker_core::services::RecordIndexChanges>>,
     ) -> Self {
         Self {
             channels,

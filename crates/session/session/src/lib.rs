@@ -219,7 +219,6 @@ mod input_sources;
 mod invite;
 #[cfg(target_os = "linux")]
 pub mod keyboard;
-#[cfg(target_os = "linux")]
 mod keyboard_shortcuts;
 #[cfg(target_os = "linux")]
 mod keys;

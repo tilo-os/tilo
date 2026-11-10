@@ -6,11 +6,11 @@
 
 use std::sync::Arc;
 
-use tilo_action_broker::services::KeyboardShortcutServices;
 use tilo_actions::ActionAddress;
 use tilo_actions::door::ActionDescriptor;
 use tilo_actions::outcome::{ActionFailure, ActionOutput};
 use tilo_actions::remote::CatalogueRow;
+use tilo_broker_core::services::KeyboardShortcutServices;
 use tilo_sheets::keyboard_shortcuts as catalogue;
 
 /// The device's shortcut table as the broker answers an app's call for it.

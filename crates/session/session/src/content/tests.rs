@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use iroh::EndpointId;
 use neighbour_wire::NeighbourMsg;
 use tilo_action_broker::record_content::{ContentSources, ContentState};
-use tilo_action_broker::route::CrdtRoute;
+use tilo_broker_core::route::CrdtRoute;
 use tilo_content::hash_bytes;
 use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
 use tilo_network_actor::{RecordContentDelivery, WorkspaceId, workspace_topic_id};

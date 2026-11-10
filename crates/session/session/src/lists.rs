@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tilo_action_broker::services::LaunchableApplication;
+use tilo_broker_core::services::LaunchableApplication;
 use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::catalogue::StoreCatalogue;
 use tilo_desktop_search::providers::host_apps::HostAppEntry;
@@ -36,7 +36,7 @@ pub struct AppLists {
     pub candidates: Vec<desktop_policy::AppCandidate>,
     /// What each installed app declared it may do on the action door under its own identity, by
     /// package id: the ceiling the broker admits an app's query and invoke against, never a grant.
-    pub declared: BTreeMap<String, tilo_action_broker::app_actions::AppActionAccess>,
+    pub declared: BTreeMap<String, tilo_broker_core::access::AppActionAccess>,
     /// The apps a service can ask this session to open, as the action door lists them: each app's
     /// name, the actions its signed manifest offers while it is not running, and the capabilities a
     /// grant is decided on. What decides the reach the device's settings app has of the settings
@@ -356,14 +356,14 @@ fn machine_entry(
 /// admits its calls against.
 fn declared(
     installed: &[app_catalogue::apps::InstalledApp],
-) -> BTreeMap<String, tilo_action_broker::app_actions::AppActionAccess> {
+) -> BTreeMap<String, tilo_broker_core::access::AppActionAccess> {
     installed
         .iter()
         .map(|app| {
             let declared = app.declared_actions();
             (
                 app.package_id.clone(),
-                tilo_action_broker::app_actions::AppActionAccess {
+                tilo_broker_core::access::AppActionAccess {
                     query: declared.query,
                     invoke: declared.invoke,
                 },
