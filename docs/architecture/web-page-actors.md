@@ -65,6 +65,21 @@ never in the record, and nor is text the page refused. Reading the page
 takes no place in it. The record answers at once whatever the page is doing,
 so a reviewer is never queued behind the agents they are watching.
 
+**The record is a resource.** It is `browser.page-record`, a record Browser
+keeps in the workspace it is open in, beside its browsing history. Each
+action is one change of it, added after the tab's others as the action ends
+and authored by the actor the action system admitted; nobody sets down
+another's action. So History steps through a tab action by action, a
+recording is a stretch of that log ([session replay](session-replay.md)),
+and the person's other devices read the same record. Reading the record
+answers from the resource, so it answers after the engine started again or
+when the engine does not answer; what is running and how many wait still
+come from the engine. A reopened window goes on with its tab's record, and
+the place an answer names is the place in that record. A private window
+keeps none. A tab keeps its newest 1000 actions and the record its 32 most
+recently used tabs; what goes beyond leaves the record's state, counted as
+dropped, and stays in its history.
+
 ## Reading
 
 Acting on a page starts with reading it, and reading is where an agent's time
@@ -104,6 +119,25 @@ window its own input lands in, so direct input in the moment after an action
 is read as that action's. Tracking starts when the document is first read or
 operated, so earlier typing carries no attribution.
 
+**The review, for the person.** The person at the window reads the same
+truth on a screen of their own. `review-page` on `browser.page` shows the
+page's review in the page's place: each form with its questions, what each
+holds now, and who set it (an agent by its name, a person typing, the page's
+own script, or no one), with a mark on a field that no longer holds what was
+set, on a required one left empty and on one the page refuses. A secret is
+said as set or not set. Under the forms stands the tab's record, in order,
+with who did each action. The Page menu, a key, the palette and an agent all
+open it through that one action, and `show-page` closes it. The review keeps
+nothing: it is drawn from the forms, fields and record reads, made as the
+tab's unnamed actor, so they take no place in the record and tell no agent
+anything. It reads again when any page action answered, when the page shows
+another document, and once a second otherwise, since the engine does not yet
+say when the page's own script changes a field; fields read from a document
+the page has left are not drawn. Choosing a row is `show-page-field`: the
+page again, with that field in view, a scroll that takes its turn and its
+place in the record like any other action. The review covers the main
+document; fields in frames are not listed yet.
+
 A reviewer on another device sees the tab as the live picture of its window:
 the engine's own pixels, with a password shown as the page shows it and a
 window that protects itself from capture blanked. The review read and the
@@ -136,13 +170,25 @@ editor written by typing through the fill action. Below those are pointer
 and key gestures, and below those the picture of the page. The order is
 always typed form, then the element's own action, then gestures.
 
-**The second visit.** Reading a page's forms is deterministic and cheap, so
-it is done on the live page each time and there is no stored copy to go
-stale. What carries over is the names: the same answers, by the same names,
-work on the next visit because a name does not depend on a document. A form
-has a signature of what it asks and where it sends it. A caller that learned
-a form once names it by signature, and a form that has changed is refused
-rather than half filled, which sends the caller back to reading it.
+**A form is an action of the page.** Each form a page is known to ask is an
+action of `browser.page` named after it ("Apply for a visitor visa"), with
+one typed parameter per question: text, a number, a date, a tick, or a
+choice held to the answers the form offers, and required where the form
+requires. A secret or a file is no parameter; the action says which action
+takes it. The palette, a script and an agent list it beside the page's other
+actions and run it with arguments, and the door refuses a wrong type or an
+answer the form does not offer before anything reaches the page. Sending a
+form is a second action of its own, so answering never sends: an agent
+fills, a person reviews, and sending is decided apart.
+
+**The second visit.** What reading a site's forms found is remembered in the
+Browser's document, by site and signature. A page of a remembered site
+publishes its forms' actions at once, before anyone reads it. The action
+names its form by signature and the engine answers only a form that still
+has it, so a form that changed is refused with `form_changed` and nothing
+is placed, which sends the caller back to reading the page; the read then
+replaces the actions and the memory. What is remembered is a form's shape,
+never what anyone answered.
 
 ## Other devices
 
@@ -185,18 +231,18 @@ reason under "Not built yet".
 
 ## Not built yet
 
-- **The record as a resource.** The record lives with the tab in the engine
-  and ends with it. It belongs in a record of Browser's, so History,
-  recordings and sync carry it like every other action log
-  ([session replay](session-replay.md)).
-- **A page's forms published as actions.** The forms read and the answer
-  action are page actions with the form as an argument. Each form should
-  appear on `browser.page` as its own action with its questions as typed
-  parameters, so the palette, scripts and agents list "Apply for a visitor
-  visa" beside the page's other actions.
-- **Site memory.** What an agent learned about a site that one page does not
-  show (the order of a multi-page flow, which answer a site wants where) kept
-  as a record keyed by site and form signature, shared in the workspace.
+- **Direct input in the record.** The record is a resource of Browser's now,
+  and it holds what the engine sets down. The engine sets down actions; what
+  a person types straight into the page it tells apart only in the review
+  read. Once it sets that down too, the record keeps it as the person's.
+- **A page's forms as actions: what is left.** A page's forms become known
+  when an actor reads them: the Browser does not read them itself when a
+  page loads. A form that asks more once it is answered has its actions
+  withdrawn until the page is read again. A form in a frame has none, and of
+  several forms that ask exactly the same the action answers the first.
+- **Site memory: what is left.** Nobody can yet see or forget what the
+  Browser remembers of a site's forms, and it knows nothing a form does not
+  show: which answer a site wants where is still the agent's to learn.
 - **Presence on the page.** Where each actor is acting, drawn on the page
   for everyone watching, as agents are shown in other apps.
 - **Who types.** Direct input is one source. Input that arrives through a
@@ -231,9 +277,10 @@ reason under "Not built yet".
   actions. The form action is one more action on the same resource, not a
   second way in.
 - **State is CRDT-backed changes.** The page's state is the site's, in the
-  engine. What Tilo adds about it (the record) is an action log and is to
-  become a resource; until then it is held where the truth is, beside the
-  page.
+  engine. What Tilo adds about it is resources: the record, each action a
+  recorded change by its actor, and the shape of the forms a site asks, in
+  the Browser's document. The window holds only where its engine's own count
+  stands against the record.
 - **The system does what is needed more than once.** Turn-taking, per-actor
   reads and the record are the tab's, so no agent implements locking or
   bookkeeping of its own.
