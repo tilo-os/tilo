@@ -2593,3 +2593,125 @@ fn every_member_of_a_channel_that_forked_reads_the_winners_records() {
         }
     }
 }
+
+/// A waiting device admitted with a member key it has since replaced asks
+/// again with the one it holds as soon as that admission reaches it, rather
+/// than on its backoff or when it next mints a fresh key.
+#[test]
+fn a_device_admitted_with_a_key_it_replaced_asks_again_at_once() {
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    let channel = ChannelId::new();
+    let policy = Policy::readers([31, 32]);
+    let dirs = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
+    let mut now = Instant::now();
+    let mut founder = device(&workspace, workspace_id, 0, 31, &policy, dirs[0].path());
+    let mut reader = device(&workspace, workspace_id, 1, 32, &policy, dirs[1].path());
+    create(&mut founder, workspace_id, channel, now);
+    run(&mut [&mut founder], &mut now, 1);
+    // The reader hears the group and asks to join; the founder is away.
+    reader.service.access(workspace_id, channel, now);
+    run(&mut [&mut reader], &mut now, 1);
+    // Nothing the reader says reaches anyone for a while: it asks again
+    // with a fresh member key once its first one went unanswered.
+    workspace.down.store(true, Ordering::SeqCst);
+    run(&mut [&mut reader], &mut now, 65);
+    workspace.down.store(false, Ordering::SeqCst);
+
+    // The founder comes back and admits the reader with its first key.
+    let back = now;
+    for _ in 0..90 {
+        run(&mut [&mut founder, &mut reader], &mut now, 1);
+        if ready_epoch(&reader.service.access(workspace_id, channel, now)).is_some() {
+            break;
+        }
+    }
+    let joined = now.duration_since(back);
+    assert!(
+        ready_epoch(&reader.service.access(workspace_id, channel, now)).is_some(),
+        "the reader joins"
+    );
+    assert!(
+        joined <= Duration::from_secs(3),
+        "the reader asks again as soon as the stale admission reaches it, joined after {joined:?}"
+    );
+}
+
+/// A device that cannot name a channel's record keeps a genesis competing
+/// with its group's until it can, and then moves to the winner's group.
+#[test]
+fn a_competing_genesis_is_judged_once_the_device_names_the_record() {
+    let workspace_id = WorkspaceId::new();
+    let channel = ChannelId::new();
+    let policy = Policy::readers([41, 42, 43]);
+    let reader_policy = Policy::readers([41, 42, 43]);
+    let dirs: Vec<_> = (0..3).map(|_| tempfile::tempdir().unwrap()).collect();
+    let mut now = Instant::now();
+    // Two devices found a group each, heard by a listener and by the reader's
+    // endpoint, should the reader join that group.
+    let founded = |seed: u8, dir: &Path| {
+        let workspace = Arc::new(Workspace::default());
+        let listener = Endpoint::join(&workspace, workspace_id, 9);
+        Endpoint::join(&workspace, workspace_id, 1);
+        let mut founder = device(&workspace, workspace_id, 0, seed, &policy, dir);
+        create(&mut founder, workspace_id, channel, now);
+        run(&mut [&mut founder], &mut now.clone(), 1);
+        let genesis = listener
+            .take_inbound()
+            .into_iter()
+            .find_map(|inbound| match inbound {
+                InboundChannelGovernance::Frame { frame, .. } => Some(*frame),
+                InboundChannelGovernance::AccessRequest { .. } => None,
+            })
+            .unwrap();
+        (workspace, founder, genesis)
+    };
+    let first = founded(41, dirs[0].path());
+    let second = founded(42, dirs[1].path());
+    let ((workspace, mut loser, _), (_, _, winning)) =
+        if first.2.digest().unwrap() < second.2.digest().unwrap() {
+            (second, first)
+        } else {
+            (first, second)
+        };
+    // The reader hears the genesis that loses, and joins its group.
+    let mut reader = device(
+        &workspace,
+        workspace_id,
+        1,
+        43,
+        &reader_policy,
+        dirs[2].path(),
+    );
+    reader.service.access(workspace_id, channel, now);
+    run(&mut [&mut loser, &mut reader], &mut now, 10);
+    let epoch = ready_epoch(&reader.service.access(workspace_id, channel, now));
+    assert!(epoch.is_some(), "the reader joins the loser's group");
+
+    // The winner's genesis reaches the reader while it cannot name the record.
+    reader_policy.unnamed.lock().unwrap().insert(channel);
+    workspace
+        .queues
+        .lock()
+        .unwrap()
+        .entry(1)
+        .or_default()
+        .push(InboundChannelGovernance::Frame {
+            workspace: workspace_id,
+            frame: Box::new(winning),
+        });
+    run(&mut [&mut reader], &mut now, 2);
+    assert_eq!(
+        ready_epoch(&reader.service.access(workspace_id, channel, now)),
+        epoch,
+        "a genesis the reader cannot judge does not move it"
+    );
+
+    // Named again, the winner's genesis decides: the reader starts over.
+    reader_policy.unnamed.lock().unwrap().remove(&channel);
+    run(&mut [&mut reader], &mut now, 1);
+    assert!(
+        reader.service.peers[&channel].peer.access() == Access::Waiting,
+        "the reader leaves the group whose genesis lost"
+    );
+}

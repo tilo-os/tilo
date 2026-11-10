@@ -1479,13 +1479,18 @@ impl ChannelEncryption {
         let (Some(entry), Some(store)) = (self.peers.get_mut(&channel), &self.store) else {
             return;
         };
-        if let Some(allowed) = &allowed
-            && !channel_crypto::backs(&frame, allowed)
-        {
+        let unjudged = match &allowed {
             // The workspace's governance reached this device before the
-            // policy here named the frame's signer. Keep the frame for the
-            // policy that moves instead of refusing a write from a device
-            // admitted a moment ago for good.
+            // policy here named the frame's signer.
+            Some(allowed) => !channel_crypto::backs(&frame, allowed),
+            // A group competing with this device's, while it cannot name who
+            // reads the channel: whether its founder may is not known here.
+            None => entry.peer.competes(&frame),
+        };
+        if unjudged {
+            // Keep the frame for the policy that moves instead of refusing it
+            // for good: a device admitted a moment ago writes, and a winning
+            // genesis moves this device to the group the others are in.
             if !entry.held.contains(&frame) {
                 if entry.held.len() == MAX_HELD_FRAMES {
                     entry.held.remove(0);
@@ -1531,6 +1536,12 @@ impl ChannelEncryption {
                 entry.retry = Backoff::now(now, REQUEST_FIRST);
                 entry.fresh_at = now;
                 true
+            }
+            PeerEvent::AdmittedWithAnotherKey => {
+                // The participants admit it again with the key it asks with
+                // now: ask at once, not on the backoff.
+                entry.retry = Backoff::now(now, REQUEST_FIRST);
+                false
             }
             PeerEvent::Genesis | PeerEvent::Duplicate | PeerEvent::Ignored => false,
         };
@@ -2304,6 +2315,22 @@ impl ChannelKeyProvider {
         self.slot.lock().ok().and_then(|slot| slot.clone())
     }
 
+    /// [`ChannelKeyAccess::generation`] of the service installed now, 0
+    /// while none is: what a first [`Self::changed`] waits from.
+    pub fn generation(&self) -> u64 {
+        self.get().map_or(0, |access| access.generation())
+    }
+
+    /// Wait until any channel's keys or this device's access to them may have
+    /// changed since `after`, the value the previous wait returned (or
+    /// [`Self::generation`] read before looking at the keys), and return the
+    /// value to wait from next. As [`Self::channel_changed`], for every
+    /// channel at once.
+    pub async fn changed(&self, after: u64) -> u64 {
+        self.changed_where(after, ChannelKeyAccess::generation)
+            .await
+    }
+
     /// Wait until `channel`'s keys or this device's access to them may have
     /// changed since `after`, the value the previous wait returned (0 at
     /// first), and return the value to wait from next.
@@ -2315,14 +2342,20 @@ impl ChannelKeyProvider {
     /// identity service, which checks the device's trust and the person's
     /// role on every answer. Costs no wakeup while nothing changes.
     pub async fn channel_changed(&self, channel: ChannelId, after: u64) -> u64 {
+        self.changed_where(after, |access| access.channel_change(channel))
+            .await
+    }
+
+    /// Wait until `current` of the installed service differs from `after`,
+    /// or the service is installed, replaced or goes away.
+    async fn changed_where(
+        &self,
+        after: u64,
+        current: impl Fn(&ChannelKeyAccess) -> u64 + Send,
+    ) -> u64 {
         // Subscribed before looking, so an installation between the two is
         // still seen.
         let mut installed = self.installed.subscribe();
-        let current = |provider: &Self| {
-            provider
-                .get()
-                .map_or(0, |access| access.channel_change(channel))
-        };
         let Some((access, mut changes)) = self
             .get()
             .and_then(|access| access.changes().map(|changes| (access, changes)))
@@ -2330,10 +2363,10 @@ impl ChannelKeyProvider {
             // No service: nothing changes until one is installed. The
             // installation counter lives as long as `self`.
             let _ = installed.changed().await;
-            return current(self);
+            return self.get().map_or(0, |access| current(&access));
         };
         loop {
-            let change = access.channel_change(channel);
+            let change = current(&access);
             if change != after {
                 return change;
             }
@@ -2345,7 +2378,7 @@ impl ChannelKeyProvider {
                         return change.wrapping_add(1);
                     }
                 }
-                _ = installed.changed() => return current(self),
+                _ = installed.changed() => return self.get().map_or(0, |access| current(&access)),
             }
         }
     }

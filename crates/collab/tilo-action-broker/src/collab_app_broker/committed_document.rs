@@ -1,6 +1,7 @@
 //! Current committed reads on the actual admitted channel.
 mod capture;
 use super::{Arc, CrdtRoute, Duration, JoinedChannel, Ordering, Rc, Weak};
+use crate::channel_encryption::ChannelKeyProvider;
 pub(super) use capture::Budget;
 pub use capture::DocumentBytes;
 use runtime_collab::committed_document::{MAX_DOCUMENT_BYTES, Reply, Request};
@@ -855,20 +856,39 @@ fn captured_unchanged(
 /// answer [`Reply::Stale`]. `check` answers `Some(announced)` while the read
 /// is unchanged: with `announced` false some input can change unannounced,
 /// and it re-runs every [`UNANNOUNCED_RECHECK`] as well.
+///
+/// A sealed record's read also changes when this device's channel `keys`
+/// do: a write sealed under an epoch or branch whose key had not reached the
+/// device opens once it has, with nothing written to the record.
 async fn hold_until_stale(
     wake: &tokio::sync::Notify,
+    keys: Option<&ChannelKeyProvider>,
     mut arm: impl FnMut(),
     mut check: impl FnMut() -> Result<Option<bool>, String>,
 ) -> Result<Reply, String> {
+    // Read before the first check, so keys arriving while it runs are seen.
+    let mut keyed = keys.map(ChannelKeyProvider::generation);
     loop {
         arm();
         let Some(announced) = check()? else {
             return Ok(Reply::Stale);
         };
-        if announced {
-            wake.notified().await;
-        } else {
-            let _ = tokio::time::timeout_at(next_unannounced_recheck(), wake.notified()).await;
+        let keys_changed = async move {
+            match keys.zip(keyed) {
+                Some((keys, after)) => keys.changed(after).await,
+                None => std::future::pending().await,
+            }
+        };
+        let changed = async {
+            if announced {
+                wake.notified().await;
+            } else {
+                let _ = tokio::time::timeout_at(next_unannounced_recheck(), wake.notified()).await;
+            }
+        };
+        tokio::select! {
+            generation = keys_changed => keyed = Some(generation),
+            () = changed => {}
         }
     }
 }
@@ -990,8 +1010,12 @@ impl JoinedChannel {
                 }
             }
         }
+        let keys = (self.record_read() == RecordRead::Sealed)
+            .then(|| self.state.services.channel_keys.clone())
+            .flatten();
         hold_until_stale(
             &wake,
+            keys.as_ref(),
             || {
                 let _ = watch.arm();
             },

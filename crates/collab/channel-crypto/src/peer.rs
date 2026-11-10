@@ -167,6 +167,9 @@ pub enum PeerEvent {
     /// commit, or its branch lost). The device is waiting again with a
     /// fresh member key and must send a new access request.
     Desynchronised,
+    /// A commit admitted this waiting device with a member key it no longer
+    /// holds. It still waits, and asks again with the key it holds now.
+    AdmittedWithAnotherKey,
 }
 
 /// What [`ChannelPeer::reconcile`] changed.
@@ -702,6 +705,16 @@ impl ChannelPeer {
     /// Whether a genesis of this channel is known here.
     pub fn has_genesis(&self) -> bool {
         self.genesis.is_some()
+    }
+
+    /// Whether `frame` is a genesis other than the one known here: a group
+    /// competing with this device's, which only a device that can name the
+    /// channel's readers can judge ([`Self::receive`]).
+    pub fn competes(&self, frame: &MlsGovernanceFrame) -> bool {
+        matches!(frame.action, MlsGovernanceAction::Genesis)
+            && self
+                .genesis
+                .is_some_and(|known| frame.digest().is_ok_and(|incoming| incoming != known))
     }
 
     /// Whether this device knows the channel has a group: it saw a genesis
@@ -1474,7 +1487,10 @@ impl ChannelPeer {
             self.apply_commit(frame, allowed, vault)
         };
         match applied {
-            Ok(PeerEvent::Ignored | PeerEvent::Desynchronised) | Err(_) => {
+            Ok(
+                PeerEvent::Ignored | PeerEvent::Desynchronised | PeerEvent::AdmittedWithAnotherKey,
+            )
+            | Err(_) => {
                 self.record = replaced;
                 self.head = lost;
                 self.desynchronise(vault)
@@ -1597,13 +1613,15 @@ impl ChannelPeer {
             return Ok(PeerEvent::Ignored);
         };
         self.seen_epoch = Some(self.seen_epoch.unwrap_or(0).max(frame.epoch));
-        let welcome = frame
+        let Some(material) = frame
             .join_material()
             .filter(|_| frame.added().contains(&self.device))
-            .filter(|material| ChannelGroup::welcome_names(&material.welcome, pending));
-        let Some(material) = welcome else {
+        else {
             return Ok(PeerEvent::Ignored);
         };
+        if !ChannelGroup::welcome_names(&material.welcome, pending) {
+            return Ok(PeerEvent::AdmittedWithAnotherKey);
+        }
         let attempt = pending.duplicate()?;
         let parent = MemberRecord::seal_waiting(pending, vault)?;
         match ChannelGroup::process_welcome_with_history(

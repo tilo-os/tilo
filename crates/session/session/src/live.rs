@@ -830,6 +830,8 @@ fn run(
         };
         tracing::debug!(device = %hex::encode(shared.device), relaying = serving.is_some(),
             "the live plane runs on this session's endpoint");
+        let keys = shared.engine.keys();
+        let mut keyed = keys.generation();
         let mut known = BTreeSet::new();
         adopt(&shared, &endpoint, serving.as_ref(), &mut known);
         // A workspace this session joins later opens its plane the same way: its channel keys
@@ -839,7 +841,10 @@ fn run(
         loop {
             tokio::select! {
                 _ = stopped.recv() => break,
-                () = announced(&shared) => adopt(&shared, &endpoint, serving.as_ref(), &mut known),
+                changed = keys.changed(keyed) => {
+                    keyed = changed;
+                    adopt(&shared, &endpoint, serving.as_ref(), &mut known);
+                }
                 Some(workspace) = rejoined.recv() => {
                     Arc::clone(&shared)
                         .settle(workspace, &endpoint, serving.as_deref())
@@ -865,23 +870,6 @@ fn adopt(
                 endpoint.clone(),
                 relay.cloned(),
             ));
-        }
-    }
-}
-
-/// Resolve when the channel service announces that a channel's keys or this device's access to them
-/// changed — a workspace joined, or existing ones re-keyed — or when it is installed for the first
-/// time.
-async fn announced(shared: &Shared) {
-    let keys = shared.engine.keys();
-    match keys.get().and_then(|access| access.changes()) {
-        Some(mut changes) => {
-            let _ = changes.changed().await;
-        }
-        None => {
-            let _ = keys
-                .channel_changed(collab_types::ChannelId::default(), 0)
-                .await;
         }
     }
 }
