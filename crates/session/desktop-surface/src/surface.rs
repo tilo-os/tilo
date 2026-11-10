@@ -138,7 +138,7 @@ pub trait TileSource {
     }
 
     /// The tab already showing what the launch `app` opens (a record launch's record,
-    /// [`crate::session::record_launch`]): it comes forward in place of a second window on the same
+    /// [`tilo_desktop_search::record_launch`]): it comes forward in place of a second window on the same
     /// record.
     fn showing(&self, _app: &str) -> Option<TabId> {
         None

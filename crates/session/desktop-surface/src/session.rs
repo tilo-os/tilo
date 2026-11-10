@@ -39,30 +39,13 @@ use tilo_actions::{ActorKind, InvocationId};
 
 use tilo_lock::MutexRecover as _;
 
+use tilo_desktop_search::record_launch;
+
 use crate::DesktopHandle;
 use crate::navigation::ChromeEffect;
 
 /// What one admitted open answers to.
 type Answer = Completer<Result<InvocationReceipt, ActionHostError>>;
-
-/// The launch a [`crate::TileSource`] reads as opening `app` on its record `record` :
-/// `{RECORD_LAUNCH}{app}:{record}` ([`record_launch`]).
-pub const RECORD_LAUNCH: &str = "record:";
-
-/// The launch that opens `app` on its record `record` .
-#[must_use]
-pub fn record_launch(app: &str, record: &str) -> String {
-    format!("{RECORD_LAUNCH}{app}:{record}")
-}
-
-/// The app and record a [`record_launch`] names, or `None` for a plain launch.
-#[must_use]
-pub fn launched_record(launch: &str) -> Option<(&str, &str)> {
-    launch
-        .strip_prefix(RECORD_LAUNCH)?
-        .split_once(':')
-        .filter(|(app, record)| !app.is_empty() && !record.is_empty())
-}
 
 /// The launch a [`crate::TileSource`] reads as opening `app` with the content whose hash is `hash`
 /// : `{CONTENT_LAUNCH}{app}:{hash}` ([`content_launch`]).

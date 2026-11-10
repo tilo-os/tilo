@@ -13,7 +13,7 @@
     target_arch = "wasm32",
     allow(
         dead_code,
-        reason = "the page hosts this search with no record index, action host or model gateway, so what those reach stays unread there"
+        reason = "the page hosts this search with no action host or model gateway, so what those reach stays unread there"
     )
 )]
 
@@ -659,13 +659,26 @@ impl SessionSearch {
                     invoke.arguments,
                 )
             }),
-            Target::Launch { app, place } => {
-                self.with_apps(|apps| match host_apps::launched(&app) {
+            Target::Launch { app, place } => self.with_apps(|apps| {
+                // A record this workspace holds opens as a link to it does: its app's `open` on
+                // the record, which brings the window on it forward or opens its app there.
+                if let Some((app, record)) = tilo_desktop_search::launched_record(&app) {
+                    let place = crate::platform::notice::Place {
+                        app: app.to_owned(),
+                        record: record.to_owned(),
+                        resource: String::new(),
+                    };
+                    return apps.invoke(
+                        crate::platform::notice::open_target(workspace, &place),
+                        serde_json::Map::new(),
+                    );
+                }
+                match host_apps::launched(&app) {
                     // The machine's own app places its window itself.
                     Some(desktop_id) => apps.start_host_app(desktop_id),
                     None => apps.open_application(workspace, &app, place),
-                })
-            }
+                }
+            }),
             Target::Prefer { source, enabled } => {
                 self.prefer(&source, enabled);
                 Ok(())
@@ -728,11 +741,16 @@ impl SessionSearch {
             });
         }
         let path = id.file_path();
-        records.bring_here(
+        if !records.bring_here(
             workspace,
             &package,
             RecordCheckout::new(id, RecordKind::new(kind)),
-        );
+        ) {
+            return Err(DoorError::Unavailable {
+                code: "records_unavailable".into(),
+                reason: "Records of another workspace are not brought here".into(),
+            });
+        }
         // A record kept as a file is opened as well, as the document it is: `file:/…` is a record
         // id, not a link, so it is the path the app is given. It opens after the reference is
         // named, so a file that is gone leaves the record held and says so.
@@ -1013,8 +1031,9 @@ mod tests {
 
     use super::*;
 
-    /// The action host a test session reaches: it notes what search opens in which workspace, and
-    /// carries out nothing else.
+    /// The action host a test session reaches: it notes what search opens — a URI in which
+    /// workspace, an app's resource by the provider and action it was invoked at — and carries out
+    /// nothing else.
     struct Opening(Rc<std::cell::RefCell<Vec<(String, String)>>>);
 
     fn unsupported() -> DoorError {
@@ -1035,10 +1054,13 @@ mod tests {
 
         fn invoke(
             &self,
-            _: RemoteActionTarget,
+            target: RemoteActionTarget,
             _: serde_json::Map<String, serde_json::Value>,
         ) -> Result<(), DoorError> {
-            Err(unsupported())
+            self.0
+                .borrow_mut()
+                .push((target.provider, target.address.action));
+            Ok(())
         }
 
         fn cancel(&self, _: &str, _: &str, _: &str) -> Result<(), DoorError> {
@@ -1201,6 +1223,205 @@ mod tests {
                 Err(DoorError::Unavailable { ref code, .. }) if code == "record_not_held"
             ),
             "a record no workspace names is refused: {refused:?}"
+        );
+    }
+
+    /// A record this workspace holds is found by the name its index gives it, and choosing it opens
+    /// it in its app as a link to it does: the app's `open` on that record, through the action host,
+    /// which brings the window on it forward or opens the app there.
+    #[test]
+    fn a_record_held_here_chosen_in_search_opens_in_its_app() {
+        const PDF: &str = "so.tilo.pdf-viewer";
+        const FORM: &str = "uuid:6d1c1f36-0000-4000-8000-0000000000aa";
+        let home = tilo_test_env::TestHome::new().expect("a home");
+        let directory = app_state::workspace_index_directory(home.data(), PDF, "here")
+            .expect("an index directory");
+        std::fs::create_dir_all(&directory).expect("the index's directory");
+        let mut index = automerge::AutoCommit::new();
+        let form = ui::record::RecordId::parse(FORM).expect("a record id");
+        assert!(ui::record::index::reference(
+            &mut index,
+            &form,
+            &ui::record::RecordKind::new("pdf.document")
+        ));
+        assert!(ui::record::index::set_name(
+            &mut index,
+            &form,
+            Some("application.pdf")
+        ));
+        std::fs::write(directory.join(app_state::DOCUMENT_FILE), index.save()).expect("the index");
+
+        let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let search = SessionSearch::new(
+            SearchOptions {
+                records: Some(crate::records::Records::of(home.data().to_path_buf())),
+                ..SearchOptions::default()
+            },
+            None,
+            "",
+            Some(Rc::new(Opening(Rc::clone(&opened)))),
+            None,
+            None,
+        );
+        let feed = search.feed("here", &Scope::Workspace);
+        let hit = feed
+            .sources
+            .iter()
+            .find(|source| source.id() == "records")
+            .and_then(|source| source.query("application").into_iter().next())
+            .expect("the form is found by its name");
+        assert_eq!(hit.title, "application.pdf");
+        search
+            .perform_checked("here", hit.target, &mut |_| Ok(()))
+            .expect("the record opens");
+        let link = crate::platform::notice::open_target(
+            "here",
+            &crate::platform::notice::Place {
+                app: PDF.into(),
+                record: FORM.into(),
+                resource: String::new(),
+            },
+        );
+        assert_eq!(
+            opened.borrow().as_slice(),
+            [(link.provider, link.address.action)],
+            "the record opens in its app, as a link to it does"
+        );
+    }
+
+    /// The windows a page's desk opens on records: each record launch opens its app on that
+    /// record, as the page does.
+    struct RecordWindows(Rc<std::cell::RefCell<Vec<(String, String)>>>);
+
+    impl tilo_desktop_surface::TileSource for RecordWindows {
+        fn tile(
+            &mut self,
+            _: &tilo_desktop_model::Workspace,
+            tab: &tilo_desktop_model::Tab,
+        ) -> ui::widget::TileHost {
+            ui::widget::TileHost::new(ui::widget::TileContent::Notice {
+                title: tab.title.clone(),
+                detail: String::new(),
+            })
+        }
+
+        fn launch(
+            &mut self,
+            _: &tilo_desktop_model::Workspace,
+            id: u64,
+            app: &str,
+        ) -> Option<tilo_desktop_model::Tab> {
+            let (app, record) = tilo_desktop_search::launched_record(app)?;
+            self.0
+                .borrow_mut()
+                .push((app.to_owned(), record.to_owned()));
+            Some(tilo_desktop_model::Tab {
+                id,
+                title: record.into(),
+                tile: tilo_desktop_model::TileContent::LocalApp {
+                    app_id: app.into(),
+                    label: record.into(),
+                    note: String::new(),
+                },
+                app_title: None,
+                view: String::new(),
+                pinned: false,
+            })
+        }
+    }
+
+    /// The page's search: the session's search mounted with no action host — a page opens an app
+    /// on its own desk — over the records its store holds, as the page's replication took them in.
+    /// A PDF its workspace's index names `application.pdf` is offered for "application", and
+    /// choosing it opens PDF Viewer on that record, as a link to the record opens it on the page.
+    #[test]
+    fn a_page_s_search_finds_a_workspace_record_by_name_and_opens_it_in_its_app() {
+        const PDF: &str = "so.tilo.pdf-viewer";
+        const FORM: &str = "uuid:6d1c1f36-0000-4000-8000-0000000000aa";
+        let _settled = ui::motion::testing::settled();
+        let mut minter = tilo_desktop_model::IdMinter::new(7);
+        let tree = tilo_desktop_surface::seed_tree(&mut minter, "Visa", Vec::new());
+        let workspace = tree
+            .active_workspace()
+            .map(|held| held.id().to_string())
+            .expect("the desk shows a workspace");
+
+        // The workspace's index of PDF Viewer's records, as it reached the page's store.
+        let home = tilo_test_env::TestHome::new().expect("a home");
+        let directory = app_state::workspace_index_directory(home.data(), PDF, &workspace)
+            .expect("an index directory");
+        std::fs::create_dir_all(&directory).expect("the index's directory");
+        let mut index = automerge::AutoCommit::new();
+        let form = ui::record::RecordId::parse(FORM).expect("a record id");
+        assert!(ui::record::index::reference(
+            &mut index,
+            &form,
+            &ui::record::RecordKind::new("pdf.document")
+        ));
+        assert!(ui::record::index::set_name(
+            &mut index,
+            &form,
+            Some("application.pdf")
+        ));
+        std::fs::write(directory.join(app_state::DOCUMENT_FILE), index.save()).expect("the index");
+        let store: crate::platform::Store =
+            std::sync::Arc::new(app_state::FsStore::new(home.data()));
+
+        let search = Rc::new(SessionSearch::new(
+            SearchOptions {
+                records: Some(crate::records::Records::over(
+                    store,
+                    crate::platform::records::Changes::default(),
+                )),
+                ..SearchOptions::default()
+            },
+            None,
+            "ada",
+            None,
+            None,
+            None,
+        ));
+        let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let (surface, handle) = tilo_desktop_surface::DesktopSurface::new(
+            tree,
+            7,
+            Box::new(RecordWindows(Rc::clone(&opened))),
+        );
+        handle.set_viewport_width(1200.0);
+        handle.set_search_host(Rc::clone(&search) as Rc<dyn SearchHost>);
+        let mut frame = ui::headless::FrameHarness::for_root(
+            ui::State::new(),
+            surface,
+            (1200, 800),
+            ui::Theme::dark(),
+        );
+
+        handle.open_search(Scope::Workspace, Some("application".into()));
+        let started = Instant::now();
+        let at = loop {
+            frame.relayout();
+            let (_, rows) = handle.search_rows();
+            if let Some(at) = rows.iter().position(|row| row.title == "application.pdf") {
+                break at;
+            }
+            assert!(
+                started.elapsed() < tilo_test_env::hang_bound(),
+                "the form is offered by its name: {rows:?}"
+            );
+            std::thread::park_timeout(Duration::from_millis(5));
+        };
+        handle.choose_search_row(at, None);
+        for _ in 0..3 {
+            frame.relayout();
+        }
+        assert!(
+            search.perform_choices(&handle, &mut |_| Ok(())).is_empty(),
+            "the page's desk opens the record itself"
+        );
+        assert_eq!(
+            opened.borrow().as_slice(),
+            [(PDF.to_owned(), FORM.to_owned())],
+            "PDF Viewer opens on the form"
         );
     }
 

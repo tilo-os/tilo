@@ -1226,15 +1226,14 @@ impl TileSource for Tiles {
     }
 
     fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
-        let (app, record, content) = if let Some((app, hash)) =
-            tilo_desktop_surface::session::launched_content(app)
-        {
-            (app, None, Some(hash))
-        } else if let Some((app, record)) = tilo_desktop_surface::session::launched_record(app) {
-            (app, Some(record), None)
-        } else {
-            (app, None, None)
-        };
+        let (app, record, content) =
+            if let Some((app, hash)) = tilo_desktop_surface::session::launched_content(app) {
+                (app, None, Some(hash))
+            } else if let Some((app, record)) = tilo_desktop_search::launched_record(app) {
+                (app, Some(record), None)
+            } else {
+                (app, None, None)
+            };
         let title = known_application(app)?;
         if let Some(hash) = content {
             self.shared
@@ -1257,7 +1256,7 @@ impl TileSource for Tiles {
     }
 
     fn showing(&self, app: &str) -> Option<TabId> {
-        let (app, record) = tilo_desktop_surface::session::launched_record(app)?;
+        let (app, record) = tilo_desktop_search::launched_record(app)?;
         let kind = application(app)?.record_kind.clone();
         self.shared
             .records

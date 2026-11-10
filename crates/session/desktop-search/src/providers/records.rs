@@ -1,5 +1,9 @@
 //! Records held by the workspaces on this device, found by name.
 //!
+//! A record this workspace holds opens in its app when its row is chosen,
+//! as a link to it opens it ([`crate::record_launch`]): the window already
+//! on it comes forward, else its app opens on it.
+//!
 //! A workspace starts empty. Moving a record into it costs one step: type
 //! the record's name, the row says which workspace it lives in, and Enter
 //! **brings it here**.
@@ -16,7 +20,7 @@
 use ui::record::{RecordCheckout, RecordId, RecordKind};
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 
-use crate::model::{DESKTOP_APP, Hit, InvokeTarget, Source, Target};
+use crate::model::{DESKTOP_APP, Hit, InvokeTarget, LaunchPlace, Source, Target, record_launch};
 
 /// The resource the session answers for the records it holds, and the
 /// action in it naming `record` as held by the workspace it runs in.
@@ -155,15 +159,25 @@ impl Records {
         }
     }
 
-    /// The row of `record`, ranked `score`.
+    /// The row of `record`, ranked `score`: one this workspace holds opens in its app, one of
+    /// another workspace is brought here. A file is the exception: bringing it here opens it as
+    /// the document it is, wherever it was held.
     fn hit(&self, record: &HeldRecord, score: i32) -> Option<Hit> {
         let facts = record.facts();
         let checkout = record.checkout()?;
-        let target =
-            InvokeTarget::action(DESKTOP_APP, &self.workspace, RECORDS_RESOURCE, BRING_HERE)
-                .with_argument(RECORD_PARAM, record.id.clone())
-                .with_argument(KIND_PARAM, checkout.kind.as_str())
-                .with_argument(PACKAGE_PARAM, record.package.clone());
+        let target = if record.here && checkout.id.file_path().is_none() {
+            Target::Launch {
+                app: record_launch(&record.package, checkout.id.route()),
+                place: LaunchPlace::Focus,
+            }
+        } else {
+            Target::Invoke(Box::new(
+                InvokeTarget::action(DESKTOP_APP, &self.workspace, RECORDS_RESOURCE, BRING_HERE)
+                    .with_argument(RECORD_PARAM, record.id.clone())
+                    .with_argument(KIND_PARAM, checkout.kind.as_str())
+                    .with_argument(PACKAGE_PARAM, record.package.clone()),
+            ))
+        };
         Some(Hit {
             row: None,
             preview: None,
@@ -177,7 +191,7 @@ impl Records {
             facts,
             score,
             icon: None,
-            target: Target::Invoke(Box::new(target)),
+            target,
         })
     }
 
@@ -221,11 +235,9 @@ impl Source for Records {
     }
 
     /// The browse set is what the other workspaces hold, not what this one
-    /// does: a record this workspace already names needs no reference to it,
-    /// so its row would do nothing when chosen. What the person worked in
-    /// here is where they left their windows
+    /// does: what the person worked in here is where they left their windows
     /// ([`crate::providers::places::Continue`]) and in what the open apps
-    /// publish.
+    /// publish. A record of this workspace is a typed name away, and opens.
     fn query(&self, needle: &str) -> Vec<Hit> {
         if needle.trim().is_empty() {
             return self.browse();
@@ -270,10 +282,22 @@ mod tests {
             None,
         );
         form.name = Some("application.pdf".into());
+        form.package = "so.tilo.pdf-viewer".into();
         let records = Records::new("here", vec![form]);
         let hits = records.query("application");
         let hit = hits.first().expect("the form is found by its name");
         assert_eq!(hit.title, "application.pdf");
+        assert_eq!(
+            hit.target,
+            Target::Launch {
+                app: record_launch(
+                    "so.tilo.pdf-viewer",
+                    "uuid:6d1c1f36-0000-4000-8000-0000000000aa"
+                ),
+                place: LaunchPlace::Focus,
+            },
+            "a record this workspace holds opens in its app, as a link to it does"
+        );
         assert!(records.query("passport").is_empty());
     }
 

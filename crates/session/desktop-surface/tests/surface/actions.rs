@@ -310,7 +310,7 @@ impl TileSource for RecordWindows {
     }
 
     fn launch(&mut self, _: &Workspace, id: u64, app: &str) -> Option<Tab> {
-        let (app, record) = tilo_desktop_surface::session::launched_record(app)?;
+        let (app, record) = tilo_desktop_search::launched_record(app)?;
         self.opened.borrow_mut().push((id, record.to_owned()));
         Some(Tab {
             id,
@@ -327,7 +327,7 @@ impl TileSource for RecordWindows {
     }
 
     fn showing(&self, app: &str) -> Option<u64> {
-        let (_, record) = tilo_desktop_surface::session::launched_record(app)?;
+        let (_, record) = tilo_desktop_search::launched_record(app)?;
         self.opened
             .borrow()
             .iter()

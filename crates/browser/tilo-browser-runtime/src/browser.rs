@@ -1215,6 +1215,8 @@ fn present_desktop(
     let dyn_history_store = Rc::clone(&dyn_store);
     // What the person's mentions are told by, kept where their settings are.
     let mentions_store = Rc::clone(&dyn_store);
+    // What the palette finds the workspace's records in: the indexes the page took in.
+    let records_store = Rc::clone(&dyn_store);
     let wake = proxy()?;
     let (mut surface, handle, shared, persistence) = crate::desktop::mount(
         desktop_inputs(config, &dyn_store, permissions)?,
@@ -1264,6 +1266,7 @@ fn present_desktop(
     let search = crate::page_search::mount(
         &handle,
         &config.author(),
+        records_store,
         Arc::new(move || {
             let _ = search_wake.send_event(id);
         }),

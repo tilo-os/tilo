@@ -16,16 +16,22 @@ use tilo_session::platform::apps::Apps;
 use tilo_session::search::{SearchOptions, SessionSearch};
 
 /// The session's search over this page's desk, mounted as a native desktop mounts it: the bundle's
-/// apps as the apps installed here, and the page's own model service as the gateway its questions
-/// run on.
+/// apps as the apps installed here, the records the workspace's indexes name as `store` holds them
+/// (what the page's replication took in, noted in its one stream of record changes), and the page's
+/// own model service as the gateway its questions run on.
 pub(crate) fn mount(
     handle: &DesktopHandle,
     person: &str,
+    store: tilo_session::platform::Store,
     wake: Arc<dyn Fn() + Send + Sync>,
 ) -> Rc<SessionSearch> {
     let search = Rc::new(SessionSearch::new(
         SearchOptions {
             preferences: SearchPreferences::default(),
+            records: Some(tilo_session::records::Records::over(
+                store,
+                crate::replication::changes(),
+            )),
             ..SearchOptions::default()
         },
         Some(Arc::new(crate::page_apps::PageApps) as Arc<dyn Apps>),

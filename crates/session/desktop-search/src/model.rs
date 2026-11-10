@@ -32,6 +32,27 @@ pub enum LaunchPlace {
     Beside,
 }
 
+/// The launch a host's windows read as opening `app` on its record `record` (the record's route):
+/// `{RECORD_LAUNCH}{app}:{record}` ([`record_launch`]). What a link to a record, an app asking for
+/// another's record, and a search row of a record this workspace holds all open, so a record
+/// already in a window comes forward rather than opening twice.
+pub const RECORD_LAUNCH: &str = "record:";
+
+/// The launch that opens `app` on its record `record` .
+#[must_use]
+pub fn record_launch(app: &str, record: &str) -> String {
+    format!("{RECORD_LAUNCH}{app}:{record}")
+}
+
+/// The app and record a [`record_launch`] names, or `None` for a plain launch.
+#[must_use]
+pub fn launched_record(launch: &str) -> Option<(&str, &str)> {
+    launch
+        .strip_prefix(RECORD_LAUNCH)?
+        .split_once(':')
+        .filter(|(app, record)| !app.is_empty() && !record.is_empty())
+}
+
 /// What choosing a hit does. The host performs it exactly as its other
 /// controls do: a launch opens a window, a window hit focuses it, an action
 /// runs through the host's action door.

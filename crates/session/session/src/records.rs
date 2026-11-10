@@ -54,8 +54,9 @@ struct Held {
 
 /// The device's record indexes, as search offers them.
 pub struct Records {
-    /// Where the indexes are, and where this session's own references are written.
-    root: PathBuf,
+    /// Where the indexes are, and where this session's own references are written; `None` for a
+    /// host whose records reach it from one workspace (a page), which brings none of another here.
+    root: Option<PathBuf>,
     /// The store the records are in, noting every write of one in the change stream: the session's
     /// one store for the workspaces' records, read by the activity and the person's mentions.
     store: Store,
@@ -89,6 +90,23 @@ impl Records {
         #[cfg(not(target_os = "linux"))]
         let plain: Store = std::rc::Rc::new(app_state::FsStore::new(&root));
         let store = crate::platform::records::noting(plain, changes.clone());
+        Self::read(Some(root), store, changes)
+    }
+
+    /// The records of the workspace whose records `store` keeps as they reach this host, read
+    /// again whenever `changes` says one moved: a page's, whose replication writes the store and
+    /// notes each record it takes in. What it holds is the one workspace's, so nothing of another
+    /// is brought here.
+    #[must_use]
+    pub fn over(store: Store, changes: crate::platform::records::Changes) -> Self {
+        Self::read(None, store, changes)
+    }
+
+    fn read(
+        root: Option<PathBuf>,
+        store: Store,
+        changes: crate::platform::records::Changes,
+    ) -> Self {
         // What the indexes name is read again whenever a record of this device moves: an app of a
         // workspace naming one writes the store this stream hears, and so does this session.
         let reading = reading(store.clone(), &changes);
@@ -99,12 +117,6 @@ impl Records {
             reading,
             names: RefCell::default(),
         }
-    }
-
-    /// Where this device keeps its record indexes, and where a record's document is.
-    #[must_use]
-    pub fn root(&self) -> PathBuf {
-        self.root.clone()
     }
 
     /// The store the workspaces' records are kept in, as this session reads them.
@@ -165,12 +177,15 @@ impl Records {
     /// Name `record` in the workspace `workspace` , in the index of `package` : the reference it
     /// holds from then on, and the whole of what bringing a record here does. Written away from the
     /// loop, through the one store the records are in, whose write notes the change in the stream
-    /// the activity and the mentions follow.
-    pub fn bring_here(&self, workspace: &str, package: &str, record: RecordCheckout) {
+    /// the activity and the mentions follow. Whether this host brings records here at all.
+    pub fn bring_here(&self, workspace: &str, package: &str, record: RecordCheckout) -> bool {
+        let Some(root) = &self.root else {
+            return false;
+        };
         let (workspace, package) = (workspace.to_owned(), package.to_owned());
         #[cfg(target_os = "linux")]
         {
-            let root = self.root.clone();
+            let root = root.clone();
             let changes = self.changes.clone();
             let (keeping, held) = (workspace.clone(), package.clone());
             let named = std::thread::Builder::new()
@@ -185,9 +200,10 @@ impl Records {
             }
         }
         #[cfg(not(target_os = "linux"))]
-        if name_in(&self.root, &workspace, &package, record) {
+        if name_in(root, &workspace, &package, record) {
             self.changes.note(&workspace, &package, "", false);
         }
+        true
     }
 
     /// The indexes as last read.

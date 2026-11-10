@@ -3,7 +3,7 @@
 //! The desktop surface hands a [`crate::TileSource`] one string per launch:
 //! a Tilo package id, `host:<desktop-id>`, `window:<n>`, or an app opening a
 //! record or content. The vocabulary is shared with what the surface and the
-//! desk already build ([`tilo_desktop_surface::session::record_launch`]); this
+//! desk already build ([`tilo_desktop_search::record_launch`]); this
 //! module reads it back so a session can tell what it is being asked to start
 //! before it starts anything.
 
