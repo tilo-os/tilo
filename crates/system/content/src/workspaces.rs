@@ -19,6 +19,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::SystemTime;
 
 use crate::{
     Collected, ContentBackend, ContentError, ContentLimits, ContentReader, ContentState,
@@ -36,7 +37,7 @@ const KEEP_FREE_PERCENT: u64 = 2;
 pub struct WorkspaceStores {
     dir: PathBuf,
     limits: ContentLimits,
-    stores: Mutex<BTreeMap<String, ContentStore>>,
+    stores: Mutex<BTreeMap<String, Kept>>,
     /// Whether the disk was found low at the last write: the error is logged
     /// once when it runs low, not at every refusal.
     low: Arc<AtomicBool>,
@@ -62,21 +63,67 @@ impl WorkspaceStores {
     ///
     /// `workspace` is not a workspace's id (a UUID).
     pub fn get(&self, workspace: &str) -> Result<ContentStore, String> {
+        Ok(self.kept(workspace)?.store)
+    }
+
+    /// Remove from `workspace`'s store what nothing in `live` names and was
+    /// last written before `before`: content the workspace no longer
+    /// references, once whoever wrote it had time to reference it.
+    ///
+    /// # Errors
+    ///
+    /// `workspace` is not a workspace's id, or its store could not be read or
+    /// changed.
+    pub fn collect(
+        &self,
+        workspace: &str,
+        live: &BTreeSet<String>,
+        before: SystemTime,
+    ) -> Result<Collected, String> {
+        self.kept(workspace)?
+            .dir
+            .collect_unreferenced_before(live, before)
+            .map_err(|error| error.to_string())
+    }
+
+    /// The workspaces this host keeps content of, by id.
+    #[must_use]
+    pub fn workspaces(&self) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return Vec::new();
+        };
+        entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let name = entry.file_name().into_string().ok()?;
+                (workspace_dir(&name).as_deref() == Some(name.as_str())).then_some(name)
+            })
+            .collect()
+    }
+
+    fn kept(&self, workspace: &str) -> Result<Kept, String> {
         let workspace = workspace_dir(workspace).ok_or("the workspace is not a uuid")?;
-        let store = self
+        let kept = self
             .stores
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .entry(workspace)
             .or_insert_with_key(|workspace| {
-                ContentStore::new(RoomChecked {
-                    inner: DirBackend::with_limits(self.dir.join(workspace), self.limits),
-                    disk: self.dir.clone(),
-                    low: Arc::clone(&self.low),
-                })
+                let dir = Arc::new(DirBackend::with_limits(
+                    self.dir.join(workspace),
+                    self.limits,
+                ));
+                Kept {
+                    store: ContentStore::new(RoomChecked {
+                        inner: Arc::clone(&dir),
+                        disk: self.dir.clone(),
+                        low: Arc::clone(&self.low),
+                    }),
+                    dir,
+                }
             })
             .clone();
-        Ok(store)
+        Ok(kept)
     }
 
     /// The limits every workspace's store is bounded by.
@@ -84,6 +131,13 @@ impl WorkspaceStores {
     pub const fn limits(&self) -> ContentLimits {
         self.limits
     }
+}
+
+/// One workspace's store, and the directory it keeps its content in.
+#[derive(Clone)]
+struct Kept {
+    store: ContentStore,
+    dir: Arc<DirBackend>,
 }
 
 /// What a host keeps free on a disk of `total` bytes: a tenth of a small
@@ -119,7 +173,7 @@ fn room_at(_path: &Path) -> Option<(u64, u64)> {
 
 /// A workspace's store that keeps nothing new while the disk is low.
 struct RoomChecked {
-    inner: DirBackend,
+    inner: Arc<DirBackend>,
     /// Where the stores are: the disk whose room counts.
     disk: PathBuf,
     low: Arc<AtomicBool>,
@@ -238,6 +292,59 @@ mod tests {
             "a released item is gone"
         );
         assert!(stores.get("").is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_workspace_lets_go_of_what_it_no_longer_references_once_its_writer_had_time() {
+        let dir =
+            std::env::temp_dir().join(format!("tilo-content-ws-collect-{}", std::process::id()));
+        let stores = WorkspaceStores::in_dir(&dir, ContentLimits::default());
+        let store = stores.get(WORKSPACE).unwrap();
+        let named = store.put(b"a file the tree names").unwrap();
+        let replaced = store.put(b"the version it replaced").unwrap();
+        let live = BTreeSet::from([named.clone()]);
+
+        let long_ago = SystemTime::UNIX_EPOCH;
+        let collected = stores.collect(WORKSPACE, &live, long_ago).unwrap();
+        assert!(
+            collected.hashes.is_empty(),
+            "content written since is spared: its writer may not have named it yet"
+        );
+        assert!(store.has(&replaced));
+
+        let later = SystemTime::now() + std::time::Duration::from_secs(60);
+        let collected = stores.collect(WORKSPACE, &live, later).unwrap();
+        assert_eq!(collected.hashes, std::slice::from_ref(&replaced));
+        assert!(store.has(&named), "what the workspace names stays");
+        assert!(!store.has(&replaced));
+        assert_eq!(stores.workspaces(), [WORKSPACE]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn writing_content_already_kept_spares_it_from_collection() {
+        let dir =
+            std::env::temp_dir().join(format!("tilo-content-ws-rewrite-{}", std::process::id()));
+        let stores = WorkspaceStores::in_dir(&dir, ContentLimits::default());
+        let store = stores.get(WORKSPACE).unwrap();
+        let hash = store.put(b"uploaded again").unwrap();
+        let path = dir.join(WORKSPACE).join(hash.get(..2).unwrap()).join(&hash);
+        std::fs::File::options()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH)
+            .unwrap();
+        let a_while_ago = SystemTime::now() - std::time::Duration::from_secs(60);
+        assert_eq!(store.put(b"uploaded again").unwrap(), hash);
+        let collected = stores
+            .collect(WORKSPACE, &BTreeSet::new(), a_while_ago)
+            .unwrap();
+        assert!(
+            collected.hashes.is_empty(),
+            "an upload of content already here is a fresh write: its record may name it soon"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

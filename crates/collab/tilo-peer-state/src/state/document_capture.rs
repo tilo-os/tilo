@@ -2,6 +2,7 @@
 //! byte limit.
 use super::{AutoCommit, Route, StatePeer, SystemTime, backend::PeerDocument};
 use automerge::ChangeHash;
+use automerge::transaction::Transactable as _;
 use collab_types::{DocumentMutation, Ed25519PublicKey, OpKind, SealedCompaction, SignedOp};
 
 /// The most bytes one capture hands out, whatever the caller allows.
@@ -36,6 +37,38 @@ impl std::error::Error for PeerDocumentReadError {}
 pub struct PeerDocumentCapture {
     heads: Vec<ChangeHash>,
     bytes: Vec<u8>,
+}
+
+impl StatePeer {
+    /// A digest of `record` of `app` as this state holds it now: any write
+    /// admitted to it since changes it, in the clear or sealed, and reading it
+    /// saves and opens nothing. `None` for a record not held. Equal revisions
+    /// at two moments mean the record took no write between them.
+    #[must_use]
+    pub fn record_revision(&self, app: &str, record: &str) -> Option<[u8; 32]> {
+        let document = self.core.documents.get(&Route {
+            app: app.into(),
+            record: record.into(),
+        })?;
+        let mut hasher = blake3::Hasher::new_derive_key("tilo record revision v1");
+        for head in document.doc.base_heads() {
+            hasher.update(&head.0);
+        }
+        hasher.update(
+            &u64::try_from(document.sealed.len())
+                .unwrap_or(u64::MAX)
+                .to_le_bytes(),
+        );
+        hasher.update(
+            &u64::try_from(document.sealed.bytes())
+                .unwrap_or(u64::MAX)
+                .to_le_bytes(),
+        );
+        if let Some(last) = document.sealed.last() {
+            hasher.update(blake3::hash(&last.payload).as_bytes());
+        }
+        Some(*hasher.finalize().as_bytes())
+    }
 }
 
 /// Stable revision of the exact committed graph, shared by native owners.

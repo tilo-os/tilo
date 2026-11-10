@@ -20,7 +20,6 @@ use collab_types::{ArtifactId, ContentRetention, EncryptionMetadata, SignedOp};
 use ed25519_dalek::SigningKey;
 #[cfg(feature = "agents")]
 use neighbour_wire::NeighbourMsg;
-#[cfg(feature = "agents")]
 use tilo_peer_state::StatePeer;
 
 use super::{GovernedWorkspace, SystemTime, Workspaces};
@@ -175,6 +174,34 @@ impl GovernedWorkspace {
         }
         Ok(Some(opened.document))
     }
+}
+
+/// `record` of `app` of `workspace` with every write of its history, saved,
+/// read from `peer`, a copy of the governor's state, and opened with
+/// `device`'s keys where it is sealed: what a reader that must see all of a
+/// record reads without holding the workspace while it does. `None` while a
+/// sealed write of it does not open or merge, or its channel's keys are not
+/// here.
+pub(super) async fn whole_document(
+    peer: &StatePeer,
+    device: Option<&super::DeviceKeys>,
+    workspace: &str,
+    (app, record): (&str, &str),
+) -> Option<Vec<u8>> {
+    if !peer.publication().is_sealed_record(app, record) {
+        return peer.document(app, record);
+    }
+    let route = collab_types::ChannelRoute::new(app, record);
+    let keys = device?.channel_keys(workspace, &route, false).await?.ok()?;
+    let keys = RecordKeys {
+        keys,
+        artifact: collab_types::document_artifact_id(app, workspace, record),
+    };
+    let opened = peer
+        .publication()
+        .opened_document(app, record, &mut keys.open())
+        .ok()??;
+    opened.unmerged.is_empty().then_some(opened.document)
 }
 
 /// Publish `changes` to `record` of `app` into `candidate` as `key`'s write:

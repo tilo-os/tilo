@@ -9,7 +9,10 @@
 //! their workspace for the hash their record names
 //! ([`crate::workspaces::Workspaces::content_answer`]), and are answered from
 //! that workspace's store alone: possessing a hash grants nothing in another
-//! workspace.
+//! workspace. What no record of a workspace names any more is let go of
+//! ([`collection`]).
+
+pub mod collection;
 
 use std::path::Path;
 use std::sync::Arc;

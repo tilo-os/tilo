@@ -23,14 +23,14 @@
 //! with are its own; and several sources serve, each answering with the
 //! content it keeps and leaving the rest to the others.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
 
 use neighbour_wire::NeighbourMsg;
 use neighbour_wire::content::ContentWants;
 use tilo_peer_state::peer_handle;
 
-use super::Workspaces;
+use super::{CollaborationError, Workspaces};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 /// The bytes of one piece, as members answer.
@@ -166,6 +166,101 @@ impl Workspaces {
             }
         }
         None
+    }
+
+    /// Every record of `workspace` the governor's copy holds (or of `only`
+    /// among them), each saved with all of its history: what tells a host
+    /// which content the workspace still references, now or in a version it
+    /// can go back to. Read from a copy of the governor's state, taken in a
+    /// moment: the workspace takes writes while its records are read.
+    /// `None` when a record cannot be read whole (sealed for a channel this
+    /// host has no keys of, or with sealed writes that do not open or merge
+    /// yet), so the caller knows it does not see all the workspace references.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not governed here.
+    pub async fn whole_records(
+        &self,
+        workspace: &str,
+        only: Option<&BTreeSet<(String, String)>>,
+    ) -> Result<Option<WholeRecords>, CollaborationError> {
+        let state = self.workspace(workspace).await?;
+        let (peer, device) = {
+            let governed = state.lock().await;
+            let peer = governed.peer().clone();
+            (peer, governed.device.clone())
+        };
+        let routes: Vec<(String, String)> = peer
+            .plaintext_routes()
+            .into_iter()
+            .chain(peer.sealed_routes())
+            .filter(|route| only.is_none_or(|only| only.contains(route)))
+            .collect();
+        let mut read = WholeRecords::default();
+        for (app, record) in routes {
+            #[cfg(any(feature = "agents", feature = "web"))]
+            let document = super::sealed_records::whole_document(
+                &peer,
+                device.as_ref(),
+                workspace,
+                (&app, &record),
+            )
+            .await;
+            #[cfg(not(any(feature = "agents", feature = "web")))]
+            let document = {
+                let _ = &device;
+                (!peer.publication().is_sealed_record(&app, &record))
+                    .then(|| peer.document(&app, &record))
+                    .flatten()
+            };
+            let (Some(document), Some(revision)) = (document, peer.record_revision(&app, &record))
+            else {
+                return Ok(None);
+            };
+            read.documents.push(document);
+            read.revisions.insert((app, record), revision);
+        }
+        Ok(Some(read))
+    }
+
+    /// Run `act` while `workspace` takes no write, if none of the records
+    /// `read` read has changed since and none was added: `Ok(Ok(_))` with
+    /// what it answered, or `Ok(Err(_))` with the records that changed or
+    /// appeared, for the caller to read again. The workspace waits only as
+    /// long as `act` takes.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not governed here.
+    pub async fn while_unwritten<R>(
+        &self,
+        workspace: &str,
+        read: &WholeRecords,
+        act: impl FnOnce() -> R,
+    ) -> Result<Result<R, BTreeSet<(String, String)>>, CollaborationError> {
+        let state = self.workspace(workspace).await?;
+        let governed = state.lock().await;
+        // Members' writes are taken into the replica under its own lock: held
+        // too, nothing lands while `act` runs.
+        let peer = governed.peer();
+        let changed: BTreeSet<(String, String)> = peer
+            .plaintext_routes()
+            .into_iter()
+            .chain(peer.sealed_routes())
+            .filter(|(app, record)| {
+                read.revisions.get(&(app.clone(), record.clone()))
+                    != peer.record_revision(app, record).as_ref()
+            })
+            .collect();
+        let answer = if changed.is_empty() {
+            Ok(act())
+        } else {
+            Err(changed)
+        };
+        drop(peer);
+        drop(governed);
+        Ok(answer)
     }
 
     /// Hand the pieces of content members send this host to `keeper`, beside
@@ -349,6 +444,24 @@ impl Workspaces {
             .iter()
             .filter_map(|message| postcard::to_allocvec(message).ok())
             .collect()
+    }
+}
+
+/// Records of a workspace read whole ([`Workspaces::whole_records`]), with
+/// the revision each was read at.
+#[derive(Default)]
+pub struct WholeRecords {
+    /// Each record saved with all of its history.
+    pub documents: Vec<Vec<u8>>,
+    revisions: BTreeMap<(String, String), [u8; 32]>,
+}
+
+impl WholeRecords {
+    /// Take in `newer`, records read again: their revisions are the ones
+    /// read last.
+    pub fn extend(&mut self, newer: Self) {
+        self.documents.extend(newer.documents);
+        self.revisions.extend(newer.revisions);
     }
 }
 
