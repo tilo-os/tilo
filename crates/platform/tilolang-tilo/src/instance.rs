@@ -1443,6 +1443,8 @@ impl Instance {
         }
     }
 
+    /// Carry out `message`, one thing the window told of the person at it, as a step of theirs,
+    /// and send what followed it: what a press made, and what the window hears after a press.
     fn event(&mut self, message: ToApp) {
         // What the person did besides type into the field they were typing into ends the change
         // their typing makes: it lands first, as one change of theirs, and what they did is the
@@ -1458,7 +1460,40 @@ impl Instance {
         let first = self.host().map(|host| host.next_ticket());
         let mut ran: Option<(ActionRef, Value)> = None;
         let pressed = matches!(message, ToApp::Fire { .. });
-        let outcome = match message {
+        let outcome = self.carry_out(message, &mut ran);
+        if let Err(words) = outcome {
+            self.notice(words, ui::NoticeKind::Error);
+            // What the controls show goes back to what they are bound to.
+            for lane in [Lane::Root, Lane::Detail] {
+                if let Some(view) = self.lane_mut(lane) {
+                    view.bound.clear();
+                }
+                self.send_bound(lane);
+            }
+        }
+        let tickets = self.commit_planned();
+        if let (Some((aref, result)), Some(first)) = (ran, first) {
+            self.after_action(&aref, &result, tickets.into_iter().filter(|t| *t >= first));
+        }
+        self.follow_opens();
+        if pressed {
+            // What the press made opens now, and the window hears right after it that the press
+            // ran: what the person typed after it goes to what it opened, never to what a later
+            // press of the same batch opens.
+            self.take_open_requests();
+            self.press_ran(self.last_fire);
+            self.tell_took();
+        }
+    }
+
+    /// Carry out what the window told `self` of, answering what it could not do in words; `ran`
+    /// takes the action it applied and what that returned, when it ran one.
+    fn carry_out(
+        &mut self,
+        message: ToApp,
+        ran: &mut Option<(ActionRef, Value)>,
+    ) -> Result<(), Words> {
+        match message {
             ToApp::Back => {
                 self.close_detail();
                 Ok(())
@@ -1468,7 +1503,7 @@ impl Instance {
                 key,
                 event,
                 value,
-            } => self.fire(lane, &key, &event, value.as_ref(), &mut ran),
+            } => self.fire(lane, &key, &event, value.as_ref(), ran),
             edit @ (ToApp::Toggle { .. }
             | ToApp::Splice { .. }
             | ToApp::Edit { .. }
@@ -1502,7 +1537,7 @@ impl Instance {
                 self.form_edit(form, &field, text);
                 Ok(())
             }
-            ToApp::FormSubmit { form } => self.form_submit(form, &mut ran),
+            ToApp::FormSubmit { form } => self.form_submit(form, ran),
             ToApp::FormCancel { form } => {
                 if self.form.as_ref().is_some_and(|open| open.id == form) {
                     self.form = None;
@@ -1534,29 +1569,6 @@ impl Instance {
                     Ok(())
                 }
             }
-        };
-        if let Err(words) = outcome {
-            self.notice(words, ui::NoticeKind::Error);
-            // What the controls show goes back to what they are bound to.
-            for lane in [Lane::Root, Lane::Detail] {
-                if let Some(view) = self.lane_mut(lane) {
-                    view.bound.clear();
-                }
-                self.send_bound(lane);
-            }
-        }
-        let tickets = self.commit_planned();
-        if let (Some((aref, result)), Some(first)) = (ran, first) {
-            self.after_action(&aref, &result, tickets.into_iter().filter(|t| *t >= first));
-        }
-        self.follow_opens();
-        if pressed {
-            // What the press made opens now, and the window hears right after it that the press
-            // ran: what the person typed after it goes to what it opened, never to what a later
-            // press of the same batch opens.
-            self.take_open_requests();
-            self.press_ran(self.last_fire);
-            self.tell_took();
         }
     }
 
