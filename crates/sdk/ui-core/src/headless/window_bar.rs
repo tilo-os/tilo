@@ -172,6 +172,7 @@ impl FrameHarness {
         theme: crate::theme::Theme,
         input: crate::interaction::InteractionEnvironment,
     ) -> Result<(), crate::widget::WidgetLayoutError> {
+        self.invalidate_local();
         self.take_interaction_environment(input);
         self.relayout_window_themed(viewport, theme)
     }

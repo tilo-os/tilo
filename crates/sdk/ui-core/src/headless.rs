@@ -2506,6 +2506,7 @@ impl FrameHarness {
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
     ) {
+        self.invalidate_local();
         self.take_interaction_environment(environment);
         self.relayout();
     }
@@ -2514,12 +2515,13 @@ impl FrameHarness {
     /// OS event, leaving the window to be laid out by whoever takes them: what
     /// they change reaches the frame that follows, so a host that lays the
     /// window out anyway ([`Self::relayout_window_themed_for`]) lays it out
-    /// once, at the size and state it will be read in.
+    /// once, at the size and state it will be read in. Callers invalidate
+    /// local state first, as every entry point does, so that the frame they
+    /// ask for afterwards reads the change.
     fn take_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
     ) {
-        self.invalidate_local();
         self.pump_component_wakes();
         self.interaction = environment;
         self.root.set_interaction_environment(environment);
