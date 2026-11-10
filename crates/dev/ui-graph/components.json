@@ -1,5 +1,5 @@
 {
-  "format": 7,
+  "format": 8,
   "toolkit": "0.1.0",
   "components": [
     {
@@ -7461,6 +7461,11 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "opens",
+          "doc": "The row opens into a document of its own where it stands: what its view gives as `detail` comes once it stands open. The list's rows offer to open when this says so, whether or not one carries its document yet.",
+          "type": "bool"
         }
       ],
       "slots": [
@@ -7510,8 +7515,9 @@
         },
         {
           "name": "detail",
-          "doc": "The item's document, shown in the row's place while the row stands open into it: a row with a document opens where it stands in the list when it is chosen, and the list's own motion grows the row to hold it. The document opens with the item's own leading control and title, in the row's column — the row becomes the item, its title written once — and what the item holds follows under them. Without a document, choosing the row opens the item elsewhere (`ui.VirtualList`'s `activate`).",
-          "accepts": "view"
+          "doc": "The item's document, shown in the row's place while the row stands open into it: a row with a document opens where it stands in the list when it is chosen, and the list's own motion grows the row to hold it. The document opens with the item's own leading control and title, in the row's column — the row becomes the item, its title written once — and what the item holds follows under them. Without a document, choosing the row opens the item elsewhere (`ui.VirtualList`'s `activate`).\nOnly the row standing open carries it: the runtime builds a row's document when the row opens and drops it when it closes, so a list of ten thousand rows on screen costs the one document a person reads.",
+          "accepts": "view",
+          "when_open": true
         }
       ],
       "semantics": {

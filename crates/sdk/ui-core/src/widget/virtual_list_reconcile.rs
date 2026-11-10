@@ -294,9 +294,17 @@ impl<M: ListModel> VirtualList<M> {
         // What the tree rows are, before any of them is built: a row reads its depth and
         // whether its subtasks show from what this leaves in its marks.
         self.shape_tree(&range);
-        if self.request_dirty || self.requested_range.as_ref() != Some(&range) {
-            self.model.request_range(range.clone());
+        // The row standing open into its item is the one whose document the host builds, so the
+        // list asks again when it opens or closes, as well as when the rows it shows move. It is
+        // asked for by its key, which the row keeps while the rows around it are read anew.
+        let open = self.open.clone();
+        if self.request_dirty
+            || self.requested_range.as_ref() != Some(&range)
+            || self.requested_open != open
+        {
+            self.model.request_range(range.clone(), open.as_ref());
             self.requested_range = Some(range.clone());
+            self.requested_open = open;
             self.request_dirty = false;
         }
         let old_keys = self

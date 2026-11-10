@@ -1656,18 +1656,14 @@ impl Core {
         }
     }
 
-    /// Record, in a view's frame, that it read the versions of `target`: it runs again when any
-    /// field of the resource changes, which is a new version.
+    /// Record, in a view's frame, that it read the versions of `target`: it runs again when a
+    /// version of the resource comes, which every change to it makes one of — the version, not
+    /// each field, so a view that reads a resource's history reads one thing of it and not its
+    /// every field.
     pub(crate) fn read_versions_of(&self, target: &crate::value::ResourceRef) {
-        let id = target.id_string();
-        let fields: Vec<String> = self
-            .type_of_ref(&target.ty)
-            .map(|(_, info)| info.fields.iter().map(|f| f.id.clone()).collect())
-            .unwrap_or_default();
         if let Some(vs) = self.frames.borrow_mut().view_mut() {
-            for field in fields {
-                vs.reads.push((id.clone(), field));
-            }
+            vs.reads
+                .push((target.id_string(), crate::marks::DOC_VERSIONS.to_owned()));
         }
     }
 

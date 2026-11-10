@@ -151,8 +151,10 @@ pub trait ListModel {
     /// Ask again for row `index` after it failed.
     fn retry(&mut self, _index: usize) {}
 
-    /// Opportunity to enqueue work for the visible window plus overscan.
-    fn request_range(&mut self, _range: Range<usize>) {}
+    /// Opportunity to enqueue work for the visible window plus overscan, and for the row `open`
+    /// — the row standing open into its item where it stands, when one does: a host that builds
+    /// rows as they are shown builds that row's document and no other's.
+    fn request_range(&mut self, _range: Range<usize>, _open: Option<&Self::Key>) {}
 
     /// Drain a model-owned invalidation wakeup. Return true after logical
     /// order, count, key, or row-state changes. Use
@@ -531,6 +533,9 @@ pub struct VirtualList<M: ListModel> {
     last_tick: Option<Instant>,
     last_anchor: Option<SparseAnchor<M::Key>>,
     requested_range: Option<Range<usize>>,
+    /// The row standing open into its item when the model was last asked for its rows: the row
+    /// whose document the host builds, and no other's.
+    requested_open: Option<M::Key>,
     request_dirty: bool,
     structure_dirty: bool,
     /// The list's own box changed height, as a list that fits its rows measures taller
@@ -741,6 +746,7 @@ impl<M: ListModel> VirtualList<M> {
             last_tick: None,
             last_anchor: None,
             requested_range: None,
+            requested_open: None,
             request_dirty: true,
             structure_dirty: true,
             box_dirty: false,

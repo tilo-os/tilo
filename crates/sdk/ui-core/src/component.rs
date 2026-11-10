@@ -966,7 +966,9 @@ pub trait RowSource {
     fn index_of(&self, key: &str) -> Option<usize>;
 
     /// Render the rows of `range` not rendered yet, and forget those rendered outside it.
-    fn request_range(&mut self, range: std::ops::Range<usize>);
+    /// Render the rows of `range` as they are shown, and the document of the row `open` — the
+    /// row standing open into its item where it stands, when one does.
+    fn request_range(&mut self, range: std::ops::Range<usize>, open: Option<String>);
 
     /// Whether the row `key` is rendered now, its content there to read: a row named but not
     /// rendered yet is on its way, and the list shows a placeholder in its slot until it

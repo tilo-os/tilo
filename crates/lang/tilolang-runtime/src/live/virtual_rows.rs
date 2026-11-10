@@ -300,6 +300,10 @@ pub(crate) struct Virtual {
     /// Rows the steps inserted or removed since the rows were read: the listing the rows stand
     /// for does not hold them, and the count the host holds is the listing's with them.
     stepped: bool,
+    /// The key of the row standing open into its item where it stands: the host says which one
+    /// it shows open, and a row's document is built for it alone. A key, not a place, so the row
+    /// the person reads stays the row it is as the rows around it come, go and move.
+    open: Option<String>,
     /// The host's rows are no longer known: steps were given that did not fit. The host reads
     /// the list anew when its holder next runs.
     lost: bool,
@@ -308,7 +312,13 @@ pub(crate) struct Virtual {
 impl Virtual {
     /// The list as its holder just read it: `rows` its rows as the host holds them, and `built`
     /// the ones built, in order. The length is the rows' own: the steps since add theirs.
-    fn new(holder: BoundId, template: RowsOf, rows: Rows, built: Vec<(usize, BoundId)>) -> Self {
+    fn new(
+        holder: BoundId,
+        template: RowsOf,
+        rows: Rows,
+        built: Vec<(usize, BoundId)>,
+        open: Option<String>,
+    ) -> Self {
         let len = rows.len();
         Self {
             holder,
@@ -317,6 +327,7 @@ impl Virtual {
             built,
             len,
             stepped: false,
+            open,
             lost: false,
         }
     }
@@ -362,6 +373,38 @@ impl Virtual {
 }
 
 impl Live {
+    /// The host shows the row at `open` of the list `list` standing open into its item: the row
+    /// that opens builds its item's document and the row that closes drops it, both rendered
+    /// again where they stand — the list sends them on as the rows that changed.
+    pub fn open_row(&mut self, list: &str, open: Option<&str>) {
+        let Some(rows) = self.lists.get(list) else {
+            return;
+        };
+        if rows.open.as_deref() == open {
+            return;
+        }
+        let before = rows.open.clone();
+        let bounds = &self.bounds;
+        let reopened: Vec<(BoundId, bool)> = rows
+            .built
+            .iter()
+            .filter_map(|(_, id)| {
+                let key = bounds.get(*id)?.as_ref()?.key.as_str();
+                let opens = key == open.unwrap_or_default();
+                (opens || Some(key) == before.as_deref()).then_some((*id, opens))
+            })
+            .collect();
+        if let Some(rows) = self.lists.get_mut(list) {
+            rows.open = open.map(str::to_owned);
+        }
+        for (id, opens) in reopened {
+            if let Some(b) = self.bound_mut(id) {
+                b.open = opens;
+            }
+            self.dirty.insert(id);
+        }
+    }
+
     /// The host's rows of the virtual list `list`, if it is one, are no longer known.
     pub(super) fn lose_rows(&mut self, list: &str) {
         if let Some(rows) = self.lists.get_mut(list) {
@@ -456,7 +499,9 @@ impl Live {
         let (key, args) = rows.template.row(&item, index);
         let fragment = rows.template.fragment(key.clone(), Vec::new());
         let place = rows.built.partition_point(|(other, _)| *other < index);
-        let stub = rows.template.stub(&key, args);
+        // A row the host holds open carries its item's document, built with it.
+        let mut stub = rows.template.stub(&key, args);
+        stub.open = rows.open.as_deref() == Some(key.as_str());
         let mut bound = Bound::new(stub, true);
         bound.path = [at.as_slice(), &[place]].concat();
         let id = self.add_bound(bound);
@@ -1131,9 +1176,12 @@ impl Builder<'_> {
                 .insert(key.clone(), RowsChange::Replace);
             self.live
                 .lists
-                .insert(key, Virtual::new(self.id, template, rows, Vec::new()));
+                .insert(key, Virtual::new(self.id, template, rows, Vec::new(), None));
             return Ok(Vec::new());
         };
+        // The row the host holds open stays open across the run: its document is built with the
+        // row it belongs to, as the rows built before it are kept.
+        let open = before.open;
         // The rows stand as they are when the rows built before hold the same items, and the
         // count is the rows' own: a listing that checks its items as it reads them answers the
         // most it can hold rather than how many, so its count moves with the bounds of its run
@@ -1183,7 +1231,7 @@ impl Builder<'_> {
             .insert(key.clone(), RowsChange::Steps(steps));
         self.live
             .lists
-            .insert(key, Virtual::new(self.id, template, rows, built));
+            .insert(key, Virtual::new(self.id, template, rows, built, open));
         Ok(children.into_iter().map(|(_, node)| node).collect())
     }
 

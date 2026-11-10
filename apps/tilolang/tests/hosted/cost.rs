@@ -1302,13 +1302,13 @@ fn check_tasks(session: &mut Session, costs: &mut Costs) {
     }
 }
 
-/// Opening a task's page: its row's title, whose page the content lane shows beside the list
-/// while the overview keeps its empty state for the next time nothing is chosen.
+/// Opening a task's page: its row opens into it where it stands, the list growing the row into
+/// the item's page — the title it edits, and under it what the item holds.
 fn open_pages(session: &mut Session, costs: &mut Costs) {
-    for _ in 0..3 {
+    for at in 1..4 {
         let title = session
             .titles()
-            .get(1)
+            .get(at)
             .cloned()
             .expect("the list shows a row");
         let (x, y) = shown_at(session, &title);
@@ -1316,9 +1316,15 @@ fn open_pages(session: &mut Session, costs: &mut Costs) {
             session.window.click_at(x, y);
         }));
         session.settle();
+        let page = opened_title_field(session).unwrap_or_else(|| {
+            panic!("the row a person opened shows the page of the task it stands for: {title}")
+        });
+        let rect = widget_by_id(session.window.root(), &page)
+            .unwrap_or_else(|| panic!("the page's title {page} is laid out"))
+            .get_rect();
         assert!(
-            session.page().contains(&title),
-            "the content lane shows the page of the task the row shows: {title}"
+            rect.height() > 0.0,
+            "the page of {title} stands under its row"
         );
     }
 }
@@ -1633,8 +1639,61 @@ fn typing_in_the_entry_renders_the_entry() {
     );
 }
 
+/// A row opens where it stands after the person's own changes have taken rows out of the place
+/// they stand in: the rows they kept are rows that open into their item like any other.
+#[test]
+fn a_row_opens_where_it_stands_after_tasks_are_checked() {
+    let _motion = ui::motion::testing::settled();
+    let chunks = seeded_tasks(SMALL);
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut session = Session::tasks_over_in(&route, chunks, None);
+    for _ in 0..4 {
+        let (_, x, y) = first_check(&mut session);
+        session.window.click_at(x, y);
+        session.settle();
+    }
+    let title = session.titles().get(1).cloned().expect("a row");
+    let (x, y) = shown_at(&mut session, &title);
+    session.window.click_at(x, y);
+    session.settle();
+    assert!(
+        opened_title_field(&mut session).is_some(),
+        "the row of {title} opens where it stands"
+    );
+}
+
+/// The row standing open into its item where it stands: the page a person reads there, and the
+/// field they type the item's title into. `None` while no row stands open.
+fn opened_title_field(session: &mut Session) -> Option<String> {
+    let view = session.hosted().view()?;
+    let mut found = None;
+    for list in view.lists() {
+        if list.starts_with(tilo_ui_host::shell::DETAIL) {
+            continue;
+        }
+        let Some(rows) = view.rows_of(&list) else {
+            continue;
+        };
+        let rows = rows.borrow();
+        for key in rows.rendered() {
+            let Some(row) = rows.row(&key) else {
+                continue;
+            };
+            if let Some(field) = find(row, &|node| {
+                node.kind == "ui.TextInput"
+                    && node.binding.as_ref().is_some_and(|b| b.field().is_some())
+            }) {
+                found = Some(field.key.clone());
+                break;
+            }
+        }
+    }
+    found
+}
+
 /// Typing a task's title on its page: the keystroke edits one field of one task, so the page
-/// that shows it and the row behind it run again, and the rest of the window stands.
+/// that shows it — the row grown into it where it stands — and the row behind it run again, and
+/// the rest of the window stands.
 #[test]
 fn typing_a_tasks_title_reruns_the_views_that_read_it() {
     let _motion = ui::motion::testing::settled();
@@ -1645,18 +1704,8 @@ fn typing_a_tasks_title_reruns_the_views_that_read_it() {
     let (x, y) = shown_at(&mut session, &title);
     session.window.click_at(x, y);
     session.settle();
-    let key = {
-        let view = session.hosted().view().expect("the window is connected");
-        let tree = view.detail_tree().expect("the page is shown");
-        let key = find(&tree, &|node| {
-            node.kind == "ui.TextInput"
-                && node.binding.as_ref().is_some_and(|b| b.field().is_some())
-        })
-        .unwrap_or_else(|| panic!("the page edits its title: {tree:?}"))
-        .key
-        .clone();
-        format!("{}{key}", tilo_ui_host::shell::DETAIL)
-    };
+    let key = opened_title_field(&mut session)
+        .unwrap_or_else(|| panic!("the row a person opened shows the page that edits its title"));
     let rect = widget_by_id(session.window.root(), &key)
         .unwrap_or_else(|| panic!("the title {key} is laid out"))
         .get_rect();

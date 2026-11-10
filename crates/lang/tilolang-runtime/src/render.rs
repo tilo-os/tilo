@@ -47,13 +47,14 @@ pub const ITEMS: &str = "items";
 /// The property of a `ui.VirtualList` naming the item where the person looking has seen
 /// nothing yet (`first_unseen`): the list draws its divider over the row that shows it.
 pub const UNSEEN_FROM: &str = "unseen_from";
-/// The kind of the divider over the first row the person looking has not seen.
 /// The property of a loop's node that names the parameter of its row view the item goes to.
 const EACH: &str = "each";
 /// The property of a loop's node that holds the key suffix of the rows around it.
 const SUFFIX: &str = "suffix";
 /// The parameter of a row view that takes the row's key suffix (`<suffix>/<item key>`).
 const ROW_KEY: &str = "$key";
+/// The kind of the node a component's named slot lowers to, holding the view its block gives it.
+const SLOT: &str = "slot";
 
 /// A view export of a loaded module.
 #[derive(Clone, Debug)]
@@ -135,6 +136,9 @@ pub(crate) struct Walk<'a> {
     /// Whether the nodes here are a row of a `list` that stands a divider where its unseen part
     /// starts (`unseen_from:`), which already says of a row there that it is new.
     pub says_new: bool,
+    /// Whether the nodes here are a row standing open into its item where it stands: the slot
+    /// that holds the item's document is built here, and in no closed row.
+    pub open: bool,
     /// How many rows that list shows, when it is a card's preview (its `preview` property):
     /// the rows after those are never shown, so they are not built.
     pub preview: Option<usize>,
@@ -151,6 +155,9 @@ impl<'a> Walk<'a> {
             prefix: if calls { Some(key) } else { walk.prefix },
             in_list: listed,
             says_new: walk.says_new,
+            // A row's own tree — the nodes a template's block was lowered into as well as the
+            // row view's — says whether it stands open; a call's tree is the callee's to walk.
+            open: walk.open,
             preview: match n.props.get(PREVIEW) {
                 Some(Value::Int(rows)) if n.kind == "list" => usize::try_from(*rows).ok(),
                 _ => None,
@@ -180,6 +187,9 @@ pub(crate) struct Stub<'a> {
     pub args: Vec<Value>,
     /// A row of a `list`: rendered when the host shows it, not now.
     pub lazy: bool,
+    /// Whether the call stands in a row the host shows open into its item: what its tree gives
+    /// as the row's document is built here, and in no closed row.
+    pub open: bool,
     pub depth: usize,
 }
 
@@ -224,6 +234,9 @@ pub(crate) struct Scoped<'p, 'b> {
     /// Whether the tree rendered is a row of a `list` that stands a divider where its unseen
     /// part starts (`unseen_from:`) (see [`Walk::says_new`]).
     pub says_new: bool,
+    /// Whether the tree rendered is a row of a `list` standing open into its item where it
+    /// stands (see [`Walk::open`]).
+    pub open: bool,
     pub boundaries: Option<&'b mut dyn Boundaries>,
 }
 
@@ -399,19 +412,21 @@ impl Core {
             nodes: &state.nodes,
             offer,
         };
-        let (prefix, says_new, hook) = match scoped {
+        let (prefix, says_new, open, hook) = match scoped {
             Some(Scoped {
                 prefix,
                 says_new,
+                open,
                 boundaries,
-            }) => (prefix, says_new, boundaries),
-            None => (None, false, None),
+            }) => (prefix, says_new, open, boundaries),
+            None => (None, false, false, None),
         };
         let walk = Walk {
             level: 0,
             prefix,
             in_list: false,
             says_new,
+            open,
             preview: None,
         };
         let tree = self.build_node(&cx, root, walk, &mut acc, hook)?;
@@ -667,7 +682,23 @@ impl Core {
             return self.view_call_node(cx, fragment, walk, acc, boundaries, call);
         }
         let below = Walk::below(walk, n, key.as_str());
-        let (children, rows_total) = self.build_children(cx, (n, &key), below, acc, hook)?;
+        // The slot holding the document a row opens into where it stands is built only for the
+        // row standing open: a closed row carries the empty slot, and the item's document — its
+        // view calls, its reads and everything they draw — is built when the row opens.
+        let closed = n.kind == SLOT
+            && !walk.open
+            && n.props
+                .get(tilolang::toolkit::WHEN_OPEN_PROP)
+                .is_some_and(|open| match open {
+                    Value::Bool(open) => *open,
+                    Value::Int(open) => *open != 0,
+                    _ => false,
+                });
+        let (children, rows_total) = if closed {
+            (Vec::new(), 0)
+        } else {
+            self.build_children(cx, (n, &key), below, acc, hook)?
+        };
         let mut props = n.props.clone();
         if below.preview.is_some() {
             // How many rows the list has, the ones not built included: the count it carries
@@ -731,6 +762,7 @@ impl Core {
             target: Rc::new(vt),
             args,
             lazy: walk.in_list,
+            open: walk.open,
             depth: cx.offer.depth.saturating_add(1),
         })?;
         Ok(UiNode {
@@ -1539,6 +1571,9 @@ impl RowsOf {
             target: Rc::clone(&self.target),
             args,
             lazy: self.lazy,
+            // The row's own: the call stands in the list's rows, and what the list shows open
+            // is the row's to say.
+            open: false,
             depth: self.depth,
         }
     }

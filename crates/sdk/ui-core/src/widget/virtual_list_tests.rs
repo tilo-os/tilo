@@ -118,7 +118,7 @@ impl ListModel for PagedList {
         }
     }
 
-    fn request_range(&mut self, range: Range<usize>) {
+    fn request_range(&mut self, range: Range<usize>, _open: Option<&u64>) {
         self.requests.borrow_mut().push(range);
     }
 

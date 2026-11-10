@@ -4,7 +4,9 @@
 //! are the toolkit's own (`tilo_ui_graph::component`), generated from each widget's Rust
 //! definition, so `ui.ListRow(title: ...)` is checked against the widget as it is.
 
-pub use tilo_ui_graph::component::{Accepts, Catalogue, Description, Offered, Type};
+pub use tilo_ui_graph::component::{
+    Accepts, Catalogue, Description, OPENS_PROP, Offered, Type, WHEN_OPEN_PROP,
+};
 
 /// The app id of the toolkit's package.
 pub const UI_APP: &str = "tilo.ui";

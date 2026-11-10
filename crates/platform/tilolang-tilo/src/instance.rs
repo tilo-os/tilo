@@ -1483,8 +1483,9 @@ impl Instance {
                 list,
                 start,
                 end,
+                open,
             } => {
-                self.request_rows(lane, &list, start as usize..end as usize);
+                self.request_rows(lane, &list, start as usize..end as usize, open.as_deref());
                 Ok(())
             }
             ToApp::Answer(answer) => {
@@ -1578,8 +1579,16 @@ impl Instance {
         }
     }
 
-    /// Render the rows `range` of the list `list` of the view of `lane`, and send them.
-    fn request_rows(&mut self, lane: Lane, list: &str, range: std::ops::Range<usize>) {
+    /// Render the rows `range` of the list `list` of the view of `lane` for the window, and the
+    /// document of the row `open` — the row standing open into its item where it stands, which
+    /// the window shows and no other row does.
+    fn request_rows(
+        &mut self,
+        lane: Lane,
+        list: &str,
+        range: std::ops::Range<usize>,
+        open: Option<&str>,
+    ) {
         let Some(host) = self.host() else {
             return;
         };
@@ -1591,7 +1600,7 @@ impl Instance {
         let Some(rows) = view.lists.get_mut(list) else {
             return;
         };
-        let requested = rows.request(range);
+        let requested = rows.request(range, open);
         let message = rows_message(&host, &*names, &handle, lane, list, requested);
         self.out.push(message);
         self.send_bound(lane);

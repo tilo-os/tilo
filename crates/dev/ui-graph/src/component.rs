@@ -20,7 +20,15 @@
 use serde::{Deserialize, Serialize};
 
 /// The version of the description format: a change to the shape of [`Description`] bumps it.
-pub const FORMAT_VERSION: u32 = 7;
+pub const FORMAT_VERSION: u32 = 8;
+
+/// The prop a `slot` node carries when what it holds is the document the row it stands in opens
+/// into where it stands: it is built only while that row stands open.
+pub const WHEN_OPEN_PROP: &str = "when_open";
+
+/// The prop a component carries when its block gives such a slot: the row offers to open into
+/// its document, which comes once it stands open.
+pub const OPENS_PROP: &str = "opens";
 
 /// Every described component of one toolkit version.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -266,6 +274,11 @@ pub struct Slot {
     /// Whether it is what the component's block fills when no slot is named.
     #[serde(default, skip_serializing_if = "is_false")]
     pub default: bool,
+    /// Whether it holds the document a row opens into where it stands: rendered only for the row
+    /// standing open, so the rows on screen that stand closed cost none of it. A component with
+    /// such a slot says so (`opens`) where it is built, so a row still offers to open.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub when_open: bool,
 }
 
 /// What a slot accepts.

@@ -2,9 +2,11 @@
 //! renders them for what each list shows.
 //!
 //! The app renders a row only when the list shows it (the visible rows and the overscan): the
-//! list asks for a range ([`RowSource::request_range`]), the window sends the app that range,
-//! and the app answers with the keys of those rows and the rows it rendered for them. Until
-//! they arrive a row is not shown, as a row scrolled in before it is built. The app sends
+//! list asks for a range ([`RowSource::request_range`]), and which row stands open into its
+//! item where it stands, the window sends the app both, and the app answers with the keys of
+//! those rows and the rows it rendered for them — the open row's document among them, and no
+//! closed row's. Until they arrive a row is not shown, as a row scrolled in before it is built.
+//! The app sends
 //! each change of the rows as it happens: a row inserted, removed or moved is that change of
 //! the list, and a shown row that changed is sent again alone. Each row is read through the
 //! one adapter, as the list's item component (`ui.ListItem`).
@@ -45,13 +47,24 @@ pub struct RemoteRows {
     /// The rows the app rendered for the range the list shows, by key.
     rows: HashMap<String, UiNode>,
     changes: Vec<ListModelChange<String>>,
-    /// The range the app was last asked for.
-    asked: Option<Range<usize>>,
-    /// A range the list shows that the app is still to be asked for.
-    wanted: Option<Range<usize>>,
+    /// The rows the app was last asked for: the range the list shows, and the row standing open
+    /// into its item where it stands.
+    asked: Option<Asked>,
+    /// Rows the list shows that the app is still to be asked for.
+    wanted: Option<Asked>,
     /// The app was asked for rows and has not answered: the list keeps taking frames until it
     /// does, so what it shows is never a frame behind what it asked for.
     awaiting: bool,
+}
+
+/// What the list asked the app for: the rows it shows, and the row standing open into its item
+/// where it stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Asked {
+    pub range: Range<usize>,
+    /// The row standing open into its item, by key, when one does: the app renders its
+    /// document, and no closed row's.
+    pub open: Option<String>,
 }
 
 impl RemoteRows {
@@ -88,12 +101,12 @@ impl RemoteRows {
         self.wanted.is_some()
     }
 
-    /// The range the list shows that the app is still to be asked for, taken.
-    pub fn take_wanted(&mut self) -> Option<(Lane, String, Range<usize>)> {
-        let range = self.wanted.take()?;
-        self.asked = Some(range.clone());
+    /// The rows the list shows that the app is still to be asked for, taken.
+    pub fn take_wanted(&mut self) -> Option<(Lane, String, Asked)> {
+        let asked = self.wanted.take()?;
+        self.asked = Some(asked.clone());
         self.awaiting = true;
-        Some((self.lane, self.list.clone(), range))
+        Some((self.lane, self.list.clone(), asked))
     }
 
     /// The app's rows: the list has `len`, the keys from `start` on are `keys`, and `rows` are
@@ -105,7 +118,7 @@ impl RemoteRows {
         if let Some(asked) = &self.asked {
             let keep: std::collections::HashSet<Rc<str>> = self
                 .keys
-                .get(asked.start.min(self.keys.len())..asked.end.min(self.keys.len()))
+                .get(asked.range.start.min(self.keys.len())..asked.range.end.min(self.keys.len()))
                 .unwrap_or_default()
                 .iter()
                 .flatten()
@@ -199,7 +212,7 @@ impl RemoteRows {
         if let Some(asked) = self.asked.clone() {
             let held = self
                 .keys
-                .get(asked.start.min(self.keys.len())..asked.end.min(self.keys.len()))
+                .get(asked.range.start.min(self.keys.len())..asked.range.end.min(self.keys.len()))
                 .unwrap_or_default()
                 .iter()
                 .flatten()
@@ -324,12 +337,15 @@ impl RowSource for RemoteRows {
         self.index_of_key(key)
     }
 
-    /// Ask the app for the rows of `range`. The rows held outside it are kept until the app
-    /// answers, so a list that asks for more than it did a frame ago shows them meanwhile.
-    fn request_range(&mut self, range: Range<usize>) {
-        // The app renders what the list shows and forgets the rest: it hears of every range.
-        if self.asked.as_ref() != Some(&range) {
-            self.wanted = Some(range);
+    /// Ask the app for the rows of `range`, and for the document of the row at `open`. The rows
+    /// held outside the range are kept until the app answers, so a list that asks for more than
+    /// it did a frame ago shows them meanwhile.
+    fn request_range(&mut self, range: Range<usize>, open: Option<String>) {
+        // The app renders what the list shows and forgets the rest: it hears of every range, and
+        // of the row that opened or closed, whose document it renders or drops.
+        let asked = Asked { range, open };
+        if self.asked.as_ref() != Some(&asked) {
+            self.wanted = Some(asked);
         }
     }
 
@@ -479,13 +495,20 @@ mod tests {
     fn a_range_not_sent_is_asked_for_once() {
         let mut rows = rows();
         rows.rows(100, 0, vec!["v/0".into()], Vec::new());
-        rows.request_range(0..20);
+        rows.request_range(0..20, None);
         assert!(rows.wants(), "the window owes the app the ask");
         assert_eq!(
             rows.take_wanted(),
-            Some((Lane::Root, "list".to_owned(), 0..20))
+            Some((
+                Lane::Root,
+                "list".to_owned(),
+                Asked {
+                    range: 0..20,
+                    open: None,
+                }
+            ))
         );
-        rows.request_range(0..20);
+        rows.request_range(0..20, None);
         assert_eq!(rows.take_wanted(), None, "asked once");
         assert!(!rows.wants());
         assert_eq!(rows.key_at(5), None, "a row not named yet");
@@ -498,7 +521,7 @@ mod tests {
         let mut rows = rows();
         rows.rows(100, 0, vec!["v/0".into()], Vec::new());
         let _ = rows.take_changes();
-        rows.request_range(90..100);
+        rows.request_range(90..100, None);
         assert!(rows.take_wanted().is_some(), "asked for the range it shows");
         // The app reads a row past the list's end: the range it shows holds nothing, and the
         // list it names is the one it holds.
@@ -511,6 +534,36 @@ mod tests {
                 count: 50
             }],
             "the list hears that its last rows went"
+        );
+    }
+
+    /// The row standing open into its item is the one whose document the app renders: the list
+    /// asks again when it opens, before or within the range it shows, and once for each.
+    #[test]
+    fn the_row_that_opens_is_asked_for_with_the_range() {
+        let mut rows = rows();
+        rows.rows(100, 0, vec!["v/0".into()], Vec::new());
+        rows.request_range(0..20, None);
+        assert_eq!(
+            rows.take_wanted().map(|(_, _, asked)| asked),
+            Some(Asked {
+                range: 0..20,
+                open: None,
+            })
+        );
+        rows.request_range(0..20, Some("v/4".to_owned()));
+        assert_eq!(
+            rows.take_wanted().map(|(_, _, asked)| asked.open),
+            Some(Some("v/4".to_owned())),
+            "the row the person opened is asked for once"
+        );
+        rows.request_range(0..20, Some("v/4".to_owned()));
+        assert_eq!(rows.take_wanted(), None, "asked once");
+        rows.request_range(0..20, None);
+        assert_eq!(
+            rows.take_wanted().map(|(_, _, asked)| asked.open),
+            Some(None),
+            "the row that closed takes its document with it"
         );
     }
 }

@@ -585,7 +585,7 @@ impl RowSource for Rendered {
         self.items.iter().position(|item| item.key == key)
     }
 
-    fn request_range(&mut self, range: std::ops::Range<usize>) {
+    fn request_range(&mut self, range: std::ops::Range<usize>, _open: Option<String>) {
         self.asked.push(range);
     }
 

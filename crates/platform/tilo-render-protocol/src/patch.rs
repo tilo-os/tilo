@@ -658,12 +658,14 @@ pub enum ToApp {
     },
     /// Back from the detail lane.
     Back,
-    /// The virtual list `list` shows the rows `start..end` now.
+    /// The virtual list `list` shows the rows `start..end` now, and the row `open` — its key —
+    /// stands open into its item where it stands ([`ToUi::Rows`] answers with its document).
     Rows {
         lane: Lane,
         list: String,
         start: u32,
         end: u32,
+        open: Option<String>,
     },
     Answer(Answer),
     /// The field `field` (a key of [`Form::fields`]) of the form `form` now holds `text`: what

@@ -1124,18 +1124,19 @@ impl AppWindow {
         if std::mem::take(&mut self.input) {
             self.follow_focus();
         }
-        let wanted: Vec<(Lane, String, std::ops::Range<usize>)> = self
+        let wanted: Vec<(Lane, String, crate::rows::Asked)> = self
             .rows
             .borrow()
             .values()
             .filter_map(|rows| rows.borrow_mut().take_wanted())
             .collect();
-        for (lane, list, range) in wanted {
+        for (lane, list, asked) in wanted {
             self.out.push(ToApp::Rows {
                 lane,
                 list,
-                start: u32::try_from(range.start).unwrap_or(u32::MAX),
-                end: u32::try_from(range.end).unwrap_or(u32::MAX),
+                start: u32::try_from(asked.range.start).unwrap_or(u32::MAX),
+                end: u32::try_from(asked.range.end).unwrap_or(u32::MAX),
+                open: asked.open,
             });
         }
         if self.out.is_empty() {

@@ -394,7 +394,7 @@ impl Workspace {
     }
 
     fn show_rows(&mut self, range: std::ops::Range<usize>) {
-        self.root_rows().borrow_mut().request_range(range);
+        self.root_rows().borrow_mut().request_range(range, None);
         self.frame();
     }
 
@@ -2610,14 +2610,14 @@ fn a_list_that_asks_for_more_rows_shows_the_ones_it_has_until_they_come() {
     );
     // The list asks for fewer rows (it has not measured them yet), then for all of them: until
     // the app answers, the rows it had stay.
-    rows.borrow_mut().request_range(0..len / 2);
+    rows.borrow_mut().request_range(0..len / 2, None);
     assert_eq!(
         rows.borrow().rendered().len(),
         len,
         "a row is kept until the app forgot it"
     );
     workspace.frame();
-    rows.borrow_mut().request_range(0..len);
+    rows.borrow_mut().request_range(0..len, None);
     assert_eq!(
         rows.borrow().rendered().len(),
         len / 2,

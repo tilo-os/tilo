@@ -215,10 +215,10 @@ fn a_chain_list_pages_back_when_its_first_row_shows() {
     assert_eq!(list.item(1).map(String::as_str), Some("line 6"));
 
     // Rows after the first: nothing opens.
-    list.request_range(1..2);
+    list.request_range(1..2, None);
     assert_eq!(joined.held(), [2]);
     // The first row shows: the part before opens, and arrives.
-    list.request_range(0..2);
+    list.request_range(0..2, None);
     assert_eq!(joined.held(), [1, 2]);
     joined.deliver(1);
     assert!(list.poll_changed());
@@ -228,7 +228,7 @@ fn a_chain_list_pages_back_when_its_first_row_shows() {
     assert_eq!(list.index_of(&newest), Some(4));
     assert!(!list.poll_changed(), "nothing moved since");
 
-    list.request_range(0..3);
+    list.request_range(0..3, None);
     joined.deliver(0);
     assert!(list.poll_changed());
     assert_eq!(list.len(), 7, "every line, and no earlier row");
@@ -247,7 +247,7 @@ fn a_chain_list_pages_back_when_its_first_row_shows() {
 fn a_part_the_workspace_has_none_of_shows_unavailable_until_it_arrives() {
     let joined = Joined::new();
     let mut list = ChainList::new(joined.chain.clone(), texts);
-    list.request_range(0..2);
+    list.request_range(0..2, None);
     assert_eq!(joined.held(), [1, 2]);
     assert!(list.row_state(0).is_pending());
 

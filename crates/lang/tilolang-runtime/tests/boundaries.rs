@@ -85,6 +85,27 @@ view item_line(item: Item) {
     row(item.title, checkbox: item.done)
 }
 
+/// A list whose rows open into their item's document where they stand: the document is built
+/// for the row standing open, and for no other row on screen.
+view documents(bag: Bag) {
+    state opened: Option<Item> = .none
+    std.list(bag.items, opened) { (item, at) ->
+        ui.ListItem(item: item, presence: at) {
+            item_line(item)
+            detail: {
+                item_document(item)
+            }
+        }
+    }
+}
+
+view item_document(item: Item) {
+    section("About {item.title}") {
+        text("what {item.title} is for")
+        checkbox("Done", bind: item.done)
+    }
+}
+
 view item_row(item: Item) {
     row {
         text(item.title)
@@ -488,6 +509,123 @@ view tinted_row(item: Item, tint: Text) {
         let patches = view.poll_patches().unwrap();
         assert!(!patches.is_empty(), "the shown rows ran again");
         assert_eq!(shown(&mut view), ["item 1", "groceries"]);
+    }
+
+    /// The document of a row is built for the row standing open into its item, and for no other
+    /// row on screen: a list of ten thousand tasks costs the one page a person reads, and the
+    /// rows that stand closed carry none of theirs.
+    #[test]
+    fn a_rows_document_is_built_for_the_row_standing_open_alone() {
+        let rows = Rows::new(100);
+        let mut view = rows.view("documents");
+        let list = list_key(&view);
+        let opened = view.stats();
+        for i in 0..10 {
+            view.row(&list, i).unwrap();
+        }
+        // Every row shows its item's line, and none shows a document: the row's `detail` slot
+        // holds what the item is about only while the row stands open into it.
+        for i in 0..10 {
+            let row = view.row(&list, i).unwrap().unwrap();
+            assert_eq!(titles(row), [format!("item {i}")]);
+            assert!(
+                texts(row).iter().all(|text| !text.contains("what item")),
+                "row {i} built the document of an item nobody opened"
+            );
+        }
+        // Two boundaries per row: the row and the line its item shows. A document would be a
+        // third.
+        assert_eq!(
+            view.stats().renders - opened.renders,
+            20,
+            "showing ten rows ran ten rows and their lines, and no document"
+        );
+
+        // The person opens the fourth row where it stands: its document arrives, built once.
+        let fourth = view.row_key(&list, 3).expect("the fourth row");
+        let before = view.stats().renders;
+        view.open_row(&list, Some(&fourth));
+        let patches = view.poll_patches().unwrap();
+        let opened_row = view.row(&list, 3).unwrap().unwrap();
+        assert!(
+            texts(opened_row)
+                .iter()
+                .any(|text| text == "what item 3 is for"),
+            "the row standing open shows its item's document: {opened_row:?}"
+        );
+        assert!(
+            patches
+                .iter()
+                .any(|patch| matches!(patch, Patch::Insert { .. })),
+            "the document is sent where it stands: {patches:?}"
+        );
+        // The row, the line it shows, and the document it now stands open into.
+        assert_eq!(
+            view.stats().renders - before,
+            3,
+            "opening a row runs it, its line and its document, and no other row"
+        );
+        for i in 0..10 {
+            if i == 3 {
+                continue;
+            }
+            let row = view.row(&list, i).unwrap().unwrap();
+            assert!(
+                texts(row).iter().all(|text| !text.contains("what item")),
+                "row {i} built a document of its own beside the one the person reads"
+            );
+        }
+
+        // A change to the open row's item reaches its document as it ever did.
+        rows.retitle(3, "three");
+        view.poll_patches().unwrap();
+        let opened_row = view.row(&list, 3).unwrap().unwrap();
+        assert!(
+            texts(opened_row)
+                .iter()
+                .any(|text| text == "what three is for"),
+            "{opened_row:?}"
+        );
+
+        // Closed again, the row drops its document, and no document of it runs from then on.
+        let before = view.stats().renders;
+        view.open_row(&list, None);
+        let patches = view.poll_patches().unwrap();
+        let closed = view.row(&list, 3).unwrap().unwrap();
+        assert!(
+            texts(closed).iter().all(|text| !text.contains("what")),
+            "the row that closed dropped its document: {closed:?}"
+        );
+        assert!(
+            patches
+                .iter()
+                .any(|patch| matches!(patch, Patch::Remove { .. })),
+            "the document is taken where it stood: {patches:?}"
+        );
+        // The row and the line it shows again; the document is gone, not built.
+        assert_eq!(
+            view.stats().renders - before,
+            2,
+            "closing a row runs it and its line again, and builds no document"
+        );
+        // The row still shows its item's line, and runs for that alone: the document of the
+        // item it no longer stands open into is not built again.
+        let before = view.stats().renders;
+        rows.retitle(3, "drei");
+        assert!(!view.poll_patches().unwrap().is_empty());
+        assert_eq!(titles(view.row(&list, 3).unwrap().unwrap()), ["drei"]);
+        assert!(
+            texts(view.row(&list, 3).unwrap().unwrap())
+                .iter()
+                .all(|text| !text.contains("what")),
+            "the closed row builds no document when its item changes"
+        );
+        assert!(
+            view.stats().renders - before <= 3,
+            "the closed row's item changing runs the view that holds the list, the row and its \
+             line, and no document: {} ran",
+            view.stats().renders - before
+        );
     }
 
     #[test]

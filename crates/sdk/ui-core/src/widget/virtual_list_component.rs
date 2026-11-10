@@ -119,8 +119,16 @@ pub struct ListItemProps {
     /// and title, in the row's column — the row becomes the item, its title written once — and
     /// what the item holds follows under them. Without a document, choosing the row opens the
     /// item elsewhere (`ui.VirtualList`'s `activate`).
-    #[component(slot)]
+    ///
+    /// Only the row standing open carries it: the runtime builds a row's document when the row
+    /// opens and drops it when it closes, so a list of ten thousand rows on screen costs the one
+    /// document a person reads.
+    #[component(slot(when_open))]
     pub detail: ItemRow,
+    /// The row opens into a document of its own where it stands: what its view gives as `detail`
+    /// comes once it stands open. The list's rows offer to open when this says so, whether or not
+    /// one carries its document yet.
+    pub opens: bool,
 }
 
 /// The row of a [`ListItemProps`].
@@ -435,6 +443,18 @@ impl DescribedRows {
         }
     }
 
+    /// Whether the rows are named: a list a host renders names none until it has read them, and
+    /// a list given its items whole names them from the start.
+    fn names_rows(&self) -> bool {
+        match &self.held {
+            Held::Nothing => false,
+            Held::Given(items) => !items.is_empty(),
+            Held::Rendered(rows) => rows
+                .try_borrow()
+                .is_ok_and(|rows| rows.is_empty() || rows.key_at(0).is_some()),
+        }
+    }
+
     fn key_presenting(&self, id: &str) -> Option<String> {
         match &self.held {
             Held::Nothing => None,
@@ -465,6 +485,7 @@ fn reusable(item: &ListItemProps) -> Option<ListItemProps> {
     Some(ListItemProps {
         key: item.key.clone(),
         item: item.item.clone(),
+        opens: item.opens,
         presence: item.presence.clone(),
         author: item.author.clone(),
         time: item.time,
@@ -537,11 +558,11 @@ impl ListModel for DescribedRows {
         }
     }
 
-    fn request_range(&mut self, range: Range<usize>) {
+    fn request_range(&mut self, range: Range<usize>, open: Option<&String>) {
         if let Held::Rendered(rows) = &self.held
             && let Ok(mut rows) = rows.try_borrow_mut()
         {
-            rows.request_range(range);
+            rows.request_range(range, open.cloned());
         }
     }
 
@@ -582,8 +603,10 @@ impl ListModel for DescribedRows {
         let Some(key) = self.key_at(index) else {
             return false;
         };
-        self.with_item(&key, |item| !matches!(item.detail, ItemRow::None))
-            .unwrap_or(false)
+        self.with_item(&key, |item| {
+            item.opens || !matches!(item.detail, ItemRow::None)
+        })
+        .unwrap_or(false)
     }
 
     /// What the row is grouped by: its item's heading, the list's tail for an item done
@@ -1581,11 +1604,15 @@ impl Described for DescribedList {
         // rows it left and arrived at build again.
         list.set_unread(unseen_from);
         // The item the host holds open: its row grows into its document where it stands, and
-        // an item that left the list opens nothing.
+        // an item that left the list opens nothing. An item the rows cannot be asked about yet
+        // — the app is reading them anew — leaves the row the person has open as it is: it is
+        // the row they are reading, and the rows that come name it again.
         let standing = open
             .as_ref()
             .and_then(|item| reading.borrow().key_presenting(&item.0));
-        list.set_open(standing);
+        if standing.is_some() || open.is_none() || reading.borrow().names_rows() {
+            list.set_open(standing);
+        }
         if let Some(picked) = picked {
             list.set_selection(picked);
         }
@@ -2475,7 +2502,7 @@ mod tests {
             self.items.iter().position(|item| item.key == key)
         }
 
-        fn request_range(&mut self, _range: Range<usize>) {}
+        fn request_range(&mut self, _range: Range<usize>, _open: Option<String>) {}
 
         fn rendered(&self, key: &str) -> bool {
             !self.withheld.iter().any(|held| held == key)

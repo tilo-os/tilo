@@ -963,9 +963,12 @@ impl Checker<'_> {
         span: Span,
     ) {
         let mut content: Vec<UiStmt> = Vec::new();
+        let mut opens = false;
         for s in block {
             match &s.kind {
-                UiKind::Slot { node, name, body } => self.slot_content(n, d, *node, name, body),
+                UiKind::Slot { node, name, body } => {
+                    opens |= self.slot_content(n, d, *node, name, body);
+                }
                 UiKind::On {
                     event,
                     param,
@@ -991,6 +994,18 @@ impl Checker<'_> {
             return;
         };
         self.slot_accepts(d, slot, &content);
+        // A component whose block gives a slot that only shows while the row stands open says so
+        // where it stands: the row offers to open into its document, which comes when it does.
+        if opens {
+            self.emit(host(
+                Imp::UiPropI,
+                vec![
+                    Ex::local(n, Ty::View),
+                    Ex::str(crate::toolkit::OPENS_PROP),
+                    Ex::int(1),
+                ],
+            ));
+        }
         // A list inside a card is the card's summary of its resource: it shows the first rows.
         let outer = self.st.ui.in_card;
         self.st.ui.in_card |= d.name == "Card";
@@ -1186,7 +1201,8 @@ impl Checker<'_> {
         Some(ty)
     }
 
-    /// `name: { ... }`: a `slot` node of `n`, named, holding the content.
+    /// `name: { ... }`: a `slot` node of `n`, named, holding the content. Whether the slot holds
+    /// the document a row opens into where it stands, which is rendered only while that row does.
     fn slot_content(
         &mut self,
         n: LocalId,
@@ -1194,7 +1210,7 @@ impl Checker<'_> {
         node: ast::NodeId,
         name: &ast::Ident,
         body: &[UiStmt],
-    ) {
+    ) -> bool {
         let Some(slot) = d.slot(&name.name) else {
             self.err(
                 "E063",
@@ -1210,7 +1226,7 @@ impl Checker<'_> {
                     )
                 ),
             );
-            return;
+            return false;
         };
         self.slot_accepts(d, slot, body);
         let key = self.stmt_key(node);
@@ -1220,8 +1236,19 @@ impl Checker<'_> {
             Imp::UiPropH,
             vec![s_ex.clone(), Ex::str("name"), Ex::str(&slot.name)],
         ));
+        if slot.when_open {
+            self.emit(host(
+                Imp::UiPropI,
+                vec![
+                    s_ex.clone(),
+                    Ex::str(crate::toolkit::WHEN_OPEN_PROP),
+                    Ex::int(1),
+                ],
+            ));
+        }
         self.child_block_of("slot", body, s, true);
         self.emit(host(Imp::UiChild, vec![Ex::local(n, Ty::View), s_ex]));
+        slot.when_open
     }
 
     /// Check that `body` fits the slot: only the component it accepts, and one at most where

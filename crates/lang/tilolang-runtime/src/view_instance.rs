@@ -315,6 +315,12 @@ impl ViewInstance {
         Ok(key.and_then(|key| self.live.find(&key)))
     }
 
+    /// The host shows the row at `open` of `list` standing open into its item: its document is
+    /// built with it, the row that stood open before drops its own, and both render again.
+    pub fn open_row(&mut self, list: &str, open: Option<&str>) {
+        self.live.open_row(list, open);
+    }
+
     /// Forget the rows of `list` outside `keep`, which scrolled out of view: they no longer
     /// run when what they read changes, and render again when shown. Returns the patches that
     /// empty them.

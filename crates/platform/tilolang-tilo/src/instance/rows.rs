@@ -107,12 +107,17 @@ impl ListRows {
         view.row_key(&self.list, index)
     }
 
-    /// Render the rows of `range` not rendered yet and forget those rendered outside it: how
-    /// many rows the list has, the keys from `range.start` on, and the rows rendered now.
-    pub fn request(&mut self, range: Range<usize>) -> Requested {
+    /// Render the rows of `range` not rendered yet, and the document of the row at `open` — the
+    /// row standing open into its item where it stands — forgetting those rendered outside the
+    /// range and the document of the row that closed: how many rows the list has, the keys from
+    /// `range.start` on, and the rows rendered now.
+    pub fn request(&mut self, range: Range<usize>, open: Option<&str>) -> Requested {
         let mut keys = Vec::new();
         let mut rows = Vec::new();
         if let Ok(mut view) = self.view.try_borrow_mut() {
+            // The row that opens builds its document and the row that closed drops it: the two of
+            // them stand as they did in the list's rows, sent again with what now changes them.
+            view.open_row(&self.list, open);
             for patch in view.hide_rows(&self.list, range.clone()) {
                 if let Patch::Remove { parent, .. } = patch
                     && let Some(row) = parent.last()
