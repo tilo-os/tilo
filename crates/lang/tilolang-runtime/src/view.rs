@@ -692,7 +692,7 @@ mod tests {
         let p = diff_with(&after, &before, &same, &lists);
         assert!(
             p.contains(&Patch::Remove {
-                parent: path.clone(),
+                parent: path,
                 key: "list~slot-removed".into(),
                 at: None,
             }),
