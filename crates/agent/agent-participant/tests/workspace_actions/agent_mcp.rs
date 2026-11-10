@@ -58,6 +58,9 @@ fn heard(browser: &mut Browser) -> (Vec<collab_types::presence::Presence>, Vec<N
         if let tilo_session_host::PeerEvent::Live { from, frame, .. } = &event
             && let Ok(LiveFrame::Ops(OpsFrame::Semantic { record, event })) =
                 LiveFrame::decode(frame)
+            // What the host says for the agent's run is the host's word
+            // (`route_parity`); this is what the agent's own device says.
+            && event.on_behalf.is_none()
             && let Ok(interaction) = serde_json::from_str(&event.interaction_json)
         {
             narrated.push((*from, record, interaction));
@@ -70,6 +73,7 @@ fn heard(browser: &mut Browser) -> (Vec<collab_types::presence::Presence>, Vec<N
         } = &event
             && *workspace_id == browser.workspace
             && let Some(frame) = collab_types::presence::Presence::decode(body)
+            && frame.on_behalf.is_none()
         {
             frames.push(frame);
         }

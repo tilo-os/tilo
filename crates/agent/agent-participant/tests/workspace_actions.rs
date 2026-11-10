@@ -82,6 +82,7 @@ tilo_automerge_isolate::test_worker!();
 // started again.
 tilo_agent_participant::app_worker!();
 
+#[cfg(test)]
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;

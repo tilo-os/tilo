@@ -258,6 +258,7 @@ impl Presence {
             app: &acting.record.app,
             action: &acting.action,
             phase: acting.phase.clone(),
+            on_behalf: None,
         };
         if let Some(event) = narration::frame(&narrated, seq, tilo_clock::unix_now_ms()) {
             let frame = LiveFrame::Ops(OpsFrame::Semantic { record, event });

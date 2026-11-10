@@ -348,6 +348,11 @@ impl Page {
             .map(|(topic, workspace)| (*topic, workspace.clone()))
             .collect();
         self.client.follow_workspaces(&live, front);
+        // The host this page's session was admitted by hosts what it shows: its word for the runs
+        // it executes is heard, nobody else's.
+        for (_, workspace) in &live {
+            self.client.set_workspace_host(workspace, Some(self.host));
+        }
         self.client.follow();
     }
 }

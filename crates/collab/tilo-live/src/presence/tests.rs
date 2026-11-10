@@ -198,6 +198,7 @@ fn a_wave_is_a_new_wave_each_time_and_an_apps_word_lives_under_its_key() {
         cluster: WORKSPACE.into(),
         key: key.clone(),
         payload: Payload::Composing { composing: true },
+        on_behalf: None,
     };
     assert!(board.hear([1; 32], &draft, 3.0));
     assert_eq!(
@@ -468,4 +469,70 @@ fn a_member_only_the_roster_named_is_not_forgotten_for_silence() {
     board.certify([1; 32], "ada".into(), "laptop");
     assert!(!board.forget_silent(SILENT_MS * 10.0));
     assert!(board.member([1; 32]).is_some());
+}
+
+/// The workspace's host speaks for the runs it executes: each is a member of
+/// its own, an agent named as the host says, spoken by the host. The same
+/// word from any other device is not heard, and the runs leave with the host
+/// or when the governance pins another host.
+#[test]
+fn the_host_speaks_for_each_run_it_executes_and_nobody_else_does() {
+    use collab_types::presence::{ShellPresence, stand_in};
+    let (host, member) = ([3; 32], [4; 32]);
+    let run = "agent-run:9";
+    let face = Presence::desktop(
+        WORKSPACE,
+        Payload::Shell(Box::new(ShellPresence {
+            seq: 1,
+            sent_at_ms: 1,
+            label: "Visa backend".into(),
+            agent: true,
+            colour: "#81a8ff".into(),
+            activity: Some("New note".into()),
+            place: None,
+            size: [0, 0],
+            windows: Vec::new(),
+            selection: None,
+            chat: None,
+            reaction: None,
+        })),
+    )
+    .spoken_for(run);
+    let mut board = board();
+    assert!(
+        !board.hear(host, &face, 1.0),
+        "no host is pinned here yet: nobody speaks for a run"
+    );
+    board.set_host(Some(host));
+    board.certify(host, "aa".repeat(32), "home-server");
+    assert!(
+        !board.hear(member, &face, 2.0),
+        "a member does not speak for a run"
+    );
+    assert!(board.hear(host, &face, 3.0));
+    let shown = board
+        .member(stand_in(host, run))
+        .expect("the run is a member");
+    assert!(shown.here && shown.agent());
+    assert_eq!(shown.label(), "Visa backend");
+    assert_eq!(shown.spoken_by, Some(host));
+    assert_eq!(shown.device, "home-server", "said on the host's device");
+    assert!(
+        !board.member(host).is_some_and(|host| host.here),
+        "the host itself said nothing"
+    );
+    let row = super::shown(shown, 3.0);
+    assert_eq!(row.spoken_by, Some(hex::encode(host)));
+    assert_eq!(row.activity.as_deref(), Some("New note"));
+
+    // Another run is another member; both leave with the host.
+    assert!(board.hear(host, &face.clone().spoken_for("agent-run:10"), 4.0));
+    assert_eq!(board.here().count(), 2);
+    board.depart(host);
+    assert_eq!(board.here().count(), 0);
+
+    // A host the governance no longer pins speaks for none of them.
+    assert!(board.hear(host, &face, 5.0));
+    assert!(board.set_host(Some(member)));
+    assert!(board.member(stand_in(host, run)).is_none());
 }

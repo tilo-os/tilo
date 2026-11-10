@@ -667,6 +667,7 @@ fn only_the_workspace_in_front_lists_people() {
             id: elsewhere.to_owned(),
         },
         payload: Payload::Arrived,
+        on_behalf: None,
     };
     sync.heard_presence(WORKSPACE, device(3), &foreign);
     assert_eq!(
@@ -686,6 +687,7 @@ fn another_apps_presence_is_not_the_desktops() {
             id: WORKSPACE.to_owned(),
         },
         payload: Payload::Arrived,
+        on_behalf: None,
     };
     sync.heard_presence(WORKSPACE, device(1), &notes);
     assert!(

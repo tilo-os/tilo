@@ -293,6 +293,18 @@ impl Presence {
 
     /// One member's presence frame as its track carried it, opened by the workspace's board: what a
     /// host that carries the frames itself (a page's endpoint) hands its session.
+    /// Take `host` as the device `workspace`'s governance pins as its host: its board hears what
+    /// that host says for the runs it executes, one member per run, and nobody else's such word.
+    /// Whether what is known there changed.
+    pub fn set_host(&self, workspace: &str, host: Option<[u8; 32]>) -> bool {
+        self.plane
+            .borrow_mut()
+            .workspaces
+            .iter_mut()
+            .find(|held| held.id == workspace)
+            .is_some_and(|held| held.board.set_host(host))
+    }
+
     pub fn heard_body(&self, workspace: &str, from: EndpointId, body: &[u8]) -> bool {
         self.heard_word(workspace, from, |board, now| {
             board.heard(*from.as_bytes(), body, now)

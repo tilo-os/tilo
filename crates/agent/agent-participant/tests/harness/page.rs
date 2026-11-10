@@ -15,6 +15,7 @@
     clippy::indexing_slicing,
     clippy::too_many_lines,
     clippy::future_not_send,
+    clippy::cast_precision_loss,
     reason = "a fixture: what it cannot set up is the failure it reports"
 )]
 
@@ -54,6 +55,15 @@ pub struct Page {
     pub correlation: u64,
     pub workspace: u64,
     pub cluster_id: String,
+    /// Who is here, as the page's board heard them: its host pinned as the
+    /// workspace's, so the runs the host speaks for are members too.
+    pub board: tilo_live::presence::Board,
+    /// The semantic work narrated here that the board admits, in order:
+    /// the record it was on and the work.
+    pub narrated: Vec<(
+        tilo_relay_protocol::live::LiveRecord,
+        tilo_actions::SemanticInteraction,
+    )>,
 }
 
 impl Page {
@@ -104,9 +114,26 @@ impl Page {
             peer.join(workspace).unwrap();
         }
         ready(&[&peer]).await;
+        Self::joined((peer, events), device, host, cluster_id)
+    }
+
+    /// The page `peer` is, as `device`, once it joined the workspace
+    /// `cluster_id` names under `host`'s host: `events` are its peer's,
+    /// taken before it joined.
+    pub fn joined(
+        (peer, events): (PeerHandle, PeerEvents),
+        device: &Device,
+        host: &Device,
+        cluster_id: &str,
+    ) -> Self {
+        let workspace = tilo_relay_protocol::room_workspace_id(cluster_id).unwrap();
+        let mut board = tilo_live::presence::Board::new(cluster_id, device.cert.device_public_key);
+        board.set_host(Some(host.cert.device_public_key));
         Self {
-            peer,
+            board,
+            narrated: Vec::new(),
             events,
+            peer,
             host_key: host.cert.device_public_key,
             documents: BTreeMap::new(),
             answers: Vec::new(),
@@ -119,6 +146,33 @@ impl Page {
     /// Take one event: a record's change is kept, everything else is the
     /// caller's to read.
     pub fn take(&mut self, event: PeerEvent) -> Option<PeerEvent> {
+        if let PeerEvent::LivePlane {
+            workspace_id,
+            from,
+            track: tilo_live::live::Track::Presence,
+            body,
+            ..
+        } = &event
+            && *workspace_id == self.workspace
+        {
+            self.board
+                .heard(*from, body, tilo_clock::unix_now_ms() as f64);
+        }
+        if let PeerEvent::Live {
+            workspace_id,
+            from,
+            frame,
+        } = &event
+            && *workspace_id == self.workspace
+            && let Ok(tilo_relay_protocol::live::LiveFrame::Ops(
+                tilo_relay_protocol::live::OpsFrame::Semantic { record, event },
+            )) = tilo_relay_protocol::live::LiveFrame::decode(frame)
+        {
+            let here = self.here();
+            if let Some(work) = tilo_session_host::narration::admit(&here, *from, &event) {
+                self.narrated.push((record, work));
+            }
+        }
         if let PeerEvent::Document(document) = &event {
             if let Some(mutation) = document.mutation() {
                 let bytes = match mutation {
@@ -133,6 +187,15 @@ impl Page {
             return None;
         }
         Some(event)
+    }
+
+    /// Everyone here now, as a surface draws them.
+    pub fn here(&self) -> Vec<collab_types::presence::Shown> {
+        let now = tilo_clock::unix_now_ms() as f64;
+        self.board
+            .here()
+            .map(|member| tilo_live::presence::shown(member, now))
+            .collect()
     }
 
     /// Take everything the page received.

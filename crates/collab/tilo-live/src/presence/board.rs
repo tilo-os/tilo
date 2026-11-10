@@ -185,6 +185,10 @@ pub struct Member {
     /// When this stay here began: it moves each time the device comes back
     /// after leaving, so a surface tells a member from the one before it.
     pub epoch: u64,
+    /// The workspace's host, when this member is a run it executes and
+    /// speaks for ([`Presence::on_behalf`]): the agent or key says nothing
+    /// itself.
+    pub spoken_by: Option<Device>,
     pointer: Smoother,
     /// When this device last heard them say anything, on the clock the
     /// caller hands [`Board::hear`]: `None` while only the roster named them.
@@ -208,6 +212,7 @@ impl Member {
             apps: Vec::new(),
             here: false,
             epoch: 0,
+            spoken_by: None,
             pointer: Smoother::default(),
             heard_ms: None,
         }
@@ -319,6 +324,9 @@ pub struct Board {
     shell_seq: u32,
     members: Vec<Member>,
     revision: u64,
+    /// The device the workspace's governance pins as its host: the one
+    /// whose word for the runs it executes is taken here ([`Self::set_host`]).
+    host: Option<Device>,
 }
 
 impl Board {
@@ -336,7 +344,54 @@ impl Board {
             shell_seq: 0,
             members: Vec::new(),
             revision: 0,
+            host: None,
         }
+    }
+
+    /// Take `host` as the workspace's host, as the workspace's governance
+    /// pins it on this device: what it says for the runs it executes is
+    /// heard as one member per run, and nobody else's such word is. Runs a
+    /// former host spoke for leave. Whether what is known here changed.
+    pub fn set_host(&mut self, host: Option<Device>) -> bool {
+        if self.host == host {
+            return false;
+        }
+        self.host = host;
+        let before = self.members.len();
+        self.members
+            .retain(|member| member.spoken_by.is_none() || member.spoken_by == host);
+        let changed = self.members.len() != before;
+        if changed {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        changed
+    }
+
+    /// Who `frame`, heard from `from`, speaks for: `from` itself, or the run
+    /// the workspace's host says it for, as that run's own member. `None`
+    /// for a word on a run from anyone but the host.
+    fn speaker(&mut self, from: Device, frame: &Presence) -> Option<Device> {
+        let Some(run) = &frame.on_behalf else {
+            return Some(from);
+        };
+        if self.host != Some(from) {
+            return None;
+        }
+        let stand_in = collab_types::presence::stand_in(from, run);
+        if !self
+            .members
+            .iter()
+            .any(|member| member.publisher == stand_in)
+        {
+            let mut member = Member::new(stand_in);
+            member.spoken_by = Some(from);
+            // The run is said on the host's device: it lists as that device.
+            if let Some(host) = self.member(from) {
+                member.device.clone_from(&host.device);
+            }
+            self.members.push(member);
+        }
+        Some(stand_in)
     }
 
     /// How many times what is known here changed: a surface drawing its
@@ -521,6 +576,9 @@ impl Board {
         if from == self.publisher {
             return false;
         }
+        let Some(from) = self.speaker(from, frame) else {
+            return false;
+        };
         let changed = self.take(from, frame, now_ms);
         if let Some(member) = self
             .members
@@ -738,6 +796,14 @@ impl Board {
     /// The roster's word on `from`: a certificate this device verified named
     /// the person and the device. Whether what is known here changed.
     pub fn certify(&mut self, from: Device, user: String, device: &str) -> bool {
+        // The runs a host speaks for list as its device.
+        for run in self
+            .members
+            .iter_mut()
+            .filter(|member| member.spoken_by == Some(from))
+        {
+            device.trim().clone_into(&mut run.device);
+        }
         self.touch(from, |member| {
             let changed = member.user.as_deref() != Some(user.as_str()) || member.device != device;
             member.user = Some(user);
@@ -746,10 +812,12 @@ impl Board {
         })
     }
 
-    /// They left the workspace.
+    /// They left the workspace, and the runs they spoke for as its host.
     pub fn depart(&mut self, publisher: Device) -> bool {
         let before = self.members.len();
-        self.members.retain(|member| member.publisher != publisher);
+        // The runs a host spoke for leave with it.
+        self.members
+            .retain(|member| member.publisher != publisher && member.spoken_by != Some(publisher));
         let changed = self.members.len() != before;
         if changed {
             self.revision = self.revision.wrapping_add(1);

@@ -84,6 +84,11 @@ pub struct Shown {
     pub epoch: u64,
     /// Their presence says they are an agent.
     pub agent: bool,
+    /// The workspace's host, hex, when it speaks for this member: an
+    /// agent's or a key's run it executes, which says nothing itself. A
+    /// surface shows them as the agent, said by the host.
+    #[serde(default)]
+    pub spoken_by: Option<String>,
     /// The name everyone here calls them.
     pub label: String,
     /// What they are doing: an agent's own line, or a person's status.

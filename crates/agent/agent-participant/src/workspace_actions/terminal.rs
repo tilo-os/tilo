@@ -399,6 +399,14 @@ impl Worker {
             Ok(output) => InvocationUpdate::Succeeded { invocation, output },
             Err(error) => InvocationUpdate::Failed { invocation, error },
         };
+        let phase = match &update {
+            InvocationUpdate::Failed { error, .. } => tilo_actions::InteractionPhase::Failed {
+                code: Some(error.code.clone()),
+                message: error.message.clone(),
+            },
+            _ => tilo_actions::InteractionPhase::Committed,
+        };
+        self.voice(ended.workspace_id, &ended.caller, &ended.request, &phase);
         if let Some(entry) = self.ledger().entries.get_mut(&invocation) {
             entry.update = update;
             entry.stop = None;

@@ -17,6 +17,9 @@
 //!
 //! Each caller's actions are also the same caller's to both: the broker's
 //! actor and the host's replica name the same actor, for the same person.
+//! What an agent or a key does is one run the host names, which History
+//! keeps and which the host itself shows live, present and narrated, though
+//! no client here says anything of itself.
 use super::*;
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -669,6 +672,49 @@ async fn both_routes_decide_every_callers_actions_alike() {
     }
     if runs.iter().any(|run| run.label == "Not me") {
         differences.push("the host took a run a client claimed".into());
+    }
+
+    // Seen live: no client here says anything of itself on the live plane,
+    // as an SDK client never does. The host speaks for each run it executes:
+    // the run is present as an agent named as the host knows it, said by the
+    // host for it, and its actions are narrated as that run's.
+    let spoken_by = hex::encode(host.cert.device_public_key);
+    let deadline = tilo_test_env::hang_deadline();
+    let (seen, narrated) = loop {
+        browser.pump();
+        let seen: BTreeMap<String, collab_types::presence::Shown> = browser
+            .here()
+            .into_iter()
+            .filter(|member| member.spoken_by.as_deref() == Some(spoken_by.as_str()))
+            .map(|member| (member.label.clone(), member))
+            .collect();
+        let narrated: BTreeSet<String> = browser
+            .narrated
+            .iter()
+            .map(|(_, work)| work.actor.id.clone())
+            .collect();
+        let all = agents.iter().all(|name| {
+            seen.get(name)
+                .is_some_and(|member| narrated.contains(&member.publisher))
+        });
+        if all || Instant::now() >= deadline {
+            break (seen, narrated);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    for name in &agents {
+        match seen.get(name) {
+            Some(member) if member.agent && narrated.contains(&member.publisher) => {}
+            other => differences.push(format!(
+                "{name}'s run is not seen live: present as {other:?}, narrated as {narrated:?}"
+            )),
+        }
+    }
+    if seen.keys().any(|label| !agents.contains(label)) {
+        differences.push(format!(
+            "the host spoke for someone who ran nothing: {:?}",
+            seen.keys().collect::<Vec<_>>()
+        ));
     }
 
     // A file put into the workspace is an edit of the workspace on both.

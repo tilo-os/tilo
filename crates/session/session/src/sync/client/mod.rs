@@ -904,6 +904,11 @@ impl Host for Hosting {
         self.roster.show_waves();
     }
 
+    fn workspace_host(&self, workspace: &str) -> Option<[u8; 32]> {
+        let engine = self.seat.engine.as_ref()?;
+        engine.host_of(tilo_desktop_model::WorkspaceId::parse(workspace)?)
+    }
+
     fn joined(&self, workspace: &str) {
         let seat = &self.seat;
         let Some(engine) = seat.engine.as_ref() else {

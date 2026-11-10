@@ -47,6 +47,7 @@ pub fn shown(member: &Member, now_ms: f64) -> Shown {
         publisher: hex::encode(member.publisher),
         epoch: member.epoch,
         agent: member.agent(),
+        spoken_by: member.spoken_by.map(hex::encode),
         label: member.label().to_owned(),
         activity: member.activity().map(|(activity, _)| activity.to_owned()),
         automatic: member.activity().is_some_and(|(_, automatic)| automatic),

@@ -25,6 +25,9 @@ pub struct Narrated<'a> {
     /// The action, on the resource it is published on.
     pub action: &'a ActionAddress,
     pub phase: InteractionPhase,
+    /// The run the workspace's host narrates this for, when the host does:
+    /// an agent's or a key's run it executes.
+    pub on_behalf: Option<&'a str>,
 }
 
 /// `narrated` as the live plane carries it, numbered `seq` on the agent's
@@ -62,6 +65,7 @@ pub fn frame(narrated: &Narrated<'_>, seq: u64, sent_at_ms: u64) -> Option<Seman
         execution: narrated.invocation.0,
         peer: NO_INSTANCE,
         interaction_json: serde_json::to_string(&interaction).ok()?,
+        on_behalf: narrated.on_behalf.map(str::to_owned),
     })
 }
 
@@ -69,19 +73,28 @@ pub fn frame(narrated: &Narrated<'_>, seq: u64, sent_at_ms: u64) -> Option<Seman
 /// `None` unless `from` is one of them as an agent and the work is well formed and names the
 /// execution its frame does. Its actor is that member, whatever the work claims: a device says only
 /// what its own agent does.
+///
+/// Work the workspace's host narrates for a run it executes ([`SemanticFrame::on_behalf`]) is the
+/// member it speaks for that run ([`collab_types::presence::stand_in`]), which the page's board
+/// admitted only from the workspace's own host: `None` from any other device.
 #[must_use]
 pub fn admit(here: &[Shown], from: [u8; 32], event: &SemanticFrame) -> Option<SemanticInteraction> {
-    let publisher = hex::encode(from);
-    here.iter()
-        .find(|member| member.publisher == publisher)?
-        .agent
-        .then_some(())?;
+    let sender = hex::encode(from);
+    let publisher = match &event.on_behalf {
+        Some(run) => hex::encode(collab_types::presence::stand_in(from, run)),
+        None => sender.clone(),
+    };
+    let member = here.iter().find(|member| member.publisher == publisher)?;
+    member.agent.then_some(())?;
+    if event.on_behalf.is_some() && member.spoken_by.as_deref() != Some(sender.as_str()) {
+        return None;
+    }
     let mut interaction: SemanticInteraction =
         serde_json::from_str(&event.interaction_json).ok()?;
     if interaction.invocation.0 != event.execution {
         return None;
     }
-    interaction.actor = InteractionActor::new(hex::encode(from), ActorKind::Agent);
+    interaction.actor = InteractionActor::new(publisher, ActorKind::Agent);
     interaction.validate().ok()?;
     Some(interaction)
 }
@@ -93,7 +106,8 @@ fn app_label(app: &str) -> String {
 
 /// An action's id as the words a person reads (`append-paragraph` is
 /// "Append paragraph").
-fn action_label(action: &str) -> String {
+#[must_use]
+pub fn action_label(action: &str) -> String {
     capitalised(action.replace(['-', '_'], " ").trim()).unwrap_or_else(|| action.to_owned())
 }
 
@@ -142,6 +156,7 @@ mod tests {
                 app: "so.tilo.sheets",
                 action: &action,
                 phase: InteractionPhase::Applying,
+                on_behalf: None,
             },
             3,
             1_700_000_000_000,
@@ -173,6 +188,7 @@ mod tests {
                 app: "so.tilo.sheets",
                 action: &action,
                 phase: InteractionPhase::Committed,
+                on_behalf: None,
             },
             1,
             1,
@@ -206,5 +222,46 @@ mod tests {
         malformed.execution = invocation.0;
         malformed.interaction_json = "{}".into();
         assert!(admit(&present, agent, &malformed).is_none());
+    }
+
+    /// Work the workspace's host narrates for a run is the member it speaks
+    /// for that run; the same frame from any device the board did not take
+    /// as that run's speaker is not drawn.
+    #[test]
+    fn the_host_narrates_a_run_as_the_member_it_speaks_for() {
+        let (host, other) = ([5; 32], [6; 32]);
+        let run = "agent-run:7";
+        let stand_in = collab_types::presence::stand_in(host, run);
+        let present = vec![Shown {
+            publisher: hex::encode(stand_in),
+            epoch: 1,
+            agent: true,
+            spoken_by: Some(hex::encode(host)),
+            label: "Visa backend".into(),
+            ..Shown::default()
+        }];
+        let action = ActionAddress::new("workbook", "new-sheet");
+        let event = frame(
+            &Narrated {
+                agent: "Visa backend",
+                invocation: InvocationId::new(),
+                app: "so.tilo.sheets",
+                action: &action,
+                phase: InteractionPhase::Committed,
+                on_behalf: Some(run),
+            },
+            1,
+            1,
+        )
+        .unwrap();
+        let admitted = admit(&present, host, &event).expect("the host's word for its run");
+        assert_eq!(admitted.actor.id, hex::encode(stand_in));
+        assert!(
+            admit(&present, other, &event).is_none(),
+            "another device does not speak for the host's run"
+        );
+        let mut unspoken = present;
+        unspoken[0].spoken_by = None;
+        assert!(admit(&unspoken, host, &event).is_none());
     }
 }

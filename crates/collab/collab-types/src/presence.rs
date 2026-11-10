@@ -23,7 +23,7 @@ pub use key::{
     ViewRect, ViewSubset,
 };
 pub use payload::{Availability, Collaborator, IDLE_AFTER, PresencePayload};
-pub use said::{DESKTOP_APP, Presence};
+pub use said::{DESKTOP_APP, Presence, stand_in};
 
 /// What a participant says in one presence frame: the semantics every
 /// publisher and reader of a workspace's presence shares. One enum, so a

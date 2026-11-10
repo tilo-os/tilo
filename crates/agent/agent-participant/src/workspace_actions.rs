@@ -52,6 +52,7 @@ mod bounded;
 mod content;
 mod feedback;
 mod reads;
+mod run_voice;
 mod terminal;
 pub use content::MAX_PUT_BYTES;
 pub use terminal::{ShellRan, TERMINAL_APP, Watching, WorkspaceShell};
@@ -70,6 +71,7 @@ use crate::participant::SharedDesktop;
 use crate::participant::actions::{Outcome, door_outcome, open_row, record_of, record_provider};
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use collab_types::DocumentMutation;
+use tilo_actions::InteractionPhase;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, ActorPlace, Caller,
     CallerPrincipal, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueRow, Completer,
@@ -1205,6 +1207,31 @@ struct Worker {
     /// workspace: the thread answers others meanwhile.
     joining: HashMap<u64, VecDeque<(Instant, Job)>>,
     clock: u64,
+    /// What the host says for the runs it executes ([`run_voice`]).
+    voices: run_voice::RunVoices,
+}
+
+/// How a run's action ended, as it is narrated.
+fn ended_phase(outcome: &Result<(ActionOutput, Option<ActorPlace>), Outcome>) -> InteractionPhase {
+    match outcome {
+        Ok(_) => InteractionPhase::Committed,
+        Err(Outcome::Failed(error)) => InteractionPhase::Failed {
+            code: Some(error.code.clone()),
+            message: error.message.clone(),
+        },
+        Err(Outcome::Rejected(error)) => InteractionPhase::Failed {
+            code: Some(error.code().to_owned()),
+            message: error.to_string(),
+        },
+    }
+}
+
+/// How a run's action the host turned away is narrated.
+fn refused_phase() -> InteractionPhase {
+    InteractionPhase::Failed {
+        code: None,
+        message: "refused".into(),
+    }
 }
 
 /// The door's answer for an action it has nothing by that address.
@@ -1318,6 +1345,7 @@ impl Worker {
             mounted: BTreeMap::new(),
             bounded: BTreeMap::new(),
             beside: HashMap::new(),
+            voices: run_voice::RunVoices::default(),
             joining: HashMap::new(),
             clock: 0,
         }
@@ -1325,7 +1353,11 @@ impl Worker {
 
     fn run(mut self, jobs: &mpsc::Receiver<(Instant, Job)>) {
         loop {
-            let next = match self.joining_until() {
+            let due = match (self.joining_until(), self.voices.next_due()) {
+                (Some(joining), Some(voice)) => Some(joining.min(voice)),
+                (joining, voice) => joining.or(voice),
+            };
+            let next = match due {
                 Some(until) => jobs.recv_timeout(until.saturating_duration_since(Instant::now())),
                 None => jobs
                     .recv()
@@ -1333,7 +1365,12 @@ impl Worker {
             };
             match next {
                 Ok((queued, job)) => self.admit(queued, job),
-                Err(mpsc::RecvTimeoutError::Timeout) => self.give_up_joining(),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    self.give_up_joining();
+                    let workspaces = &self.workspaces;
+                    self.voices
+                        .tick(|workspace_id| workspaces.get(&workspace_id).map(|held| &held.peer));
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
@@ -1992,22 +2029,8 @@ impl Worker {
             drop(ledger);
             (caller, request)
         };
-        if let Some(receipt) = self.start_terminal_run(workspace_id, &caller, &request) {
-            let mut ledger = self.ledger();
-            ledger.running = None;
-            if matches!(receipt.status, ReceiptStatus::Rejected { .. }) {
-                ledger.forget(&invocation);
-            }
-            drop(ledger);
-            return receipt;
-        }
-        if let Some(receipt) = self.stop_terminal_runs(workspace_id, &caller, &request) {
-            let mut ledger = self.ledger();
-            ledger.running = None;
-            if matches!(receipt.status, ReceiptStatus::Rejected { .. }) {
-                ledger.forget(&invocation);
-            }
-            drop(ledger);
+        self.voice(workspace_id, &caller, &request, &InteractionPhase::Applying);
+        if let Some(receipt) = self.terminal(workspace_id, &caller, &request) {
             return receipt;
         }
         let outcome = self.perform(workspace_id, &caller, &request);
@@ -2032,6 +2055,7 @@ impl Worker {
                 resource = %target.address.resource, action = %target.address.action,
                 code = error.code(), %error, "workspace actions: refused"),
         }
+        self.voice(workspace_id, &caller, &request, &ended_phase(&outcome));
         let mut ledger = self.ledger();
         ledger.running = None;
         let (update, left_at) = match outcome {
@@ -2078,6 +2102,54 @@ impl Worker {
         }
         drop(ledger);
         InvocationState::new(invocation, update).receipt()
+    }
+
+    /// A Terminal run `request` starts, or the runs it stops, answered
+    /// here: `None` for any other request.
+    fn terminal(
+        &mut self,
+        workspace_id: u64,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Option<InvocationReceipt> {
+        let receipt = self
+            .start_terminal_run(workspace_id, caller, request)
+            .or_else(|| self.stop_terminal_runs(workspace_id, caller, request))?;
+        let mut ledger = self.ledger();
+        ledger.running = None;
+        let refused = matches!(receipt.status, ReceiptStatus::Rejected { .. });
+        if refused {
+            ledger.forget(&request.invocation);
+        }
+        drop(ledger);
+        if refused {
+            self.voice(workspace_id, caller, request, &refused_phase());
+        }
+        Some(receipt)
+    }
+
+    /// Say `caller`'s run taking `request` at `phase`, as the host speaks
+    /// for the runs it executes ([`run_voice`]).
+    fn voice(
+        &mut self,
+        workspace_id: u64,
+        caller: &Caller,
+        request: &InvokeRequest,
+        phase: &InteractionPhase,
+    ) {
+        let Some(workspace) = self.workspaces.get(&workspace_id) else {
+            return;
+        };
+        let Some(cluster) = workspace.cluster_id(workspace_id) else {
+            return;
+        };
+        self.voices.acting(
+            (&workspace.peer, workspace_id, &cluster),
+            caller,
+            request.invocation,
+            &request.target,
+            phase,
+        );
     }
 
     /// The appearance `request` may show: only a bot whose installation

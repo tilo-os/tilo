@@ -45,6 +45,12 @@ pub trait Host: 'static {
     /// This session joined `workspace` on the plane: what its host opens there.
     fn joined(&self, _workspace: &str) {}
 
+    /// The device `workspace`'s governance pins as its host, as this device verified it: the only
+    /// one whose word for the runs it executes this session hears ([`Client::set_workspace_host`]).
+    fn workspace_host(&self, _workspace: &str) -> Option<[u8; 32]> {
+        None
+    }
+
     /// What this host owes on every pass of [`Client::follow`].
     fn pass(&self, _client: &Client) {}
 }
@@ -223,10 +229,28 @@ impl Client {
                 let _ = outgoing.send(Cmd::Leave(topic));
             },
         );
+        // Each workspace's board hears the runs its host speaks for from that host alone.
+        let hosted = self.host.borrow().clone().is_some_and(|host| {
+            live.iter().fold(false, |moved, (_, workspace)| {
+                self.presence
+                    .set_host(workspace, host.workspace_host(workspace))
+                    || moved
+            })
+        });
+        let changed = changed || hosted;
         if changed {
             self.touched();
         }
         changed
+    }
+
+    /// Take `host` as the device `workspace`'s governance pins as its host, for a session whose
+    /// host names it itself (a page, with the host its session was admitted by): the workspace's
+    /// board hears what that host says for the runs it executes, one member per run.
+    pub fn set_workspace_host(&self, workspace: &str, host: Option<[u8; 32]>) {
+        if self.presence.set_host(workspace, host) {
+            self.touched();
+        }
     }
 
     /// Hear everything that reached the plane since the last call. Whether anything did.
