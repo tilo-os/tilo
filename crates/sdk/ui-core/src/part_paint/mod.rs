@@ -35,6 +35,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 pub use draw::{Painted, cached_parts, paint_part};
 pub use motion::{Moment, PartMotion};
+pub use shader::{SURFACE_SHADER, SurfaceShaderCode, builtin_surface_shader};
 pub use tilo_theme_sdk::{
     Brush, Easing, Lens, Op, PaintedPart, Param, ParamSpec, Part, PartImage, PartPainter,
     PartScene, PartState, PartTokens, Sampling, ShaderSource, Sides, States, Stop, Transition,

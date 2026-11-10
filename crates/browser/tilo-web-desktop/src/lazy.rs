@@ -287,6 +287,12 @@ split_code! {
 }
 
 split_code! {
+    /// A theme's surface shader: the first theme that states one asks for it.
+    mod surface_shader: tilo_ui::part_paint::SurfaceShaderCode = tilo_ui::part_paint::builtin_surface_shader()
+        => tilo_ui::part_paint::SURFACE_SHADER, module = "surface_shader", hash = "c40e7b19d2a6f385";
+}
+
+split_code! {
     /// History: the first window that registers it asks for it.
     mod history: tilo_ui::history_mode::MakeHistory = tilo_ui::history_mode::builtin_history()
         => tilo_ui::history_mode::HISTORY, module = "history", hash = "e1a7c5039b6d2f84";
@@ -362,6 +368,7 @@ pub(crate) fn register() {
     tilo_browser_runtime::defer_model_clients(fetch_model_clients);
     emoji::register();
     history::register();
+    surface_shader::register();
     action_palette::register();
     feedback_code::register();
     dom_presenter::register();

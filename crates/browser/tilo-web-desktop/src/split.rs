@@ -144,13 +144,21 @@ macro_rules! lazy_exports {
     };
 }
 
-// The certified peer: the crypto, the transport and the workspaces'
-// replication behind it. The page loads it once the start module is in, and
-// every door into a workspace waits for it (`loadRuntime` of `web/host.mjs`).
+// The way into a workspace: the certified peer (the crypto, the transport
+// and the workspaces' replication behind it), the person's root identity,
+// links and the workspaces this page entered. The page loads it once the
+// start module is in, and every door into a workspace waits for it
+// (`loadRuntime` of `web/host.mjs`).
 lazy_exports!("peer":
     "hostRefusal", "hostInfo", "certifyDevice", "channelVault", "issueDeviceCert",
     "sealedInvitationLink", "redeemInvitation", "inspectInvitation", "reconnectCertificate",
     "acceptInvitation", "enterThroughDoor", "deviceCertCanonical", "certifyWithRoot",
     "createLoginCode", "followLoginCode", "keepStandIn", "retireStandIn", "revokeDevice",
     "wasmpeer_*", "__wbg_wasmpeer_*", "pairinghost_*", "__wbg_pairinghost_*",
+    "rootNew", "rootHeld", "rootOpenRecovery", "rootOpenPasskey", "rootEnvelopeEmpty",
+    "rootEnvelopePublicKey", "rootEnvelopeKept", "rootEnvelopePasskeys", "nodeSessionVouched",
+    "root_*", "__wbg_root_*", "signInAnswer", "wayIn", "wayInAfter", "admittedAsAsked",
+    "parseLink", "formatLink", "formatInviteLink", "nativeLink", "qrSvg",
+    "rememberEntered", "nameEntered", "markEnteredUnavailable", "forgetGoneWorkspaces",
+    "settleFailedWorkspace",
 );

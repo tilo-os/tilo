@@ -77,6 +77,12 @@ lazy-hyphenation = []
 # then images are left out. The browser desktop uses this to keep them out of
 # its start module.
 lazy-image-decode = []
+# A theme's surface shader (the WGSL front end and the interpreter that
+# draws it) is not linked: the program fetches its code the first time a
+# theme states a shader (`part_paint::SURFACE_SHADER`); until then such
+# parts draw their fallback. The browser desktop uses this to keep it out of
+# its start module.
+lazy-surface-shader = []
 # The emoji catalogue (names and keywords in every language, about half a
 # megabyte) is not linked into the toolkit's own code paths: the program
 # fetches it the first time a picker, reaction or `:name:` asks and hands it

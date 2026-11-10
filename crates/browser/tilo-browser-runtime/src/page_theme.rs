@@ -151,9 +151,12 @@ pub(crate) fn current() -> ui::Theme {
     )
 }
 
-/// Which change of what the theme is built from the page is at.
+/// Which change of what the theme is built from the page is at. A theme's
+/// surface shader is checked once its code is in, so its arrival is one.
 pub(crate) fn generation() -> u64 {
-    GENERATION.with(Cell::get)
+    GENERATION
+        .with(Cell::get)
+        .wrapping_add(ui::part_paint::SURFACE_SHADER.generation())
 }
 
 /// What the theme is built from changed: every mount takes it again on its
