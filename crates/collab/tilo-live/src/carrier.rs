@@ -48,7 +48,7 @@ pub use crate::admit::{
     WireStats, origin_config, present, start, version, wire,
 };
 
-/// The WebTransport subprotocol and `moq-lite` draft every Tilo `MoQ` route
+/// The `moq-lite` draft every Tilo `MoQ` session
 /// negotiates. No other version is offered or accepted.
 pub use crate::preface::PROTOCOL;
 pub use crate::preface::{

@@ -1,9 +1,8 @@
 //! The client half of the carrier: present a grant, wait for the host's
 //! answer, and run `moq-lite` on an admitted session.
 //!
-//! A native device and a browser page run the same code here. Only how the
-//! transport is opened differs ([`Dial`]: WebTransport or a direct iroh
-//! connection), and that step is the caller's. Nothing in this module needs a
+//! A native device and a browser page run the same code here. How the
+//! transport is opened ([`Dial`], an iroh connection) is the caller's step. Nothing in this module needs a
 //! thread or a runtime beyond plain future polling, so it builds for the page
 //! (no Tokio) as it does for the desktop.
 
@@ -22,8 +21,8 @@ pub fn version() -> Option<moq_net::Version> {
 
 /// A carrier transport: [`moq_net`]'s poll session interface, clonable (each
 /// clone makes its own progress), thread-safe, and `'static` so its driver
-/// runs on a task of its own. WebTransport and iroh both qualify; nothing in
-/// this module names either.
+/// runs on a task of its own. An iroh connection qualifies; nothing in
+/// this module names it.
 pub trait Carrier: moq_net::transport::poll::Session + Send + Sync + 'static {}
 
 impl<T> Carrier for T where T: moq_net::transport::poll::Session + Send + Sync + 'static {}

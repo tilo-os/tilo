@@ -21,9 +21,7 @@ use iroh::{Endpoint, EndpointAddr, RelayMode};
 use moq_net::Timestamp;
 use tilo_live::carrier::{self, AdmissionError, Dial as _};
 use tilo_live::native;
-use tilo_live::relay::{
-    Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization, VoiceRoute,
-};
+use tilo_live::relay::{Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization};
 use tilo_live::voice::{FRAME_SAMPLES, VoiceObject};
 use tilo_seal::discord_voice::{TransportCipher, XCHACHA};
 
@@ -158,10 +156,8 @@ async fn native_carrier_admits_scopes_and_relays_their_sealed_tracks() {
         move |session| {
             let relay = relay.clone();
             async move {
-                let peer = Peer::Native(session.remote());
-                relay
-                    .serve_session(VoiceRoute::negotiated(), session, peer)
-                    .await;
+                let peer = Peer(session.remote());
+                relay.serve_session(session, peer).await;
             }
         }
     })

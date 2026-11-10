@@ -3,11 +3,10 @@
 //! [`Session`] implements [`moq_net::transport::poll::Session`] over iroh, so
 //! everything above [`crate::carrier`] — the admission preface, `moq-lite` and
 //! its SETUP, the relay — runs unchanged on a direct connection between two
-//! endpoints. WebTransport stays the browser's carrier; a native device speaks
-//! this one instead of a browser-issued certificate and route.
+//! endpoints. It is every device's carrier, a page's included: a page reaches
+//! the serving device through its packet relay.
 //!
-//! Datagrams carry voice as they do over WebTransport: no stream waits behind
-//! a lost datagram. The connection's statistics map one to one:
+//! Datagrams carry voice: no stream waits behind a lost datagram. The connection's statistics map one to one:
 //!
 //! | [`moq_net::web_transport_trait::Stats`] | iroh [`ConnectionStats`] |
 //! | --- | --- |
@@ -20,9 +19,9 @@
 //! | `rtt` | [`Connection::rtt`] of the connection's first path |
 //! | `estimated_send_rate` | none this layer reports |
 //!
-//! A connection reaches `MoQ` only through the same admission preface as a
-//! WebTransport session ([`crate::admit::present`] and `carrier::accept`):
-//! the transport is merely open until the host admits it.
+//! A connection reaches `MoQ` only through the admission preface
+//! ([`crate::admit::present`] and `carrier::accept`): the transport is merely
+//! open until the host admits it.
 
 use std::future::Future;
 use std::pin::{Pin, pin};
@@ -45,8 +44,7 @@ use tilo_lock::MutexRecover as _;
 use crate::admit::{AdmissionError, Dial, Dialling, start};
 use crate::preface::PROTOCOL;
 
-/// The ALPN every carrier connection negotiates: the `moq-lite` draft name,
-/// which is also the WebTransport subprotocol.
+/// The ALPN every carrier connection negotiates: the `moq-lite` draft name.
 pub const ALPN: &[u8] = PROTOCOL.as_bytes();
 
 /// Bytes of datagrams one connection holds for a session that is slow to

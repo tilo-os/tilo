@@ -34,16 +34,14 @@ use crate::voice;
 /// device), never by a count here, so a call has no participant limit.
 pub const MAX_ADMITTING: usize = 16;
 pub const MAX_AUTHORIZATION_BYTES: usize = carrier::MAX_GRANT_BYTES;
-/// Exact WebTransport path of the voice relay.
-pub const VOICE_PATH: &str = crate::preface::PATH;
 /// The one track a voice broadcast carries.
 pub const VOICE_TRACK: &str = "audio";
 /// Longest an offered namespace whose publisher authority lapsed may stay
 /// offered to a subscriber before that subscriber fails closed.
 const LAPSED_OFFER_FENCE: Duration = Duration::from_millis(900);
 /// How long a revoked or expired session may stay open after the revocation
-/// notice so the client closes first. Chromium can crash its renderer when the
-/// server closes a WebTransport session with streams in flight. No media flows
+/// notice so the client closes first, rather than having the session cut
+/// under it with streams in flight. No media flows
 /// to or from the session during this grace: its view and its publication are
 /// dropped when authority is lost.
 pub const GOAWAY_GRACE: Duration = Duration::from_secs(1);
@@ -72,26 +70,6 @@ const MAX_GROUPS_IN_FLIGHT: usize = 3;
 const MAX_OPAQUE_OBJECT_BYTES: usize = 4096;
 /// Objects one opaque group may have.
 const MAX_OPAQUE_GROUP_OBJECTS: u64 = 16;
-
-/// Host-internal marker for a fresh per-request exact raw route comparison.
-///
-/// This marker is neither authentication nor independent authority evidence.
-/// Its private field only requires callers to use [`Relay::validate_route`]
-/// before URL normalization for each accepted request, or
-/// [`VoiceRoute::negotiated`] where the transport itself negotiated the one
-/// route.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct VoiceRoute(());
-
-impl VoiceRoute {
-    /// The route of a connection whose transport negotiated
-    /// [`carrier::PROTOCOL`](crate::carrier::PROTOCOL) directly, with no HTTP/3
-    /// authority or path to compare: a native iroh carrier.
-    #[must_use]
-    pub fn negotiated() -> Self {
-        Self(())
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
@@ -166,15 +144,10 @@ pub trait SessionAuthorization: Send + Sync {
     }
 }
 
-/// Who is asking to be admitted, as the transport proved it.
+/// Who is asking to be admitted: the iroh endpoint id the QUIC/TLS handshake
+/// proved. Every device reaches the plane over iroh, a page included.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Peer {
-    /// An iroh connection: the endpoint id the QUIC/TLS handshake proved.
-    Native([u8; 32]),
-    /// A WebTransport session on the relay: nothing but the proof identifies
-    /// it, and only the listener knows its route.
-    Web,
-}
+pub struct Peer(pub [u8; 32]);
 
 /// Admission runs before any origin is attached. The opaque proof is passed
 /// only here and is never included in errors, URLs, tracing or counters.
@@ -371,20 +344,14 @@ impl Relay {
         }
     }
 
-    /// Serve one session answered with [`carrier::PROTOCOL`] on an exactly
-    /// validated route.
+    /// Serve one session answered with [`carrier::PROTOCOL`].
     ///
     /// This runs the admission preface, attaches only host-owned scopes, and
     /// keeps the `MoQ` driver in this future: it is cancelled on any
     /// authorization failure or caller cancellation and never detached.
     /// `peer` is who the transport proved is asking; the authority sees it
     /// beside the preface's own proof.
-    pub async fn serve_session<S: carrier::Carrier>(
-        &self,
-        _route: VoiceRoute,
-        transport: S,
-        peer: Peer,
-    ) {
+    pub async fn serve_session<S: carrier::Carrier>(&self, transport: S, peer: Peer) {
         let Ok(admitting) = self.admitting.clone().try_acquire_owned() else {
             self.counters.rejected.fetch_add(1, Ordering::Relaxed);
             carrier::close(&transport, carrier::CLOSE_DENIED, "relay busy");

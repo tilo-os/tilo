@@ -15,9 +15,9 @@
 //! asked for ([`Plane::wanted_pictures`]), so a picture nobody watches costs
 //! no bitrate and no encoder.
 //!
-//! The carrier is whatever [`Dial`] this device has: iroh to the workspace's
-//! relay ([`crate::native::Iroh`]), or a page's WebTransport session. This
-//! module names neither.
+//! The carrier is whatever [`Dial`] this device has: iroh to the device that
+//! serves the workspace ([`crate::native::Iroh`]). This module does not name
+//! it.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};

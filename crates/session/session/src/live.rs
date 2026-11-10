@@ -30,9 +30,7 @@ use tilo_live::grant;
 use tilo_live::live::{self, Namespace, Track};
 use tilo_live::native;
 use tilo_live::plane::{Heard, Join, Plane, PlaneError};
-use tilo_live::relay::{
-    Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization, VoiceRoute,
-};
+use tilo_live::relay::{Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization};
 use tilo_live::roster::Roster;
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::local_host::Protocols;
@@ -111,9 +109,7 @@ fn bind(
     own: [u8; 32],
     now_ns: u64,
 ) -> Result<Request, Denied> {
-    let Peer::Native(endpoint) = peer else {
-        return Err(Denied);
-    };
+    let Peer(endpoint) = peer;
     let workspace = WorkspaceId::parse(&live::workspace_id(grant.workspace)).ok_or(Denied)?;
     // One scope per workspace today: the workspace itself.
     if grant.scope != scope_of(workspace).id() {
@@ -237,9 +233,7 @@ struct Shared {
 
 impl RelayAuthority for Shared {
     fn admit(&self, peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
-        let Peer::Native(_) = peer else {
-            return Err(Denied);
-        };
+        let Peer(_) = peer;
         let grant = grant::Native::parse(proof).ok_or(Denied)?;
         let workspace = WorkspaceId::parse(&live::workspace_id(grant.workspace)).ok_or(Denied)?;
         let members = channels::members_of(&self.engine, workspace).map_err(|_| Denied)?;
@@ -621,10 +615,8 @@ impl Live {
                     let Some(relay) = served(&mut named).await else {
                         return;
                     };
-                    let peer = Peer::Native(session.remote());
-                    relay
-                        .serve_session(VoiceRoute::negotiated(), session, peer)
-                        .await;
+                    let peer = Peer(session.remote());
+                    relay.serve_session(session, peer).await;
                 }
             });
             vec![(
@@ -1024,7 +1016,7 @@ mod tests {
         ];
         assert!(
             bind(
-                Peer::Native([1; 32]),
+                Peer([1; 32]),
                 &grant(workspace, &mine),
                 &members,
                 [1; 32],
@@ -1035,7 +1027,7 @@ mod tests {
         );
         assert!(
             bind(
-                Peer::Native([2; 32]),
+                Peer([2; 32]),
                 &grant(workspace, &mine),
                 &members,
                 [1; 32],
@@ -1046,7 +1038,7 @@ mod tests {
         );
         assert!(
             bind(
-                Peer::Native([3; 32]),
+                Peer([3; 32]),
                 &grant(workspace, &other),
                 &members,
                 [1; 32],
@@ -1082,7 +1074,7 @@ mod tests {
         delegated.delegation = serde_json::to_vec(&delegation).unwrap();
         assert!(
             bind(
-                Peer::Native(page),
+                Peer(page),
                 &delegated,
                 &members,
                 mine.device_public_key,
@@ -1093,7 +1085,7 @@ mod tests {
         );
         assert!(
             bind(
-                Peer::Native(page),
+                Peer(page),
                 &grant(workspace, &mine),
                 &members,
                 mine.device_public_key,
@@ -1105,7 +1097,7 @@ mod tests {
         let later = 100 + 60 * 60 * 1_000_000_000;
         assert!(
             bind(
-                Peer::Native(page),
+                Peer(page),
                 &delegated,
                 &members,
                 mine.device_public_key,
@@ -1120,14 +1112,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            bind(
-                Peer::Native(page),
-                &anyone,
-                &members,
-                mine.device_public_key,
-                200
-            )
-            .is_err(),
+            bind(Peer(page), &anyone, &members, mine.device_public_key, 200).is_err(),
             "an endpoint cannot vouch for itself"
         );
     }
@@ -1149,7 +1134,7 @@ mod tests {
         ];
         assert!(
             bind(
-                Peer::Native([2; 32]),
+                Peer([2; 32]),
                 &grant(workspace, &mine),
                 &members,
                 [2; 32],
@@ -1162,7 +1147,7 @@ mod tests {
         elsewhere.scope =
             Scope::channel(workspace.to_string(), collab_types::ChannelId::default()).id();
         assert!(
-            bind(Peer::Native([2; 32]), &elsewhere, &members, [2; 32], 10).is_err(),
+            bind(Peer([2; 32]), &elsewhere, &members, [2; 32], 10).is_err(),
             "a scope this session carries no plane for is refused"
         );
     }
@@ -1177,7 +1162,7 @@ mod tests {
         }];
         assert!(
             bind(
-                Peer::Native([1; 32]),
+                Peer([1; 32]),
                 &grant(workspace, &expired),
                 &members,
                 [1; 32],

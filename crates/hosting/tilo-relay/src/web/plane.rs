@@ -258,9 +258,7 @@ impl RelayAuthority for Authority {
     fn admit(&self, peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
         // Every participant reaches this plane over iroh, a page included: it
         // proves itself with the certificate its grant carries.
-        let Peer::Native(device) = peer else {
-            return Err(Denied);
-        };
+        let Peer(device) = peer;
         self.admit_member(device, proof)
     }
 }
@@ -302,10 +300,8 @@ impl Plane {
         let handler = tilo_live::native::handler(move |session: tilo_live::native::Session| {
             let relay = relay.clone();
             async move {
-                let peer = Peer::Native(session.remote());
-                relay
-                    .serve_session(tilo_live::relay::VoiceRoute::negotiated(), session, peer)
-                    .await;
+                let peer = Peer(session.remote());
+                relay.serve_session(session, peer).await;
             }
         });
         (tilo_live::native::ALPN.to_vec(), Box::new(handler))

@@ -34,7 +34,6 @@ use tilo_live::native;
 use tilo_live::plane::{self, Heard, Join, Plane, PlaneError};
 use tilo_live::relay::{
     AuthorizationStatus, Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization,
-    VoiceRoute,
 };
 use tilo_live::roster::Roster;
 use tilo_live::scope::Scope;
@@ -117,9 +116,7 @@ impl Authority {
 
 impl RelayAuthority for Authority {
     fn admit(&self, peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
-        let Peer::Native(device) = peer else {
-            return Err(Denied);
-        };
+        let Peer(device) = peer;
         let grant = grant::Native::parse(proof).ok_or(Denied)?;
         if live::workspace_bytes(WORKSPACE) != Some(grant.workspace) {
             return Err(Denied);
@@ -220,10 +217,8 @@ fn serve(relay: &Relay, endpoint: &Endpoint) -> iroh::protocol::Router {
             native::handler(move |session: native::Session| {
                 let relay = relay.clone();
                 async move {
-                    let peer = Peer::Native(session.remote());
-                    relay
-                        .serve_session(VoiceRoute::negotiated(), session, peer)
-                        .await;
+                    let peer = Peer(session.remote());
+                    relay.serve_session(session, peer).await;
                 }
             }),
         )
