@@ -95,7 +95,11 @@ for _ in $(seq 1 30); do
 done
 [[ -n $answer ]] || die 'the door did not answer /health within 30 seconds'
 [[ $(code "$answer") == 200 ]] || die "/health answered: ${answer%%$'\r\n'*}"
-[[ $(body "$answer") == '{"ok":true}' ]] || die "/health said: $(body "$answer")"
+# The door answers for itself, and says what the site answered for its sign-in page: here the
+# site does not resolve, so it names the page it could not reach.
+health=$(body "$answer")
+[[ $health == '{"ok":true,"sign_in":'* ]] || die "/health said: $health"
+[[ $health == *'/sign-in'* ]] || die "/health named no sign-in page: $health"
 
 # The issuer the deployment names is the one agents are given.
 answer=$(request GET /.well-known/oauth-authorization-server '') || die 'the door answered no metadata'
