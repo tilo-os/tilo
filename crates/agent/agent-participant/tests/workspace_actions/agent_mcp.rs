@@ -762,21 +762,21 @@ const LEAVES_WITHIN: Duration = Duration::from_secs(4);
 /// the person's page within [`LEAVES_WITHIN`].
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_that_leaves_leaves_who_is_here() {
-    leaves_who_is_here(Ending::Leaves).await;
+    Box::pin(leaves_who_is_here(Ending::Leaves)).await;
 }
 
 /// An agent whose session closes without a word, as a killed process leaves it, leaves who is
 /// here as soon as its session is gone, rather than once the page gave up waiting for its word.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_whose_session_closes_leaves_who_is_here() {
-    leaves_who_is_here(Ending::Closes).await;
+    Box::pin(leaves_who_is_here(Ending::Closes)).await;
 }
 
 /// The person stops their agent from its card: its session ends for good, and it leaves who is
 /// here with it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stopped_agent_leaves_who_is_here() {
-    leaves_who_is_here(Ending::Stopped).await;
+    Box::pin(leaves_who_is_here(Ending::Stopped)).await;
 }
 
 /// An agent whose session ends as `ending` says leaves who is here on the person's page: the page
