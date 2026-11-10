@@ -146,8 +146,8 @@ macro_rules! lazy_exports {
 
 // The way into a workspace: the certified peer (the crypto, the transport
 // and the workspaces' replication behind it), the person's root identity,
-// links, the workspaces this page entered, and the answers a workspace's
-// host gives a window's catalogue requests. The page loads it once the
+// links, the workspaces this page entered, the accounts this browser keeps
+// and the answers a workspace's host gives a window's catalogue requests. The page loads it once the
 // start module is in, and every door into a workspace waits for it
 // (`loadRuntime` of `web/host.mjs`).
 lazy_exports!("peer":
@@ -161,5 +161,5 @@ lazy_exports!("peer":
     "root_*", "__wbg_root_*", "signInAnswer", "wayIn", "wayInAfter", "admittedAsAsked",
     "parseLink", "formatLink", "formatInviteLink", "nativeLink", "qrSvg",
     "rememberEntered", "nameEntered", "markEnteredUnavailable", "forgetGoneWorkspaces",
-    "settleFailedWorkspace", "component_catalogue_response",
+    "settleFailedWorkspace", "component_catalogue_response", "project_browser_accounts",
 );
