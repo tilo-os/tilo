@@ -173,12 +173,21 @@ impl LiveFanout<'_> {
             // This commit is already durable. The replay owner
             // will take one final coherent cut before opening
             // this exact session to post-Ready live delivery.
-            target
-                .replay
-                .as_ref()
-                .invariant("replay missing")?
+            let replay = target.replay.as_ref().invariant("replay missing")?;
+            replay
                 .dirty
                 .store(true, std::sync::atomic::Ordering::SeqCst);
+            // A frame for this device alone (its Welcome to a channel's
+            // group) goes between the replay's batches: the keys it brings
+            // open what the replay is still sending.
+            if self
+                .frame
+                .audience
+                .as_ref()
+                .is_some_and(|audience| audience.contains(&target.peer.device_public_key))
+            {
+                replay.address(self.frame.envelope.clone());
+            }
             return Ok(());
         }
         if !runtime.attached(recipient)

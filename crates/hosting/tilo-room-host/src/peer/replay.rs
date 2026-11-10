@@ -174,6 +174,27 @@ async fn write_bootstrap<W: tokio::io::AsyncWrite + Unpin>(
     Ok(())
 }
 
+/// Frames addressed to a replaying device that wait for the replay's next
+/// pause between batches.
+const MAX_ADDRESSED: usize = 64;
+
+/// Write the frames committed for this device alone while its replay runs
+/// ([`ReplayCatchup::address`]), each authorised as every state frame is.
+async fn write_addressed<W: tokio::io::AsyncWrite + Unpin>(
+    catchup: &ReplayCatchup,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    write: &mut W,
+) -> Result<(), PeerError> {
+    for frame in catchup.take_addressed() {
+        authorize_state_frame(&frame, peer, session).await?;
+        write
+            .write_all(&encode_charged(&frame, session, false)?)
+            .await?;
+    }
+    Ok(())
+}
+
 /// One subscription's replay as [`finish_replay_write`] drives it: the workspace,
 /// its persistence owner, and the replay ticket's authority and catch-up.
 #[derive(Clone, Copy)]
@@ -282,6 +303,7 @@ async fn drive_replay<W: tokio::io::AsyncWrite + Unpin>(
     // Of the phase, the time spent writing batches to the connection.
     let mut writing = std::time::Duration::ZERO;
     loop {
+        write_addressed(run.catchup, peer, session, write).await?;
         let authority = run.authority.clone();
         let source = StateSource::new(peer, session);
         let preparing = async {
@@ -680,6 +702,15 @@ pub(super) struct ReplayCatchup {
     /// a crash ends the session, and its next one replays retained history.
     /// The store's work reclamation discards what a crash leaves.
     held: std::path::PathBuf,
+    /// Frames committed while this replay runs that are addressed to this
+    /// device alone among the workspace's (the Welcome that admits it to a
+    /// channel's group, [`neighbour_wire::audience`]): written between the
+    /// replay's batches rather than after its last one. Nothing the replay
+    /// carries is what such a frame builds on, and the keys it brings open
+    /// what the replay is still sending, so a page shows a record while the
+    /// rest of the workspace arrives. The final cut carries them again, which
+    /// the device ignores as a frame it already applied.
+    addressed: std::sync::Mutex<Vec<Arc<Envelope>>>,
 }
 impl ReplayCatchup {
     pub(super) const ACTIVE: u8 = 0;
@@ -693,7 +724,23 @@ impl ReplayCatchup {
             phase: std::sync::atomic::AtomicU8::new(Self::ACTIVE),
             dirty: std::sync::atomic::AtomicBool::new(false),
             held: work.join(crate::store::replay::held_work_name(rand::random())),
+            addressed: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// Hand `frame`, addressed to this device, to the replay's next pause
+    /// between batches. Past [`MAX_ADDRESSED`] waiting frames the newest is
+    /// left to the final cut, which carries every one of them anyway.
+    pub(super) fn address(&self, frame: Arc<Envelope>) {
+        let mut addressed = self.addressed.lock_recover();
+        if addressed.len() < MAX_ADDRESSED {
+            addressed.push(frame);
+        }
+    }
+
+    /// The frames addressed to this device since the last call, oldest first.
+    fn take_addressed(&self) -> Vec<Arc<Envelope>> {
+        std::mem::take(&mut *self.addressed.lock_recover())
     }
 
     /// Hold `bytes`, the commit at host order `sequence`, for the final cut.

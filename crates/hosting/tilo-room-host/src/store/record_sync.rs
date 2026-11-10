@@ -188,6 +188,26 @@ impl WorkspaceStore {
         ))
     }
 
+    /// Whether the retained lineage `name` carries a record's frames: every
+    /// lineage of the store is read for its record first. A lineage of
+    /// anything else — a device's certificate, the workspace's own document,
+    /// a channel's governance — carries none.
+    pub(super) fn carries_record(&self, name: &OsStr) -> Result<bool, StoreError> {
+        let Some(channel) = lineage_channel(name) else {
+            return Ok(false);
+        };
+        if !self.classes().channels.contains_key(&channel) {
+            self.read_lineage_records()?;
+        }
+        Ok(self.classes().channels.contains_key(&channel))
+    }
+
+    /// Take `channel` to carry `record`, as a frame retained on it would say.
+    #[cfg(test)]
+    pub(crate) fn learn_record(&self, channel: [u8; 32], record: &str) {
+        self.classes().learn(channel, record);
+    }
+
     /// Learn the record of every retained lineage not read yet, unless no
     /// lineage was added or removed since the last time.
     fn read_lineage_records(&self) -> Result<(), StoreError> {
