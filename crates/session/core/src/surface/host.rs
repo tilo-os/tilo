@@ -5,6 +5,8 @@
 //! (the Linux compositor's buffers, the page's canvas) and hands the surface the input that lands
 //! on them. Nothing here knows how the pixels were made or where they are shown.
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use super::{
@@ -541,6 +543,14 @@ pub trait SurfaceHost {
     /// window, the desk, another surface): an open popover closes.
     fn pressed_elsewhere(&mut self, _x: f64, _y: f64) {}
 
+    /// What the surface's owner closes when the pointer is pressed somewhere other than this
+    /// surface. The handle the session shares with its host runs it before
+    /// [`SurfaceHost::pressed_elsewhere`], and before holding the surface, since closing may ask the
+    /// surface to draw again.
+    fn press_elsewhere_closes(&self) -> Option<Rc<dyn Fn()>> {
+        None
+    }
+
     /// The pointer button that press came from is up again, at this logical point: the press is
     /// over, and so is everything it was still doing.
     fn press_ended(&mut self, _x: f64, _y: f64) {}
@@ -666,6 +676,114 @@ pub trait SurfaceHost {
 
     /// A drag this surface started ended: `dropped` when a target took it.
     fn drag_ended(&mut self, _dropped: bool) {}
+}
+
+/// A surface the session hands to its host while keeping a handle of its own: the host drives the
+/// same instance the role that placed it reads, so every method reaches what the role placed and
+/// the owner closes what it has open before the surface hears the press.
+impl<T: SurfaceHost + ?Sized> SurfaceHost for Rc<RefCell<T>> {
+    fn layers(&self) -> Vec<HostLayer> {
+        self.borrow().layers()
+    }
+    fn below_windows(&self) -> bool {
+        self.borrow().below_windows()
+    }
+    fn above_lock(&self) -> bool {
+        self.borrow().above_lock()
+    }
+    fn drawn_over_lock(&self) -> bool {
+        self.borrow().drawn_over_lock()
+    }
+    fn withholds_captures(&self) -> bool {
+        self.borrow().withholds_captures()
+    }
+    fn accepts_pointer(&self, x: f64, y: f64) -> bool {
+        self.borrow().accepts_pointer(x, y)
+    }
+    fn pointer_motion(&mut self, x: f64, y: f64) {
+        self.borrow_mut().pointer_motion(x, y);
+    }
+    fn pointer_leave(&mut self) {
+        self.borrow_mut().pointer_leave();
+    }
+    fn pointer_button(&mut self, button: u32, pressed: bool) {
+        self.borrow_mut().pointer_button(button, pressed);
+    }
+    fn pressed_elsewhere(&mut self, x: f64, y: f64) {
+        if let Some(closes) = self.borrow().press_elsewhere_closes() {
+            closes();
+        }
+        self.borrow_mut().pressed_elsewhere(x, y);
+    }
+    fn press_ended(&mut self, x: f64, y: f64) {
+        self.borrow_mut().press_ended(x, y);
+    }
+    fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {
+        self.borrow_mut().pointer_axis(horizontal, vertical);
+    }
+    fn wants_keyboard(&self) -> bool {
+        self.borrow().wants_keyboard()
+    }
+    fn key(&mut self, key: &HostKey) {
+        self.borrow_mut().key(key);
+    }
+    fn text_input(&self) -> Option<HostTextInput> {
+        self.borrow().text_input()
+    }
+    fn ime(&mut self, event: HostIme) {
+        self.borrow_mut().ime(event);
+    }
+    fn claim_key(&mut self, key: &HostKey, locked: bool, inhibited: bool) -> KeyClaim {
+        self.borrow_mut().claim_key(key, locked, inhibited)
+    }
+    fn window_pictures(&self) -> Vec<WindowPicture> {
+        self.borrow().window_pictures()
+    }
+    fn drawn_over_windows(&self) -> Vec<(u64, (i32, i32, i32, i32))> {
+        self.borrow().drawn_over_windows()
+    }
+    fn backdrops(&self) -> Vec<BackdropRequest> {
+        self.borrow().backdrops()
+    }
+    fn set_backdrops(&mut self, images: Vec<Option<BackdropImage>>) {
+        self.borrow_mut().set_backdrops(images);
+    }
+    fn prepare_frame(&mut self) -> bool {
+        self.borrow_mut().prepare_frame()
+    }
+    fn advance(&mut self) -> bool {
+        self.borrow_mut().advance()
+    }
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.borrow().next_deadline()
+    }
+    fn set_frame_interval(&mut self, interval: std::time::Duration) {
+        self.borrow_mut().set_frame_interval(interval);
+    }
+    fn outputs_changed(&mut self, outputs: &[HostedOutput]) {
+        self.borrow_mut().outputs_changed(outputs);
+    }
+    fn cursor(&self) -> CursorIcon {
+        self.borrow().cursor()
+    }
+    fn drop_offered(&mut self, mimes: &[String], x: f64, y: f64) -> Option<String> {
+        self.borrow_mut().drop_offered(mimes, x, y)
+    }
+    fn drop_left(&mut self) {
+        self.borrow_mut().drop_left();
+    }
+    fn drop_data(&mut self, mime: &str, data: Vec<u8>) {
+        self.borrow_mut().drop_data(mime, data);
+    }
+    fn take_drag(&mut self) -> Option<HostDrag> {
+        self.borrow_mut().take_drag()
+    }
+    fn drag_ended(&mut self, dropped: bool) {
+        self.borrow_mut().drag_ended(dropped);
+    }
+    fn press_elsewhere_closes(&self) -> Option<Rc<dyn Fn()>> {
+        self.borrow().press_elsewhere_closes()
+    }
 }
 
 #[cfg(test)]

@@ -57,7 +57,6 @@ use crate::notifications::mount_banners;
 use crate::panels::mount::mount_activities;
 use crate::panels::mount::{KeyContext, mount_controls, mount_setup};
 use crate::plane::Plane;
-use crate::platform::surfaces::Held;
 use crate::search::SessionSearch;
 use tilo_app_launch::Doors as WindowDoors;
 
@@ -681,10 +680,7 @@ impl Session {
             &overlays,
             &switcher,
         )));
-        compositor.add_host(crate::shell::under(
-            options.shell,
-            Held::new(Rc::clone(&chrome)),
-        ));
+        compositor.add_host(crate::shell::under(options.shell, Rc::clone(&chrome)));
         // Search's code is asked for as the session starts, so it is in by the
         // time someone searches; a search asked for before then opens now,
         // and the desk publishes it on its next pass.

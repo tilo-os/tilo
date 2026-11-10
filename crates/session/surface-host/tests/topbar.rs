@@ -9,6 +9,9 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use tilo_compositor::{Compositor, OutputConfig, StackPolicy};
 use tilo_session_core::surface::SurfaceHost as _;
 
@@ -49,7 +52,7 @@ fn the_top_bar_draws_along_the_top_of_the_output() {
         ))
         .unwrap();
     let host = bar(size);
-    compositor.add_host(Box::new(host));
+    compositor.add_host(Rc::new(RefCell::new(host)));
     compositor.render().unwrap();
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
 

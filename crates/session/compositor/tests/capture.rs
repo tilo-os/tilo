@@ -14,7 +14,9 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
+use std::cell::RefCell;
 use std::os::fd::{AsFd as _, OwnedFd};
+use std::rc::Rc;
 use std::time::Duration;
 
 use tilo_compositor::{Compositor, InputEvent, OutputConfig, StackPolicy};
@@ -238,7 +240,7 @@ fn compositor() -> Compositor {
     compositor
         .add_output(&OutputConfig::new("HEADLESS-1", 64, 48))
         .expect("output");
-    compositor.add_host(Box::new(Square::new((8, 8, 16, 16), RED)));
+    compositor.add_host(Rc::new(RefCell::new(Square::new((8, 8, 16, 16), RED))));
     compositor
 }
 
@@ -387,7 +389,7 @@ fn a_copy_with_damage_waits_until_the_output_changes() {
         !pump_until(&mut compositor, &mut tool, 20, |seen| seen.ready),
         "nothing changed, nothing is copied"
     );
-    compositor.add_host(Box::new(Square::new((40, 30, 8, 8), GREEN)));
+    compositor.add_host(Rc::new(RefCell::new(Square::new((40, 30, 8, 8), GREEN))));
     pump(&mut compositor, &mut tool, |seen| seen.ready);
     // The new square is damaged (and the one it moved down in the stack),
     // not the whole output.
@@ -464,7 +466,7 @@ fn a_trusted_tool_copies_an_output_through_image_copy_capture() {
     frame.attach_buffer(&small);
     frame.damage_buffer(0, 0, 16, 16);
     frame.capture();
-    compositor.add_host(Box::new(Square::new((40, 30, 8, 8), GREEN)));
+    compositor.add_host(Rc::new(RefCell::new(Square::new((40, 30, 8, 8), GREEN))));
     pump(&mut compositor, &mut tool, |seen| seen.ready || seen.failed);
     assert!(tool.seen.failed);
 }

@@ -14,6 +14,9 @@
     reason = "a fixture's pixels are small whole numbers it laid out itself"
 )]
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use tilo_compositor::{Compositor, OutputConfig, StackPolicy};
 use tilo_session_core::surface::{HostFrame, HostLayer, Region, SurfaceHost};
 
@@ -71,7 +74,7 @@ fn a_hosted_frame_its_host_fills_row_by_row_draws_the_same_way_up() {
     compositor
         .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
         .expect("output");
-    compositor.add_host(Box::new(Rows::new((640, 480))));
+    compositor.add_host(Rc::new(RefCell::new(Rows::new((640, 480)))));
     compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     let above = frame.pixel(320, 120).unwrap();
@@ -171,7 +174,7 @@ fn a_layer_shows_where_it_drew_and_nowhere_else() {
     compositor
         .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
         .expect("output");
-    compositor.add_host(Box::new(Bar::new((640, 480), (640, 480), 1)));
+    compositor.add_host(Rc::new(RefCell::new(Bar::new((640, 480), (640, 480), 1))));
     compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     let inside = frame.pixel(120, 40).unwrap();
@@ -196,7 +199,7 @@ fn a_layer_the_size_of_the_output_drawn_at_half_of_it_lands_where_it_was_drawn()
         .expect("output");
     // The frame is drawn at twice the pixels of the rectangle it covers: the bar it draws at (80,
     // 40) of the frame covers (40, 20) on the output.
-    compositor.add_host(Box::new(Bar::new((640, 480), (320, 240), 2)));
+    compositor.add_host(Rc::new(RefCell::new(Bar::new((640, 480), (320, 240), 2))));
     compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     let inside = frame.pixel(50, 25).unwrap();
@@ -284,7 +287,7 @@ fn what_a_layer_stopped_drawing_is_painted_over() {
     compositor
         .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
         .expect("output");
-    compositor.add_host(Box::new(Vanishes::new((640, 480))));
+    compositor.add_host(Rc::new(RefCell::new(Vanishes::new((640, 480)))));
     compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     let painted = frame.pixel(120, 40).unwrap();
@@ -321,7 +324,12 @@ fn a_layer_that_is_not_at_the_outputs_corner_draws_where_it_says() {
         .expect("output");
     // A panel a third of the way down the output, drawn at twice the pixels of the rectangle it
     // covers: its bar at (80, 40) of the frame lands at (40, 320) of the output.
-    compositor.add_host(Box::new(Bar::at((0, 300), (640, 480), (320, 240), 2)));
+    compositor.add_host(Rc::new(RefCell::new(Bar::at(
+        (0, 300),
+        (640, 480),
+        (320, 240),
+        2,
+    ))));
     compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     let inside = frame.pixel(50, 325).unwrap();
@@ -344,10 +352,10 @@ fn a_layer_that_drew_nothing_is_not_drawn() {
     compositor
         .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
         .expect("output");
-    compositor.add_host(Box::new(Blank {
+    compositor.add_host(Rc::new(RefCell::new(Blank {
         frame: HostFrame::new((640, 480)),
         size: (640, 480),
-    }));
+    })));
     compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     let middle = frame.pixel(320, 240).unwrap();
@@ -395,7 +403,7 @@ fn a_host_that_needs_a_frame_now_shortens_the_loops_wait() {
         None,
         "an idle loop waits for an event, not for a poll interval"
     );
-    compositor.add_host(Box::new(Animated));
+    compositor.add_host(Rc::new(RefCell::new(Animated)));
     assert!(
         compositor.next_wait() <= Some(Duration::from_millis(1)),
         "a frame a host asks for now is drawn now"

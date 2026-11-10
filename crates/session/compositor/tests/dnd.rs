@@ -188,7 +188,7 @@ fn setup(log: &Rc<RefCell<DropLog>>) -> (Compositor, TestClient) {
     compositor
         .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
         .expect("output");
-    compositor.add_host(Box::new(DropZone::new(Rc::clone(log))));
+    compositor.add_host(Rc::new(RefCell::new(DropZone::new(Rc::clone(log)))));
     let mut client = TestClient::connect(&mut compositor);
     pump(&mut compositor, &mut client, |_, client| {
         client.seen.wm_base.is_some()

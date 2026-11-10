@@ -46,11 +46,11 @@ fn hosted_field(compositor: &mut Compositor, caret: (f64, f64, f64, f64)) -> Rc<
         width: caret.2,
         height: caret.3,
     });
-    compositor.add_host(Box::new(Square::new(
+    compositor.add_host(Rc::new(RefCell::new(Square::new(
         (0, 0, 10, 10),
         [0, 255, 0, 255],
         Rc::clone(&log),
-    )));
+    ))));
     log
 }
 
@@ -225,9 +225,9 @@ fn the_candidate_window_stands_under_the_caret() {
 fn the_desks_chords_still_work_while_an_engine_composes() {
     let mut compositor = headless(Box::new(StackPolicy));
     let chords = Rc::new(RefCell::new(HostLog::default()));
-    compositor.add_host(Box::new(Chords {
+    compositor.add_host(Rc::new(RefCell::new(Chords {
         log: Rc::clone(&chords),
-    }));
+    })));
     let log = hosted_field(&mut compositor, (120.0, 50.0, 2.0, 20.0));
     let mut engine = TestClient::connect_trusted(&mut compositor);
     pump(&mut compositor, &mut [&mut engine], |_, clients| {

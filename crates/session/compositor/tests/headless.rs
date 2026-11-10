@@ -604,11 +604,11 @@ impl SurfaceHost for Chords {
 fn a_hosted_surface_that_wants_the_keyboard_takes_keys_from_the_focused_window() {
     let mut compositor = headless(Box::new(StackPolicy));
     let log = Rc::new(RefCell::new(HostLog::default()));
-    compositor.add_host(Box::new(Square::new(
+    compositor.add_host(Rc::new(RefCell::new(Square::new(
         (0, 0, 10, 10),
         [0, 255, 0, 255],
         Rc::clone(&log),
-    )));
+    ))));
     let mut client = mapped_client(&mut compositor, "typing", (200, 100), [255, 0, 0, 255]);
 
     log.borrow_mut().wants_keyboard = true;
@@ -652,11 +652,11 @@ fn a_hosted_surface_that_wants_the_keyboard_takes_keys_from_the_focused_window()
 fn hosted_surfaces_draw_above_windows_and_take_the_pointer_over_them() {
     let mut compositor = headless(Box::new(StackPolicy));
     let log = Rc::new(RefCell::new(HostLog::default()));
-    compositor.add_host(Box::new(Square::new(
+    compositor.add_host(Rc::new(RefCell::new(Square::new(
         (300, 220, 40, 40),
         [0, 255, 0, 255],
         Rc::clone(&log),
-    )));
+    ))));
     let mut client = mapped_client(&mut compositor, "under", (200, 100), [255, 0, 0, 255]);
 
     compositor.draw_frame().expect("a frame");
@@ -701,11 +701,11 @@ fn hosted_surfaces_draw_above_windows_and_take_the_pointer_over_them() {
 fn a_hosted_apps_drag_carries_its_icon_under_the_pointer() {
     let mut compositor = headless(Box::new(StackPolicy));
     let log = Rc::new(RefCell::new(HostLog::default()));
-    compositor.add_host(Box::new(Square::new(
+    compositor.add_host(Rc::new(RefCell::new(Square::new(
         (0, 0, 40, 40),
         [0, 255, 0, 255],
         Rc::clone(&log),
-    )));
+    ))));
     let shown = |compositor: &mut Compositor, x, y| {
         compositor.draw_frame().expect("a frame");
         compositor.screenshot("HEADLESS-1").unwrap().pixel(x, y)
@@ -973,9 +973,9 @@ fn a_tablet_pad_follows_the_keyboard_focus_to_a_client_that_takes_tablets() {
 fn a_surface_below_the_windows_shows_and_takes_the_pointer_only_around_them() {
     let mut compositor = headless(Box::new(StackPolicy));
     let log = Rc::new(RefCell::new(HostLog::default()));
-    compositor.add_host(Box::new(
+    compositor.add_host(Rc::new(RefCell::new(
         Square::new((0, 0, 640, 480), [0, 0, 255, 255], Rc::clone(&log)).below(),
-    ));
+    )));
     let mut client = mapped_client(&mut compositor, "over", (200, 100), [255, 0, 0, 255]);
 
     compositor.draw_frame().expect("a frame");
@@ -1353,12 +1353,12 @@ fn a_hosted_surface_pictures_a_window_live_in_a_rect_of_its_own() {
     let mut compositor = headless(Box::new(StackPolicy));
     let mut client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
     let (info, _) = compositor.windows()[0].clone();
-    compositor.add_host(Box::new(Pictures(WindowPicture {
+    compositor.add_host(Rc::new(RefCell::new(Pictures(WindowPicture {
         window: info.id,
         rect: (10.0, 10.0, 100.0, 100.0),
         opacity: 1.0,
         clip: None,
-    })));
+    }))));
     compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     // 200 x 100 fits 100 x 100 as 100 x 50, centred: rows 35..85.
@@ -1385,12 +1385,12 @@ fn a_picture_of_a_window_carries_its_corners_and_its_lift() {
     let mut compositor = headless(Box::new(StackPolicy));
     let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
     let (info, _) = compositor.windows()[0].clone();
-    compositor.add_host(Box::new(Pictures(WindowPicture {
+    compositor.add_host(Rc::new(RefCell::new(Pictures(WindowPicture {
         window: info.id,
         rect: (10.0, 10.0, 100.0, 100.0),
         opacity: 1.0,
         clip: None,
-    })));
+    }))));
     compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     let pixel = |x, y| frame.pixel(x, y).expect("on the output");
@@ -1444,12 +1444,12 @@ fn a_private_window_is_pictured_as_the_placeholder_its_captures_show() {
         [255, 0, 0, 255],
     );
     let (info, _) = compositor.windows()[0].clone();
-    compositor.add_host(Box::new(Pictures(WindowPicture {
+    compositor.add_host(Rc::new(RefCell::new(Pictures(WindowPicture {
         window: info.id,
         rect: (10.0, 10.0, 100.0, 100.0),
         opacity: 1.0,
         clip: None,
-    })));
+    }))));
     compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     assert_eq!(
@@ -1524,12 +1524,12 @@ fn a_picture_of_an_app_that_holds_secrets_is_its_placeholder() {
         [255, 0, 0, 255],
     );
     let (info, _) = compositor.windows()[0].clone();
-    compositor.add_host(Box::new(Pictures(WindowPicture {
+    compositor.add_host(Rc::new(RefCell::new(Pictures(WindowPicture {
         window: info.id,
         rect: (10.0, 10.0, 100.0, 100.0),
         opacity: 1.0,
         clip: None,
-    })));
+    }))));
     compositor.draw_frame().expect("a frame");
     let display = compositor.screenshot("HEADLESS-1").unwrap();
     let placeholder = display
@@ -1647,7 +1647,7 @@ fn translucent_chrome_is_handed_a_blur_of_what_lies_below_it_when_that_changes()
     // The window covers 220..420 x 190..290: the region's right and lower part is red, the rest
     // background.
     let handed = Rc::new(RefCell::new(Vec::new()));
-    compositor.add_host(Box::new(Frosted(Rc::clone(&handed))));
+    compositor.add_host(Rc::new(RefCell::new(Frosted(Rc::clone(&handed)))));
     compositor.draw_frame().expect("a frame");
     let first = handed.borrow_mut().pop().flatten().expect("a backdrop");
     assert_eq!(first.texels, (40, 20));
@@ -1693,7 +1693,7 @@ fn a_backdrop_follows_the_effects_the_windows_are_drawn_with() {
     let mut compositor = headless(Box::new(StackPolicy));
     let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
     let handed = Rc::new(RefCell::new(Vec::new()));
-    compositor.add_host(Box::new(Frosted(Rc::clone(&handed))));
+    compositor.add_host(Rc::new(RefCell::new(Frosted(Rc::clone(&handed)))));
     compositor.draw_frame().expect("a frame");
     handed.borrow_mut().clear();
 
@@ -2788,9 +2788,9 @@ fn a_confined_pointer_stops_at_the_edge_of_its_region() {
 fn an_inhibiting_client_keeps_the_desktops_chords_until_focus_or_the_release_chord() {
     let log = Rc::new(RefCell::new(HostLog::default()));
     let mut compositor = headless(Box::<Columns>::default());
-    compositor.add_host(Box::new(Chords {
+    compositor.add_host(Rc::new(RefCell::new(Chords {
         log: Rc::clone(&log),
-    }));
+    })));
     let mut vm = mapped_client(&mut compositor, "vm", (250, 200), [255, 0, 0, 255]);
 
     // The desktop's own key surface answers Super+X wherever the keyboard is.
@@ -2884,9 +2884,9 @@ fn a_hosted_surface_hears_how_long_the_display_holds_a_frame() {
             ..OutputConfig::new("HEADLESS-1", 640, 480)
         })
         .unwrap();
-    compositor.add_host(Box::new(Paced {
+    compositor.add_host(Rc::new(RefCell::new(Paced {
         heard: Rc::clone(&heard),
-    }));
+    })));
     compositor.render().unwrap();
     assert_eq!(
         heard.borrow().last().copied(),

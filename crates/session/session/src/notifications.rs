@@ -16,7 +16,6 @@ use std::time::{Duration, Instant};
 use crate::platform::fabric::ContinuityNotificationProjection;
 use crate::platform::fabric::SharedLink;
 use crate::platform::fabric::{DeviceId, PersonalFabricAction};
-use crate::platform::surfaces::Held;
 use chrono::{Datelike as _, Timelike as _};
 use serde_json::{Map, Value};
 use settings_store::notification_policy::{EffectiveNotificationPolicy, NotificationPolicy};
@@ -133,7 +132,7 @@ pub(crate) fn mount_banners(
                 options.scale,
                 stack,
             )));
-            compositor.add_host(Box::new(Held::new(Rc::clone(&surface))));
+            compositor.add_host(surface.clone());
             doors.add(surface);
             notices.show_banners_elsewhere();
         }

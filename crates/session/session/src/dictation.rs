@@ -31,7 +31,6 @@ use tilo_sheets::dictation::{Answer, DictationSeat, Failure, Prompt, RecoveryRea
 
 use crate::Options;
 use crate::clipboard::Clipboard;
-use crate::platform::surfaces::Held;
 use crate::sheets::Sheet;
 
 /// How much of what is being heard the card shows: the last words, so the person sees the
@@ -485,7 +484,7 @@ fn mount_sheet(
         Ok(sheet) => {
             let seat = sheet.seat().clone();
             let sheet = Rc::new(RefCell::new(sheet.typing_through()));
-            compositor.add_host(Box::new(Held::new(Rc::clone(&sheet))));
+            compositor.add_host(sheet.clone());
             doors.add(sheet);
             Some(seat)
         }

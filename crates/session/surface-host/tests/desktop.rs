@@ -9,6 +9,8 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Duration;
 use tilo_compositor::{Compositor, LayoutRect, OutputConfig, WindowInfo, WindowPolicy as _};
 
@@ -142,7 +144,7 @@ fn the_desktop_lies_under_the_windows_and_covers_the_output() {
     compositor
         .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
         .unwrap();
-    compositor.add_host(Box::new(host.clone()));
+    compositor.add_host(Rc::new(RefCell::new(host.clone())));
     compositor.render().unwrap();
     let layers = host.layers();
     assert_eq!(layers.len(), 1);

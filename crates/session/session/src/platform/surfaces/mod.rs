@@ -20,7 +20,7 @@ pub use tilo_session_core::surface::Placement;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-pub use linux::{Held, Hosted};
+pub use linux::Hosted;
 
 /// The tilolang shell a desktop shows: the package it runs (the person's installed one or this
 /// build's copy), and the identity a part of it is made with.

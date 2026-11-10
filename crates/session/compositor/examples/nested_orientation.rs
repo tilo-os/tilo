@@ -33,6 +33,9 @@ mod nested {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     use tilo_compositor::{
         Compositor, NestedBackend, NestedConfig, OutputConfig, Screenshot, StackPolicy,
     };
@@ -94,7 +97,7 @@ mod nested {
         outer
             .add_output(&OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT))
             .expect("output");
-        outer.add_host(Box::new(Marker::new()));
+        outer.add_host(Rc::new(RefCell::new(Marker::new())));
         let socket = outer.listen().expect("socket");
         // By its full path: the window's process gets a runtime directory of its own, so it cannot
         // find the socket by name.
@@ -184,7 +187,7 @@ mod nested {
             Ok(compositor) => compositor,
             Err(error) => panic!("the window did not open on the output here: {error}"),
         };
-        window.add_host(Box::new(Marker::new()));
+        window.add_host(Rc::new(RefCell::new(Marker::new())));
         for _ in 0..10 {
             window.dispatch(Duration::from_millis(16)).expect("wait");
             window.render().expect("render");
@@ -240,7 +243,7 @@ mod nested {
         compositor
             .add_output(&OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT))
             .expect("output");
-        compositor.add_host(Box::new(Marker::new()));
+        compositor.add_host(Rc::new(RefCell::new(Marker::new())));
         compositor.render().expect("render");
         compositor.screenshot("HEADLESS-1").expect("screenshot")
     }

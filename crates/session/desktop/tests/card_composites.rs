@@ -7,6 +7,7 @@
     clippy::indexing_slicing,
     reason = "in a test these are the assertion, not a hazard"
 )]
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_compositor::{Compositor, OutputConfig, StackPolicy};
@@ -144,7 +145,7 @@ fn assert_palette_shows(scale: f64, size: (u32, u32)) {
         let search = search.borrow();
         search.palette().unwrap().get_rect()
     };
-    compositor.add_host(Box::new(host));
+    compositor.add_host(Rc::new(RefCell::new(host)));
     let mut shot = None;
     for _ in 0..8 {
         compositor.draw_frame().unwrap();

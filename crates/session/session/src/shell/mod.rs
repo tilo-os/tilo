@@ -19,7 +19,6 @@ use tilo_session_core::shell::{ArrangementReading, Ask};
 
 use crate::desk_resource::Desk;
 use crate::displays;
-use crate::platform::surfaces::Held;
 
 #[cfg(target_os = "linux")]
 pub mod state;
@@ -267,7 +266,7 @@ impl Shell {
             Rc::new(move |key: &str| pictured(&handle, key)),
         );
         let part = Rc::new(RefCell::new(part));
-        compositor.add_host(Box::new(Held::new(Rc::clone(&part))));
+        compositor.add_host(part.clone());
         // Each display's part is its own surface on the door: what the person, a script or an agent
         // drives the shell through, and what reads its labels.
         doors.add(Rc::clone(&part) as tilo_session_core::door::Shared);
@@ -1000,11 +999,11 @@ fn typed(value: &str, ty: Option<tilo_actions::params::ParamType>) -> Value {
 /// windows stand in), so the desktop's own step aside ([`Aside`]) rather than drawing a second set
 /// of either. It still keeps the windows' model the wells place them by. Without a shell, the
 /// desktop is the shell and stands as itself.
-pub(crate) fn under(shell: bool, host: impl SurfaceHost + 'static) -> Box<dyn SurfaceHost> {
+pub(crate) fn under(shell: bool, host: impl SurfaceHost + 'static) -> Rc<RefCell<dyn SurfaceHost>> {
     if shell {
-        Box::new(Aside(host))
+        Rc::new(RefCell::new(Aside(host)))
     } else {
-        Box::new(host)
+        Rc::new(RefCell::new(host))
     }
 }
 

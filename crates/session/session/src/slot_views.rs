@@ -18,8 +18,6 @@ use tilo_compositor::Compositor;
 use tilo_desktop::overlays::{Overlays, Slot, Target};
 use tilo_desktop_surface::DesktopHandle;
 
-use crate::platform::surfaces::Held;
-
 /// The tilolang views the session runs for the shell's slots.
 pub(crate) struct SlotViews {
     /// The desk whose own state, the search it opens, takes the keyboard before the chrome has
@@ -62,7 +60,7 @@ impl SlotViews {
             })
         });
         let host = Rc::new(RefCell::new(SlotView::new(slot, self.scale, focused)));
-        compositor.add_host(Box::new(Held::new(Rc::clone(&host))));
+        compositor.add_host(host.clone());
         self.hosts.insert(slot, Rc::clone(&host));
         host
     }

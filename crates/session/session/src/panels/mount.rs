@@ -12,7 +12,6 @@ use tilo_sheets::shortcut_guide::State as GuideState;
 
 use crate::keys::{ControllerKeys, DeskKeys, Invocations, PressedChords, Presses, SessionKeys};
 use crate::panels::{ActivityLayer, Readout, ReadoutPlace, ReadoutPlaces, Reserved};
-use crate::platform::surfaces::Held;
 use crate::setup::Setup;
 use crate::{BeforeDesk, SessionCommand};
 use tilo_session_core::door::Doors;
@@ -30,7 +29,7 @@ pub(crate) fn mount_setup(
     crate::setup::lend(waiter.clone(), person);
     surface.map(|surface| {
         let setup = Rc::new(RefCell::new(Setup::new(surface, scale, waiter)));
-        compositor.add_host(Box::new(Held::new(Rc::clone(&setup))));
+        compositor.add_host(setup.clone());
         doors.add(Rc::clone(&setup) as tilo_session_core::door::Shared);
         setup
     })
@@ -96,7 +95,7 @@ pub(crate) fn mount_controls(
     // answers with.
     let places: ReadoutPlaces = Rc::new(RefCell::new(ReadoutPlace::default()));
     let readout = Rc::new(RefCell::new(Readout::new(scale, Rc::clone(&places), band)));
-    compositor.add_host(Box::new(Held::new(Rc::clone(&readout))));
+    compositor.add_host(readout.clone());
     let shared: tilo_session_core::door::Shared = readout.clone();
     doors.add(shared);
     let commands = Rc::new(RefCell::new(Vec::new()));
@@ -109,7 +108,7 @@ pub(crate) fn mount_controls(
     // The press that falls outside a surface the session placed closes it,
     // which only the input path knows the place of.
     crate::press_outside::mount(compositor, &overlays);
-    compositor.add_host(Box::new(
+    compositor.add_host(Rc::new(RefCell::new(
         SessionKeys::new(
             shortcuts,
             Presses {
@@ -129,7 +128,7 @@ pub(crate) fn mount_controls(
             reveals,
         )
         .with_commands(Rc::clone(&commands)),
-    ));
+    )));
     (
         commands,
         controls_reading,
@@ -170,7 +169,7 @@ pub(crate) fn mount_activities(
                 readout,
                 options.scale,
             )));
-            compositor.add_host(Box::new(Held::new(Rc::clone(&surface))));
+            compositor.add_host(surface.clone());
             doors.add(surface);
             Some(link)
         }

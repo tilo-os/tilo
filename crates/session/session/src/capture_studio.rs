@@ -52,7 +52,6 @@ use crate::Options;
 use crate::capture_io::{CaptureIo, NO_WORKER, Note, Sound, WriteFailed, Written};
 use crate::capture_send::Sends;
 use crate::nearby_transfer::NearbyTransfer;
-use crate::platform::surfaces::Held;
 use crate::sheets::Sheet;
 
 /// One frame every this long: the replay buffer's rate, so a recording and a clip of what just
@@ -250,7 +249,7 @@ pub(crate) fn mount(
             let sheet = sheet.always_serving();
             let seat = sheet.seat().clone();
             let sheet = Rc::new(RefCell::new(sheet));
-            compositor.add_host(Box::new(Held::new(Rc::clone(&sheet))));
+            compositor.add_host(sheet.clone());
             doors.add(sheet);
             Some(CaptureStudio {
                 seat,

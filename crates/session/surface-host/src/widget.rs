@@ -145,6 +145,10 @@ pub struct WidgetHost {
     /// Fingers are carrying the desk's strips: the surface draws them
     /// following the hand until it lets go.
     hand_on_deck: bool,
+    /// What the role that placed the tree closes when the pointer is pressed
+    /// elsewhere: it runs before the tree is borrowed, so the role may ask the
+    /// layer it holds to draw again.
+    dismissed: Option<Rc<dyn Fn()>>,
 }
 
 impl WidgetHost {
@@ -199,6 +203,7 @@ impl WidgetHost {
             asked: Rc::new(std::cell::Cell::new(false)),
             cadence: Cadence::new(),
             hand_on_deck: false,
+            dismissed: None,
         }
     }
 
@@ -267,6 +272,15 @@ impl WidgetHost {
     #[must_use]
     pub fn with_keyboard(mut self, wants: Rc<dyn Fn() -> bool>) -> Self {
         self.keyboard = Some(wants);
+        self
+    }
+
+    /// Close what the role has open in the tree when the pointer is pressed
+    /// elsewhere: `dismissed` runs before the tree is borrowed, so the role may
+    /// ask the layer it holds to draw again.
+    #[must_use]
+    pub fn with_dismissal(mut self, dismissed: Rc<dyn Fn()>) -> Self {
+        self.dismissed = Some(dismissed);
         self
     }
 
@@ -717,6 +731,10 @@ impl SurfaceHost for WidgetHost {
 
     fn pointer_button(&mut self, button: u32, pressed: bool) {
         self.input(&mouse_input(button, pressed));
+    }
+
+    fn press_elsewhere_closes(&self) -> Option<Rc<dyn Fn()>> {
+        self.dismissed.clone()
     }
 
     fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {

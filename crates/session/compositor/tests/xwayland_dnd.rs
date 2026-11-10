@@ -53,7 +53,7 @@ impl Session {
         compositor
             .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
             .expect("output");
-        compositor.add_host(Box::new(DropZone::new(Rc::clone(&log))));
+        compositor.add_host(Rc::new(RefCell::new(DropZone::new(Rc::clone(&log)))));
         let display = compositor
             .x11_displays()
             .expect("displays")

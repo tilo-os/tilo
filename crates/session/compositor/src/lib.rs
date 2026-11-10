@@ -83,8 +83,10 @@ mod xwayland;
 
 pub use seats::{Aim, Seat, WindowAim};
 
+use std::cell::RefCell;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -587,11 +589,12 @@ impl Compositor {
     }
 
     /// Host a surface app above the windows (and above earlier hosts), or under them when it says
-    /// so ([`SurfaceHost::below_windows`]).
-    pub fn add_host(&mut self, mut host: Box<dyn SurfaceHost>) {
+    /// so ([`SurfaceHost::below_windows`]). The host drives the surface the caller still holds: what
+    /// it publishes and what it shows are read from the same instance.
+    pub fn add_host(&mut self, host: Rc<RefCell<dyn SurfaceHost>>) {
         let outputs = self.data.state.hosted_outputs();
-        host.outputs_changed(&outputs);
-        self.data.state.hosts.push(host);
+        host.borrow_mut().outputs_changed(&outputs);
+        self.data.state.hosts.push(Box::new(host));
         self.data.state.mark_redraw_all();
     }
 
