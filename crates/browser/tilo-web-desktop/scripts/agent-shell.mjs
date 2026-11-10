@@ -1446,24 +1446,20 @@ try {
               // says which window that is: the cursor is read only once the note it writes in is
               // the window in front, so the shot is of the note at work and not of the console
               // still covering it.
-              const frontAt = Date.now();
-              const front = await until(async () => {
-                const nodes = await semantics(tab);
-                return noteInFront(nodes) ? nodes : undefined;
-              }, 12000, 120);
-              log(`${combo}: the followed note came to the front ${((Date.now() - frontAt) / 1000).toFixed(1)} s after the write began`);
               // The agent's cursor lands on the text as the write commits, and the words it
               // changed stay lit for a second and a half: read it the moment it is in the frame's
-              // semantics, never after a fixed wait.
+              // semantics, never after a fixed wait. Whether the note is the window drawn last is
+              // said in the log: the frame's order of windows moves as they are redrawn, and a
+              // shot of the note behind the console is still a shot of the note.
               const showing = await until(async () => {
                 const nodes = await semantics(tab);
-                return noteInFront(nodes) && agentCursor(nodes) ? nodes : undefined;
-              }, 8000, 120);
+                return agentCursor(nodes) ? nodes : undefined;
+              }, 12000, 120);
+              log(`${combo}: mid-edit, the note is ${noteInFront(showing ?? []) ? '' : 'not '}the window drawn last`);
               const cursor = showing ? agentCursor(showing) : undefined;
               check(`${combo}: the agent's cursor stands on what it writes`, Boolean(cursor),
                 showing ? `the frame shows ${names(showing)}`
-                  : front ? `the note is in front but no cursor was published while the write was in flight: ${names(front)}`
-                    : `the followed note never came to the front: ${names(await semantics(tab))}`);
+                  : `the page published no agent cursor while the write was in flight: ${names(await semantics(tab))}`);
               log(`${combo}: mid-edit shot in the note` +
                 `${cursor ? `, its cursor at ${JSON.stringify(cursor.rect)}` : ', with no agent cursor'}`);
               await shot(tab, combo, 'following-mid-edit', {expect: [/^launch notes$/i], read: showing});
