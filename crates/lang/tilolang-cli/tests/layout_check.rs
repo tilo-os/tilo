@@ -135,7 +135,11 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // Its lists group no rows under headings of their own.
             | Kind::HeadingRoom
             // A list of this fixture groups nothing, so no group of it opens on a row.
-            | Kind::OrphanedRow => "(no view)",
+            | Kind::OrphanedRow
+            // The fixture's pages lay no section under a block of their own, and no list stands
+            // beside the page it opens.
+            | Kind::CrowdedHeading
+            | Kind::DetailRowNotChosen => "(no view)",
         };
         assert_eq!(
             finding.view,
@@ -441,10 +445,10 @@ fn a_phone_layout_shows_what_a_tapped_row_opens() {
     for (app, shows) in [
         // Notes is a tree and the note it opens: at this width the tree is the window's first
         // screen and a row of it pushes the note in front, with the way back to the tree.
-        ("notes", ", then a notebook in front at 390×844"),
+        ("notes", ", then a note_editor in front at 390×844"),
         (
             "notes",
-            ", then Back pressed, then a notebook in front at 390×844",
+            ", then Back pressed, then a note_editor in front at 390×844",
         ),
         // A board keeps no detail of its own: the card a finger taps is the page that shows.
         ("board", "then a card_page in front at 390×844"),

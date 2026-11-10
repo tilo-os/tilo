@@ -1373,15 +1373,26 @@ fn a_notebook_is_a_tree_beside_the_note_it_opens() {
         monday.content_left
     );
 
-    // The "+" stands in the sidebar's own header, and nothing of the content's holds it: the
-    // window says once where a note is started.
+    // One control starts a note: the window's bar offers it as the window's own action, and the
+    // sidebar's header keeps the file commands, never a second button for what the bar has.
     let tree = staged.composed().expect("the window composes");
     let mut shells = Vec::new();
     nodes(&tree, "ui.NavShell", &mut shells);
     let shell = shells.first().expect("the window is a shell");
-    let mut head = Vec::new();
-    nodes(shell, "ui.Button", &mut head);
-    let starts: Vec<&tilo_ui_host::UiNode> = head
+    let slot = |name: &str| {
+        shell
+            .children
+            .iter()
+            .find(|child| {
+                child.kind == "slot"
+                    && child.props.get("name")
+                        == Some(&tilo_render_protocol::patch::Value::text(name))
+            })
+            .unwrap_or_else(|| panic!("the shell has its {name} slot: {shell:?}"))
+    };
+    let mut buttons = Vec::new();
+    nodes(shell, "ui.Button", &mut buttons);
+    let starts: Vec<&tilo_ui_host::UiNode> = buttons
         .iter()
         .filter(|button| {
             button.props.get("label") == Some(&tilo_render_protocol::patch::Value::text("New note"))
@@ -1389,21 +1400,27 @@ fn a_notebook_is_a_tree_beside_the_note_it_opens() {
         .copied()
         .collect();
     assert_eq!(starts.len(), 1, "one control starts a note: {starts:?}");
-    let slot = shell
-        .children
-        .iter()
-        .find(|child| {
-            child.kind == "slot"
-                && child.props.get("name")
-                    == Some(&tilo_render_protocol::patch::Value::text("sidebar_actions"))
-        })
-        .expect("the shell has its sidebar's own controls");
+    let mut in_bar = Vec::new();
+    nodes(slot("actions"), "ui.Button", &mut in_bar);
+    assert!(
+        in_bar
+            .iter()
+            .any(|b| b.props.get("label")
+                == Some(&tilo_render_protocol::patch::Value::text("New note"))),
+        "the window's bar starts a note"
+    );
     let mut in_sidebar = Vec::new();
-    nodes(slot, "ui.Button", &mut in_sidebar);
-    assert_eq!(
-        in_sidebar.len(),
-        1,
-        "the sidebar's header holds the control that starts a note"
+    nodes(slot("sidebar_actions"), "ui.Button", &mut in_sidebar);
+    assert!(
+        in_sidebar.is_empty(),
+        "the sidebar's header offers no second button of the window's: {in_sidebar:?}"
+    );
+    let mut menus = Vec::new();
+    nodes(slot("sidebar_actions"), "ui.MenuButton", &mut menus);
+    assert!(
+        menus.iter().any(|menu| menu.props.get("label")
+            == Some(&tilo_render_protocol::patch::Value::text("File"))),
+        "the sidebar's header keeps the notebook's file commands: {menus:?}"
     );
 }
 

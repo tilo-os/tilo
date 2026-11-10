@@ -367,20 +367,17 @@ view notebook(nb: Notebook) {
     }
 }
 
-/// The notebook's controls in the window's bar: the one that makes a note, and the file commands
-/// — the notebook's own, and those of the note open beside the tree.
+/// The notebook's controls in the window's bar, given the note open beside the tree: its file
+/// commands, the notebook's own and the open note's. What makes a note is the window's primary
+/// action, which the bar offers once, so no button of the head's draws it again.
 view notebook_head(open: Option<Note>) {
-    let nb = root Notebook
-    row(gap: .related) {
-        notebook_menu(nb, open)
-    }
+    notebook_menu(root Notebook, open)
 }
 
-/// The notebook's file commands beside the control that makes a note: a Markdown file or a zip
-/// of them in, the whole notebook out, and — while a note is open — a picture into it and the
-/// note out as a file of its own. They stand in the window's bar, where the controls of the
-/// page beside the tree stand, so the page keeps no file control of its own and every command
-/// has one place at every width.
+/// The notebook's file commands: a Markdown file or a zip of them in, the whole notebook out,
+/// and — while a note is open — a picture into it and the note out as a file of its own. They
+/// stand in the window's bar, where the controls of the page beside the tree stand, so the page
+/// keeps no file control of its own and every command has one place at every width.
 view notebook_menu(nb: Notebook, open: Option<Note>) {
     ui.MenuButton("File", icon: .file_plus) {
         ui.MenuItem("Import Markdown…", icon: .file_plus) {

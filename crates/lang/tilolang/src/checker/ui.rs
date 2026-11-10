@@ -1,5 +1,7 @@
 //! View bodies: UI statements lowered to `ui_*` host calls ([`crate::abi`]).
 
+use std::collections::BTreeSet;
+
 use super::expr::dotted;
 use super::{Checker, Ctx, Ex, StateRef, conv, store_op};
 use crate::abi::Imp;
@@ -14,13 +16,19 @@ impl Checker<'_> {
     /// Lowers the `state` declarations at the top of a view body: each reads its slot, or its
     /// default while the slot is empty, into a local of its name. Returns the rest of the body.
     pub(super) fn view_state(&mut self, view: &str, body: &[UiStmt]) -> Vec<UiStmt> {
-        self.state_slots(view, body, true)
+        self.state_slots(view, body, None)
     }
 
-    /// [`Self::view_state`], with `defaults` off for a frame that runs over a live view — an
-    /// `on show` handler reads the state the view holds and has no view around it to compute a
-    /// default from.
-    fn state_slots(&mut self, view: &str, body: &[UiStmt], defaults: bool) -> Vec<UiStmt> {
+    /// [`Self::view_state`], in a frame that runs over a live view — an `on show` handler reads
+    /// the state the view holds. Such a frame has no view around it, so `live` names the view's
+    /// parameters: a default that reads one is the render's to compute, and the frame starts the
+    /// state at a value of its type instead.
+    fn state_slots(
+        &mut self,
+        view: &str,
+        body: &[UiStmt],
+        live: Option<&BTreeSet<String>>,
+    ) -> Vec<UiStmt> {
         let mut rest = Vec::new();
         for s in body {
             let UiKind::State(d) = &s.kind else {
@@ -36,9 +44,12 @@ impl Checker<'_> {
             else {
                 continue;
             };
-            let fallback = match &d.default {
-                Some(e) if defaults => self.expr_as(e, &info.ty),
-                _ => self.zero_of(&info.ty, d.name.span),
+            let fallback = match (&d.default, live) {
+                (Some(e), Some(params)) if names_any(e, params) => {
+                    self.zero_of(&info.ty, d.name.span)
+                }
+                (Some(e), _) => self.expr_as(e, &info.ty),
+                (None, _) => self.zero_of(&info.ty, d.name.span),
             };
             // The slot's value, or the default while it is empty; scalars travel boxed.
             let args = vec![Ex::str(&info.id), Self::handle_of(fallback)];
@@ -129,7 +140,14 @@ impl Checker<'_> {
     /// The function a view answers `on show(x: T): action` with: run with the item, in the
     /// view's own state, and what it returns is applied there. `id` is the view's, and `name`
     /// what it is called.
-    pub(super) fn run_show(&mut self, id: &str, name: &str, show: &UiStmt, body: &[UiStmt]) {
+    pub(super) fn run_show(
+        &mut self,
+        id: &str,
+        name: &str,
+        show: &UiStmt,
+        body: &[UiStmt],
+        params: &BTreeSet<String>,
+    ) {
         let UiKind::On {
             event,
             param,
@@ -195,8 +213,8 @@ impl Checker<'_> {
         self.st.types.clone_from(&outer.types);
         self.at = self.outer_at;
         // The state the view declares, read from its slots: this frame has the item and no view
-        // around it, so a default is not its to compute.
-        self.state_slots(name, body, false);
+        // around it, so a default that reads one of the view's parameters is not its to compute.
+        self.state_slots(name, body, Some(params));
         if !ty.is_error() {
             let act = self.expr_as(action, &Ty::Action);
             self.emit(Stmt::Return(Some(act)));
@@ -1364,4 +1382,12 @@ pub(super) fn removed_arg(prim: &str, arg: &str) -> Option<&'static str> {
         }
         _ => return None,
     })
+}
+
+/// Whether `e` names any of `names`: a default that reads the view's parameters is the render's
+/// to compute, and no frame around it can.
+fn names_any(e: &ast::Expr, names: &BTreeSet<String>) -> bool {
+    let mut found = BTreeSet::new();
+    super::boundary::names_in(e, &mut found);
+    found.iter().any(|name| names.contains(name))
 }

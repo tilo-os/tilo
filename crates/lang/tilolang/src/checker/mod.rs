@@ -800,8 +800,10 @@ impl Checker<'_> {
         // What the view answers when the window is asked to show an item of one of its types:
         // each a function of its own, run with the item, applied in the view's state.
         let (shows, rest) = Self::view_shows(&rest);
+        let params: std::collections::BTreeSet<String> =
+            c.params.iter().map(|p| p.name.clone()).collect();
         for show in &shows {
-            self.run_show(&c.id, &c.name, show, &v.body);
+            self.run_show(&c.id, &c.name, show, &v.body, &params);
         }
         let rest = rest.as_slice();
         let env = self.env;

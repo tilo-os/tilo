@@ -111,7 +111,8 @@ pub fn inspect(
     let mut titled = Vec::new();
     headings(root, &mut titled);
     if let Some(title) = title.map(one_line).filter(|title| !title.is_empty()) {
-        titled.push((title, Rect::new(0.0, 0.0, 0.0, 0.0)));
+        // The bar paints its title where no box stands for it.
+        titled.push((title, None));
     }
     listed_detail(&titled, root, &mut Vec::new(), &mut out);
     gutter(root, f64::from(viewport.0), &mut Vec::new(), &mut out);
@@ -698,13 +699,17 @@ pub(super) fn is_list(node: &InspectionNode) -> bool {
 
 // --- the row a page beside a list shows --------------------------------------------------------
 
+/// A heading over a page: its words, and where it stands; none for the title a window's bar
+/// paints, which stands over the page whatever column it is drawn in.
+type Titled = (String, Option<Rect>);
+
 /// The heading a box over a list is titled with: the words of the page the list stands beside.
-fn headings(node: &InspectionNode, out: &mut Vec<(String, Rect)>) {
+fn headings(node: &InspectionNode, out: &mut Vec<Titled>) {
     if matches!(role(node), Some(Role::Heading { .. }))
         && let Some(name) = semantics_name(node)
         && !name.trim().is_empty()
     {
-        out.push((one_line(name), rect(node)));
+        out.push((one_line(name), Some(rect(node))));
     }
     for child in &node.children {
         headings(child, out);
@@ -718,7 +723,7 @@ fn headings(node: &InspectionNode, out: &mut Vec<(String, Rect)>) {
 /// whose page is titled with words none of its rows carry (a title the rows do not say) names no
 /// row to highlight; neither is held to the rule.
 fn listed_detail(
-    titled: &[(String, Rect)],
+    titled: &[Titled],
     node: &InspectionNode,
     keys: &mut Vec<String>,
     out: &mut Vec<Problem>,
@@ -744,11 +749,13 @@ fn listed_detail(
             let beside = titled
                 .iter()
                 .filter(|(words, at)| {
-                    // The bar's own title stands over the page whatever column it is drawn in.
-                    let bar = *at == Rect::new(0.0, 0.0, 0.0, 0.0);
-                    (bar || at.x0 >= boxed.x1 - SLACK) && rows.iter().any(|(name, _)| name == words)
+                    at.is_none_or(|at| at.x0 >= boxed.x1 - SLACK)
+                        && rows.iter().any(|(name, _)| name == words)
                 })
-                .min_by(|(_, one), (_, other)| one.y0.total_cmp(&other.y0));
+                .min_by(|(_, one), (_, other)| {
+                    let top = |at: &Option<Rect>| at.map_or(f64::NEG_INFINITY, |at| at.y0);
+                    top(one).total_cmp(&top(other))
+                });
             if let Some((words, _)) = beside
                 && words != &chosen.0
             {

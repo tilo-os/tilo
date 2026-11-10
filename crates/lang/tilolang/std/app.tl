@@ -435,55 +435,29 @@ template view tree_rows<T>(
             on drop(moved: T, at: Option<T>): place(moved, .none, at)
             on into(moved: T, at: Option<T>): place(moved, at, .none)
             on after(moved: T, at: T): place_after(moved, at)
-            if searching {
-                // The matches and the rows they stand under: the rows the search shows, each
-                // one a row of the tree in the place it keeps.
-                for x in shown {
-                    let p = parent(x)
-                    let above: Option<T> = items.filter(y -> y.parent == p).previous(x)
-                    ui.TreeViewNode(
-                        x,
-                        label(x),
-                        parent: p,
-                        presence: lenses(x).find(l -> not l.mine)?.who,
-                        depth: depth(x),
-                        branch: branch(x),
-                        above: above,
-                        navigates: false,
-                    ) {
-                        toolbar: {
-                            add(x)
-                        }
-                        row: {
-                            row(x)
-                        }
+            // The matches and the rows they stand under, or the whole collection: one row each,
+            // in the place the tree keeps it.
+            for x in if searching { shown } else { items } {
+                // The item just before this one under the same parent: the place the actions
+                // offered on it get and the row `Tab` indents it under. The store's index
+                // answers the run of `p`'s own, never a walk of the rows before it.
+                let p = parent(x)
+                let above: Option<T> = items.filter(y -> y.parent == p).previous(x)
+                ui.TreeViewNode(
+                    x,
+                    label(x),
+                    parent: p,
+                    presence: lenses(x).find(l -> not l.mine)?.who,
+                    depth: depth(x),
+                    branch: branch(x),
+                    above: above,
+                    navigates: false,
+                ) {
+                    toolbar: {
+                        add(x)
                     }
-                }
-            } else {
-                for x in items {
-                    // The item just before this one under the same parent: the place the actions
-                    // offered on it get and the row `Tab` indents it under, whatever the window
-                    // shows between them. The store's index answers the run of `p`'s own, never a
-                    // walk of the rows before it: none for a first child, which costs its own row
-                    // and no other.
-                    let p = parent(x)
-                    let above: Option<T> = items.filter(y -> y.parent == p).previous(x)
-                    ui.TreeViewNode(
-                        x,
-                        label(x),
-                        parent: p,
-                        presence: lenses(x).find(l -> not l.mine)?.who,
-                        depth: depth(x),
-                        branch: branch(x),
-                        above: above,
-                        navigates: false,
-                    ) {
-                        toolbar: {
-                            add(x)
-                        }
-                        row: {
-                            row(x)
-                        }
+                    row: {
+                        row(x)
                     }
                 }
             }

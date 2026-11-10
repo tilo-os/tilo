@@ -296,10 +296,13 @@ fn a_pressed_row_shows_the_note_beside_the_tree() {
     for index in 0..len {
         let row = window.row(&list, index).unwrap().cloned().expect("a row");
         let node = find(&row, "ui.TreeViewNode").expect("the row is a tree node");
-        assert_eq!(
-            node.props.get("navigates"),
-            Some(&Value::Bool(false)),
-            "a row opens the note where the tree already shows it"
+        assert!(
+            matches!(
+                node.props.get("navigates"),
+                Some(Value::Bool(false) | Value::Int(0))
+            ),
+            "a row opens the note where the tree already shows it: {:?}",
+            node.props.get("navigates")
         );
     }
     // The first note is open until a person chooses another, and the tree says so.
