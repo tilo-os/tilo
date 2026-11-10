@@ -193,6 +193,30 @@ pub struct NativeCommittedView {
     /// This device's live replica, shared with the workspace's direct links.
     replica: Replica,
     record: record::StoredWorkspace,
+    /// Who reads each channel, as [`Self::channel_readers`] and
+    /// [`Self::unit_scope`] last answered.
+    readers: Arc<std::sync::Mutex<ChannelReaders>>,
+}
+/// A channel asked about, and the route of its record when the asker knows it.
+type ChannelAsked = (collab_types::ChannelId, Option<collab_types::ChannelRoute>);
+/// Who reads the channels and records asked about at one instant, as a view's
+/// governance decides it: the view never changes, so neither do they.
+#[derive(Default)]
+struct ChannelReaders {
+    at_ns: u64,
+    readers: std::collections::HashMap<ChannelAsked, Option<std::collections::BTreeSet<[u8; 32]>>>,
+    scopes: std::collections::HashMap<collab_types::ChannelRoute, collab_types::ChannelId>,
+}
+impl ChannelReaders {
+    /// The answers held for `at_ns`, dropping those of any other instant.
+    fn at(&mut self, at_ns: u64) -> &mut Self {
+        if self.at_ns != at_ns {
+            self.readers.clear();
+            self.scopes.clear();
+            self.at_ns = at_ns;
+        }
+        self
+    }
 }
 impl NativeCommittedView {
     fn new(peer: StatePeer, record: record::StoredWorkspace) -> Self {
@@ -200,7 +224,64 @@ impl NativeCommittedView {
             replica: Replica::new(peer.clone()),
             peer,
             record,
+            readers: Arc::default(),
         }
+    }
+    /// The devices that may read `channel` at `now`
+    /// (as its governance's `channel_readers` decides it), once for each
+    /// channel and instant: a page asks again for every frame its channels
+    /// take in, thousands while it arrives in a workspace of hundreds of
+    /// people, and the answer cannot change while the view and the instant
+    /// stay the same.
+    ///
+    /// # Errors
+    /// The view's governance cannot be read.
+    pub fn channel_readers(
+        &self,
+        now: web_time::SystemTime,
+        channel: collab_types::ChannelId,
+        route: Option<&collab_types::ChannelRoute>,
+    ) -> Result<Option<std::collections::BTreeSet<[u8; 32]>>, String> {
+        use tilo_lock::MutexRecover as _;
+        let at_ns = crate::state::now_ns(now);
+        let key = (channel, route.cloned());
+        if let Some(answer) = self.readers.lock_recover().at(at_ns).readers.get(&key) {
+            return Ok(answer.clone());
+        }
+        let answer = self
+            .peer
+            .governance()
+            .channel_readers(now, channel, route)?;
+        self.readers
+            .lock_recover()
+            .at(at_ns)
+            .readers
+            .insert(key, answer.clone());
+        Ok(answer)
+    }
+    /// The key scope `route`'s record seals under at `now` (as its
+    /// governance's `unit_scope` decides it), once for each record and
+    /// instant, as [`Self::channel_readers`] is.
+    ///
+    /// # Errors
+    /// The view's governance cannot be read.
+    pub fn unit_scope(
+        &self,
+        now: web_time::SystemTime,
+        route: &collab_types::ChannelRoute,
+    ) -> Result<collab_types::ChannelId, String> {
+        use tilo_lock::MutexRecover as _;
+        let at_ns = crate::state::now_ns(now);
+        if let Some(scope) = self.readers.lock_recover().at(at_ns).scopes.get(route) {
+            return Ok(*scope);
+        }
+        let scope = self.peer.governance().unit_scope(now, route)?;
+        self.readers
+            .lock_recover()
+            .at(at_ns)
+            .scopes
+            .insert(route.clone(), scope);
+        Ok(scope)
     }
     /// The replica as the record published it.
     #[must_use]
@@ -919,6 +1000,7 @@ impl NativeWorkspaceOwner {
             replica: replica.clone(),
             peer: published,
             record,
+            readers: Arc::default(),
         });
         let continuity = candidate.continuity();
         self.0.publish(

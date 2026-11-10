@@ -43,19 +43,23 @@ impl PeerGovernance<'_> {
             .collect())
     }
     /// Current governed access derived from the admitted workspace document.
+    ///
+    /// Each identity row is decoded and its certificate's signature verified
+    /// once per document state: a page in a workspace of hundreds of people
+    /// lists its member devices for every frame its channels take in.
     pub fn governed_access(self, now: SystemTime) -> Result<GovernedAccess, String> {
-        let policy = self
+        let doc = self
             .peer
             .core
             .workspace_doc
             .as_ref()
-            .ok_or("workspace governance missing")?
-            .policy();
-        let workspace_policy = policy.workspace_policy(&self.peer.core.workspace);
+            .ok_or("workspace governance missing")?;
+        let workspace_policy = doc.policy().workspace_policy(&self.peer.core.workspace);
+        let certificates = doc.identity_certificates();
         let mut member_devices = Vec::new();
         let mut member_user_roots = Vec::new();
-        for bytes in policy.identities.values() {
-            let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
+        for (key, identity) in doc.identities() {
+            let identity = identity.as_ref().map_err(err)?;
             // An agent outside its delegation reads and writes nothing.
             if identity
                 .delegate_acting(&self.peer.core.workspace, now_ns(now))
@@ -63,10 +67,13 @@ impl PeerGovernance<'_> {
             {
                 continue;
             }
-            let cert = identity.device_cert;
-            if tilo_user_identity::verify_device_cert_at(&cert, now_ns(now)).is_err()
-                || self.peer.core.revocations.refuses(&cert)
-            {
+            let Some(cert) = certificates
+                .get(key)
+                .and_then(|cert| cert.current_typed(now_ns(now)).ok())
+            else {
+                continue;
+            };
+            if self.peer.core.revocations.refuses(cert) {
                 continue;
             }
             let person = hex::encode(cert.user_public_key);
@@ -148,17 +155,23 @@ impl PeerGovernance<'_> {
             let access = self.peer.governance().governed_access(now)?;
             return Ok(Some(access.member_devices.into_iter().collect()));
         }
-        let routes: Vec<collab_types::ChannelRoute> = route.cloned().into_iter().collect();
-        let readers = self
-            .peer
-            .governance()
-            .withheld_record_readers(now, &routes)?;
-        let Some(withheld) = readers.withheld.get(&channel) else {
+        // Only the asked channel's record is decided: a frame on one record's
+        // channel never pays for every record the workspace's grants name.
+        let access = self.peer.governance().governed_access(now)?;
+        let policy = self.governed_policy()?;
+        let workspace = self.peer.core.workspace.as_str();
+        let Some((app, record)) = collab_types::named_records(&policy.grants, workspace)
+            .chain(route.map(|route| (route.app.as_str(), route.record.as_str())))
+            .find(|(app, record)| {
+                collab_types::document_channel_id(app, workspace, record) == channel
+            })
+        else {
             return Ok(None);
         };
+        let withheld = self.withheld_from(&access, &policy, now, app, record);
         Ok(Some(
-            readers
-                .readers
+            access
+                .member_devices
                 .into_iter()
                 .filter(|device| !withheld.contains(device))
                 .collect(),
@@ -176,23 +189,14 @@ impl PeerGovernance<'_> {
         now: SystemTime,
         route: &collab_types::ChannelRoute,
     ) -> Result<collab_types::ChannelId, String> {
-        let readers = self
-            .peer
-            .governance()
-            .withheld_record_readers(now, std::slice::from_ref(route))?;
-        let unit =
-            collab_types::document_channel_id(&route.app, &self.peer.core.workspace, &route.record);
-        Ok(
-            if readers
-                .withheld
-                .get(&unit)
-                .is_some_and(|denied| !denied.is_empty())
-            {
-                unit
-            } else {
-                collab_types::workspace_scope(&self.peer.core.workspace)
-            },
-        )
+        let access = self.peer.governance().governed_access(now)?;
+        let policy = self.governed_policy()?;
+        let withheld = self.withheld_from(&access, &policy, now, &route.app, &route.record);
+        Ok(if withheld.is_empty() {
+            collab_types::workspace_scope(&self.peer.core.workspace)
+        } else {
+            collab_types::document_channel_id(&route.app, &self.peer.core.workspace, &route.record)
+        })
     }
 
     /// The governed member devices a Read Deny keeps out of a record's
@@ -220,27 +224,8 @@ impl PeerGovernance<'_> {
         routes: &[collab_types::ChannelRoute],
     ) -> Result<RecordReaders, String> {
         let access = self.peer.governance().governed_access(now)?;
-        let policy = self
-            .peer
-            .core
-            .workspace_doc
-            .as_ref()
-            .ok_or("workspace governance missing")?
-            .policy()
-            .workspace_policy(&self.peer.core.workspace);
+        let policy = self.governed_policy()?;
         let workspace = self.peer.core.workspace.as_str();
-        let denied = |app: &str, record: &str| -> BTreeSet<[u8; 32]> {
-            access
-                .member_devices
-                .iter()
-                .copied()
-                .filter(|device| {
-                    self.peer
-                        .check_document_read(*device, app, record, now)
-                        .is_err()
-                })
-                .collect()
-        };
         let mut records: BTreeSet<(&str, &str)> =
             collab_types::named_records(&policy.grants, workspace).collect();
         records.extend(
@@ -248,27 +233,15 @@ impl PeerGovernance<'_> {
                 .iter()
                 .map(|route| (route.app.as_str(), route.record.as_str())),
         );
-        let mut withheld = std::collections::HashMap::new();
-        for (app, record) in records {
-            // Only a grant below the workspace or a member's own record (read
-            // by that person alone) can decide a record otherwise than the
-            // workspace: a record neither covers is read by every member.
-            let node = collab_types::document_node(workspace, app, record);
-            let covered = collab_types::member_record(record).is_some()
-                || policy
-                    .grants
-                    .iter()
-                    .any(|grant| grant.node.len() > 1 && grant.node.covers(&node));
-            let devices = if covered {
-                denied(app, record)
-            } else {
-                BTreeSet::new()
-            };
-            withheld.insert(
-                collab_types::document_channel_id(app, workspace, record),
-                devices,
-            );
-        }
+        let withheld = records
+            .into_iter()
+            .map(|(app, record)| {
+                (
+                    collab_types::document_channel_id(app, workspace, record),
+                    self.withheld_from(&access, &policy, now, app, record),
+                )
+            })
+            .collect();
         // Every channel whose record the node cannot name may be any record, a
         // member's own included: no device is admitted to it until a device
         // names its record.
@@ -279,6 +252,55 @@ impl PeerGovernance<'_> {
             withheld,
             unrouted,
         })
+    }
+
+    /// The devices of `access` that may not read `app`'s `record` at `now`
+    /// under `policy`, the workspace's current policy, built once by the
+    /// caller for every device it decides.
+    fn withheld_from(
+        self,
+        access: &GovernedAccess,
+        policy: &tilo_action_policy::WorkspacePolicy,
+        now: SystemTime,
+        app: &str,
+        record: &str,
+    ) -> BTreeSet<[u8; 32]> {
+        // Only a grant below the workspace or a member's own record (read
+        // by that person alone) can decide a record otherwise than the
+        // workspace: a record neither covers is read by every member.
+        let node = collab_types::document_node(&self.peer.core.workspace, app, record);
+        let covered = collab_types::member_record(record).is_some()
+            || policy
+                .grants
+                .iter()
+                .any(|grant| grant.node.len() > 1 && grant.node.covers(&node));
+        if !covered {
+            return BTreeSet::new();
+        }
+        // A member's own record is that person's alone, whatever the grants
+        // say: a device of anyone else is withheld without deciding it, so a
+        // workspace of hundreds of people decides each such record for one
+        // person's devices, not for everyone's.
+        let theirs = collab_types::member_record(record)
+            .and_then(|(person, _)| <[u8; 32]>::try_from(hex::decode(person).ok()?).ok());
+        access
+            .member_devices
+            .iter()
+            .copied()
+            .filter(|device| {
+                if let Some(person) = theirs
+                    && self
+                        .peer
+                        .certificate(device, now)
+                        .is_ok_and(|cert| cert.user_public_key != person)
+                {
+                    return true;
+                }
+                self.peer
+                    .check_document_read_under(policy, *device, app, record, now)
+                    .is_err()
+            })
+            .collect()
     }
 
     /// The workspace's people and grants as its governance records them: its

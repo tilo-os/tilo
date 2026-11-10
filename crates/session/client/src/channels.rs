@@ -468,9 +468,7 @@ impl ChannelDirectory for Directory {
         let readers = self
             .engine
             .owner()
-            .with_current(workspace, |view| {
-                view.peer().governance().channel_readers(at, channel, route)
-            })
+            .with_current(workspace, |view| view.channel_readers(at, channel, route))
             // A workspace whose governance cannot be read says nothing of who reads it.
             .ok()
             .flatten()?;
@@ -494,9 +492,7 @@ impl ChannelDirectory for Directory {
         let at = UNIX_EPOCH.checked_add(Duration::from_secs(now))?;
         self.engine
             .owner()
-            .with_current(workspace, |view| {
-                view.peer().governance().unit_scope(at, route)
-            })
+            .with_current(workspace, |view| view.unit_scope(at, route))
             .ok()
     }
 
