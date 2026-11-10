@@ -16,28 +16,32 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use super::{COMMIT_WAIT, Needs, Worker, bytes_of, is_part};
 
 /// The record at `route` as the session's replica holds it, with `written`
-/// (a change of it the replica may not have taken in yet) merged in.
+/// (a change of it the replica may not have taken in yet) merged in, and
+/// whether the replica holds it at all.
 fn document(
     peer: &tilo_session_host::PeerHandle,
     route: &DocumentRoute,
     written: Option<&[u8]>,
-) -> automerge::AutoCommit {
+) -> (automerge::AutoCommit, bool) {
     let held = peer
         .engine()
         .record(&route.cluster_id, &route.app_id, &route.record);
-    let mut doc = match held {
-        Ok(Some(bytes)) => automerge::AutoCommit::load(&bytes).unwrap_or_else(|error| {
-            tracing::warn!(record = %route.record, %error, "workspace actions: a record does not load");
-            automerge::AutoCommit::new()
-        }),
-        _ => automerge::AutoCommit::new(),
+    let (mut doc, held) = match held {
+        Ok(Some(bytes)) => (
+            automerge::AutoCommit::load(&bytes).unwrap_or_else(|error| {
+                tracing::warn!(record = %route.record, %error, "workspace actions: a record does not load");
+                automerge::AutoCommit::new()
+            }),
+            true,
+        ),
+        _ => (automerge::AutoCommit::new(), false),
     };
     if let Some(bytes) = written
         && let Err(error) = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes)
     {
         tracing::warn!(record = %route.record, %error, "workspace actions: a change does not load");
     }
-    doc
+    (doc, held)
 }
 
 impl Worker {
@@ -134,7 +138,7 @@ impl Worker {
                 .workspaces
                 .get(&workspace_id)
                 .ok_or("the workspace was not joined")?;
-            document(&workspace.peer, route, Some(written))
+            document(&workspace.peer, route, Some(written)).0
         };
         let Some(checkout) = ui::record::identity(&record) else {
             return Ok(());
@@ -173,7 +177,7 @@ impl Worker {
                 link.as_deref(),
             )
             .map_err(|error| error.to_string())?;
-        let mut index = document(&workspace.peer, &index_route, None);
+        let (mut index, held) = document(&workspace.peer, &index_route, None);
         let _ = index.save();
         let named = ui::record::index::reference(&mut index, &checkout.id, &checkout.kind);
         let renamed = name.is_some()
@@ -185,10 +189,16 @@ impl Worker {
         if change.is_empty() {
             return Ok(());
         }
-        self.commit(
-            workspace_id,
-            &index_route,
-            &DocumentMutation::Incremental(change),
-        )
+        // An index the workspace holds nothing of yet starts as the whole
+        // record: a reader holding none of it reads it from that, where a
+        // change alone would wait for a base no one sends.
+        let mutation = if held {
+            DocumentMutation::Incremental(change)
+        } else {
+            DocumentMutation::Snapshot(index.save())
+        };
+        // Durably: the next name is written over this one, read back from the
+        // session's replica.
+        self.commit_durably(workspace_id, &index_route, &mutation)
     }
 }
