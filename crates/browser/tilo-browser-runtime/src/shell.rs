@@ -1995,7 +1995,7 @@ mod tests {
     use std::collections::BTreeMap;
     use tilo_action_policy::Role;
     use tilo_desktop_model::IdMinter;
-    use tilo_desktop_model::commands::Standing;
+    use tilo_desktop_model::commands::{DesktopCommand, Standing};
 
     const GUEST: &str = "guest";
     const OTHER_GUEST: &str = "other-guest";

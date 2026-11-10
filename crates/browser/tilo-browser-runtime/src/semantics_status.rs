@@ -314,6 +314,7 @@ mod tests {
             child_clip: None,
             page_title: None,
             layout: None,
+            paint_key: None,
             semantics: Some(access),
             children: vec![],
         }
@@ -340,6 +341,7 @@ mod tests {
             child_clip: None,
             page_title: None,
             layout: None,
+            paint_key: None,
             semantics: None,
             children,
         };
