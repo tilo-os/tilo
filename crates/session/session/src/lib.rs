@@ -212,6 +212,8 @@ mod here;
 mod host_account;
 #[cfg(target_os = "linux")]
 mod host_shell;
+#[cfg(target_os = "linux")]
+mod hosted_workspaces;
 mod i18n;
 #[cfg(target_os = "linux")]
 pub mod identity;

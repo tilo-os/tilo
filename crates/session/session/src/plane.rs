@@ -987,6 +987,12 @@ fn seams(
         // desktop: what an app writes of its own scope reaches their other
         // devices, and what those wrote reaches the app here.
         personal: Seam::when(personal),
+        // A workspace placed on a host has its records changed there: the
+        // person's actions on them are sent to the host, which decides and
+        // runs them, and the change reaches the windows here by sync.
+        hosted_workspaces: Seam::when(crate::hosted_workspaces::HostedWorkspaces::service(
+            engine.as_ref(),
+        )),
         // The steps only this session may take for the person: the
         // workspace's activity the Activity app reads, pairing a nearby
         // device, administering their identities and the devices trusted

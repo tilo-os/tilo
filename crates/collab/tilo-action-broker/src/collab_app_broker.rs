@@ -11354,6 +11354,8 @@ pub mod tests {
         revision: String,
         pub resolve_mode: DirectoryResolveMode,
         result: tilo_actions::ResultSpec,
+        /// What the action is: opening Atlas, a view, unless a test makes it another.
+        pub operation: tilo_actions::OperationKind,
         confirmation_required: bool,
         params: Vec<tilo_actions::ActionParam>,
         query_count: usize,
@@ -11362,12 +11364,14 @@ pub mod tests {
 
     impl TestActionDirectory {
         fn contract(&self) -> tilo_actions::ActionContract {
-            let mut contract = tilo_actions::ActionContract::view();
+            let mut contract = tilo_actions::ActionContract::for_operation(self.operation);
             // Opening Atlas changes the invoking participant's view, not the
             // publishing participant's private UI.
-            contract
-                .tags
-                .push(tilo_actions::PARTICIPANT_VIEW_TAG.into());
+            if self.operation == tilo_actions::OperationKind::View {
+                contract
+                    .tags
+                    .push(tilo_actions::PARTICIPANT_VIEW_TAG.into());
+            }
             contract.result = self.result.clone();
             if self.confirmation_required {
                 contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
@@ -11388,7 +11392,7 @@ pub mod tests {
                 keywords: Vec::new(),
                 icon: None,
                 description: Some("Open the Atlas workspace".into()),
-                operation_kind: tilo_actions::OperationKind::View,
+                operation_kind: self.operation,
                 params: self.params.clone(),
                 contract: contract.clone(),
                 input: runtime_collab::ExportedInput::None,
@@ -11404,7 +11408,7 @@ pub mod tests {
                 descriptor: Some(descriptor),
                 has_children: false,
                 visibility: Some(runtime_collab::RowVisibility {
-                    governing_kind: Some(tilo_actions::OperationKind::View),
+                    governing_kind: Some(self.operation),
                     action: "open".into(),
                     contract,
                 }),
@@ -11489,6 +11493,8 @@ pub mod tests {
     include!("record_content_tests.rs");
     #[cfg(test)]
     include!("offload_door_tests.rs");
+    #[cfg(test)]
+    include!("hosted_workspace_tests.rs");
 
     pub struct LocalDirectoryFixture {
         _fanout: Arc<FanoutState>,
@@ -11894,6 +11900,7 @@ pub mod tests {
             revision: "directory-r1".into(),
             resolve_mode: DirectoryResolveMode::Found,
             result: tilo_actions::ResultSpec::None,
+            operation: tilo_actions::OperationKind::View,
             confirmation_required: false,
             params: Vec::new(),
             query_count: 0,

@@ -1408,6 +1408,7 @@ mod owner_commit_tests {
                 revision: "directory-r1".into(),
                 resolve_mode: DirectoryResolveMode::Found,
                 result: tilo_actions::ResultSpec::None,
+                operation: tilo_actions::OperationKind::View,
                 confirmation_required: false,
                 params: Vec::new(),
                 query_count: 0,

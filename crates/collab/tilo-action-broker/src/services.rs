@@ -876,6 +876,18 @@ impl DisplayControlContext {
         self.device
     }
 }
+/// Where the records of a workspace another device hosts run their actions.
+pub trait HostedWorkspaces: Send + Sync {
+    /// The actions of `workspace`'s host, when a host other than this device
+    /// holds it and runs its records' actions in its own workers: what the
+    /// person's invocations of those actions are sent to, decided and run.
+    /// `None` for a workspace this device hosts itself or holds alone.
+    fn host_actions(
+        &self,
+        workspace: &str,
+    ) -> Option<Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>>;
+}
+
 /// The native host's separately authorized display transaction service.
 pub trait DisplayControlServices: Send + Sync {
     fn command(&self, context: &DisplayControlContext, command: &[u8]) -> Result<Vec<u8>, String>;
@@ -963,6 +975,10 @@ pub struct HostServices {
     /// The person's own store, which carries the records of their own scope
     /// to their other devices. Without it those records stay on this device.
     pub personal: Option<tilo_peer_state::PersonalSync>,
+    /// The hosts of the workspaces another device hosts, where the person's
+    /// invocations of those workspaces' record actions run. Without it every
+    /// action runs here.
+    pub hosted_workspaces: Option<Arc<dyn HostedWorkspaces>>,
 }
 
 impl HostServices {
@@ -1011,5 +1027,6 @@ impl HostServices {
         "own_device",
         "workspace_nodes",
         "personal",
+        "hosted_workspaces",
     ];
 }

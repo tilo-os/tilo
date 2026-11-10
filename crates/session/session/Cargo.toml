@@ -212,6 +212,9 @@ tilo-network-actor = { path = "../network-actor" }
 # A host's own questions to a member, asked on the collaboration endpoint:
 # what an agent asks before it acts on a workspace, answered by the person.
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
+# This device's session with a workspace's host, which runs the person's
+# actions on that workspace's records in its own workers.
+tilo-session-host = { path = "../../session/host" }
 # This device's relays wait in the collaboration endpoint until a workspace
 # it shows has someone else in it, and its key is published only then.
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
@@ -438,7 +441,6 @@ tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["te
 # governs the workspace a join enrolls into, folding what its pages write,
 # and the page of its person that recorded there first.
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["web"] }
-tilo-session-host = { path = "../../session/host" }
 # What `NetworkManager` says, fed in rather than read from a bus.
 tilo-nm = { path = "../../system/tilo-nm" }
 # The other device's tunnel and this one's, in memory, for what a route

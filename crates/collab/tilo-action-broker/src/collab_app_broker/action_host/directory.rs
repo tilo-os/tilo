@@ -245,6 +245,17 @@ impl AppBrokerState {
         // Runs on the broker's local set in the same turn the owner answered,
         // so nothing can change between resolution and admission.
         resolved.then(move |reply| {
+            // An action of a record another device hosts runs there: nothing
+            // is admitted here, and the host's receipt is the answer.
+            if let Some(forward) =
+                state.directory_forward(&caller, &root, &request, origin.as_ref(), reply.as_ref())
+            {
+                if let Ok(mut ledger) = state.remote_invocations.lock() {
+                    ledger.abandon(&request.invocation);
+                }
+                super::answer_with(state.send_to_host(&caller, forward), completer);
+                return;
+            }
             // A caller that stopped waiting (its admission deadline passed)
             // has already been told the action did not start; keep it so.
             let staged = if completer.is_abandoned() {

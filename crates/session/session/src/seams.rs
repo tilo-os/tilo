@@ -149,6 +149,7 @@ seams! {
     own_device: Arc<dyn OwnDeviceActions>,
     workspace_nodes: Arc<dyn WorkspaceNodeActions>,
     personal: tilo_peer_state::PersonalSync,
+    hosted_workspaces: Arc<dyn tilo_action_broker::services::HostedWorkspaces>,
 }
 
 /// The records this session reads outside their apps, from the engine that holds its workspaces.

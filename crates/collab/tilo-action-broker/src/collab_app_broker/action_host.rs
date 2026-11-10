@@ -41,6 +41,7 @@ mod governance_witness_tests;
 
 mod app_admission;
 mod directory;
+mod hosted;
 mod launch_child;
 mod own_device;
 mod publishers;
@@ -2553,6 +2554,9 @@ impl AppBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        if let Some(forward) = self.eager_forward(caller, origin, request) {
+            return self.send_to_host(caller, forward);
+        }
         let reservation = self.reserve_invocation(caller, request);
         match reservation {
             Err(error) => return Pending::ready(Err(error)),
