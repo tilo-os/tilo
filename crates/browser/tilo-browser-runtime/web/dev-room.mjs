@@ -40,13 +40,11 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
  */
 export async function openInRoom({surface, name, onStatus = () => {}}) {
   const workspace = await call('/');
-  const wasm = await import('./pkg/tilo_browser_runtime.js');
-  await wasm.default();
   onStatus('joining');
   const {identity} = await createIdentity({passkey: false});
   const offer = await call('/join', {userPublicKey: identity.userPublicKey, name});
   const peer = await joinWorkspace({
-    ...offer, identity, displayName: name, label: name, runtime: wasm,
+    ...offer, identity, displayName: name, label: name,
     profile: `tilo-dev-room:${identity.userPublicKey.slice(0, 16)}`,
   });
   await peer.whenReady();

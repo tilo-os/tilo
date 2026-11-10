@@ -1157,12 +1157,7 @@ enum JsDurable {
 /// # Errors
 ///
 /// Throws for operations outside the wire bounds.
-#[wasm_bindgen(js_name = encodeLivePreview)]
-pub fn encode_live_preview(
-    record_json: &str,
-    seq: u64,
-    ops_json: &str,
-) -> Result<Vec<u8>, JsError> {
+fn encode_live_preview(record_json: &str, seq: u64, ops_json: &str) -> Result<Vec<u8>, JsError> {
     let record = record_from_js(serde_json::from_str(record_json).map_err(js_error)?);
     let ops = ops_from_js(serde_json::from_str(ops_json).map_err(js_error)?)?;
     LiveFrame::Ops(OpsFrame::Preview { seq, record, ops })
@@ -1175,8 +1170,7 @@ pub fn encode_live_preview(
 /// # Errors
 ///
 /// Throws for a malformed record.
-#[wasm_bindgen(js_name = encodeLivePreviewEnd)]
-pub fn encode_live_preview_end(record_json: &str) -> Result<Vec<u8>, JsError> {
+fn encode_live_preview_end(record_json: &str) -> Result<Vec<u8>, JsError> {
     let record = record_from_js(serde_json::from_str(record_json).map_err(js_error)?);
     LiveFrame::Ops(OpsFrame::End { record })
         .encode()
@@ -1523,67 +1517,6 @@ impl JsCallOperation {
             },
         })
     }
-}
-
-/// `{agentId, label, color, device, workspaces, apps, mayConfirm, expiresAtNs}`
-/// of a delegation that verified.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct JsDelegation {
-    agent_id: String,
-    label: String,
-    color: String,
-    device: String,
-    workspaces: Vec<String>,
-    apps: Vec<String>,
-    expires_at_ns: u64,
-}
-
-/// Verify an agent's delegation (hex, as `AgentInfo.delegation` carries it)
-/// against the user root the page trusts, at `nowMs`, and return what it
-/// grants as JSON. The page calls an agent "yours" only after this.
-///
-/// # Errors
-///
-/// Throws for a delegation that does not decode, names another user, does
-/// not verify, or has expired.
-#[wasm_bindgen(js_name = verifyAgentDelegation)]
-pub fn verify_agent_delegation(
-    delegation_hex: &str,
-    user_public_key_hex: &str,
-    now_ms: f64,
-) -> Result<String, JsError> {
-    let bytes = hex::decode(delegation_hex).map_err(js_error)?;
-    let delegation =
-        tilo_relay_protocol::delegation::Delegation::decode(&bytes).map_err(js_error)?;
-    let user: [u8; 32] = hex::decode(user_public_key_hex)
-        .ok()
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or_else(|| js_error("user public key must be 32 bytes of hex"))?;
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "a page clock in milliseconds is well inside u64 nanoseconds"
-    )]
-    let at_ns = (now_ms.max(0.0) as u64).saturating_mul(1_000_000);
-    delegation.verify(&user, at_ns).map_err(js_error)?;
-    let agent_id = delegation
-        .delegate
-        .agent_id()
-        .ok_or_else(|| js_error("the delegation is not an agent's"))?
-        .to_owned();
-    serde_json::to_string(&JsDelegation {
-        agent_id,
-        label: delegation.label,
-        color: tilo_relay_protocol::agents::color_hex(delegation.color),
-        device: hex::encode(delegation.device_public_key),
-        // The page calls a delegation's workspaces what its own API does; the
-        // protocol spells the scope's as rooms.
-        workspaces: delegation.scope.rooms,
-        apps: delegation.scope.apps,
-        expires_at_ns: delegation.expires_at_ns,
-    })
-    .map_err(js_error)
 }
 
 /// The revocations of `entries` the person `cert` certifies signed: a

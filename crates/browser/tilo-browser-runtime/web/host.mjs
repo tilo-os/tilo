@@ -79,8 +79,22 @@ const data=createDataLoader({baseURL:import.meta.url,runtime});
 /** Open a profile's durable storage for state kept outside any mount (the
  * relay peer). Shares the lease with mounts of the same profile/device;
  * `flush()` resolves when writes are durable; call `release()` once. */
-/** The wasm runtime module, once loaded (the peer's codec and certificates). */
-export async function loadRuntime(){await ready();return runtime;}
+/** The certified peer's code — its crypto, transport and the workspaces'
+ * replication — is a module of its own in the desktop bundle (`lazy_exports!`
+ * in tilo-web-desktop), which nothing before a workspace's door needs. It is
+ * fetched as soon as the start module is in, and every door waits for it.
+ * The bindgen glue of a split bundle imports `__wasm_split.js` itself, so it
+ * is here once the start module is; a bundle without one has the peer in
+ * its start module. */
+const peerCode=retryableMemo(async()=>{
+  await ready();
+  const split=await import('./pkg/__wasm_split.js').catch(()=>null);
+  await split?.load('peer');
+});
+void peerCode().catch(()=>{});
+/** The wasm runtime module, once loaded with the peer's code (its codec and
+ * certificates). */
+export async function loadRuntime(){await peerCode();return runtime;}
 /** Open the WebGPU device and compile the renderer once the module is in,
  * while the page opens the workspace it was let into; the first mount
  * takes it.

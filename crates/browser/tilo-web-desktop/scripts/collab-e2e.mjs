@@ -210,15 +210,13 @@ for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
 <script type="module">
 try {
   const q = new URLSearchParams(location.search);
-  const wasm = await import('./pkg/tilo_browser_runtime.js');
   const {connectPeer} = await import('./peer.mjs');
   const {openDeviceCustody, idbStorage} = await import('./device-custody.mjs');
-  await wasm.default();
   const profile = q.get('profile');
   const custody = await openDeviceCustody({profile, storage: idbStorage()});
   const peer = globalThis.peer = await connectPeer({
     origin: q.get('origin'), userPublicKey: q.get('user'), label: q.get('label'), room: q.get('room'),
-    custody, profile, displayName: q.get('label'), runtime: wasm,
+    custody, profile, displayName: q.get('label'),
   });
   globalThis.tiloMount = await peer.mountDesktop(document.getElementById('surface'), {apps: [q.get('app')]});
   globalThis.harnessReady = true;

@@ -365,5 +365,57 @@ fn split_modules_initialise_their_data_before_their_code_runs() -> Result<()> {
     }
     // Loading `tabler` left `reader`'s state alone.
     assert_eq!(call(&mut store, "call_reader", step)?, 0x1234_567b);
+    // `reader`'s module also answers its lazy export.
+    for i in samples {
+        assert_eq!(
+            call(&mut store, "reader_peek", i)?,
+            u32::from(blobs["reader"][offset(i)]),
+            "reader_peek({i})"
+        );
+    }
+    Ok(())
+}
+
+/// Exports named in `tilo_split_exports` stay exports of the start module,
+/// answered by their module once it is in.
+#[test]
+fn lazy_exports_answer_once_their_module_is_in() -> Result<()> {
+    use wasmi::{Engine, Extern, Linker, Module, Store};
+
+    let fixture = build_fixture("lazy")?;
+    let linked = &fixture.linked;
+    let outputs = Splitter::new(linked, linked)?.emit()?;
+    let step = |x: u32| x.rotate_left(7) ^ 0x5bd1_e995;
+
+    let engine = Engine::default();
+    let mut store = Store::new(&engine, ());
+    let main = Linker::<()>::new(&engine)
+        .instantiate_and_start(&mut store, &Module::new(&engine, &outputs.main.bytes)?)?;
+    let call = |store: &mut Store<()>, name: &str, i: u32| -> Result<u32> {
+        Ok(main
+            .get_typed_func::<u32, u32>(&*store, name)?
+            .call(store, i)?)
+    };
+    assert!(call(&mut store, "later_sum", 3).is_err());
+    assert!(call(&mut store, "later_mix", 3).is_err());
+
+    let module = Module::new(&engine, split_module(&outputs, "later"))?;
+    let mut linker = Linker::<()>::new(&engine);
+    for import in module.imports() {
+        let export: Extern = main
+            .get_export(&store, import.name())
+            .with_context(|| format!("the start module does not export {}", import.name()))?;
+        linker.define(import.module(), import.name(), export)?;
+    }
+    linker.instantiate_and_start(&mut store, &module)?;
+    for i in [0u32, 1, 7, 99, 0x7fff_ffff] {
+        assert_eq!(
+            call(&mut store, "later_sum", i)?,
+            step(i).wrapping_add(step(i ^ 1))
+        );
+        let at = offset(i);
+        let want = step(checksum(&fixture.blobs["start"][at..(at + 16).min(LEN)]));
+        assert_eq!(call(&mut store, "later_mix", i)?, want, "later_mix({i})");
+    }
     Ok(())
 }

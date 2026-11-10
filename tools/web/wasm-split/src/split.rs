@@ -44,6 +44,9 @@ pub struct Splitter<'a> {
 
     shared_symbols: BTreeSet<Node>,
     split_points: Vec<SplitPoint>,
+    /// The table slots past the linked layout the split modules' entries
+    /// take, before the shared functions' slots.
+    entry_slots: usize,
     chunks: Vec<HashSet<Node>>,
     main_graph: HashSet<Node>,
     call_graph: HashMap<Node, HashSet<Node>>,
@@ -158,7 +161,8 @@ impl<'a> Splitter<'a> {
     pub fn new(original: &'a [u8], bindgened: &'a [u8]) -> Result<Self> {
         let (module, ids, fns_to_ids) = parse_module_with_ids(bindgened)?;
 
-        let split_points = accumulate_split_points(&module);
+        let split_points = accumulate_split_points(&module, &lazy_exports(original)?)?;
+        let entry_slots = split_points.iter().map(|split| split.entries.len()).sum();
 
         // Note that we can't trust the normal symbols - just the data symbols - and we can't use the data offset
         // since that's not reliable after bindgening
@@ -168,6 +172,7 @@ impl<'a> Splitter<'a> {
             original,
             bindgened,
             split_points,
+            entry_slots,
             _ids_to_fns: ids,
             fns_to_ids,
             main_graph: Default::default(),
@@ -287,11 +292,13 @@ impl<'a> Splitter<'a> {
         //    When the side modules load, they will initialize functions into the table where the "holes" are.
         self.replace_segments_with_holes(&mut out, &unused_symbols);
 
-        // 2. Wipe away the unused functions and data symbols
-        self.prune_main_symbols(&mut out, &unused_symbols)?;
-
-        // 3. Change the functions called from split modules to be local functions that call the indirect function
+        // 2. Change the functions called from split modules to be local
+        //    functions that call the indirect function, while the lazy
+        //    exports' functions are still there to read their types from
         self.create_ifunc_table(&mut out, &unused_symbols);
+
+        // 3. Wipe away the unused functions and data symbols
+        self.prune_main_symbols(&mut out, &unused_symbols)?;
 
         // 4. Re-export the memories, globals, and other stuff
         self.re_export_items(&mut out);
@@ -363,7 +370,7 @@ impl<'a> Splitter<'a> {
         let roots = unique_symbols
             .iter()
             .copied()
-            .chain([Node::Function(split.export_func)]);
+            .chain(split.entries.iter().map(|entry| Node::Function(entry.func)));
         let stops = self.replaced_or_deleted(&symbols_to_import, &symbols_to_delete);
         let bodies = self.kept_bodies(roots, &stops);
         SplitParts {
@@ -412,7 +419,11 @@ impl<'a> Splitter<'a> {
         let unique_symbols = self.remap_ids(&unique_symbols, &ids_to_fns);
         let symbols_to_delete = self.remap_ids(&symbols_to_delete, &ids_to_fns);
         let symbols_to_import = self.remap_ids(&symbols_to_import, &ids_to_fns);
-        let split_export_func = ids_to_fns[self.fns_to_ids[&split.export_func]];
+        let entries: Vec<(usize, FunctionId)> = split
+            .entries
+            .iter()
+            .map(|entry| (entry.slot, ids_to_fns[self.fns_to_ids[&entry.func]]))
+            .collect();
 
         // Do some basic cleanup of the module to make it smaller
         // This removes exports, imports, and the start function
@@ -425,14 +436,7 @@ impl<'a> Splitter<'a> {
         self.create_ifunc_initializers(&mut out, &unique_symbols);
 
         // Convert our split module's functions to real functions that call the indirect function
-        self.add_split_imports(
-            &mut out,
-            split.index,
-            split_export_func,
-            split.export_name,
-            &symbols_to_import,
-            &shared_funcs,
-        );
+        self.add_split_imports(&mut out, &entries, &symbols_to_import, &shared_funcs);
 
         // Delete all the functions that are not reachable from the main module
         self.delete_main_funcs_from_split(&mut out, &symbols_to_delete);
@@ -446,9 +450,12 @@ impl<'a> Splitter<'a> {
         Ok(SplitModule {
             bytes: out.emit_wasm(),
             module_name: split.module_name.clone(),
-            component_name: Some(split.component_name.clone()),
+            component_name: split
+                .point
+                .as_ref()
+                .map(|point| point.component_name.clone()),
             relies_on_chunks,
-            hash_id: Some(split.hash_name.clone()),
+            hash_id: split.point.as_ref().map(|point| point.hash_name.clone()),
         })
     }
 
@@ -529,13 +536,13 @@ impl<'a> Splitter<'a> {
             .expand_ifunc_table_max(
                 &mut out,
                 ifunc_table_id,
-                self.split_points.len() + shared_funcs.len(),
+                self.entry_slots + shared_funcs.len(),
             )
             .unwrap();
 
         self.convert_shared_to_imports(&mut out, segment_start, &shared_funcs, &symbols_to_import);
 
-        let mut slot = segment_start + self.split_points.len();
+        let mut slot = segment_start + self.entry_slots;
         let mut own = Vec::new();
         for node in &shared_funcs {
             if let Node::Function(id) = node {
@@ -670,7 +677,7 @@ impl<'a> Splitter<'a> {
     ) {
         let ifunc_table_id = self.load_funcref_table(out);
 
-        let mut idx = self.split_points.len();
+        let mut idx = self.entry_slots;
         for node in ifuncs {
             if let Node::Function(ifunc) = node {
                 if symbols_to_import.contains(node) {
@@ -702,7 +709,7 @@ impl<'a> Splitter<'a> {
             .expand_ifunc_table_max(
                 out,
                 ifunc_table,
-                self.split_points.len() + self.shared_symbols.len(),
+                self.entry_slots + self.shared_symbols.len(),
             )
             .expect("failed to expand ifunc table");
 
@@ -712,24 +719,29 @@ impl<'a> Splitter<'a> {
         // These don't require an additional stub function
         let mut ifuncs = vec![];
 
-        // Push the split import functions into the list - after we've pushed in the shared imports
-        for idx in 0..self.split_points.len() {
-            // this is okay since we're in the main module
-            let import_func = self.split_points[idx].import_func;
-            let import_id = self.split_points[idx].import_id;
-            let ty_id = out.funcs.get(import_func).ty();
-            let stub_idx = segment_start + ifuncs.len();
-
-            // Replace the import function with a local function that calls the indirect function
-            out.funcs.get_mut(import_func).kind =
-                self.make_stub_funcs(out, ifunc_table, ty_id, stub_idx as _);
-
-            // And remove the corresponding import
-            out.imports.delete(import_id);
-
-            // Push into the list the properly typed dummy func so the entry is populated
-            // unclear if the typing is important here
-            ifuncs.push(dummy_func);
+        // Each entry's slot holds a placeholder until its module fills it in.
+        // A split point's import becomes a local function calling through
+        // the slot; a lazy export is taken over by such a function, so the
+        // page's call reaches the module once it is in.
+        for split in &self.split_points {
+            for entry in &split.entries {
+                let stub_idx = (segment_start + entry.slot) as i32;
+                if let Some(export) = entry.lazy_export {
+                    let ty_id = out.funcs.get(entry.func).ty();
+                    let stub = self.make_stub_funcs(out, ifunc_table, ty_id, stub_idx);
+                    let FunctionKind::Local(stub) = stub else {
+                        unreachable!("a stub is local");
+                    };
+                    let stub = out.funcs.add_local(stub);
+                    out.exports.get_mut(export).item = ExportItem::Function(stub);
+                } else if let Some(point) = &split.point {
+                    let ty_id = out.funcs.get(point.import_func).ty();
+                    out.funcs.get_mut(point.import_func).kind =
+                        self.make_stub_funcs(out, ifunc_table, ty_id, stub_idx);
+                    out.imports.delete(point.import_id);
+                }
+                ifuncs.push(dummy_func);
+            }
         }
 
         // Add the stub functions to the ifunc table
@@ -787,9 +799,13 @@ impl<'a> Splitter<'a> {
 
     fn prune_main_symbols(&self, out: &mut Module, unused_symbols: &HashSet<Node>) -> Result<()> {
         // Wipe the split point exports
-        for split in self.split_points.iter() {
+        for point in self
+            .split_points
+            .iter()
+            .filter_map(|split| split.point.as_ref())
+        {
             // it's okay that we're not re-mapping IDs since this is just used by the main module
-            out.exports.delete(split.export_id);
+            out.exports.delete(point.export_id);
         }
 
         // And then any actual symbols from the callgraph
@@ -905,32 +921,32 @@ impl<'a> Splitter<'a> {
         }
     }
 
+    /// Fill this module's entries' slots in, and turn what it calls outside
+    /// itself into calls through the table.
     fn add_split_imports(
         &self,
         out: &mut Module,
-        split_idx: usize,
-        split_export_func: FunctionId,
-        split_export_name: String,
+        entries: &[(usize, FunctionId)],
         symbols_to_import: &HashSet<Node>,
         ifuncs: &Vec<Node>,
     ) {
         let ifunc_table_id = self.load_funcref_table(out);
         let segment_start = self
-            .expand_ifunc_table_max(out, ifunc_table_id, self.split_points.len() + ifuncs.len())
+            .expand_ifunc_table_max(out, ifunc_table_id, self.entry_slots + ifuncs.len())
             .unwrap();
 
-        out.exports.add(&split_export_name, split_export_func);
-
-        out.tables
-            .get_mut(ifunc_table_id)
-            .elem_segments
-            .insert(out.elements.add(
-                ElementKind::Active {
-                    table: ifunc_table_id,
-                    offset: ConstExpr::Value(ir::Value::I32((segment_start + split_idx) as i32)),
-                },
-                ElementItems::Functions(vec![split_export_func]),
-            ));
+        for (slot, func) in entries {
+            out.tables
+                .get_mut(ifunc_table_id)
+                .elem_segments
+                .insert(out.elements.add(
+                    ElementKind::Active {
+                        table: ifunc_table_id,
+                        offset: ConstExpr::Value(ir::Value::I32((segment_start + slot) as i32)),
+                    },
+                    ElementItems::Functions(vec![*func]),
+                ));
+        }
 
         self.convert_shared_to_imports(out, segment_start, ifuncs, symbols_to_import);
     }
@@ -1221,7 +1237,16 @@ impl<'a> Splitter<'a> {
         Ok(())
     }
 
+    /// Every split module's entries: what only the table reaches.
+    fn entry_funcs(&self) -> HashSet<FunctionId> {
+        self.split_points
+            .iter()
+            .flat_map(|split| split.entries.iter().map(|entry| entry.func))
+            .collect()
+    }
+
     fn unused_main_symbols(&self) -> HashSet<Node> {
+        let entries = self.entry_funcs();
         self.split_points
             .iter()
             .flat_map(|split| split.reachable_graph.iter())
@@ -1231,9 +1256,13 @@ impl<'a> Splitter<'a> {
                     return false;
                 }
 
-                // And ensure we aren't also exporting it
+                // And ensure we aren't also exporting it, but as a lazy
+                // export, whose export a stub takes over
                 match sym {
-                    Node::Function(u) => self.source_module.exports.get_exported_func(*u).is_none(),
+                    Node::Function(u) => {
+                        entries.contains(u)
+                            || self.source_module.exports.get_exported_func(*u).is_none()
+                    }
                     _ => true,
                 }
             })
@@ -1393,10 +1422,20 @@ impl<'a> Splitter<'a> {
         let main_fn_entry = new_call_graph.entry(Node::Function(main_fn)).or_default();
         main_fn_entry.extend(recovered_children);
 
-        // Also attach any truly new symbols to the main function. Usually these are the shim functions
+        // Also attach the truly new symbols the table holds to the main
+        // function: wasm-bindgen's shims, which no code calls by name. A new
+        // function the code calls or exports is reached from its caller or
+        // as an export (the walk below), so a lazy export's shims go with its
+        // module.
+        let in_table: HashSet<FunctionId> =
+            table_slots(&self.source_module).into_values().collect();
         for (name, new) in new_names.iter() {
             if !old_names.contains_key(name) {
-                main_fn_entry.extend(new.iter().map(|id| Node::Function(*id)));
+                main_fn_entry.extend(
+                    new.iter()
+                        .filter(|id| in_table.contains(id))
+                        .map(|id| Node::Function(*id)),
+                );
             }
         }
         for (node, children) in new_call_graph {
@@ -1436,7 +1475,11 @@ impl<'a> Splitter<'a> {
         // Now go fill in the reachability graph for each of the split points
         // We want to be as narrow as possible since we've reparented any new symbols to the main module
         self.split_points.iter_mut().for_each(|split| {
-            let roots: HashSet<_> = [Node::Function(split.export_func)].into();
+            let roots: HashSet<_> = split
+                .entries
+                .iter()
+                .map(|entry| Node::Function(entry.func))
+                .collect();
             split.reachable_graph = reachable_graph(&self.call_graph, &roots);
         });
 
@@ -1477,11 +1520,7 @@ impl<'a> Splitter<'a> {
     fn main_roots(&self) -> HashSet<Node> {
         // Accumulate all the split entrypoints
         // This will include wasm_bindgen functions too
-        let exported_splits = self
-            .split_points
-            .iter()
-            .map(|f| f.export_func)
-            .collect::<HashSet<_>>();
+        let exported_splits = self.entry_funcs();
 
         // And only return the functions that are reachable from the main module's start function
         let mut roots = self
@@ -1854,84 +1893,165 @@ impl<'a> ModuleWithRelocations<'a> {
     }
 }
 
+/// A module split off the start module, and every way into it.
 #[derive(Debug, Clone)]
 pub struct SplitPoint {
     module_name: String,
-    import_id: ImportId,
-    export_id: ExportId,
-    import_func: FunctionId,
-    export_func: FunctionId,
-    component_name: String,
-    index: usize,
+    /// The Rust side's split point into the module, when it declares one.
+    point: Option<RustPoint>,
+    /// The functions the module answers through the function table, each
+    /// at its own slot past the table's linked layout.
+    entries: Vec<Entry>,
     reachable_graph: HashSet<Node>,
-    hash_name: String,
-
-    #[allow(unused, reason = "kept for diagnostics")]
-    import_name: String,
-
-    #[allow(unused, reason = "kept for diagnostics")]
-    export_name: String,
 }
 
-/// Search the module's imports and exports for functions marked as split points.
+/// A split point the Rust side declares as a pair of functions named by
+/// the splitter's convention:
 ///
-/// These will be in the form of:
+/// `__wasm_split_00___<module>___00_<import|export>_<hash>_<function>`
 ///
-/// `__wasm_split_00<module>00_<import|export>_<hash>_<function>`
-///
-/// For a function named `SomeRoute2` in the module `add_body_element`, the pairings would be:
-///
-/// `__wasm_split_00add_body_element00_import_abef5ee3ebe66ff17677c56ee392b4c2_SomeRoute2`
-/// `__wasm_split_00add_body_element00_export_abef5ee3ebe66ff17677c56ee392b4c2_SomeRoute2`
-///
-fn accumulate_split_points(module: &Module) -> Vec<SplitPoint> {
-    let mut index = 0;
+/// The start module calls the import, which becomes a call through the
+/// table once the module filled the export's slot in.
+#[derive(Debug, Clone)]
+struct RustPoint {
+    import_id: ImportId,
+    import_func: FunctionId,
+    export_id: ExportId,
+    hash_name: String,
+    component_name: String,
+}
 
-    module
-        .imports
-        .iter()
-        .sorted_by(|a, b| a.name.cmp(&b.name))
-        .flat_map(|import| {
-            if !import.name.starts_with("__wasm_split_00") {
-                return None;
+/// One function a split module answers through the table: a split point's
+/// export, or a module export the page calls once the module is in
+/// ([`LAZY_EXPORTS`]), whose export in the start module then calls through
+/// the table.
+#[derive(Debug, Clone)]
+struct Entry {
+    func: FunctionId,
+    slot: usize,
+    /// The start module's export of `func`, which a stub takes over.
+    lazy_export: Option<ExportId>,
+}
+
+/// The custom section in which the linked module names the exports each
+/// split module answers: one `<module> <export>` per line, `<export>`
+/// ending in `*` for every export with that prefix. Such an export calls
+/// into its module, which the page loads (`load(module)` of
+/// `__wasm_split.js`) before it calls the export.
+pub const LAZY_EXPORTS: &str = "tilo_split_exports";
+
+/// The lines of the linked module's [`LAZY_EXPORTS`] sections.
+fn lazy_exports(original: &[u8]) -> Result<Vec<(String, String)>> {
+    let mut found = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(original) {
+        if let Payload::CustomSection(section) = payload? {
+            if section.name() != LAZY_EXPORTS {
+                continue;
             }
+            let text = std::str::from_utf8(section.data()).context("lazy exports are not UTF-8")?;
+            for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+                let (module, export) = line.split_once(' ').with_context(|| {
+                    format!("lazy export line {line:?} is not `<module> <export>`")
+                })?;
+                found.push((module.to_owned(), export.trim().to_owned()));
+            }
+        }
+    }
+    Ok(found)
+}
 
-            let ImportKind::Function(import_func) = import.kind else {
-                return None;
-            };
-
-            // Parse the import name to get the module name, the hash, and the function name
-            let remain = import.name.trim_start_matches("__wasm_split_00___");
-            let (module_name, rest) = remain.split_once("___00").unwrap();
-            let (hash, fn_name) = rest.trim_start_matches("_import_").split_once("_").unwrap();
-
-            // Look for the export with the same name
-            let export_name =
-                format!("__wasm_split_00___{module_name}___00_export_{hash}_{fn_name}");
-            let export_func = module
-                .exports
-                .get_func(&export_name)
-                .expect("Could not find export");
-            let export = module.exports.get_exported_func(export_func).unwrap();
-
-            let our_index = index;
-            index += 1;
-
-            Some(SplitPoint {
-                export_id: export.id(),
-                import_id: import.id(),
-                module_name: module_name.to_string(),
-                import_name: import.name.clone(),
-                import_func,
-                export_func,
-                export_name,
-                hash_name: hash.to_string(),
-                component_name: fn_name.to_string(),
-                index: our_index,
-                reachable_graph: Default::default(),
-            })
+/// The modules to split off: the Rust side's split points, and the modules
+/// `lazy` names exports of, merged by module name. A lazy export that the
+/// module does not have is an error: a page calling it would find it in the
+/// start module after all, or not at all.
+fn accumulate_split_points(module: &Module, lazy: &[(String, String)]) -> Result<Vec<SplitPoint>> {
+    let mut points: BTreeMap<String, SplitPoint> = BTreeMap::new();
+    fn point<'a>(points: &'a mut BTreeMap<String, SplitPoint>, name: &str) -> &'a mut SplitPoint {
+        points.entry(name.to_owned()).or_insert_with(|| SplitPoint {
+            module_name: name.to_owned(),
+            point: None,
+            entries: Vec::new(),
+            reachable_graph: HashSet::new(),
         })
-        .collect()
+    }
+    for import in module.imports.iter().sorted_by(|a, b| a.name.cmp(&b.name)) {
+        if !import.name.starts_with("__wasm_split_00") {
+            continue;
+        }
+        let ImportKind::Function(import_func) = import.kind else {
+            continue;
+        };
+        let remain = import.name.trim_start_matches("__wasm_split_00___");
+        let (module_name, rest) = remain
+            .split_once("___00")
+            .with_context(|| format!("split import {} has no module", import.name))?;
+        let (hash, fn_name) = rest
+            .trim_start_matches("_import_")
+            .split_once('_')
+            .with_context(|| format!("split import {} has no hash", import.name))?;
+        let export_name = format!("__wasm_split_00___{module_name}___00_export_{hash}_{fn_name}");
+        let export_func = module
+            .exports
+            .get_func(&export_name)
+            .with_context(|| format!("no export {export_name} for split import {}", import.name))?;
+        let export = module
+            .exports
+            .get_exported_func(export_func)
+            .expect("exported");
+        let split = point(&mut points, module_name);
+        anyhow::ensure!(
+            split.point.is_none(),
+            "module {module_name} has two split points"
+        );
+        split.point = Some(RustPoint {
+            import_id: import.id(),
+            import_func,
+            export_id: export.id(),
+            hash_name: hash.to_owned(),
+            component_name: fn_name.to_owned(),
+        });
+        split.entries.push(Entry {
+            func: export_func,
+            slot: 0,
+            lazy_export: None,
+        });
+    }
+    for (module_name, pattern) in lazy {
+        let matches: Vec<_> = module
+            .exports
+            .iter()
+            .filter(|export| match pattern.strip_suffix('*') {
+                Some(prefix) => export.name.starts_with(prefix),
+                None => export.name == *pattern,
+            })
+            .filter_map(|export| match export.item {
+                ExportItem::Function(func) => Some((export.id(), func)),
+                _ => None,
+            })
+            .sorted_by_key(|(_, func)| *func)
+            .collect();
+        anyhow::ensure!(
+            !matches.is_empty(),
+            "lazy export {pattern} of {module_name} is not exported"
+        );
+        let split = point(&mut points, module_name);
+        for (export, func) in matches {
+            split.entries.push(Entry {
+                func,
+                slot: 0,
+                lazy_export: Some(export),
+            });
+        }
+    }
+    let mut slot = 0;
+    let mut points: Vec<SplitPoint> = points.into_values().collect();
+    for split in &mut points {
+        for entry in &mut split.entries {
+            entry.slot = slot;
+            slot += 1;
+        }
+    }
+    Ok(points)
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Copy, PartialOrd, Ord, Clone)]
@@ -2054,11 +2174,7 @@ impl Splitter<'_> {
             }
         }
         let module = &self.source_module;
-        let split_exports: HashSet<FunctionId> = self
-            .split_points
-            .iter()
-            .map(|split| split.export_func)
-            .collect();
+        let split_exports = self.entry_funcs();
         // Walk from everything main keeps, through both the code's own
         // references and the relocation graph: a function kept only by
         // this walk still reaches vtables (data symbols) whose methods are
