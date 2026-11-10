@@ -122,6 +122,7 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::OpenRecord { workspace_id, .. }
         | Envelope::RecordOpened { workspace_id, .. }
         | Envelope::RecordContentWant { workspace_id, .. }
+        | Envelope::HostSaid { workspace_id, .. }
         | Envelope::WorkspaceBootstrap { workspace_id, .. } => *workspace_id == scope.workspace_id,
         Envelope::Ping | Envelope::Pong => true,
         // Host business, which a workspace-scoped session does not ask: the

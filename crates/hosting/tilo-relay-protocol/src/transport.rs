@@ -656,6 +656,22 @@ pub enum Envelope {
     /// ([`crate::entering`]): the first envelope of that session, before
     /// anything else it is sent.
     Entered(crate::entering::Entered),
+
+    /// The host's own word for a run it executes
+    /// ([`crate::host_voice::HostSaid`]): sent by the host's device to the
+    /// relay that is the host, which fans it out to the workspace's other
+    /// subscribers only when its own device said it. A device takes it only
+    /// when `signature` is its host's over `said`. It never rides the live
+    /// plane, whose keys a host that is no member of it does not hold.
+    HostSaid {
+        workspace_id: u64,
+        /// The canonical [`crate::host_voice::HostSaid`] encoding.
+        #[serde(with = "serde_bytes")]
+        said: Vec<u8>,
+        /// The host device's signature over `said`.
+        #[serde(with = "serde_bytes")]
+        signature: [u8; 64],
+    },
 }
 
 impl Envelope {
@@ -715,6 +731,7 @@ impl Envelope {
             Self::AgentRunAnswer { .. } => "AgentRunAnswer",
             Self::AgentRunStopped => "AgentRunStopped",
             Self::Entered(_) => "Entered",
+            Self::HostSaid { .. } => "HostSaid",
         }
     }
 
@@ -761,7 +778,8 @@ impl Envelope {
             | Self::OpenRecord { workspace_id, .. }
             | Self::RecordOpened { workspace_id, .. }
             | Self::WorkspaceBootstrap { workspace_id, .. }
-            | Self::RecordContentWant { workspace_id, .. } => Some(*workspace_id),
+            | Self::RecordContentWant { workspace_id, .. }
+            | Self::HostSaid { workspace_id, .. } => Some(*workspace_id),
             Self::Ping
             | Self::Pong
             | Self::PeerRelayHello { .. }

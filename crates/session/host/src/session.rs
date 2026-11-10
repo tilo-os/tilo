@@ -43,6 +43,7 @@ use tilo_relay_session::RelayClient;
 mod connect;
 mod entry;
 mod governance;
+mod host_voice;
 mod inbound;
 mod opened_records;
 mod plane;
@@ -532,6 +533,8 @@ enum Command {
     Barrier(Completion),
     /// Presence frames for the workspace's plane, said as this device.
     Presence(u64, Vec<collab_types::presence::Presence>),
+    /// The host's word for a run it executes ([`PeerHandle::say_for_run`]).
+    SayForRun(u64, tilo_relay_protocol::host_voice::HostWords),
     /// The page's microphone frames, published on the workspace's plane as
     /// this device's voice.
     CallAudio(u64, Vec<CallFrame>),
@@ -2250,6 +2253,10 @@ impl Task {
                 self.publish_presence(workspace_id, frames);
                 true
             }
+            Command::SayForRun(workspace_id, words) => {
+                self.say_for_run(workspace_id, words, client).await;
+                true
+            }
             Command::CallAudio(workspace_id, frames) => {
                 self.publish_call_audio(workspace_id, frames);
                 true
@@ -2572,6 +2579,8 @@ impl Task {
                 from,
                 frame,
             } => match self.open_live(workspace_id, &frame) {
+                // A run's narration is the host's own, signed outside the plane.
+                Opening::Opened(opened) if host_voice::plane_narrates_a_run(&opened) => {}
                 Opening::Opened(opened) => self.emit(&PeerEvent::Live {
                     workspace_id,
                     from,

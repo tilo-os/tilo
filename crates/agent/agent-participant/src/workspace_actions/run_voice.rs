@@ -1,7 +1,7 @@
 //! The host's own word for the runs it executes: no run goes unseen.
 //!
 //! An agent or a key acting through the host need not say anything of
-//! itself on the live plane (an SDK client never does). The host does it for
+//! itself (an SDK client never does). The host does it for
 //! each run it executes ([`Caller::agent_run`]), whether or not the client
 //! narrates too: the run is present in the workspace as a member of its own,
 //! named and coloured by the agent or key as the host knows it, saying the
@@ -9,7 +9,10 @@
 //! on the record's stream as it goes. Every frame names the run it is said
 //! for ([`Presence::on_behalf`]), so a reader takes it only from the device
 //! the workspace's governance pins as its host, and shows the run as spoken
-//! by the host for that agent.
+//! by the host for that agent. The host says it signed with its own device
+//! key, outside the live plane ([`PeerHandle::say_for_run`]): a host that is
+//! no member of the plane holds none of its keys, and needs none to speak for
+//! its runs.
 //!
 //! A run stays present while it acts: its word is restated at the presence
 //! keep-alive, and it leaves once it took no action for [`IDLE`].
@@ -20,7 +23,8 @@ use std::time::{Duration, Instant};
 use collab_types::presence::{Payload, Presence, agent_rgb};
 use tilo_actions::remote::{Caller, RemoteActionTarget};
 use tilo_actions::{InteractionPhase, InvocationId};
-use tilo_relay_protocol::live::{LiveFrame, LiveRecord, OpsFrame};
+use tilo_relay_protocol::host_voice::HostWords;
+use tilo_relay_protocol::live::LiveRecord;
 use tilo_session_host::{PeerHandle, narration};
 
 /// How often a present run's word is said again, so a device that came
@@ -101,7 +105,7 @@ impl RunVoices {
         }
         if arriving {
             let arrived = Presence::desktop(cluster, Payload::Arrived).spoken_for(&run.id);
-            let _ = peer.publish_presence(workspace_id, vec![arrived]);
+            let _ = peer.say_for_run(workspace_id, HostWords::Presence(arrived));
         }
         voice.say(peer, workspace_id, &run.id, now);
         let Some(record) = record else {
@@ -117,9 +121,8 @@ impl RunVoices {
             on_behalf: Some(&run.id),
         };
         if let Some(event) = narration::frame(&narrated, voice.narrated, tilo_clock::unix_now_ms())
-            && let Ok(bytes) = LiveFrame::Ops(OpsFrame::Semantic { record, event }).encode()
         {
-            let _ = peer.publish_live(workspace_id, bytes);
+            let _ = peer.say_for_run(workspace_id, HostWords::Narration { record, event });
         }
     }
 
@@ -149,7 +152,7 @@ impl RunVoices {
                 .is_none_or(|leave| leave <= now)
             {
                 let left = Presence::desktop(&voice.cluster, Payload::Left).spoken_for(run);
-                let _ = peer.publish_presence(*workspace_id, vec![left]);
+                let _ = peer.say_for_run(*workspace_id, HostWords::Presence(left));
                 return false;
             }
             if voice
@@ -180,6 +183,6 @@ impl Voice {
             None,
         );
         let face = Presence::desktop(&self.cluster, Payload::Shell(Box::new(view))).spoken_for(run);
-        let _ = peer.publish_presence(workspace_id, vec![face]);
+        let _ = peer.say_for_run(workspace_id, HostWords::Presence(face));
     }
 }

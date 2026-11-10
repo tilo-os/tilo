@@ -323,6 +323,46 @@ pub(super) async fn handle_presence(
     Ok(None)
 }
 
+/// Handle `HostSaid`: the host's own word for a run it executes
+/// ([`tilo_relay_protocol::host_voice`]), fanned out to the workspace's other
+/// subscribers. Only this host's own device speaks for its runs, and only
+/// with its signature over a run's word: anything else is dropped here, as
+/// every device drops it again on arrival. The frame never touches the live
+/// plane, so a host that is no member of it speaks without its keys.
+pub(super) async fn handle_host_said(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    env: Envelope,
+) {
+    let Envelope::HostSaid {
+        workspace_id,
+        said,
+        signature,
+    } = &env
+    else {
+        return;
+    };
+    let host = session.own_device_public_key;
+    if peer.device_public_key != *host || !subscribed.contains(workspace_id) {
+        tracing::debug!(
+            workspace_id,
+            "host frame dropped: only the host's own subscribed device speaks for its runs"
+        );
+        return;
+    }
+    if let Err(error) =
+        tilo_relay_protocol::host_voice::HostSaid::open(said, signature, *workspace_id, host)
+    {
+        tracing::debug!(workspace_id, %error, "host frame dropped");
+        return;
+    }
+    let ws = session.workspaces.lock().await.get(workspace_id).cloned();
+    if let Some(ws) = ws {
+        ws.lock().await.fanout_presence(host, &env);
+    }
+}
+
 /// Handle `RecordContentWant`: fan a member's request for content out to the
 /// workspace's other members, as presence was fanned out, and answer it here
 /// from what the host keeps ([`answer_content`]).

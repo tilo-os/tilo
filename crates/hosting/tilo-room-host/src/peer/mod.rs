@@ -81,7 +81,8 @@ use dispatch::{handle_envelope, unserved_private};
 pub use fetch::FetchGrants;
 use hello::handle_host_hello;
 use live::{
-    handle_content_want, handle_live_join, handle_presence, handle_voice, route_record_content,
+    handle_content_want, handle_host_said, handle_live_join, handle_presence, handle_voice,
+    route_record_content,
 };
 use records::handle_open_record;
 pub use subscribe::get_or_autobind_workspace;

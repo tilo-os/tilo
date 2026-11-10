@@ -6,8 +6,9 @@ use super::{
     Arc, AuthenticatedPeer, Envelope, EnvelopeV2, PeerError, RemoteActionRoute, ReplayCatchup,
     ReplayHandle, ReplayTicket, SessionCtx, Subscription, handle_agent_run, handle_commit,
     handle_compaction, handle_content_want, handle_delta, handle_host_action, handle_host_hello,
-    handle_live_join, handle_open_record, handle_presence, handle_remote_action, handle_subscribe,
-    handle_sync_request, handle_unsubscribe, handle_voice, handle_workspaces, route_record_content,
+    handle_host_said, handle_live_join, handle_open_record, handle_presence, handle_remote_action,
+    handle_subscribe, handle_sync_request, handle_unsubscribe, handle_voice, handle_workspaces,
+    route_record_content,
 };
 #[cfg(test)]
 use super::{ReplayWrite, finish_replay_write};
@@ -141,6 +142,10 @@ pub(super) async fn handle_envelope(
         }
         Envelope::RetiredLiveJoin { workspace_id } => {
             handle_live_join(peer, session, subscribed, workspace_id).await
+        }
+        env @ Envelope::HostSaid { .. } => {
+            handle_host_said(peer, session, subscribed, env).await;
+            Ok(None)
         }
         Envelope::HostAction { frame } => Ok(handle_host_action(peer, session, &frame)),
         Envelope::WorkspacesRequest { request_id, frame } => {

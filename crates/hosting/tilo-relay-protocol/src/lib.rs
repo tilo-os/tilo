@@ -49,6 +49,7 @@ pub mod config;
 pub mod directory;
 pub mod entering;
 pub mod home_peer;
+pub mod host_voice;
 pub mod hosted;
 pub mod live;
 pub mod login_code;

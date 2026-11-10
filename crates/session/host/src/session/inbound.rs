@@ -172,6 +172,7 @@ impl Task {
             // This session's token for its host's fetch proxy, which dies
             // with the connection.
             Envelope::FetchGrant { token } => self.grant_fetch_proxy(&token),
+            said @ Envelope::HostSaid { .. } => self.heard_from_host(&said),
             Envelope::RecordOpened {
                 workspace_id,
                 channel,
