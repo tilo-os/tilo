@@ -227,6 +227,13 @@ impl Snippets {
 - `destructive` marks a deletion or overwrite; it does not change the kind.
   An undoable one (the document alone, or a compensated outside change) runs
   at once and offers Undo; only one Undo cannot take back asks people first.
+- `by_app` marks a verb that is the app's own bookkeeping of a record, such
+  as what its engine listed. Only the app's code applies it, to a record it
+  holds (`PersonRecord::invoke`, `invoke_as`), authored by whoever the app
+  names. It is declared to no caller: it is not published and not in the
+  app's surface, nothing builds it by its id, and the generic `apply`,
+  `group` and every door that decodes an action refuse it. `housekeeping`
+  says what kind of change a verb makes; `by_app` says nobody invokes it.
 
 The resource attribute covers what used to need a hand-written `Resource`:
 `initialize` (deterministic genesis), `seed` (first content, by the creator,

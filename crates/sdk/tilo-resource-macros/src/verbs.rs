@@ -199,6 +199,9 @@ struct ActionOptions {
     prepare: Option<syn::Path>,
     /// `audience = "agents"` or `"people"`: who listings offer it to.
     audience: Option<syn::Ident>,
+    /// `by_app`: only the app's own code applies it. It is declared to no
+    /// caller: never published, never built by its id, refused as a value.
+    by_app: bool,
 }
 
 fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
@@ -222,6 +225,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
         writes: Vec::new(),
         prepare: None,
         audience: None,
+        by_app: false,
     };
     if matches!(attr.meta, Meta::Path(_)) {
         return Ok(options);
@@ -282,9 +286,11 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.writes.push(meta.value()?.parse::<syn::Ident>()?);
         } else if meta.path.is_ident("audience") {
             options.audience = Some(crate::audience_option(&meta)?);
+        } else if meta.path.is_ident("by_app") {
+            options.by_app = true;
         } else {
             return Err(meta.error(
-                "expected `id = \"...\"`, `label`, `keywords`, `icon`, `field`, `moderation`, `destructive`, `irreversible`, `housekeeping`, `external`, `local`, `incoming_message`, `answers`, `writes = field`, `prepare = path`, `item = field`, `audience = \"agents\"` or `undo = path`",
+                "expected `id = \"...\"`, `label`, `keywords`, `icon`, `field`, `moderation`, `destructive`, `irreversible`, `housekeeping`, `external`, `local`, `incoming_message`, `answers`, `writes = field`, `prepare = path`, `item = field`, `audience = \"agents\"`, `by_app` or `undo = path`",
             ));
         }
         if options.housekeeping && options.external {
@@ -292,7 +298,25 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
         }
         Ok(())
     })?;
+    if let Some(conflict) = by_app_conflict(&options) {
+        return Err(syn::Error::new(attr.span(), conflict));
+    }
     Ok(options)
+}
+
+/// Why an action cannot be `by_app` and what else `options` say, if it
+/// cannot: nobody is offered it, and only the app's own code builds it.
+fn by_app_conflict(options: &ActionOptions) -> Option<&'static str> {
+    if !options.by_app {
+        return None;
+    }
+    if options.audience.is_some() {
+        return Some("a `by_app` action is offered to nobody: it names no `audience`");
+    }
+    if options.prepare.is_some() {
+        return Some("a `by_app` action is built by the app's own code: it takes no `prepare`");
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1027,6 +1051,8 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
     let mut change_kinds = Vec::new();
     let mut incoming = Vec::new();
     let mut irreversibles = Vec::new();
+    let mut by_app_arms = Vec::new();
+    let mut by_app_ids = Vec::new();
     let mut compensations = Vec::new();
     let mut item_arms = Vec::new();
     let mut compensating = Vec::new();
@@ -1205,6 +1231,10 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         if verb.options.irreversible {
             irreversibles.push(quote!(Self::#variant(..) => true,));
         }
+        if verb.options.by_app {
+            by_app_arms.push(quote!(Self::#variant(..) => true,));
+            by_app_ids.push(id.clone());
+        }
 
         let const_ident = format_ident!("{}", method.to_string().to_uppercase());
         let const_doc = format!("Bind or apply the `{id}` action: {label_text}.");
@@ -1271,8 +1301,9 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         // An action whose first parameter is an item id acts on an element
         // of a collection: it is also offered on each item, id bound. One
         // naming an outbox (`item = ops`) acts on an entry of it, which is
-        // no item resource.
-        if !verb.options.within.is_empty() {
+        // no item resource. What only the app's own code applies is offered
+        // to nobody, so on no item either.
+        if !verb.options.by_app && !verb.options.within.is_empty() {
             // An item of a collection inside items: the first parameters
             // name the enclosing items, outermost first, then the item.
             let depth = verb.options.within.len();
@@ -1314,7 +1345,8 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 within: &[#(#outer),*],
                 within_params: &[#(#outer_params),*],
             }));
-        } else if let Some(first) = verb.params.first()
+        } else if !verb.options.by_app
+            && let Some(first) = verb.params.first()
             && last_ident(&first.ty).is_some_and(|(name, _)| name == "Id")
         {
             let param = &first.public;
@@ -1466,6 +1498,11 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 params: #params_mod::#variant::__PARAMS,
             }
         };
+        // What only the app's own code applies is declared to no caller: it
+        // is never published, and nothing builds it by its id.
+        if verb.options.by_app {
+            continue;
+        }
         // Without a `prepare` hook, every verb of the record is built by one
         // function: its arguments decoded as a recorded action is.
         decls.push(if prepare.is_some() {
@@ -1893,6 +1930,46 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         }
     };
+    // What only the app's own code applies says so of itself, so a door
+    // that decodes one refuses it, and is built where the app invokes it.
+    let (by_app_fn, by_app_resource_fns) = if by_app_arms.is_empty() {
+        (quote!(), quote!())
+    } else {
+        (
+            quote! {
+                fn by_app(&self) -> bool {
+                    #[allow(unreachable_patterns, reason = "every other operation is declared to callers")]
+                    match self {
+                        #(#by_app_arms)*
+                        _ => false,
+                    }
+                }
+            },
+            quote! {
+                fn by_app(action: &Self::Action) -> bool {
+                    #krate::Operation::by_app(&action.operation)
+                }
+
+                fn build_by_app(
+                    id: &str,
+                    arguments: &#krate::__private::serde_json::Map<
+                        ::std::string::String,
+                        #krate::__private::serde_json::Value,
+                    >,
+                    now_ms: i64,
+                ) -> ::core::option::Option<
+                    ::core::result::Result<Self::Action, ::std::string::String>,
+                > {
+                    match id {
+                        #(#by_app_ids)|* => ::core::option::Option::Some(
+                            #krate::__private::build_stamped::<#action_enum>(id, arguments, now_ms),
+                        ),
+                        _ => ::core::option::Option::None,
+                    }
+                }
+            },
+        )
+    };
     // An action declared below one field is placed there whichever door it
     // comes through, the generic `apply` included.
     let field_fn = if fields_of.is_empty() {
@@ -2027,6 +2104,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             #change_kind
             #incoming_fn
             #irreversible_fn
+            #by_app_fn
             #compensation_fns
 
             fn writes(&self) -> #krate::footprint::Writes {
@@ -2150,6 +2228,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
 
             #seed_fn
+            #by_app_resource_fns
             #version
             #load
             #locate

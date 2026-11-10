@@ -198,9 +198,9 @@ pub use replica::Replica;
 pub use resource::{
     APPLY, APPLY_PARAM, ActionDecl, BuildAction, EDIT_PARAM, FIELD_EDIT, HeadInputs, NoAction,
     Place, Resource, ScopeDecl, SearchBody, SearchEntry, SearchPiece, SearchRow, SearchRowShape,
-    SearchText, SearchWeight, SharedRecord, bind_declaration, build_action, child_by_id,
-    declaration_spec, default_search, encode, head_inputs, need_of, origin_now_ms, publish,
-    publish_head, publish_head_of, reset_type_schemas, scope_contains, spec_kind,
+    SearchText, SearchWeight, SharedRecord, bind_declaration, build_action, by_app_refusal,
+    child_by_id, declaration_spec, default_search, encode, head_inputs, need_of, origin_now_ms,
+    publish, publish_head, publish_head_of, reset_type_schemas, scope_contains, spec_kind,
     state_from_reading, with_origin_clock,
 };
 pub use schema::JsonSchema;

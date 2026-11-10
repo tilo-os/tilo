@@ -478,6 +478,30 @@ pub trait Resource: Sized + 'static {
         ActionKind::Undoable
     }
 
+    /// Whether `action` is one only the app's own code applies
+    /// (`#[action(by_app)]`): the app's bookkeeping of the record, such as
+    /// what its engine listed. It has no declaration, so it is not
+    /// published, nothing builds it by its id, and the generic [`APPLY`] and
+    /// every door that decodes an action refuse it ([`by_app_refusal`]).
+    /// The app applies it to a record it holds.
+    fn by_app(action: &Self::Action) -> bool {
+        let _ = action;
+        false
+    }
+
+    /// The action `id` only the app's own code applies, built from
+    /// `arguments` where the app invokes it
+    /// ([`Invoke::build`](crate::Invoke::build)); `None` for any other id.
+    /// `#[resource]` generates it.
+    fn build_by_app(
+        id: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        now_ms: i64,
+    ) -> Option<Result<Self::Action, String>> {
+        let _ = (id, arguments, now_ms);
+        None
+    }
+
     /// Register this resource's replay decoder. Override to register an
     /// existing vocabulary under additional type ids.
     fn register(registry: &mut ActionRegistry) {
@@ -1961,9 +1985,17 @@ fn cached_schema(
     value
 }
 
+/// Why an action only the app's own code applies ([`Resource::by_app`]) is
+/// refused where a caller sent it: one sentence for every door.
+#[must_use]
+pub fn by_app_refusal(label: &str) -> String {
+    format!("{label} keeps this itself: it is not an action to invoke")
+}
+
 /// A JSON action value as [`APPLY`] reads it. A value naming a declared
 /// action is checked against that declaration first, so it is refused with
-/// the reason the named action would give.
+/// the reason the named action would give. A value of an action only the
+/// app's own code applies is refused: it is no caller's to send.
 fn read_apply(vocabulary: &Vocabulary, value: serde_json::Value) -> Result<Built, String> {
     let declarations = vocabulary.declarations();
     let mut ids: Vec<&str> = Vec::with_capacity(declarations.len());
@@ -1982,7 +2014,11 @@ fn read_apply(vocabulary: &Vocabulary, value: serde_json::Value) -> Result<Built
     if let Some(schema) = apply_param(vocabulary).schema {
         tilo_actions::validate_json_schema(&value, &schema)?;
     }
-    (vocabulary.read)(value)
+    let action = (vocabulary.read)(value)?;
+    if action.by_app() {
+        return Err(by_app_refusal(vocabulary.label));
+    }
+    Ok(action)
 }
 
 /// The parameter of [`GROUP`](crate::GROUP): invocations of the resource's

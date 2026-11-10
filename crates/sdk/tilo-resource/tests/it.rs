@@ -5,6 +5,8 @@
 
 #[path = "apply_cache.rs"]
 pub mod apply_cache;
+#[path = "by_app.rs"]
+pub mod by_app;
 #[path = "data_enum.rs"]
 pub mod data_enum;
 #[cfg(feature = "chrono")]

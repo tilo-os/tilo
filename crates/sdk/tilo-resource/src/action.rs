@@ -482,6 +482,13 @@ pub trait Operation: Serialize + DeserializeOwned + Clone + std::fmt::Debug + 's
         false
     }
 
+    /// Whether only the app's own code applies this operation
+    /// (`#[action(by_app)]`): it is declared to no caller, and a door that
+    /// decodes one refuses it. `#[resource]` generates it.
+    fn by_app(&self) -> bool {
+        false
+    }
+
     /// Whether this operation declares the verb that undoes it
     /// (`#[action(undo = path)]`).
     fn compensates(&self) -> bool {
@@ -1823,6 +1830,11 @@ impl<R: Resource> Invoke<R> {
     pub fn build(&self, now_ms: i64) -> Result<R::Action, String> {
         if let Some(refusal) = &self.refusal {
             return Err(refusal.clone());
+        }
+        // What only the app's own code applies has no declaration a caller
+        // could name: it is built here, where the app invokes it.
+        if let Some(built) = R::build_by_app(self.id, &self.arguments, now_ms) {
+            return built;
         }
         crate::resource::build_action::<R>(self.id, &self.arguments, now_ms)
     }

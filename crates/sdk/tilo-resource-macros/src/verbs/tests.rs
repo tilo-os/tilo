@@ -143,3 +143,22 @@ fn read_verb_preserves_parameter_metadata_and_secret_validation() {
         );
     }
 }
+
+#[test]
+fn a_by_app_action_names_no_audience_and_takes_no_prepare() {
+    let kept: Attribute = syn::parse_quote!(#[action(housekeeping, by_app)]);
+    let options = action_options(&kept).expect("a by_app action parses");
+    assert!(options.by_app);
+    assert!(options.housekeeping);
+    let offered: Attribute = syn::parse_quote!(#[action]);
+    assert!(!action_options(&offered).expect("an action parses").by_app);
+
+    let refused: [Attribute; 3] = [
+        syn::parse_quote!(#[action(by_app, audience = "agents")]),
+        syn::parse_quote!(#[action(audience = "people", by_app)]),
+        syn::parse_quote!(#[action(by_app, prepare = fill)]),
+    ];
+    for attribute in &refused {
+        assert!(action_options(attribute).is_err(), "{}", quote!(#attribute));
+    }
+}

@@ -37,6 +37,7 @@ trait AnyAction {
     fn need(&self) -> ActionNeed;
     fn risk(&self) -> RiskLevel;
     fn undoable(&self) -> bool;
+    fn by_app(&self) -> bool;
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
 }
 
@@ -71,6 +72,10 @@ impl<R: Resource> AnyAction for Typed<R> {
         )
     }
 
+    fn by_app(&self) -> bool {
+        R::by_app(&self.0)
+    }
+
     fn into_any(self: Box<Self>) -> Box<dyn Any> {
         Box::new(self.0)
     }
@@ -103,6 +108,13 @@ impl Built {
     #[must_use]
     pub fn undoable(&self) -> bool {
         self.0.undoable()
+    }
+
+    /// Whether only the app's own code applies it
+    /// ([`Resource::by_app`]): no caller's value is one.
+    #[must_use]
+    pub fn by_app(&self) -> bool {
+        self.0.by_app()
     }
 
     /// Encoded under its resource's registry type id.
