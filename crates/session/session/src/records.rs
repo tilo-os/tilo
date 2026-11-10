@@ -65,8 +65,8 @@ pub struct Records {
     names: RefCell<Vec<(String, String)>>,
 }
 
-/// How the indexes are read: by a worker following their directories, or — where they cannot be
-/// followed — once, when the session starts.
+/// The indexes as last read, read again whenever the change stream says a workspace's records
+/// moved: the store every writer of the records lands in is the one watcher there is.
 enum Reading {
     Followed(Watched<Vec<Held>>),
     Once(Arc<Vec<Held>>),
@@ -95,9 +95,9 @@ impl Records {
             tracing::warn!(%error, "the workspace indexes of this device are not listed");
             Vec::new()
         });
-        // Each index directory, and the directory of workspaces holding it: a workspace made after
-        // this session started keeps its index in a directory nothing watches yet, so the workspace
-        // appearing next to the others is what tells the worker to read the indexes again.
+        // The index directories the reader follows: a record written into one of them reads the
+        // list again. A workspace made after this session started keeps its index in a directory
+        // nothing watches yet, so the directory of workspaces holding them is followed too.
         let mut directories: BTreeSet<PathBuf> = BTreeSet::new();
         for (package, workspace) in &indexes {
             match app_state::workspace_index_directory(&root, package, workspace) {
