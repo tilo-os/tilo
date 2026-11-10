@@ -1018,3 +1018,18 @@ fn a_busy_relay_answers_rate_limited_with_its_wait() {
     assert_eq!(error["retry_after_ms"], 480, "{answered}");
     assert_eq!(answered["isError"], true);
 }
+
+/// Where the site keeps no invitation, the link carries the invitation's
+/// text after a route that names the relay, as the site's own workspace
+/// links do, so following it reaches the workspace's host.
+#[tokio::test]
+async fn an_invitation_the_site_keeps_not_names_the_relay_in_its_link() {
+    let (site, _) = site_answering("404 Not Found").await;
+    let door = door_in_front_of(&site);
+    let workspace = "3ee4a797-1ec0-474b-a3d0-62895d5e15af";
+    let link = door.invitation_link(workspace, b"signed", u64::MAX).await;
+    assert!(
+        link.starts_with(&format!("{site}/#/@relay.tilo.test/w/{workspace}?invite=")),
+        "{link}"
+    );
+}

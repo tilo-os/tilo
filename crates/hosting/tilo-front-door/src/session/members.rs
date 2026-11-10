@@ -226,7 +226,11 @@ impl crate::Door {
             |error| {
                 tracing::info!(%error, "the site kept no invitation; handing over its text");
                 let text = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(invitation);
-                format!("{entry}/#/w/{workspace}?invite={text}")
+                // The route names the relay, as the site's own workspace
+                // links do: without it the page asks the site itself for
+                // the workspace's host, which it is not.
+                let host = self.relay.name();
+                format!("{entry}/#/@{host}/w/{workspace}?invite={text}")
             },
             |shelved| shelved.link,
         )
