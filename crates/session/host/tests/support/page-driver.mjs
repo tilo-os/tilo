@@ -29,7 +29,7 @@ import {pageBundle} from '../../../../../tools/web/page-bundle.mjs';
 
 const mode = process.argv[2];
 if (!['passkey', 'node'].includes(mode)) throw new Error('usage: page-driver.mjs passkey|node');
-const web = fileURLToPath(new URL('../../../tilo-browser-runtime/web/', import.meta.url));
+const web = fileURLToPath(new URL('../../../../browser/tilo-browser-runtime/web/', import.meta.url));
 const legacy = JSON.parse(readFileSync(fileURLToPath(new URL('./legacy-root-record.json', import.meta.url)), 'utf8'));
 /** `text`, base64url, as the bytes it names. */
 const bytes = text => Array.from(Buffer.from(text.replace(/-/g, '+').replace(/_/g, '/'), 'base64'));
