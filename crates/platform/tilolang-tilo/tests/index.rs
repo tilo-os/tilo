@@ -411,6 +411,7 @@ fn an_index_kept_change_by_change_holds_what_deriving_it_anew_holds() {
 }
 
 /// Remove the item `id` of the list `root` from its items, as the list's Delete does.
+#[cfg(feature = "record")]
 fn remove(replica: &mut Replica, root: &str, id: &str) {
     replica.apply(&DynAction {
         app: APP.to_owned(),
@@ -430,6 +431,7 @@ fn remove(replica: &mut Replica, root: &str, id: &str) {
 }
 
 /// Put the item `id` back into the items of the list `root`, at the order key `key`.
+#[cfg(feature = "record")]
 fn place_back(replica: &mut Replica, root: &str, id: &str, key: &str) {
     let meta = replica.host.packages()[0].meta.clone();
     replica.apply(&DynAction {
