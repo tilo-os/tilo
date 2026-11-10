@@ -58,6 +58,9 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const PING_INTERVAL: Duration = Duration::from_secs(15);
 /// How often overdue channel access requests are sent again.
 const CHANNEL_TICK: Duration = Duration::from_secs(1);
+/// The most envelopes the session reads in one pass before it looks at its
+/// commands and timers again.
+const MAX_READ_AT_ONCE: usize = 256;
 /// Documents held per route while this device waits for its keys; past it
 /// the oldest is owed by the host's replay of the record.
 const MAX_HELD_DOCUMENTS: usize = 4096;
@@ -780,6 +783,7 @@ impl PeerHandle {
             shared: shared.clone(),
             workspaces: BTreeSet::new(),
             planes_due: BTreeSet::new(),
+            governance_batch: None,
             kept: BTreeMap::new(),
             placing: BTreeMap::new(),
             planes: plane::Planes::default(),
@@ -1267,6 +1271,9 @@ struct Task {
     /// channel tick. A page in many workspaces pays for the ones that
     /// changed, not for all of them on every frame it reads.
     planes_due: BTreeSet<u64>,
+    /// Governance frames received and not admitted yet, admitted together
+    /// ([`Self::admit_governance`]).
+    governance_batch: Option<inbound::GovernanceBatch>,
     /// What this device keeps of each workspace's content ([`PeerHandle::keep_content`]).
     kept: BTreeMap<u64, Arc<dyn Kept>>,
     /// Workspaces of this device's person joined once the host governs them:
@@ -1938,42 +1945,37 @@ impl Task {
                         }
                     }
                 },
-                envelope = client.recv() => match envelope {
-                    // The person stopped the agent this session is a run of: it ends here, and
-                    // connects no more, so nothing of the agent is said again.
-                    Some(Envelope::AgentRunStopped) => {
-                        self.fail("agent-run-stopped", "The person stopped this agent in Tilo.");
-                        client.disconnect().await;
-                        return Exit::Closed;
-                    }
-                    Some(envelope) => {
-                        if let Some((event, reply)) = self.voice.inbound(&envelope) {
-                            if let Some(reply) = reply
-                                && client.send(reply).is_err()
-                            {
-                                return Exit::Lost("host session saturated".into());
-                            }
-                            if let Some(event) = event {
-                                self.emit(&PeerEvent::Voice(event));
-                            }
-                            continue;
+                envelope = client.recv() => {
+                    let Some(mut envelope) = envelope else {
+                        return Exit::Lost("the host closed the session".into());
+                    };
+                    // What else the host sent is read in the same pass, so
+                    // governance it replayed as many frames is admitted at
+                    // once ([`Self::admit_governance`]), before anything else
+                    // is decided.
+                    let mut read = 0usize;
+                    loop {
+                        // The person stopped the agent this session is a run of: it ends here, and
+                        // connects no more, so nothing of the agent is said again.
+                        if matches!(envelope, Envelope::AgentRunStopped) {
+                            self.admit_governance();
+                            self.fail("agent-run-stopped", "The person stopped this agent in Tilo.");
+                            client.disconnect().await;
+                            return Exit::Closed;
                         }
-                        if self.content_wanted(&envelope, &client) {
-                            continue;
+                        if let Err(exit) = self.received(&client, envelope) {
+                            return exit;
                         }
-                        let admitted = match &envelope {
-                            Envelope::Ready { workspace_id, .. } => Some(*workspace_id),
-                            _ => None,
-                        };
-                        if !self.begin(&client, &envelope) {
-                            return Exit::Lost("host session saturated".into());
-                        }
-                        self.inbound(envelope);
-                        if let Some(workspace_id) = admitted {
-                            self.admitted(workspace_id, &client);
+                        read = read.saturating_add(1);
+                        let next = (read < MAX_READ_AT_ONCE)
+                            .then(|| client.inbound.try_lock().ok()?.try_recv().ok())
+                            .flatten();
+                        match next {
+                            Some(next) => envelope = next,
+                            None => break,
                         }
                     }
-                    None => return Exit::Lost("the host closed the session".into()),
+                    self.admit_governance();
                 },
                 _ = ping.tick() => {
                     if client.send(Envelope::Ping).is_err() {
@@ -1995,6 +1997,42 @@ impl Task {
                 }
             }
         }
+    }
+
+    /// Take in `envelope`, one the host sent: a voice frame, content asked
+    /// for, or what [`Self::inbound`] decides.
+    fn received(&mut self, client: &RelayClient, envelope: Envelope) -> Result<(), Exit> {
+        // Governance gathered from the frames before is the workspace's before
+        // anything after it is decided.
+        if !matches!(envelope, Envelope::Delta { .. }) {
+            self.admit_governance();
+        }
+        if let Some((event, reply)) = self.voice.inbound(&envelope) {
+            if let Some(reply) = reply
+                && client.send(reply).is_err()
+            {
+                return Err(Exit::Lost("host session saturated".into()));
+            }
+            if let Some(event) = event {
+                self.emit(&PeerEvent::Voice(event));
+            }
+            return Ok(());
+        }
+        if self.content_wanted(&envelope, client) {
+            return Ok(());
+        }
+        let admitted = match &envelope {
+            Envelope::Ready { workspace_id, .. } => Some(*workspace_id),
+            _ => None,
+        };
+        if !self.begin(client, &envelope) {
+            return Err(Exit::Lost("host session saturated".into()));
+        }
+        self.inbound(envelope);
+        if let Some(workspace_id) = admitted {
+            self.admitted(workspace_id, client);
+        }
+        Ok(())
     }
 
     /// Send a remote-action frame to device `to`, or say it cannot go.

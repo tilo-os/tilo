@@ -59,6 +59,22 @@ fn hold_reason(route: &DocumentRoute, envelope: &collab_types::SignedOp) -> Hold
     }
 }
 
+/// Governance a workspace's host sent as consecutive frames, not admitted yet:
+/// admitted together when something else arrives or the frames already here
+/// are read ([`Task::admit_governance`]).
+pub(super) struct GovernanceBatch {
+    workspace_id: u64,
+    author: [u8; 32],
+    retained: bool,
+    room: String,
+    /// Each frame's changes, in the order they came.
+    frames: Vec<Vec<Vec<u8>>>,
+    bytes: usize,
+}
+
+/// The most governance one batch gathers before it is admitted.
+const GOVERNANCE_BATCH_BYTES: usize = 8 * 1024 * 1024;
+
 impl Task {
     /// The host no longer lets this device into `workspace_id`, for
     /// `reason`: its owner deleted it, or this device may not.
@@ -91,6 +107,9 @@ impl Task {
     pub(super) fn inbound(&mut self, envelope: Envelope) {
         let now = tilo_clock::unix_now_ms();
         self.update(|status| status.last_contact_at_ms = Some(now));
+        if !matches!(envelope, Envelope::Delta { .. }) {
+            self.admit_governance();
+        }
         match envelope {
             Envelope::Ready { workspace_id, .. } => {
                 self.update(|status| {
@@ -201,29 +220,120 @@ impl Task {
     pub(super) fn inbound_body(&mut self, workspace_id: u64, body: Vec<u8>, author: [u8; 32]) {
         let retained = lock(&self.shared).status.workspaces.get(&workspace_id) != Some(&true);
         match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body) {
-            Ok(
-                message @ (neighbour_wire::NeighbourMsg::IdentityHello { .. }
-                | neighbour_wire::NeighbourMsg::SyncResp { .. }),
-            ) => {
-                // Governance the replica refuses is not the workspace's.
-                let admitted = self.replicas.admit(
-                    workspace_id,
-                    author,
-                    retained,
-                    message,
-                    web_time::SystemTime::now(),
-                );
-                if admitted == Ok(true) {
-                    self.follow_governance(workspace_id);
-                }
+            Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, room }) => {
+                self.gather_governance(workspace_id, author, retained, room, changes);
             }
-            Ok(message) => self.inbound_message(body, message, author, retained),
+            Ok(message @ neighbour_wire::NeighbourMsg::IdentityHello { .. }) => {
+                self.admit_governance();
+                self.admit_governance_message(workspace_id, author, retained, message);
+            }
+            Ok(message) => {
+                self.admit_governance();
+                self.inbound_message(body, message, author, retained);
+            }
             Err(_) => {}
         }
     }
 
+    /// Gather `changes`, a frame of the workspace document `author` sent, with
+    /// the frames before it of the same workspace and author. A host replays a
+    /// workspace's governance as its base and every change since, a frame
+    /// each, and taking a frame in reads the whole governance (every member's
+    /// certificate, every receipt): admitted frame by frame, the replay of a
+    /// workspace of hundreds cost a newcomer seconds before its desktop.
+    fn gather_governance(
+        &mut self,
+        workspace_id: u64,
+        author: [u8; 32],
+        retained: bool,
+        room: String,
+        changes: Vec<Vec<u8>>,
+    ) {
+        let bytes: usize = changes.iter().map(Vec::len).sum();
+        let joins = self.governance_batch.as_ref().is_some_and(|batch| {
+            batch.workspace_id == workspace_id
+                && batch.author == author
+                && batch.retained == retained
+                && batch.room == room
+                && batch.bytes.saturating_add(bytes) <= GOVERNANCE_BATCH_BYTES
+        });
+        if !joins {
+            self.admit_governance();
+        }
+        let batch = self
+            .governance_batch
+            .get_or_insert_with(|| GovernanceBatch {
+                workspace_id,
+                author,
+                retained,
+                room,
+                frames: Vec::new(),
+                bytes: 0,
+            });
+        batch.frames.push(changes);
+        batch.bytes = batch.bytes.saturating_add(bytes);
+    }
+
+    /// Admit the governance gathered so far ([`Self::gather_governance`]) as
+    /// one change of the workspace's replica. Should the replica refuse it
+    /// whole, each frame is admitted on its own, so a frame it refuses costs
+    /// only itself, as when each was admitted as it came.
+    pub(super) fn admit_governance(&mut self) {
+        let Some(batch) = self.governance_batch.take() else {
+            return;
+        };
+        let GovernanceBatch {
+            workspace_id,
+            author,
+            retained,
+            room,
+            frames,
+            ..
+        } = batch;
+        if frames.len() > 1 {
+            let message = neighbour_wire::NeighbourMsg::SyncResp {
+                changes: frames.iter().flatten().cloned().collect(),
+                room: room.clone(),
+            };
+            if self.admit_governance_message(workspace_id, author, retained, message) {
+                return;
+            }
+        }
+        for changes in frames {
+            let message = neighbour_wire::NeighbourMsg::SyncResp {
+                changes,
+                room: room.clone(),
+            };
+            self.admit_governance_message(workspace_id, author, retained, message);
+        }
+    }
+
+    /// Admit `message`, governance `author` sent `workspace_id`, through the
+    /// workspace's replica: whether the replica took it.
+    fn admit_governance_message(
+        &mut self,
+        workspace_id: u64,
+        author: [u8; 32],
+        retained: bool,
+        message: neighbour_wire::NeighbourMsg,
+    ) -> bool {
+        // Governance the replica refuses is not the workspace's.
+        let admitted = self.replicas.admit(
+            workspace_id,
+            author,
+            retained,
+            message,
+            web_time::SystemTime::now(),
+        );
+        if admitted == Ok(true) {
+            self.follow_governance(workspace_id);
+        }
+        admitted.is_ok()
+    }
+
     /// A held document, decided again; `retained` as it arrived.
     pub(super) fn held_body(&mut self, body: Vec<u8>, author: [u8; 32], retained: bool) {
+        self.admit_governance();
         if let Ok(message) = postcard::from_bytes(&body) {
             self.inbound_message(body, message, author, retained);
         }
