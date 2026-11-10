@@ -37,9 +37,12 @@
 //! # What it keeps
 //!
 //! Everything the governed workspaces' current trees reference: each file's
-//! manifest and its chunks, however much that is: what bounds it is the
-//! disk the store is on. A blob of a file dropped from a tree stays in the
-//! store.
+//! manifest and its chunks, however much that is. What bounds it is the disk
+//! the store is on: while that runs low the store refuses new content and
+//! says why ([`tilo_content::ContentError::DiskLow`]), and the host asks
+//! again later, so a file it could not keep then stays with the members that
+//! wrote it until there is room. A blob of a file dropped from a tree stays
+//! in the store.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
