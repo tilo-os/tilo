@@ -564,7 +564,28 @@ BLANKS = b"""<!doctype html><title>Second site</title>
 <h1>Second site</h1>
 <p>The page that loaded.</p>"""
 
+# The gestures page in a frame of another site, set in from the page's corner
+# behind a border and padding: a point of the frame is not a point of the page.
+GESTURES_HOLDER = b"""<!doctype html><title>Holder</title>
+<h1>Holder</h1>
+<div style="height:40px"></div>
+<iframe src="{OTHER}/gestures" title="Gestures" style="margin-left:60px;width:700px;height:560px;border:3px solid #000;padding:5px"></iframe>"""
+
+# A file input another site serves in a frame.
+UPLOAD = b"""<!doctype html><title>Upload</title>
+<label>Passport scan <input name="scan" type="file" accept=".pdf"></label>
+<p id="status">Nothing chosen</p>
+<script>
+document.querySelector('input').addEventListener('change', e => document.getElementById('status').textContent =
+  'files ' + [...e.target.files].map(f => f.name + ':' + f.size).join(','));
+</script>"""
+
+UPLOAD_HOLDER = b"""<!doctype html><title>Documents</title>
+<h1>Your documents</h1>
+<iframe src="{OTHER}/upload" title="Upload" style="width:600px;height:200px;border:0"></iframe>"""
+
 TWO_SITES = {'/news': NEWS, '/consent': CONSENT, '/consent-loading': CONSENT_LOADING, '/churn': CHURN,
+             '/gestures-holder': GESTURES_HOLDER, '/upload': UPLOAD, '/upload-holder': UPLOAD_HOLDER,
              '/embedder': EMBEDDER, '/signup': SIGNUP, '/blanks': BLANKS,
              '/terms': TERMS, '/terms-holder': TERMS_HOLDER,
              '/blank': b'<!doctype html><title>blank</title>'}
@@ -1620,9 +1641,16 @@ class PageActions(unittest.TestCase):
         said = self.ok('search', text='87 partners', frame=frame)
         self.assertEqual(said['data']['total'], 1, said)
         self.assertEqual(self.ok('changes', frame=frame, actor='ada')['message'], 'Nothing changed')
-        # The page's own document holds none of the frame's words, and says
-        # which frame to look in.
-        absent = self.ok('search', text='87 partners')
+        # The page's own document holds none of the frame's words: a search
+        # that names no frame looks on in the frame the page shows, and says
+        # which frame holds them.
+        there = self.ok('search', text='87 partners')
+        self.assertEqual((there['data']['total'], there['data']['page_total'], there['data']['matches'][0]['frame']),
+                         (1, 0, frame), there)
+        self.assertIn(f'1 in frame {frame} ("Privacy choices")', there['message'])
+        # Words no document of the page says are found nowhere, and the
+        # answer names the frame a caller may read.
+        absent = self.ok('search', text='88 partners')
         self.assertEqual(absent['data']['total'], 0, absent)
         self.assertIn(f'frame={frame} ("Privacy choices")', absent['message'])
         # The question is answered by the ref alone, and the page hears it:
@@ -2824,12 +2852,175 @@ class PageActions(unittest.TestCase):
         # The ref says which frame it was found in: it needs no frame named.
         self.ok('fill', element=found['data']['element'], text='456')
         self.assertIn('value="456"', self.ok('outline', frame=frame)['outline'])
-        # The page itself holds none of the frame's words, and a caller
-        # looking in the wrong document is told which frame holds them.
-        absent = self.find(name='Security code')
+        # The page itself holds none of the frame's words: a find that names
+        # no frame looks on in the frame the page shows, and names it.
+        there = self.find(name='Security code')
+        self.assertTrue(there['ok'], there)
+        self.assertEqual((there['data']['element'], there['data']['frame']), (found['data']['element'], frame), there)
+        self.assertIn(f'in frame {frame} ("Card form")', there['message'], there)
+        # What no document of the page holds is not found, and the caller is
+        # still told where a frame's own document is read.
+        absent = self.find(name='Sort code')
         self.assertEqual((absent['ok'], absent['code']), (False, 'not_found'), absent)
         self.assertIn(f'frame={frame}', absent['message'], absent)
         self.assertIn('read it with read-page', absent['message'], absent)
+
+    def test_a_find_and_a_search_look_on_in_the_frames_the_page_shows(self):
+        self.h.navigate(self.url + '/embedder')
+        outline = self.reads('textbox "Email"', 'the frame was never read with the page')['outline']
+        frame = re.search(r'iframe "Newsletter sign-up" \[frame=(\d+)\]', outline).group(1)
+        # Words the page's own document does not say are looked for in the
+        # frame it shows. The line names its frame, and is read on from there.
+        found = self.ok('search', text='promo CODE')
+        hit = found['data']['matches'][0]
+        self.assertEqual((found['data']['total'], found['data']['page_total'], hit['frame']), (1, 0, frame), found)
+        self.assertEqual(found['outline'], f"frame {frame}, {hit['line']}: {hit['text']}")
+        self.assertIn(f'none in the page\'s own document, 1 in frame {frame} ("Newsletter sign-up")', found['message'])
+        self.assertNotIn('frames', found['data'])
+        self.assertIn('Promo code', self.ok('outline', frame=frame, **{'from': hit['line']})['outline'].splitlines()[0])
+        # Words the page's own document says are found there and no further.
+        own = self.ok('search', text='letters')
+        self.assertEqual((own['data']['total'], [match.get('frame') for match in own['data']['matches']]), (1, [None]), own)
+        self.assertNotIn('page_total', own['data'])
+        # Asked to, a search looks in the frames as well.
+        both = self.ok('search', text='letters', frames=True)
+        self.assertEqual((both['data']['total'], both['data']['page_total'], [match.get('frame') for match in both['data']['matches']]),
+                         (2, 1, [None, frame]), both)
+        self.assertTrue(both['outline'].splitlines()[1].startswith(f'frame {frame}, '), both)
+        self.assertIn('Search the letters', both['data']['matches'][1]['text'])
+        # A frame named is the one document searched.
+        alone = self.ok('search', text='letters', frame=frame)
+        self.assertEqual((alone['data']['total'], alone['data']['matches'][0].get('frame')), (1, None), alone)
+        # A find that the page's own document cannot answer is answered by
+        # the frame, whose element's ref acts there.
+        email = self.find(name='Email')
+        self.assertTrue(email['ok'], email)
+        self.assertEqual((email['data']['element'], email['data']['frame'], email['data']['matches']),
+                         (self.ref(outline, 'textbox "Email"'), frame, 1), email)
+        self.ok('fill', element=email['data']['element'], text='ada@example.org')
+        self.assertIn('value="ada@example.org"', self.ok('outline', frame=frame)['outline'])
+        # One the page's own document answers is answered there.
+        note = self.find(role='textbox')
+        self.assertEqual((note['data']['name'], 'frame' in note['data']), ('Note', False), note)
+        # Asked to, a find counts the page's matches and the frame's
+        # together, the page's first: several are listed with their frames
+        # and none is guessed.
+        several = self.find(role='textbox', frames=True)
+        self.assertEqual((several['ok'], several['code']), (False, 'ambiguous'), several)
+        self.assertIn('4 elements are role "textbox" on the page and in its frames: (1) textbox "Note"', several['message'])
+        self.assertIn(f'(2) frame {frame}: textbox "Email"', several['message'])
+        third = self.find(role='textbox', nth=3, frames=True)
+        self.assertEqual((third['data']['name'], third['data']['frame'], third['data']['nth'], third['data']['matches']),
+                         ('Promo code', frame, 3, 4), third)
+        self.assertIn(f'in frame {frame} ("Newsletter sign-up") of 4', third['message'])
+        first = self.find(role='textbox', nth=1, frames=True)
+        self.assertEqual((first['data']['name'], 'frame' in first['data']), ('Note', False), first)
+        beyond = self.find(role='textbox', nth=5, frames=True)
+        self.assertEqual((beyond['ok'], beyond['code']), (False, 'not_found'), beyond)
+        self.assertIn('there is no (5)', beyond['message'])
+        # The closest way any document matches decides: a name in another
+        # letter case is found in the frame when nothing matches it better.
+        self.assertEqual(self.find(name='promo code', frames=True)['data']['frame'], frame)
+        # Looking is reading: nothing but the fill took a place in the record.
+        self.assertEqual([entry['action'] for entry in self.ok('ledger', since=0)['data']['entries']], ['fill'])
+
+    def test_gestures_work_on_the_elements_of_another_site_s_frame(self):
+        self.h.navigate(self.url + '/gestures-holder')
+        outline = self.reads('canvas "Signature pad"', 'the frame was never read with the page')['outline']
+        frame = re.search(r'iframe "Gestures" \[frame=(\d+)\]', outline).group(1)
+        inside = lambda: self.ok('outline', frame=frame)['outline']
+        self.assertNotIn('Fishing licence', inside(), 'the menu starts closed')
+        # A hover on an element of the frame opens what the frame's own
+        # style opens, where the frame sits in the page.
+        trigger = self.ref(outline, '(?:hint|hoverable) "Licences menu"')
+        hovered = self.ok('hover', element=trigger, actor='ada')
+        self.assertTrue(hovered['data']['changed'], hovered)
+        self.assertIn('+ - list', hovered['outline'], hovered)
+        self.ok('click', element=self.ref(inside(), 'link "Fishing licence"'), actor='ada')
+        self.assertIn('text "opened fishing"', inside())
+        # A drag between two elements of the frame moves what a hand would.
+        first = self.ref(inside(), 'draggable "Riverton office"')
+        third = self.ref(inside(), 'draggable "Central office"')
+        dragged = self.ok('drag', element=first, to=third, steps=6, actor='ada')
+        self.assertIn('Dragged', dragged['message'], dragged)
+        self.ok('click', element=self.ref(inside(), 'button "Save order"'), actor='ada')
+        self.assertIn('text "saved Porthaven office > Central office > Riverton office"', inside(), dragged)
+        # A path is drawn on the frame's canvas, in the canvas's own box.
+        pad = self.ref(inside(), 'canvas "Signature pad"')
+        points = [[20, 110], [40, 60], [60, 100], [80, 50], [100, 105], [120, 70], [140, 95]]
+        drawn = self.ok('path', element=pad, points=points, actor='ada')
+        self.assertEqual(drawn['data']['drew'], len(points), drawn)
+        self.ok('click', element=self.ref(inside(), 'button "Submit signature"'), actor='ada')
+        self.assertIn('text "Signature received"', inside(), 'the frame\'s canvas took the line')
+        # Each is set down with the frame it was done in.
+        entries = self.ok('ledger', since=0)['data']['entries']
+        self.assertEqual([(entry['action'], entry['ok'], entry.get('frame')) for entry in entries],
+                         [('hover', True, frame), ('click', True, frame), ('drag', True, frame), ('click', True, frame),
+                          ('path', True, frame), ('click', True, frame)])
+        self.assertEqual({entry['frame_url'] for entry in entries}, {self.server.other + '/gestures'})
+        # A drag does not leave its frame: an end outside it is refused.
+        refused = self.page('drag', element=first, to_x=10, to_y=10, steps=2)
+        self.assertEqual((refused['ok'], refused['code']), (False, 'invalid_request'), refused)
+        # The page around the frame stayed where it was.
+        self.assertIn('heading "Holder" level=1', self.outline())
+
+    def test_a_point_over_a_frame_names_the_frame_s_own_element(self):
+        self.h.navigate(self.url + '/nested')
+        outline = self.reads('iframe "Outer frame"', 'the page never listed its frame')['outline']
+        outer = re.search(r'iframe "Outer frame" \[frame=(\d+)\]', outline).group(1)
+        within = self.reads('iframe "Payment form"', 'the outer frame never listed its own', frame=outer)['outline']
+        inner = re.search(r'iframe "Payment form" \[frame=(\d+)\]', within).group(1)
+        save = self.ref(self.reads('button "Save bank details"', 'the inner frame was never read', frame=inner)['outline'],
+                        'button "Save bank details"')
+        # Where the inner frame's button is in the page: each frame's place
+        # in the document that holds it, and the button's in its own.
+        x, y = self.main_world(
+            '((outer, inner, box) => [outer.x + inner.x + box.x + box.width / 2, outer.y + inner.y + box.y + box.height / 2])('
+            'document.querySelector("iframe").getBoundingClientRect(), '
+            'document.querySelector("iframe").contentDocument.querySelector("iframe").getBoundingClientRect(), '
+            'document.querySelector("iframe").contentDocument.querySelector("iframe").contentDocument'
+            '.querySelector("button").getBoundingClientRect())')
+        hit = self.ok('at', x=x, y=y)
+        # The element is the frame's own, named with its frame, by a ref
+        # that acts there, at the point the caller gave.
+        self.assertEqual((hit['data']['ref'], hit['data']['frame'], hit['data']['interactive']), (save, inner, True), hit)
+        self.assertEqual((hit['data']['x'], hit['data']['y']), (x, y), hit)
+        self.assertIn(f'button "Save bank details" [ref={save}] is at', hit['message'], hit)
+        self.assertIn(f'in frame {inner}', hit['message'], hit)
+        self.assertEqual([key for key in hit['data'] if key in ('frame_element', 'inside')], [])
+        # A point of the page's own document is the page's, as it was.
+        own = self.ok('at', x=20, y=20)
+        self.assertNotIn('frame', own['data'], own)
+        self.assertNotIn('in frame', own['message'], own)
+
+    def test_files_are_chosen_for_a_file_input_in_another_site_s_frame(self):
+        self.h.navigate(self.url + '/upload-holder')
+        outline = self.reads('file "Passport scan"', 'the frame was never read with the page')['outline']
+        frame = re.search(r'iframe "Upload" \[frame=(\d+)\]', outline).group(1)
+        scan = self.ref(outline, 'file "Passport scan"')
+        with tempfile.TemporaryDirectory() as folder:
+            passport, photo, second = (os.path.join(folder, name) for name in ('passport.pdf', 'photo.png', 'second.pdf'))
+            for path, body in ((passport, b'%PDF-1.4'), (photo, b'\x89PNG one'), (second, b'%PDF-1.5!')):
+                with open(path, 'wb') as file:
+                    file.write(body)
+            # The frame's own element says what it accepts.
+            refused = self.page('fill_files', element=scan, paths=[photo])
+            self.assertEqual((refused['ok'], refused['code']), (False, 'not_accepted'), refused)
+            chosen = self.ok('fill_files', element=scan, paths=[passport], actor='ada')
+            self.assertEqual(chosen['data']['files'], ['passport.pdf'], chosen)
+            # The frame's page heard the picker's own events, and holds the file.
+            held = self.reads('text "files passport.pdf:8"', 'the frame\'s page never heard of the file', frame=frame)
+            self.assertRegex(held['outline'], r'file "Passport scan" .*files="passport.pdf"')
+            # A click on it holds the page's chooser as in the page itself,
+            # and the files then chosen reach the same field.
+            clicked = self.ok('click', element=scan, actor='ada')
+            self.assertIn('file chooser', clicked['message'], clicked)
+            again = self.ok('fill_files', element=scan, paths=[second], actor='ada')
+            self.assertEqual(again['data']['files'], ['second.pdf'], again)
+            self.reads('text "files second.pdf:9"', 'the frame\'s page never heard of the second file', frame=frame)
+        entries = self.ok('ledger', since=0)['data']['entries']
+        self.assertEqual([(entry['action'], entry['ok'], entry.get('frame')) for entry in entries],
+                         [('fill_files', False, frame), ('fill_files', True, frame), ('click', True, frame), ('fill_files', True, frame)])
 
 
 if __name__ == '__main__':

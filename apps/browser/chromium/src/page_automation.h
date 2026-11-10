@@ -460,6 +460,17 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // A key pressed without an element: what the page said of where its
     // focus is, kept while the frames that focus is inside are asked.
     bool armed=false;CefRefPtr<CefDictionaryValue> arm;
+    // A find or a search that looks on in the frames the page shows: what
+    // the page's own document said (and whether its matches are counted),
+    // the frames to ask, by their numbers, and what each said.
+    CefRefPtr<CefDictionaryValue> look;bool look_counted=false;std::vector<int> look_frames;size_t look_index=0;
+    std::vector<std::pair<int,CefRefPtr<CefDictionaryValue>>> looked;
+    // A drawn path: the moves of the pointer the page had heard when the
+    // last point was sent, which of its points was last sent and which was
+    // last gone on from.
+    double moves=0;int asked_point=0,heard_point=0;
+    // Whether a gesture of pointer steps has told the page that it began.
+    bool acting_told=false;
     Pending()=default;
     Pending(int request,uint64_t token,uint64_t navigations,bool retried,CefRefPtr<CefDictionaryValue> command,
       std::string message)
@@ -631,7 +642,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // A pointer gesture is placed step by step, in the tree it reads itself.
     if(Action()=="pointer") { BeginGesture();return; }
     // A gesture the page runs itself starts from what the page shows now.
-    if(Dragging() || HoverAtPoint()) { BeginPageGesture();return; }
+    if(Dragging() || HoverAtPoint()) { GestureDocument();return; }
     // A tree kept from an earlier action still speaks for this one unless the
     // page's frames moved since it was read. A retry is not a first read: the
     // tree it read is the one it reads again.
@@ -881,7 +892,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     auto params=CefDictionaryValue::Create();
     params->SetString("expression",std::string(kPageAutomation)+"\n;globalThis.__tiloPage.run({action:'need_styles'})");
     params->SetInt("contextId",world_);params->SetBool("returnByValue",true);params->SetBool("userGesture",false);params->SetBool("silent",true);
-    Call(Stage::Hover,"Runtime.evaluate",params);
+    CallIn(Stage::Hover,world_session_,"Runtime.evaluate",params);
   }
   int drag_steps() const {
     return pending_ && pending_->command->HasKey("steps")?static_cast<int>(pending_->command->GetInt("steps")):1;
@@ -899,6 +910,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     const auto& source=pending_->command;
     command->SetInt("doc",document_);
     command->SetBool("gesture_page",true);
+    if(!world_frame_.number.empty()) command->SetString("frame",world_frame_.number);
     Mark(command);
     // The page mirrors a hover through its own CSS only when that CSS opens
     // something, which it said before the gesture began.
@@ -919,7 +931,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // only learns once its element has a centre.
     if(kind==PageGesture::End && gesture=="hover") {
       const double zoom=std::pow(1.2,browser_->GetHost()->GetZoomLevel());
-      command->SetDouble("x",pending_->from_x/zoom);command->SetDouble("y",pending_->from_y/zoom);
+      command->SetDouble("x",pending_->from_x/zoom-world_frame_.x);command->SetDouble("y",pending_->from_y/zoom-world_frame_.y);
     }
     // A drawing path carries its points; the page resolves them from the
     // element's own box, in viewport pixels for the engine's pointer.
@@ -929,7 +941,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     params->SetString("expression",std::string(kPageAutomation)+"\n;globalThis.__tiloPage.run("+CefWriteJSON(wrapped,JSON_WRITER_DEFAULT).ToString()+")");
     params->SetInt("contextId",world_);params->SetBool("returnByValue",true);params->SetBool("userGesture",false);params->SetBool("silent",true);
     params->SetBool("awaitPromise",true);
-    Call(stage,"Runtime.evaluate",params);
+    CallIn(stage,world_session_,"Runtime.evaluate",params);
   }
   // A turn of the wheel asks the page where the wheel turns and what it has
   // left to move, in the action's own world: the page resolves the element
@@ -1597,6 +1609,12 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     } else if(At(Stage::GestureBegin) || At(Stage::Hover) || At(Stage::GestureEnd) || At(Stage::Path)) {
       auto remote=success && result?result->GetDictionary("result"):nullptr;
       auto value=remote?remote->GetDictionary("value"):nullptr;
+      // A frame that answers nothing has moved on to another document, and
+      // the element the gesture named went with the one before.
+      if(!value && frame_doc_) {
+        Forget(frame_doc_);
+        Fail("stale_element","That element's frame moved on to another document; read the page again");return;
+      }
       if(!value || value->GetType("ok")!=VTYPE_BOOL) { Fail("script","The page did not return a result");return; }
       if(!value->GetBool("ok")) {
         const auto code=value->GetType("code")==VTYPE_STRING?value->GetString("code").ToString():"script";
@@ -1608,7 +1626,21 @@ class PageAutomation final : public CefDevToolsMessageObserver {
         pending_->hover_styles=value->GetType("need_styles")==VTYPE_BOOL && value->GetBool("need_styles");
         GesturePage(Stage::GestureBegin,PageGesture::Begin);return;
       }
-      if(At(Stage::GestureBegin)) { GestureLanded(value);return; }
+      if(value->GetType("document_url")==VTYPE_STRING) pending_->frame_url=Clip(value->GetString("document_url").ToString(),300);
+      if(At(Stage::GestureBegin)) {
+        // The ends of a gesture in a frame are points of the frame's own
+        // document. The frame is brought into view and placed once the
+        // gesture's element has been, as a click in a frame is, and the
+        // pointer goes where the two put the point in the page.
+        if(frame_doc_) {
+          auto landed=value->Copy(false);
+          PlaceDocument(frame_doc_,false,[this,landed](Clicked) {
+            PlaceDocument(frame_doc_,true,[this,landed](Clicked place) { world_frame_.x=place.x;world_frame_.y=place.y;GestureLanded(landed); });
+          });
+          return;
+        }
+        GestureLanded(value);return;
+      }
       if(At(Stage::Path)) { StartPath(value);return; }
       GestureFinished(value);
     } else {
@@ -1644,6 +1676,10 @@ class PageAutomation final : public CefDevToolsMessageObserver {
           params->SetInt("contextId",text_frame_.world);params->SetBool("silent",true);
           Call(Stage::NativeElement,"Runtime.evaluate",params);return;
         }
+        // What the page's own document does not hold may be in a frame it
+        // shows: a find that found nothing looks on there.
+        if(code=="not_found" && !PrivateText() && Action()=="find" && !frame_doc_ &&
+           value->GetType("frames")==VTYPE_LIST && value->GetList("frames")->GetSize()) { FindOn(value,false);return; }
         Fail(code.size()<=64?code:"script",Text(value,"message"));return;
       }
       Act(value);
@@ -1722,7 +1758,8 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   bool GesturePoints(CefRefPtr<CefDictionaryValue> value,CefPoint& from,CefPoint& to) const {
     const auto read=[&](const char* x,const char* y,CefPoint& point) {
       if(value->GetType(x)!=VTYPE_DOUBLE && value->GetType(x)!=VTYPE_INT) return false;
-      point=CefPoint(static_cast<int>(std::lround(Number(value,x))),static_cast<int>(std::lround(Number(value,y))));
+      // A point of a frame's document is moved by where the frame sits.
+      point=CefPoint(static_cast<int>(std::lround(Number(value,x)+world_frame_.x)),static_cast<int>(std::lround(Number(value,y)+world_frame_.y)));
       return true;
     };
     return read("x","y",from) && (Action()!="drag" || read("to_x","to_y",to));
@@ -1788,6 +1825,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   void DragFallback() {
     auto command=CefDictionaryValue::Create();
     command->SetInt("doc",document_);command->SetString("action","drag_fallback");
+    if(!world_frame_.number.empty()) command->SetString("frame",world_frame_.number);
     // The element the drag left, and the one it was dropped on, resolved by the
     // page itself when the gesture began.
     const auto& begin=pending_->drag_fallback;
@@ -1800,13 +1838,15 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     if(!target.empty()) command->SetString("to",target);
     // The ends the engine's pointer actually used, in the view's space.
     const double zoom=std::pow(1.2,browser_->GetHost()->GetZoomLevel());
-    command->SetDouble("x",pending_->from_x/zoom);command->SetDouble("y",pending_->from_y/zoom);
-    command->SetDouble("to_x",pending_->to_x/zoom);command->SetDouble("to_y",pending_->to_y/zoom);
+    // The page's script reads points in its own document: a frame's are
+    // the pointer's, less where the frame sits.
+    command->SetDouble("x",pending_->from_x/zoom-world_frame_.x);command->SetDouble("y",pending_->from_y/zoom-world_frame_.y);
+    command->SetDouble("to_x",pending_->to_x/zoom-world_frame_.x);command->SetDouble("to_y",pending_->to_y/zoom-world_frame_.y);
     auto wrapped=CefValue::Create();wrapped->SetDictionary(command);
     auto params=CefDictionaryValue::Create();
     params->SetString("expression",std::string(kPageAutomation)+"\n;globalThis.__tiloPage.run("+CefWriteJSON(wrapped,JSON_WRITER_DEFAULT).ToString()+")");
     params->SetInt("contextId",world_);params->SetBool("returnByValue",true);params->SetBool("userGesture",false);params->SetBool("silent",true);
-    Call(Stage::GestureEnd,"Runtime.evaluate",params);
+    CallIn(Stage::GestureEnd,world_session_,"Runtime.evaluate",params);
   }
   // A page drag nothing is driving is refused at the press it would start from
   // (`host.cc`'s `StartDragging`), so a move that arrives without a gesture is
@@ -1821,6 +1861,8 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   void StartPath(CefRefPtr<CefDictionaryValue> value) {
     std::vector<std::pair<double,double>> path;
     if(!ReadPoints(value->GetList("points"),path)) { Fail("script","The page resolved no drawing path");return; }
+    // The points of a frame's document are moved by where the frame sits.
+    for(auto& point:path) { point.first+=world_frame_.x;point.second+=world_frame_.y; }
     pending_->points=std::move(path);pending_->point_index=0;pending_->drawing=true;
     const auto& first=pending_->points.front();
     PressPointer(CefPoint(static_cast<int>(std::lround(first.first)),static_cast<int>(std::lround(first.second))),true);
@@ -1892,14 +1934,15 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     if(call_) { rest_point_=point;rest_pending_=true;return; }
     rest_pending_=false;
     const double zoom=std::pow(1.2,browser_->GetHost()->GetZoomLevel());
-    if(point.x>=0 && point.y>=0) { command->SetDouble("x",point.x/zoom);command->SetDouble("y",point.y/zoom); }
+    if(point.x>=0 && point.y>=0) { command->SetDouble("x",point.x/zoom-world_frame_.x);command->SetDouble("y",point.y/zoom-world_frame_.y); }
     else command->SetBool("nowhere",true);
+    if(!world_frame_.number.empty()) command->SetString("frame",world_frame_.number);
     auto wrapped=CefValue::Create();wrapped->SetDictionary(command);
     auto params=CefDictionaryValue::Create();
     params->SetString("expression",std::string(kPageAutomation)+"\n;globalThis.__tiloPage.run("+CefWriteJSON(wrapped,JSON_WRITER_DEFAULT).ToString()+")");
     params->SetInt("contextId",world_);params->SetBool("returnByValue",true);params->SetBool("userGesture",false);params->SetBool("silent",true);
     params->SetBool("awaitPromise",true);
-    Call(Stage::Pointer,"Runtime.evaluate",params);
+    CallIn(Stage::Pointer,world_session_,"Runtime.evaluate",params);
   }
   void GestureFinished(CefRefPtr<CefDictionaryValue> value) {
     const auto action=Action();
@@ -1920,6 +1963,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // A find names what to look for, so the words it matches travel with it.
     for(const char* key:{"role","name"}) if(pending_->command->HasKey(key)) command->SetString(key,pending_->command->GetString(key));
     if(pending_->command->HasKey("nth")) command->SetInt("nth",static_cast<int>(pending_->command->GetInt("nth")));
+    if(action=="find" && !frame_doc_ && LooksInFrames()) command->SetBool("all",true);
     for(const char* key:{"x","y"}) if(pending_->command->HasKey(key)) command->SetDouble(key,Number(pending_->command,key));
     for(const char* key:{"quiet_ms","timeout_ms"}) if(pending_->command->HasKey(key)) command->SetInt(key,pending_->command->GetInt(key));
     if(pending_->command->HasKey("expires_ms")) command->SetDouble("expires_ms",Number(pending_->command,"expires_ms"));
@@ -2007,6 +2051,219 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     answer->SetString("format","png");
     answer->SetString("capture",data);
     Succeed(capture_label_,std::nullopt,answer);
+  }
+  // A gesture on an element of a frame runs in that frame's document: the
+  // ref says which document it was read in. Its points are that document's
+  // own, moved by where the frame sits in the page for the engine's
+  // pointer. Both ends of a drag are elements of the one document.
+  void GestureDocument() {
+    const auto read_in=[&](const char* key) {
+      if(pending_->command->GetType(key)!=VTYPE_STRING) return 0;
+      const auto held=docs_.find(RefDocument(pending_->command->GetString(key).ToString()));
+      return held!=docs_.end() && held->second.holder?held->first:0;
+    };
+    const int from=read_in("element"),to=read_in("to");
+    if(Action()=="drag" && (from || to) && (from!=to || pending_->command->HasKey("x") || pending_->command->HasKey("to_x"))) {
+      Fail("invalid_request","A drag in a frame names both its ends by elements of that frame");return;
+    }
+    if(const int number=from?from:to) {
+      const PageDocument document=docs_[number];
+      world_=document.context;document_=document.number;world_session_=document.session;frame_doc_=document.number;
+      world_id_=document.frame;world_frame_=PageFrame{};world_frame_.id=document.frame;
+      world_frame_.number=std::to_string(document.handle);pending_->frame=document.handle;
+    }
+    BeginPageGesture();
+  }
+  // Whether a find or a search was asked to look in the page's frames too.
+  bool LooksInFrames() const { return pending_->command->GetType("frames")==VTYPE_BOOL && pending_->command->GetBool("frames"); }
+  static std::string Quoted(const std::string& text) {
+    auto value=CefValue::Create();value->SetString(text);
+    return CefWriteJSON(value,JSON_WRITER_DEFAULT).ToString();
+  }
+  // The frames a document listed for this side to look on in, by the
+  // numbers the tab calls them: as many as a read of the page reads.
+  void LookIn(CefRefPtr<CefListValue> frames) {
+    for(size_t i=0;frames && i<frames->GetSize() && pending_->look_frames.size()<kShownFrames;++i) {
+      auto frame=frames->GetType(i)==VTYPE_DICTIONARY?frames->GetDictionary(i):nullptr;
+      const auto ref=Text(frame,"ref");
+      if(ref.empty() || RefDocument(ref)!=document_ || !docs_.count(document_)) continue;
+      const int handle=HandleOf(ref);
+      if(frame->GetType("label")==VTYPE_STRING) frame_labels_[handle]=Clip(frame->GetString("label").ToString(),120);
+      pending_->look_frames.push_back(handle);
+    }
+  }
+  std::string FrameSaid(int handle) const {
+    const auto label=frame_labels_.find(handle);
+    return "frame "+std::to_string(handle)+(label!=frame_labels_.end() && !label->second.empty()?" ("+Quoted(label->second)+")":std::string());
+  }
+  static bool Answered(CefRefPtr<CefDictionaryValue> said) { return said && said->GetType("ok")==VTYPE_BOOL && said->GetBool("ok"); }
+  // Words are searched for in the page's own document, and in the frames
+  // the page shows when the caller asks for that or the page's own document
+  // does not say them: a frame is its own document, and often the one that
+  // holds what was looked for. A match in a frame names its frame, and its
+  // line is one to read on from with that frame.
+  void SearchOn(CefRefPtr<CefDictionaryValue> value) {
+    auto data=value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr;
+    pending_->look=value->Copy(false);
+    if(data && (LooksInFrames() || Number(data,"total")<1)) LookIn(data->GetType("frames")==VTYPE_LIST?data->GetList("frames"):nullptr);
+    SearchNext();
+  }
+  void SearchNext() {
+    if(pending_->look_index>=pending_->look_frames.size()) { SearchAnswer();return; }
+    const int handle=pending_->look_frames[pending_->look_index++];
+    auto command=CefDictionaryValue::Create();
+    command->SetString("action","search");command->SetString("text",pending_->command->GetString("text"));
+    AskFrame(handle,command,[this,handle](CefRefPtr<CefDictionaryValue> said) {
+      if(Answered(said)) pending_->looked.emplace_back(handle,said->Copy(false));
+      SearchNext();
+    });
+  }
+  void SearchAnswer() {
+    auto own=pending_->look;
+    auto data=Findings(own);
+    if(!data) data=CefDictionaryValue::Create();
+    const int here=static_cast<int>(Number(data,"total"));
+    auto matches=data->GetType("matches")==VTYPE_LIST?data->GetList("matches")->Copy():CefListValue::Create();
+    std::string outline=Text(own,"outline"),where;int there=0;
+    for(const auto& [handle,said]:pending_->looked) {
+      auto theirs=said->GetType("data")==VTYPE_DICTIONARY?said->GetDictionary("data"):nullptr;
+      const int total=theirs?static_cast<int>(Number(theirs,"total")):0;
+      if(total<1) continue;
+      there+=total;
+      const auto number=std::to_string(handle);
+      auto found=theirs->GetType("matches")==VTYPE_LIST?theirs->GetList("matches"):nullptr;
+      for(size_t i=0;found && i<found->GetSize();++i) {
+        if(found->GetType(i)!=VTYPE_DICTIONARY) continue;
+        auto match=found->GetDictionary(i)->Copy(false);match->SetString("frame",number);
+        matches->SetDictionary(matches->GetSize(),match);
+      }
+      for(const auto& line:Lines(Text(said,"outline"))) { if(!outline.empty()) outline+='\n';outline+="frame "+number+", "+line; }
+      where+=(where.empty()?"":", ")+std::to_string(total)+" in "+FrameSaid(handle);
+    }
+    // No frame says them either: the page's own answer stands.
+    if(!there) { Succeed(Text(own,"message"),Text(own,"outline"),data);return; }
+    const auto words=Quoted(Clip(pending_->command->GetString("text").ToString(),200));
+    const int all=here+there;
+    const std::string message=std::to_string(all)+(all==1?" line says ":" lines say ")+words+": "+
+      (here?std::to_string(here)+" in the page's own document, ":"none in the page's own document, ")+where+
+      "; read on from a line by giving its number as from, and the frame it is in as frame";
+    data->SetList("matches",matches);data->SetInt("total",all);data->SetInt("page_total",here);
+    Succeed(message,outline,data);
+  }
+  // A find names one element. It is looked for in the page's own document,
+  // and in the frames the page shows when the caller asks for that or the
+  // page's own document holds no match. The matches of every document
+  // looked in are counted together, the page's first, by the closest way
+  // any of them matched; a match in a frame names its frame, and its ref
+  // acts there.
+  void FindOn(CefRefPtr<CefDictionaryValue> value,bool counted) {
+    pending_->look=value->Copy(false);pending_->look_counted=counted;
+    auto data=value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr;
+    auto frames=counted?(data && data->GetType("frames")==VTYPE_LIST?data->GetList("frames"):nullptr)
+      :(value->GetType("frames")==VTYPE_LIST?value->GetList("frames"):nullptr);
+    LookIn(frames);
+    FindNext();
+  }
+  CefRefPtr<CefDictionaryValue> FindCommand() const {
+    auto command=CefDictionaryValue::Create();command->SetString("action","find");
+    for(const char* key:{"role","name"}) if(pending_->command->GetType(key)==VTYPE_STRING) command->SetString(key,pending_->command->GetString(key));
+    return command;
+  }
+  void FindNext() {
+    if(pending_->look_index>=pending_->look_frames.size()) { FindAnswer();return; }
+    const int handle=pending_->look_frames[pending_->look_index++];
+    auto command=FindCommand();command->SetBool("all",true);
+    AskFrame(handle,command,[this,handle](CefRefPtr<CefDictionaryValue> said) {
+      if(Answered(said)) pending_->looked.emplace_back(handle,said->Copy(false));
+      FindNext();
+    });
+  }
+  void FindAnswer() {
+    struct Held { int handle=0,step=3,total=0;CefRefPtr<CefListValue> lines; };
+    std::vector<Held> held;
+    const auto take=[&](int handle,CefRefPtr<CefDictionaryValue> said) {
+      auto data=said && said->GetType("data")==VTYPE_DICTIONARY?said->GetDictionary("data"):nullptr;
+      if(!data) return;
+      Held one;one.handle=handle;one.step=static_cast<int>(Number(data,"step"));one.total=static_cast<int>(Number(data,"total"));
+      one.lines=data->GetType("lines")==VTYPE_LIST?data->GetList("lines"):nullptr;
+      if(one.total>0 && one.step>=0 && one.step<3) held.push_back(one);
+    };
+    auto own=pending_->look;
+    auto own_data=own->GetType("data")==VTYPE_DICTIONARY?own->GetDictionary("data"):nullptr;
+    if(pending_->look_counted) take(0,own);
+    for(const auto& [handle,said]:pending_->looked) take(handle,said);
+    // No document holds it: what the page's own document said stands.
+    if(held.empty()) { Fail("not_found",pending_->look_counted?Text(own_data,"nothing"):Text(own,"message"));return; }
+    int best=3;
+    for(const auto& one:held) best=std::min(best,one.step);
+    std::vector<Held> counted;int sum=0;
+    for(const auto& one:held) if(one.step==best) { counted.push_back(one);sum+=one.total; }
+    const std::string asked=pending_->look_counted?Text(own_data,"asked"):Text(own,"asked");
+    const int nth=pending_->command->GetType("nth")==VTYPE_INT?pending_->command->GetInt("nth"):0;
+    if(!nth && sum>1) {
+      std::string listed;int number=0;
+      for(const auto& one:counted)
+        for(size_t i=0;one.lines && i<one.lines->GetSize() && number<12;++i)
+          listed+=(listed.empty()?"":"; ")+std::string("(")+std::to_string(++number)+") "+
+            (one.handle?"frame "+std::to_string(one.handle)+": ":std::string())+one.lines->GetString(i).ToString();
+      Fail("ambiguous",std::to_string(sum)+" elements are "+asked+" on the page and in its frames: "+listed+
+        (sum>number?" and "+std::to_string(sum-number)+" more":std::string())+". Name one by its number, nth, or name its frame");
+      return;
+    }
+    if(nth>sum) {
+      Fail("not_found","The page and its frames have "+std::to_string(sum)+(sum==1?" element ":" elements ")+asked+
+        ", so there is no ("+std::to_string(nth)+"); name one from 1 to "+std::to_string(sum));
+      return;
+    }
+    int before=0;Held pick=counted.front();
+    if(nth) for(const auto& one:counted) { if(nth<=before+one.total) { pick=one;break; } before+=one.total; }
+    auto command=FindCommand();
+    if(nth) command->SetInt("nth",nth-before);
+    const std::function<void(CefRefPtr<CefDictionaryValue>)> found=[this,pick,nth,sum](CefRefPtr<CefDictionaryValue> said) {
+      if(!said || said->GetType("ok")!=VTYPE_BOOL) { Fail("page_changed","The page changed while its frames were looked through; find the element again");return; }
+      if(!said->GetBool("ok")) { Fail(Text(said,"code").empty()?"not_found":Text(said,"code"),Text(said,"message"));return; }
+      auto data=said->GetType("data")==VTYPE_DICTIONARY?said->GetDictionary("data")->Copy(false):CefDictionaryValue::Create();
+      data->SetInt("nth",nth?nth:1);data->SetInt("matches",sum);
+      std::string message="Found "+Text(data,"line");
+      if(pick.handle) { data->SetString("frame",std::to_string(pick.handle));message+=" in "+FrameSaid(pick.handle); }
+      if(nth) message+=" of "+std::to_string(sum);
+      Succeed(message,std::nullopt,data);
+    };
+    if(pick.handle) { AskFrame(pick.handle,command,found);return; }
+    command->SetInt("doc",document_);
+    Ask(world_session_,"Runtime.evaluate",PointerEvaluate(command,world_),[found](bool success,CefRefPtr<CefDictionaryValue> result) { found(Said(success,result)); });
+  }
+  // A point over a frame is a point of that frame's document: the frame is
+  // asked what is there, and a frame inside it in turn. The answer names
+  // the element, the frame it is in and a ref that acts there, with the
+  // point as the caller gave it. A frame that cannot be read is what the
+  // page holds at that point.
+  void AtFrame(CefRefPtr<CefDictionaryValue> value,int depth) {
+    auto data=value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr;
+    const auto ref=Text(data,"frame_element");
+    auto inside=data && data->GetType("inside")==VTYPE_DICTIONARY?data->GetDictionary("inside"):nullptr;
+    if(ref.empty() || !inside || depth>=kKeyFrameDepth || !docs_.count(RefDocument(ref))) { AtAnswer(value);return; }
+    auto command=CefDictionaryValue::Create();
+    command->SetString("action","at");command->SetBool("inside",true);
+    command->SetDouble("x",Number(inside,"x"));command->SetDouble("y",Number(inside,"y"));
+    command->SetDouble("page_x",Number(pending_->command,"x"));command->SetDouble("page_y",Number(pending_->command,"y"));
+    AskFrame(HandleOf(ref),command,[this,value,depth](CefRefPtr<CefDictionaryValue> said) {
+      if(!Answered(said)) { AtAnswer(value);return; }
+      AtFrame(said->Copy(false),depth+1);
+    });
+  }
+  void AtAnswer(CefRefPtr<CefDictionaryValue> value) {
+    auto data=value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data")->Copy(false):nullptr;
+    if(data) { data->Remove("frame_element");data->Remove("inside"); }
+    Succeed(Text(value,"message"),std::nullopt,data);
+  }
+  // What a read found, as its caller is given it: without the frames the
+  // page's script listed for this side to look on in.
+  static CefRefPtr<CefDictionaryValue> Findings(CefRefPtr<CefDictionaryValue> value) {
+    if(!value || value->GetType("data")!=VTYPE_DICTIONARY) return nullptr;
+    auto data=value->GetDictionary("data")->Copy(false);
+    data->Remove("frames");
+    return data;
   }
   static std::vector<std::string> Lines(const std::string& text) {
     std::vector<std::string> lines;
@@ -2205,12 +2462,18 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // page's code, so it cannot have led anywhere, and what it found is its
     // answer's findings.
     if(action=="find") { pending_->navigation="none";
-      Succeed(Text(value,"message"),std::nullopt,value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr);return; }
+      // Asked to look in the page's frames too, the page's own document
+      // lists every match for this side to count with theirs.
+      auto found=value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr;
+      if(found && found->HasKey("step") && !frame_doc_) { FindOn(value,true);return; }
+      Succeed(Text(value,"message"),std::nullopt,found);return; }
+    if(action=="search" && !frame_doc_) { pending_->navigation="none";SearchOn(value);return; }
+    if(action=="at" && !PrivateText()) { AtFrame(value->Copy(false),0);return; }
     // The fields of the page with who set each, and its forms as the
     // questions they ask: reads like the outline.
     if(action=="fields" && !frame_doc_) { pending_->navigation="none";ReviewFrames(value);return; }
     if(action=="fields" || action=="forms" || action=="search") { pending_->navigation="none";
-      Succeed(Text(value,"message"),Text(value,"outline"),value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr);return; }
+      Succeed(Text(value,"message"),Text(value,"outline"),Findings(value));return; }
     // A form answered whole runs the page's input handlers, and may send
     // the form: it answers once the page has handled that, with what the
     // page said of each answer.
@@ -2403,6 +2666,10 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       said=Text(value,"message");
     }
     if(pending_->message.empty()) pending_->message=said;
+    // A click that opened the frame's file chooser is held, not shown, as
+    // in the page's own document: the answer says so.
+    if(file_dialog_ && pending_->message.find("file chooser")==std::string::npos)
+      pending_->message+="; the page opened a file chooser, which is answered by fill-page-files for that element";
     // What was done in the frame made the page itself leave: the answer
     // waits for that load, as any other action's does.
     if(navigations_!=pending_->navigations && browser_->IsLoading()) {

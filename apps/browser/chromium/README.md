@@ -383,9 +383,6 @@ navigation is not the action's answer: it arrives in the `network` log as its
 document request, marked `navigation` with Chromium's `user_gesture`. `none`:
 the action ran none of the page's code (reading, reader view).
 
-Not yet covered inside a frame: `hover`, `drag`, `path` and `at`, which act in
-the page's own document.
-
 ```sh
 python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromium-host
 ```
@@ -424,7 +421,8 @@ lines that hold those words in any letter case: `data.total`, and up to 30
 outline reads, so a secret's value is found by neither. Words on either side
 of a link, or in two paragraphs, are on separate lines. `find` names controls
 and headings only; its refusal says words are found by searching. A search or
-a find that comes up empty on a page with frames names the frames to look in.
+a find that names no `frame` looks on in the frames the page shows (see
+"Frames"), and one that comes up empty there too names the frames to look in.
 
 `action: "reader"` with `enabled` shows the document's article alone and puts
 the page back when turned off. The article is the `article`, `main` or
@@ -458,7 +456,8 @@ and the sandbox are as they were.
   gone given again. `frame` takes the number, `frame=3` or `[frame=3]`.
 - **A ref carries its frame.** A ref says which document it was read in, so
   an action on an element of a frame (`click`, `fill`, `select`, `press`,
-  `submit`, `capture`, a `pointer` step) runs in that frame without `frame`.
+  `submit`, `fill_files`, `capture`, `hover`, `drag`, `path`, a `pointer`
+  step) runs in that frame without `frame`.
   `outline`, `changes`, `find`, `search`, `fields`, `forms`, `fill_form`,
   `scroll` and `settle` take `frame` to read, answer or turn a frame's
   document. A `frame` named beside a ref is the document the action runs in.
@@ -470,6 +469,32 @@ and the sandbox are as they were.
   says to read the rest by its number. A frame nobody sees (a tracker's
   pixel) is listed and not read. A frame inside a frame is listed among its
   holder's lines and read by its own number.
+- **A find and a search look on in the frames.** With no `frame` named, a
+  `search` whose words the page's own document does not say, and a `find` it
+  has no match for, look in the frames the page shows (the same six a read of
+  the page reads), and with `frames: true` they look there as well as in the
+  page. A search's match in a frame carries `frame`, is printed
+  `frame 3, 12: text`, and its line is a `from` to read on from with that
+  frame; `data.total` counts every match and `data.page_total` the page's
+  own. A find counts the matches of every document it looked in together, the
+  page's first, by the closest way any of them matched (the whole name, then
+  any letter case, then a part): one match answers with its `frame` beside
+  the ref, which acts there; several without `nth` are refused as `ambiguous`
+  and listed with their frames, and `nth` counts across them. With a `frame`
+  named, that document alone is looked in.
+- **A gesture in a frame.** `hover`, `drag` and `path` on an element of a
+  frame run in the frame's document: the element is brought into view there,
+  the frame in the page, and the engine's pointer goes where the two put the
+  point. Both ends of a drag are elements of the one frame; an end given as a
+  point, or in another document, is `invalid_request`. A `fill_files` in a
+  frame sets the files of the frame's own input, and a click that opens its
+  chooser holds it as in the page.
+- **A point over a frame is the frame's.** `at` takes a point of the page.
+  Over a frame it answers with the frame's own element, through frames inside
+  frames: `data.frame`, a `ref` that acts there, and
+  `… is at 310, 240 in frame 3`. A frame that cannot be read is answered as
+  the `iframe` the page holds at that point. `at` with a `frame` is refused:
+  a point is the page's.
 - **Gone is said.** `frame_gone`: the number was given and its frame has left
   the page, with its element or with the page it was on. `no_frame`: no read
   of this tab printed that number. `not_ready`: the frame is between two

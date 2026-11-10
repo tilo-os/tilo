@@ -2585,6 +2585,8 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     // search named; a search says the words it looks for.
     if(d->HasKey("from") && (action!="outline" || !type("from",VTYPE_INT) || d->GetInt("from")<1 || d->GetInt("from")>1000000))return false;
     if(action=="search" && (!type("text",VTYPE_STRING) || d->GetString("text").empty() || d->GetString("text").length()>200))return false;
+    // A find or a search may be asked to look in the frames the page shows.
+    if(d->HasKey("frames") && (!type("frames",VTYPE_BOOL) || (action!="find" && action!="search")))return false;
     // A form's answers: the form by the id or signature its read gave, each
     // answer under the name the form asks it by, as text, a number, yes or
     // no, or the chosen ones of several, and whether to send it and how.

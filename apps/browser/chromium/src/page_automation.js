@@ -728,9 +728,23 @@ globalThis.__tiloPage ||= (() => {
     // point read in the frame's document is a point in the frame's viewport,
     // so the frame's own viewport position is the whole of the offset: no
     // scroll is added.
+    const origin = frameOrigin(element);
+    return {ok: true, message: 'Frame', x: origin.x, y: origin.y};
+  }
+  // Where a frame's own viewport starts in this document's: inside the
+  // frame element's border and padding.
+  function frameOrigin(element) {
     const box = element.getBoundingClientRect(), style = getComputedStyle(element);
     const inset = side => (parseFloat(style[`border${side}Width`]) || 0) + (parseFloat(style[`padding${side}`]) || 0);
-    return {ok: true, message: 'Frame', x: box.x + inset('Left'), y: box.y + inset('Top')};
+    return {x: box.x + inset('Left'), y: box.y + inset('Top')};
+  }
+  // The frames this document shows, as many as a read of the page reads
+  // with it: where a find or a search looks on when asked to, or when this
+  // document holds no match.
+  const MAX_SHOWN_FRAMES = 6;
+  function shownFrames() {
+    return [...document.querySelectorAll('iframe,frame')].filter(frameShown).slice(0, MAX_SHOWN_FRAMES)
+      .map(element => ({ref: refOf(element), label: clean(element.title || element.name, MAX_NAME)}));
   }
 
   // A point in a frame's own document means nothing in the page: the caller
@@ -826,14 +840,24 @@ globalThis.__tiloPage ||= (() => {
     return {ref, state, line: `${label || element.localName} [ref=${ref}] ${state}`};
   }
 
-  // What a click at viewport point (x, y) would hit.
-  function at(x, y) {
-    const hit = topmost(x, y);
-    if (!hit) return {ok: true, message: `Nothing at ${x}, ${y}`, data: {x, y, element: null}};
+  // What a click at viewport point (x, y) would hit. A point over a frame
+  // hits the frame's own document: the frame is named with the point as its
+  // document sees it, and the browser process asks that document in turn,
+  // which answers with the point as the page gave it (`page`).
+  function at(x, y, page) {
+    const hit = topmost(x, y), said = page || {x, y};
+    const where = `${said.x}, ${said.y}${frameId() ? ` in frame ${frameId()}` : ''}`;
+    if (!hit) return {ok: true, message: `Nothing at ${where}`, data: {x: said.x, y: said.y, element: null}};
     const target = targetAt(hit);
-    const data = {x, y, element: describe(hit), interactive: !!target};
+    const data = {x: said.x, y: said.y, element: describe(hit), interactive: !!target};
+    if (frameId()) data.frame = frameId();
     if (target) Object.assign(data, {ref: refOf(target), target: summary(target)});
-    return {ok: true, message: target ? `${summary(target)} [ref=${data.ref}] is at ${x}, ${y}` : `${describe(hit)} is at ${x}, ${y}`, data};
+    if (hit.localName === 'iframe' || hit.localName === 'frame') {
+      const origin = frameOrigin(hit);
+      data.frame_element = refOf(hit);
+      data.inside = {x: x - origin.x, y: y - origin.y};
+    }
+    return {ok: true, message: target ? `${summary(target)} [ref=${data.ref}] is at ${where}` : `${describe(hit)} is at ${where}`, data};
   }
 
   // What the action in progress set off. It is armed before the action's
@@ -1212,11 +1236,11 @@ globalThis.__tiloPage ||= (() => {
       return {ok: true, message: `Nothing on the page${where} says ${quote(wanted)}${beyond ? ', as far as a page is read' : ''}. ` +
         'Words on either side of a link, or in two paragraphs, are on separate lines: search for fewer of them' +
         (framesNote() ? '.' + framesNote() : ''),
-        outline: '', data: {matches: [], total: 0}};
+        outline: '', data: {matches: [], total: 0, frames: shownFrames()}};
     const listed = total > hits.length ? `, the first ${hits.length} listed` : '';
     return {ok: true, message: `${total} ${total === 1 ? 'line says' : 'lines say'} ${quote(wanted)}${where}${listed}; ` +
       'read on from a line by giving its number as from',
-      outline: hits.map(hit => `${hit.line}: ${hit.text}`).join('\n'), data: {matches: hits, total}};
+      outline: hits.map(hit => `${hit.line}: ${hit.text}`).join('\n'), data: {matches: hits, total, frames: shownFrames()}};
   }
 
   // What the page shows that an agent can act on, as the outline prints it:
@@ -1389,6 +1413,20 @@ globalThis.__tiloPage ||= (() => {
     const all = findCandidates();
     const ofRole = role ? all.filter(candidate => candidate.kind === role) : all;
     const asked = described(role, name);
+    // Every match of this document, for a find that looks through the
+    // page's frames as well: the browser process counts them together, by
+    // the closest way any document matched.
+    if (command.all === true) {
+      for (const step of [0, 1, 2]) {
+        if (!name && step > 0) break;
+        const matches = name ? ofRole.filter(candidate => MATCHES[step](candidate.label, name)) : ofRole;
+        if (!matches.length) continue;
+        return {ok: true, message: `${matches.length} found`, data: {step, total: matches.length, asked,
+          lines: matches.slice(0, MAX_FIND_AMBIGUOUS).map(candidate => candidate.line), frames: shownFrames()}};
+      }
+      return {ok: true, message: 'None found', data: {step: 3, total: 0, asked, lines: [], frames: shownFrames(),
+        nothing: findsNothing(role, name, all).message}};
+    }
     // The whole name first; then in any letter case, then by a part of it,
     // each only once nothing matched the way before it.
     for (const step of [0, 1, 2]) {
@@ -1415,7 +1453,12 @@ globalThis.__tiloPage ||= (() => {
       return {ok: true, ...data, data,
         message: `Found ${pick.line}${nth === null ? '' : ` of ${matches.length}`}`};
     }
-    return findsNothing(role, name, all);
+    // Nothing here: the frames this document shows are where the browser
+    // process looks on.
+    const nothing = findsNothing(role, name, all);
+    nothing.frames = shownFrames();
+    nothing.asked = asked;
+    return nothing;
   }
 
   function clip(rect) {
@@ -3036,7 +3079,8 @@ globalThis.__tiloPage ||= (() => {
           // distance once the page has given what it has.
           case 'scroll_target': return scrollTarget(command);
           case 'scroll_left': return scrollLeft();
-          case 'at': return frameId() ? atInFrame() : at(command.x, command.y);
+          case 'at': return frameId() && command.inside !== true ? atInFrame()
+            : at(command.x, command.y, command.inside === true ? {x: command.page_x, y: command.page_y} : null);
           case 'frame_offset': return frameOffset(command.element, command.anchored);
           case 'frame_fence': return fence();
           case 'settle': return settle(command.quiet_ms, command.timeout_ms);
