@@ -1001,8 +1001,11 @@ impl Engine {
         let room = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         let identity = self.identity();
         // What the joiner dials: this device's endpoint, signed by the device the grant names, as a
-        // host of its own workspace.
-        let hint = self.own_host_hint(workspace, endpoint)?;
+        // host of its own workspace. A link is handed to someone who may be anywhere, so it names
+        // the addresses anyone can dial and the relay this device is reached through, never the
+        // ones only this device's own network knows.
+        let reachable = tilo_delivery_protocol::workspace_join::reachable(endpoint);
+        let hint = self.own_host_hint(workspace, &reachable)?;
         let now_ns: u64 = now
             .duration_since(tilo_clock::UNIX_EPOCH)
             .map_err(|error| error.to_string())?
