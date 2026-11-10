@@ -4672,42 +4672,33 @@ requires = ["arch=x86_64"]
 outputs = ["/target/page-boot/**"]
 timeout_secs = 1200
 
-# Releasing the image the gate passed: this chain does not build a second one. carry-lounge
-# pulls the published `dev-<commit>` anonymously and pins it by digest, sign-lounge signs that
-# digest, and publish-lounge tags it `sha-<commit>` for cloud-deploy. A commit whose Lounge
-# image has not been published is refused by name, so the release waits for a gated build
-# instead of shipping an image no one used.
-[[check]]
-name = "carry-lounge"
-image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-run = "bash tools/ci/publish/lounge-carry.sh /target/publish/lounge/release"
-outputs = ["/target/publish/lounge/release/image.oci.tar", "/target/publish/lounge/release/digest"]
-requires = ["arch=any"]
-on = ["stable"]
-cache = false
-
+# Releasing the Lounge: t's own image-lounge build of the released commit (the same cached build
+# the gate runs), with the entrypoint and image tests its check runs, signed with the release key
+# and published as `sha-<commit>` for cloud-deploy, on stable and on a release tag. Published on
+# dispatch as `dev-<commit>`, so a deployment can try a commit before it is released. The release
+# needs no registry image made elsewhere first: any commit tagged is released from its own build.
 [[check]]
 name = "sign-lounge"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/lounge /target/publish/lounge/release"
-needs = ["carry-lounge", "signing-tools"]
+run = "install -d /target/publish/lounge/release\ncp /target/publish/lounge/image.oci.tar /target/publish/lounge/digest /target/publish/lounge/release/\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/lounge /target/publish/lounge/release"
+needs = ["image-lounge", "signing-tools"]
 outputs = ["/target/publish/lounge/release/payload.json", "/target/publish/lounge/release/signature", "/target/publish/lounge/release/dry-run.pub"]
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 requires = ["arch=any"]
-on = ["stable"]
+on = ["stable", "tag:v[0-9]*.[0-9]*.[0-9]*"]
 
 [[check]]
 name = "publish-lounge"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/lounge /target/publish/lounge/release 'release:sha-{commit}'"
-needs = ["carry-lounge", "signing-tools"]
+run = "install -d /target/publish/lounge/release\ncp /target/publish/lounge/image.oci.tar /target/publish/lounge/digest /target/publish/lounge/release/\nbash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/lounge /target/publish/lounge/release 'dev:dev-{commit}' 'release:sha-{commit}'"
+needs = ["image-lounge", "signing-tools"]
 optional_needs = ["sign-lounge"]
-outputs = ["/target/publish/lounge/receipt.json"]
-pointers = { lounge = "/target/publish/lounge/receipt.json" }
+outputs = ["/target/publish/lounge/release/receipt.json"]
+pointers = { lounge = "/target/publish/lounge/release/receipt.json" }
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
-on = ["stable"]
+on = ["dispatch", "stable", "tag:v[0-9]*.[0-9]*.[0-9]*"]
 
 # The registry server: this tree is its context, and the compiler-cache client it installs is the
 # fetched asset cache, a named context of `os-assets`' outputs. So t plans it instruction by
