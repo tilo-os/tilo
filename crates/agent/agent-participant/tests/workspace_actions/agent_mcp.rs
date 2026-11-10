@@ -255,7 +255,9 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
             Instant::now() < deadline,
             "the agent's sheet ({edited}), its window ({shown}), what it says it is doing \
              ({said}), its narrated action ({phases:?}) or where it left off ({selected:?}) \
-             never all reached the browser"
+             never all reached the browser\nbrowser channels: {}\nagent channels: {}",
+            browser.peer.status().channels,
+            agent.peer.status().channels,
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }

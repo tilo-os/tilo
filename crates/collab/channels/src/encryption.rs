@@ -741,16 +741,19 @@ impl ChannelEncryption {
     /// The [`Self::generation`] at which `channel`'s keys or access last
     /// changed; 0 while they never did in this service. A storage unit
     /// changes when the scope carrying it does, so asking by the unit's
-    /// channel answers with its scope's change too.
+    /// channel answers with the later of its own change (its readers named,
+    /// say) and its scope's: a unit told once of its own still hears every
+    /// epoch its scope moves to after.
     pub fn channel_change(&self, channel: ChannelId) -> u64 {
-        if let Some(change) = self.changed.get(&channel) {
-            return *change;
-        }
-        self.units
+        let own = self.changed.get(&channel).copied().unwrap_or(0);
+        let scope = self
+            .units
             .get(&channel)
+            .filter(|scope| **scope != channel)
             .and_then(|scope| self.changed.get(scope))
             .copied()
-            .unwrap_or(0)
+            .unwrap_or(0);
+        own.max(scope)
     }
 
     /// The key scope that carries every unit of `workspace` whose readers

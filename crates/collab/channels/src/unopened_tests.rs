@@ -308,3 +308,37 @@ fn a_routed_channel_opens_on_the_interval_without_announcements() {
     ));
     assert!(service.unopened.is_empty());
 }
+
+/// A storage unit told of a change of its own — its readers named — still
+/// hears every change of the scope that carries it after: a reader that took
+/// the unit's keys once takes the scope's next epoch too, instead of keeping
+/// keys nobody seals under any more.
+#[test]
+fn a_unit_told_of_its_own_change_still_hears_its_scope_move_after() {
+    let dir = tempfile::tempdir().unwrap();
+    let directory = LateReaders::default();
+    let mut service = late_readers_service(dir.path(), &directory);
+    let (workspace, unit, scope) = (WorkspaceId::new(), ChannelId::new(), ChannelId::new());
+    let transport = Endpoint::join(&Arc::new(Workspace::default()), workspace, 0);
+    let mut now = Instant::now();
+    assert!(matches!(
+        service.access(workspace, unit, now),
+        ChannelAccess::Unavailable
+    ));
+    service.pump(&transport, now, 1_000);
+    directory.name();
+    now = now.checked_add(Duration::from_secs(5)).unwrap();
+    service.pump(&transport, now, 1_005);
+    let told = service.channel_change(unit);
+    assert_ne!(told, 0, "the unit is told its readers are known");
+
+    // The unit turns out to be carried by the workspace's scope, whose
+    // epoch then moves, as when a member is admitted to it.
+    service.units.insert(unit, scope);
+    service.bump(scope);
+    assert!(
+        service.channel_change(unit) > told,
+        "the scope's new epoch reaches the unit's readers"
+    );
+    assert_eq!(service.channel_change(unit), service.generation());
+}

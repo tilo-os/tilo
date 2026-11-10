@@ -56,6 +56,9 @@ const finish = async (code, message) => {
     // What the page kept of the workspaces it entered and the hosts it is a
     // member of: which way it took in on its next load.
     report[`${name}People`] = await tab.evaluate(`JSON.stringify(globalThis.tiloMount?.people?.() ?? null)`).catch(() => '');
+    // Whose channels the page holds keys for: a page without its workspace's
+    // keys joins no live plane, so it hears nobody and nobody hears it.
+    report[`${name}Channels`] = await tab.evaluate(`globalThis.tiloChannels?.() ?? ''`).catch(() => '');
     report[`${name}Kept`] = await tab.evaluate(`JSON.stringify(Object.fromEntries(Object.keys(localStorage)
       .filter(key => /workspace|membership|entered/i.test(key)).map(key => [key, localStorage.getItem(key)])))`).catch(() => '');
   }
@@ -66,7 +69,7 @@ const finish = async (code, message) => {
       const lines = (tab.log ?? []).slice(-60);
       if (lines.length) console.error(`--- ${name} said:\n${lines.join('\n')}`);
     }
-    for (const {name} of tabs) console.error(`--- ${name} kept: ${report[`${name}Kept`]}\n--- ${name} people: ${report[`${name}People`]}`);
+    for (const {name} of tabs) console.error(`--- ${name} kept: ${report[`${name}Kept`]}\n--- ${name} people: ${report[`${name}People`]}\n--- ${name} channels: ${report[`${name}Channels`]}`);
     console.error(`FAIL: ${message}`);
   }
   console.log(JSON.stringify(report));
