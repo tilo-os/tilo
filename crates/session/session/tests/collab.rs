@@ -1304,13 +1304,26 @@ fn frame(session: &mut Session) -> tilo_compositor::Screenshot {
         .expect("a frame of the session")
 }
 
-/// How many pixels of the desk differ between two frames of it.
-fn differing(before: &tilo_compositor::Screenshot, after: &tilo_compositor::Screenshot) -> usize {
-    before
-        .rgba
-        .chunks_exact(4)
-        .zip(after.rgba.chunks_exact(4))
-        .filter(|(a, b)| a != b)
+/// How far around a panel its shadow reaches, in the desk's pixels.
+const SHADOW: f64 = 32.0;
+
+/// How many pixels differ between two frames of the desk where a panel standing at the rect
+/// draws: the panel itself and the shadow around it.
+fn differing(
+    before: &tilo_compositor::Screenshot,
+    after: &tilo_compositor::Screenshot,
+    (x, y, width, height): (f64, f64, f64, f64),
+) -> usize {
+    let draws = |at: u32, down: u32| {
+        let (at, down) = (f64::from(at), f64::from(down));
+        at >= x - SHADOW
+            && at < x + width + SHADOW
+            && down >= y - SHADOW
+            && down < y + height + SHADOW
+    };
+    (0..before.height)
+        .flat_map(|down| (0..before.width).map(move |at| (at, down)))
+        .filter(|&(at, down)| draws(at, down) && before.pixel(at, down) != after.pixel(at, down))
         .count()
 }
 
@@ -1385,7 +1398,7 @@ fn the_rosters_first_frame_on_the_desk_is_final() {
     }
 
     // The faces open the roster, and the frame that draws it is the one the person sees: the next
-    // turn of the session draws nothing new.
+    // turn of the session draws nothing new of it.
     session
         .invoke(CHROME_RESOURCE, "toggle-collaborators", &Arguments::new())
         .expect("the bar's faces open who is here");
@@ -1393,8 +1406,13 @@ fn the_rosters_first_frame_on_the_desk_is_final() {
     let first = frame(&mut session);
     session.step(Duration::from_millis(1)).expect("step");
     let second = frame(&mut session);
+    // What the roster draws is where it stands, its shadow around it. The rest of the desk is the
+    // shell's, which redraws on turns of its own: its dock takes a mark away under its launcher
+    // a few turns after the roster opens, on whichever turn the shell hears of it, and that turn
+    // is not the roster's frame.
+    let roster = control(&session, &["people-panel"]).expect("the roster stands on the desk");
     assert_eq!(
-        differing(&first, &second),
+        differing(&first, &second, roster),
         0,
         "the roster's material is drawn in its first frame"
     );
