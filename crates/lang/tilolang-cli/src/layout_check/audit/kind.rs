@@ -106,7 +106,8 @@ pub enum Kind {
     /// inside it keeps a scrollbar of its own and cuts the rows it holds at its edge.
     NestedScroller,
     /// A row's title written a second time in the item the row opened into: the row became the
-    /// item, its title standing once, in the field that edits it.
+    /// item, its title standing once, in the field that edits it. The words a box is announced by
+    /// are not written, so a row named after its item's own title is no second title on screen.
     RepeatedRowTitle,
     /// A page given a column of its own inside another page: the gutter is counted twice, so
     /// what it holds stands inset from the rows beside it and narrower than them.

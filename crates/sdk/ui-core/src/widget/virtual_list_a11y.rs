@@ -108,6 +108,12 @@ impl<M: ListModel> VirtualList<M> {
         walked
     }
 
+    /// Whether `row` stands open into its item where it stands: the item's document takes the
+    /// row's place in the list, so the row is the item, named and announced by what it states.
+    fn standing_open(&self, row: &MountedRow<M::Key>) -> bool {
+        self.open.as_ref() == Some(&row.key)
+    }
+
     /// The node of one mounted row: a list item holding the row's own semantics.
     pub(super) fn row_node(
         &self,
@@ -118,7 +124,8 @@ impl<M: ListModel> VirtualList<M> {
         let child = row.widget.accessibility();
         // The item standing open in its row is still the row: it is named by the title its
         // document states, never by the name of the field the document happens to begin with.
-        let name = (self.open.as_ref() == Some(&row.key))
+        let name = self
+            .standing_open(row)
             .then(|| first_page_title(row.widget.as_ref()))
             .flatten()
             .or_else(|| child.as_ref().and_then(|node| node.name.clone()))
@@ -166,7 +173,7 @@ impl<M: ListModel> VirtualList<M> {
         }
         // The row standing open into its item says so, as the row over a document does: what
         // the item holds shows under the row, where the row stands in the list.
-        if self.open.as_ref() == Some(&row.key) {
+        if self.standing_open(row) {
             item.state.expanded = Some(true);
         }
         match &row.state {
@@ -215,10 +222,12 @@ impl<M: ListModel> VirtualList<M> {
                     input
                 })
             });
-        // A row that is a tree item of its own is this node: its controls stand under the
-        // item itself, not under a second node of the same row.
+        // A row that is a tree item of its own is this node: its controls stand under the item
+        // itself, not under a second node of the same row. So do the controls of the item a row
+        // stands open into: that item is the row, and the box that took the row's place in the
+        // tree is announced by the title the item states, so a reader hears the row once.
         let child = child.map(|node| {
-            if node.level.is_some() {
+            if node.level.is_some() || self.standing_open(row) {
                 node.children
             } else {
                 vec![node]
@@ -399,7 +408,7 @@ impl<M: ListModel> VirtualList<M> {
             ),
             None => (None, None),
         };
-        let expanded = if self.open.as_ref() == Some(&row.key) {
+        let expanded = if self.standing_open(row) {
             Some(true)
         } else {
             folded

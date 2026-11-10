@@ -864,6 +864,9 @@ fn second_open(list: Option<&InspectionNode>, shown: &mut BTreeSet<String>) -> b
 /// A row that opened into its item is the item: its title stands once, in the field that edits it,
 /// and what the item holds follows under it. The row's title left standing over the document says
 /// the same words twice in one place.
+///
+/// The words counted are the ones a person reads ([`writes`]), never the name a box is announced
+/// by: the item is its own row and is announced by its title, which is written once.
 fn repeated_row_titles(node: &InspectionNode, keys: &mut Vec<String>, out: &mut Vec<Problem>) {
     if is_list(node) {
         let open: Vec<(String, Rect)> = node
@@ -911,25 +914,41 @@ fn repeated_row_titles(node: &InspectionNode, keys: &mut Vec<String>, out: &mut 
     }
 }
 
-/// How many widgets standing within `at` say `title`: a row's own label, the value of the field
-/// that edits it, a heading.
+/// How many widgets standing within `at` write `title` where a person reads it: a label, a
+/// heading, the value of the field that edits it.
 fn titled_within(node: &InspectionNode, title: &str, at: Rect) -> usize {
     let own = rect(node);
     let mut count = usize::from(
         at.contains(own.center())
-            && node.semantics.as_ref().is_some_and(|semantics| {
-                semantics
-                    .name
-                    .as_deref()
-                    .into_iter()
-                    .chain(semantics.value.as_deref())
-                    .any(|written| one_line(written) == title)
-            }),
+            && node
+                .semantics
+                .as_ref()
+                .is_some_and(|semantics| writes(semantics, title)),
     );
     for child in &node.children {
         count = count.saturating_add(titled_within(child, title, at));
     }
     count
+}
+
+/// Whether this node writes `title` on the screen: the words of a label, a heading or a link, or
+/// the value of the field it is. A box's accessible name is not written anywhere: the row standing
+/// open into its item is named by the title that item states (`Role::ListItem` and its like), and a
+/// box that names what it holds says those words once, in what it holds.
+fn writes(semantics: &ui::a11y::AccessNode, title: &str) -> bool {
+    let drawn = matches!(
+        semantics.role,
+        Role::StaticText | Role::Label | Role::Heading { .. } | Role::Link
+    );
+    (drawn
+        && semantics
+            .name
+            .as_deref()
+            .is_some_and(|name| one_line(name) == title))
+        || semantics
+            .value
+            .as_deref()
+            .is_some_and(|value| one_line(value) == title)
 }
 
 /// `text` as one line of words: whitespace collapsed, ends trimmed.
@@ -1732,12 +1751,26 @@ mod tests {
             "the item's own title, in the field that edits it"
         );
 
+        // The item is its own row: the box the row opened into is announced by the title the
+        // document states, and says nothing of its own on screen.
+        let mut row = holding("RowOpen", "row", Some(Role::ListItem), vec![field()]);
+        row.rect = [0.0, 100.0, 400.0, 400.0];
+        row.semantics = Some(
+            AccessNode::new(Role::ListItem)
+                .with_name("Call the landlord about the boiler")
+                .with_state(ui::a11y::AccessState::new().expanded(true)),
+        );
+        assert!(
+            found(Kind::RepeatedRowTitle, &list(vec![row]), (1280, 800)).is_empty(),
+            "the row's name is the item's title, written once in the field that edits it"
+        );
+
         // The row's label left standing over the document: the same words twice.
         let label = named(
-            "ListRow",
-            "row",
+            "Text",
+            "label",
             [16.0, 100.0, 300.0, 36.0],
-            Role::ListItem,
+            Role::StaticText,
             "Call the landlord about the boiler",
         );
         let problems = found(

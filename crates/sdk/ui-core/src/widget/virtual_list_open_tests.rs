@@ -358,3 +358,57 @@ fn a_list_too_narrow_to_hold_its_item_opens_it_in_front_instead() {
     assert_eq!(roomy.open_row(), Some(&0));
     assert!(opened.borrow().is_empty());
 }
+
+/// A list whose even rows carry a document, drawn as the row standing open into it draws it.
+fn opening_list() -> VirtualList<Opens> {
+    VirtualList::with_selection_delegate(
+        Opens {
+            rows: (0..6_u64).collect(),
+        },
+        20.0,
+        |_, _, key, build| {
+            let document: Element = Box::new(ProbeRow::new(
+                format!("row {key}"),
+                120.0,
+                false,
+                Rc::new(Cell::new(0)),
+            ));
+            if build.expanded {
+                Box::new(super::open::RowOpen::new(document, false)) as Element
+            } else {
+                document
+            }
+        },
+    )
+    .with_viewport_height(200.0)
+}
+
+/// The row standing open into its item is the item, and a reader is handed it once: the box that
+/// took the row's place names the same row, so the item's controls stand under the row rather
+/// than under a second row of the same item.
+#[test]
+fn the_row_standing_open_is_handed_to_a_reader_once() {
+    let mut list = opening_list();
+    let _ = lay_out(&mut list, 300.0);
+    list.set_open(Some(0));
+
+    let semantics = list.accessibility().expect("the list has a node");
+    let item = semantics.children.first().expect("the list hands its rows");
+    assert_eq!(item.role, crate::a11y::Role::ListItem);
+    assert_eq!(item.state.expanded, Some(true));
+    assert_eq!(item.name.as_deref(), Some("row 0"));
+    let nested: Vec<_> = item
+        .children
+        .iter()
+        .filter(|node| {
+            matches!(
+                node.role,
+                crate::a11y::Role::ListItem | crate::a11y::Role::TreeItem
+            )
+        })
+        .collect();
+    assert!(
+        nested.is_empty(),
+        "the open row is one row, not one inside another: {nested:?}"
+    );
+}
