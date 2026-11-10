@@ -143,6 +143,12 @@ fn hand_over(
             "addressed device may not act in the workspace",
         );
     }
+    if let Some(plane) = session.app_serving
+        && plane.tracks(workspace_id)
+        && let Ok(decoded) = tilo_actions::remote::RemoteActionFrame::decode(&frame)
+    {
+        plane.relayed(workspace_id, peer.device_public_key, &decoded.message);
+    }
     let stamped = Envelope::RemoteAction {
         workspace_id,
         version,

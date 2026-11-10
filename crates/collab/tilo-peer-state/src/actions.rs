@@ -967,6 +967,10 @@ fn refusal(
                 result: Err(error),
             }
         }
+        RemoteActionMessage::Confirm { correlation, .. } => RemoteActionMessage::ConfirmResponse {
+            correlation: *correlation,
+            result: Err(error),
+        },
         _ => return None,
     })
 }

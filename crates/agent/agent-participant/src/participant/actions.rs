@@ -129,6 +129,13 @@ impl AgentParticipant {
                     result: Err(ActionHostError::ConfirmationRequired),
                 }
             }
+            // Nor does an agent confirm an action by its own word.
+            RemoteActionMessage::Confirm { correlation, .. } => {
+                RemoteActionMessage::ConfirmResponse {
+                    correlation,
+                    result: Err(ActionHostError::ConfirmationRequired),
+                }
+            }
             // An agent keeps no content for others to put into.
             RemoteActionMessage::ContentPutRequest { correlation, .. } => {
                 RemoteActionMessage::ContentPutResponse {
@@ -156,6 +163,7 @@ impl AgentParticipant {
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
+            | RemoteActionMessage::ConfirmResponse { .. }
             | RemoteActionMessage::RetiredResourceWatch { .. }
             | RemoteActionMessage::RetiredResourceReading { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => return,

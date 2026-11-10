@@ -448,9 +448,13 @@ impl crate::AppServingPlane for WorkspaceRecordsPlane {
         if agents {
             return None;
         }
-        serve_with_browser(self.browsers.as_ref(), workspace_id, message, |message| {
-            self.actions.serve(workspace_id, caller, message)
-        })
+        serve_with_browser(
+            self.browsers.as_ref(),
+            workspace_id,
+            caller,
+            message,
+            |message| self.actions.serve(workspace_id, caller, message),
+        )
     }
 
     fn route(
@@ -459,8 +463,24 @@ impl crate::AppServingPlane for WorkspaceRecordsPlane {
         sender: [u8; 32],
         message: &tilo_actions::remote::RemoteActionMessage,
     ) -> Option<crate::app_serving::Routing> {
-        let _ = sender;
-        self.browsers.as_ref()?.route(workspace_id, message)
+        self.browsers.as_ref()?.route(workspace_id, sender, message)
+    }
+
+    fn relayed(
+        &self,
+        workspace_id: u64,
+        from: [u8; 32],
+        message: &tilo_actions::remote::RemoteActionMessage,
+    ) {
+        if let Some(browsers) = self.browsers.as_ref() {
+            browsers.relayed(workspace_id, from, message);
+        }
+    }
+
+    fn tracks(&self, workspace_id: u64) -> bool {
+        self.browsers
+            .as_ref()
+            .is_some_and(|browsers| browsers.tracks(workspace_id))
     }
 
     fn content(&self) -> Option<Arc<WorkspaceStores>> {
@@ -479,9 +499,13 @@ impl crate::AppServingPlane for HostActionsPlane {
         caller: &tilo_actions::remote::Caller,
         message: tilo_actions::remote::RemoteActionMessage,
     ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>> {
-        serve_with_browser(self.browsers.as_ref(), workspace_id, message, |message| {
-            self.host.serve(workspace_id, caller, message)
-        })
+        serve_with_browser(
+            self.browsers.as_ref(),
+            workspace_id,
+            caller,
+            message,
+            |message| self.host.serve(workspace_id, caller, message),
+        )
     }
 
     fn route(
@@ -490,8 +514,24 @@ impl crate::AppServingPlane for HostActionsPlane {
         sender: [u8; 32],
         message: &tilo_actions::remote::RemoteActionMessage,
     ) -> Option<crate::app_serving::Routing> {
-        let _ = sender;
-        self.browsers.as_ref()?.route(workspace_id, message)
+        self.browsers.as_ref()?.route(workspace_id, sender, message)
+    }
+
+    fn relayed(
+        &self,
+        workspace_id: u64,
+        from: [u8; 32],
+        message: &tilo_actions::remote::RemoteActionMessage,
+    ) {
+        if let Some(browsers) = self.browsers.as_ref() {
+            browsers.relayed(workspace_id, from, message);
+        }
+    }
+
+    fn tracks(&self, workspace_id: u64) -> bool {
+        self.browsers
+            .as_ref()
+            .is_some_and(|browsers| browsers.tracks(workspace_id))
     }
 
     fn content(&self) -> Option<Arc<WorkspaceStores>> {
@@ -506,16 +546,38 @@ impl crate::AppServingPlane for HostActionsPlane {
 /// Serve a workspace's message, placing its Browser after an answered
 /// `app.so.tilo.browser#open`: the open answers once the window is live, and
 /// a Browser this host cannot place is refused in words that say so rather
-/// than as an app it does not know.
+/// than as an app it does not know. A page action of a window up here that
+/// asks the person first is put to them here
+/// ([`crate::hosted_browser::HostedBrowsers::confirm`]): this host is what
+/// reaches their approving devices.
 fn serve_with_browser(
     browsers: Option<&Arc<crate::hosted_browser::HostedBrowsers>>,
     workspace_id: u64,
+    caller: &tilo_actions::remote::Caller,
     message: tilo_actions::remote::RemoteActionMessage,
     serve: impl FnOnce(
         tilo_actions::remote::RemoteActionMessage,
     ) -> Option<Pending<tilo_actions::remote::RemoteActionMessage>>,
 ) -> Option<Pending<tilo_actions::remote::RemoteActionMessage>> {
     use tilo_actions::remote::RemoteActionMessage;
+    if let (
+        Some(browsers),
+        RemoteActionMessage::Confirm {
+            correlation,
+            request,
+        },
+    ) = (browsers, &message)
+    {
+        let correlation = *correlation;
+        return Some(
+            browsers
+                .confirm(workspace_id, caller, request)
+                .map(move |result| RemoteActionMessage::ConfirmResponse {
+                    correlation,
+                    result: result.map(Box::new),
+                }),
+        );
+    }
     let opens = match &message {
         RemoteActionMessage::Invoke(request) if crate::hosted_browser::opens_browser(request) => {
             Some(request.invocation)
@@ -783,6 +845,7 @@ fn attach_records(
             relay: crate::hosted_browser::relay_address().map_err(RelayError::Identity)?,
             workspaces: relay.workspaces().cloned(),
             runtime: tokio::runtime::Handle::current(),
+            certification: relay.confirmations(),
         });
     }
     let shell = shell.map(|shell| shell as Arc<dyn WorkspaceShell>);
@@ -870,6 +933,7 @@ async fn start_inner(
         web_entry,
         (options.feedback_reviewer, options.shell, options.browsers),
     )?;
+    drop(plane);
     agents
         .start(
             HostEndpoint::iroh(relay.node_addr(), host_cert),

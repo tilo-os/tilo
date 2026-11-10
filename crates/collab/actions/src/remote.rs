@@ -975,6 +975,20 @@ pub enum RemoteActionMessage {
         correlation: u64,
         result: Result<ContentGetAnswer, ActionHostError>,
     },
+    /// Ask the host to put `request` to the person the caller acts for and
+    /// answer with their confirmation of that one invocation
+    /// ([`ActionHost::confirm`]): where they are asked is the host's, and a
+    /// host with nobody to ask answers
+    /// [`ActionHostError::ConfirmationRequired`].
+    Confirm {
+        correlation: u64,
+        request: Box<InvokeRequest>,
+    },
+    /// Answer to [`Self::Confirm`], same correlation.
+    ConfirmResponse {
+        correlation: u64,
+        result: Result<Box<ConfirmedInvocation>, ActionHostError>,
+    },
 }
 
 /// Largest piece of a record one answer carries, before encoding.
@@ -1076,8 +1090,24 @@ impl RemoteActionMessage {
                 | Self::ConfirmationRequest { .. }
                 | Self::ContentPutRequest { .. }
                 | Self::ContentGetRequest { .. }
+                | Self::Confirm { .. }
         )
     }
+}
+
+/// `request` put to the person `caller` acts for, answered for
+/// `correlation` ([`ActionHost::confirm`]).
+fn confirmed<H: ActionHost>(
+    host: &H,
+    caller: &Caller,
+    correlation: u64,
+    request: &InvokeRequest,
+) -> Pending<RemoteActionMessage> {
+    host.confirm(caller, request)
+        .map(move |result| RemoteActionMessage::ConfirmResponse {
+            correlation,
+            result: result.map(Box::new),
+        })
 }
 
 /// A versioned [`RemoteActionMessage`], the unit a transport carries.
@@ -1251,6 +1281,10 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
                 }),
             })
         }
+        RemoteActionMessage::Confirm {
+            correlation,
+            request,
+        } => confirmed(host, caller, correlation, &request),
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
@@ -1262,6 +1296,7 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         | RemoteActionMessage::RetiredResourceReading { .. }
         | RemoteActionMessage::ContentPutResponse { .. }
         | RemoteActionMessage::ContentGetResponse { .. }
+        | RemoteActionMessage::ConfirmResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => return None,
     };
     // An abandoned answer still answers: the caller hears a refusal.
@@ -1324,6 +1359,10 @@ pub fn refuse(
                 result: Err(error),
             }
         }
+        RemoteActionMessage::Confirm { correlation, .. } => RemoteActionMessage::ConfirmResponse {
+            correlation: *correlation,
+            result: Err(error),
+        },
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
@@ -1335,6 +1374,7 @@ pub fn refuse(
         | RemoteActionMessage::RetiredResourceReading { .. }
         | RemoteActionMessage::ContentPutResponse { .. }
         | RemoteActionMessage::ContentGetResponse { .. }
+        | RemoteActionMessage::ConfirmResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => return None,
     })
 }

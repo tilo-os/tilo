@@ -5791,7 +5791,7 @@ impl AppBrokerState {
                     && binding.resource == offered.resource
                     && binding.action == offered.action
                     && binding.argument_digest == argument_digest(argument)
-                    && self.take_witness(token, binding)
+                    && (self.take_witness(token, binding) || Self::host_witnessed(token, binding))
             }
             _ => false,
         };
@@ -5892,6 +5892,28 @@ impl AppBrokerState {
 
     /// Spend the person's answer `token` names, when it was given for this
     /// very invocation.
+    /// Whether `token` is the answer of the host that certified this device,
+    /// for exactly `binding`: this device's own person let `binding`'s
+    /// invocation of this action, with these arguments, run. Only the key
+    /// that issued this device's certificate answers for it; another host's
+    /// word, like a changed action, is no answer at all.
+    fn host_witnessed(token: &str, binding: &WitnessBinding) -> bool {
+        let Some(witness) = tilo_user_identity::HostWitness::decode(token) else {
+            return false;
+        };
+        let Ok((_, cert)) = tilo_identity_host::broker::trusted_current_device(&binding.workspace)
+        else {
+            return false;
+        };
+        let argument = binding.argument_digest;
+        witness.stands_for(&cert, tilo_clock::unix_now_ns())
+            && witness.invocation == *binding.invocation.0.as_bytes()
+            && witness.provider == binding.provider
+            && witness.resource == binding.resource
+            && witness.action == binding.action
+            && witness.argument == argument
+    }
+
     fn take_witness(&self, token: &str, binding: &WitnessBinding) -> bool {
         let Ok(mut witnessed) = self.witnessed_confirmations.lock() else {
             return false;

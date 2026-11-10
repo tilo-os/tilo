@@ -21,17 +21,25 @@
 //!   window reaches this host (a door agent's calls go to the workspace's
 //!   host device) and is handed to the device holding the window, stamped
 //!   with the caller, so it runs there as the caller's: History records the
-//!   agent's run for the person it acts for. The relay runs none of it, and
-//!   the approval a page action needs is asked there, as on any device.
-//! - **Meter** ([`BrowserMeter`]): every page action handed over is admitted
-//!   for the workspace's account first, and counted. A refused one is
-//!   answered with the host's typed [`Refusal`] — the VM path's refusal, not
-//!   a second one.
+//!   agent's run for the person it acts for. The relay runs none of it.
+//! - **Ask** ([`HostedBrowsers::confirm`]): a page action asks the person
+//!   first, and nobody stands in front of a window in a VM to ask. The
+//!   window refuses such an action for want of their answer; this host puts
+//!   the question to their approving devices, as it does for its own agents'
+//!   actions, and answers with their confirmation of that one invocation,
+//!   signed by its own device key. The window that certified it accepts that
+//!   answer for its own person and runs the action without asking again;
+//!   nothing else is a confirmation there.
+//! - **Meter** ([`BrowserMeter`]): every page action is admitted for the
+//!   workspace's account before it is handed over, and counted once the
+//!   window answers that it ran. A refused one is answered with the host's
+//!   typed [`Refusal`] — the VM path's refusal, not a second one — and one
+//!   the person did not allow is never counted.
 //!
 //! What starts and stops environments is the hosted-VM service's
 //! ([`BrowserEnvironments`]): this host places, routes and counts.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -39,12 +47,16 @@ use ed25519_dalek::SigningKey;
 use iroh::EndpointAddr;
 use tilo_actions::remote::host_account::{NextStep, NextStepKind, Reason, Refusal};
 use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, InvokeRequest,
-    RemoteActionMessage, RemoteActionTarget, provider_workspace,
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, Confirmation,
+    ConfirmedInvocation, InvokeRequest, Pending, RemoteActionMessage, RemoteActionTarget,
+    argument_digest, pending, provider_workspace,
 };
 use tilo_actions::selection::logical_resource_id;
 use tilo_lock::MutexRecover as _;
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+use tilo_relay_protocol::certify::PendingConfirmation;
+use tilo_user_identity::{
+    Answered, DeviceCapabilities, DeviceCert, HostWitness, Parties, sign_device_cert,
+};
 
 /// The app a hosted workspace opens Browser through.
 pub const APP: &str = "so.tilo.browser";
@@ -54,6 +66,11 @@ pub const PAGE_RESOURCE: &str = "browser.page";
 /// How long a device certified for an environment lasts: as long as the
 /// environment may run.
 pub const DEVICE_LIFETIME: Duration = Duration::from_secs(2 * 60 * 60);
+/// How long the person's answer to one page action stays good for running
+/// it: their confirmation of that invocation, not a standing grant.
+pub const WITNESS_LIFETIME: u64 = 5 * 60 * 1_000_000_000;
+/// How long a page action's question waits for the person.
+const ANSWER_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
 /// The label the workspace shows the environment's device under.
 pub const DEVICE_LABEL: &str = "Browser";
 /// The address the sessions in the environments reach this host at, written
@@ -168,6 +185,9 @@ pub struct Authority {
     /// The runtime the workspaces run on: listing a device writes membership
     /// there.
     pub runtime: tokio::runtime::Handle,
+    /// Where the person is asked about an action their agent made: the
+    /// channel their approving devices answer on.
+    pub certification: crate::certification::CertificationProtocol,
 }
 
 /// One workspace's window, while its environment runs.
@@ -179,6 +199,22 @@ struct Open {
     device: DeviceCert,
 }
 
+/// A page action handed to a window, as the host handed it there: whose it
+/// is, which window has it, and what the window said of it.
+struct Handed {
+    caller: [u8; 32],
+    window: [u8; 32],
+    /// The workspace, by its UUID: whose account it is counted on.
+    workspace: String,
+    /// The window refused it for want of the person's confirmation: the
+    /// action asks first, so nothing more is handed over until they answer.
+    asks: bool,
+}
+
+/// How many handed page actions are remembered while their windows answer:
+/// beyond it, the oldest are forgotten and only go uncounted.
+const HANDED: usize = 8192;
+
 /// The Browser this host places for its workspaces, and the page actions it
 /// hands to the windows.
 pub struct HostedBrowsers {
@@ -189,6 +225,9 @@ pub struct HostedBrowsers {
     /// The windows up now, by workspace.
     open: Mutex<BTreeMap<u64, Open>>,
     authority: Mutex<Option<Authority>>,
+    /// The page actions handed to a window and not yet answered, by
+    /// invocation: what a count is owed for once it ran, and what asks first.
+    handed: Mutex<HashMap<tilo_actions::InvocationId, Handed>>,
 }
 
 #[allow(
@@ -209,6 +248,7 @@ impl HostedBrowsers {
             account,
             open: Mutex::default(),
             authority: Mutex::default(),
+            handed: Mutex::default(),
         }
     }
 
@@ -266,36 +306,255 @@ impl HostedBrowsers {
     /// window, once the meter admits it for the workspace's account; refused
     /// with the host's typed refusal otherwise. `None` for an action that is
     /// not a page action of that window, which this host serves itself.
+    ///
+    /// An action the window refused for want of the person's confirmation is
+    /// handed over again only with their answer
+    /// ([`Self::confirm`]): without one it is refused
+    /// [`ActionHostError::ConfirmationRequired`], so the caller knows to ask.
     #[must_use]
     pub fn route(
         &self,
         workspace_id: u64,
+        caller: [u8; 32],
         message: &RemoteActionMessage,
     ) -> Option<crate::app_serving::Routing> {
         let RemoteActionMessage::Invoke(request) = message else {
             return None;
         };
-        let (provider, device, workspace) = {
+        let (provider, window) = {
             let open = self.open.lock_recover();
             let up = open.get(&workspace_id)?;
-            (
-                up.window.provider.clone(),
-                up.window.device,
-                up.workspace.clone(),
-            )
+            (up.window.provider.clone(), up.window.device)
         };
         if !page_action(&request.target, &provider) {
             return None;
         }
+        let witnessed = match &request.confirmation {
+            Some(Confirmation::Witnessed(token)) => {
+                self.witnessed(token, workspace_id, caller, request)
+            }
+            _ => false,
+        };
+        if request.confirmation.is_some() && !witnessed {
+            return Some(crate::app_serving::Routing::Refused(
+                ActionHostError::NotPermitted,
+            ));
+        }
+        if !witnessed {
+            let handed = self.handed.lock_recover();
+            if handed.get(&request.invocation).is_some_and(|handed| {
+                handed.asks && handed.caller == caller && handed.window == window
+            }) {
+                return Some(crate::app_serving::Routing::Refused(
+                    ActionHostError::ConfirmationRequired,
+                ));
+            }
+        }
         Some(match self.meter.admit(&self.account) {
             Ok(()) => {
-                self.meter.record(&workspace, &self.account);
-                crate::app_serving::Routing::Device(device)
+                self.hand_over(workspace_id, caller, window, request.invocation);
+                crate::app_serving::Routing::Device(window)
             }
             Err(refusal) => crate::app_serving::Routing::Refused(ActionHostError::Refused {
                 reason: refusal.to_reason(),
             }),
         })
+    }
+
+    /// The window's answer to a page action this host handed it: the action
+    /// ran (`Completed`), so it is counted; it asked first
+    /// (`ConfirmationRequired`), so it is remembered as one that does, and
+    /// counted when it runs after the person answered; anything else ran
+    /// nothing and is counted not at all.
+    pub fn relayed(&self, workspace_id: u64, from: [u8; 32], message: &RemoteActionMessage) {
+        let RemoteActionMessage::Receipt(receipt) = message else {
+            return;
+        };
+        if !self.open.lock_recover().contains_key(&workspace_id) {
+            return;
+        }
+        let mut handed = self.handed.lock_recover();
+        let Some(entry) = handed.get(&receipt.invocation) else {
+            return;
+        };
+        if entry.window != from {
+            return;
+        }
+        match &receipt.status {
+            tilo_actions::remote::ReceiptStatus::Completed { .. } => {
+                let counted = handed.remove(&receipt.invocation);
+                drop(handed);
+                if let Some(counted) = counted {
+                    self.meter.record(&counted.workspace, &self.account);
+                }
+            }
+            tilo_actions::remote::ReceiptStatus::Rejected {
+                error: ActionHostError::ConfirmationRequired,
+            } => {
+                if let Some(entry) = handed.get_mut(&receipt.invocation) {
+                    entry.asks = true;
+                }
+            }
+            // Running, or to be followed: the answer is still to come, and
+            // what it settles is counted then.
+            tilo_actions::remote::ReceiptStatus::Accepted => {}
+            tilo_actions::remote::ReceiptStatus::Rejected { .. }
+            | tilo_actions::remote::ReceiptStatus::Failed { .. }
+            | tilo_actions::remote::ReceiptStatus::Cancelled { .. } => {
+                handed.remove(&receipt.invocation);
+            }
+        }
+    }
+
+    /// Put `request` — a page action of `workspace_id`'s window — to the
+    /// person on their approving devices and answer with their confirmation
+    /// for that one invocation, signed by this host's own device key: the
+    /// witness the window it certified accepts, and no other.
+    ///
+    /// # Errors
+    ///
+    /// [`ActionHostError::UnknownAction`] for anything that is not a page
+    /// action of a window up here, [`ActionHostError::NotPermitted`] when the
+    /// person declined, and [`ActionHostError::ConfirmationRequired`] when
+    /// nobody answered.
+    pub fn confirm(
+        &self,
+        workspace_id: u64,
+        caller: &tilo_actions::remote::Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
+        let (window, certification, person, key) = {
+            let open = self.open.lock_recover();
+            let Some(up) = open.get(&workspace_id) else {
+                return Pending::ready(Err(ActionHostError::UnknownAction));
+            };
+            if !page_action(&request.target, &up.window.provider) {
+                return Pending::ready(Err(ActionHostError::UnknownAction));
+            }
+            let authority = self.authority.lock_recover();
+            let Some(authority) = authority.as_ref() else {
+                return Pending::ready(Err(ActionHostError::UnknownAction));
+            };
+            (
+                up.window.device,
+                authority.certification.clone(),
+                authority.user_public_key,
+                authority.key.clone(),
+            )
+        };
+        let Some(&caller_device) = caller.device_public_key() else {
+            return Pending::ready(Err(ActionHostError::NotPermitted));
+        };
+        if caller.user_public_key() != Some(&person) {
+            return Pending::ready(Err(ActionHostError::NotPermitted));
+        }
+        let workspace = caller.workspace().unwrap_or_default().to_owned();
+        let question = question(&workspace, caller, request);
+        let (completer, answer) = pending();
+        let request = request.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let witnessed = match certification.confirm(question).await {
+                // The question shows no draft, so nothing in it is changed.
+                Ok(tilo_relay_protocol::certify::ConfirmationAnswer::AllowOnce) => {
+                    let now = tilo_clock::unix_now_ns();
+                    let mut witness = HostWitness::unsigned(
+                        Parties {
+                            person,
+                            host: key.verifying_key().to_bytes(),
+                            caller: caller_device,
+                            target: window,
+                        },
+                        Answered {
+                            invocation: *request.invocation.0.as_bytes(),
+                            provider: request.target.provider.clone(),
+                            resource: request.target.address.resource.clone(),
+                            action: request.target.address.action.clone(),
+                            argument: argument_digest(request.argument.to_slot().as_deref()),
+                        },
+                        (now, now.saturating_add(WITNESS_LIFETIME)),
+                    );
+                    match witness.sign(&key) {
+                        Ok(()) => Ok(ConfirmedInvocation::unchanged(Confirmation::Witnessed(
+                            witness.encode(),
+                        ))),
+                        Err(error) => Err(ActionHostError::Unavailable {
+                            reason: format!("the host could not answer for the person: {error}"),
+                        }),
+                    }
+                }
+                Ok(tilo_relay_protocol::certify::ConfirmationAnswer::Deny) => {
+                    Err(ActionHostError::NotPermitted)
+                }
+                Err(_) => Err(ActionHostError::ConfirmationRequired),
+            };
+            completer.complete(witnessed);
+        });
+        answer
+    }
+
+    /// Whether `token` is this host's answer for exactly this page action:
+    /// the answer of the host that certified `workspace_id`'s window, for the
+    /// person it serves, naming this caller, this invocation, this action and
+    /// these arguments, and still good.
+    fn witnessed(
+        &self,
+        token: &str,
+        workspace_id: u64,
+        caller: [u8; 32],
+        request: &InvokeRequest,
+    ) -> bool {
+        let Some(witness) = HostWitness::decode(token) else {
+            return false;
+        };
+        let open = self.open.lock_recover();
+        let Some(up) = open.get(&workspace_id) else {
+            return false;
+        };
+        witness.stands_for(&up.device, tilo_clock::unix_now_ns())
+            && witness.caller_device_public_key == caller
+            && witness.invocation == *request.invocation.0.as_bytes()
+            && witness.provider == request.target.provider
+            && witness.resource == request.target.address.resource
+            && witness.action == request.target.address.action
+            && witness.argument == argument_digest(request.argument.to_slot().as_deref())
+    }
+
+    /// Whether `workspace_id` has a page action with a window, whose answer
+    /// this host counts.
+    #[must_use]
+    pub fn tracks(&self, workspace_id: u64) -> bool {
+        self.open.lock_recover().contains_key(&workspace_id)
+            && !self.handed.lock_recover().is_empty()
+    }
+
+    /// Remember that `invocation` of `caller`'s is with the window, for what
+    /// it answers to be counted by.
+    fn hand_over(
+        &self,
+        workspace_id: u64,
+        caller: [u8; 32],
+        window: [u8; 32],
+        invocation: tilo_actions::InvocationId,
+    ) {
+        let workspace = self
+            .open
+            .lock_recover()
+            .get(&workspace_id)
+            .map(|up| up.workspace.clone())
+            .unwrap_or_default();
+        let mut handed = self.handed.lock_recover();
+        if handed.len() >= HANDED && !handed.contains_key(&invocation) {
+            handed.clear();
+        }
+        handed.insert(
+            invocation,
+            Handed {
+                caller,
+                window,
+                workspace,
+                asks: false,
+            },
+        );
     }
 
     /// The UUID of the workspace this host carries as `workspace_id`, when it
@@ -431,6 +690,51 @@ fn certified(stand_in: &DeviceCert, key: &SigningKey) -> Result<(DeviceCert, [u8
 #[must_use]
 pub fn page_action(target: &RemoteActionTarget, provider: &str) -> bool {
     target.provider == provider && logical_resource_id(&target.address.resource) == PAGE_RESOURCE
+}
+
+/// The question `request` puts to the person, as their approving devices
+/// draw it: the agent that asked, by the name it goes by, the action as the
+/// caller described it, and the workspace it acts in.
+fn question(
+    workspace: &str,
+    caller: &tilo_actions::remote::Caller,
+    request: &InvokeRequest,
+) -> PendingConfirmation {
+    let mut id = [0_u8; 32];
+    let _ = getrandom::fill(&mut id);
+    let address = &request.target.address;
+    let context = request.context.as_ref();
+    let agent_id = match caller.principal() {
+        tilo_actions::remote::CallerPrincipal::Agent(agent) => agent.clone(),
+        _ => String::new(),
+    };
+    PendingConfirmation {
+        id,
+        agent_id,
+        agent_label: caller
+            .agent_name()
+            .map_or_else(|| address.action.clone(), str::to_owned),
+        action_label: context
+            .and_then(|context| context.purpose.clone())
+            .unwrap_or_else(|| address.action.clone()),
+        resource_label: context
+            .and_then(|context| context.resource.as_ref())
+            .map_or_else(
+                || address.resource.clone(),
+                |resource| resource.label.clone(),
+            ),
+        risk: context
+            .and_then(|context| {
+                context
+                    .facets
+                    .iter()
+                    .find(|facet| facet.key == tilo_actions::RISK_FACET)
+            })
+            .map_or_else(|| "destructive".to_owned(), |facet| facet.value.clone()),
+        workspace: workspace.to_owned(),
+        expires_at_ns: tilo_clock::unix_now_ns().saturating_add(ANSWER_WAIT_NS),
+        ..PendingConfirmation::default()
+    }
 }
 
 /// [`Reason::NoPaymentMethod`] for an account whose period's free actions are

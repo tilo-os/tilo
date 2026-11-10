@@ -168,10 +168,18 @@ it, as it already carries remote actions between a workspace's devices. The
 action runs on the window, and History records it as the caller's: the
 agent's run, for the person it acts for.
 
-Page actions are `Outside`, so an agent's call asks the person first. The
-relay already does this, asking the person's approving devices with a
-five-minute token bound to the call. That is the approval before
-`submit-page`, and it needs nothing new.
+Page actions are `Outside`, so an agent's call asks the person first. Nobody
+stands in front of a window in a VM, so the session there refuses such an
+action for want of the person's answer, and the relay puts the question to
+the person's approving devices (`CertificationProtocol::confirm`, five
+minutes for this one invocation). Allowed, the relay hands the action back
+with the person's answer signed by its own device key; the session accepts
+an answer from the host that certified it, for its own person, and runs the
+action without asking again. Denied or unanswered, the action does not run.
+That is the approval before `submit-page`.
+
+The page action is counted once the window answers that it ran, so an
+action the person did not allow is never counted.
 
 ## The paint path
 

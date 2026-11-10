@@ -1887,6 +1887,18 @@ impl AppServingPlane for GovernedPlane {
         }
         self.apps.as_ref()?.route(workspace_id, sender, message)
     }
+
+    fn relayed(&self, workspace_id: u64, from: [u8; 32], message: &RemoteActionMessage) {
+        if let Some(apps) = self.apps.as_ref() {
+            apps.relayed(workspace_id, from, message);
+        }
+    }
+
+    fn tracks(&self, workspace_id: u64) -> bool {
+        self.apps
+            .as_ref()
+            .is_some_and(|apps| apps.tracks(workspace_id))
+    }
 }
 
 #[cfg(test)]

@@ -15,9 +15,9 @@ use std::time::Duration;
 
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Completer,
-    ContentGetAnswer, ContentPutAnswer, InvocationReceipt, InvocationState, InvokeRequest,
-    MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionFrame, RemoteActionMessage, UpdateMark,
-    pending, serve,
+    ConfirmedInvocation, ContentGetAnswer, ContentPutAnswer, InvocationReceipt, InvocationState,
+    InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
+    UpdateMark, pending, serve,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
@@ -114,6 +114,7 @@ struct Waiting {
     follows: HashMap<InvocationId, Followed>,
     puts: HashMap<u64, Asked<Answered<ContentPutAnswer>>>,
     gets: HashMap<u64, Asked<Answered<ContentGetAnswer>>>,
+    confirms: HashMap<u64, Asked<Answered<ConfirmedInvocation>>>,
 }
 
 /// An invocation the device accepted, as it last answered for it.
@@ -164,6 +165,9 @@ impl Waiting {
         for (_, asked) in self.gets.drain() {
             give.push(giving(asked, Err(error.clone())));
         }
+        for (_, asked) in self.confirms.drain() {
+            give.push(giving(asked, Err(error.clone())));
+        }
     }
 
     /// The requests past their deadline, answered as unanswered.
@@ -187,6 +191,9 @@ impl Waiting {
         for asked in expired(&mut self.gets, now) {
             give.push(giving(asked, Err(late())));
         }
+        for asked in expired(&mut self.confirms, now) {
+            give.push(giving(asked, Err(late())));
+        }
     }
 
     fn is_empty(&self) -> bool {
@@ -196,6 +203,7 @@ impl Waiting {
             && self.cancels.is_empty()
             && self.puts.is_empty()
             && self.gets.is_empty()
+            && self.confirms.is_empty()
     }
 
     /// The requests `message` answers.
@@ -251,6 +259,14 @@ impl Waiting {
             } => {
                 if let Some(asked) = self.gets.remove(&correlation) {
                     give.push(giving(asked, result));
+                }
+            }
+            RemoteActionMessage::ConfirmResponse {
+                correlation,
+                result,
+            } => {
+                if let Some(asked) = self.confirms.remove(&correlation) {
+                    give.push(giving(asked, result.map(|confirmed| *confirmed)));
                 }
             }
             _ => {}
@@ -697,6 +713,32 @@ impl ActionHost for SessionActions {
             let asked = self.0.waiting.lock_recover().cancels.remove(id);
             for asked in asked.unwrap_or_default() {
                 asked.answer.complete(Err(error.clone()));
+            }
+        }
+        answered
+    }
+
+    /// The person's confirmation for `request`, asked of the host the device is with: where they
+    /// are put to them is the host's to say.
+    fn confirm(
+        &self,
+        _caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Answered<ConfirmedInvocation>> {
+        let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
+        let (answer, answered) = pending();
+        self.0
+            .waiting
+            .lock_recover()
+            .confirms
+            .insert(correlation, Asked::new(answer));
+        if let Err(error) = self.0.send(RemoteActionMessage::Confirm {
+            correlation,
+            request: Box::new(request.clone()),
+        }) {
+            let asked = self.0.waiting.lock_recover().confirms.remove(&correlation);
+            if let Some(asked) = asked {
+                asked.answer.complete(Err(error));
             }
         }
         answered

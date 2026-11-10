@@ -685,6 +685,9 @@ impl AppBrokerState {
             // Questions travel between a person's own devices; an
             // application neither asks nor answers them.
             | RemoteActionMessage::ConfirmationRequest { .. }
+            // A confirmation is asked for on the door that puts questions to
+            // the person, never by an application.
+            | RemoteActionMessage::Confirm { .. }
             // A retired verb: nothing asks for a reading this way, and
             // nothing is answered.
             | RemoteActionMessage::RetiredResourceWatch { .. }
@@ -700,6 +703,7 @@ impl AppBrokerState {
             | RemoteActionMessage::RecordResponse { .. }
             | RemoteActionMessage::FeedbackResponse { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
+            | RemoteActionMessage::ConfirmResponse { .. }
             | RemoteActionMessage::RetiredResourceReading { .. }
             | RemoteActionMessage::ContentPutResponse { .. }
             | RemoteActionMessage::ContentGetResponse { .. }

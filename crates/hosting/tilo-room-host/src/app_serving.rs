@@ -97,6 +97,21 @@ pub trait AppServingPlane: Send + Sync {
         let _ = (workspace_id, sender, message);
         None
     }
+
+    /// What device `from` answered `message` in `workspace_id`, on its way
+    /// to the caller: the host only carries it, and a plane that handed the
+    /// frame over may want to know how it went.
+    fn relayed(&self, workspace_id: u64, from: [u8; 32], message: &RemoteActionMessage) {
+        let _ = (workspace_id, from, message);
+    }
+
+    /// Whether this plane waits on answers to frames of `workspace_id`: the
+    /// host decodes what it forwards there for [`Self::relayed`], and reads
+    /// the rest untouched.
+    fn tracks(&self, workspace_id: u64) -> bool {
+        let _ = workspace_id;
+        false
+    }
 }
 
 /// Where a frame is served instead of on the host it was addressed to

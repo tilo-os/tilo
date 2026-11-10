@@ -476,6 +476,8 @@ impl WorkspaceActions {
             | RemoteActionMessage::RecordResponse { .. }
             | RemoteActionMessage::ConfirmationRequest { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
+            | RemoteActionMessage::Confirm { .. }
+            | RemoteActionMessage::ConfirmResponse { .. }
             | RemoteActionMessage::RetiredResourceWatch { .. }
             | RemoteActionMessage::RetiredResourceReading { .. }
             | RemoteActionMessage::ContentPutResponse { .. }
@@ -636,6 +638,8 @@ impl HostActions {
             | RemoteActionMessage::RecordResponse { .. }
             | RemoteActionMessage::ConfirmationRequest { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
+            | RemoteActionMessage::Confirm { .. }
+            | RemoteActionMessage::ConfirmResponse { .. }
             | RemoteActionMessage::RetiredResourceWatch { .. }
             | RemoteActionMessage::RetiredResourceReading { .. }
             | RemoteActionMessage::ContentPutResponse { .. }

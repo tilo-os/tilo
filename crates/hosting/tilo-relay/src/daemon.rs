@@ -226,6 +226,14 @@ impl Relay {
         &self.web
     }
 
+    /// This host's channel to the person's approving devices: where a
+    /// question about an action it runs for one of their agents is answered.
+    #[cfg(feature = "web")]
+    #[must_use]
+    pub fn confirmations(&self) -> crate::certification::CertificationProtocol {
+        self.web.certification.clone()
+    }
+
     /// Name the device of the session beside this node (the shell that runs
     /// the person's apps), which pages address to open apps there. Named
     /// once; a later call keeps the first.
