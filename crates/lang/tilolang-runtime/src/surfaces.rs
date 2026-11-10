@@ -150,9 +150,9 @@ impl Core {
             return Ok(());
         };
         // Only what the window's own place offers: an action that reads a row over it has
-        // none on a window's page. What the view already put in the sidebar's header — the
-        // "+" that makes the thing the sidebar lists — stands there alone, not again in the
-        // window's bar.
+        // none on a window's page. What the view already drew in the window's bar with its own
+        // controls — the "+" that makes the thing the sidebar lists, the page's own button for
+        // what it shows — stands there alone, not again beside them as the subject's action.
         let headed = self.header_actions(shell)?;
         let acted: Vec<Value> = self
             .actions_on(&subject, &Value::none())
@@ -386,13 +386,16 @@ impl Core {
         }
     }
 
-    /// The actions the shell's sidebar header runs: the ids of the actions its controls apply.
-    /// The window's own bar leaves those where the view put them, so the thing a window makes
-    /// stands in the sidebar's "+" alone.
+    /// The actions the view's own controls in the window's bar apply: those of the sidebar's
+    /// head, and those of the controls the page draws in the bar's own row (a page's `header`).
+    /// A control the view drew there stands where the view put it, alone: the subject's action
+    /// of the same name is not placed beside it as a second button.
     fn header_actions(&self, shell: usize) -> Result<Vec<String>, RuntimeError> {
         let mut ids = Vec::new();
-        if let Some(head) = self.slot(shell, SIDEBAR_ACTIONS)? {
-            self.applied_ids(head, &mut ids)?;
+        for name in [SIDEBAR_ACTIONS, ACTIONS, OVERVIEW_ACTIONS] {
+            if let Some(head) = self.slot(shell, name)? {
+                self.applied_ids(head, &mut ids)?;
+            }
         }
         Ok(ids)
     }

@@ -485,6 +485,65 @@ mod cases {
         );
     }
 
+    /// A page that draws its own control for an action in the bar has that control alone: the
+    /// action it applies is not placed beside it as a second button of the same words.
+    #[test]
+    fn a_pages_own_bar_control_stands_once() {
+        const HEADED: &str = r#"
+app so.tilo.test.headed "Headed"
+type Note {
+    title: Text
+}
+type Notes {
+    items: Collection<Note>
+}
+root Notes
+default view all for Notes
+default view note_page for Note
+primary action new(n: Notes) -> Note (icon: .plus) {
+    n.items.insert(Note(title: "One"))
+}
+action archive(n: Note) (label: "Archive", icon: .archive) {
+    n.title = n.title
+}
+view all(n: Notes) {
+    std.page(n) {
+        ui.Text("Notes")
+    }
+}
+view note_page(n: Note) {
+    std.page(n) {
+        header: {
+            ui.Button("Archive", icon: .archive) {
+                on press: archive(n)
+            }
+        }
+        text(n.title)
+    }
+}
+"#;
+        let w = install(HEADED);
+        let root = w.root("Notes");
+        let note = returned_ref(w.call("new", vec![Value::resource(&root)]));
+        let window = w.window("note_page", &note);
+        let tree = window.tree();
+        one_bar(tree);
+        let shell = of_kind(tree, "ui.NavShell")
+            .into_iter()
+            .next()
+            .expect("the window's bar");
+        let archive = slot(shell, "actions")
+            .into_iter()
+            .filter(|child| child.props.get("label") == Some(&Value::text("Archive")))
+            .count();
+        assert_eq!(
+            archive,
+            1,
+            "the page's own Archive stands in the bar once:\n{}",
+            dump(tree)
+        );
+    }
+
     /// A page whose item offers nothing shows no "…": the door would open on nothing, taking a
     /// line of the page for a control with nothing behind it.
     #[test]
