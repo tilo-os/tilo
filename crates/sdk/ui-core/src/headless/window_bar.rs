@@ -39,13 +39,14 @@ impl FrameHarness {
         self.invalidate_local();
         if !self.window_bar {
             self.window_bar = true;
-            crate::window_toolbar::set_hosted(true);
+            self.host_bar_window();
             if let Some(history) = &mut self.history {
                 history.remove_fallback_bar();
                 history.set_open_button(false);
                 history.set_window_presents(true);
             }
         }
+        let _running = self.running();
         // The bar the frame offers its content's header row: a row that takes it fills the
         // window, with the window's controls at its trailing end, and one that does not leaves
         // the bar its band above ([`Self::row_holds_bar`]). Every frame offers it, as a window's
@@ -61,6 +62,40 @@ impl FrameHarness {
             tracing::warn!(%error, "window bar: the frame under it did not lay out");
         }
         self.refresh_row_holds();
+    }
+
+    /// This window is the one the app's bar calls act on while the guard lives: what it declares
+    /// or asks there is this window's, never another window's a process lays out beside it. None
+    /// while the harness shows no bar, where the thread's own window is the app's.
+    pub(super) fn running(&self) -> Option<crate::window_toolbar::WindowScope> {
+        self.window
+            .as_ref()
+            .map(|window| crate::window_toolbar::enter(Some(window)))
+    }
+
+    /// Take a window of this harness's own to host the app's bar in, standing as the thread's own
+    /// while the harness lives: the app declares its slots on it and asks it for what its bar
+    /// does, so windows a process lays out beside each other keep their bars apart.
+    pub(super) fn host_bar_window(&mut self) {
+        let window = crate::hosted_window::HostedWindow::new();
+        self.window_scope = Some(crate::window_toolbar::enter(Some(&window)));
+        self.window = Some(window);
+    }
+
+    /// The window this harness shows the app in, once it stands in for the desktop's bar.
+    #[must_use]
+    pub fn window(&self) -> Option<&crate::hosted_window::HostedWindow> {
+        self.window.as_ref()
+    }
+
+    /// What this window's bar shows: the slots the app declared on this window, with the notice
+    /// up and the reactions shown. The thread's own bar while the harness stands in for none.
+    #[must_use]
+    pub fn window_toolbar(&self) -> Option<crate::window_toolbar::WindowToolbar> {
+        match &self.window {
+            Some(window) => window.shown(),
+            None => crate::window_toolbar::shown(),
+        }
     }
 
     /// Read whether the app's frame holds the window's bar in a header row of its own, from the
@@ -377,6 +412,7 @@ impl FrameHarness {
     /// notice asks for an undo) is done and shown, as the live window's idle
     /// service does after that sync.
     pub fn press_window_slot(&mut self, event: crate::window_toolbar::ToolbarEvent) {
+        let _running = self.running();
         self.invalidate_local();
         if crate::window_toolbar::deliver_to_app(event) {
             self.hand_keyboard_to_app();
@@ -394,7 +430,8 @@ impl FrameHarness {
     /// # Errors
     /// Says what the bar offers when no action is named `name`.
     pub fn press_window_action(&mut self, name: &str) -> Result<(), String> {
-        let toolbar = crate::window_toolbar::declared().unwrap_or_default();
+        let _running = self.running();
+        let toolbar = self.window_toolbar().unwrap_or_default();
         let actions = toolbar.leading.iter().chain(&toolbar.actions);
         let mut offered = Vec::new();
         let mut found = None;
@@ -502,7 +539,7 @@ impl FrameHarness {
             (self.window_search.in_place() != crate::widget::InPlace::Nothing)
                 .then(|| crate::widget::WindowSearch::least_span(&self.theme)),
         );
-        bar.set_toolbar(TAB, crate::window_toolbar::shown());
+        bar.set_toolbar(TAB, self.window_toolbar());
         bar.set_history_control(TAB, self.window_history_control());
         bar.set_group_focused(true);
         // The first layout gives the bar its width; the second measures a
@@ -1943,7 +1980,6 @@ mod tests {
         width: u32,
         slots: Option<crate::window_toolbar::WindowToolbar>,
     ) -> FrameHarness {
-        crate::window_toolbar::declare(slots);
         let mut harness = FrameHarness::for_app(
             crate::State::new(),
             Covered {
@@ -1955,6 +1991,8 @@ mod tests {
             crate::theme::Theme::dark(),
         );
         harness.present_in_window_bar();
+        // The app declares its slots on the window its bar shows, never on the thread's.
+        crate::window_toolbar::declare(slots);
         harness
     }
 
@@ -2172,6 +2210,97 @@ mod tests {
             "and the scrim is gone with it"
         );
         crate::window_toolbar::declare(None);
+    }
+
+    /// An app whose frame declares the window's bar, as an app's own does when it draws.
+    struct DeclaresBar(crate::window_toolbar::WindowToolbar);
+
+    impl Widget for DeclaresBar {
+        fn name(&self) -> &str {
+            "DeclaresBar"
+        }
+
+        fn update(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) -> bool {
+            crate::window_toolbar::declare(Some(self.0.clone()));
+            false
+        }
+
+        fn build_layout(
+            &mut self,
+            tree: &mut taffy::TaffyTree<()>,
+            _: &crate::theme::Theme,
+            nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            use crate::widget::TaffyTreeExt as _;
+            tree.widget_leaf(taffy::Style::default(), nodes, self)
+        }
+    }
+
+    /// Two windows a process lays out keep their bars apart: each app declares its slots on its
+    /// own window, the frame of one reads nothing of the other's, and the thread keeps none of
+    /// them once the windows are gone.
+    #[test]
+    fn windows_a_process_lays_out_keep_their_bars_apart() {
+        use crate::window_toolbar::{ToolbarAction, WindowToolbar};
+        let _hosted = HostedReset;
+        let bar = |id: &str, name: &str| WindowToolbar {
+            actions: vec![ToolbarAction::new(id, "plus", name)],
+            ..WindowToolbar::default()
+        };
+        let mut notes = harness_of(Box::new(DeclaresBar(bar("new-note", "New note"))));
+        let mut tasks = harness_of(Box::new(DeclaresBar(bar("new-task", "New task"))));
+        notes.present_in_window_bar();
+        tasks.present_in_window_bar();
+        // Each window runs the frame that declares its bar, as a live window does.
+        notes.relayout();
+        tasks.relayout();
+        let names = |harness: &mut FrameHarness| -> Vec<String> {
+            harness
+                .window_bar_layout(800.0)
+                .controls
+                .into_iter()
+                .filter(|control| control.slot == "action")
+                .map(|control| control.name)
+                .collect()
+        };
+        assert_eq!(names(&mut notes), vec!["New note"], "notes' bar is its own");
+        assert_eq!(names(&mut tasks), vec!["New task"], "tasks' bar is its own");
+        assert_eq!(
+            notes.window_toolbar().map(|bar| bar.actions.len()),
+            Some(1),
+            "notes' window shows the one action its app declares"
+        );
+        // A press the desktop hands one window reaches that window's app, not the other's.
+        let press = crate::window_toolbar::ToolbarEvent::Action {
+            id: "new-note".into(),
+        };
+        notes.press_window_slot(press.clone());
+        let note = notes.window().expect("notes' window");
+        assert_eq!(
+            note.take_events(),
+            vec![press],
+            "the press reaches the app the window runs"
+        );
+        assert!(
+            tasks
+                .window()
+                .expect("tasks' window")
+                .take_events()
+                .is_empty(),
+            "the window standing beside it heard none of it"
+        );
+        tasks.relayout();
+        assert_eq!(
+            names(&mut tasks),
+            vec!["New task"],
+            "tasks kept its own bar"
+        );
+        drop(notes);
+        drop(tasks);
+        assert!(
+            !crate::window_toolbar::is_hosted(),
+            "no window stands as the thread's own once both are gone"
+        );
     }
 
     pub(super) struct HostedReset;

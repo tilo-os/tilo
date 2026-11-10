@@ -420,6 +420,13 @@ pub struct FrameHarness {
     /// The app's window-bar slots in a row of the frame's own, as a window
     /// of its own hosts them ([`Self::host_window_slots`]).
     slot_row: Option<Box<slot_row::HostedSlots>>,
+    /// The window this harness shows the app in, once it stands in for the desktop's bar
+    /// ([`Self::present_in_window_bar`]): the app declares its bar's slots on this window, so
+    /// windows a process lays out beside each other keep their bars apart.
+    window: Option<crate::hosted_window::HostedWindow>,
+    /// `window` standing as the thread's own for as long as the harness lives: what the app's
+    /// bar hands it between frames ([`Self::press_window_slot`]) is this window's.
+    window_scope: Option<crate::window_toolbar::WindowScope>,
     /// The app a concrete root stands for ([`Self::for_app`]): its kind and
     /// title, which its window's bar wears as a desktop window's tab does.
     window_app: Option<(crate::widget::AppKind, String)>,
@@ -1067,6 +1074,7 @@ impl FrameHarness {
         presented: &mut bool,
         completed: &mut usize,
     ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        let _running = self.running();
         let Some(queue) = self.owner_wake_queue.clone() else {
             return Ok(());
         };
@@ -1143,6 +1151,7 @@ impl FrameHarness {
     /// Capture/close embedded components while the host still owns their trees.
     /// Recovery reports stay owned by this host until explicitly transferred.
     pub fn close_components(&mut self) {
+        let _running = self.running();
         self.invalidate_local();
         self.pending_app_activation = None;
         self.bound_publication.clear();
@@ -1545,6 +1554,8 @@ impl FrameHarness {
             row_holds: false,
             window_search: Box::new(crate::widget::WindowSearch::new()),
             slot_row: None,
+            window: None,
+            window_scope: None,
             window_app: None,
             bound_resources: crate::bound_dispatch::BoundResourceCache::default(),
             bound_resource_frames: 0,
@@ -1700,6 +1711,9 @@ impl FrameHarness {
         event: &WindowEvent,
         modifiers: &winit::event::Modifiers,
     ) -> RootDispatch {
+        // What the app answers the person with — a slot declared, a notice shown — is this
+        // window's.
+        let _running = self.running();
         self.invalidate_local();
         let _wake = self.enter_wake();
         crate::motion::note_input(event);
@@ -1755,6 +1769,7 @@ impl FrameHarness {
 
     /// Deliver an authenticated transport answer through the native widget tree.
     pub fn handle_collaboration_event(&mut self, event: &crate::collaboration::CollabEvent) {
+        let _running = self.running();
         self.invalidate_local();
         crate::widget::handle_collab_event(self.root.as_mut(), event);
         self.relayout();
@@ -1875,6 +1890,7 @@ impl FrameHarness {
     }
 
     fn perform_history(&mut self, request: crate::undo::UndoRequest) -> bool {
+        let _running = self.running();
         if self.pump_component_wakes_checked().is_err() {
             return false;
         }
@@ -2632,6 +2648,7 @@ impl FrameHarness {
 
     /// Read wake demand without materializing document text or semantic nodes.
     pub fn frame_schedule(&self) -> FrameSchedule {
+        let _running = self.running();
         self.drain_component_wakes();
         let queued_work = self.layout_requested
             || self.input_frame_pending
@@ -3237,6 +3254,9 @@ impl FrameHarness {
     }
 
     fn try_relayout_once(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
+        // What the app declares and asks of its bar while the frame builds, updates and draws is
+        // this window's, never the thread's or another window's the process lays out beside it.
+        let _running = self.running();
         if self.layout_requested {
             // A deferred request permits a full original composition, not
             // stale target access. Retire BEFORE its arbitrary callbacks; a
@@ -6269,6 +6289,7 @@ impl FrameHarness {
         event: &WindowEvent,
         host_navigation_allowed: bool,
     ) {
+        let _running = self.running();
         if let WindowEvent::ModifiersChanged(modifiers) = event {
             self.modifiers = *modifiers;
         }
@@ -6620,6 +6641,7 @@ impl FrameHarness {
     /// 3. **Undo/redo the tree asked for** runs last, so an action performed in
     ///    the same tick is already on the stack and is what gets reverted.
     fn idle_control_tick(&mut self) {
+        let _running = self.running();
         // This original action sweep dereferences the mapped tree. Standalone
         // model work leaves it unavailable until fresh composition admission.
         if self.owner_service_layout_retired {
@@ -6847,6 +6869,8 @@ impl FrameHarness {
         arguments: serde_json::Value,
         confirmed: bool,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        // An action the person takes answers on this window's bar, as a press does.
+        let _running = self.running();
         let serde_json::Value::Object(arguments) = arguments else {
             return Err(tilo_actions::DoorError::InvalidArguments(
                 "arguments are an object".into(),

@@ -110,12 +110,16 @@ impl FrameHarness {
         if self.window_bar || self.slot_row.is_some() {
             return;
         }
+        // The row's slots are this window's, as the desktop bar's are
+        // ([`Self::present_in_window_bar`]): a process laying out several windows keeps each
+        // row to its own window.
+        self.host_bar_window();
+        let _running = self.running();
         self.slot_row = Some(Box::new(HostedSlots {
             row: SlotRow::new(),
             inset: 0.0,
             revision: crate::window_toolbar::revision().wrapping_sub(1),
         }));
-        crate::window_toolbar::set_hosted(true);
         if let Some(history) = &mut self.history {
             history.remove_fallback_bar();
             history.set_open_button(false);

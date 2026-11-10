@@ -1128,9 +1128,10 @@ thread_local! {
     static HOSTED: Cell<bool> = const { Cell::new(false) };
     static EDIT_REQUESTED: Cell<bool> = const { Cell::new(false) };
     static SEARCH_REQUESTED: Cell<Option<SearchOpening>> = const { Cell::new(None) };
-    /// The window of the app its host is running, while it runs one.
-    static WINDOW: RefCell<Option<crate::hosted_window::HostedWindow>> =
-        const { RefCell::new(None) };
+    /// The windows a host is running apps in, the innermost last: the last one is the window
+    /// this module's calls act on.
+    static WINDOWS: RefCell<Vec<crate::hosted_window::HostedWindow>> =
+        const { RefCell::new(Vec::new()) };
 }
 
 /// While the returned guard lives, this module's calls act on `window`: the
@@ -1138,38 +1139,47 @@ thread_local! {
 /// enclosing window. Guards nest.
 #[must_use = "the window is current until the guard is dropped"]
 pub fn enter(window: Option<&crate::hosted_window::HostedWindow>) -> WindowScope {
-    match window {
-        Some(window) => WindowScope {
-            changed: true,
-            earlier: WINDOW.with(|current| current.replace(Some(window.clone()))),
-        },
-        None => WindowScope {
-            changed: false,
-            earlier: None,
-        },
+    let Some(window) = window else {
+        return WindowScope { entered: None };
+    };
+    WINDOWS.with(|windows| windows.borrow_mut().push(window.clone()));
+    WindowScope {
+        entered: Some(window.identity()),
     }
 }
 
-/// Puts back the enclosing window when dropped: see [`enter`].
+/// Leaves the window it entered when dropped: see [`enter`].
 pub struct WindowScope {
-    /// Whether this guard changed the window.
-    changed: bool,
-    /// The window current before it did.
-    earlier: Option<crate::hosted_window::HostedWindow>,
+    /// Which window this guard entered ([`crate::hosted_window::HostedWindow::identity`]).
+    entered: Option<usize>,
 }
 
 impl Drop for WindowScope {
     fn drop(&mut self) {
-        if self.changed {
-            let earlier = self.earlier.take();
-            WINDOW.with(|current| *current.borrow_mut() = earlier);
-        }
+        let Some(entered) = self.entered else {
+            return;
+        };
+        // The guard leaves its own window from wherever it stands: a host that runs several
+        // windows in one thread leaves them in any order, and the ones still running stay
+        // current in the order they were entered.
+        let _ = WINDOWS.try_with(|windows| {
+            let mut windows = windows.borrow_mut();
+            if let Some(at) = windows
+                .iter()
+                .rposition(|window| window.identity() == entered)
+            {
+                windows.remove(at);
+            }
+        });
     }
 }
 
 /// The window of the app being run, if its host shows it in one.
 pub(crate) fn window() -> Option<crate::hosted_window::HostedWindow> {
-    WINDOW.with(|current| current.borrow().clone())
+    WINDOWS
+        .try_with(|windows| windows.borrow().last().cloned())
+        .ok()
+        .flatten()
 }
 
 /// The workspace of the window the app runs in, when its host put the
@@ -1182,12 +1192,9 @@ pub fn workspace() -> Option<String> {
 /// Which window this module's calls act on now: the one a host lent the app
 /// it is running, or `None` for the process's own window.
 pub(crate) fn current_window() -> Option<usize> {
-    WINDOW.with(|current| {
-        current
-            .borrow()
-            .as_ref()
-            .map(crate::hosted_window::HostedWindow::identity)
-    })
+    window()
+        .as_ref()
+        .map(crate::hosted_window::HostedWindow::identity)
 }
 
 /// Declare the window's slots (`None`: none). Cheap when nothing changed.
@@ -1265,7 +1272,7 @@ pub fn notify(notice: Option<ToolbarNotice>) {
 pub fn withdraw(notice: &ToolbarNotice) {
     let mut bounded = notice.clone();
     bounded.bound();
-    let Ok(window) = WINDOW.try_with(|current| current.borrow().clone()) else {
+    let Ok(window) = WINDOWS.try_with(|windows| windows.borrow().last().cloned()) else {
         return;
     };
     if let Some(window) = window {

@@ -2075,8 +2075,10 @@ impl AppCheck<'_> {
             bar_height,
             staged.harness().window_header_row_height(),
         ));
+        // The bar's primary action is read off the slots this window declared, never the
+        // process's: windows laid out side by side in one process keep their bars apart.
         problems.extend(audit::bar_primary(
-            ui::window_toolbar::shown().as_ref(),
+            staged.harness().window_toolbar().as_ref(),
             bar,
         ));
         for problem in &mut problems {
