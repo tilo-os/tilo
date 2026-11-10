@@ -1,6 +1,5 @@
 //! What a page asks a host before it holds a session, over HTTPS through its
-//! `fetch`: the host's certificate and address, a member's approval of their
-//! own device, and joining a workspace.
+//! `fetch`: the host's certificate and address, and joining a workspace.
 //!
 //! Everything after that is the session, over iroh
 //! (`tilo_relay_session::RelayClient`), dialled where [`crate::Host`] says.
@@ -194,15 +193,6 @@ pub async fn host_info(
     client: &dyn HttpClient,
 ) -> Result<tilo_relay_protocol::web::HostInfo, LinkError> {
     call(client, "/host", Vec::new()).await
-}
-
-/// Send a member's root-signed approver command (their pending device
-/// requests, or a decision on one).
-pub async fn certify_approve(
-    client: &dyn HttpClient,
-    approval: &tilo_relay_protocol::certify::MemberApproval,
-) -> Result<tilo_relay_protocol::certify::ApproverReply, LinkError> {
-    call(client, "/certify/approve", encode(approval)?).await
 }
 
 /// One step of joining a workspace with no session (`/join`).

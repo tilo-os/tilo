@@ -396,6 +396,43 @@ impl CertificationProtocol {
         Ok((digest, pairing_code, receiver))
     }
 
+    /// Whether `user` is the person this host runs for, or a member of a
+    /// workspace it serves: whose devices it queues, and whose root may answer
+    /// for them.
+    async fn admits(&self, user: [u8; 32]) -> bool {
+        match &self.workspaces {
+            Some(workspaces) => {
+                crate::workspace_access::admits_person(
+                    workspaces,
+                    self.identity.user_public_key,
+                    user,
+                )
+                .await
+            }
+            None => user == self.identity.user_public_key,
+        }
+    }
+
+    /// One approver command from a member's root, answered once.
+    async fn serve_member(
+        &self,
+        connection: &Connection,
+        mut send: iroh::endpoint::SendStream,
+        approval: MemberApproval,
+    ) -> Result<(), AcceptError> {
+        let reply = if self.admits(approval.user_public_key).await {
+            self.member_approve(approval, unix_now_ns())
+        } else {
+            ApproverReply::Refused {
+                reason: "only a member approves devices here".into(),
+            }
+        };
+        write_frame(&mut send, &encode(&reply)?)
+            .await
+            .map_err(|error| io(&error))?;
+        finish(connection, send).await
+    }
+
     async fn serve_requester(
         &self,
         connection: &Connection,
@@ -407,17 +444,7 @@ impl CertificationProtocol {
         // A member of a workspace this host serves queues their own devices
         // beside the host's own, answered by their root rather than the
         // owner's.
-        let member = match &self.workspaces {
-            Some(workspaces) => {
-                crate::workspace_access::admits_person(
-                    workspaces,
-                    self.identity.user_public_key,
-                    request.user_public_key,
-                )
-                .await
-            }
-            None => request.user_public_key == self.identity.user_public_key,
-        };
+        let member = self.admits(request.user_public_key).await;
         // A request a person's stand-in here expects is queued like theirs,
         // whether or not they are a member of a workspace this host serves.
         let stand_in = self
@@ -687,6 +714,7 @@ impl ProtocolHandler for CertificationProtocol {
             CertifyOpen::Approver(hello) => {
                 self.serve_approver(&connection, send, recv, hello).await
             }
+            CertifyOpen::Member(approval) => self.serve_member(&connection, send, approval).await,
         }
     }
 }

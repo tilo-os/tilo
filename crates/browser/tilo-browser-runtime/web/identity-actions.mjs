@@ -286,7 +286,7 @@ export function createIdentityActions({
   // invites is open; only one that answers such an invite is asked about.
   const askPending = async () => {
     for (const id of invites.prune()) closeInvite(id);
-    if (!invites.size) { stopPairing?.(); stopPairing = null; return; }
+    if (!invites.size) { stopPairing?.(); stopPairing = null; void pairing.close?.(); return; }
     let pending;
     try { pending = await pairing.pending(); } catch (error) { onError(error); return; }
     for (const request of forInvites(pending, invites)) {

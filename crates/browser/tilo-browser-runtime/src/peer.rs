@@ -975,56 +975,87 @@ pub async fn revoke_device(root: JsValue, key_hex: String) -> Result<String, JsE
     serde_json::to_string(&entry).map_err(js_error)
 }
 
-/// The new devices waiting at the host at `post` for the member root the
-/// page holds (`root`) to pair them: `[{digest, pairingCode, label, device,
-/// invite, requestedAtMs}]` JSON, keys, digest and invite as hex (`invite`
-/// null for a request no invite asked for).
-#[wasm_bindgen(js_name = pendingPairings)]
-pub async fn pending_pairings(post: Function, root: JsValue) -> Result<String, JsError> {
-    let root = PageSigner::from_js(&root)?;
-    let pending = tilo_relay_client::pending_pairings(&PageHttp(post), &root)
-        .await
-        .map_err(js_error)?;
-    Ok(serde_json::Value::Array(
-        pending
-            .iter()
-            .map(|entry| {
-                serde_json::json!({
-                    "digest": hex::encode(entry.request_digest),
-                    "pairingCode": entry.pairing_code,
-                    "label": entry.request.device_label,
-                    "device": hex::encode(entry.request.device_public_key),
-                    "invite": (entry.request.invite != [0; 16])
-                        .then(|| hex::encode(entry.request.invite)),
-                    "requestedAtMs": entry.requested_at_ns / 1_000_000,
-                })
-            })
-            .collect(),
-    )
-    .to_string())
-}
+/// The host a page pairs its person's new devices through, as that person's
+/// root: it reaches the host as every device does, over iroh through the relay
+/// the host names, from one endpoint it keeps while the page pairs.
+#[wasm_bindgen(js_name = PairingHost)]
+pub struct PairingHost(tilo_relay_client::MemberApprover);
 
-/// Pair (`approved`) or turn away the waiting device `digest_hex` at the
-/// host at `post`, with the member root the page holds. Resolves to the
-/// certificate issued (JSON), or null when turned away.
-#[wasm_bindgen(js_name = answerPairing)]
-pub async fn answer_pairing(
-    post: Function,
-    root: JsValue,
-    digest_hex: String,
-    approved: bool,
-) -> Result<Option<String>, JsError> {
-    let root = PageSigner::from_js(&root)?;
-    let digest: [u8; 32] = hex::decode(&digest_hex)
-        .ok()
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or_else(|| JsError::new("a request digest is 64 hex characters"))?;
-    let issued = tilo_relay_client::answer_pairing(&PageHttp(post), &root, digest, approved)
-        .await
-        .map_err(js_error)?;
-    issued
-        .map(|cert| serde_json::to_string(&cert).map_err(js_error))
-        .transpose()
+#[wasm_bindgen(js_class = PairingHost)]
+impl PairingHost {
+    /// The host `address` names (`hostInfo().address`, JSON).
+    ///
+    /// # Errors
+    /// `address` is not a host's address.
+    #[wasm_bindgen(constructor)]
+    pub fn new(address: &str) -> Result<Self, JsError> {
+        let host = serde_json::from_str::<JsHostAddress>(address)
+            .map_err(js_error)?
+            .host();
+        Ok(Self(tilo_relay_client::MemberApprover::new(host)))
+    }
+
+    /// The new devices waiting here for the member root the page holds
+    /// (`root`) to pair them: `[{digest, pairingCode, label, device, invite,
+    /// requestedAtMs}]` JSON, keys, digest and invite as hex (`invite` null
+    /// for a request no invite asked for).
+    ///
+    /// # Errors
+    /// The host was not reached, or turned the root away.
+    pub async fn pending(&self, root: JsValue) -> Result<String, JsError> {
+        let root = PageSigner::from_js(&root)?;
+        let pending = tilo_relay_client::pending_pairings(&self.0, &root)
+            .await
+            .map_err(js_error)?;
+        Ok(serde_json::Value::Array(
+            pending
+                .iter()
+                .map(|entry| {
+                    serde_json::json!({
+                        "digest": hex::encode(entry.request_digest),
+                        "pairingCode": entry.pairing_code,
+                        "label": entry.request.device_label,
+                        "device": hex::encode(entry.request.device_public_key),
+                        "invite": (entry.request.invite != [0; 16])
+                            .then(|| hex::encode(entry.request.invite)),
+                        "requestedAtMs": entry.requested_at_ns / 1_000_000,
+                    })
+                })
+                .collect(),
+        )
+        .to_string())
+    }
+
+    /// Pair (`approved`) or turn away the waiting device `digest_hex`, with
+    /// the member root the page holds. Resolves to the certificate issued
+    /// (JSON), or null when turned away.
+    ///
+    /// # Errors
+    /// The host was not reached, the device no longer waits, or the host
+    /// refused the answer.
+    pub async fn answer(
+        &self,
+        root: JsValue,
+        digest_hex: String,
+        approved: bool,
+    ) -> Result<Option<String>, JsError> {
+        let root = PageSigner::from_js(&root)?;
+        let digest: [u8; 32] = hex::decode(&digest_hex)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| JsError::new("a request digest is 64 hex characters"))?;
+        let issued = tilo_relay_client::answer_pairing(&self.0, &root, digest, approved)
+            .await
+            .map_err(js_error)?;
+        issued
+            .map(|cert| serde_json::to_string(&cert).map_err(js_error))
+            .transpose()
+    }
+
+    /// Let go of the host: the page pairs nothing more through it.
+    pub async fn close(&self) {
+        self.0.close().await;
+    }
 }
 
 // ---- Previews: what a member's editor shows before the change lands -----

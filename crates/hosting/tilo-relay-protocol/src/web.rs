@@ -1,6 +1,5 @@
 //! What a page asks a host over HTTPS before it has a session: the host's
-//! address, approvals for a member's own devices, and the join steps of a
-//! workspace. Served by the host itself.
+//! address and the join steps of a workspace. Served by the host itself.
 //!
 //! Everything a page does once it is up goes over its iroh session; these
 //! routes only get it there. Every body is postcard. Routes (all `POST`,
@@ -9,7 +8,6 @@
 //! | Route | Body | Answer |
 //! |---|---|---|
 //! | `/host` | — | [`HostInfo`] |
-//! | `/certify/approve` | `MemberApproval` | `ApproverReply` |
 //! | `/join` | [`JoinStep`](crate::workspaces::JoinStep) | [`JoinReply`](crate::workspaces::JoinReply) |
 //! | `/fetch` ([`FETCH_PATH`]) | any method: `tilo_net::proxy` wire protocol v1 | the target's response, or the proxy's failure |
 //!
@@ -28,9 +26,9 @@
 //! same time as one of the person's devices.
 //!
 //! `/join` is the route a device calls without a session: a person a host
-//! does not know yet joins through it. A device certifies itself over the
-//! host's certification ALPN, and `/certify/approve` carries a member's
-//! root-signed answer to their own device's request.
+//! does not know yet joins through it. A device certifies itself, and a
+//! member's root answers their own device's request, over the host's
+//! certification ALPN (`crate::certify`).
 
 use serde::{Deserialize, Serialize};
 

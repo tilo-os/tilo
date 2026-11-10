@@ -17,6 +17,9 @@
 //! host → approver:   ApproverReply::Pending(Vec<PendingCertification>)
 //! approver → host:   ApproverRequest::Decide { request_digest, decision }
 //! host → approver:   ApproverReply::Decided | ApproverReply::Refused { reason }
+//!
+//! member → host:     CertifyOpen::Member(MemberApproval)
+//! host → member:     ApproverReply
 //! ```
 //!
 //! A request the host itself queued for a delegate device (an agent it
@@ -39,7 +42,9 @@
 //! through any host they share: the new device asks on the certification
 //! ALPN and shows its pairing code, and a page holding the member's root
 //! reads and answers that member's pending requests with
-//! [`MemberApproval`]s (`/certify/approve`), each signed by the root. The
+//! [`MemberApproval`]s, each signed by the root and each on a connection of
+//! its own ([`CertifyOpen::Member`]): a page reaches the host on the same
+//! carrier for this as for everything else. The
 //! host lists a member only their own requests and accepts a certificate
 //! only for the exact request it answers.
 //!
@@ -62,13 +67,21 @@ pub const MAX_CERTIFY_FRAME_BYTES: usize = 16 * 1024;
 /// Requests one host holds at once; further requests are refused.
 pub const MAX_PENDING_CERTIFICATIONS: usize = 32;
 
-/// First frame on a certification stream.
+/// First frame on a certification stream. Its variants' order is their tag
+/// on the wire: a new opener goes last, and the ones before keep theirs.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "a wire message, decoded once per connection and never kept in bulk"
+)]
 pub enum CertifyOpen {
     /// An uncertified device asks to be certified.
     Request(CertificationRequest),
     /// A certified device opens an approver session.
     Approver(Hello),
+    /// A member's root asks one approver command of the host, answered with
+    /// one [`ApproverReply`]. A host that predates it refuses the opener.
+    Member(MemberApproval),
 }
 
 /// What the host tells a waiting requester.
@@ -140,7 +153,7 @@ pub const MEMBER_APPROVAL_LABEL: &[u8] = b"tilo member approval v1\0";
 /// How far a [`MemberApproval`]'s time may be from the host's clock.
 pub const MEMBER_APPROVAL_SKEW_NS: u64 = 5 * 60 * 1_000_000_000;
 
-/// An approver command from a member's root over HTTPS: only
+/// An approver command from a member's root ([`CertifyOpen::Member`]): only
 /// [`ApproverRequest::ListPending`] (that member's own requests),
 /// [`ApproverRequest::Decide`] (one of them), [`ApproverRequest::Confirmations`]
 /// (what the host asks that member about actions run for them) and

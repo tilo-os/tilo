@@ -7,7 +7,8 @@
 //! new device holds no root, asks the host to certify it for the person
 //! (`certify`) and shows its pairing code; a device of theirs that holds
 //! the person's root lists the waiting requests (`pending_pairings`) and
-//! approves or declines one (`answer_pairing`), both over HTTPS. The host
+//! approves or declines one (`answer_pairing`), both over the host's
+//! certification protocol, as the page reaches it. The host
 //! only carries and checks: it hands on nothing a root did not sign for
 //! exactly that request, and only to requests naming a person it serves.
 
@@ -33,14 +34,13 @@ use collab_types::DocumentMutation;
 use ed25519_dalek::{Signer as _, SigningKey};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_relay_client::CertificationOutcome;
-use tilo_relay_client::https as carrier;
+use tilo_relay_client::MemberApprover;
 use tilo_relay_protocol::certify::{
     ApproverDecision, ApproverReply, ApproverRequest, MemberApproval, PendingCertification,
 };
 use tilo_session_host::invite::guest_certificate;
 use tilo_session_host::{
-    CertifyError, Host, HttpClient, LinkError, MemoryPeerStore, PeerStore as _, answer_pairing,
-    certify, pending_pairings,
+    CertifyError, Host, MemoryPeerStore, PeerStore as _, answer_pairing, certify, pending_pairings,
 };
 use tilo_user_identity::{
     CERTIFICATION_SCHEMA_VERSION, CertificationPolicy, CertificationRequest, DeviceCapabilities,
@@ -98,9 +98,9 @@ impl Asking {
 
 /// The one request waiting for `root` at the host, polled as the "Pair a
 /// new device" menu polls it.
-async fn waiting_for(https: &dyn HttpClient, root: &SigningKey) -> PendingCertification {
+async fn waiting_for(approver: &MemberApprover, root: &SigningKey) -> PendingCertification {
     wait_for("the request to wait for its root", || async {
-        let mut pending = pending_pairings(https, root).await.unwrap();
+        let mut pending = pending_pairings(approver, root).await.unwrap();
         assert!(pending.len() <= 1, "{pending:?}");
         pending.pop()
     })
@@ -120,8 +120,8 @@ fn approval(root: &SigningKey, request: ApproverRequest) -> MemberApproval {
     }
 }
 
-async fn approve(https: &dyn HttpClient, approval: &MemberApproval) -> ApproverReply {
-    carrier::certify_approve(https, approval).await.unwrap()
+async fn approve(approver: &MemberApprover, approval: &MemberApproval) -> ApproverReply {
+    approver.ask(approval).await.unwrap()
 }
 
 fn refused(reply: &ApproverReply) -> bool {
@@ -159,7 +159,7 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
     )
     .await;
     let _laptop = participant::Participant::start(&host.relay, &root).await;
-    let https = host.https();
+    let approver = MemberApprover::new(host.iroh());
     let page = host.iroh();
 
     // The laptop page holds Ada's root and is in the workspace.
@@ -177,14 +177,14 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
     // The phone opens the pairing link: it names Ada, and nothing else.
     let mut phone = ask_to_pair(&page, user, "Phone");
     let shown = phone.code().await;
-    let waiting = waiting_for(&*https, &root).await;
+    let waiting = waiting_for(&approver, &root).await;
     assert_eq!(waiting.pairing_code, shown, "both pages show one code");
     assert_eq!(
         waiting.request.device_public_key,
         phone.key.verifying_key().to_bytes()
     );
     assert_eq!(waiting.request.device_label, "Phone");
-    answer_pairing(&*https, &root, waiting.request_digest, true)
+    answer_pairing(&approver, &root, waiting.request_digest, true)
         .await
         .unwrap();
     let phone_key = phone.key.clone();
@@ -192,7 +192,7 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
     assert_paired(&cert, &host_cert, user, &phone_key);
     assert_eq!(host_cert, host_device.cert);
     assert!(
-        pending_pairings(&*https, &root).await.unwrap().is_empty(),
+        pending_pairings(&approver, &root).await.unwrap().is_empty(),
         "an answered request no longer waits"
     );
 
@@ -256,13 +256,13 @@ async fn a_declined_device_gets_no_certificate() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let https = host.https();
+    let approver = MemberApprover::new(host.iroh());
 
     let mut phone = ask_to_pair(&host.iroh(), user, "Phone");
     let shown = phone.code().await;
-    let waiting = waiting_for(&*https, &root).await;
+    let waiting = waiting_for(&approver, &root).await;
     assert_eq!(waiting.pairing_code, shown);
-    answer_pairing(&*https, &root, waiting.request_digest, false)
+    answer_pairing(&approver, &root, waiting.request_digest, false)
         .await
         .unwrap();
     let answer = phone.answer().await;
@@ -270,10 +270,10 @@ async fn a_declined_device_gets_no_certificate() {
         matches!(&answer, Err(CertifyError::Denied(reason)) if reason.contains("declined")),
         "{answer:?}"
     );
-    assert!(pending_pairings(&*https, &root).await.unwrap().is_empty());
+    assert!(pending_pairings(&approver, &root).await.unwrap().is_empty());
     // A decision is final: approving it afterwards finds nothing to approve.
     assert!(matches!(
-        answer_pairing(&*https, &root, waiting.request_digest, true).await,
+        answer_pairing(&approver, &root, waiting.request_digest, true).await,
         Err(CertifyError::Denied(_))
     ));
     host.relay.shutdown().await;
@@ -362,7 +362,7 @@ async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::te
         )
         .await;
     }
-    let https = host.https();
+    let approver = MemberApprover::new(host.iroh());
     let page = host.iroh();
 
     // Nobody here is Carol: a request naming her is refused at once, and
@@ -378,23 +378,23 @@ async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::te
     );
     assert!(code.try_recv().is_err(), "a refused request shows no code");
     assert!(matches!(
-        pending_pairings(&*https, &carol).await,
-        Err(CertifyError::Transport(LinkError::Refused(_)))
+        pending_pairings(&approver, &carol).await,
+        Err(CertifyError::Denied(_))
     ));
 
     // Bob's phone asks to be his.
     let mut phone = ask_to_pair(&page, person(&bob), "Phone");
     phone.code().await;
-    let waiting = waiting_for(&*https, &bob).await;
+    let waiting = waiting_for(&approver, &bob).await;
     let digest = waiting.request_digest;
 
     // Alice owns the host and Erin is a member, but neither holds Bob's
     // root: neither sees his request, nor answers it, even with a
     // certificate their own root signed.
     for other in [&alice, &erin] {
-        assert!(pending_pairings(&*https, other).await.unwrap().is_empty());
+        assert!(pending_pairings(&approver, other).await.unwrap().is_empty());
         assert!(matches!(
-            answer_pairing(&*https, other, digest, true).await,
+            answer_pairing(&approver, other, digest, true).await,
             Err(CertifyError::Denied(_))
         ));
         let own = tilo_user_identity::issue_device_cert(
@@ -406,7 +406,7 @@ async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::te
         );
         assert!(own.is_err(), "a root certifies only requests naming it");
         let reply = approve(
-            &*https,
+            &approver,
             &approval(
                 other,
                 ApproverRequest::Decide {
@@ -421,26 +421,24 @@ async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::te
     // Erin cannot answer in Bob's name either.
     let mut forged = approval(&erin, ApproverRequest::ListPending);
     forged.user_public_key = person(&bob);
-    assert!(refused(&approve(&*https, &forged).await));
+    assert!(refused(&approve(&approver, &forged).await));
     // Nor Carol, who is no member here.
-    assert!(matches!(
-        carrier::certify_approve(
-            &*https,
-            &approval(
-                &carol,
-                ApproverRequest::Decide {
-                    request_digest: digest,
-                    decision: ApproverDecision::Deny,
-                },
-            ),
-        )
-        .await,
-        Err(LinkError::Refused(_))
-    ));
+    let reply = approve(
+        &approver,
+        &approval(
+            &carol,
+            ApproverRequest::Decide {
+                request_digest: digest,
+                decision: ApproverDecision::Deny,
+            },
+        ),
+    )
+    .await;
+    assert!(refused(&reply), "{reply:?}");
 
     // Bob's request still waits, and Bob answers it.
-    assert_eq!(waiting_for(&*https, &bob).await, waiting);
-    answer_pairing(&*https, &bob, digest, true).await.unwrap();
+    assert_eq!(waiting_for(&approver, &bob).await, waiting);
+    answer_pairing(&approver, &bob, digest, true).await.unwrap();
     let phone_key = phone.key.clone();
     let (cert, host_cert) = phone.answer().await.unwrap();
     assert_paired(&cert, &host_cert, person(&bob), &phone_key);
@@ -477,7 +475,7 @@ async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::te
         .unwrap()
         .unwrap();
     assert_eq!(outcome, CertificationOutcome::Expired);
-    assert!(pending_pairings(&*https, &dave).await.unwrap().is_empty());
+    assert!(pending_pairings(&approver, &dave).await.unwrap().is_empty());
     host.relay.shutdown().await;
 }
 
@@ -494,16 +492,16 @@ async fn approvals_for_requests_that_do_not_wait_are_refused() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let https = host.https();
+    let approver = MemberApprover::new(host.iroh());
 
     // Nothing waits under a made-up digest.
     let made_up = [7; 32];
     assert!(matches!(
-        answer_pairing(&*https, &root, made_up, true).await,
+        answer_pairing(&approver, &root, made_up, true).await,
         Err(CertifyError::Denied(_))
     ));
     let reply = approve(
-        &*https,
+        &approver,
         &approval(
             &root,
             ApproverRequest::Decide {
@@ -517,7 +515,7 @@ async fn approvals_for_requests_that_do_not_wait_are_refused() {
 
     let mut phone = ask_to_pair(&host.iroh(), user, "Phone");
     phone.code().await;
-    let waiting = waiting_for(&*https, &root).await;
+    let waiting = waiting_for(&approver, &root).await;
     let digest = waiting.request_digest;
 
     // A certificate for another key, or with more than was asked, is not
@@ -546,11 +544,11 @@ async fn approvals_for_requests_that_do_not_wait_are_refused() {
     wider.capabilities = DeviceCapabilities::primary();
     tilo_user_identity::sign_device_cert(&mut wider, &root).unwrap();
     for spoofed in [other_key, wider] {
-        let reply = approve(&*https, &issue(spoofed)).await;
+        let reply = approve(&approver, &issue(spoofed)).await;
         assert!(refused(&reply), "{reply:?}");
     }
     assert_eq!(
-        waiting_for(&*https, &root).await,
+        waiting_for(&approver, &root).await,
         waiting,
         "a refused answer leaves the request waiting"
     );
@@ -558,8 +556,8 @@ async fn approvals_for_requests_that_do_not_wait_are_refused() {
     // The honest answer is taken once: neither a replay of it nor a second
     // answer changes it.
     let answered = issue(honest.clone());
-    assert_eq!(approve(&*https, &answered).await, ApproverReply::Decided);
-    let replayed = approve(&*https, &answered).await;
+    assert_eq!(approve(&approver, &answered).await, ApproverReply::Decided);
+    let replayed = approve(&approver, &answered).await;
     assert!(refused(&replayed), "{replayed:?}");
     let deny = approval(
         &root,
@@ -568,10 +566,10 @@ async fn approvals_for_requests_that_do_not_wait_are_refused() {
             decision: ApproverDecision::Deny,
         },
     );
-    let second = approve(&*https, &deny).await;
+    let second = approve(&approver, &deny).await;
     assert!(refused(&second), "{second:?}");
     assert!(matches!(
-        answer_pairing(&*https, &root, digest, false).await,
+        answer_pairing(&approver, &root, digest, false).await,
         Err(CertifyError::Denied(_))
     ));
     let (cert, _) = phone.answer().await.unwrap();
@@ -593,7 +591,7 @@ async fn a_device_paired_through_the_door_enters_the_workspace_as_the_person() {
         .create("Lounge")
         .await
         .unwrap();
-    let https = host.https();
+    let approver = MemberApprover::new(host.iroh());
 
     // Bob came in through the door on his laptop, whose page holds his root.
     let bob = new_key();
@@ -620,9 +618,9 @@ async fn a_device_paired_through_the_door_enters_the_workspace_as_the_person() {
     // His phone opens the pairing link and the laptop approves it.
     let mut phone = ask_to_pair(&host.iroh(), user, "Phone");
     let shown = phone.code().await;
-    let waiting = waiting_for(&*https, &bob).await;
+    let waiting = waiting_for(&approver, &bob).await;
     assert_eq!(waiting.pairing_code, shown);
-    answer_pairing(&*https, &bob, waiting.request_digest, true)
+    answer_pairing(&approver, &bob, waiting.request_digest, true)
         .await
         .unwrap();
     let phone_key = phone.key.clone();

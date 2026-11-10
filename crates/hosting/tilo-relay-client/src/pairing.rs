@@ -6,6 +6,7 @@
 //! Only the root signs: the host carries and checks, and hands nothing on
 //! that a root did not sign for exactly that request.
 
+#[cfg(feature = "iroh")]
 use tilo_relay_protocol::certify::{
     ApproverDecision, ApproverReply, ApproverRequest, MemberApproval,
 };
@@ -15,6 +16,8 @@ use tilo_user_identity::{
     certification::MAX_CERTIFICATION_LABEL_BYTES, verify_device_cert_at,
 };
 
+#[cfg(feature = "iroh")]
+use crate::certify::MemberApprover;
 use crate::error::CertifyError;
 use crate::https::{self, HttpClient};
 use crate::signer::DeviceSigner;
@@ -252,6 +255,7 @@ pub async fn revoke_device(
     Ok(entry)
 }
 
+#[cfg(feature = "iroh")]
 async fn member_approval(
     root: &dyn DeviceSigner,
     request: ApproverRequest,
@@ -272,30 +276,32 @@ async fn member_approval(
     })
 }
 
+#[cfg(feature = "iroh")]
 async fn approve(
-    client: &dyn HttpClient,
+    host: &MemberApprover,
     root: &dyn DeviceSigner,
     request: ApproverRequest,
 ) -> Result<ApproverReply, CertifyError> {
     let approval = member_approval(root, request).await?;
-    match https::certify_approve(client, &approval).await? {
+    match host.ask(&approval).await? {
         ApproverReply::Refused { reason } => Err(CertifyError::Denied(reason)),
         reply => Ok(reply),
     }
 }
 
-/// The requests of new devices waiting at the host at `client` for `root` (a
+/// The requests of new devices waiting at `host` for `root` (a
 /// member's root) to answer, each showing its pairing code.
 ///
 /// # Errors
 ///
 /// [`CertifyError::Transport`] when the host is not reached, or
 /// [`CertifyError::Denied`] when it refuses.
+#[cfg(feature = "iroh")]
 pub async fn pending_pairings(
-    client: &dyn HttpClient,
+    host: &MemberApprover,
     root: &dyn DeviceSigner,
 ) -> Result<Vec<tilo_relay_protocol::certify::PendingCertification>, CertifyError> {
-    match approve(client, root, ApproverRequest::ListPending).await? {
+    match approve(host, root, ApproverRequest::ListPending).await? {
         ApproverReply::Pending(pending) => Ok(pending),
         _ => Err(CertifyError::Denied(
             "the host answered something else".into(),
@@ -303,7 +309,7 @@ pub async fn pending_pairings(
     }
 }
 
-/// Answer the pending request `request_digest` at the host at `client`:
+/// Answer the pending request `request_digest` at `host`:
 /// approved, `root` certifies the device it names as a browser of that root,
 /// and the certificate it issued is answered for the root's own record.
 ///
@@ -311,14 +317,15 @@ pub async fn pending_pairings(
 ///
 /// [`CertifyError::Denied`] when the request is gone or the host refuses, and
 /// [`CertifyError::Transport`] when it is not reached.
+#[cfg(feature = "iroh")]
 pub async fn answer_pairing(
-    client: &dyn HttpClient,
+    host: &MemberApprover,
     root: &dyn DeviceSigner,
     request_digest: [u8; 32],
     approved: bool,
 ) -> Result<Option<DeviceCert>, CertifyError> {
     let decision = if approved {
-        let pending = pending_pairings(client, root).await?;
+        let pending = pending_pairings(host, root).await?;
         let Some(found) = pending
             .iter()
             .find(|entry| entry.request_digest == request_digest)
@@ -342,20 +349,21 @@ pub async fn answer_pairing(
         ApproverDecision::Issue(cert) => Some(cert.clone()),
         _ => None,
     };
-    decide_pairing(client, root, request_digest, issued.clone())
+    decide_pairing(host, root, request_digest, issued.clone())
         .await
         .map(|()| issued)
 }
 
-/// Answer the pending request `request_digest` at the host at `client`, as
+/// Answer the pending request `request_digest` at `host`, as
 /// `approver`: with `cert`, one the person's root already issued for exactly
 /// that request, or turned away without one.
 ///
 /// # Errors
 ///
 /// As [`answer_pairing`].
+#[cfg(feature = "iroh")]
 pub async fn decide_pairing(
-    client: &dyn HttpClient,
+    host: &MemberApprover,
     approver: &dyn DeviceSigner,
     request_digest: [u8; 32],
     cert: Option<DeviceCert>,
@@ -365,7 +373,7 @@ pub async fn decide_pairing(
         None => ApproverDecision::Deny,
     };
     approve(
-        client,
+        host,
         approver,
         ApproverRequest::Decide {
             request_digest,

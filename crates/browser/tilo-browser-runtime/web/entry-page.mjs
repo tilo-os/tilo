@@ -2004,14 +2004,18 @@ function loginCodes(runtime, origin) {
  * approve them.
  */
 function pairingOf({peer, identity, runtime, link}) {
-  if (!peer?.origin || !peer.workspace || !runtime?.pendingPairings || !link) return null;
-  const post = httpsPost(peer.origin);
+  if (!peer?.origin || !peer.workspace || !peer.host?.address || !runtime?.PairingHost || !link) return null;
+  // The host reached as every device reaches it, over iroh, only while the
+  // page pairs: made on the first question, let go once no invite is open.
+  let host = null;
+  const at = () => (host ??= new runtime.PairingHost(JSON.stringify(peer.host.address)));
   return {
     link: (invite, room = peer.workspace) => {
       const url = link.format({mode: 'desktop', target: {scope: {kind: 'room', host: peer.origin, room}}});
       return `${url}${new URL(url).hash.includes('?') ? '&' : '?'}pair=${pairSecret(identity.userPublicKey, invite)}`;
     },
-    pending: async () => JSON.parse(await runtime.pendingPairings(post, identity)),
-    answer: (digest, approved) => runtime.answerPairing(post, identity, digest, approved),
+    pending: async () => JSON.parse(await at().pending(identity)),
+    answer: (digest, approved) => at().answer(identity, digest, approved),
+    close: () => { const done = host; host = null; return done?.close(); },
   };
 }

@@ -68,6 +68,7 @@ async fn an_agent_logs_in_with_the_tabs_code_and_shows_in_the_workspace_as_the_p
         .await
         .unwrap();
     let https = host.https();
+    let approver = tilo_relay_client::MemberApprover::new(host.iroh());
 
     // Bob's tab holds his root and came in through the door.
     let bob = new_key();
@@ -127,7 +128,7 @@ async fn an_agent_logs_in_with_the_tabs_code_and_shows_in_the_workspace_as_the_p
 
     // The tab approves the request that names its invite, and only that one.
     let waiting = wait_for("the agent's request to wait for Bob's root", || async {
-        pending_pairings(&*https, &bob)
+        pending_pairings(&approver, &bob)
             .await
             .unwrap()
             .into_iter()
@@ -139,7 +140,7 @@ async fn an_agent_logs_in_with_the_tabs_code_and_shows_in_the_workspace_as_the_p
         cli_key.verifying_key().to_bytes()
     );
     assert_eq!(waiting.request.device_label, "Claude Code on build-box");
-    answer_pairing(&*https, &bob, waiting.request_digest, true)
+    answer_pairing(&approver, &bob, waiting.request_digest, true)
         .await
         .unwrap();
     let signed = tilo_test_env::within("the login", asking)
@@ -147,7 +148,7 @@ async fn an_agent_logs_in_with_the_tabs_code_and_shows_in_the_workspace_as_the_p
         .unwrap()
         .unwrap();
     assert!(
-        pending_pairings(&*https, &bob).await.unwrap().is_empty(),
+        pending_pairings(&approver, &bob).await.unwrap().is_empty(),
         "an answered code no longer waits: it worked once"
     );
 
@@ -212,7 +213,7 @@ async fn an_agent_logs_in_with_the_tabs_code_and_shows_in_the_workspace_as_the_p
         "{:?}",
         stray.as_ref().map(|signed| &signed.label)
     );
-    assert!(pending_pairings(&*https, &bob).await.unwrap().is_empty());
+    assert!(pending_pairings(&approver, &bob).await.unwrap().is_empty());
 
     agent.close();
     tab.close();

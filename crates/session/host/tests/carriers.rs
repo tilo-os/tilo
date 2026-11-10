@@ -4,9 +4,10 @@
 //! once per [`Carrier`] against a real host running its own packet relay, so a
 //! feature that works over one carrier and not the other fails here.
 //!
-//! The device under test reaches the host over the carrier; the person's other
-//! devices that answer it (the laptop that approves, the one that writes back)
-//! dial directly.
+//! The device under test reaches the host over the carrier, and so does
+//! whatever approves it (a root-holding laptop, or a page holding the
+//! person's root); the person's other devices that answer it (the one that
+//! writes back) dial directly.
 
 #![allow(
     clippy::unwrap_used,
@@ -37,8 +38,8 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::VoiceGrant;
 use tilo_session_host::{
-    Carrier, Host, MemoryPeerStore, PeerEvent, PeerHandle, PeerSnapshot, TransportPhase,
-    VoiceEvent, certify,
+    Carrier, Host, MemberApprover, MemoryPeerStore, PeerEvent, PeerHandle, PeerSnapshot,
+    TransportPhase, VoiceEvent, answer_pairing, certify, pending_pairings,
 };
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, UserIdentity,
@@ -73,7 +74,8 @@ macro_rules! over_each_carrier {
 }
 
 over_each_carrier!(
-    a_device_is_certified_and_approved,
+    a_root_holding_device_certifies_a_new_one,
+    the_persons_root_pairs_a_new_device,
     documents_sync_both_ways_until_the_device_is_revoked,
     the_workspace_admits_the_device_and_its_live_plane_carries_it,
     the_device_takes_part_in_a_call,
@@ -180,7 +182,7 @@ fn page(
     )
 }
 
-async fn a_device_is_certified_and_approved(carrier: Carrier) {
+async fn a_root_holding_device_certifies_a_new_one(carrier: Carrier) {
     let ada = Ada::start().await;
     let (_, cert, host_cert) = ada.certified(&ada.host.over(carrier)).await;
     assert_eq!(
@@ -189,6 +191,49 @@ async fn a_device_is_certified_and_approved(carrier: Carrier) {
     );
     assert_eq!(cert.user_public_key, ada.root.verifying_key().to_bytes());
     assert!(!cert.capabilities.can_admit_devices);
+    ada.host.relay.shutdown().await;
+}
+
+/// What a page holding the person's root runs: it lists the device waiting
+/// for it and pairs it, each command its own root-signed approval.
+async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
+    let ada = Ada::start().await;
+    let host = ada.host.over(carrier);
+    let user = ada.root.verifying_key().to_bytes();
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let (code_tx, code_rx) = tokio::sync::oneshot::channel::<String>();
+    let asking = tokio::spawn({
+        let host = host.clone();
+        let key = key.clone();
+        async move {
+            certify(&host, user, "Phone", [0; 16], &key, |code| {
+                let _ = code_tx.send(code.to_owned());
+            })
+            .await
+        }
+    });
+    let shown = tilo_test_env::within("the pairing code", code_rx)
+        .await
+        .unwrap();
+    let root = MemberApprover::new(host);
+    let waiting = wait_for("the phone to wait for the root", || async {
+        pending_pairings(&root, &ada.root).await.unwrap().pop()
+    })
+    .await;
+    assert_eq!(waiting.pairing_code, shown, "the person compares codes");
+    let issued = answer_pairing(&root, &ada.root, waiting.request_digest, true)
+        .await
+        .unwrap()
+        .expect("an approval issues a certificate");
+    let (cert, host_cert) = asking.await.unwrap().unwrap();
+    assert_eq!(cert, issued);
+    assert_eq!(cert.device_public_key, key.verifying_key().to_bytes());
+    assert_eq!(
+        host_cert.device_public_key,
+        ada.host_device.cert.device_public_key
+    );
+    assert!(pending_pairings(&root, &ada.root).await.unwrap().is_empty());
+    root.close().await;
     ada.host.relay.shutdown().await;
 }
 

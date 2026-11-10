@@ -8,9 +8,9 @@
 //! - [`coedit`] — the co-edit payloads carried through the host; the iroh
 //!   session speaking them is `tilo_relay_session::coedit::RelayCoeditSession`;
 //! - [`certify`] — ask a host for a `DeviceCert`, or approve such requests
-//!   as a root-holding device;
-//! - [`pairing`] — the pairing ceremony over HTTPS, and the certificates a
-//!   person's root issues;
+//!   as a root-holding device or as a member's root;
+//! - [`pairing`] — the pairing ceremony a member's root answers, and the
+//!   certificates a person's root issues;
 //! - [`login`] — a computer signing in as one of the person's devices, the
 //!   login code it reads, and the two ways into the workspace it names;
 //! - [`sign_in`] — a device proving its person to a service that asks;
@@ -22,8 +22,8 @@
 //!   away;
 //! - [`host`] — where a workspace's host is reached;
 //! - [`https`] — what a page asks a host before it holds a session, over
-//!   HTTPS through its `fetch`: the host's certificate and address, a
-//!   member's approval of their own device, and joining a workspace.
+//!   HTTPS through its `fetch`: the host's certificate and address, and
+//!   joining a workspace.
 //!
 //! The messages themselves are defined in [`tilo_relay_protocol`]. Without
 //! the default `iroh` feature certification is left out and the signer seam,
@@ -63,16 +63,19 @@ pub mod signer;
 
 #[cfg(feature = "iroh")]
 pub use certify::{
-    Approver, CERTIFICATION_WAIT_NS, CertificationOutcome, certify, request_certification,
+    Approver, CERTIFICATION_WAIT_NS, CertificationOutcome, MemberApprover, certify,
+    request_certification,
 };
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound};
 pub use error::{CertifyError, LinkError};
 pub use host::{Carrier, Host};
 pub use https::{Answer, AnswerFuture, HttpClient, HttpFuture};
 pub use pairing::{
-    IssuedRole, NODE_CERT_LIFETIME_NS, answer_pairing, certify_with_root, decide_pairing,
-    issue_agent_grant, issue_device_cert, issue_stand_in, pending_pairings, revoke_device,
+    IssuedRole, NODE_CERT_LIFETIME_NS, certify_with_root, issue_agent_grant, issue_device_cert,
+    issue_stand_in, revoke_device,
 };
+#[cfg(feature = "iroh")]
+pub use pairing::{answer_pairing, decide_pairing, pending_pairings};
 pub use sign_in::{encode, grant_label, sign_in_proof};
 pub use signer::{DeviceSigner, MaybeSendSync, SignError, SignFuture};
 pub use tilo_relay_protocol::transport::{ContentPeerRegistration, Envelope};

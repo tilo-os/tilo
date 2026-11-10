@@ -2,11 +2,10 @@
 //! HTTP/1.1), served by the relay itself.
 //!
 //! What a page needs before it holds a session rides it: the host's
-//! certificate and address (`/host`), device certification, joining a
-//! workspace, the public directory, root envelopes and profiles, the fetch
-//! proxy and the static entry. Everything after that — presence, membership,
-//! records, previews, calls — is the page's own session, whatever its
-//! carrier. Routes are listed in [`tilo_relay_protocol::web`].
+//! certificate and address (`/host`), joining a workspace, the public
+//! directory, root envelopes and profiles, the fetch proxy and the static
+//! entry. Everything after that — certification, presence, membership,
+//! records, previews, calls — goes over iroh, as every device's does. Routes are listed in [`tilo_relay_protocol::web`].
 //!
 //! No owner loop runs here: every handler is async and awaits the relay's
 //! own locks; workspace I/O already runs on the blocking pool.
@@ -841,21 +840,8 @@ async fn route(
     if let Some(answer) = login_route(web, route, &bytes, client) {
         return Ok(answer);
     }
-    let certification = &web.context.certification;
     match route {
         "/host" => Ok(encoded(&web.host_info)),
-        "/certify/approve" => {
-            let approval: crate::certify::MemberApproval = decode(&bytes)?;
-            if !admitted_anywhere(web, approval.user_public_key).await {
-                return Err(status(
-                    StatusCode::FORBIDDEN,
-                    "only a member approves devices here",
-                ));
-            }
-            Ok(encoded(
-                &certification.member_approve(approval, tilo_clock::unix_now_ns()),
-            ))
-        }
         "/join" => {
             let workspaces = web
                 .workspaces

@@ -5,15 +5,17 @@
 //! request, presents it to its host and waits for a root holder to hand over
 //! a certificate. [`request_certification`] is the same conversation over an
 //! endpoint the caller already has, [`Approver`] what a root-holding device
-//! runs to list and answer pending requests.
+//! runs to list and answer pending requests, and [`MemberApprover`] what a
+//! page holding a member's root runs to do the same for that member's own
+//! devices.
 
 use iroh::endpoint::{Connection, Endpoint, RecvStream, SendStream};
 use iroh_base::EndpointAddr;
 use tilo_relay_protocol::auth::{self, Hello, HelloAck};
 use tilo_relay_protocol::certify::{
     ApproverDecision, ApproverReply, ApproverRequest, CERTIFY_ALPN, CertifyOpen, CertifyReply,
-    ConfirmationAnswer, MAX_CERTIFY_FRAME_BYTES, PendingCertification, PendingConfirmation,
-    PendingDelegate,
+    ConfirmationAnswer, MAX_CERTIFY_FRAME_BYTES, MemberApproval, PendingCertification,
+    PendingConfirmation, PendingDelegate,
 };
 use tilo_user_identity::{
     CERTIFICATION_SCHEMA_VERSION, CertificationPolicy, CertificationRequest, DeviceCapabilities,
@@ -324,5 +326,55 @@ impl Approver {
     pub fn close(mut self) {
         let _ = self.send.finish();
         self.connection.close(0u32.into(), b"approver done");
+    }
+}
+
+/// A member's root asking one host its approver commands
+/// ([`MemberApproval`]s): what a page holding the root runs to pair the
+/// person's new devices through any host they share. It reaches the host as
+/// [`Host`] says, from one endpoint bound on the first command, each command on
+/// a connection of its own.
+pub struct MemberApprover {
+    host: Host,
+    endpoint: tokio::sync::OnceCell<Endpoint>,
+}
+
+impl MemberApprover {
+    /// Commands for the host at `host`.
+    #[must_use]
+    pub fn new(host: Host) -> Self {
+        Self {
+            host,
+            endpoint: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    /// The host's answer to `approval`.
+    ///
+    /// # Errors
+    ///
+    /// The host was not reached, or its answer did not decode. A host that
+    /// turns the command away answers [`ApproverReply::Refused`].
+    pub async fn ask(&self, approval: &MemberApproval) -> Result<ApproverReply, CertifyError> {
+        let endpoint = self
+            .endpoint
+            .get_or_try_init(|| self.host.bind(None))
+            .await?;
+        let connection = endpoint
+            .connect(self.host.addr(), CERTIFY_ALPN)
+            .await
+            .map_err(|error| iroh(&error))?;
+        let (mut send, mut recv) = connection.open_bi().await.map_err(|error| iroh(&error))?;
+        write(&mut send, &CertifyOpen::Member(approval.clone())).await?;
+        let reply = read(&mut recv).await;
+        connection.close(0u32.into(), b"");
+        reply
+    }
+
+    /// Close the endpoint, waiting for the host to hear it.
+    pub async fn close(&self) {
+        if let Some(endpoint) = self.endpoint.get() {
+            endpoint.close().await;
+        }
     }
 }
