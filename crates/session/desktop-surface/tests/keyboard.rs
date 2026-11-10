@@ -789,8 +789,13 @@ impl Desk {
 
     /// Frames until every source of the open search has answered. A source answers on a worker, and
     /// its answer wakes the desk: a test pumps what the wake asks for and draws the frame it
-    /// brings, as a host does. An application's own answer is the host's to look for on its clock,
-    /// so this does not wait for one.
+    /// brings, as a host does.
+    ///
+    /// Two things a search waits for elsewhere are not waited for here. An application's own answer
+    /// is the host's to look for on its clock. And the rows are not cut to the card's room: this
+    /// desk draws no card over its windows, so no layout ever gives the palette the room its rows
+    /// stand in, and the rows a test reads are the ones cut to the guess the palette keeps until a
+    /// host gives it one.
     fn settle_search(&mut self) {
         let background = ui::background::Background::current();
         let now = ui::time::now();
@@ -800,7 +805,7 @@ impl Desk {
             let busy = {
                 let palette = self.handle.search_palette();
                 let palette = palette.borrow();
-                palette.filling_in() || palette.answering()
+                palette.answering()
             };
             if !busy {
                 return;
