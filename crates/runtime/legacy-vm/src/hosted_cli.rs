@@ -20,6 +20,8 @@ usage: tilo-legacy hosted <command>
   serve --state DIR --run DIR --kernel VMLINUX [--initramfs FILE] [--cmdline TEXT]
         [--disk-image RAW] [--firecracker PATH] [--plans FILE] [--idle-suspend SECONDS]
         [--evict-notice FILE] [--memory-mib MIB] [--status-listen ADDR]
+        [--browser --browser-kernel VMLINUX --browser-disk-image RAW
+         [--browser-spares N] [--browser-idle-stop SECONDS] [--browser-lifetime SECONDS]]
         (--jail-helper PATH [--jail-config FILE] | --unjailed)
                          own this host's workspace VMs; listens on RUN/hosted.sock.
                          Each VM runs jailed, with a network, through the
@@ -32,7 +34,13 @@ usage: tilo-legacy hosted <command>
                          --memory-mib bounds what the VMs awake at once take
                          together, by their sizes; a wake past it waits.
                          --status-listen answers Status alone over TCP, for a
-                         placer
+                         placer.
+                         --browser also runs the workspaces' browser
+                         environments from the browser guest image: N spares
+                         (default 2) boot with a session waiting for a
+                         workspace, each environment ends after its idle limit
+                         (default 600 s) or its lifetime (default 7200 s), and
+                         it keeps nothing when it stops.
   status --run DIR       every VM, its phase and its last wake
   place --listen ADDR --record FILE --statefulset NAMESPACE/NAME --max N
         --status-port PORT
@@ -40,9 +48,10 @@ usage: tilo-legacy hosted <command>
                          it, else the first with room), and start hosts, the
                          StatefulSet's pods NAME-0, NAME-1, …, as their VMs fill
                          them: past three quarters, or for any VM waiting
-  fetch-guest --images DIR [--ref REF]
+  fetch-guest --images DIR [--ref REF] [--browser]
                          fetch the pinned guest image into DIR and print the
-                         kernel's and the root filesystem's paths
+                         kernel's and the root filesystem's paths; --browser
+                         fetches the browser guest instead
   usage --run DIR --account ID [--from MS] [--to MS]
                          the account's usage records and totals, as JSON
   run --run DIR --workspace ID --account ID [--environment ID] [--size SIZE]
@@ -52,6 +61,11 @@ usage: tilo-legacy hosted <command>
                          with its status. For operators checking a host
   suspend --run DIR WORKSPACE ENVIRONMENT
   stop --run DIR WORKSPACE ENVIRONMENT
+  browser-open --run DIR --workspace ID --account ID [--material JSON]
+                         open or attach a workspace's browser environment, and
+                         say what it took
+  browser-stop --run DIR WORKSPACE
+                         end a workspace's browser environment now
 ";
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -112,12 +126,37 @@ impl Flags {
 pub fn main(args: &[String]) -> Result<ExitCode, String> {
     let (command, rest) = args.split_first().ok_or(USAGE)?;
     match command.as_str() {
-        "serve" => serve(&Flags::parse(rest, &["--unjailed"])?),
+        "serve" => serve(&Flags::parse(rest, &["--unjailed", "--browser"])?),
         "files-serve" => files_serve(&Flags::parse(rest, &["--read-only"])?),
-        "fetch-guest" => fetch_guest(&Flags::parse(rest, &[])?),
+        "fetch-guest" => fetch_guest(&Flags::parse(rest, &["--browser"])?),
         "status" => ask(&Flags::parse(rest, &[])?, &Request::Status),
         "run" => run(rest),
         "place" => place(&Flags::parse(rest, &[])?),
+        "browser-open" => {
+            let flags = Flags::parse(rest, &[])?;
+            ask(
+                &flags,
+                &Request::OpenBrowser {
+                    browser: control::OpenBrowser {
+                        workspace: flags.need("--workspace")?.to_string(),
+                        account: flags.need("--account")?.to_string(),
+                        material: flags.get("--material").unwrap_or("{}").to_string(),
+                    },
+                },
+            )
+        }
+        "browser-stop" => {
+            let flags = Flags::parse(rest, &[])?;
+            let [workspace] = flags.rest.as_slice() else {
+                return Err("browser-stop: WORKSPACE".to_string());
+            };
+            ask(
+                &flags,
+                &Request::StopBrowser {
+                    workspace: workspace.clone(),
+                },
+            )
+        }
         "usage" => {
             let flags = Flags::parse(rest, &[])?;
             let number = |name: &str, default: u64| {
@@ -165,15 +204,12 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
 /// the root filesystem's path, one per line.
 fn fetch_guest(flags: &Flags) -> Result<ExitCode, String> {
     let images = flags.path("--images")?;
-    let reference = match flags.get("--ref") {
-        Some(reference) if guest::valid_pinned_ref(reference) => reference.to_string(),
-        Some(reference) => {
-            return Err(format!(
-                "{reference} is not a digest-pinned hosted guest reference"
-            ));
-        }
-        None => guest::current_ref().ok_or_else(|| guest::GuestError::NotPublished.to_string())?,
+    let guest = if flags.has("--browser") {
+        guest::Guest::Browser
+    } else {
+        guest::Guest::Linux
     };
+    let reference = guest::reference(guest, flags.get("--ref")).map_err(|e| e.to_string())?;
     let guest = guest::ensure_guest(&images, &reference).map_err(|e| e.to_string())?;
     println!("kernel {}", guest.kernel.display());
     println!("rootfs {}", guest.rootfs.display());
@@ -222,6 +258,11 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
             idle_suspend: Duration::from_secs(idle.max(1)),
             self_exe: std::env::current_exe().map_err(|e| e.to_string())?,
             jail,
+            browser: if flags.has("--browser") {
+                Some(browser_guest(flags)?)
+            } else {
+                None
+            },
         },
     };
     // SAFETY: the handler only stores to an atomic.
@@ -252,6 +293,36 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
         .serve(&STOP, evict_notice.as_deref())
         .map_err(|e| e.to_string())?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// The browser environments' settings: the browser guest image, the spares
+/// kept booted, and how long one lives.
+fn browser_guest(flags: &Flags) -> Result<legacy_vm::hosted::browser::BrowserGuest, String> {
+    let seconds = |name: &str, default: u64| {
+        flags
+            .get(name)
+            .map_or(Ok(default), str::parse::<u64>)
+            .map_err(|_| format!("{name} takes seconds"))
+    };
+    let machine = Machine {
+        firecracker: PathBuf::from(flags.get("--firecracker").unwrap_or("firecracker")),
+        kernel: flags.path("--browser-kernel")?,
+        initramfs: None,
+        cmdline: flags
+            .get("--cmdline")
+            .unwrap_or(Machine::DEFAULT_CMDLINE)
+            .to_string(),
+        base_disk: flags.get("--browser-disk-image").map(PathBuf::from),
+    };
+    let mut guest = legacy_vm::hosted::browser::BrowserGuest::new(machine);
+    if let Some(spares) = flags.get("--browser-spares") {
+        guest.spares = spares
+            .parse()
+            .map_err(|_| "--browser-spares takes a count".to_string())?;
+    }
+    guest.idle_stop = Duration::from_secs(seconds("--browser-idle-stop", 600)?.max(1));
+    guest.lifetime = Duration::from_secs(seconds("--browser-lifetime", 7_200)?.max(1));
+    Ok(guest)
 }
 
 /// The VM hosts as a Kubernetes `StatefulSet`: its replicas, read and set
@@ -382,12 +453,11 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         return Err(format!("run: the program follows --\n{USAGE}"));
     }
     let flags = Flags::parse(options, &[])?;
-    let size = match flags.get("--size").unwrap_or("small") {
-        "small" => VmSize::Small,
-        "default" => VmSize::Default,
-        "large" => VmSize::Large,
-        "xlarge" => VmSize::Xlarge,
-        other => return Err(format!("run: no VM size {other:?}")),
+    let size = match flags.get("--size") {
+        Some(name) => VmSize::parse(name)
+            .filter(|size| *size != VmSize::Browser)
+            .ok_or_else(|| format!("run: no VM size {name:?}"))?,
+        None => VmSize::Small,
     };
     let request = Request::Ensure {
         vm: VmRequest {
@@ -530,6 +600,13 @@ fn ask(flags: &Flags, request: &Request) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         Reply::Done | Reply::Ready { .. } => Ok(ExitCode::SUCCESS),
+        Reply::Opened { opened_ms } => {
+            println!(
+                "{}",
+                opened_ms.map_or_else(|| "attached".to_string(), |ms| format!("opened in {ms} ms"))
+            );
+            Ok(ExitCode::SUCCESS)
+        }
         Reply::Placed { host } => {
             println!("{host}");
             Ok(ExitCode::SUCCESS)

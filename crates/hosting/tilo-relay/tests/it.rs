@@ -63,6 +63,9 @@ mod persistent_room;
 #[path = "personal_device_process.rs"]
 mod personal_device_process;
 #[cfg(feature = "agents")]
+#[path = "placed_browser.rs"]
+mod placed_browser;
+#[cfg(feature = "agents")]
 #[path = "placed_shell.rs"]
 mod placed_shell;
 #[path = "presence_batching.rs"]

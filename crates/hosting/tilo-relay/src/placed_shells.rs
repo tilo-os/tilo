@@ -133,6 +133,58 @@ impl PlacedShells {
         let _ = self.asking.set((plane, endpoint));
     }
 
+    /// This host's device plane and endpoint, once it runs.
+    pub(crate) fn asking(&self) -> Result<&(ActionPlane, Endpoint), String> {
+        self.asking
+            .get()
+            .ok_or_else(|| "the host is not running yet".to_owned())
+    }
+
+    /// Who pays for the VMs placed from here.
+    pub(crate) fn account(&self) -> &str {
+        &self.account
+    }
+
+    /// The VM hosts' member devices, by the name the placer answers.
+    pub(crate) fn members(&self) -> &Members {
+        &self.members
+    }
+
+    /// The host that runs the VM of `workspace`'s `environment` (of `size`),
+    /// waiting while none has room and keeping the line that said so in
+    /// `waited`; `None` when `stop` ended the wait.
+    pub(crate) fn placed(
+        &self,
+        workspace: &str,
+        environment: &str,
+        size: VmSize,
+        waited: &mut Option<String>,
+        stop: Option<&(dyn Fn() -> bool + Sync)>,
+    ) -> Result<Option<String>, String> {
+        let vm = VmRequest {
+            workspace: workspace.to_owned(),
+            environment: environment.to_owned(),
+            account: self.account.clone(),
+            size,
+        };
+        loop {
+            if stop.is_some_and(|stop| stop()) {
+                return Ok(None);
+            }
+            match ask_placer(&self.placer, &Request::Place { vm: vm.clone() })? {
+                Reply::Placed { host } => return Ok(Some(host)),
+                Reply::Busy(words) => {
+                    waited
+                        .get_or_insert_with(|| format!("ush: {words} Waiting; Ctrl+C cancels.\n"));
+                    wait(BUSY_RETRY, stop);
+                }
+                Reply::Refused(refusal) => return Err(refusal.message),
+                Reply::Error(error) => return Err(format!("the placer: {error}")),
+                other => return Err(format!("the placer answered {other:?}")),
+            }
+        }
+    }
+
     /// Run `command` in `workspace`'s session `session` on the VM host the
     /// placer names for the workspace, showing the caller what it prints
     /// while it runs and stopping it there when the caller asks.
@@ -148,9 +200,16 @@ impl PlacedShells {
         agent: bool,
         watching: Watching<'_>,
     ) -> Result<ShellRan, String> {
-        let (plane, endpoint) = self.asking.get().ok_or("the host is not running yet")?;
+        let (plane, endpoint) = self.asking()?;
         let mut waited = None;
-        let Some(host) = self.place(workspace, &mut waited, watching.stop)? else {
+        let Some(host) = self.placed(
+            workspace,
+            ENVIRONMENT,
+            self.size,
+            &mut waited,
+            watching.stop,
+        )?
+        else {
             return Ok(shell_ran(stopped_before_start(command, waited)));
         };
         let member = self.members.get(&host).ok_or_else(|| {
@@ -170,39 +229,6 @@ impl PlacedShells {
             ran.output.insert_str(0, &words);
         }
         Ok(shell_ran(ran))
-    }
-
-    /// The host that runs `workspace`'s VM, waiting while none has room and
-    /// keeping the line that said so in `waited`; `None` when `stopping`
-    /// ended the wait.
-    fn place(
-        &self,
-        workspace: &str,
-        waited: &mut Option<String>,
-        stop: Option<&(dyn Fn() -> bool + Sync)>,
-    ) -> Result<Option<String>, String> {
-        let vm = VmRequest {
-            workspace: workspace.to_owned(),
-            environment: ENVIRONMENT.to_owned(),
-            account: self.account.clone(),
-            size: self.size,
-        };
-        loop {
-            if stop.is_some_and(|stop| stop()) {
-                return Ok(None);
-            }
-            match ask_placer(&self.placer, &Request::Place { vm: vm.clone() })? {
-                Reply::Placed { host } => return Ok(Some(host)),
-                Reply::Busy(words) => {
-                    waited
-                        .get_or_insert_with(|| format!("ush: {words} Waiting; Ctrl+C cancels.\n"));
-                    wait(BUSY_RETRY, stop);
-                }
-                Reply::Refused(refusal) => return Err(refusal.message),
-                Reply::Error(error) => return Err(format!("the placer: {error}")),
-                other => return Err(format!("the placer answered {other:?}")),
-            }
-        }
     }
 }
 
@@ -242,7 +268,7 @@ pub fn read_members(path: &Path) -> Result<Members, String> {
     serde_json::from_slice(&bytes).map_err(|error| format!("{}: {error}", path.display()))
 }
 
-fn member_address(member: &Member) -> Result<EndpointAddr, String> {
+pub(crate) fn member_address(member: &Member) -> Result<EndpointAddr, String> {
     let key: [u8; 32] = hex::decode(&member.device)
         .ok()
         .and_then(|bytes| bytes.try_into().ok())
@@ -361,7 +387,7 @@ fn run_on(
     }
 }
 
-fn settled<T>(pending: tilo_actions::remote::Pending<T>) -> Result<T, String> {
+pub(crate) fn settled<T>(pending: tilo_actions::remote::Pending<T>) -> Result<T, String> {
     match pending.wait_timeout(ANSWER_PATIENCE) {
         Ok(Some(value)) => Ok(value),
         _ => Err("the VM host did not answer".into()),

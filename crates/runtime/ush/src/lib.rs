@@ -65,6 +65,7 @@ pub mod audit;
 pub mod branch;
 pub mod broker;
 pub mod content;
+pub mod environment_browsers;
 pub mod environment_runs;
 pub mod file_actions;
 pub mod fleet;

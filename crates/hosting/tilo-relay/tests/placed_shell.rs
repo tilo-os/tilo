@@ -162,6 +162,7 @@ async fn placed() -> Arc<Placed> {
         (vm_host.sk.clone(), vm_host.cert.clone()),
         member_endpoint,
         take_work::Relay::new(&hex::encode(desk.device_pubkey()), &host_address(&hosted)).unwrap(),
+        None,
     )
     .unwrap();
 

@@ -183,8 +183,9 @@ pub(in crate::standalone) fn plane(
     joined: &Arc<Joined>,
     relay: Relay,
     replicas: Option<super::files::ReplicaSlot>,
+    browsers: Option<PathBuf>,
 ) -> std::io::Result<ActionPlane> {
-    let dispatcher = shell_runs(profile, joined, replicas).ok_or_else(|| {
+    let dispatcher = shell_runs(profile, joined, replicas, browsers).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             "a member that takes work runs the workspace's shell on Linux",
@@ -215,22 +216,25 @@ fn shell_runs(
     profile: &Path,
     joined: &Arc<Joined>,
     replicas: Option<super::files::ReplicaSlot>,
+    browsers: Option<PathBuf>,
 ) -> Option<Arc<dyn ActionHost + Send + Sync>> {
     use ush::environment_runs::EnvironmentRuns;
     use ush::workspace_shell::WorkspaceShells;
     let member = profile.to_path_buf();
     let holder = Arc::downgrade(joined);
-    let shells = WorkspaceShells::from_env(profile.join(STATE)).with_files(move |workspace| {
-        // The workspace's files are held from its first run on, a workspace
-        // entered for the run included.
-        replicas
-            .as_ref()
-            .and_then(|slot| slot.get())
-            .zip(holder.upgrade())
-            .zip(tilo_desktop_model::WorkspaceId::parse(workspace))
-            .and_then(|((replicas, joined), id)| super::hold_files(replicas, &joined, id))
-            .unwrap_or_else(|| files(&member, workspace))
-    });
+    let shells = WorkspaceShells::from_env(profile.join(STATE))
+        .with_files(move |workspace| {
+            // The workspace's files are held from its first run on, a workspace
+            // entered for the run included.
+            replicas
+                .as_ref()
+                .and_then(|slot| slot.get())
+                .zip(holder.upgrade())
+                .zip(tilo_desktop_model::WorkspaceId::parse(workspace))
+                .and_then(|((replicas, joined), id)| super::hold_files(replicas, &joined, id))
+                .unwrap_or_else(|| files(&member, workspace))
+        })
+        .with_browsers_on(browsers);
     Some(Arc::new(EnvironmentRuns::new(shells, joined.operator())))
 }
 
@@ -243,6 +247,7 @@ fn shell_runs(
     _profile: &Path,
     _joined: &Arc<Joined>,
     _replicas: Option<super::files::ReplicaSlot>,
+    _browsers: Option<PathBuf>,
 ) -> Option<Arc<dyn ActionHost + Send + Sync>> {
     None
 }
@@ -261,6 +266,8 @@ impl Member {
     /// Serve, as the device `key` and `cert` certify, the work of the
     /// workspaces kept in `profile` over `endpoint`, entering the ones
     /// `relay` places here. `endpoint` is keyed by the same device key.
+    /// `browsers` names the hosted-VM service a workspace's browser
+    /// environment starts on, when this member runs them.
     ///
     /// # Errors
     ///
@@ -271,10 +278,11 @@ impl Member {
         (key, cert): (SigningKey, DeviceCert),
         endpoint: Endpoint,
         relay: Relay,
+        browsers: Option<PathBuf>,
     ) -> std::io::Result<Self> {
         let custody = tilo_identity_host::custody::HostIdentity::kept(cert, key);
         let joined = Joined::from_profile(profile, custody, endpoint.clone())?;
-        let plane = plane(profile, &joined, relay, None)?;
+        let plane = plane(profile, &joined, relay, None, browsers)?;
         // The plane holds the workspaces it serves; this member answers them
         // through the router.
         drop(joined);

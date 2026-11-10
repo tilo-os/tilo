@@ -32,6 +32,20 @@ pub struct ShareRequest {
     pub read_only: bool,
 }
 
+/// A workspace's browser environment, to start or attach to: the machine runs
+/// a headless session with Browser, which joins the workspace with `material`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OpenBrowser {
+    pub workspace: String,
+    /// Who the machine's time is booked to, as the relay knows the account;
+    /// no plan admits a browser environment, and no card is needed for one.
+    pub account: String,
+    /// What its session joins the workspace with — the workspace, the record
+    /// to open and the device certificate — opaque here, and passed to the
+    /// guest as one line of its session's input.
+    pub material: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Request {
     /// Wake the VM (starting it on first use) with `shares` mounted.
@@ -62,6 +76,15 @@ pub enum Request {
     /// a variant by its place.
     Place {
         vm: VmRequest,
+    },
+    /// Start `workspace`'s browser environment, or attach to the one already
+    /// serving it.
+    OpenBrowser {
+        browser: OpenBrowser,
+    },
+    /// End `workspace`'s browser environment now, with everything it wrote.
+    StopBrowser {
+        workspace: String,
     },
 }
 
@@ -124,6 +147,12 @@ pub enum Reply {
     /// The host the VM runs on (a placer's answer).
     Placed {
         host: String,
+    },
+    /// A workspace's browser environment is up, its session in the workspace.
+    /// `opened_ms`: what opening took, when this request opened it; `None`
+    /// when it attached to the environment someone else opened.
+    Opened {
+        opened_ms: Option<u64>,
     },
 }
 

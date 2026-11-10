@@ -308,7 +308,9 @@ fn take_work_plane(
         return Ok(None);
     };
     stage("taking the work of the workspaces relayed here");
-    take_work::plane(root, joined, relay, Some(Arc::clone(replicas))).map(Some)
+    // Browser environments start on the hosted-VM service this host's
+    // environment names, when it runs one.
+    take_work::plane(root, joined, relay, Some(Arc::clone(replicas)), None).map(Some)
 }
 
 /// What the broker's services are opened from: this profile's workspace, apps

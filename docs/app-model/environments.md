@@ -441,6 +441,26 @@ that workspace environment's own, never in a guest sharing the host's kernel
   in `os/hosted-guest-snapshot.env`, and `tilo-legacy hosted fetch-guest`
   fetches only that digest under `/etc/containers/policy.json`'s
   `sigstoreSigned` scope for `registry.tilo.so/tilo/hosted-guest`.
+- **Browser environments:** a hosted workspace's Browser runs in a microVM of
+  its own on the VM hosts, beside its Linux VM: size `browser` (2 vCPU / 2 GB /
+  8 GB disk), booted from the browser guest image
+  (`registry.tilo.so/tilo/hosted-browser-guest`, pinned beside the hosted
+  guest's digest, with Browser and an engine instead of a compiler). The relay
+  opens one directly when someone in the workspace opens Browser, and it is
+  placed as `<workspace>/browser` like any VM. It keeps nothing: a fresh disk
+  from the image every boot, never snapshotted, and its disk and state are
+  deleted when it stops after ten minutes without page activity, two hours
+  alive, or when the workspace closes it. Each host keeps two spares booted
+  with a session waiting for a workspace, so Browser opens in about a second,
+  and a spare that was handed to a workspace is never handed to another. No
+  plan admits it and no card is needed for it, while it takes its share of the
+  host's memory budget and the placer's view like any VM, and its machine's
+  time is not in an account's ledger (the relay counts the page actions). What
+  runs in it is a headless session that joins the workspace as a device; the
+  host starts it through the guest agent, and the exact contract — argv, the
+  `TILO_HOSTED_BROWSER` mark, one line of material on its stdin, `ready`,
+  `up` and `used` on its stdout — is documented in
+  [`crates/runtime/legacy-vm/src/hosted/browser.rs`](../../crates/runtime/legacy-vm/src/hosted/browser.rs).
 
 ## Members that take work
 
@@ -458,14 +478,18 @@ way a device serves its own:
   the requester as a window stream (`surface_stream`), with input routed back.
 
 A member holds a workspace as any device does, so its device plane admits the
-relay's runs. The first time the relay asks about a workspace it placed on the
-member, the member enters it: it asks the relay's own `room.enter`, which
-answers an invitation naming the member's person, and redeems it as a device
-joins any workspace. The relay decides which member may enter which
-workspace, never the request: a device of another person asking the member
-gets nothing from it, and a workspace the relay does not govern is refused
-there and remembered for a while, so nothing that names workspaces makes the
-member ask again and again.
+relay's runs. A member that runs the workspace's VMs also answers its browser
+environments' opens there (`tilo_actions::remote::browser`), which the host's
+hosted-VM service starts beside the Linux VM; the relay asks for them the way
+it asks for a shell command, placing `<workspace>/browser` first
+(`crates/hosting/tilo-relay/src/placed_browsers.rs`). The first time the relay
+asks about a workspace it placed on the member, the member enters it: it asks
+the relay's own `room.enter`, which answers an invitation naming the member's
+person, and redeems it as a device joins any workspace. The relay decides
+which member may enter which workspace, never the request: a device of another
+person asking the member gets nothing from it, and a workspace the relay does
+not govern is refused there and remembered for a while, so nothing that names
+workspaces makes the member ask again and again.
 
 ## Terminal
 

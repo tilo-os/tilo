@@ -19,6 +19,10 @@
 //! - once no command has run for the idle limit, it is snapshotted to disk
 //!   and its process ends; the next command restores it;
 //! - every VM has a [`size`] and a persistent disk of that size;
+//! - a workspace's Browser runs in one too ([`browser`]): its size's guest
+//!   image, started directly rather than for a command, never snapshotted,
+//!   and deleted with everything it wrote when it ends — with spares booted
+//!   for the next workspace;
 //! - [`meter`] records each run and each held snapshot, per second, in the
 //!   account's ledger, and [`plan`] refuses what the account's plan does not
 //!   cover, in words an agent can act on;
@@ -60,6 +64,7 @@
     reason = "errors are typed enums whose variants document themselves"
 )]
 
+pub mod browser;
 pub mod control;
 pub mod files;
 pub mod firecracker;

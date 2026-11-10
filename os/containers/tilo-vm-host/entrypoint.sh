@@ -27,6 +27,8 @@
 #      no more VMs than its memory budget (TILO_VM_MEMORY_MIB, or auto from the
 #      node's memory) holds, and answers a placer's Status on
 #      TILO_VM_STATUS_LISTEN;
+#   5b. with TILO_VM_BROWSER, the browser guest image, which the service boots
+#      for each workspace's browser environment beside its Linux VM;
 #   6. with TILO_TAKE_WORK_RELAY, the member: `tilo-runtime --daemon`, as the
 #      service, under the member identity, which takes the relay's runs for
 #      the workspaces whose VMs are here (restarted if it stops).
@@ -124,6 +126,20 @@ if [ "$memory_mib" = auto ]; then
 fi
 if [ -n "$memory_mib" ]; then set -- "$@" --memory-mib "$memory_mib"; fi
 if [ -n "${TILO_VM_STATUS_LISTEN:-}" ]; then set -- "$@" --status-listen "$TILO_VM_STATUS_LISTEN"; fi
+# A host that runs browser environments boots their own guest image: a
+# headless session with Browser and its engine. Two spares stay booted for the
+# next workspace unless TILO_VM_BROWSER_SPARES says how many.
+if [ -n "${TILO_VM_BROWSER:-}" ]; then
+  browser=$(as_service tilo-legacy hosted fetch-guest --images "$data/images" --browser) \
+    || { say 'TILO_VM_BROWSER is set, but no browser guest has been published'; exit 1; }
+  browser_kernel=$(printf '%s\n' "$browser" | sed -n 's/^kernel //p')
+  browser_rootfs=$(printf '%s\n' "$browser" | sed -n 's/^rootfs //p')
+  say "browser guest kernel $browser_kernel, root filesystem $browser_rootfs"
+  set -- "$@" --browser --browser-kernel "$browser_kernel" --browser-disk-image "$browser_rootfs"
+  if [ -n "${TILO_VM_BROWSER_SPARES:-}" ]; then
+    set -- "$@" --browser-spares "$TILO_VM_BROWSER_SPARES"
+  fi
+fi
 
 # 6. the member
 if [ -n "${TILO_TAKE_WORK_RELAY:-}" ]; then

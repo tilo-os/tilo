@@ -70,6 +70,7 @@ fn a_workspace_shell_runs_programs_in_its_vm_and_refuses_an_account_without_a_ca
             add_payment_method: "https://billing.example/card".into(),
             manage_billing: None,
             raise_limit: None,
+            browser_free_actions: None,
         }),
         ..Plans::default()
     };
@@ -94,6 +95,7 @@ fn a_workspace_shell_runs_programs_in_its_vm_and_refuses_an_account_without_a_ca
             idle_suspend: Duration::from_secs(2),
             self_exe: env_path("TILO_LEGACY_BIN"),
             jail,
+            browser: None,
         },
     };
     let socket = config.socket();

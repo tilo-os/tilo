@@ -196,3 +196,150 @@ fn only_the_hosts_own_devices_may_ask_and_only_for_runs() {
         "{refused:?}"
     );
 }
+
+/// A member whose host runs browser environments on `socket`.
+fn browser_member(dir: &std::path::Path, socket: std::path::PathBuf) -> EnvironmentRuns {
+    let files = dir.join("replicas");
+    EnvironmentRuns::new(
+        WorkspaceShells::new(
+            dir.join("shells"),
+            Some(crate::hosted_vm::HostedTarget {
+                socket,
+                account: "acct-1".into(),
+                size: legacy_vm::hosted::size::VmSize::Small,
+                plans: None,
+            }),
+        )
+        .with_files(move |workspace| files.join(workspace)),
+        OPERATOR,
+    )
+}
+
+/// A hosted-VM service answering each ask with the next of `replies`, and what
+/// it was asked.
+fn fake_hosted(
+    dir: &std::path::Path,
+    replies: Vec<legacy_vm::hosted::control::Reply>,
+) -> (
+    std::path::PathBuf,
+    std::sync::Arc<std::sync::Mutex<Vec<legacy_vm::hosted::control::Request>>>,
+) {
+    use legacy_vm::hosted::control;
+    let socket = dir.join("hosted.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = std::sync::Arc::clone(&asked);
+    std::thread::spawn(move || {
+        let mut replies = replies.into_iter();
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let Ok(Some(request)) = control::FRAMING.read_value(&mut stream) else {
+                continue;
+            };
+            seen.lock().unwrap().push(request);
+            if let Some(reply) = replies.next() {
+                let _ = control::FRAMING.write_value(&mut stream, &reply);
+            }
+        }
+    });
+    (socket, asked)
+}
+
+/// A browser environment to open, as the relay asks for it.
+fn opening(material: &str) -> InvokeRequest {
+    use tilo_actions::remote::browser;
+    let asked = browser::OpenBrowser {
+        workspace: "ws-1".into(),
+        account: "acct-1".into(),
+        material: material.into(),
+    };
+    let serde_json::Value::Object(map) = serde_json::to_value(asked).unwrap() else {
+        panic!("an open is an object");
+    };
+    InvokeRequest {
+        invocation: InvocationId::new(),
+        target: browser::target(),
+        argument: InvokeArgument::Json(map),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+    }
+}
+
+/// Follow an invocation of the member's browser work until it ends, and what
+/// it answered.
+fn opened(
+    runs: &EnvironmentRuns,
+    caller: &Caller,
+    id: InvocationId,
+) -> Option<tilo_actions::remote::browser::OpenedBrowser> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        assert!(Instant::now() < deadline, "it never ended");
+        if let Some(change) = runs.next_change(caller, &id) {
+            answered(change);
+        }
+        match runs.observe(caller, &id).unwrap().update {
+            InvocationUpdate::Succeeded { output, .. } => {
+                return output
+                    .value
+                    .map(|value| serde_json::from_value(value).unwrap());
+            }
+            InvocationUpdate::Failed { error, .. } => panic!("it failed: {}", error.message),
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn opening_a_browser_environment_asks_the_hosts_service() {
+    use legacy_vm::hosted::control::{OpenBrowser, Reply, Request};
+    let dir = tempfile::tempdir().unwrap();
+    let (socket, asked) = fake_hosted(
+        dir.path(),
+        vec![
+            // Every machine is full at first: it waits, and asks again.
+            Reply::Busy("Starting another machine for it, about 3 minutes.".into()),
+            Reply::Opened {
+                opened_ms: Some(900),
+            },
+        ],
+    );
+    let runs = browser_member(dir.path(), socket);
+    let request = opening("{\"record\":\"r1\"}");
+    let receipt = answered(runs.invoke(&host(), request)).unwrap();
+    let opened = opened(&runs, &host(), receipt.invocation).unwrap();
+    assert_eq!(opened.opened_ms, Some(900), "the spare was handed over");
+    let asked = asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 2, "asked again once there was room");
+    let Request::OpenBrowser {
+        browser:
+            OpenBrowser {
+                workspace,
+                account,
+                material,
+            },
+    } = &asked[0]
+    else {
+        panic!("an open: {:?}", asked[0]);
+    };
+    assert_eq!(
+        (workspace.as_str(), account.as_str(), material.as_str()),
+        ("ws-1", "acct-1", "{\"record\":\"r1\"}"),
+        "the caller's workspace, and the material word for word"
+    );
+}
+
+#[test]
+fn a_member_that_runs_no_vms_opens_no_browser_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    let runs = member(dir.path());
+    let refused = answered(runs.invoke(&host(), opening("{}")));
+    assert!(
+        matches!(refused, Err(ActionHostError::Unavailable { .. })),
+        "a host with no Linux VMs has no browser environment: {refused:?}"
+    );
+}

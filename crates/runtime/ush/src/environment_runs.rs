@@ -1,5 +1,7 @@
-//! A member device that takes its workspaces' work runs their shell
-//! commands ([`tilo_actions::remote::environment_runs`]).
+//! A member device that takes its workspaces' work: it runs their shell
+//! commands ([`tilo_actions::remote::environment_runs`]) and opens their
+//! browser environments ([`tilo_actions::remote::browser`]) on the hosted-VM
+//! service beside it.
 //!
 //! [`EnvironmentRuns`] is what the member's device plane hands a request to:
 //! it admits a [`RUN`](environment_runs::RUN) from the workspace's host (a
@@ -16,6 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
+use tilo_actions::remote::browser::{self, OpenBrowser};
 use tilo_actions::remote::environment_runs::{self, CommandRan, RunCommand, RunOutput};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationLedger,
@@ -23,6 +26,7 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 
+use crate::environment_browsers::BrowserHost;
 use crate::workspace_shell::{Payer, ShellRun, WorkspaceShells};
 
 /// How many runs the ledger remembers, finished ones forgotten first.
@@ -37,6 +41,9 @@ pub struct EnvironmentRuns(Arc<Inner>);
 
 struct Inner {
     shells: WorkspaceShells,
+    /// Where browser environments start: the hosted-VM service of this host,
+    /// when it runs one.
+    browsers: Option<BrowserHost>,
     /// The operator this member belongs to: whose devices may ask.
     operator: [u8; 32],
     ledger: Mutex<InvocationLedger<Run>>,
@@ -68,8 +75,10 @@ impl EnvironmentRuns {
     /// Runs in `shells`, asked by devices of `operator`.
     #[must_use]
     pub fn new(shells: WorkspaceShells, operator: [u8; 32]) -> Self {
+        let browsers = shells.hosted_socket().map(BrowserHost::new);
         Self(Arc::new(Inner {
             shells,
+            browsers,
             operator,
             ledger: Mutex::new(InvocationLedger::with_capacity(REMEMBERED)),
             moved: Condvar::new(),
@@ -80,7 +89,7 @@ impl EnvironmentRuns {
 
 fn not_served() -> ActionHostError {
     ActionHostError::Unavailable {
-        reason: "this member runs only its workspaces' shell commands".into(),
+        reason: "this member runs its workspaces' shell commands and browser environments".into(),
     }
 }
 
@@ -124,6 +133,49 @@ impl Inner {
         *run.state.lock().unwrap_or_else(PoisonError::into_inner) =
             InvocationState::new(invocation, update);
         self.moved();
+    }
+
+    /// Answer `run` by opening (or ending) `workspace`'s browser environment
+    /// on this host's hosted-VM service, and answer what it said.
+    fn start_browser(
+        self: &Arc<Self>,
+        run: Run,
+        workspace: String,
+        asked: Option<OpenBrowser>,
+        browsers: Option<BrowserHost>,
+    ) {
+        let inner = Arc::clone(self);
+        let invocation = run.state().invocation();
+        std::thread::spawn(move || {
+            let outcome = match (asked, browsers) {
+                (Some(mut asked), Some(browsers)) => {
+                    // The workspace is the caller's, whatever the argument says.
+                    asked.workspace.clone_from(&workspace);
+                    browsers.open(&asked).map(Some)
+                }
+                (None, Some(browsers)) => browsers.stop(&workspace).map(|()| None),
+                _ => Err("this member runs no browser environments".to_owned()),
+            };
+            let update = match outcome {
+                Ok(opened) => InvocationUpdate::Succeeded {
+                    invocation,
+                    output: ActionOutput {
+                        value: opened.and_then(|opened| serde_json::to_value(opened).ok()),
+                        resources: Vec::new(),
+                    },
+                },
+                Err(message) => InvocationUpdate::Failed {
+                    invocation,
+                    error: ActionFailure {
+                        code: "unavailable".into(),
+                        message,
+                        details: None,
+                        retryable: true,
+                    },
+                },
+            };
+            inner.set(&run, update);
+        });
     }
 
     fn start(self: &Arc<Self>, run: Run, workspace: String, asked: RunCommand) {
@@ -259,9 +311,20 @@ impl EnvironmentRuns {
     ) -> Result<InvocationReceipt, ActionHostError> {
         let target = &request.target;
         if target.provider != environment_runs::PROVIDER
-            || target.address.action != environment_runs::RUN
+            || target.address.resource != environment_runs::RESOURCE
         {
             return Err(not_served());
+        }
+        let action = target.address.action.as_str();
+        let browsers = self
+            .0
+            .browsers
+            .as_ref()
+            .filter(|_| action == browser::OPEN || action == browser::STOP);
+        if (action == browser::OPEN || action == browser::STOP) && browsers.is_none() {
+            return Err(ActionHostError::Unavailable {
+                reason: "this member runs no Linux VMs, so no browser environment".into(),
+            });
         }
         // Only the workspace's host asks: a device of this member's own
         // operator. Anyone else could name an account that is not theirs.
@@ -272,7 +335,12 @@ impl EnvironmentRuns {
             .workspace()
             .ok_or(ActionHostError::NotPermitted)?
             .to_owned();
-        let asked = argument(request)?;
+        let asked = match action {
+            environment_runs::RUN => Asked::Run(argument(request)?),
+            browser::OPEN => Asked::Browser(Some(open_argument(request)?)),
+            browser::STOP => Asked::Browser(None),
+            _ => return Err(not_served()),
+        };
         let invocation = request.invocation;
         let mut ledger = self.0.ledger.lock().unwrap_or_else(PoisonError::into_inner);
         match ledger.reserve(caller, request)? {
@@ -291,11 +359,39 @@ impl EnvironmentRuns {
                 ledger.complete(&invocation, run.clone());
                 drop(ledger);
                 let receipt = run.state().receipt();
-                self.0.start(run, workspace, asked);
+                match asked {
+                    Asked::Run(asked) => self.0.start(run, workspace, asked),
+                    Asked::Browser(asked) => {
+                        let browsers = browsers.cloned();
+                        self.0.start_browser(run, workspace, asked, browsers);
+                    }
+                }
                 Ok(receipt)
             }
         }
     }
+}
+
+/// What one invocation of the member's work asks for.
+enum Asked {
+    /// Run a command line in a session's shell.
+    Run(RunCommand),
+    /// Open a workspace's browser environment (`Some`), or end it.
+    Browser(Option<OpenBrowser>),
+}
+
+/// A browser environment to open, as its action's argument.
+fn open_argument(request: &InvokeRequest) -> Result<OpenBrowser, ActionHostError> {
+    let InvokeArgument::Json(map) = &request.argument else {
+        return Err(ActionHostError::InvalidRequest {
+            reason: "opening a browser environment takes its workspace as JSON".into(),
+        });
+    };
+    serde_json::from_value(serde_json::Value::Object(map.clone())).map_err(|error| {
+        ActionHostError::InvalidRequest {
+            reason: format!("not a browser environment to open: {error}"),
+        }
+    })
 }
 
 #[cfg(test)]

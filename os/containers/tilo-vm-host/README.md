@@ -2,7 +2,8 @@
 
 One per VM-host node of a Tilo host that serves other people's workspaces
 (tilo.sh): `tilo-legacy hosted serve`, which runs each workspace
-environment's Linux programs in a jailed Firecracker VM
+environment's Linux programs in a jailed Firecracker VM, and its Browser in a
+microVM of its own when `TILO_VM_BROWSER` is set
 ([`docs/app-model/environments.md`](../../../docs/app-model/environments.md),
 "Hosted workspace VMs"). `entrypoint.sh` says what the start does.
 
@@ -29,6 +30,12 @@ environment's Linux programs in a jailed Firecracker VM
   admits wakes against.
 - **The guest**: the digest this build pins (`os/hosted-guest-snapshot.env`),
   or `TILO_VM_GUEST_REF`; either way only an image the release key signed.
+- **Browser environments** (optional): `TILO_VM_BROWSER=1` has the host run
+  each workspace's Browser in a microVM of its own beside its Linux VM, from
+  the browser guest image the same file pins (`HOSTED_BROWSER_GUEST_<ARCH>_REF`).
+  Two spares stay booted for the next workspace (`TILO_VM_BROWSER_SPARES`);
+  each environment keeps nothing and ends after ten minutes without page
+  activity, or two hours alive. It takes its share of the memory budget.
 
 | | |
 | --- | --- |

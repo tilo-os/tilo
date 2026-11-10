@@ -85,6 +85,9 @@ pub struct WorkspaceShells {
     files_of: Option<Box<FilesOf>>,
     /// Where Linux programs run, when this host runs them.
     vms: Option<HostedTarget>,
+    /// The hosted-VM service browser environments start on, when it is not
+    /// the one the environment names.
+    browsers: Option<PathBuf>,
     sessions: Mutex<HashMap<(String, String), Shared>>,
 }
 
@@ -137,6 +140,7 @@ impl WorkspaceShells {
             state: state.into(),
             files_of: None,
             vms,
+            browsers: None,
             sessions: Mutex::new(HashMap::new()),
         }
     }
@@ -163,6 +167,24 @@ impl WorkspaceShells {
     #[must_use]
     pub fn runs_programs(&self) -> bool {
         self.vms.is_some()
+    }
+
+    /// The same shells, whose browser environments start on the hosted-VM
+    /// service at `socket` (the one the environment names, unless a host
+    /// names it another way).
+    #[must_use]
+    pub fn with_browsers_on(mut self, socket: Option<PathBuf>) -> Self {
+        self.browsers = socket;
+        self
+    }
+
+    /// Where this host's hosted-VM service listens, when it runs one: the
+    /// programs' VMs and the workspaces' browser environments are its.
+    #[must_use]
+    pub fn hosted_socket(&self) -> Option<PathBuf> {
+        self.browsers
+            .clone()
+            .or_else(|| self.vms.as_ref().map(|target| target.socket.clone()))
     }
 
     /// The directory `workspace`'s shells work in: its files on this host.

@@ -19,6 +19,7 @@ use legacy_agent_protocol::{AGENT_PORT, GuestMessage, HostMessage, client};
 use libvirt_domain::DomainState;
 use thiserror::Error;
 
+use super::browser::BrowserGuest;
 use super::files::Served;
 use super::firecracker::{self, Api, FirecrackerError, Machine, VmFiles};
 use super::jail::{Jail, JailDirs};
@@ -60,6 +61,11 @@ pub enum VmError {
     #[error("the VM is not running")]
     NotRunning,
     #[error(
+        "this host runs no browser environments: its service was started without the \
+         browser guest image"
+    )]
+    NoBrowserGuest,
+    #[error(
         "every Linux VM this host runs at once is running; try again in a minute \
          (an idle VM goes to sleep after its idle limit)"
     )]
@@ -80,6 +86,9 @@ pub struct Settings {
     /// one ([`super::jail`]). Unjailed VMs (development only) have no
     /// network.
     pub jail: Option<Arc<Jail>>,
+    /// The browser environments this host runs, when it runs any: the guest
+    /// image they boot, the spares it keeps, and how long one lives.
+    pub browser: Option<BrowserGuest>,
 }
 
 /// How the last wake went: what an agent waited for its first command.
@@ -99,7 +108,9 @@ struct ShareServer {
 pub struct HostedVm {
     files: VmFiles,
     settings: Arc<Settings>,
-    ledger: Ledger,
+    /// Where its runs are billed; `None` for a browser environment, which no
+    /// account's ledger runs: the relay counts page use.
+    ledger: Option<Ledger>,
     clock: Clock,
     meter: Meter,
     life: Lifecycle,
@@ -123,15 +134,13 @@ impl HostedVm {
         identity: VmIdentity,
         files: VmFiles,
         settings: Arc<Settings>,
-        ledger: Ledger,
+        ledger: Option<Ledger>,
         clock: Clock,
     ) -> Result<Self, VmError> {
         std::fs::create_dir_all(&files.state)?;
         let mut meter = Meter::load(&files.meter()).unwrap_or_else(|| Meter::new(identity));
         kill_stray(&files, settings.jail.as_deref());
-        if let Some(record) = meter.recover() {
-            ledger.append(&record)?;
-        }
+        record_in(ledger.as_ref(), meter.recover().as_ref())?;
         meter.save(&files.meter())?;
         let mut life = Lifecycle::new(settings.idle_suspend.as_secs());
         let disk = files.disk().is_file();
@@ -165,6 +174,33 @@ impl HostedVm {
     #[must_use]
     pub const fn identity(&self) -> &VmIdentity {
         &self.meter.identity
+    }
+
+    /// Whether this is a workspace's browser environment rather than a Linux
+    /// VM: it boots the browser guest image, is never snapshotted, and keeps
+    /// nothing when it stops.
+    #[must_use]
+    pub fn is_browser(&self) -> bool {
+        self.meter.identity.size == VmSize::Browser
+    }
+
+    /// The guest image this VM boots: its kind's.
+    fn machine(&self) -> Result<Machine, VmError> {
+        if self.is_browser() {
+            return self
+                .settings
+                .browser
+                .as_ref()
+                .map(|browser| browser.machine.clone())
+                .ok_or(VmError::NoBrowserGuest);
+        }
+        Ok(self.settings.machine.clone())
+    }
+
+    /// How to reach the running VM's agent.
+    #[must_use]
+    pub fn link(&self) -> Option<AgentLink> {
+        self.link.clone()
     }
 
     #[must_use]
@@ -232,7 +268,8 @@ impl HostedVm {
     }
 
     /// Look at the running VM: is it alive, what runs in it. Suspends it
-    /// once it has been idle for the limit.
+    /// once it has been idle for the limit; a browser environment is never
+    /// suspended (its session's idle limit ends it, and it keeps nothing).
     pub fn poll(&mut self) -> Result<(), VmError> {
         if !self.reap() || self.life.phase() != Phase::Running {
             return Ok(());
@@ -244,6 +281,9 @@ impl HostedVm {
         };
         self.meter.seen(now);
         self.meter.save(&self.files.meter())?;
+        if self.is_browser() {
+            return Ok(());
+        }
         if let Some(actions) = self.life.activity(running, now / 1000)
             && let Err(error) = self.execute(&actions)
         {
@@ -253,8 +293,12 @@ impl HostedVm {
         Ok(())
     }
 
-    /// Suspend now, whatever runs.
+    /// Suspend now, whatever runs. A browser environment is never
+    /// snapshotted, so it is left as it is.
     pub fn suspend(&mut self) -> Result<(), VmError> {
+        if self.is_browser() {
+            return Ok(());
+        }
         self.reap();
         if let Some(actions) = self.life.suspend_now()
             && let Err(error) = self.execute(&actions)
@@ -267,25 +311,42 @@ impl HostedVm {
 
     /// Stop the VM and drop its snapshot: the next command boots it from
     /// its disk. The guest flushes its disk first; it is not shut down
-    /// beyond that, so stopping is never billed for a slow shutdown.
+    /// beyond that, so stopping is never billed for a slow shutdown. A
+    /// browser environment keeps nothing: its disk, meter and sockets are
+    /// deleted.
     pub fn stop(&mut self) -> Result<(), VmError> {
         if let Some(process) = self.process.take() {
-            let _ = self.agent(&HostMessage::MountFiles { shares: Vec::new() });
-            let _ = self.sync_guest();
+            if !self.is_browser() {
+                let _ = self.agent(&HostMessage::MountFiles { shares: Vec::new() });
+                let _ = self.sync_guest();
+            }
             self.finish(process);
             self.ended(RunEnd::Stopped)?;
         }
         self.stop_servers();
         self.drop_snapshot()?;
         self.observe()?;
+        if self.is_browser() {
+            self.forget()?;
+        }
         Ok(())
+    }
+
+    /// Delete everything a browser environment wrote: its disk, its meter
+    /// and its sockets. What it kept is nothing.
+    fn forget(&self) -> Result<(), VmError> {
+        let _ = std::fs::remove_dir_all(&self.files.run);
+        match std::fs::remove_dir_all(&self.files.state) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
+            _ => Ok(()),
+        }
     }
 
     fn execute(&mut self, actions: &[Action]) -> Result<(), VmError> {
         for action in actions {
             match action {
                 Action::CreateDisk => firecracker::create_disk(
-                    &self.settings.machine,
+                    &self.machine()?,
                     &self.files.disk(),
                     self.meter.identity.size,
                 )?,
@@ -309,7 +370,8 @@ impl HostedVm {
 
     fn start(&mut self) -> Result<(), VmError> {
         let settings = Arc::clone(&self.settings);
-        let machine = &settings.machine;
+        let machine = self.machine()?;
+        let machine = &machine;
         let snapshot = self.files.snapshot();
         std::fs::create_dir_all(&self.files.run)?;
         std::fs::create_dir_all(self.files.vmm())?;
@@ -332,7 +394,7 @@ impl HostedVm {
         let dirs = if let Some(jail) = &settings.jail {
             let slot = jail.take().ok_or(VmError::HostFull)?;
             self.slot = Some(slot);
-            match self.jail_dirs() {
+            match self.jail_dirs(machine) {
                 Ok(dirs) => Some((jail, slot, dirs)),
                 Err(error) => {
                     self.release();
@@ -409,14 +471,8 @@ impl HostedVm {
 
     /// The directories a jail is made of: the VM's state, its sockets, and
     /// the guest kernel's (absent for a kernel at the filesystem root).
-    fn jail_dirs(&self) -> std::io::Result<(File, File, Option<File>)> {
-        let guest = self
-            .settings
-            .machine
-            .kernel
-            .parent()
-            .map(File::open)
-            .transpose()?;
+    fn jail_dirs(&self, machine: &Machine) -> std::io::Result<(File, File, Option<File>)> {
+        let guest = machine.kernel.parent().map(File::open).transpose()?;
         Ok((
             File::open(self.files.vmm())?,
             File::open(&self.files.run)?,
@@ -447,16 +503,21 @@ impl HostedVm {
         let Some(jail) = self.settings.jail.clone() else {
             return;
         };
-        let released = self.jail_dirs().and_then(|(vmm, sockets, _)| {
-            jail.helper.release(
-                slot,
-                &JailDirs {
-                    vmm: &vmm,
-                    sockets: &sockets,
-                    guest: None,
-                },
-            )
-        });
+        let released = self
+            .machine()
+            .map_err(|error| std::io::Error::other(error.to_string()))
+            .and_then(|machine| {
+                self.jail_dirs(&machine).and_then(|(vmm, sockets, _)| {
+                    jail.helper.release(
+                        slot,
+                        &JailDirs {
+                            vmm: &vmm,
+                            sockets: &sockets,
+                            guest: None,
+                        },
+                    )
+                })
+            });
         match released {
             Ok(()) => jail.give_back(slot),
             Err(error) => eprintln!("tilo-legacy hosted: releasing slot {slot}: {error}"),
@@ -588,9 +649,8 @@ impl HostedVm {
         self.ended(RunEnd::Suspended)?;
         snapshot.complete()?;
         let now = (self.clock)();
-        if let Some(record) = self.meter.snapshot_taken(now, snapshot.bytes_on_disk()) {
-            self.ledger.append(&record)?;
-        }
+        let record = self.meter.snapshot_taken(now, snapshot.bytes_on_disk());
+        record_in(self.ledger.as_ref(), record.as_ref())?;
         self.meter.save(&self.files.meter())?;
         self.life.suspended();
         self.link = None;
@@ -602,18 +662,15 @@ impl HostedVm {
         let _ = std::fs::remove_file(self.pid_file());
         self.link = None;
         let record = self.meter.stopped((self.clock)(), how);
-        if let Some(record) = &record {
-            self.ledger.append(record)?;
-        }
+        record_in(self.ledger.as_ref(), record.as_ref())?;
         self.meter.save(&self.files.meter())?;
         Ok(record)
     }
 
     fn drop_snapshot(&mut self) -> Result<(), VmError> {
         self.files.snapshot().discard()?;
-        if let Some(record) = self.meter.snapshot_dropped((self.clock)()) {
-            self.ledger.append(&record)?;
-        }
+        let record = self.meter.snapshot_dropped((self.clock)());
+        record_in(self.ledger.as_ref(), record.as_ref())?;
         self.meter.save(&self.files.meter())?;
         Ok(())
     }
@@ -723,6 +780,14 @@ impl Drop for HostedVm {
 /// The descriptor a share server gets its bound listener on.
 pub const LISTEN_FD: i32 = 3;
 
+/// Bill `record` to its account, when this VM's runs are billed at all.
+fn record_in(ledger: Option<&Ledger>, record: Option<&UsageRecord>) -> Result<(), VmError> {
+    match (ledger, record) {
+        (Some(ledger), Some(record)) => Ok(ledger.append(record)?),
+        _ => Ok(()),
+    }
+}
+
 /// `tilo-legacy confine-fs --isolate --hide … --ro … -- tilo-legacy hosted
 /// files-serve …`: Landlock holds the server to its one share (read-only
 /// when the share is) and what it needs to run, and namespaces of its own
@@ -805,6 +870,57 @@ fn kill_stray(files: &VmFiles, jail: Option<&Jail>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_browser_environment_is_never_snapshotted_and_keeps_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = VmFiles {
+            state: dir.path().join("state"),
+            run: dir.path().join("run"),
+            jailed: false,
+        };
+        std::fs::create_dir_all(files.vmm()).unwrap();
+        std::fs::write(files.disk(), b"a fresh copy of the browser guest").unwrap();
+        let machine = Machine {
+            firecracker: dir.path().join("no-firecracker"),
+            kernel: dir.path().join("vmlinux"),
+            initramfs: None,
+            cmdline: Machine::DEFAULT_CMDLINE.into(),
+            base_disk: None,
+        };
+        let settings = Settings {
+            machine: machine.clone(),
+            idle_suspend: Duration::from_secs(1),
+            self_exe: dir.path().join("tilo-legacy"),
+            jail: None,
+            browser: Some(BrowserGuest::new(machine)),
+        };
+        let identity = VmIdentity {
+            vm: "ws1/browser".into(),
+            workspace: "ws1".into(),
+            environment: "browser".into(),
+            account: "acct-1".into(),
+            size: VmSize::Browser,
+        };
+        let mut vm = HostedVm::open(
+            identity,
+            files.clone(),
+            Arc::new(settings),
+            None,
+            Arc::new(|| 1_000),
+        )
+        .unwrap();
+        assert!(vm.is_browser());
+        // phase: a browser environment is never suspended to a snapshot
+        vm.suspend().unwrap();
+        assert!(!files.snapshot().valid() && !files.snapshot().memory.exists());
+        // phase: stopping it deletes the disk it booted, and everything else
+        vm.stop().unwrap();
+        assert!(
+            !files.state.exists(),
+            "a browser environment keeps nothing when it stops"
+        );
+    }
 
     #[test]
     fn a_share_server_is_confined_to_its_share() {
