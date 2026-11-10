@@ -42,7 +42,9 @@ pub mod steps;
 /// Where an agent's task programs run.
 pub mod programs;
 
-/// Where a session's own question is answered: the model gateway its host runs.
+/// Where a session's own question is answered: the model gateway its host runs. The capability it
+/// names is built where the question runs — on the answering thread on a desktop, on the page's
+/// own turn on the web — so a host whose models hold its one thread's handles answers too.
 pub trait Models: Send + Sync {
     /// The capability a question asked in this session runs on; `None` while the person set no
     /// provider up, or no gateway runs here.

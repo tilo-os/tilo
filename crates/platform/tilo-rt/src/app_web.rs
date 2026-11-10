@@ -50,6 +50,13 @@ where
     TASKS.with(|tasks| tasks.spawn_local(future))
 }
 
+/// Run `future` as an app task on the page's own turn: where a desktop starts a thread for work
+/// that holds values of one thread (the page's own services), the page runs it here instead.
+#[cfg(target_family = "wasm")]
+pub fn spawn_task(future: impl Future<Output = ()> + 'static) {
+    drop(spawn_local(future));
+}
+
 /// The app runtime, started on first use.
 pub fn app() -> &'static AppRuntime {
     APP.get_or_init(|| AppRuntime {

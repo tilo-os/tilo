@@ -17,10 +17,8 @@ use tilo_session::platform::apps::Apps;
 use tilo_session::search::{SearchOptions, SessionSearch};
 
 /// The session's search over this page's desk, mounted as a native desktop mounts it: the bundle's
-/// apps as the apps installed here.
-///
-/// A page runs no model gateway the session's ask can reach — the page's own service keeps its
-/// models on the page's thread — so its palette offers no question until the ask runs here too.
+/// apps as the apps installed here, and the page's own model service as the gateway its questions
+/// run on.
 pub(crate) fn mount(
     handle: &DesktopHandle,
     person: &str,
@@ -35,10 +33,20 @@ pub(crate) fn mount(
         person,
         None,
         Some(wake),
-        None,
+        Some(Arc::new(PageGateway) as Arc<dyn tilo_session::platform::Models>),
     ));
     handle.set_search_host(Rc::clone(&search) as Rc<dyn tilo_desktop_surface::SearchHost>);
     search
+}
+
+/// The model service this page runs, as the session's ask reaches it: its models hold the page's
+/// own handles, so each question builds the capability where it is asked.
+struct PageGateway;
+
+impl tilo_session::platform::Models for PageGateway {
+    fn models(&self) -> Option<ui::models::Models> {
+        Some(crate::host_services::page_models())
+    }
 }
 
 /// The rows the person chose since the last call, carried out as the session carries them out: the
