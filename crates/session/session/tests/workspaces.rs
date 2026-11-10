@@ -363,7 +363,7 @@ fn a_branch_of_a_workspace_holds_what_it_held_and_the_person_goes_there() {
             CHROME_RESOURCE,
             "branch-workspace",
             &serde_json::Map::from_iter([
-                ("source".to_owned(), source_name.clone().into()),
+                ("source".to_owned(), source_name.into()),
                 ("name".to_owned(), "Question 2".into()),
             ]),
         )
@@ -423,33 +423,7 @@ fn a_branch_of_a_workspace_holds_what_it_held_and_the_person_goes_there() {
         .map(|(_, name, _)| name)
         .collect();
     assert!(names.contains(&"Question 2".to_owned()), "{names:?}");
-
-    // What the notes app keeps for the source is the branch's too, naming the branch; the source's
-    // is as it was, and a change to one is not the other's.
-    let copied = data
-        .path()
-        .join("tilo-rooms")
-        .join(&branch)
-        .join("so.tilo.notes/.local/share/so.tilo.notes/rooms")
-        .join(&branch)
-        .join("records/uuid-plan/state.automerge");
-    let read = |path: &Path| {
-        automerge::AutoCommit::load(&std::fs::read(path).expect("a note")).expect("a document")
-    };
-    assert_eq!(
-        ui::record::workspace_scope(&read(&copied)).as_deref(),
-        Some(branch.as_str())
-    );
-    assert_eq!(
-        ui::record::workspace_scope(&read(&kept)).as_deref(),
-        Some(source.as_str())
-    );
-    std::fs::write(&copied, b"").expect("the branch's note changes");
-    assert_eq!(
-        ui::record::workspace_scope(&read(&kept)).as_deref(),
-        Some(source.as_str()),
-        "the source's note stays"
-    );
+    what_the_branch_keeps(data.path(), &source, &kept, &branch);
     drop(session);
 
     let mut again = session_keeping(state.path());
@@ -457,6 +431,34 @@ fn a_branch_of_a_workspace_holds_what_it_held_and_the_person_goes_there() {
     let after: Vec<String> = held(&again).into_iter().map(|(_, _, id)| id).collect();
     assert!(after.contains(&branch), "the branch came back: {after:?}");
     assert!(after.contains(&source), "and so did the source: {after:?}");
+}
+
+/// What the notes app keeps for the source is the branch's too, naming the branch; the source's is
+/// as it was, and a change to one is not the other's.
+fn what_the_branch_keeps(data: &Path, source: &str, kept: &Path, branch: &str) {
+    let copied = data
+        .join("tilo-rooms")
+        .join(branch)
+        .join("so.tilo.notes/.local/share/so.tilo.notes/rooms")
+        .join(branch)
+        .join("records/uuid-plan/state.automerge");
+    let read = |path: &Path| {
+        automerge::AutoCommit::load(&std::fs::read(path).expect("a note")).expect("a document")
+    };
+    assert_eq!(
+        ui::record::workspace_scope(&read(&copied)).as_deref(),
+        Some(branch)
+    );
+    assert_eq!(
+        ui::record::workspace_scope(&read(kept)).as_deref(),
+        Some(source)
+    );
+    std::fs::write(&copied, b"").expect("the branch's note changes");
+    assert_eq!(
+        ui::record::workspace_scope(&read(kept)).as_deref(),
+        Some(source),
+        "the source's note stays"
+    );
 }
 
 /// A branch names a workspace the desk has: one it does not have is refused, and nothing is made.

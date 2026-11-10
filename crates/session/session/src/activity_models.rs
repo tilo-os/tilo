@@ -13,6 +13,10 @@ pub(crate) use crate::search_ask::PACKAGE;
 
 /// Ask the model `job`'s question through `models`: the answer's text, or nothing when no model is
 /// available or the ask failed. Nothing about a failure reaches the document.
+#[allow(
+    clippy::future_not_send,
+    reason = "asked on the app runtime's own thread, whose model gateway handle is not Send"
+)]
 pub(crate) async fn answer(models: Option<&dyn Models>, job: &Job) -> String {
     let Some(models) = models.and_then(Models::models) else {
         return String::new();

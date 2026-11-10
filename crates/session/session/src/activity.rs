@@ -726,7 +726,7 @@ fn read_workspace_records(
             }
             let document = document_of(store, &package, workspace, &id);
             if let Some(document) = &document {
-                noted(&document.get_actor());
+                noted(document.get_actor());
             }
             read.push(DetachedRecordHistory {
                 app: package.clone(),
@@ -895,7 +895,7 @@ impl ActivityHost for Host {
             };
             let woken = Arc::clone(&self.0.woken);
             let wake = self.0.wake.clone();
-            return self.0.undos.start(
+            self.0.undos.start(
                 door,
                 self.0.person.clone(),
                 undo.workspace,
@@ -903,7 +903,7 @@ impl ActivityHost for Host {
                 undo.task_id,
                 undo.steps,
                 move || ask_for_frame(&woken, wake.as_ref()),
-            );
+            )
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -1367,7 +1367,17 @@ mod tests {
             "the rename is what happened: {:?}",
             feed.entries[0]
         );
-        assert_eq!(feed.entries[0].author.name, "ada", "and who did it");
+        // Whoever wrote it, a row names the person reading it as such: the wire says the change is
+        // the reader's own, and words it as every history row does.
+        assert_eq!(
+            feed.entries[0].author.relation,
+            wire::Relation::Reader,
+            "and who did it: the person here"
+        );
+        assert_eq!(
+            feed.entries[0].author.name, "You",
+            "a row names the person reading it, not by their account's name"
+        );
         assert!(
             feed.mutations,
             "the desk's own layout is the person's to undo"
