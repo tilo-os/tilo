@@ -226,6 +226,12 @@ pub(super) async fn whole_document(
 
 /// Publish `changes` to `record` of `app` into `candidate` as `key`'s write:
 /// sealed with `keys` for a sealed record, in the clear otherwise.
+///
+/// The first sealed write of a record is the whole record, its cleartext base
+/// with `changes`: a reader holding only the record's ciphertext history — a
+/// page that joins later, whose host replays nothing the workspace's
+/// governance already covers — reads the record from it, where a change
+/// alone would wait forever for a base that never comes.
 #[cfg(feature = "agents")]
 pub(super) fn publish_changes(
     candidate: &mut StatePeer,
@@ -239,6 +245,24 @@ pub(super) fn publish_changes(
         None => candidate
             .publication_mut()
             .publish_incremental(app, record, changes, key, now),
+        Some(keys) if !candidate.publication().is_sealed_record(app, record) => {
+            let mut document = match candidate.document(app, record) {
+                Some(base) => {
+                    automerge::AutoCommit::load(&base).map_err(|error| error.to_string())?
+                }
+                None => automerge::AutoCommit::new(),
+            };
+            tilo_automerge::ApplyIncoming::load_incoming(&mut document, &changes)
+                .map_err(|error| error.to_string())?;
+            refound(
+                candidate,
+                Some(keys),
+                (app, record),
+                document.save(),
+                key,
+                now,
+            )
+        }
         Some(keys) => candidate.publication_mut().publish_sealed_incremental(
             app,
             record,

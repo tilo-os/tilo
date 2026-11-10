@@ -293,6 +293,7 @@ async fn receive_until(
             agent.peer().status().channels,
         );
         agent.pump();
+        let own = browser.engine().identity().device_cert.device_public_key;
         let mut landed = false;
         for event in events.drain() {
             if let PeerEvent::Landed {
@@ -301,8 +302,9 @@ async fn receive_until(
             } = event
                 && changed == *route
             {
+                // The browser's own write lands in its replica too.
                 assert!(
-                    wrote.is_none_or(|wrote| wrote == author),
+                    wrote.is_none_or(|wrote| wrote == author || wrote == own),
                     "only the agent edits here"
                 );
                 landed = true;
