@@ -94,7 +94,9 @@ runtime() {
     # builder image seeds, puts it where the tests run — the first job on a machine copies it from
     # the image and the rest verify what is there — and the toolkit's catalog roots read it. The
     # build directory is the cache a job shares with the build; a run outside one keeps it in the
-    # test cache, where it outlives the run rather than being written into the tree.
+    # test cache, where it outlives the run rather than being written into the tree. A machine
+    # without the image's seed has the jobs that share the cache take turns (the cache's lock), so
+    # one fetches the catalog and the rest verify what it left rather than each fetching it.
     provide TILO_FONT_ASSET_CACHE "${TILO_FONT_ASSET_CACHE:-${CARGO_TARGET_DIR:-$cache_dir}/font-artifacts}"
     python3 "$repo/tools/font-catalog.py" root "$repo/crates/sdk/ui-core/assets/fonts" \
         --scope fixtures --cache "$TILO_FONT_ASSET_CACHE" >/dev/null
