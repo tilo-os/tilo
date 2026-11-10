@@ -41,6 +41,7 @@ use tilo_relay_client::LinkError;
 use tilo_relay_session::RelayClient;
 
 mod connect;
+mod governance;
 mod inbound;
 mod plane;
 mod voice;
@@ -48,6 +49,7 @@ mod voice;
 use connect::Dial;
 #[cfg(test)]
 use connect::{connect, iroh_link_error};
+use governance::HostGovernance;
 use inbound::{HeldFrame, HoldReason};
 
 /// Longest wait between reconnect attempts.
@@ -286,6 +288,28 @@ pub struct PeerStatus {
     /// (root key, hex), as the workspace's governance admitted them. Who is here is shown by
     /// person from it, so someone the live plane never certified to this page is still theirs.
     pub room_devices: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+impl PeerStatus {
+    /// `device`'s session as it starts: connecting, nothing joined yet.
+    fn connecting(device: [u8; 32]) -> Self {
+        Self {
+            phase: TransportPhase::Connecting,
+            authenticated: false,
+            attempt: 0,
+            next_attempt_at_ms: None,
+            last_contact_at_ms: None,
+            workspaces: BTreeMap::new(),
+            routes: BTreeMap::new(),
+            failures: Vec::new(),
+            outgoing_pending: 0,
+            device,
+            generation: 0,
+            channels: String::new(),
+            room_members: BTreeMap::new(),
+            room_devices: BTreeMap::new(),
+        }
+    }
 }
 
 /// Something the session produced for its consumers.
@@ -710,22 +734,7 @@ impl PeerHandle {
     ) -> Self {
         let (commands, receiver) = mpsc::unbounded_channel();
         let shared = Arc::new(Mutex::new(Shared {
-            status: PeerStatus {
-                phase: TransportPhase::Connecting,
-                authenticated: false,
-                attempt: 0,
-                next_attempt_at_ms: None,
-                last_contact_at_ms: None,
-                workspaces: BTreeMap::new(),
-                routes: BTreeMap::new(),
-                failures: Vec::new(),
-                outgoing_pending: 0,
-                device: config.cert.device_public_key,
-                generation: 0,
-                channels: String::new(),
-                room_members: BTreeMap::new(),
-                room_devices: BTreeMap::new(),
-            },
+            status: PeerStatus::connecting(config.cert.device_public_key),
             queues: Vec::new(),
             wakes: Vec::new(),
             listeners: Vec::new(),
@@ -790,6 +799,7 @@ impl PeerHandle {
             agent_runs_pending: BTreeMap::new(),
             agent_runs_next: 0,
             held_actions: Vec::new(),
+            begun: BTreeSet::new(),
         };
         task.update(|status| {
             status.outgoing_pending = task.outbox.len();
@@ -1333,6 +1343,12 @@ struct Task {
     /// admission, they are refused by the host and the request they carry is
     /// never answered.
     held_actions: Vec<HeldAction>,
+    /// The workspaces whose replay the host began on this connection: their
+    /// bootstrap arrived, or their `Ready` for a host that sends none. The
+    /// host subscribed this connection to them, so it takes what the page
+    /// says there — its certificate ([`Self::introduce`]) and its channels'
+    /// governance ([`Self::send_governance`]) — while the replay runs.
+    begun: BTreeSet<u64>,
 }
 
 /// An open compaction request: workspace, route, and the entries it covers.
@@ -1367,14 +1383,39 @@ impl Task {
         }
     }
 
+    /// Answer the host beginning a workspace's replay (its bootstrap) or
+    /// admitting this session to it (its `Ready`) with what the page says
+    /// there from then on. `false` when the session took no more.
+    fn begin(&mut self, client: &RelayClient, envelope: &Envelope) -> bool {
+        match envelope {
+            Envelope::WorkspaceBootstrap { workspace_id, .. } => {
+                self.introduce(client, *workspace_id)
+            }
+            Envelope::Ready { workspace_id, .. } => self.announce(client, *workspace_id),
+            _ => true,
+        }
+    }
+
+    /// Tell the host this device's certificate as soon as it subscribed this
+    /// connection to `workspace_id`, which its bootstrap ahead of the replay
+    /// says: the workspace's channel participants take a device's access
+    /// request only once they hold its certificate, so a page told only at
+    /// `Ready` got its keys a whole replay late. Returns `false` when the
+    /// session could not take it.
+    fn introduce(&mut self, client: &RelayClient, workspace_id: u64) -> bool {
+        if !self.begun.insert(workspace_id) {
+            return true;
+        }
+        identity_hello(workspace_id, &self.config.cert, &self.config.revocations)
+            .is_none_or(|hello| client.send(hello).is_ok())
+    }
+
     /// Tell the host, once `workspace_id` admitted this device, its
-    /// certificate and that it answers compaction requests. Returns `false`
-    /// when the session could not take them.
-    fn announce(&self, client: &RelayClient, workspace_id: u64) -> bool {
-        if let Some(hello) =
-            identity_hello(workspace_id, &self.config.cert, &self.config.revocations)
-            && client.send(hello).is_err()
-        {
+    /// certificate (unless the replay's start told it already) and that it
+    /// answers compaction requests. Returns `false` when the session could
+    /// not take them.
+    fn announce(&mut self, client: &RelayClient, workspace_id: u64) -> bool {
+        if !self.introduce(client, workspace_id) {
             return false;
         }
         client
@@ -1562,7 +1603,8 @@ impl Task {
 
     /// Subscribe every joined workspace again, from now on waiting for its
     /// `Ready`. Returns `false` when the session could not take them.
-    fn resubscribe(&self, client: &RelayClient) -> bool {
+    fn resubscribe(&mut self, client: &RelayClient) -> bool {
+        self.begun.clear();
         let mut sent_ok = true;
         for workspace_id in &self.workspaces {
             sent_ok &= client
@@ -1904,9 +1946,7 @@ impl Task {
                             Envelope::Ready { workspace_id, .. } => Some(*workspace_id),
                             _ => None,
                         };
-                        if let Some(workspace_id) = admitted
-                            && !self.announce(&client, workspace_id)
-                        {
+                        if !self.begin(&client, &envelope) {
                             return Exit::Lost("host session saturated".into());
                         }
                         self.inbound(envelope);
@@ -2178,6 +2218,7 @@ impl Task {
             status.workspaces.entry(workspace_id).or_insert(false);
         });
         self.received.clear();
+        self.begun.remove(&workspace_id);
         client.is_none_or(|client| client.send(self.subscribe(workspace_id)).is_ok())
     }
 
@@ -2239,6 +2280,7 @@ impl Task {
         // Every subscription starts whole: the host replays the workspace's
         // retained state, and duplicate detection begins with it.
         self.received.clear();
+        self.begun.clear();
         for workspace_id in self.workspaces.clone() {
             sent_ok &= client.send(self.subscribe(workspace_id)).is_ok();
         }
@@ -2955,23 +2997,6 @@ impl Task {
         }
         channels
     }
-
-    /// Send the governance the channels said for every workspace the host
-    /// admitted this session to; the rest waits until it does. Returns
-    /// `false` when the session could not take an envelope.
-    fn send_governance(&self, client: &RelayClient) -> bool {
-        let admitted = |workspace_id: u64| {
-            lock(&self.shared).status.workspaces.get(&workspace_id) == Some(&true)
-        };
-        let device = self.config.cert.device_public_key;
-        let mut delivered = true;
-        for (workspace_id, message) in self.governance.take_for(admitted) {
-            if let Some(envelope) = governance_envelope(device, workspace_id, &message) {
-                delivered &= client.send(envelope).is_ok();
-            }
-        }
-        delivered
-    }
 }
 
 /// This device's channels as a reader: its state in `state`, sealed under
@@ -3029,75 +3054,6 @@ impl RouteKeys {
 /// The storage unit of `route`: the channel its content is sealed under.
 fn unit(route: &DocumentRoute) -> collab_types::ChannelId {
     collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record)
-}
-
-/// The channels' workspace transport over the host session: what they say
-/// waits here for the session to send it, newest per channel, until the host
-/// admitted the session to its workspace.
-#[derive(Default)]
-struct HostGovernance {
-    inbound: Mutex<Vec<tilo_channels::InboundChannelGovernance>>,
-    outbound: Mutex<BTreeMap<(u64, [u8; 16]), neighbour_wire::NeighbourMsg>>,
-}
-
-impl HostGovernance {
-    /// What waits for the workspaces `admitted` names.
-    fn take_for(&self, admitted: impl Fn(u64) -> bool) -> Vec<(u64, neighbour_wire::NeighbourMsg)> {
-        let outbound = std::mem::take(&mut *self.outbound.lock_recover());
-        let (due, waiting): (BTreeMap<_, _>, BTreeMap<_, _>) = outbound
-            .into_iter()
-            .partition(|((workspace_id, _), _)| admitted(*workspace_id));
-        self.outbound.lock_recover().extend(waiting);
-        due.into_iter()
-            .map(|((workspace_id, _), message)| (workspace_id, message))
-            .collect()
-    }
-}
-
-impl tilo_channels::GovernanceTransport for HostGovernance {
-    fn publish(&self, message: neighbour_wire::NeighbourMsg) -> bool {
-        use neighbour_wire::NeighbourMsg;
-        let (workspace, channel) = match &message {
-            NeighbourMsg::MlsAccessRequest {
-                workspace, request, ..
-            } => (workspace, request.channel),
-            NeighbourMsg::MlsRoutedAccessRequest { room, request, .. } => (room, request.channel),
-            // A reader commits nothing.
-            _ => return false,
-        };
-        let Ok(workspace_id) = tilo_relay_protocol::room_workspace_id(workspace) else {
-            return false;
-        };
-        self.outbound
-            .lock_recover()
-            .insert((workspace_id, channel.0.into_bytes()), message);
-        true
-    }
-
-    fn take_inbound(&self) -> Vec<tilo_channels::InboundChannelGovernance> {
-        std::mem::take(&mut *self.inbound.lock_recover())
-    }
-}
-
-/// `message`, signed governance of `workspace_id`, wrapped for the host.
-fn governance_envelope(
-    device: [u8; 32],
-    workspace_id: u64,
-    message: &neighbour_wire::NeighbourMsg,
-) -> Option<Envelope> {
-    let (channel, _) = neighbour_wire::retention(message, false)?;
-    Some(Envelope::Delta {
-        workspace_id,
-        author_device_public_key: device,
-        authored_at_ns: tilo_clock::unix_now_ns(),
-        delta: CoeditPayload::Checkpoint {
-            channel,
-            body: postcard::to_allocvec(message).ok()?,
-        }
-        .encode()
-        .ok()?,
-        signature: [0; 64],
-    })
 }
 
 impl Task {

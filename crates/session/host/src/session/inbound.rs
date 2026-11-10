@@ -293,13 +293,18 @@ impl Task {
         }
     }
 
-    /// Whether the host answered `Ready` for `route`'s workspace: it sent the
-    /// governance it holds first, so the page's mirror of its channels is
-    /// what the workspace decided.
+    /// Whether the page knows what governs `route`'s channel: the host answered
+    /// `Ready` for its workspace (it sent the governance it holds first, so the
+    /// page's mirror of its channels is what the workspace decided), or the
+    /// page holds the route's keys already. A group's participants admitted
+    /// the page to the group that carries the route, so its channel is sealed
+    /// and the page decides the route's replayed writes now: the record shows
+    /// while the rest of the workspace is still on its way.
     pub(super) fn governance_known(&self, route: &DocumentRoute) -> bool {
-        route.workspace_id().is_ok_and(|workspace_id| {
-            lock(&self.shared).status.workspaces.get(&workspace_id) == Some(&true)
-        })
+        self.ciphers.contains_key(route)
+            || route.workspace_id().is_ok_and(|workspace_id| {
+                lock(&self.shared).status.workspaces.get(&workspace_id) == Some(&true)
+            })
     }
 
     /// Decide again the documents held for the routes of `workspace_id`,
