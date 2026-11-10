@@ -38,8 +38,15 @@
 //! the host again on the repaired state and reads each repaired record back
 //! as the host will serve it: whole, and with how many messages.
 //!
+//! A record whose history holds writes that build on changes it never received
+//! (and so never read whole) is repaired the same way, with nothing to carry:
+//! it is compacted into what does read.
+//!
 //! The compaction replaces the writes it covers in the host's state, as any
-//! compaction does; the state's backup is what keeps them.
+//! compaction does. Every change the repaired record leaves out (the other
+//! branches' and the ones waiting on missing changes) is first kept, as it was
+//! written, under `<state>/repaired-records/`, so none is lost: one a missing
+//! change turns up for can be taken in again.
 //!
 //! Build it for the host, and run it as the user that owns the state, after
 //! a fresh backup and with the host stopped, first with `--dry-run`, which
@@ -70,6 +77,9 @@ use tilo_room_host::workspaces::Workspaces;
 use tilo_user_identity::{DeviceCert, RevocationList, sign_device_cert};
 
 const CHAT: &str = "so.tilo.chat";
+/// Where the changes a repaired record leaves out are kept, under the host's
+/// state: `<workspace>/<app>/<record>/<hash>.change`, each as it was written.
+const ARCHIVE: &str = "repaired-records";
 
 struct Args {
     state: PathBuf,
@@ -181,6 +191,7 @@ async fn run(args: &Args) -> anyhow::Result<Vec<RecordReport>> {
             &summary.workspace,
             args.app.as_deref(),
             args.dry_run,
+            &relay_root.join(ARCHIVE),
         )
         .await?;
         if found.is_empty() {
@@ -275,6 +286,8 @@ struct RecordReport {
     /// branch has it.
     conflicts: Vec<String>,
     repaired: bool,
+    /// How many left-out changes were kept, and where.
+    archived: Option<(usize, PathBuf)>,
     reads_whole: Option<bool>,
     failed: Option<String>,
 }
@@ -333,9 +346,12 @@ impl RecordReport {
         }
         if self.waiting > 0 {
             println!(
-                "  {} changes build on changes no copy here holds; they are left out of the repaired record",
+                "  {} changes build on changes no copy here holds; they are left out of the repaired record and kept beside it",
                 self.waiting
             );
+        }
+        if let Some((count, at)) = &self.archived {
+            println!("  {count} left-out changes kept in {}", at.display());
         }
         for unreadable in &self.unreadable {
             println!("  a write does not open here: {unreadable}");
@@ -401,6 +417,7 @@ async fn repair_workspace(
     workspace: &str,
     app: Option<&str>,
     dry_run: bool,
+    archive: &Path,
 ) -> anyhow::Result<Vec<RecordReport>> {
     let mut reports = Vec::new();
     let routes = workspaces
@@ -443,7 +460,9 @@ async fn repair_workspace(
                 continue;
             }
         };
-        if analysis.collisions.is_empty() {
+        // A record holding each sequence once, and every change of it in
+        // place, reads whole: nothing to do.
+        if analysis.collisions.is_empty() && analysis.waiting == 0 {
             continue;
         }
         analysis.describe(&mut report);
@@ -452,7 +471,9 @@ async fn repair_workspace(
                 "writes of its history do not open with the keys this host holds; repairing it would lose them"
                     .into(),
             );
-        } else if !dry_run && let Err(error) = apply(workspaces, &analysis, &mut report).await {
+        } else if !dry_run
+            && let Err(error) = apply(workspaces, &analysis, &mut report, archive).await
+        {
             report.failed = Some(format!("{error:#}"));
         }
         report.print(dry_run);
@@ -467,12 +488,31 @@ async fn apply(
     workspaces: &Workspaces,
     analysis: &Analysis,
     report: &mut RecordReport,
+    archive: &Path,
 ) -> anyhow::Result<()> {
     let (workspace, app, record) = (
         report.workspace.as_str(),
         report.app.as_str(),
         report.record.as_str(),
     );
+    // Every change the repaired record leaves out is kept first, as it was
+    // written: a change it waits for may still turn up, and the compaction
+    // below takes them out of the host's state.
+    let kept_at = archive
+        .join(workspace)
+        .join(app)
+        .join(if record.is_empty() {
+            "(primary)"
+        } else {
+            record
+        });
+    std::fs::create_dir_all(&kept_at).with_context(|| format!("create {}", kept_at.display()))?;
+    for change in &analysis.left_out {
+        let path = kept_at.join(format!("{}.change", change.hash()));
+        std::fs::write(&path, change.raw_bytes())
+            .with_context(|| format!("keep {}", path.display()))?;
+    }
+    report.archived = Some((analysis.left_out.len(), kept_at.clone()));
     let mut kept = analysis.kept.clone();
     workspaces
         .compact_record_into(workspace, app, record, kept.save())
@@ -546,6 +586,9 @@ struct Analysis {
     branches: Vec<Branch>,
     /// Changes no branch holds: they wait for changes nobody has.
     waiting: usize,
+    /// Every change the kept record leaves out, as it was written: kept
+    /// beside the state before the history is compacted, so none is lost.
+    left_out: Vec<automerge::Change>,
 }
 
 impl Analysis {
@@ -648,6 +691,7 @@ impl Analysis {
             kept,
             branches,
             waiting: changes.len().saturating_sub(held_anywhere.len()),
+            left_out: outside(&changes, &kept_held),
         })
     }
 
@@ -691,6 +735,16 @@ impl Analysis {
         }
         report.after = Some(count(app, record, &repaired).len());
     }
+}
+
+/// The changes of `changes` outside `held`, as they were written.
+fn outside(changes: &[automerge::Change], held: &BTreeSet<usize>) -> Vec<automerge::Change> {
+    changes
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !held.contains(index))
+        .map(|(_, change)| change.clone())
+        .collect()
 }
 
 /// The record made of the changes `include` names, applied in causal order;
@@ -1142,9 +1196,15 @@ mod tests {
         );
 
         // A dry run changes nothing.
-        let reports = repair_workspace(&workspaces, &workspace, Some(CHAT), true)
-            .await
-            .unwrap();
+        let reports = repair_workspace(
+            &workspaces,
+            &workspace,
+            Some(CHAT),
+            true,
+            &scratch.path().join(ARCHIVE),
+        )
+        .await
+        .unwrap();
         let [report] = reports.as_slice() else {
             panic!("one record holds a sequence twice: {reports:?}");
         };
@@ -1172,12 +1232,23 @@ mod tests {
                 .is_whole()
         );
 
-        let mut reports = repair_workspace(&workspaces, &workspace, Some(CHAT), false)
-            .await
-            .unwrap();
+        let mut reports = repair_workspace(
+            &workspaces,
+            &workspace,
+            Some(CHAT),
+            false,
+            &scratch.path().join(ARCHIVE),
+        )
+        .await
+        .unwrap();
         assert!(
             matches!(reports.as_slice(), [report] if report.repaired && report.failed.is_none()),
             "{reports:?}"
+        );
+        assert!(
+            matches!(&reports[0].archived, Some((kept, _)) if *kept >= 2),
+            "the left-out branch is kept beside the state: {:?}",
+            reports[0].archived
         );
 
         // The host started again on the repaired state reads it whole.
@@ -1218,10 +1289,107 @@ mod tests {
 
         // Run again, it finds nothing to repair.
         assert!(
-            repair_workspace(&workspaces, &workspace, Some(CHAT), false)
+            repair_workspace(
+                &workspaces,
+                &workspace,
+                Some(CHAT),
+                false,
+                &scratch.path().join(ARCHIVE)
+            )
+            .await
+            .unwrap()
+            .is_empty()
+        );
+    }
+
+    /// A page's write never reaches the host, and the page writes on top of
+    /// it: the record's history holds a write that waits for a change nobody
+    /// sends, and the record does not read whole. The repair keeps what reads,
+    /// keeps the waiting write beside the state, and the record reads whole.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_record_waiting_on_a_change_it_never_got_reads_whole_once_repaired() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (key, cert) = governor();
+        let _ = tilo_agent_participant::AppCatalogue::native();
+        let keys = std::sync::Arc::new(TestChannelKeys::default());
+        let relay =
+            test_host_holding(scratch.path(), &key, &cert, std::sync::Arc::clone(&keys)).await;
+        let workspaces = relay.workspaces().clone();
+        let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+        let catalogue = tilo_agent_participant::AppCatalogue::native();
+        workspaces
+            .prepare_application(&workspace, &cert, &catalogue, CHAT, "")
+            .await
+            .unwrap();
+        let primary = workspaces
+            .record_document(&workspace, CHAT, "")
+            .await
+            .unwrap()
+            .unwrap();
+        let chat =
+            <chat::Chat as tilo_resource::Resource>::read(&AutoCommit::load(&primary).unwrap())
+                .unwrap();
+        let channel = chat
+            .channels
+            .iter()
+            .find(|(_, channel)| channel.is_channel())
+            .map(|(id, _)| id.to_string())
+            .unwrap();
+        let ada = hex::encode([9; 32]);
+        let (page_key, _) = member_device(&workspaces, &workspace, (&key, &cert), 9).await;
+        let joined = SealingMember::join(&workspaces, &workspace, (CHAT, ""), page_key).await;
+        let page = joined.part(&workspaces, &workspace, &part()).await;
+        let writer = automerge::ActorId::random();
+        let say = |text: &'static str| {
+            let (chat, channel, ada, writer) = (&chat, &channel, &ada, &writer);
+            move |doc: &mut AutoCommit| {
+                doc.set_actor(writer.clone());
+                chat::demo::say_in_part(doc, chat, ada, channel, text).unwrap();
+            }
+        };
+        page.writes(&workspaces, &workspace, say("hello")).await;
+        // Written, never sent.
+        let ((), _never_sent) = page.seal(&workspace, say("lost on the way"));
+        page.writes(&workspaces, &workspace, say("after it")).await;
+        let route = BTreeSet::from([(CHAT.to_owned(), part())]);
+        assert!(
+            !workspaces
+                .whole_records(&workspace, Some(&route))
                 .await
                 .unwrap()
-                .is_empty()
+                .is_whole()
         );
+
+        let archive = scratch.path().join(ARCHIVE);
+        let mut reports = repair_workspace(&workspaces, &workspace, Some(CHAT), false, &archive)
+            .await
+            .unwrap();
+        let [report] = reports.as_slice() else {
+            panic!("one record waits: {reports:?}");
+        };
+        assert!(
+            report.collisions.is_empty() && report.waiting > 0,
+            "{report:?}"
+        );
+        assert!(report.repaired && report.failed.is_none(), "{report:?}");
+        let (kept, at) = report.archived.clone().unwrap();
+        assert_eq!(std::fs::read_dir(&at).unwrap().count(), kept);
+        for entry in std::fs::read_dir(&at).unwrap() {
+            let bytes = std::fs::read(entry.unwrap().path()).unwrap();
+            automerge::Change::from_bytes(bytes).expect("a kept change reads as written");
+        }
+
+        drop(workspaces);
+        relay.shutdown().await;
+        let relay = test_host_holding(scratch.path(), &key, &cert, keys).await;
+        let workspaces = relay.workspaces().clone();
+        verify(&workspaces, &mut reports).await;
+        assert_eq!(reports[0].reads_whole, Some(true), "{:?}", reports[0]);
+        let read = workspaces
+            .record_document(&workspace, CHAT, &part())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(texts(&AutoCommit::load(&read).unwrap()).contains("hello"));
     }
 }
