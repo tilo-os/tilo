@@ -496,7 +496,7 @@ async function connect({
   }
   // Seals the channel state the runtime keeps in the profile's storage, from
   // the platform secret store, as the session's own MLS vault keeps its key.
-  const vaultOf = () => runtime.channelVault(`page:${profile}/${device}:${userPublicKey}`);
+  const vaultOf = () => runtime.channel_vault(`page:${profile}/${device}:${userPublicKey}`);
   let channelVault = storage ? await vaultOf() : undefined;
   const post = httpsPost(origin, fetcher);
   const custodyForWasm = custody.kind === 'sealed-seed' ? await custody.unseal() : custody;

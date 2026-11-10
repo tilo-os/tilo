@@ -69,8 +69,10 @@ function fakeRuntime({phase = 'ready'} = {}) {
       calls.status = [...(calls.status ?? []), {requestId, device}];
       return JSON.stringify(calls.status.length < 2 ? {kind: 'waiting'} : {kind: 'admitted', room: WORKSPACE, workspaceId: '7', name: 'Acme', role: 'Editor'});
     },
-    /** The platform secret store's channel vault key of a namespace. */
-    async channelVault(namespace) {
+    /** The platform secret store's channel vault key of a namespace, named as
+     * the module exports it: a fake that renamed it would pass while the page
+     * asked the real module for a name it does not have. */
+    async channel_vault(namespace) {
       calls.vaults = [...(calls.vaults ?? []), namespace];
       return new Uint8Array(32).fill(0x5a);
     },
