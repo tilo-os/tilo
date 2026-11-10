@@ -12,6 +12,7 @@
     )
 )]
 
+pub mod arrivals;
 pub mod channels;
 pub mod client;
 pub mod custody;
@@ -22,6 +23,7 @@ pub mod membership;
 pub mod plane;
 pub mod presence;
 
+pub use arrivals::Arrivals;
 pub use client::{Client, Presence};
 pub use plane::{
     Cmd, Device, Event, Outbox, RosterDevice, SayPresence, Topic, Transport, topic_of,

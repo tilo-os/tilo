@@ -151,6 +151,17 @@ seams! {
     personal: tilo_peer_state::PersonalSync,
 }
 
+/// The records this session reads outside their apps, from the engine that holds its workspaces: a
+/// session that holds none reads a record only on the app's own channel.
+pub(crate) fn document_reads(
+    engine: Option<&Arc<crate::engine::Engine>>,
+) -> Seam<Arc<dyn tilo_action_broker::services::NativeDocumentReads>> {
+    Seam::when(engine.map(|engine| {
+        Arc::new(crate::record_reads::Records::new(Arc::clone(engine)))
+            as Arc<dyn tilo_action_broker::services::NativeDocumentReads>
+    }))
+}
+
 /// What each installed app declared it may do on the action door, read from the lists search keeps:
 /// a ceiling the broker decides an app's calls against, never a grant.
 pub(crate) fn declared_access(

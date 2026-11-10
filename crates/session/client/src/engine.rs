@@ -185,6 +185,9 @@ pub struct Engine {
     /// hold their frames in.
     #[cfg(not(target_arch = "wasm32"))]
     directed: Option<tilo_peer_state::direct::Owning>,
+    /// What lands here from the workspaces' other devices: what a read waiting for a record it
+    /// holds none of wakes on.
+    arrivals: Arc<crate::arrivals::Arrivals>,
 }
 
 /// How much of the workspaces' sealed history this device keeps to hand their other devices: every
@@ -197,6 +200,23 @@ const FRAMES_KEPT: tilo_peer_state::store::Appetite = tilo_peer_state::store::Ap
 /// A record's bytes, with the heads they were last saved at: what [`Engine::record_since`] answers
 /// when the record changed since the caller last read it.
 type SavedRecord = Option<(Vec<u8>, [u8; 32])>;
+
+/// What a read of one of a workspace's records found ([`Engine::read_record`]).
+pub enum RecordReading {
+    /// The record as the workspace holds it, sealed writes opened with the record's channel keys.
+    Captured {
+        /// Names exactly these heads: equal revisions are equal documents.
+        revision: [u8; 32],
+        /// The document's heads, sorted.
+        heads: Vec<[u8; 32]>,
+        bytes: Vec<u8>,
+    },
+    /// The record stands where the caller last read it.
+    Unchanged([u8; 32]),
+    /// The record is not here yet: the workspace's host was asked for it, or the record's keys are
+    /// on their way, and it reads once they are.
+    Pending,
+}
 
 impl std::fmt::Debug for Engine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -226,6 +246,7 @@ impl Engine {
             unfounded: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             #[cfg(not(target_arch = "wasm32"))]
             directed: None,
+            arrivals: Arc::new(crate::arrivals::Arrivals::default()),
         }
     }
 
@@ -312,7 +333,7 @@ impl Engine {
             .map(|read| read.map(|(bytes, _)| bytes))
     }
 
-    /// [`Self::record`], with the heads the bytes were saved at, and told the heads
+    /// [`Self::record`], with the revision the bytes were saved at, and told the revision
     /// `known` this caller already holds: a record whose admitted heads still are those
     /// is answered as unchanged without capturing or saving the document at all.
     /// # Errors
@@ -324,50 +345,151 @@ impl Engine {
         record: &str,
         known: Option<[u8; 32]>,
     ) -> Result<SavedRecord, String> {
+        Ok(
+            match self.read_record(workspace, app, record, known, MAX_DOCUMENT_BYTES)? {
+                RecordReading::Captured {
+                    revision, bytes, ..
+                } => Some((bytes, revision)),
+                RecordReading::Unchanged(_) | RecordReading::Pending => None,
+            },
+        )
+    }
+
+    /// What `workspace` holds of `app`'s `record` now, for the reader this device is: the whole
+    /// document with the heads it stands at, a record that still stands where `known` left it, or
+    /// nothing yet. At most `maximum` bytes are handed out.
+    ///
+    /// # Errors
+    /// The workspace is not held here, this device may not read the record, the record is sealed
+    /// and this device holds no keys of it, or the document cannot be read.
+    pub fn read_record(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+        known: Option<[u8; 32]>,
+        maximum: usize,
+    ) -> Result<RecordReading, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         if self.asks_for_record(workspace, app, record)? {
-            return Ok(None);
+            return Ok(RecordReading::Pending);
         }
         let sealed = self.owner.with_current(workspace, |view| {
             Ok(view.peer().publication().is_sealed_record(app, record))
         })?;
-        let joined = if sealed {
-            self.join_channel(workspace, app, record)?
-        } else {
-            true
-        };
-        if sealed && !joined {
-            return Ok(None);
+        if sealed && !self.join_channel(workspace, app, record)? {
+            return Ok(RecordReading::Pending);
         }
-        let reader = self.identity.device_cert.device_public_key;
         // Taken before the workspace's view is held: the channel service's pump settles the groups
         // under its own lock and reads the workspace's governance there, so a read that asked it
         // for keys while holding the view would wait on it as it waits on the view.
         let history = self.keys.get().and_then(|keys| {
             keys.history_keys(workspace, &collab_types::ChannelRoute::new(app, record))
         });
-        self.owner.with_current(workspace, |view| {
-            match view.read_document_with_history(
-                reader,
-                (app, record),
-                known,
-                MAX_DOCUMENT_BYTES,
-                SystemTime::now(),
-                &mut |write| {
-                    let keys = history
-                        .as_ref()
-                        .ok_or("this session's channel service is not running")?
-                        .as_ref()
-                        .map_err(Clone::clone)?;
-                    keys.open(write)
+        self.read_in(workspace, (app, record), known, maximum, &mut |write| {
+            let keys = history
+                .as_ref()
+                .ok_or("this session's channel service is not running")?
+                .as_ref()
+                .map_err(Clone::clone)?;
+            keys.open(write)
+        })
+    }
+
+    /// [`Self::read_record`] under keys the caller holds itself rather than this device's channel
+    /// service: what a caller that sealed a record's writes reads them back with.
+    fn read_in(
+        &self,
+        workspace: WorkspaceId,
+        (app, record): (&str, &str),
+        known: Option<[u8; 32]>,
+        maximum: usize,
+        open: &mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>,
+    ) -> Result<RecordReading, String> {
+        let reader = self.identity.device_cert.device_public_key;
+        self.owner
+            .with_current(workspace, |view| {
+                view.read_document_with_history(
+                    reader,
+                    (app, record),
+                    known,
+                    maximum,
+                    SystemTime::now(),
+                    open,
+                )
+            })
+            .map(|read| match read {
+                DocumentRead::Captured(document) => RecordReading::Captured {
+                    revision: document.revision,
+                    heads: document.heads,
+                    bytes: document.bytes,
                 },
-            )? {
-                DocumentRead::Captured(document) => {
-                    let revision = document.revision;
-                    Ok(Some((document.bytes, revision)))
-                }
-                DocumentRead::Unchanged(_) | DocumentRead::CheckpointPending => Ok(None),
+                DocumentRead::Unchanged(revision) => RecordReading::Unchanged(revision),
+                DocumentRead::CheckpointPending => RecordReading::Pending,
+            })
+    }
+
+    /// Whether `workspace` holds `app`'s `record` here now: what a read of it opens, or a record
+    /// this device holds nothing of that may still be on its way.
+    #[must_use]
+    pub fn holds_record(&self, workspace: &str, app: &str, record: &str) -> bool {
+        WorkspaceId::parse(workspace).is_some_and(|workspace| {
+            self.owner.with_current(workspace, |view| {
+                Ok(view.peer().document(app, record).is_some())
+            }) == Ok(true)
+        })
+    }
+
+    /// Ask `workspace`'s hosts for `app`'s `record` when it is one they send a device only once
+    /// asked, and this device holds none of it.
+    pub fn request_record(&self, workspace: &str, app: &str, record: &str) {
+        if let Some(workspace) = WorkspaceId::parse(workspace) {
+            let _ = self.asks_for_record(workspace, app, record);
+        }
+    }
+
+    /// Whether this device can ask its workspaces' hosts for what they retain: a session whose
+    /// collaboration plane is not running reads only what it holds.
+    #[must_use]
+    pub fn reaches_host(&self) -> bool {
+        self.link.lock_recover().is_some()
+    }
+
+    /// What lands here from the workspaces' other devices: the event a read waiting for one waits
+    /// on.
+    #[must_use]
+    pub fn arrivals(&self) -> Arc<crate::arrivals::Arrivals> {
+        Arc::clone(&self.arrivals)
+    }
+
+    /// Whether `certificate`'s holder reads `app`'s `record` in `workspace` here now: the workspace
+    /// is held with this device's custody of it, its people certify the caller, and the caller's
+    /// device is one the workspace's policy lets read the record.
+    /// # Errors
+    /// The workspace is not held here, this device has no custody of it, or the caller may not
+    /// read the record now.
+    pub fn authorizes_read(
+        &self,
+        workspace: &str,
+        certificate: &tilo_user_identity::DeviceCert,
+        app: &str,
+        record: &str,
+    ) -> Result<(), String> {
+        use tilo_broker_core::custody::OwnerCustody as _;
+        let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
+        self.check_custody(&self.owner, workspace)?;
+        let reader = self.identity.device_cert.device_public_key;
+        self.owner.with_current(workspace, |view| {
+            let certified = view.peer().certificates().iter().any(|held| {
+                held.device_public_key == certificate.device_public_key
+                    && held.user_public_key == certificate.user_public_key
+            });
+            if !certified {
+                return Err("the reader is no device the workspace certifies".to_owned());
             }
+            view.peer()
+                .check_document_read(reader, app, record, SystemTime::now())
+                .map_err(|error| error.to_string())
         })
     }
 
@@ -470,27 +592,23 @@ impl Engine {
         (app, record): (&str, &str),
         keys: &channel_crypto::ChannelContentKeys,
     ) -> Result<Option<Vec<u8>>, String> {
-        let reader = self.identity.device_cert.device_public_key;
-        self.owner.with_current(workspace, |view| {
-            let read = view.read_document_with_history(
-                reader,
-                (app, record),
-                None,
-                MAX_DOCUMENT_BYTES,
-                SystemTime::now(),
-                &mut |write| {
-                    let metadata = write.encryption.ok_or("the write is not sealed")?;
-                    let ciphertext = collab_types::sealed_ciphertext(write)
-                        .map_err(|error| error.to_string())?;
-                    keys.open_content(write.artifact, &metadata, &ciphertext)
-                        .map(|plaintext| plaintext.to_vec())
-                        .map_err(|error| error.to_string())
-                },
-            )?;
-            Ok(match read {
-                DocumentRead::Captured(document) => Some(document.bytes),
-                DocumentRead::Unchanged(_) | DocumentRead::CheckpointPending => None,
-            })
+        let read = self.read_in(
+            workspace,
+            (app, record),
+            None,
+            MAX_DOCUMENT_BYTES,
+            &mut |write| {
+                let metadata = write.encryption.ok_or("the write is not sealed")?;
+                let ciphertext =
+                    collab_types::sealed_ciphertext(write).map_err(|error| error.to_string())?;
+                keys.open_content(write.artifact, &metadata, &ciphertext)
+                    .map(|plaintext| plaintext.to_vec())
+                    .map_err(|error| error.to_string())
+            },
+        )?;
+        Ok(match read {
+            RecordReading::Captured { bytes, .. } => Some(bytes),
+            RecordReading::Unchanged(_) | RecordReading::Pending => None,
         })
     }
 

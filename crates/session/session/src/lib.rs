@@ -43,6 +43,7 @@ mod activity_provider;
 mod continuations;
 pub mod host_actions;
 pub mod overlays;
+mod record_reads;
 pub mod records;
 pub mod search;
 mod search_ask;

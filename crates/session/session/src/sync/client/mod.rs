@@ -1723,6 +1723,8 @@ pub struct PeerDocuments {
     fanout: Arc<tilo_action_broker::collab_broker::FanoutState>,
     /// What search reads again of a record a peer wrote.
     changes: Option<Arc<dyn tilo_action_broker::services::RecordIndexChanges>>,
+    /// What wakes a read waiting for a record this device held none of until it lands.
+    arrivals: Option<Arc<tilo_session_client::Arrivals>>,
 }
 
 #[cfg(target_os = "linux")]
@@ -1734,11 +1736,13 @@ impl PeerDocuments {
         channels: Arc<std::sync::Mutex<tilo_broker_core::collab_core::BrokerChannels>>,
         fanout: Arc<tilo_action_broker::collab_broker::FanoutState>,
         changes: Option<Arc<dyn tilo_action_broker::services::RecordIndexChanges>>,
+        arrivals: Option<Arc<tilo_session_client::Arrivals>>,
     ) -> Self {
         Self {
             channels,
             fanout,
             changes,
+            arrivals,
         }
     }
 
@@ -1766,6 +1770,15 @@ impl PeerDocuments {
         // What search holds of the record is read again from what the peer wrote into it.
         if let Some(changes) = &self.changes {
             changes.changed(&workspace, &app, &record);
+        }
+        // A read of the record that this device held none of until now waits for it, and one that
+        // holds it open reads what landed: a write on its route answers both, and nothing else
+        // does.
+        if let Some(arrivals) = &self.arrivals {
+            arrivals.landed();
+        }
+        if let Some(state) = self.fanout.app_broker() {
+            state.wake_record_reads(&workspace, &app, &record);
         }
     }
 }

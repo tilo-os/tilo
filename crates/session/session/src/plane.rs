@@ -819,13 +819,10 @@ fn seams(
         approved_checks: Seam::unserved(
             "no project's approved check runs here: this session installs no check service",
         ),
-        // A record is held on the collaboration plane of the app that owns
-        // it, in everyone's copy at once; the session keeps no documents of
-        // its own to read one from.
-        committed_documents: Seam::unserved(
-            "records are read and changed on the collaboration plane each app holds, \
-             not through this session's documents",
-        ),
+        // This device's own copy of each workspace's records: an app's Open of a record the
+        // workspace holds, and an agent's task read, are answered from it, sealed writes opened
+        // with the record channel's keys.
+        committed_documents: crate::seams::document_reads(engine.as_ref()),
         // A call an app joins is this session's: the channel it is in, who
         // else is there, and what the app hears of it until it leaves.
         native_media: Seam::when(native_media.map(|media| {

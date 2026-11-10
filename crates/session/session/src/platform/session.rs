@@ -530,6 +530,7 @@ impl Session {
                 std::sync::Arc::clone(&channels_broker),
                 std::sync::Arc::clone(&channels_fanout),
                 record_changes.clone(),
+                engine.as_ref().map(|engine| engine.arrivals()),
             )),
         );
         // The content the workspaces' records reference: kept beside their
