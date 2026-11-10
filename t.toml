@@ -4571,7 +4571,10 @@ outputs = ["/target/publish/web-entry/release/payload.json", "/target/publish/we
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 requires = ["arch=any"]
-on = ["stable"]
+# Signed on stable and on a dispatch: the web entry is released at a release tag, with the relay
+# of the same commit (`t dispatch publish-web-entry --ref tag:vX.Y.Z`). The signing role trusts
+# stable and v* tags only, so a dispatch on main gets no signature and publishes nothing.
+on = ["stable", "dispatch"]
 
 [[check]]
 name = "publish-web-entry"
