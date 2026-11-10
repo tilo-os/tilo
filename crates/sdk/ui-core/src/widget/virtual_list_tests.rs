@@ -453,14 +453,19 @@ fn semantic_rows_share_scrolled_variable_geometry_and_stable_key_actions() {
             Rect::new(0.0, -10.0, 300.0 - gutter, 14.0),
             "the list's own row box, clear of the bar's gutter",
         );
-        let delegate = first
-            .children
-            .first()
-            .expect("the row's own widget under it");
+        // The row is the control its widget states, not a row around one: a reader is handed
+        // one node where the list shows one row.
         assert_eq!(
-            delegate.name.as_deref(),
+            first.name.as_deref(),
             Some("1"),
-            "the row's own control reads under the list's row",
+            "the row reads as the control it holds",
+        );
+        assert!(
+            first
+                .children
+                .iter()
+                .all(|node| node.role != crate::a11y::Role::Button),
+            "the row's own widget is not handed over a second time"
         );
     }
 
@@ -693,9 +698,13 @@ fn pointer_input_separates_delegate_presses_drag_scroll_and_selection() {
         assert_eq!(semantics.role, crate::a11y::Role::List);
         assert_eq!(semantics.children[0].role, crate::a11y::Role::ListItem);
         assert_eq!(semantics.children[0].name.as_deref(), Some("action 7"));
-        assert_eq!(
-            semantics.children[0].children[0].role,
-            crate::a11y::Role::Button
+        // The row is the button its widget states: one node where the list shows one row.
+        assert!(
+            semantics.children[0]
+                .children
+                .iter()
+                .all(|node| node.role != crate::a11y::Role::Button),
+            "the row's own widget is not handed over a second time"
         );
     }
 
@@ -2223,4 +2232,142 @@ fn a_window_laid_out_at_a_scale_stands_on_its_device_pixels() {
             off.iter().take(4).cloned().collect::<Vec<_>>().join(", ")
         );
     }
+}
+
+/// The exported node `id`, as the reader is handed it.
+pub(super) fn exported(
+    nodes: &[(accesskit::NodeId, accesskit::Node)],
+    id: accesskit::NodeId,
+) -> accesskit::Node {
+    nodes
+        .iter()
+        .find(|(each, _)| *each == id)
+        .map(|(_, node)| node.clone())
+        .unwrap_or_else(|| panic!("no node {id:?} in the export"))
+}
+
+/// Every node handed to a reader under `id`, depth first, with its id.
+pub(super) fn inside(
+    nodes: &[(accesskit::NodeId, accesskit::Node)],
+    id: accesskit::NodeId,
+) -> Vec<(accesskit::NodeId, accesskit::Node)> {
+    let mut out = Vec::new();
+    let mut frontier = vec![id];
+    while let Some(next) = frontier.pop() {
+        for child in exported(nodes, next).children() {
+            out.push((*child, exported(nodes, *child)));
+            frontier.push(*child);
+        }
+    }
+    out
+}
+
+/// The one node of `nodes` with `role` named `label`, and its id.
+pub(super) fn named(
+    nodes: &[(accesskit::NodeId, accesskit::Node)],
+    role: accesskit::Role,
+    label: &str,
+) -> (accesskit::NodeId, accesskit::Node) {
+    nodes
+        .iter()
+        .find(|(_, node)| node.role() == role && node.label() == Some(label))
+        .cloned()
+        .unwrap_or_else(|| panic!("no {role:?} named {label:?}"))
+}
+
+/// Nothing of `covered` stands outside `within`.
+pub(super) fn within(within: accesskit::Rect, covered: accesskit::Rect) -> bool {
+    covered.x0 >= within.x0
+        && covered.y0 >= within.y0
+        && covered.x1 <= within.x1
+        && covered.y1 <= within.y1
+}
+
+/// A row states its words, and the controls inside it are worked where they stand: a reader
+/// reaches a closed row's box and ticks it off without the row being opened.
+#[test]
+fn a_closed_rows_own_controls_are_where_the_row_is() {
+    use crate::a11y::Action;
+    use crate::headless::FrameHarness;
+    use crate::widget::{Checkbox, Column, Text};
+    use accesskit::Role as AkRole;
+
+    let done = crate::LocalState::new(false);
+    let model = VecListModel::new(vec![7_u64], |key| *key).unwrap();
+    let state = done.clone();
+    let list = VirtualList::new(model, 40.0, move |_, _, _| {
+        Box::new(
+            Column::new()
+                .push(Box::new(Text::new("Buy oat milk")))
+                .push(Box::new(
+                    Checkbox::from_state(&state).with_accessible_name("Done"),
+                )),
+        ) as Element
+    })
+    .with_viewport_height(200.0);
+    let mut harness = FrameHarness::for_root(crate::State::new(), list, (300, 400), Theme::dark());
+
+    let nodes = harness.a11y_nodes();
+    let (row_id, row) = named(&nodes, AkRole::ListItem, "Buy oat milk");
+    let row_bounds = row.bounds().expect("the row stands where it is drawn");
+    let controls = inside(&nodes, row_id);
+    let (checkbox, _) = named(&controls, AkRole::CheckBox, "Done");
+    let bounds = exported(&nodes, checkbox)
+        .bounds()
+        .expect("the box stands where it is drawn");
+    assert!(
+        within(row_bounds, bounds),
+        "the box stands inside its row: {bounds:?} not in {row_bounds:?}"
+    );
+
+    harness
+        .perform_a11y_action(checkbox, &Action::Activate)
+        .expect("the box is operated");
+    assert!(done.with(|checked| *checked), "the tick reaches the box");
+}
+
+/// A row that states a box of its own — as every list row does — says it once: the row and the
+/// box it carries are the only nodes handed over, and the box is worked where the row says.
+#[test]
+fn a_closed_rows_checkbox_is_one_control_under_one_row() {
+    use crate::a11y::Action;
+    use crate::headless::FrameHarness;
+    use crate::widget::ListRow;
+    use accesskit::Role as AkRole;
+
+    let toggled = Rc::new(Cell::new(None::<bool>));
+    let heard = Rc::clone(&toggled);
+    let model = VecListModel::new(vec![7_u64], |key| *key).unwrap();
+    let list = VirtualList::new(model, 36.0, move |_, _, key| {
+        Box::new(
+            ListRow::new(key.to_string(), "Buy oat milk").checkbox(false, {
+                let heard = Rc::clone(&heard);
+                move |on| heard.set(Some(on))
+            }),
+        ) as Element
+    })
+    .with_viewport_height(200.0);
+    let mut harness = FrameHarness::for_root(crate::State::new(), list, (300, 400), Theme::dark());
+
+    let nodes = harness.a11y_nodes();
+    let (row_id, row) = named(&nodes, AkRole::ListItem, "Buy oat milk");
+    let controls = inside(&nodes, row_id);
+    assert!(
+        controls
+            .iter()
+            .all(|(_, node)| !matches!(node.role(), AkRole::ListItem | AkRole::TreeItem)),
+        "the row is one node, not a row inside a row"
+    );
+    let (checkbox, box_node) = controls
+        .iter()
+        .find(|(_, node)| node.role() == AkRole::CheckBox)
+        .cloned()
+        .expect("the row hands over its box");
+    assert_eq!(box_node.toggled(), Some(accesskit::Toggled::False));
+    assert!(row.bounds().is_some());
+
+    harness
+        .perform_a11y_action(checkbox, &Action::Activate)
+        .expect("the box is operated");
+    assert_eq!(toggled.get(), Some(true), "the tick reaches the row's box");
 }

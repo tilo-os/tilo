@@ -50,9 +50,17 @@ use node_identity::WidgetNodeMap;
 use reading_order::ReadingOrder;
 use walk::{A11yVisitor, Visit, walk, walk_synthetic};
 
-/// A widget hosted inside its parent's synthetic tree, and the synthetic path
-/// below the child it hangs off ([`Widget::accessibility_child_path`]).
-pub(crate) type HostedWidget<'a> = (Vec<usize>, &'a dyn Widget);
+/// A widget hosted inside its parent's synthetic tree: the synthetic path below the child it
+/// hangs off ([`Widget::accessibility_child_path`]), and whether that child *is* the widget's
+/// own node — the parent publishes the widget's semantics itself
+/// ([`Widget::accessibility_represents_child`]), so the walk attaches the widget's children to
+/// the synthetic node and exports no second node of the widget's own.
+pub(crate) struct HostedWidget<'a> {
+    pub path: Vec<usize>,
+    pub widget: &'a dyn Widget,
+    pub as_node: bool,
+}
+
 /// Hosted widgets by the index of the synthetic child they hang off.
 pub(crate) type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
 
@@ -63,7 +71,7 @@ pub(crate) struct ExportedChildren<'a> {
     pub direct: Vec<(usize, &'a dyn Widget)>,
     /// Walked under the synthetic child they hang off.
     pub hosted: HostedByIndex<'a>,
-    /// Not walked: the widget represents them in its own synthetic tree.
+    /// No node of their own: the widget represents them in its own synthetic tree.
     pub represented: Vec<&'a dyn Widget>,
 }
 
@@ -74,17 +82,28 @@ pub(crate) fn exported_children(w: &dyn Widget) -> ExportedChildren<'_> {
         represented: Vec::new(),
     };
     for (index, child) in w.children().into_iter().enumerate() {
-        if w.accessibility_represents_child(index) {
-            children.represented.push(child);
-        } else if let Some(mut path) = w.accessibility_child_path(index)
+        let represented = w.accessibility_represents_child(index);
+        if let Some(mut path) = w.accessibility_child_path(index)
             && !path.is_empty()
         {
             let parent_index = path.remove(0);
+            // A represented child's own node is the synthetic one it hangs off, so what it
+            // holds is walked under it; it still names the child that holds keyboard focus, as
+            // an unhosted one does.
+            if represented {
+                children.represented.push(child);
+            }
             children
                 .hosted
                 .entry(parent_index)
                 .or_default()
-                .push((path, child));
+                .push(HostedWidget {
+                    path,
+                    widget: child,
+                    as_node: represented,
+                });
+        } else if represented {
+            children.represented.push(child);
         } else {
             children.direct.push((index, child));
         }
@@ -92,28 +111,29 @@ pub(crate) fn exported_children(w: &dyn Widget) -> ExportedChildren<'_> {
     children
 }
 
-/// The widgets hosted in one synthetic child: walked as its own children
-/// when any hangs off it directly, else handed on to its synthetic children.
-pub(crate) enum HostedIn<'a> {
-    Direct(Vec<&'a dyn Widget>),
-    Nested(HostedByIndex<'a>),
+/// The widgets hosted in one synthetic child: those hanging off it directly, and those hanging
+/// off its own synthetic children. A synthetic child can hold both — the controls a widget
+/// describes in its own node, and the widgets whose tree it publishes as that node.
+pub(crate) struct HostedHere<'a> {
+    pub direct: Vec<HostedWidget<'a>>,
+    pub nested: HostedByIndex<'a>,
 }
 
-pub(crate) fn hosted_in(hosted: Vec<HostedWidget<'_>>) -> HostedIn<'_> {
-    let direct = hosted
-        .iter()
-        .filter(|(path, _)| path.is_empty())
-        .map(|(_, child)| *child)
-        .collect::<Vec<_>>();
-    if !direct.is_empty() {
-        return HostedIn::Direct(direct);
+pub(crate) fn hosted_in(hosted: Vec<HostedWidget<'_>>) -> HostedHere<'_> {
+    let mut here = HostedHere {
+        direct: Vec::new(),
+        nested: HostedByIndex::new(),
+    };
+    for hosted in hosted {
+        if hosted.path.is_empty() {
+            here.direct.push(hosted);
+        } else {
+            let mut hosted = hosted;
+            let child_index = hosted.path.remove(0);
+            here.nested.entry(child_index).or_default().push(hosted);
+        }
     }
-    let mut nested = HostedByIndex::new();
-    for (mut path, child) in hosted {
-        let child_index = path.remove(0);
-        nested.entry(child_index).or_default().push((path, child));
-    }
-    HostedIn::Nested(nested)
+    here
 }
 /// Ids are paths, as long as the tree is deep, and every node is hashed a few
 /// times a refresh: a fast hash, not a DoS-resistant one, for keys no peer

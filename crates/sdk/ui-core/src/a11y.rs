@@ -745,6 +745,42 @@ pub struct A11ySettings {
 /// here, where accessibility code has always found them.
 pub use crate::color::{contrast_ratio, relative_luminance};
 
+/// The node `widget` states, and what a row of one is called: its own, or the
+/// first node a widget it wraps names itself with. A wrapper that adds no node
+/// of its own — a slot, a box, a toolbar floating over a row — stands where
+/// what it wraps does, so the row it draws states what that rows states.
+pub(crate) fn stated_node(widget: &dyn crate::widget::Widget) -> Option<AccessNode> {
+    if let Some(node) = widget.accessibility()
+        && node.name.is_some()
+    {
+        return Some(node);
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| stated_node(child))
+}
+
+/// The widget that states `widget`'s row ([`stated_node`]), to act on: the one
+/// whose node an owner publishing the row hands over, so the one an action on
+/// that node reaches.
+pub(crate) fn stated_widget_mut(
+    widget: &mut dyn crate::widget::Widget,
+) -> Option<&mut dyn crate::widget::Widget> {
+    if widget
+        .accessibility()
+        .is_some_and(|node| node.name.is_some())
+    {
+        return Some(widget);
+    }
+    for child in widget.children_mut() {
+        if let Some(stated) = stated_widget_mut(child) {
+            return Some(stated);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1417,4 +1417,87 @@ mod tests {
             branch.content_left
         );
     }
+
+    /// A row of a tree holds what it shows: the box that ticks it off and the quick action over
+    /// its corner are controls of the row, reached and worked under the one node it is.
+    #[test]
+    fn a_trees_row_holds_the_controls_it_shows() {
+        use crate::a11y::Action;
+        use crate::headless::FrameHarness;
+        use crate::theme::Theme;
+        use accesskit::Role as AkRole;
+
+        let queue = crate::Intents::default();
+        let mut props = node("a", None, true, &queue);
+        props.row = Some(TreeViewRowProps {
+            checkbox: Some(false),
+            ..TreeViewRowProps::default()
+        });
+        props.toolbar = vec![ButtonProps {
+            label: "Add".to_owned(),
+            press: Event::View(Intent::new(&queue, "a", "add")),
+            ..ButtonProps::default()
+        }];
+        let mut harness = FrameHarness::for_root(
+            crate::State::new(),
+            tree_of(vec![props], true, Event::None),
+            (400, 400),
+            Theme::dark(),
+        );
+
+        let nodes = harness.a11y_nodes();
+        let node_of = |role: AkRole, label: &str| {
+            nodes
+                .iter()
+                .find(|(_, node)| node.role() == role && node.label() == Some(label))
+                .cloned()
+        };
+        let (row, _) = node_of(AkRole::TreeItem, "a").expect("the tree hands over its node");
+        // What stands under the node, depth first.
+        let mut controls = Vec::new();
+        let mut frontier = vec![row];
+        while let Some(next) = frontier.pop() {
+            let children = nodes
+                .iter()
+                .find(|(id, _)| *id == next)
+                .map(|(_, node)| node.children().to_vec())
+                .unwrap_or_default();
+            for child in children {
+                controls.push(child);
+                frontier.push(child);
+            }
+        }
+        let label_of = |id: accesskit::NodeId| {
+            nodes
+                .iter()
+                .find(|(each, _)| *each == id)
+                .map(|(_, node)| node.clone())
+                .expect("an exported node")
+        };
+        let checkbox = controls
+            .iter()
+            .map(|id| (*id, label_of(*id)))
+            .find(|(_, node)| node.role() == AkRole::CheckBox)
+            .expect("the row hands over its box");
+        assert_eq!(checkbox.1.toggled(), Some(accesskit::Toggled::False));
+        controls
+            .iter()
+            .map(|id| label_of(*id))
+            .find(|node| node.role() == AkRole::Button && node.label() == Some("Add"))
+            .expect("the row hands over its quick action");
+
+        harness
+            .perform_a11y_action(checkbox.0, &Action::Activate)
+            .expect("the box is operated");
+        let heard: Vec<_> = queue
+            .take()
+            .into_iter()
+            .map(|fired| (fired.key, fired.event))
+            .collect();
+        assert_eq!(
+            heard,
+            [("a".to_owned(), "check".to_owned())],
+            "the tick reaches the row's box, and the owner hears it"
+        );
+    }
 }

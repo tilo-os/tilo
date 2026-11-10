@@ -1012,3 +1012,120 @@ fn a_branch_row_starts_on_the_column_its_neighbours_do() {
         "a leaf folds nothing, and still keeps the step free"
     );
 }
+
+/// A tree whose rows open the item into a document of its own where they stand, one under
+/// another: the rows say how they nest, and hold the fields that edit them.
+struct OpenableTree {
+    keys: Vec<u64>,
+    parents: HashMap<u64, u64>,
+}
+
+impl ListModel for OpenableTree {
+    type Key = u64;
+
+    fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    fn key_at(&self, index: usize) -> Option<u64> {
+        self.keys.get(index).copied()
+    }
+
+    fn index_of(&self, key: &u64) -> Option<usize> {
+        self.keys.iter().position(|candidate| candidate == key)
+    }
+
+    fn tree_at(&self, index: usize) -> Option<TreeRow<u64>> {
+        let key = self.key_at(index)?;
+        Some(TreeRow {
+            parent: self.parents.get(&key).copied(),
+        })
+    }
+
+    fn opens_in_place(&self, _index: usize) -> bool {
+        true
+    }
+}
+
+/// A tree row standing open into the item's document: its title field, the page under it and
+/// the box that ticks it off.
+#[test]
+fn a_tree_row_open_in_its_place_hands_a_reader_what_it_holds() {
+    use crate::a11y::Action;
+    use crate::headless::FrameHarness;
+    use crate::widget::{Checkbox, Column, TextInput};
+    use accesskit::Role as AkRole;
+
+    let done = crate::LocalState::new(false);
+    let state = done.clone();
+    let model = OpenableTree {
+        keys: vec![0, 1, 2],
+        parents: HashMap::from([(1, 0)]),
+    };
+    let list = VirtualList::with_selection_delegate(model, 20.0, move |_, _, key, build| {
+        if build.expanded {
+            let document: Element = Box::new(
+                Column::new()
+                    .push(Box::new(
+                        TextInput::new(Vec::new())
+                            .with_text_role(crate::tokens::TextRole::Title)
+                            .with_id("title")
+                            .with_accessible_name("Title")
+                            .with_initial_value("Subtasks"),
+                    ))
+                    .push(Box::new(
+                        TextInput::new(Vec::new())
+                            .with_id("notes")
+                            .multiline(true)
+                            .with_accessible_name("Notes"),
+                    ))
+                    .push(Box::new(
+                        Checkbox::from_state(&state).with_accessible_name("Done"),
+                    )),
+            );
+            Box::new(super::open::RowOpen::new(document, true)) as Element
+        } else {
+            Box::new(super::tests::ProbeRow::new(
+                format!("task {key}"),
+                20.0,
+                false,
+                Rc::new(Cell::new(0)),
+            )) as Element
+        }
+    })
+    .with_tree(Rc::new(TreeMarks::default()))
+    .with_viewport_height(300.0);
+    let mut harness = FrameHarness::for_root(crate::State::new(), list, (400, 500), Theme::dark());
+    harness
+        .root_mut::<VirtualList<OpenableTree>>()
+        .set_open(Some(0));
+    harness.relayout();
+
+    let nodes = harness.a11y_nodes();
+    let (row_id, row) = super::tests::named(&nodes, AkRole::TreeItem, "Subtasks");
+    let row_bounds = row.bounds().expect("the row stands where it is drawn");
+    let controls = super::tests::inside(&nodes, row_id);
+    assert!(
+        controls
+            .iter()
+            .all(|(_, node)| !matches!(node.role(), AkRole::ListItem | AkRole::TreeItem)),
+        "the open row is one tree item, not one inside another"
+    );
+    super::tests::named(&controls, AkRole::TextInput, "Title");
+    super::tests::named(&controls, AkRole::MultilineTextInput, "Notes");
+    let (checkbox, _) = super::tests::named(&controls, AkRole::CheckBox, "Done");
+    for (id, _) in &controls {
+        let bounds = super::tests::exported(&nodes, *id)
+            .bounds()
+            .expect("a control stands where it is drawn");
+        assert!(
+            super::tests::within(row_bounds, bounds),
+            "{bounds:?} stands outside its row {row_bounds:?}"
+        );
+    }
+
+    harness
+        .perform_a11y_action(checkbox, &Action::Activate)
+        .expect("the box is operated");
+    assert!(done.with(|checked| *checked), "the tick reaches the box");
+}

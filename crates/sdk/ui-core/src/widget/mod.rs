@@ -2032,6 +2032,14 @@ pub trait Widget {
     /// nested path of synthetic children returned by
     /// [`accessibility`](Widget::accessibility).
     ///
+    /// The child, and everything inside it, is walked under that synthetic
+    /// child instead of beside it, so the tree a reader gets matches where a
+    /// person sees the child. Combined with
+    /// [`accessibility_represents_child`](Widget::accessibility_represents_child)
+    /// it also says *which* synthetic child the parent publishes the child's
+    /// own node as: the widget's children then stand under that node, one node
+    /// per child, and no second node of the child's own is exported.
+    ///
     /// The default preserves the one-level
     /// [`accessibility_child_parent`](Widget::accessibility_child_parent)
     /// contract. Tables override this to place a real cell control beneath
@@ -2047,6 +2055,12 @@ pub trait Widget {
     /// export it a second time. A host that publishes a child's semantics
     /// itself (to add its own controls inside the same dialog) answers `true`
     /// for that child; assistive technology then sees one copy, not two.
+    ///
+    /// A host that also gives the child a path
+    /// ([`accessibility_child_path`](Widget::accessibility_child_path))
+    /// publishes the child's *node*, and the walk hangs the child's own
+    /// children under it: a row opened into its item is one node holding the
+    /// item's controls, not a row and an item.
     fn accessibility_represents_child(&self, _child_index: usize) -> bool {
         false
     }

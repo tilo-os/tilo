@@ -2440,6 +2440,15 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         child_index < self.mounted.len()
     }
 
+    fn accessibility_child_path(&self, child_index: usize) -> Option<Vec<usize>> {
+        // A row whose widget holds controls of its own is that row's node, and what it holds
+        // stands under it: a person who opens an item reaches the fields that edit it, and a
+        // row's box is a control of its own rather than words the row states.
+        let row = self.mounted.get(child_index)?;
+        self.handing_controls(row)
+            .then(|| vec![row.index.saturating_add(self.headings_before(child_index))])
+    }
+
     /// Focus the row an assistive technology moves to, and select it, as the keyboard does.
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
         let [child] = path else {
