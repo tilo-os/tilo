@@ -970,6 +970,18 @@ try {
   // browser: no page scroll, zoom or history.
   const nav = tab => tab.evaluate('JSON.stringify(globalThis.tiloMount?.navigation?.getSnapshot?.() ?? null)').then(JSON.parse);
   const panOf = async tab => (await nav(tab))?.desktopPan ?? null;
+  // Where the strip comes to rest: the same place on three reads a few frames apart.
+  const restingPan = async tab => {
+    let last = null;
+    let same = 0;
+    for (let reads = 0; reads < 100 && same < 2; reads++) {
+      await settle(tab, 2);
+      const now = await panOf(tab);
+      same = now && last && now.offset === last.offset ? same + 1 : 0;
+      last = now;
+    }
+    return last;
+  };
   const namesOf = async tab => {
     await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
     await settle(tab, 1);
@@ -1085,11 +1097,12 @@ try {
   // The fingers rest on Sheets' grid, wherever on the strip the search
   // brought its window: the middle of the desk can be another window's then,
   // whose sideways wheel the strip takes, as it should.
+  // The search slides the strip to Sheets: the swipe waits until it is at rest.
   await search(a.tab, a.command, 'sheets', 'Sheets');
   await settle(a.tab, 2);
   const cell = await sheetCell(a.tab);
   if (!cell) failed('Sheets shows no cell B2 to swipe over');
-  const keptPan = await panOf(a.tab);
+  const keptPan = await restingPan(a.tab);
   const sheetBefore = await picture(a.tab);
   await sidewaysSwipe(a.tab, cell.x, cell.y, forward);
   const sheetPan = await panOf(a.tab);

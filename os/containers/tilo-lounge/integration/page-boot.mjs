@@ -241,7 +241,15 @@ for (let tries = 0; tries < 20 && !centre; tries++) {
   })()`).catch(() => 'null'));
 }
 if (!centre) await fail('Sheets shows no cell B2 to swipe over');
-const before = await panOf();
+// The search slides the strip to Sheets: the swipe waits until it is at
+// rest, the same place on three reads a few frames apart.
+let before = null;
+for (let reads = 0, same = 0; reads < 100 && same < 2; reads++) {
+  await settled(2);
+  const now = await panOf();
+  same = now && before && now.offset === before.offset ? same + 1 : 0;
+  before = now;
+}
 if (!before || !(before.max > 0)) await fail(`the strip does not overflow, so a pan could not show: ${JSON.stringify(before)}`);
 const swipe = [];
 for (const step of [6, 12, 18, 24, 18, 12, 6]) {
