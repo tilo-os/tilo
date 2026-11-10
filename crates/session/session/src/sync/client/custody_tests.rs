@@ -70,7 +70,7 @@ impl Host {
         Self::of(&SigningKey::from_bytes(&[0x71; 32]))
     }
 
-    /// A host of the person `owner_key` , on this machine.
+    /// A host of the person `owner_key` , on this machine, a device of its own.
     fn of(owner_key: &SigningKey) -> Self {
         let state = tempfile::tempdir().expect("the host's directory");
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -78,7 +78,14 @@ impl Host {
             .enable_all()
             .build()
             .expect("the host's runtime");
-        let host_key = SigningKey::from_bytes(&[0x72; 32]);
+        // A host is a device of its own, and its relay answers on the Iroh node that device's key
+        // names. Two hosts sharing a key are one node to every dialer, so either answers the
+        // other's joins and the other's members' links: each host mints a key from its own
+        // directory.
+        let host_key = SigningKey::from_bytes(&blake3::derive_key(
+            "the notes host",
+            state.path().as_os_str().as_encoded_bytes(),
+        ));
         let cert = certified(
             owner_key,
             &host_key,
@@ -320,10 +327,6 @@ fn holds_receipt(device: &Device, workspace_id: WorkspaceId, invocation: uuid::U
 /// and the owner's custody leaves for the workspace's other session, which
 /// then holds it too.
 #[test]
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the host is both sessions' host: it outlives every join made on it"
-)]
 fn a_receipt_the_owner_commits_reaches_the_workspaces_other_session() {
     let host = Host::start();
     let writer = Device::start(0x51, "The writing device");
@@ -410,10 +413,6 @@ fn wait_for(
 /// with what it holds. What was written on the person's other device before this one came up is
 /// here, and what this one writes reaches the other.
 #[test]
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the host is both devices' host: it outlives every join made on it"
-)]
 fn a_person_s_further_device_enters_their_workspace_at_its_host() {
     let root = SigningKey::from_bytes(&[0x71; 32]);
     let host = Host::of(&root);
