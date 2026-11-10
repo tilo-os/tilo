@@ -1163,31 +1163,42 @@ mod tests {
         );
     }
 
+    /// The content beside the panel is never a phone's screen: an authored minimum under a
+    /// column's width ([`crate::widget::arrange::column_min_width`]) is raised to one, so the panel
+    /// stops where the content still reads and the handle stays usable.
     #[test]
-    fn adaptive_sidebar_resize_keeps_the_content_minimum_and_handle_available() {
+    fn a_panel_keeps_a_column_for_the_content_however_narrow_its_authored_minimum() {
+        let theme = Theme::dark();
+        let column = f64::from(crate::widget::arrange::column_min_width(
+            crate::widget::arrange::rem_of(&theme),
+        ));
         for side in [SidebarSide::Left, SidebarSide::Right] {
             let mut drawer = SidebarDrawer::new()
                 .side(side)
                 .with_rail()
                 .content_min_width(360.0);
-            drawer.scale_for(&Theme::dark());
+            drawer.scale_for(&theme);
             let area = Rect::new(40.0, 20.0, 800.0, 740.0);
             drawer.resolve(area);
             drawer.snap(true);
             drawer.resolve(area);
+            assert!(drawer.is_docked(), "the panel docks beside a column");
+            assert_eq!(drawer.content_rect().width(), column);
+            assert!(
+                drawer.sidebar_rect().width() + column <= area.width() + 0.5,
+                "the panel and the content's column fit the window"
+            );
+            assert!(drawer.resize_accessibility().is_some());
+            // Asking for more gives the panel no more: what stands beside it is a column.
             let value = match side {
                 SidebarSide::Left => "90%",
                 SidebarSide::Right => "10%",
             };
-            assert!(drawer.perform_resize_action(
-                drawer.resize_target(),
-                &crate::a11y::Action::SetValue(value.into()),
-            ));
+            let target = drawer.resize_target();
+            drawer.perform_resize_action(target, &crate::a11y::Action::SetValue(value.into()));
             drawer.resolve(area);
             assert!(drawer.is_docked(), "resize must not turn into an overlay");
-            assert_eq!(drawer.content_rect().width(), 360.0);
-            assert_eq!(drawer.list_rect().width(), 324.0);
-            assert!(drawer.resize_accessibility().is_some());
+            assert_eq!(drawer.content_rect().width(), column);
         }
     }
 
