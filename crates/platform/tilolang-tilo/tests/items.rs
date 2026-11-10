@@ -351,9 +351,8 @@ fn a_cards_place_is_read_of_the_collections_index_not_its_items() {
     let elsewhere = r.card("ada", &doing, "elsewhere");
     let todo_at = r.at(&todo);
     let walked = |r: &Replica| r.host.store().read_stats().doc.entries;
-    let stands = |r: &mut Workspace, card: &str| -> Option<i64> {
+    let stands = |r: &Workspace, card: &str| -> Option<i64> {
         let card_at = r.at(card);
-        let (todo_at, card_at) = (todo_at.clone(), card_at.clone());
         let value = call(r, "where_it_stands", &todo_at, &card_at);
         match value {
             Value::Opt(Some(inner)) => match *inner {
@@ -364,8 +363,8 @@ fn a_cards_place_is_read_of_the_collections_index_not_its_items() {
             other => panic!("{other:?}"),
         }
     };
-    let holds = |r: &mut Workspace, card: &str| -> bool {
-        let (todo_at, card_at) = (todo_at.clone(), r.at(card));
+    let holds = |r: &Workspace, card: &str| -> bool {
+        let card_at = r.at(card);
         match call(r, "holds", &todo_at, &card_at) {
             Value::Bool(held) => held,
             other => panic!("{other:?}"),
@@ -374,17 +373,17 @@ fn a_cards_place_is_read_of_the_collections_index_not_its_items() {
     // Where a card stands, and whether the column holds it, are read of the column's index:
     // what the record would be walked for — its entries — stays where it was.
     let before = walked(&r.ada);
-    assert_eq!(stands(&mut r, &first), Some(0), "the first card's place");
-    assert_eq!(stands(&mut r, &second), Some(1), "the second card's place");
+    assert_eq!(stands(&r, &first), Some(0), "the first card's place");
+    assert_eq!(stands(&r, &second), Some(1), "the second card's place");
     assert_eq!(
-        stands(&mut r, &elsewhere),
+        stands(&r, &elsewhere),
         None,
         "a card of another column stands in this one nowhere"
     );
-    assert!(holds(&mut r, &first), "the column holds its first card");
-    assert!(holds(&mut r, &second), "the column holds its second card");
+    assert!(holds(&r, &first), "the column holds its first card");
+    assert!(holds(&r, &second), "the column holds its second card");
     assert!(
-        !holds(&mut r, &elsewhere),
+        !holds(&r, &elsewhere),
         "the column does not hold a card of another column"
     );
     assert_eq!(
@@ -395,20 +394,20 @@ fn a_cards_place_is_read_of_the_collections_index_not_its_items() {
     // A card that leaves is one the column no longer holds, and the one after it stands where
     // the one before it did.
     r.file("ada", &doing, &first);
-    assert!(!holds(&mut r, &first), "the card moved out is not held");
-    assert_eq!(stands(&mut r, &second), Some(0), "the card moved up");
+    assert!(!holds(&r, &first), "the card moved out is not held");
+    assert_eq!(stands(&r, &second), Some(0), "the card moved up");
     r.act(
         "ada",
         ("Column", &todo_at),
         "place",
         json!({ "card": r.at(&first), "at": 0 }),
     );
-    assert_eq!(stands(&mut r, &first), Some(0), "the card moved back");
-    assert_eq!(stands(&mut r, &second), Some(1), "and the other after it");
+    assert_eq!(stands(&r, &first), Some(0), "the card moved back");
+    assert_eq!(stands(&r, &second), Some(1), "and the other after it");
 }
 
 /// What the action `name` answers for the card `card` of the column `column`, run as `ada`.
-fn call(r: &mut Workspace, name: &str, column: &str, card: &str) -> Value {
+fn call(r: &Workspace, name: &str, column: &str, card: &str) -> Value {
     let meta = r.meta.clone();
     let id = meta
         .actions
