@@ -109,6 +109,40 @@ impl WindowGroup {
         );
     }
 
+    /// What a control of the window's furniture does when a person presses it there, as assistive
+    /// technology and automation press it by its node. `None` for a target that is not the
+    /// furniture's (the window's bar answers those), else whether the action ran: nothing runs
+    /// while no row holds the bar, or where the row had no room to place the control.
+    pub(super) fn perform_held_furniture_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+    ) -> Option<bool> {
+        self.held_bar?;
+        let control = match target {
+            crate::widget::tabs::NEW_TAB_TARGET => None,
+            crate::widget::tabs::WINDOW_MAXIMIZE_TARGET => Some(WindowControl::Maximize),
+            crate::widget::tabs::WINDOW_CLOSE_TARGET => Some(WindowControl::Close),
+            _ => return None,
+        };
+        let placed = match control {
+            None => self.held.new_tab,
+            Some(WindowControl::Maximize) => self.held.controls.maximize,
+            Some(WindowControl::Close) => self.held.controls.close,
+            Some(WindowControl::Minimize) => return Some(false),
+        };
+        if !matches!(action, crate::a11y::Action::Activate) || placed.area() <= 0.0 {
+            return Some(false);
+        }
+        match control {
+            // The window's own door: the shell decides what a new place holds.
+            None => self.pending_new_tab = Some(self.id),
+            Some(control) => self.run_held_control(control),
+        }
+        self.held_dirty = true;
+        Some(true)
+    }
+
     /// Run a press on the window's controls in a held bar's row: close ends the window, restore
     /// and maximize change its place, as the bar's own controls do.
     pub(super) fn run_held_control(&mut self, control: WindowControl) {

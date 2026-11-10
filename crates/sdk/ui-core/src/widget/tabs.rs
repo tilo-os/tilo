@@ -3788,6 +3788,9 @@ pub const TAB_PILL_INSET_Y: f64 = 6.0;
 pub const WINDOW_HISTORY_TARGET: &str = "window-history";
 pub const WINDOW_MAXIMIZE_TARGET: &str = "window-maximize";
 pub const WINDOW_CLOSE_TARGET: &str = "window-close";
+/// Action target of a window's new-tab door, as assistive technology and
+/// automation address it.
+pub const NEW_TAB_TARGET: &str = "tab-new";
 /// Where a window bar's row starts: the leading glyph then sits as far from
 /// the window's leading edge as the close glyph does from its trailing edge.
 const WINDOW_BAR_LEAD_PX: f64 = super::window_controls::EDGE_INSET
@@ -4629,7 +4632,7 @@ impl Widget for TabBar {
             };
             tab_children.push(
                 new_tab
-                    .with_action_target("tab-new")
+                    .with_action_target(NEW_TAB_TARGET)
                     .with_state(AccessState {
                         focusable: true,
                         ..Default::default()
@@ -4710,7 +4713,7 @@ impl Widget for TabBar {
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;
         }
-        if target == "tab-new" {
+        if target == NEW_TAB_TARGET {
             if !self.new_tab {
                 return false;
             }

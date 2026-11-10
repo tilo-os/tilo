@@ -333,6 +333,45 @@ impl RowFurniture {
         }
     }
 
+    /// The furniture as assistive technology and automation reach it: the new-tab door, then the
+    /// window's maximize (or restore) and close, in the bar's order, each where the row draws it,
+    /// named and targeted as the bar's own — a window shows the same functions whether its row
+    /// holds the bar or stands as its slots. `maximized` says which way the maximize control acts.
+    pub(crate) fn accessibility(&self, maximized: bool) -> Vec<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        use crate::widget::tabs::{
+            NEW_TAB, NEW_TAB_TARGET, WINDOW_CLOSE_TARGET, WINDOW_MAXIMIZE_TARGET,
+        };
+        use crate::widget::window_controls::WindowControl;
+        let button = |name: String, target: &str, rect: Rect| {
+            AccessNode::new(Role::Button)
+                .with_name(name)
+                .with_action_target(target)
+                .with_bounds(rect)
+                .with_state(AccessState::new().focusable(true))
+        };
+        let mut out = Vec::new();
+        if self.new_tab.area() > 0.0 {
+            out.push(button(NEW_TAB.to_owned(), NEW_TAB_TARGET, self.new_tab));
+        }
+        for (control, rect) in self.controls.iter() {
+            let target = match control {
+                WindowControl::Maximize => WINDOW_MAXIMIZE_TARGET,
+                WindowControl::Close => WINDOW_CLOSE_TARGET,
+                // A Tilo window is a tab its group puts away: it has no minimized state, so the
+                // row's furniture never places one
+                // ([`WindowControls::lay_out`](crate::widget::window_controls::WindowControls::lay_out)).
+                WindowControl::Minimize => continue,
+            };
+            out.push(button(
+                crate::i18n::I18nManager::lookup_plain(control.name_key(maximized)),
+                target,
+                rect,
+            ));
+        }
+        out
+    }
+
     /// Paint the furniture over the app's own drawing: the window's controls and its new-tab door
     /// in `state`, and the window's search on the row's ground.
     pub(crate) fn paint(

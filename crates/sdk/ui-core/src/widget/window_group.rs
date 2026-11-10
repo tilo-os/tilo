@@ -3086,8 +3086,21 @@ impl Widget for WindowGroup {
         (!self.is_closing()).then(|| self.active_tab_id())
     }
 
+    /// While the app's own header row holds the bar, the window's furniture in that row: its
+    /// new-tab door and its close/restore controls, after the row's own controls, as the bar's
+    /// are after its tabs. A window that draws its bar of its own publishes them there.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        self.held_bar?;
+        Some(
+            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+                .with_semantic_key(format!("window-furniture:{}", self.id))
+                .with_children(self.held.accessibility(self.maximized)),
+        )
+    }
+
     /// A node of the bar's, activated: a tab's pill switches to that tab, a
-    /// window control does what it shows.
+    /// window control does what it shows. The furniture of a row holding the bar is the
+    /// window's, and acts even where the bar it stands for draws nothing.
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -3095,6 +3108,9 @@ impl Widget for WindowGroup {
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
+        if let Some(performed) = self.perform_held_furniture_action(target, action) {
+            return performed;
+        }
         self.bar
             .perform_semantic_action(target, action, state, path)
     }
@@ -3191,14 +3207,16 @@ impl Widget for WindowGroup {
         if self.navigation_bar_visible() {
             children.push(&self.bar);
         }
-        if self.shows_its_bar() {
-            children.push(&self.search);
-        }
         let active = self.bar.active_id();
         if let Some((id, host)) = self.hosts.iter().find(|(id, _)| *id == active) {
             // A host swapped in through `host_for_tab_mut` is named here.
             host.set_panic_scope(*id);
             children.push(&**host);
+        }
+        // The window's search reads after what the window shows, as its other own functions do:
+        // assistive technology reaches it once it has read the app, and its own row's controls.
+        if self.shows_its_bar() {
+            children.push(&self.search);
         }
         children
     }
@@ -3212,9 +3230,19 @@ impl Widget for WindowGroup {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Children run bar, search, app: reversed, the app's layer goes first.
-        for child in self.children_mut().into_iter().rev() {
-            child.draw_overlay(scene, transform, text_renderer, theme, presence);
+        // The app's top layer first, the window's search over it, then the bar's menus over both:
+        // what a person reaches last stands on top.
+        let active = self.bar.active_id();
+        if let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) {
+            host.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+        if self.shows_its_bar() {
+            self.search
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+        if self.navigation_bar_visible() {
+            self.bar
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
     }
 
@@ -3226,12 +3254,12 @@ impl Widget for WindowGroup {
         if band {
             children.push(&mut self.bar);
         }
-        if shows {
-            children.push(&mut self.search);
-        }
         if let Some((id, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) {
             host.set_panic_scope(*id);
             children.push(&mut **host);
+        }
+        if shows {
+            children.push(&mut self.search);
         }
         children
     }

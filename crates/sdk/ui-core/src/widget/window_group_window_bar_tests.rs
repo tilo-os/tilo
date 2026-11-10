@@ -823,6 +823,151 @@ fn a_row_that_holds_the_bar_keeps_the_windows_functions() {
     );
 }
 
+/// An app whose header row holds a popover: the row is the window's bar.
+fn holding_row_shell() -> crate::widget::NavShell {
+    crate::widget::NavShell::new()
+        .content(Box::new(crate::widget::Text::new("Body")))
+        .content_header(
+            "Design",
+            vec![Box::new(
+                crate::widget::Button::new("catch-up", "Mia changed 3 messages")
+                    .with_popover(crate::widget::Text::new("What changed")),
+            )],
+        )
+}
+
+/// The name assistive technology reads for the window's control named by `key`.
+fn window_control_name(key: &str) -> String {
+    crate::i18n::I18nManager::lookup_plain(key)
+}
+
+/// The bounds the tree reports for the node named `name`, when it reads there.
+fn node_bounds(frame: &crate::headless::FrameHarness, name: &str) -> Option<accesskit::Rect> {
+    let id = frame.a11y_node_named(name)?;
+    frame
+        .a11y_nodes()
+        .into_iter()
+        .find(|(node, _)| *node == id)
+        .and_then(|(_, node)| node.bounds())
+}
+
+/// Where the node named `name` stands in the tree, in reading order.
+fn node_order(frame: &crate::headless::FrameHarness, name: &str) -> Option<usize> {
+    let id = frame.a11y_node_named(name)?;
+    frame.a11y_nodes().iter().position(|(node, _)| *node == id)
+}
+
+/// Every name the tree reads: what a failure lists instead of the one it wants.
+fn tree_names(frame: &crate::headless::FrameHarness) -> Vec<String> {
+    frame
+        .a11y_nodes()
+        .into_iter()
+        .filter_map(|(_, node)| node.label().map(str::to_owned))
+        .collect()
+}
+
+/// The window's furniture in a row that holds the bar reaches assistive technology as the bar's
+/// own does: the new-tab door, then restore/maximize and close, each where the row draws it, and
+/// each performing what it shows when activated. They read after the app's own header controls, as
+/// the bar's read after its tabs.
+#[test]
+fn a_row_that_holds_the_bar_publishes_the_windows_furniture() {
+    let _settled = crate::motion::testing::settled();
+    let (mut frame, _window) = shell_window(holding_row_shell());
+    let (row, new_tab, controls) = {
+        let g = frame.root_mut::<WindowGroup>();
+        let slot = g
+            .held_bar_for_tests()
+            .expect("the app's row is the window's bar");
+        (
+            slot.row,
+            g.new_tab_rect(),
+            crate::widget::window_controls::WindowControls::lay_out(slot.controls),
+        )
+    };
+    let search = frame.root_mut::<WindowGroup>().window_search().anchor();
+    let names = (
+        crate::widget::tabs::NEW_TAB.to_owned(),
+        window_control_name("host-window-maximize"),
+        window_control_name("host-window-close"),
+        crate::i18n::I18nManager::lookup_plain("window-search-name"),
+    );
+    let shown = |frame: &crate::headless::FrameHarness, name: &str| {
+        node_bounds(frame, name).unwrap_or_else(|| {
+            panic!(
+                "no node bounds for {name:?}; the tree reads {:?}",
+                tree_names(frame)
+            )
+        })
+    };
+    for (name, rect) in [
+        (&names.0, new_tab),
+        (&names.1, controls.maximize),
+        (&names.2, controls.close),
+        (&names.3, search),
+    ] {
+        let bounds = shown(&frame, name);
+        assert!(
+            (bounds.x0 - rect.x0).abs() < 0.5
+                && (bounds.y0 - rect.y0).abs() < 0.5
+                && (bounds.x1 - rect.x1).abs() < 0.5
+                && (bounds.y1 - rect.y1).abs() < 0.5,
+            "{name:?} reports the control's own rect: {bounds:?} for {rect:?}"
+        );
+        assert!(
+            row.contains(rect.center()),
+            "{name:?} stands in the row that holds the bar: {rect:?} in {row:?}"
+        );
+    }
+    // The row's own controls come first: the window's furniture and search follow them.
+    let own = node_order(&frame, "Mia changed 3 messages").expect("the row's own control is read");
+    for name in [&names.0, &names.1, &names.2, &names.3] {
+        let at = node_order(&frame, name).expect("read");
+        assert!(
+            at > own,
+            "{name:?} reads after the app's own header controls: {at} after {own}"
+        );
+    }
+
+    // Each performs what it shows.
+    let activate = |frame: &mut crate::headless::FrameHarness, name: &str| {
+        let id = frame
+            .a11y_node_named(name)
+            .unwrap_or_else(|| panic!("no node named {name:?}: {:?}", tree_names(frame)));
+        frame
+            .perform_a11y_action(id, &crate::a11y::Action::Activate)
+            .unwrap_or_else(|error| panic!("{name:?}: {error}"));
+    };
+    activate(&mut frame, &names.0);
+    assert_eq!(
+        frame.root_mut::<WindowGroup>().take_pending_new_tab(),
+        Some(10),
+        "the new-tab door asks the shell for a place"
+    );
+
+    activate(&mut frame, &names.1);
+    assert!(
+        frame.root_mut::<WindowGroup>().maximized,
+        "restore/maximize changes the window's place"
+    );
+    frame.relayout();
+    assert!(
+        node_bounds(&frame, &window_control_name("host-window-restore")).is_some(),
+        "the control now shows the other way: {:?}",
+        tree_names(&frame)
+    );
+    assert!(
+        node_bounds(&frame, &names.1).is_none(),
+        "and no longer reads as maximize"
+    );
+
+    activate(&mut frame, &window_control_name("host-window-close"));
+    assert!(
+        frame.root_mut::<WindowGroup>().has_closing_host(1),
+        "close ends the window, as the bar's own does"
+    );
+}
+
 /// A window whose row stands as the bar's slots keeps the same functions, so a person gets one
 /// answer either way: the search and the window's controls stand at the bar's trailing end, and
 /// the bar's ground moves the window.
