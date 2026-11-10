@@ -63,6 +63,8 @@ mod para_styles;
 pub mod preserve;
 #[cfg(any(feature = "html", feature = "docx", feature = "odt"))]
 mod resolved;
+#[cfg(feature = "markdown")]
+pub mod rich;
 #[cfg(feature = "rtf")]
 pub mod rtf;
 #[cfg(feature = "office")]

@@ -2289,9 +2289,13 @@ impl Checker<'_> {
 
     /// A method that stands on a type instead of a value: `Date.parse(text, near: now)` and
     /// `Time.parse(text, near: now)`, the day or the moment a text names when people type it
-    /// ("tomorrow", "fri 10am", "in 2 weeks"), read at a moment in the person's zone.
+    /// ("tomorrow", "fri 10am", "in 2 weeks"), read at a moment in the person's zone; and
+    /// `RichText.from_markdown(text)`, the document a Markdown text says.
     fn type_method(&mut self, ty: Ty, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         let t = self.show(&ty);
+        if ty == Ty::RichText {
+            return self.rich_type_method(name, args, span);
+        }
         if name.name != "parse" {
             self.err(
                 "E027",
@@ -2347,6 +2351,42 @@ impl Checker<'_> {
         Ex::host(imp, vec![text, near], Ty::Option(Box::new(ty)))
     }
 
+    /// `RichText.from_markdown(text)`: the document a Markdown text says, as the type's one
+    /// method of its own. It reads nothing but the text, so it is as pure as a value's method.
+    fn rich_type_method(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        if name.name != "from_markdown" {
+            self.err(
+                "E027",
+                name.span,
+                "`RichText` is a type, not a value; its one method of its own is `.from_markdown(text)`, the document a Markdown text says, and `RichText(…)` builds a value",
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        let [text] = args else {
+            self.err(
+                "E022",
+                span,
+                "`.from_markdown` takes the one text it reads: `RichText.from_markdown(text)`",
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        };
+        if text.name.is_some() {
+            self.err(
+                "E022",
+                text.value.span,
+                "`.from_markdown` takes the text by position: `RichText.from_markdown(text)`",
+            );
+        }
+        let text = self.expr_as(&text.value, &Ty::Text);
+        Ex::host(Imp::RichFromMarkdown, vec![text], Ty::RichText)
+    }
+
     pub(super) fn value_method(
         &mut self,
         r: Ex,
@@ -2394,6 +2434,14 @@ impl Checker<'_> {
                 Imp::FileText,
                 vec![r],
                 Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text)),
+            ),
+            // The files an archive holds, each kept in the device's content store under the name
+            // it has inside it: what an import of a package reads its pages and their nesting
+            // from, and refuses with why when the archive is not one or holds too much.
+            (Ty::File, "files") if args.is_empty() => Ex::host(
+                Imp::FileFiles,
+                vec![r],
+                Ty::Result(Box::new(Ty::List(Box::new(Ty::File))), Box::new(Ty::Text)),
             ),
             // A map read as a value (a `json.Value`'s object, or one `json.decode` read): its
             // keys, and the value one key holds.
@@ -2605,11 +2653,12 @@ impl Checker<'_> {
 }
 
 /// The type a text names, where it is written before a method instead of a value:
-/// `Date.parse(...)`, `Time.parse(...)`.
+/// `Date.parse(...)`, `Time.parse(...)`, `RichText.from_markdown(...)`.
 fn parse_ty(name: &str) -> Option<Ty> {
     match name {
         "Date" => Some(Ty::Date),
         "Time" => Some(Ty::Time),
+        "RichText" => Some(Ty::RichText),
         _ => None,
     }
 }

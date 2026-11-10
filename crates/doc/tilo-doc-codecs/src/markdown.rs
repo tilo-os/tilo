@@ -286,6 +286,45 @@ struct ImportState {
     footnote_bodies: BTreeMap<String, Vec<String>>,
     def_label: Option<String>,
     def_para: Option<String>,
+    // An image being read: its source, where its text starts, and the alt text its own
+    // events carry, which is written as its Markdown rather than as the surrounding text.
+    image: Option<ImageIn>,
+    // Inside a quote (`> …`): its paragraphs are the quote's, not the document's, and a quote
+    // whose text opens with an alert marker (`[!WARNING]`) is that alert.
+    in_quote: bool,
+    quote_block: Option<String>,
+}
+
+/// The names a quote's `alert` attribute holds: GitHub-flavoured Markdown's alerts.
+const CALLOUTS: [&str; 5] = ["note", "tip", "important", "warning", "caution"];
+
+/// The stored attribute that makes a quote an alert.
+const CALLOUT_ATTR: &str = "alert";
+
+/// The alert a quote's text opens with: GitHub-flavoured Markdown's `[!NOTE]`, `[!TIP]`,
+/// `[!IMPORTANT]`, `[!WARNING]` or `[!CAUTION]`, and what the quote says after it.
+fn alert_of(text: &str) -> Option<(&'static str, &str)> {
+    let rest = text.strip_prefix("[!")?;
+    let (name, said) = rest.split_once(']')?;
+    let kind = CALLOUTS
+        .into_iter()
+        .find(|callout| callout.eq_ignore_ascii_case(name.trim()))?;
+    Some((kind, said))
+}
+
+/// An image `![](source)` being read: its source, the position its text starts at, and the alt
+/// text read from between its brackets.
+struct ImageIn {
+    source: String,
+    start: usize,
+    alt: String,
+}
+
+impl ImageIn {
+    /// The Markdown the image is written as, as the image was read.
+    fn markdown(&self) -> String {
+        format!("![{}]({})", self.alt, self.source)
+    }
 }
 
 impl ImportState {
@@ -348,21 +387,41 @@ impl ImportState {
                 doc.set_attr(&id, "level", *level as i64);
             }
             Event::End(TagEnd::Heading(_) | TagEnd::CodeBlock) => self.cur = None,
+            // A quote: its paragraphs are the quote's, which a view draws set apart — and a
+            // GitHub alert is a quote whose text opens with its marker, `[!WARNING]`, which the
+            // document stores as the quote's `alert` attribute and never as words.
+            Event::Start(Tag::BlockQuote(_)) => self.in_quote = true,
+            Event::End(TagEnd::BlockQuote(_)) => {
+                self.cur = None;
+                self.in_quote = false;
+            }
+            Event::Rule => {
+                start_block(
+                    doc,
+                    &mut self.prev,
+                    &mut self.cur,
+                    &mut self.cur_len,
+                    "divider",
+                );
+                self.cur = None;
+            }
             Event::Start(Tag::Paragraph) => {
                 if !self.in_item && !self.in_cell {
-                    start_block(
+                    let id = start_block(
                         doc,
                         &mut self.prev,
                         &mut self.cur,
                         &mut self.cur_len,
-                        "paragraph",
+                        if self.in_quote { "quote" } else { "paragraph" },
                     );
+                    self.quote_block = self.in_quote.then_some(id);
                 }
             }
             Event::End(TagEnd::Paragraph) => {
                 if !self.in_item && !self.in_cell {
                     self.cur = None;
                 }
+                self.quote_block = None;
             }
             Event::Start(Tag::List(start)) => self.ordered_stack.push(start.is_some()),
             Event::End(TagEnd::List(_)) => {
@@ -511,10 +570,31 @@ impl ImportState {
                     });
                 }
             }
+            // An image: its alt text is not the paragraph's text but the Markdown the picture
+            // is written as, `![alt](source)`, which is what an editor shows a picture by and
+            // what writes it back.
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                self.image = Some(ImageIn {
+                    source: dest_url.to_string(),
+                    start: self.cur_len,
+                    alt: String::new(),
+                });
+            }
+            Event::End(TagEnd::Image) => {
+                if let (Some(image), Some(b)) = (self.image.take(), self.cur.as_ref()) {
+                    let written = image.markdown();
+                    doc.splice_text(b, image.start, 0, &written);
+                    self.cur_len = image.start.saturating_add(written.chars().count());
+                }
+            }
             Event::Text(t) => {
-                if let Some(b) = self.cur.as_ref() {
-                    doc.splice_text(b, self.cur_len, 0, t);
+                if let Some(image) = self.image.as_mut() {
+                    image.alt.push_str(t);
+                } else if let Some(b) = self.cur.clone() {
+                    let start = self.cur_len;
+                    doc.splice_text(&b, self.cur_len, 0, t);
                     self.cur_len = self.cur_len.saturating_add(t.chars().count());
+                    self.take_alert(doc, &b, start, t);
                 }
             }
             Event::Code(t) => {
@@ -532,7 +612,9 @@ impl ImportState {
                 }
             }
             Event::SoftBreak | Event::HardBreak => {
-                if let Some(b) = self.cur.as_ref() {
+                if let Some(image) = self.image.as_mut() {
+                    image.alt.push(' ');
+                } else if let Some(b) = self.cur.as_ref() {
                     doc.splice_text(b, self.cur_len, 0, " ");
                     self.cur_len = self.cur_len.saturating_add(1);
                 }
@@ -541,6 +623,21 @@ impl ImportState {
             Event::InlineHtml(html) | Event::Html(html) => self.handle_inline_html(html),
             _ => {}
         }
+    }
+
+    /// A quote that opens with an alert's marker is that alert: the marker is not part of what
+    /// it says, and the block keeps which alert it is.
+    fn take_alert(&mut self, doc: &mut DocMut, block: &str, start: usize, text: &str) {
+        if start > 0 || self.quote_block.as_deref() != Some(block) {
+            return;
+        }
+        let Some((kind, said)) = alert_of(text) else {
+            return;
+        };
+        let marker = text.chars().count().saturating_sub(said.chars().count());
+        doc.splice_text(block, 0, isize::try_from(marker).unwrap_or(isize::MAX), "");
+        doc.set_attr(block, CALLOUT_ATTR, kind);
+        self.cur_len = self.cur_len.saturating_sub(marker);
     }
 
     fn handle_inline_html(&mut self, html: &str) {
@@ -695,6 +792,8 @@ fn export_md(
                     Some(&mut footnotes),
                 ));
             }
+            "quote" | "blockquote" => out.push_str(&render_quote(b, &mut footnotes)),
+            "divider" => out.push_str("---"),
             "list_item" => {
                 let item = ExportBlock::new(b);
                 out.push_str(&"  ".repeat(usize::try_from(item.list_level()).unwrap_or(0)));
@@ -763,6 +862,32 @@ fn fence_length(code: &str) -> usize {
         .map(str::len)
         .max()
         .map_or(3, |longest| longest.saturating_add(1).max(3))
+}
+
+/// A quote as Markdown: each of its lines set apart (`> …`), and an alert of one opening with
+/// its marker, which reads back as the same alert.
+fn render_quote(block: &BlockView, footnotes: &mut Footnotes<'_>) -> String {
+    let mut out = String::new();
+    let alert = block
+        .str_attr(CALLOUT_ATTR)
+        .and_then(|name| {
+            CALLOUTS
+                .into_iter()
+                .find(|callout| callout.eq_ignore_ascii_case(name.trim()))
+        })
+        .map(str::to_ascii_uppercase);
+    if let Some(alert) = alert {
+        let _ = writeln!(out, "> [!{alert}]");
+    }
+    let said = render_inline_notes(&block.text, &block.marks, Some(footnotes));
+    for (index, line) in said.split('\n').enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        out.push_str("> ");
+        out.push_str(line);
+    }
+    out
 }
 
 /// Escapes a cell so it survives one table row; re-import unescapes `\|` back to `|`.

@@ -367,6 +367,15 @@ impl Platform for HostPlatform {
         crate::files::save(request, content)
     }
 
+    fn keep_content(
+        &self,
+        name: &str,
+        media: &str,
+        bytes: &[u8],
+    ) -> Result<tilolang_tilo::runtime::blob::FileValue, String> {
+        crate::files::keep(name, media, bytes)
+    }
+
     fn waker(&self) -> Waker {
         Arc::clone(&self.wake)
     }

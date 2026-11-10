@@ -661,6 +661,13 @@ impl ActionMeta {
         self.role.as_deref() == Some("migration")
     }
 
+    /// Whether the action takes a `File` — the person's own file, which the chooser a control
+    /// runs fills ([`Self::unbound`]'s exception): it is then no command, only a control's.
+    #[must_use]
+    pub fn takes_a_file(&self) -> bool {
+        self.params.iter().any(|param| param.ty.trim() == "File")
+    }
+
     /// The parameters an invocation that has given `bound` arguments still lacks: those after
     /// them that have no default, each with its place, which its form asks the person for
     /// before the action runs. Empty when it runs at once on what it was given.
@@ -829,13 +836,16 @@ impl PackageMeta {
     }
 
     /// The actions the platform offers: every action but the hidden ones of scenarios and the
-    /// migrations, which the platform runs itself. This is the one list every surface draws from
-    /// — the header's buttons and menu, an item's menu, the palette — so an action is always
-    /// somewhere a person, an agent or a program can reach it.
+    /// migrations, which the platform runs itself, and but the ones that take a `File` — a file
+    /// is the person's own, and the chooser a control runs fills that parameter
+    /// (`file.choose(a)`), so it is no command a menu, a palette, an agent or a program runs.
+    /// This is the one list every surface draws from — the header's buttons and menu, an item's
+    /// menu, the palette — so an action is always somewhere a person, an agent or a program can
+    /// reach it.
     pub fn offered_actions(&self) -> impl Iterator<Item = &ActionMeta> {
         self.actions
             .iter()
-            .filter(|a| !a.scenario && !a.is_migration())
+            .filter(|a| !a.scenario && !a.is_migration() && !a.takes_a_file())
     }
 
     /// The actions code may call by name: every action but the hidden ones of scenarios and the

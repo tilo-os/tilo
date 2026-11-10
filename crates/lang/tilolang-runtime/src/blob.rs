@@ -6,10 +6,11 @@
 //! is taken in, and the record keeps the address: an action's argument is the address, so
 //! history, replay and undo carry the file without carrying a picture.
 //!
-//! Three things need the device, and only these: taking a chosen file in ([`BlobHost::choose`]),
-//! reading a file's content as text (`.text()`, bounded by [`MAX_TEXT`]), and putting what an
-//! action made where the person wants it ([`BlobHost::save`]). A host that holds no content
-//! store answers that it holds no files; the types and the records work all the same.
+//! Four things need the device, and only these: taking a chosen file in ([`BlobHost::choose`]),
+//! reading a file's content as text (`.text()`, bounded by [`MAX_TEXT`]) or as the files an
+//! archive holds (`.files()`, bounded by [`MAX_ARCHIVE_FILES`]), and putting what an action made
+//! where the person wants it ([`BlobHost::save`]). A host that holds no content store answers
+//! that it holds no files; the types and the records work all the same.
 //!
 //! Reading a file is a read, not an effect: its content is what its address names and never
 //! changes, so an invocation that reads one is computed again from the same bytes. A device
@@ -40,6 +41,23 @@ pub const MAX_TEXT: usize = 256 * 1024;
 
 /// [`MAX_TEXT`] as a file's size reads it.
 pub const MAX_TEXT_BYTES: i64 = 256 * 1024;
+
+/// The most files one archive an action reads (`.files()`) may hold.
+pub const MAX_ARCHIVE_FILES: usize = 256;
+
+/// The most bytes one file in an archive may be, and all of them together: a person chooses an
+/// archive of documents, never a disk image, and what it holds is read into memory.
+pub const MAX_ARCHIVE_PART: u64 = 1024 * 1024;
+
+/// [`MAX_ARCHIVE_PART`] for every file of one archive together.
+pub const MAX_ARCHIVE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// The bounds one archive is read under: its files, each of them, and all of them together.
+const ARCHIVE: bounded_zip::ZipLimits = bounded_zip::ZipLimits {
+    max_parts: MAX_ARCHIVE_FILES,
+    max_part_bytes: MAX_ARCHIVE_PART,
+    max_total_bytes: MAX_ARCHIVE_BYTES,
+};
 
 /// A file's content as the store holds it: its name, the media type it was taken as, how many
 /// bytes it is, and the hash of its content.
@@ -127,6 +145,19 @@ pub trait BlobHost {
     ///
     /// Why it could not be written (no chooser, a refused path, a failed write).
     fn save(&self, request: &SaveRequest, content: &[u8]) -> Result<(), String>;
+
+    /// Keep `bytes` as a file called `name` of media type `media`, answering the file whose
+    /// content they now are: what a program that holds bytes makes of them, such as the files
+    /// an archive a person chose holds (`.files()`). The content is kept once whatever its name:
+    /// the same bytes answer the same address.
+    ///
+    /// # Errors
+    ///
+    /// Why the bytes were not kept (no content store, a failed write).
+    fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
+        let _ = (name, media, bytes);
+        Err("this host keeps no files".to_owned())
+    }
 }
 
 /// The media type of a file called `name`, as far as its extension tells: what a chooser starts
@@ -206,6 +237,14 @@ impl Core {
                 };
                 self.result(answer.map(Value::text))
             }
+            Imp::FileFiles => {
+                let file = self.file_arg(a.h(0)?)?;
+                let answer = match self.blobs.borrow().as_ref() {
+                    Some(blobs) => files_of(blobs.as_ref(), &file),
+                    None => Err("this host holds no content store".to_owned()),
+                };
+                self.result(answer.map(Value::List))
+            }
             _ => trap("not a file import"),
         }
     }
@@ -235,6 +274,33 @@ fn read_text(blobs: &dyn BlobHost, file: &FileValue) -> Result<String, String> {
         ));
     };
     String::from_utf8(bytes).map_err(|_| format!("`{}` is not text", file.name))
+}
+
+/// The files an archive holds, each kept in the device's content store under the name it has
+/// inside it, which is what an importer of a package (an export of notes, a zip of documents)
+/// reads names and nesting from. A file is read within [`ARCHIVE`]'s bounds: an archive is a
+/// person's, and one that holds more than an importer reads is refused with why.
+fn files_of(blobs: &dyn BlobHost, file: &FileValue) -> Result<Vec<Value>, String> {
+    if file.size > MAX_CHOSEN_BYTES {
+        return Err(format!(
+            "`{}` is {} bytes: more than the {MAX_CHOSEN} a file may be",
+            file.name, file.size
+        ));
+    }
+    let Some(bytes) = blobs.read(&file.hash) else {
+        return Err(format!(
+            "the content of `{}` is not on this device",
+            file.name
+        ));
+    };
+    let parts = bounded_zip::read_zip_parts(&bytes, &ARCHIVE)
+        .map_err(|why| format!("`{}` is not an archive that reads: {why}", file.name))?;
+    let mut out = Vec::with_capacity(parts.len());
+    for (name, content) in parts {
+        let media = media_of(&name);
+        out.push(Value::File(Rc::new(blobs.keep(&name, &media, &content)?)));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

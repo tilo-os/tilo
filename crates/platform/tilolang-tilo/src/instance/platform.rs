@@ -139,6 +139,18 @@ pub trait Platform {
         Err("this host saves no files".to_owned())
     }
 
+    /// Keep `bytes` in the device's content store as a file called `name` of media type
+    /// `media`: what a program that holds bytes makes of them (the files an archive holds,
+    /// `.files()`). A platform that holds no store answers the error saying so.
+    ///
+    /// # Errors
+    ///
+    /// Why the bytes were not kept.
+    fn keep_content(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
+        let _ = (name, media, bytes);
+        Err("this host keeps no files".to_owned())
+    }
+
     /// What wakes the instance when work it waits for is ready (an index read off the frame).
     fn waker(&self) -> Waker;
 
@@ -175,6 +187,10 @@ impl BlobHost for PlatformBlobs {
 
     fn save(&self, request: &SaveRequest, content: &[u8]) -> Result<(), String> {
         self.0.save_file(request, content)
+    }
+
+    fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
+        self.0.keep_content(name, media, bytes)
     }
 }
 

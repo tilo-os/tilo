@@ -1,9 +1,12 @@
-//! The `RichText` imports: `RichText(...)` (with a time as a part, `rich_time`), `r.excerpt`,
-//! `r.text`, `r.references`, `r.people` and `r.is_empty()` (see [`crate::rich`]).
+//! The `RichText` imports: `RichText(...)` (with a time as a part, `rich_time`),
+//! `RichText.from_markdown(text)`, and the members `r.excerpt`, `r.text`, `r.markdown`,
+//! `r.references`, `r.people` and `r.is_empty()` (see [`crate::rich`]).
 //!
-//! `r.excerpt` and `r.text` are the text as the person running the code reads it: each
-//! reference to a resource they hold by its title now, one they cannot read as only being
-//! there ([`Core::read_rich`]), never the title the text was written with.
+//! `r.excerpt`, `r.text` and `r.markdown` are the text as the person running the code reads
+//! it: each reference to a resource they hold by its title now, one they cannot read as only
+//! being there ([`Core::read_rich`]), never the title the text was written with. `r.markdown`
+//! is the document as Markdown, each picture written where its bytes are
+//! (`![](tilo-blob://…)`).
 
 use std::rc::Rc;
 
@@ -22,6 +25,8 @@ pub const PART_TEXT: i32 = 1;
 pub const PART_REFERENCES: i32 = 2;
 /// `r.people`: the people it mentions.
 pub const PART_PEOPLE: i32 = 3;
+/// `r.markdown`: the document as Markdown.
+pub const PART_MARKDOWN: i32 = 4;
 
 impl Core {
     pub(crate) fn rich_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
@@ -47,6 +52,9 @@ impl Core {
                 let part = match a.h(1)? {
                     PART_EXCERPT => Value::Text(self.read_rich(&r, true)),
                     PART_TEXT => Value::Text(self.read_rich(&r, false)),
+                    PART_MARKDOWN => {
+                        Value::Text(tilo_doc_codecs::rich::markdown_of_blocks(&r.blocks))
+                    }
                     PART_REFERENCES => Value::List(self.referenced(&r)?),
                     PART_PEOPLE => Value::List(
                         r.references()
@@ -62,6 +70,16 @@ impl Core {
                 self.ret_h(part)
             }
             Imp::RichEmpty => ret_i32(i32::from(self.rich_arg(a.h(0)?)?.is_empty())),
+            // `RichText.from_markdown(text)`: the document a Markdown text says, read the one
+            // way every app reads one (`tilo_doc_codecs::rich`), a picture kept as the Markdown
+            // it is written as.
+            Imp::RichFromMarkdown => {
+                let markdown = self.text(a.h(0)?)?;
+                match tilo_doc_codecs::rich::blocks_of_markdown(&markdown) {
+                    Ok(blocks) => self.ret_h(Value::Rich(RichValue { blocks })),
+                    Err(why) => trap(format!("this text is not a document: {why}")),
+                }
+            }
             Imp::RichTime => {
                 let at = match self.val(a.h(0)?)? {
                     Value::Text(at) => at,

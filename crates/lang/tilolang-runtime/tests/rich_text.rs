@@ -293,6 +293,72 @@ mod cases {
     }
 
     #[test]
+    fn a_markdown_document_is_a_rich_text_and_back() {
+        let b = Workspace::on(&AmStore::new(), None);
+        let markdown = concat!(
+            "# Groceries\n",
+            "\n",
+            "- [ ] oat milk\n",
+            "- [x] eggs\n",
+            "\n",
+            "Text with **bold**, `code` and [a link](https://example.test).\n",
+            "\n",
+            "```rust\n",
+            "fn main() {}\n",
+            "```\n",
+            "\n",
+            "| a | b |\n",
+            "| --- | --- |\n",
+            "| 1 | 2 |\n",
+            "\n",
+            "![a fox](tilo-blob://fox)\n",
+            "\n",
+            "> remember the bags\n",
+            "\n",
+            "---\n",
+        );
+        let post = returned_ref(b.call(
+            "import_body",
+            vec![Value::resource(&b.board), Value::text(markdown)],
+        ));
+        let body = b.body(&post);
+        let kinds: Vec<&str> = body
+            .blocks
+            .iter()
+            .map(|block| block.kind.as_str())
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "heading",
+                "list_item",
+                "list_item",
+                "paragraph",
+                "paragraph",
+                "paragraph",
+                "paragraph",
+                "quote",
+                "divider",
+            ],
+            "a fence, a table and a picture are paragraphs: {kinds:?}"
+        );
+        assert!(
+            body.blocks[3]
+                .marks
+                .iter()
+                .any(|mark| mark.name == "strong"),
+            "bold is a mark: {:?}",
+            body.blocks[3].marks
+        );
+        assert_eq!(
+            b.done("markdown_of", vec![Value::resource(&post)],)
+                .as_text(),
+            Some(markdown),
+            "the document writes as the Markdown it was read from"
+        );
+    }
+
+    #[test]
     fn anchors_resolve_to_the_paragraphs_they_cite() {
         let b = Workspace::on(&AmStore::new(), None);
         let post = b.say("Intro\nDetails\nOutro");

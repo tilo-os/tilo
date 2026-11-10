@@ -70,6 +70,31 @@ pub fn choose(request: &FileRequest) -> Result<Option<FileValue>, String> {
     )))
 }
 
+/// Keep `bytes` in the content store as a file called `name`: what a program that holds bytes
+/// makes of them, such as the files an archive a person chose holds.
+///
+/// # Errors
+///
+/// Why the bytes were not kept: no store, too large a file, or the store's failure.
+pub fn keep(name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
+    let store = store()?;
+    if bytes.len() > MAX_CHOSEN {
+        return Err(format!(
+            "`{name}` is {} bytes: more than the {MAX_CHOSEN} a file may be",
+            bytes.len()
+        ));
+    }
+    let hash = store
+        .put(bytes)
+        .map_err(|error| format!("`{name}` could not be kept: {error}"))?;
+    Ok(FileValue::new(
+        name,
+        media,
+        i64::try_from(bytes.len()).unwrap_or(i64::MAX),
+        hash,
+    ))
+}
+
 /// Put `content` where the person says: what `file.save` runs.
 ///
 /// # Errors

@@ -82,6 +82,16 @@ action refer(p: Post, t: Task) {
     p.body = RichText(p.body, " see ", t)
 }
 
+/// Posts a Markdown document as its body.
+action import_body(b: Board, markdown: Text) -> Post {
+    b.posts.insert(Post(body: RichText.from_markdown(markdown)))
+}
+
+/// What a post says as a Markdown document.
+action markdown_of(p: Post) -> Text {
+    p.body.markdown
+}
+
 /// What a post says in a line.
 action excerpt_of(p: Post) -> Text {
     p.body.excerpt

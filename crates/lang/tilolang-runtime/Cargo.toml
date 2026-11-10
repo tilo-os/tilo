@@ -16,6 +16,12 @@ blake3.workspace = true
 tilolang = { path = "../tilolang" }
 # `RichText` values and fields are tilo-doc's rich text: one rich-text model for every app.
 tilo-doc = { path = "../../doc/tilo-doc" }
+# A document as the Markdown an editor shows and writes, and the bounded reader of the archives
+# a person imports.
+tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs", default-features = false, features = [
+    "markdown",
+] }
+bounded-zip = { path = "../../doc/bounded-zip" }
 # The zone a wall-clock time is read in, and how a wall time that falls in a change of clocks
 # resolves, so a time of day survives one on every device.
 tilo-recurrence = { path = "../../sdk/tilo-recurrence" }

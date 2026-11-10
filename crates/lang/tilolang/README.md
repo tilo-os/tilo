@@ -447,9 +447,43 @@ as `open` does, and neither is offered to an `fn`, an action or an agent: a file
 own. A program that holds bytes invokes the same action with a file it has, so an app's import
 path is one action whichever way the file arrived.
 
+`f.files()` reads an archive (a `.zip`) as the files it holds, each kept in the device's content
+store under the name it has inside it, as a `Result<List<File>, Text>` — `.err` why it does not
+read (not an archive, or one that holds more than 256 files, more than 1 MiB in one file or more
+than 16 MiB together) — which is how an importer reads a package: an export of notes, a page and
+its pictures. The files are the person's, read within those bounds, and each file's `name` is its
+path inside the archive, so an import keeps the nesting the archive had.
+
 A chosen file may be at most 1 MiB; a larger one is refused with its size, before anything is
 written. An action never carries the bytes: its invocation carries the address, so undo, a
 replay and a sync move the reference and the store moves the content.
+
+**Rich text.** A `RichText` is a document: its paragraphs with their formatting, a heading, a
+list or checklist item, a quote, a table, a fenced code block (a formula is one, in its own
+language), a divider, a picture. `r.excerpt` is its first line with text, `r.text` all of it,
+`r.references` the resources it refers to and `r.people` the people it mentions, and
+`r.is_empty()` says it holds nothing. `r.markdown` writes it as Markdown and
+`RichText.from_markdown(text)` reads a Markdown text as one — the same document, block for
+block: a heading, a list item with its depth, a mark over a run of text:
+
+```
+fn note_as_file(n: Note) -> Text {
+    "# {n.title}\n\n{n.body.markdown}"
+}
+
+action import_markdown(nb: Notebook, file: File) -> Note {
+    match file.text() {
+        .ok(text) => nb.notes.insert(Note(title: "", body: RichText.from_markdown(text))),
+        .err(why) => nb.notes.insert(Note(title: "", body: RichText(why))),
+    }
+}
+```
+
+A picture is the Markdown it is written as, a paragraph of its own holding `![alt](source)`:
+`r.markdown` writes the address of its bytes (`![](tilo-blob://…)`), which every device of the
+workspace holds, and `RichText.from_markdown` keeps the source a picture was written with, so
+the document a person exported is the document read back. A table is kept as its Markdown
+source, which is what an editor shows it as a grid of.
 
 **JSON.** Text a service sent reads into the type the code names, and a value writes back as
 text, with no effect to declare: the work is in the text and the value, nothing outside them.

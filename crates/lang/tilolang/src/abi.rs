@@ -266,6 +266,7 @@ imports! {
     RichPart = "rich_part" ([H, I32] -> [H]);
     RichEmpty = "rich_empty" ([H] -> [I32]);
     RichTime = "rich_time" ([H] -> [H]);
+    RichFromMarkdown = "rich_from_markdown" ([H] -> [H]);
     Phrase = "phrase" ([H, H] -> [H]);
     Word = "word" ([H, H, H] -> [H]);
     EntryParts = "entry_parts" ([H, H] -> [H]);
@@ -299,6 +300,7 @@ imports! {
     FilePart = "file_part" ([H, I32] -> [H]);
     FileSize = "file_size" ([H] -> [I64]);
     FileText = "file_text" ([H] -> [H]);
+    FileFiles = "file_files" ([H] -> [H]);
     ActChoose = "act_choose" ([H, H] -> [H]);
     ActSave = "act_save" ([H, H] -> [H]);
 

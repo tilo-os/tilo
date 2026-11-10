@@ -22891,6 +22891,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
+ "bounded-zip",
  "chrono",
  "chrono-tz",
  "foldhash 0.1.5",
@@ -22903,6 +22904,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-doc",
+ "tilo-doc-codecs",
  "tilo-recurrence",
  "tilo-reference",
  "tilo-resource",

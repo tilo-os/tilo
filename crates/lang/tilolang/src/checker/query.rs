@@ -922,7 +922,7 @@ impl Checker<'_> {
                     "E021",
                     name.span,
                     format!(
-                        "a `File` has the fields `name`, `media`, `size` and `url`, not `{other}`; `.text()` reads its content"
+                        "a `File` has the fields `name`, `media`, `size` and `url`, not `{other}`; `.text()` reads its content and `.files()` the files an archive holds"
                     ),
                 );
                 return Ex::error();
@@ -935,11 +935,12 @@ impl Checker<'_> {
         )
     }
 
-    /// `.excerpt`, `.text`, `.references` and `.people` of a `RichText`.
+    /// `.excerpt`, `.text`, `.markdown`, `.references` and `.people` of a `RichText`.
     pub(super) fn rich_part(&mut self, v: Ex, name: &ast::Ident) -> Ex {
         let (part, ty) = match name.name.as_str() {
             "excerpt" => (0, Ty::Text),
             "text" => (1, Ty::Text),
+            "markdown" => (4, Ty::Text),
             "references" => (
                 2,
                 Ty::List(Box::new(Ty::Record(super::program::resource_key()))),
@@ -950,7 +951,7 @@ impl Checker<'_> {
                     "E021",
                     name.span,
                     format!(
-                        "`RichText` has the members `excerpt`, `text`, `references` and `people`, not `{other}`"
+                        "`RichText` has the members `excerpt`, `text`, `markdown`, `references` and `people`, not `{other}`"
                     ),
                 );
                 return Ex::error();

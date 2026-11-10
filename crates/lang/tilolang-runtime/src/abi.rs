@@ -250,6 +250,7 @@ imports! {
     (RichPart, "rich_part", "ii", "i"),
     (RichEmpty, "rich_empty", "i", "i"),
     (RichTime, "rich_time", "i", "i"),
+    (RichFromMarkdown, "rich_from_markdown", "i", "i"),
     (Phrase, "phrase", "ii", "i"),
     (Word, "word", "iii", "i"),
     (EntryParts, "entry_parts", "ii", "i"),
@@ -281,6 +282,7 @@ imports! {
     (FilePart, "file_part", "ii", "i"),
     (FileSize, "file_size", "i", "l"),
     (FileText, "file_text", "i", "i"),
+    (FileFiles, "file_files", "i", "i"),
     (ActChoose, "act_choose", "ii", "i"),
     (ActSave, "act_save", "ii", "i"),
 
