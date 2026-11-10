@@ -81,17 +81,31 @@ impl Session {
                 .iter()
                 .filter_map(|following| following.reask.out.map(|(id, _)| id))
                 .collect();
+            // The next thing to look at: the earliest deadline still running,
+            // or the pace a child is held at. A child that asks the person
+            // has no deadline — the person decides in their own time — so
+            // while its re-ask is out the loop waits as long as the host holds
+            // one, and its answer (or the hold ending) wakes it.
             let until = followed
                 .iter()
                 .filter(|following| following.outcome.is_none())
                 .flat_map(|following| {
                     let reask = &following.reask;
                     let paced = reask.out.is_none().then_some(reask.not_before).flatten();
-                    [Some(following.deadline), paced]
+                    [following.deadline, paced]
                 })
                 .flatten()
                 .min()
-                .unwrap_or(now);
+                .unwrap_or_else(|| {
+                    let holding = followed.iter().any(|following| {
+                        following.outcome.is_none() && following.reask.out.is_some()
+                    });
+                    if holding {
+                        now.checked_add(REASK_HOLD).unwrap_or(now)
+                    } else {
+                        now
+                    }
+                });
             if let Some((request_id, result)) = self.await_task_replies(&asked, until)? {
                 // The host refuses to observe a child of a run it has just
                 // read cancelled: that is the run's cancellation, not the
@@ -412,9 +426,14 @@ fn conclude_native(following: &mut Following) {
         tilo_actions::InvocationUpdate::Failed { error, .. } => {
             Some(Err(TaskActionStop::Failed(error.message.clone())))
         }
-        _ if ui::time::now() >= following.deadline => Some(Err(TaskActionStop::Failed(
-            "Native action outcome remains unknown; review history before retrying".into(),
-        ))),
+        _ if following
+            .deadline
+            .is_some_and(|deadline| ui::time::now() >= deadline) =>
+        {
+            Some(Err(TaskActionStop::Failed(
+                "Native action outcome remains unknown; review history before retrying".into(),
+            )))
+        }
         _ => None,
     };
 }

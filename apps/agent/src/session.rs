@@ -104,7 +104,10 @@ struct Following {
     reask: native_task::Reask,
     /// The latest state the host reported.
     update: tilo_actions::InvocationUpdate,
-    deadline: Instant,
+    /// When the step gives up, where it has a time: a step that asks the
+    /// person first has none of its own but the run's budget — the person
+    /// decides in their own time, and nothing else cuts it short.
+    deadline: Option<Instant>,
     /// Its outcome, once settled.
     outcome: Option<Result<StepOutcome, TaskActionStop>>,
 }
@@ -850,9 +853,8 @@ impl Session {
         // step's ordinary wait.
         let deadline = if asks_person {
             self.task_budget_deadline()
-                .unwrap_or_else(|| ui::time::now() + Duration::from_secs(24 * 60 * 60))
         } else {
-            self.task_wait_deadline(TASK_ACTION_WAIT)
+            Some(self.task_wait_deadline(TASK_ACTION_WAIT))
         };
         Ok(Ok(Following {
             action: action.clone(),
