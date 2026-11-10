@@ -259,7 +259,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         shown = shown || desk_windows(&mut browser, &sheets.record) > 0;
         let said = view
             .as_ref()
-            .is_some_and(|view| view.activity.as_deref() == Some("Adding sheets"));
+            .is_some_and(|view| view.activity.as_deref() == Some("Adding Sheets"));
         let committed = phases.contains(&tilo_actions::InteractionPhase::Committed);
         if edited && said && shown && committed && selected.is_some() {
             break;
@@ -311,7 +311,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     let view = view.expect("another device hears the agent");
     assert!(view.agent);
     assert_eq!(view.label, "Claude Code");
-    assert_eq!(view.activity.as_deref(), Some("Adding sheets"));
+    assert_eq!(view.activity.as_deref(), Some("Adding Sheets"));
     let edited_record = tilo_relay_protocol::live::LiveRecord {
         app: SHEETS.into(),
         record: sheets.record.clone(),
