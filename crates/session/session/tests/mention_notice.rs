@@ -208,6 +208,38 @@ fn installed_probe(home: &tilo_test_env::TestHome) {
     tilo_test_env::pin("TILO_APPS_DATA_DIR", &store);
 }
 
+/// What the session asked of its apps when the person chose the notice: the record's app, in the
+/// workspace that holds it, on the record and at the place the notice named.
+fn opening_in(
+    workspace: &str,
+    (target, arguments): (
+        RemoteActionTarget,
+        serde_json::Map<String, serde_json::Value>,
+    ),
+) {
+    assert_eq!(
+        application_provider(&target.provider),
+        Some((workspace, PROBE)),
+        "the app that keeps the record, in the workspace that holds it: {target:?}"
+    );
+    assert_eq!(
+        application_provider_record(&target.provider),
+        Some(
+            RecordId::parse(RECORD)
+                .expect("a record id")
+                .storage_key()
+                .as_str()
+        ),
+        "on the record the notice names: {target:?}"
+    );
+    assert_eq!(
+        target.address,
+        ActionAddress::new(format!("{KIND}/pages/p1"), OPEN_ACTION),
+        "at the mention's own place in it"
+    );
+    assert!(arguments.is_empty(), "the open carries nothing else");
+}
+
 /// Where this test's session keeps what it says, for the log it writes.
 struct LogSink(std::sync::Arc<Mutex<String>>);
 
@@ -243,9 +275,9 @@ fn logging() -> std::sync::Arc<Mutex<String>> {
     log
 }
 
-#[test]
-fn a_mention_in_a_record_is_told_and_choosing_it_opens_the_record() {
-    let _settled = ui::motion::testing::settled();
+/// A home whose device has an identity, and the app a record of the test's is kept by: the state a
+/// development session starts in.
+fn home_with_an_identity() -> tilo_test_env::TestHome {
     let mut home = tilo_test_env::TestHome::new().expect("a home");
     // The identity `dist/dev/shell-run.sh` mints before it starts its session: a throwaway whose
     // certificate lets this device govern its own workspaces, so the desk's workspace is one this
@@ -261,6 +293,13 @@ fn a_mention_in_a_record_is_told_and_choosing_it_opens_the_record() {
     )
     .expect("the throwaway identity");
     installed_probe(&home);
+    home
+}
+
+#[test]
+fn a_mention_in_a_record_is_told_and_choosing_it_opens_the_record() {
+    let _settled = ui::motion::testing::settled();
+    let home = home_with_an_identity();
     let log = logging();
     // The workspaces' records, in this device's data: what the session's activity and its mentions
     // follow, and what this test writes an app's record through.
@@ -339,28 +378,7 @@ fn a_mention_in_a_record_is_told_and_choosing_it_opens_the_record() {
         opens.taken().into_iter().next()
     });
     let opened = chosen.elapsed();
-    let (target, arguments) = opening;
-    assert_eq!(
-        application_provider(&target.provider),
-        Some((workspace.as_str(), PROBE)),
-        "the app that keeps the record, in the workspace that holds it: {target:?}"
-    );
-    assert_eq!(
-        application_provider_record(&target.provider),
-        Some(
-            RecordId::parse(RECORD)
-                .expect("a record id")
-                .storage_key()
-                .as_str()
-        ),
-        "on the record the notice names: {target:?}"
-    );
-    assert_eq!(
-        target.address,
-        ActionAddress::new(format!("{KIND}/pages/p1"), OPEN_ACTION),
-        "at the mention's own place in it"
-    );
-    assert!(arguments.is_empty(), "the open carries nothing else");
+    opening_in(&workspace, opening);
     assert!(
         !log.lock()
             .expect("the log")

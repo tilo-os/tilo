@@ -63,27 +63,25 @@ impl Changes {
         if app.is_empty() {
             return;
         }
+        // A record noted twice before it is read is read once, and a live change of it is news even
+        // where the replay reached it first.
         let route = (workspace.to_owned(), app.to_owned(), record.to_owned());
-        {
-            let mut reached = self
-                .0
-                .reached
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            // A record noted twice before it is read is read once, and a live change of it is
-            // news even where the replay reached it first.
-            let held = reached.entry(route).or_insert(replayed);
-            *held &= replayed;
-        }
-        {
-            let mut moved_in = self
-                .0
-                .moved_in
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            let moved = moved_in.entry(workspace.to_owned()).or_default();
-            *moved = moved.saturating_add(1);
-        }
+        let mut reached = self
+            .0
+            .reached
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let held = reached.entry(route).or_insert(replayed);
+        *held &= replayed;
+        drop(reached);
+        let mut moved_in = self
+            .0
+            .moved_in
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let moved = moved_in.entry(workspace.to_owned()).or_default();
+        *moved = moved.saturating_add(1);
+        drop(moved_in);
         self.0.moved.fetch_add(1, Ordering::AcqRel);
         self.0
             .readers
