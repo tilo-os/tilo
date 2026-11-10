@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use tilo_actions::{ActionAddress, OperationKind, ResourceSpec, ResourceViewSpec};
 use tilo_compositor::OutputConfig;
-use tilo_session::mount::indexes::SessionIndexes;
+use tilo_session::platform::indexes::SessionIndexes;
 use tilo_session::{Options, Session};
 use tilo_surface_host::Published;
 

@@ -157,7 +157,7 @@ fn split_command(args: &[String]) -> (&[String], &[String]) {
 #[cfg(target_os = "linux")]
 fn first_boot(ours: &[String], host_desktop: bool) -> Option<std::process::ExitCode> {
     use std::process::ExitCode;
-    use tilo_session::mount::firstboot::{self, OneShot};
+    use tilo_session::firstboot::{self, OneShot};
     match firstboot::one_shot(ours) {
         Ok(Some(OneShot::SetupOnly)) => Some(match firstboot::run_setup(host_desktop) {
             Ok(()) => ExitCode::SUCCESS,
@@ -1227,7 +1227,7 @@ fn search_options(
     }
     tilo_session::SearchOptions {
         indexes: Some(std::sync::Arc::new(
-            tilo_session::mount::indexes::SessionIndexes::new(content, files),
+            tilo_session::platform::indexes::SessionIndexes::new(content, files),
         )),
         preferences: tilo_desktop_search::SearchPreferences::from_values(
             &settings_store::load_section(tilo_desktop_search::preferences::SECTION),

@@ -9,6 +9,12 @@ use std::sync::Arc;
 use tilo_desktop_search::Held;
 use ui::floating_surface::Recipient;
 
+/// This device's indexes, read from its disk.
+#[cfg(target_os = "linux")]
+mod disk;
+#[cfg(target_os = "linux")]
+pub use disk::SessionIndexes;
+
 /// The indexes this host offers search beyond the desk.
 pub trait Indexes: Send + Sync {
     /// The indexes as `person` reads them: rows about what apps hold say who wrote them.

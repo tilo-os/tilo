@@ -24,7 +24,7 @@ use tilo_compositor::OutputConfig;
 use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_desktop_search::providers::AppEntry;
-use tilo_session::mount::indexes::SessionIndexes;
+use tilo_session::platform::indexes::SessionIndexes;
 use tilo_session::{AppLists, Lists, Options, SearchOptions, Session};
 use ui::search::index_publication::{IndexDelta, IndexEntry, IndexKind, IndexPerson};
 

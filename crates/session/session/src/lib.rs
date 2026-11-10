@@ -183,6 +183,8 @@ mod file_clipboard;
 #[cfg(target_os = "linux")]
 pub mod files_daemon;
 #[cfg(target_os = "linux")]
+pub mod firstboot;
+#[cfg(target_os = "linux")]
 mod fs_authority;
 #[cfg(target_os = "linux")]
 mod held;
@@ -236,6 +238,8 @@ mod notifications;
 #[cfg(target_os = "linux")]
 mod options;
 #[cfg(target_os = "linux")]
+mod overview;
+#[cfg(target_os = "linux")]
 mod owner_session;
 #[cfg(target_os = "linux")]
 mod pairing;
@@ -284,6 +288,8 @@ mod send_to;
 mod service_sessions;
 #[cfg(target_os = "linux")]
 pub mod session_package;
+#[cfg(target_os = "linux")]
+mod settings_sync;
 #[cfg(target_os = "linux")]
 mod setup;
 #[cfg(target_os = "linux")]

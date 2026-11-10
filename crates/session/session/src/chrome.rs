@@ -769,7 +769,7 @@ pub(crate) fn host(
     options: &crate::Options,
     wiring: ChromeWiring,
     sync: Option<Rc<crate::sync::Client>>,
-    overview: &crate::mount::overview::Overview,
+    overview: &crate::overview::Overview,
     emoji: &tilo_desktop::emoji::EmojiLink,
     overlays: &Overlays,
     switcher: &tilo_desktop::window_switcher::Switcher,

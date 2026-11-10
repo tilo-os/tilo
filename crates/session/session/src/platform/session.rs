@@ -203,7 +203,7 @@ impl Session {
         .ok();
         let presentation = (options.presentation)();
         tilo_startup_metrics::mark("session-presentation-done");
-        let overview = crate::mount::overview::Overview::new(
+        let overview = crate::overview::Overview::new(
             presentation.theme.motion(),
             presentation.theme.reduce_motion,
         );
@@ -1321,7 +1321,7 @@ impl Session {
             )),
             arrangement,
             underway: busy,
-            settings: crate::mount::settings_sync::SettingsSync::new(),
+            settings: crate::settings_sync::SettingsSync::new(),
             fleet_renewal: crate::mount::renewal::FleetRenewal::for_joined_device(fabric)
                 .map(std::sync::Arc::new),
             overview,
@@ -1470,7 +1470,7 @@ impl Session {
                 (options.presentation)().theme.motion(),
             ),
             warmth,
-            language: crate::mount::language::Language::new(),
+            language: crate::i18n::Language::new(),
             night_light,
             auto_brightness,
             keyboard_preference: options.config.on_screen_keyboard,

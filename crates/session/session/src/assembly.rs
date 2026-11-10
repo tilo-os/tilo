@@ -316,7 +316,7 @@ pub(crate) struct Shared {
     pub(crate) underway: Rc<Cell<tilo_session_core::arrangement::Busy>>,
     /// The person's settings, kept in step with their other devices.
     #[cfg(target_os = "linux")]
-    pub(crate) settings: crate::mount::settings_sync::SettingsSync,
+    pub(crate) settings: crate::settings_sync::SettingsSync,
     /// A joined device's certificate, renewed through the person's devices
     /// once it is due: this device holds no root to reissue it with.
     #[cfg(target_os = "linux")]
@@ -324,7 +324,7 @@ pub(crate) struct Shared {
     /// The overview's pictures and the clock they fly on, which its panel
     /// in the chrome draws with.
     #[cfg(target_os = "linux")]
-    pub(crate) overview: crate::mount::overview::Overview,
+    pub(crate) overview: crate::overview::Overview,
     /// Dictation: the speech the person allows once per dictation, and the
     /// sheet they answer on.
     #[cfg(target_os = "linux")]
@@ -479,7 +479,7 @@ pub struct Session {
     /// The language the session's own surfaces speak, as the person's
     /// settings last said it.
     #[cfg(target_os = "linux")]
-    pub(crate) language: crate::mount::language::Language,
+    pub(crate) language: crate::i18n::Language,
     /// The person's warmth and when it shows, and the panel following the
     /// light in the room while they asked for it.
     #[cfg(target_os = "linux")]

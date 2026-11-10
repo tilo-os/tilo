@@ -705,7 +705,7 @@ impl crate::Session {
             reason = "a playhead in a recording is far inside f64's exact integers"
         )]
         let position_ms = *position_ms as f64;
-        crate::mount::audio::handoff(
+        crate::devices::handoff(
             &self.shared,
             Some(tilo_quick_settings::MediaOffer {
                 request_id: hex::encode(envelope.request_id),

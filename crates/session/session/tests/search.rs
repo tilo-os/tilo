@@ -113,7 +113,7 @@ fn session_over(
         }),
         search: SearchOptions {
             indexes: content.map(|content| {
-                std::sync::Arc::new(tilo_session::mount::indexes::SessionIndexes::new(
+                std::sync::Arc::new(tilo_session::platform::indexes::SessionIndexes::new(
                     content, None,
                 )) as std::sync::Arc<dyn tilo_session::platform::indexes::Indexes>
             }),

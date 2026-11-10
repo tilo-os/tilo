@@ -79,6 +79,49 @@ impl tilolang_tilo::runtime::Words for SeededWords {
     }
 }
 
+/// The language the session's surfaces are drawn in, followed from the person's settings.
+#[cfg(target_os = "linux")]
+pub(crate) struct Language {
+    /// The settings version the language was last followed at, so the document is read again only
+    /// when it changed.
+    seen: std::cell::Cell<Option<settings_store::SettingsStamp>>,
+}
+
+#[cfg(target_os = "linux")]
+impl Language {
+    pub(crate) fn new() -> Self {
+        Self {
+            seen: std::cell::Cell::new(None),
+        }
+    }
+
+    /// Follow the person's language when their settings changed since the last pass. Returns
+    /// whether the words on screen are now resolved in another language: the caller lays out what
+    /// it keeps between frames.
+    pub(crate) fn follow(&self) -> bool {
+        let stamp = settings_store::stamp();
+        if !settings_store::document_changed(self.seen.get().is_some(), self.seen.get(), stamp) {
+            return false;
+        }
+        self.seen.set(stamp);
+        let before = ui::I18nManager::revision();
+        ui::i18n::follow_configured_language();
+        ui::I18nManager::revision() != before
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl crate::Session {
+    /// Speak the person's language in the session's own surfaces: the manager's selection follows
+    /// their settings (see [`Language`]), and what the chrome keeps between frames is laid out
+    /// again, so its words are resolved in the language now selected.
+    pub(crate) fn follow_language(&self) {
+        if self.language.follow() {
+            self.shared.chrome.borrow_mut().relayout();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -289,3 +289,10 @@ impl Service for Served {
         true
     }
 }
+
+/// Land a session another of the person's devices hands this one, so the now-playing card offers to
+/// continue it here; `None` clears it. The devices' reading carries it ([`crate::devices`]), so the
+/// panel shows the offer as it shows the rows, and continuing it names the same one back.
+pub(crate) fn handoff(shared: &crate::Shared, offer: Option<tilo_quick_settings::MediaOffer>) {
+    *shared.handoff.borrow_mut() = offer;
+}

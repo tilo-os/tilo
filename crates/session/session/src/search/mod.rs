@@ -26,6 +26,10 @@ use crate::platform::apps::{Apps, Reading};
 use crate::platform::indexes::Indexes;
 use crate::records::Records;
 
+/// What the session publishes that search reads, fed every pass.
+#[cfg(target_os = "linux")]
+mod host;
+
 use tilo_actions::DoorError;
 use tilo_actions::remote::downloaded_apps as downloaded_wire;
 use tilo_actions::remote::{
