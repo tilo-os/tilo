@@ -347,9 +347,11 @@ def boot_box(facts: dict, run: Run, disk: Path, memory: int) -> None:
 def lists_terminal(vm: TiloVm) -> bool:
     """Whether the session answers and its app catalogue lists Terminal, which every image
     carries: a fresh session publishes the catalogue a few seconds after it starts."""
+    keep_awake(vm)
     try:
         vm.state()
-        listed = vm.control_json("actions", "list", "Terminal", "--json", "--limit", "200")
+        listed = vm.control_json("actions", "list", "Terminal", "--kind", "application", "--json",
+                                 "--limit", "200")
     except VmError:
         return False
     return any(row.get("provider") == "applications"
@@ -395,17 +397,45 @@ def identity_diagnosis(vm: TiloVm) -> str:
         return f"diagnosis failed: {exc}"
 
 
+def what_shows(vm: TiloVm) -> str:
+    """What the session answers when it lists no apps: its chrome's flags, the targets it
+    draws, and what listing its actions says."""
+    parts = []
+    try:
+        dump = vm.state()
+        state = dump.get("state") or dump
+        chrome = state.get("chrome") or {}
+        parts.append("chrome " + json.dumps({k: v for k, v in chrome.items()
+                                             if isinstance(v, (bool, int, str))})[:600])
+    except (VmError, ValueError) as exc:
+        parts.append(f"state: {str(exc)[:400]}")
+    try:
+        parts.append("targets " + json.dumps([t.get("name") for t in vm.targets()][:40])[:800])
+    except (VmError, ValueError) as exc:
+        parts.append(f"targets: {str(exc)[:400]}")
+    try:
+        parts.append("actions " + vm.run("control", "actions", "list", "Terminal", "--json",
+                                         "--limit", "20", timeout=60)[:600])
+    except VmError as exc:
+        parts.append(f"actions: {str(exc)[:800]}")
+    return "; ".join(parts)
+
+
 def desk_at_boot(run: Run, name: str, label: str) -> list[str]:
     """Whether the person's session came up at its desk on its own this boot: what stood in
     its way (setup or identity recovery, or a session that listed no apps), with what the
     session's own identity check answers now kept as evidence. Empty when the desk is up."""
     vm = run.vm(name)
     up = wait_until(lambda: lists_terminal(vm) or bool(setup_shown(vm)), 300, interval=1.0)
-    shown = setup_shown(vm) if up else ["the session listed no apps within 300s"]
+    shown = setup_shown(vm) if up else [f"the session listed no apps within 300s: {what_shows(vm)}"]
     if shown:
-        run.write(f"{label}-{name}-verify-session.txt", identity_diagnosis(vm))
+        run.write(f"{label}-{name}-verify-session.txt",
+                  f"== what the session shows\n{'; '.join(shown)}\n" + identity_diagnosis(vm))
         run.write(f"{label}-{name}-session.txt", session_excerpt(vm))
-        wait_session(vm)
+        try:
+            wait_session(vm)
+        except Failed as exc:
+            shown.append(f"and after a slot restart: {exc}: {what_shows(vm)}")
     return shown
 
 
@@ -635,11 +665,19 @@ def act(vm: TiloVm, provider: str, name: str, args: dict | None = None, wait: bo
     """Invoke the desktop action `name` of `provider`, addressed as `tilo-control actions list`
     prints it (`resource␟action`): the listed row whose id is `name` or ends in it."""
     keep_awake(vm)
-    listed = vm.control_json("actions", "list", "--json", "--programmatic", "--wait=8000",
-                             "--limit", "2000")
-    rows = [r for r in listed.get("actions", []) if r.get("provider") == provider
-            and (r["id"] == name or r["id"].endswith("\x1f" + name))]
-    expect(rows, f"{vm.vm} lists no {provider} action {name!r}")
+    # Every page: each window a desk shows lists actions of its own, and a desk that kept
+    # several lists more than one page holds.
+    rows, cursor, pages = [], None, 0
+    while not rows and pages < 20:
+        page = ["--cursor", cursor] if cursor else []
+        listed = vm.control_json("actions", "list", "--json", "--programmatic", "--wait=8000",
+                                 "--limit", "2000", *page)
+        rows = [r for r in listed.get("actions", []) if r.get("provider") == provider
+                and (r["id"] == name or r["id"].endswith("\x1f" + name))]
+        cursor, pages = listed.get("next_cursor"), pages + 1
+        if not cursor:
+            break
+    expect(rows, f"{vm.vm} lists no {provider} action {name!r} in {pages} page(s)")
     argv = ["actions", "invoke", provider, rows[0]["id"]]
     if wait:
         argv.append("--wait=20000")
@@ -798,6 +836,31 @@ def open_window(vm: TiloVm, ws: dict) -> object:
     return new[0]["id"]
 
 
+# What the person's session says of its workspaces' sync, at debug: set on box before it is
+# branched, so a and b inherit it. Read back only when a window does not travel.
+SYNC_LOG = ("info,tilo_session::sync=debug,tilo_session::shared_desktop=debug,"
+            "tilo_session::workspaces=debug,tilo_peer_state=debug,tilo::join_flow=debug")
+
+
+def log_sync(vm: TiloVm) -> None:
+    """Have the person's session log its sync at debug from its next start on."""
+    vm.root_exec(
+        "d=/etc/systemd/system/tilo-vm-session@me.service.d; mkdir -p $d && "
+        f"printf '[Service]\\nEnvironment=RUST_LOG={SYNC_LOG}\\n' > $d/90-e2e-sync-log.conf && "
+        "systemctl daemon-reload", timeout=60, check=False)
+
+
+def sync_excerpt(vm: TiloVm) -> str:
+    """The session's last words of its workspaces' sync this boot, unfiltered but for drawing."""
+    text = vm.root_exec("journalctl -m --since \"$(uptime -s)\" --no-pager -o short-iso "
+                        "SYSLOG_IDENTIFIER=tilo-session-me 2>&1 "
+                        "| grep -av 'FRAME-LIFECYCLE\\|paint-stats\\|HEAP-MILESTONE\\|MESA\\|app_output\\|frames=' "
+                        "| grep -a 'sync\\|shared_desktop\\|workspaces\\|peer_state\\|join_flow\\|WARN\\|ERROR' "
+                        "| grep -av 'has no live plane' "
+                        "| tail -n 250 | cut -c1-500", timeout=120, check=False)
+    return text or "(nothing)"
+
+
 def session_excerpt(vm: TiloVm) -> str:
     """What the person's session said this boot of its identity, joining, its channels and its
     workspaces. Read with --merge: a branch renews its machine id after the journal opened its
@@ -811,7 +874,7 @@ def session_excerpt(vm: TiloVm) -> str:
     except VmError as exc:
         return f"journalctl failed: {exc}"
     keep = re.compile(r"identity|recover|chain|join|channel|workspace|refus|admit|enter|host|"
-                      r"certif|secret|vault|proof|ERROR|WARN", re.I)
+                      r"certif|secret|vault|proof|sync|peer|transport|sibling|lock|ERROR|WARN", re.I)
     noise = ("FRAME-LIFECYCLE", "paint-stats", "HEAP-MILESTONE", "DEVICE-MEMORY", "frames=",
              "MESA", "app_output")
     lines = [l[:600] for l in text.splitlines() if not any(n in l for n in noise)]
@@ -834,6 +897,10 @@ def edit_shows_on(run: Run, ws: dict, writer: str, reader: str, label: str, time
     gid = open_window(w, ws)
 
     def arrived():
+        # Both desks stay in use while the window travels: an idle desk locks, and a locked
+        # one offers none of its actions to the next step.
+        keep_awake(w)
+        keep_awake(r)
         try:
             mine = tabs_in(w.state(), ws["room"]).get(gid)
             theirs = tabs_in(r.state(), ws["room"])
@@ -846,8 +913,8 @@ def edit_shows_on(run: Run, ws: dict, writer: str, reader: str, label: str, time
     if not seen:
         run.write(f"{label}-{writer}-state.json", json.dumps(w.state(), indent=1))
         run.write(f"{label}-{reader}-state.json", json.dumps(r.state(), indent=1))
-        run.write(f"{label}-{writer}-sync-session.txt", session_excerpt(w))
-        run.write(f"{label}-{reader}-sync-session.txt", session_excerpt(r))
+        run.write(f"{label}-{writer}-sync-session.txt", sync_excerpt(w))
+        run.write(f"{label}-{reader}-sync-session.txt", sync_excerpt(r))
         def desk(vm):
             st = vm.state()
             return {"workspaces": [(w.get("room"), w.get("name"), len(groups_in(st, w.get("room"))))
@@ -1044,6 +1111,7 @@ def steps(run: Run, args) -> None:
                        if s["id"] == "S03b" and s["status"] == "pass"), None)
     passwords = next((s["facts"].get("password_items") for s in run.steps
                       if s["id"] == "S03d" and s["status"] == "pass"), None)
+    log_sync(run.vm(SOURCE))
     run.step("S03e", "box stopped and started again comes up at its desk", cold_boot, run)
     run.step("S04", "box is stopped and branched into a and b", branch, run)
     if not run.passed("S04"):
