@@ -454,9 +454,9 @@ and the sandbox are as they were.
   gone given again. `frame` takes the number, `frame=3` or `[frame=3]`.
 - **A ref carries its frame.** A ref says which document it was read in, so
   an action on an element of a frame (`click`, `fill`, `select`, `press`,
-  `submit`, `fill_files`, `scroll`, `capture`, a `pointer` step) runs in that
-  frame without `frame`. `outline`, `changes`, `find`, `search`, `fields`,
-  `forms`, `fill_form` and `settle` take `frame` to read or answer a frame's
+  `submit`, `capture`, a `pointer` step) runs in that frame without `frame`.
+  `outline`, `changes`, `find`, `search`, `fields`, `forms`, `fill_form`,
+  `scroll` and `settle` take `frame` to read, answer or turn a frame's
   document. A `frame` named beside a ref is the document the action runs in.
 - **The page's read shows what its frames hold.** An `outline` of the page's
   own document reads up to 6 of the frames the page shows (visible, and at
