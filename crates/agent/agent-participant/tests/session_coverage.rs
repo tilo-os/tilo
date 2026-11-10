@@ -2228,12 +2228,12 @@ impl RelayWorkspace {
             self.ana.0.pump();
             self.rae.0.pump();
             self.ben.0.pump();
-            let heard = self.ana.0.remote_members().iter().any(|member| {
-                member
-                    .shell
-                    .as_ref()
-                    .is_some_and(|shell| shell.label == name)
-            });
+            let heard = self
+                .ana
+                .0
+                .remote_members()
+                .iter()
+                .any(|member| member.label == name);
             async move { heard.then_some(()) }
         })
         .await;

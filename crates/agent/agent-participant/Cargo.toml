@@ -83,6 +83,11 @@ mail = { path = "../../../apps/mail" }
 # The certified relay session (iroh for a host-side agent) and its live
 # plane; the same code a browser page runs.
 tilo-session-host = { path = "../../session/host", features = ["toolkit"] }
+# The participant's client: the board of who is here and the agent's own word on it, as every host
+# keeps them.
+tilo-session-client = { path = "../../session/client" }
+# A device on the plane is named by its endpoint id.
+iroh.workspace = true
 iroh-base.workspace = true
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }

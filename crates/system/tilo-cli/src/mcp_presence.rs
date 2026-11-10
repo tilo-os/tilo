@@ -320,7 +320,7 @@ impl Presence {
                 said.selection.clone(),
             )
         };
-        let mut view = tilo_session_host::presence::view(
+        let mut view = tilo_session_client::presence::view(
             seq,
             now_ms(),
             &self.label,
@@ -670,7 +670,7 @@ mod tests {
             app: "so.tilo.sheets".into(),
             record: "uuid:7".into(),
         };
-        let view = tilo_session_host::presence::view(
+        let view = tilo_session_client::presence::view(
             4,
             1_700_000_000_000,
             "Claude Code",
@@ -688,7 +688,7 @@ mod tests {
         // An agent that acts nowhere yet names no window: a receiver still
         // draws its face, with its line and nothing to follow.
         let nowhere =
-            tilo_session_host::presence::view(5, 1, "Claude Code", [1, 2, 3], None, None, None);
+            tilo_session_client::presence::view(5, 1, "Claude Code", [1, 2, 3], None, None, None);
         assert_eq!(nowhere.focus(), None);
         assert!(nowhere.windows.is_empty());
         assert!(nowhere.activity.is_none());

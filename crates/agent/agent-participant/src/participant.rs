@@ -24,6 +24,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use collab_types::presence::Shown;
+use iroh::EndpointId;
+
 use crate::apps::{AppCatalogue, Seed};
 use crate::control::{AgentControl, AgentIdentity};
 use crate::planner::{MESSAGE_APPS, Planner, Step, StepAction, written_steps};
@@ -212,17 +215,6 @@ struct Asking {
 type WitnessAnswer =
     Result<tilo_actions::remote::ConfirmedInvocation, tilo_actions::remote::ActionHostError>;
 
-/// Another member of the workspace as this agent sees it: the view of itself
-/// it last said on the workspace's presence.
-#[derive(Clone, Debug, PartialEq)]
-pub struct RemoteMember {
-    /// The member's device key.
-    pub publisher: [u8; 32],
-    /// Its view: who it shows itself as, the windows it shows and the caret
-    /// in the one it works in.
-    pub shell: Option<collab_types::presence::ShellPresence>,
-}
-
 /// One agent in one workspace.
 pub struct AgentParticipant {
     identity: AgentIdentity,
@@ -254,8 +246,8 @@ pub struct AgentParticipant {
     focus: Option<LiveRecord>,
     /// Where in the focused record its last operation left it.
     place: Option<(LiveAnchor, LiveAnchor)>,
-    /// Who is here and what each says of themselves: the board every host keeps.
-    presence: tilo_live::presence::Board,
+    /// Who is here and what each says of themselves, said on this agent's session.
+    presence: tilo_session_client::Presence,
     running: Option<Running>,
     /// The current task's step the person is asked to confirm.
     asking: Option<Asking>,
@@ -406,6 +398,13 @@ impl AgentParticipant {
         let woken = Arc::clone(&control);
         peer.on_change(Arc::new(move || woken.wake()));
         peer.join(workspace_id)?;
+        let presence = crate::presence::enter(
+            &peer,
+            &identity.cert,
+            &identity.delegation.label,
+            &config.workspace,
+        )
+        .ok_or_else(|| "the agent's certificate names no device".to_string())?;
         let unopened = unopened::Unopened::new(&config.workspace);
         // The workspace's own pictures go to the model's provider only where the
         // person running the agent said so.
@@ -415,10 +414,6 @@ impl AgentParticipant {
                 &identity.delegation.label,
                 crate::vision::pictures_setting().as_deref(),
             ));
-        let presence = tilo_live::presence::Board::new(
-            config.workspace.clone(),
-            identity.cert.device_public_key,
-        );
         Ok(Self {
             identity,
             control,
@@ -507,7 +502,7 @@ impl AgentParticipant {
     /// `STEP_SLICE`, at most one that plans. Says when to pump again.
     pub fn pump(&mut self) -> Next {
         for event in self.events.drain() {
-            self.receive(event, now_ms());
+            self.receive(event);
         }
         // What arrived for the shared desktop is admitted through the
         // isolate in one batch, before any plan reads it.
@@ -579,7 +574,10 @@ impl AgentParticipant {
     /// How long this loop may sleep before the board owes another word.
     fn presence_wait(&self) -> Duration {
         let now = now_ms();
-        let due = self.presence.next_due(now).unwrap_or(now + KEEPALIVE_MS);
+        let due = self
+            .presence
+            .next_due_in(&self.workspace)
+            .unwrap_or(now + KEEPALIVE_MS);
         Duration::from_secs_f64(((due - now) / 1_000.0).max(0.001))
     }
 
@@ -673,7 +671,7 @@ impl AgentParticipant {
         }
     }
 
-    fn receive(&mut self, event: PeerEvent, now: f64) {
+    fn receive(&mut self, event: PeerEvent) {
         match event {
             PeerEvent::Ready { workspace_id } if workspace_id == self.workspace_id => {
                 if !self.ready {
@@ -699,7 +697,10 @@ impl AgentParticipant {
                 body,
                 ..
             } if workspace_id == self.workspace_id && from != self.device() => {
-                self.presence.heard(from, &body, now);
+                if let Ok(from) = EndpointId::from_bytes(&from) {
+                    self.presence
+                        .heard_body(&self.workspace.clone(), from, &body);
+                }
             }
             PeerEvent::ContentWanted {
                 workspace_id,
@@ -2131,22 +2132,17 @@ impl AgentParticipant {
         self.apps.get(route)
     }
 
-    /// Every other member as this agent sees them, each with the view it last said of itself.
-    pub fn remote_members(&self) -> Vec<RemoteMember> {
-        self.presence
-            .here()
-            .map(|member| RemoteMember {
-                publisher: member.publisher,
-                shell: member.shell.as_deref().cloned(),
-            })
-            .collect()
+    /// Everyone here, as every surface that draws them reads them: each with the view it last said
+    /// of itself.
+    pub fn remote_members(&self) -> Vec<Shown> {
+        self.presence.members(&self.workspace)
     }
 
     /// What this agent is doing now, as its presence says it.
     fn activity(&self) -> Option<String> {
         self.control
             .activity()
-            .map(|activity| tilo_session_host::presence::activity(&activity))
+            .map(|activity| tilo_session_client::presence::activity(&activity))
     }
 
     /// Put the view of the record at `route` on the workspace's shared desktop
@@ -2216,8 +2212,8 @@ impl AgentParticipant {
         }
     }
 
-    fn publish_presence(&mut self) {
-        let view = tilo_session_host::presence::view(
+    fn publish_presence(&self) {
+        let view = tilo_session_client::presence::view(
             0,
             tilo_clock::unix_now_ms(),
             &self.identity.delegation.label,
@@ -2226,12 +2222,11 @@ impl AgentParticipant {
             self.focus.as_ref(),
             self.place.as_ref(),
         );
-        let own = crate::presence::own(&self.identity.cert, &self.identity.delegation.label, view);
-        crate::presence::say(&mut self.presence, &self.peer, self.workspace_id, &own);
+        crate::presence::say(&self.presence, &view);
     }
 
-    fn say_presence_due(&mut self) {
-        crate::presence::due(&mut self.presence, &self.peer, self.workspace_id);
+    fn say_presence_due(&self) {
+        crate::presence::due(&self.presence, &self.workspace);
     }
 
     fn leave(&mut self) {
@@ -2243,6 +2238,7 @@ impl AgentParticipant {
         self.focus = None;
         self.place = None;
         self.publish_presence();
+        crate::presence::leave(&self.presence);
         self.apps.clear();
         self.left = true;
     }

@@ -75,7 +75,7 @@ pub use model::{
     OpenAiModel, PlanModel, PlanReads, READ_VIEW, ReadView, ScriptedModel,
 };
 pub use participant::actions::{RECORD_PROVIDER, record_provider};
-pub use participant::{AgentParticipant, Next, ParticipantConfig, Pumped, RemoteMember};
+pub use participant::{AgentParticipant, Next, ParticipantConfig, Pumped};
 pub use planner::{
     DirectPlanner, NoReads, Obligations, PlanContext, PlanRole, Planner, Reads, Role, Step,
     StepAction, TurnRetries,

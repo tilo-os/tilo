@@ -14,7 +14,7 @@ use tilo_desktop_model::WorkspaceId as DeskWorkspaceId;
 use tilo_live::presence;
 use tilo_live::presence::Board;
 
-use crate::plane::{Cmd, Device, Event, Outbox, SayPresence, Topic};
+use crate::plane::{Device, Event, SayPresence, Topic};
 use crate::presence::{OwnPresence, Plane, Workspace, now_ms};
 
 /// Where this person is here: their pointer over a tile, and their shell.
@@ -54,10 +54,6 @@ pub struct Presence {
     said: RefCell<Vec<Frame>>,
     /// The wave this person sent last, for their own row to say sent.
     sent_wave: RefCell<Option<presence::Wave>>,
-    /// Where this session says what it says to the plane.
-    pub(super) outgoing: Arc<dyn Outbox>,
-    /// What the plane heard, as this session reads it.
-    pub(super) arrived: std::sync::mpsc::Receiver<Event>,
     /// Where this device's word of itself goes on each workspace's presence track, as the transport
     /// it says on carries it: `None` on a host that says presence nowhere.
     saying: Option<Arc<dyn SayPresence>>,
@@ -75,16 +71,10 @@ impl std::fmt::Debug for Presence {
 }
 
 impl Presence {
-    /// A presence saying what it says through `outgoing`, hearing what the plane delivered on
-    /// `arrived`, and saying this device's word of itself on `saying`'s tracks.
+    /// A presence saying this device's word of itself on `saying`'s tracks, for the device
+    /// `device` names. What the transport heard reaches it through [`Self::heard`].
     #[must_use]
-    pub fn over(
-        outgoing: Arc<dyn Outbox>,
-        arrived: std::sync::mpsc::Receiver<Event>,
-        saying: Option<Arc<dyn SayPresence>>,
-        device: &Device,
-        own: OwnPresence,
-    ) -> Self {
+    pub fn over(saying: Option<Arc<dyn SayPresence>>, device: &Device, own: OwnPresence) -> Self {
         Self {
             plane: RefCell::new(Plane::new(device.publisher)),
             own: RefCell::new(own),
@@ -93,8 +83,6 @@ impl Presence {
             follow_asked: Cell::new(false),
             said: RefCell::new(Vec::new()),
             sent_wave: RefCell::new(None),
-            outgoing,
-            arrived,
             saying,
             device: device.name.clone(),
         }
@@ -196,18 +184,19 @@ impl Presence {
             .any(|call| call.channel == channel && call.joined_by(user.as_deref()))
     }
 
-    /// Follow the workspaces a host names itself — a page's mounts, each showing one — as a desk's
-    /// are followed: take part in each of `live`, leave the ones gone, and remember `active` as the
-    /// one in front. Each workspace this device joins is handed to `joined`, which its host opens.
-    /// Answers whether anything changed.
-    pub fn follow_workspaces(
+    /// Take part in each of `live`, leave the ones gone, and remember `active` as the one in front.
+    /// Each workspace joined is handed to `joined` — its transport subscribes, and its host opens
+    /// what it carries — and each one left to `left`, in the order the boards take them. Answers
+    /// whether anything changed.
+    pub fn hold(
         &self,
         live: &[(Topic, String)],
         active: Option<Topic>,
-        mut joined: impl FnMut(&str),
+        mut joined: impl FnMut(&str, Topic),
+        mut left: impl FnMut(Topic),
     ) -> bool {
         let mut joining = Vec::new();
-        let mut left: Vec<(Topic, String)> = Vec::new();
+        let mut leaving: Vec<(Topic, String)> = Vec::new();
         let mut changed = false;
         let mut front_changed = false;
         {
@@ -223,12 +212,12 @@ impl Presence {
             }
             for workspace in &plane.workspaces {
                 if live.iter().all(|(ws, _)| *ws != workspace.ws) {
-                    left.push((workspace.ws, workspace.id.clone()));
+                    leaving.push((workspace.ws, workspace.id.clone()));
                 }
             }
             plane
                 .workspaces
-                .retain(|held| left.iter().all(|(ws, _)| *ws != held.ws));
+                .retain(|held| leaving.iter().all(|(ws, _)| *ws != held.ws));
             if plane.active != active {
                 plane.active = active;
                 front_changed = true;
@@ -236,22 +225,18 @@ impl Presence {
             }
         }
         for (ws, id) in joining {
-            let _ = self.outgoing.send(Cmd::Join(ws));
+            joined(&id, ws);
             if DeskWorkspaceId::parse(&id).is_some() {
                 self.say_into(&id);
-                // A workspace joined is one this device takes part in through whatever its host
-                // opens there: the desktop's custody session, which carries the workspace's app
-                // records.
-                joined(&id);
             }
             changed = true;
         }
-        for (ws, id) in left {
+        for (ws, id) in leaving {
             // The members take this device down where it was.
             if let Some(workspace) = DeskWorkspaceId::parse(&id) {
                 self.say_frames(workspace, vec![(0, Frame::desktop(&id, Payload::Left))]);
             }
-            let _ = self.outgoing.send(Cmd::Leave(ws));
+            left(ws);
             changed = true;
         }
         if front_changed {
@@ -260,6 +245,13 @@ impl Presence {
             self.say_own();
         }
         changed
+    }
+
+    /// Take part in the workspaces this session's transport already put it in, as a host that
+    /// joined them itself does, and remember `active` as the one in front. Answers whether
+    /// anything changed.
+    pub fn taking_part(&self, live: &[(Topic, String)], active: Option<Topic>) -> bool {
+        self.hold(live, active, |_, _| {}, |_| {})
     }
 
     /// When this person next says again where they are, so the workspaces hear they are still here
@@ -287,25 +279,6 @@ impl Presence {
     #[must_use]
     pub fn next_due_in(&self, workspace: &str) -> Option<f64> {
         self.plane.borrow().next_due_in(workspace, now_ms())
-    }
-
-    /// Hear everything the plane delivered since the last call, handing each to `keep`, and say
-    /// what the workspace in front's board owes. Whether anything came in.
-    pub fn arrivals(&self, mut keep: impl FnMut(Event)) -> bool {
-        let mut heard = false;
-        while let Ok(event) = self.arrived.try_recv() {
-            keep(event);
-            heard = true;
-        }
-        heard
-    }
-
-    /// A presence on its own — a host with no desk, no list of the person's own workspaces and no
-    /// fabric of its own — takes everything the plane delivered, and says what the workspace in
-    /// front owes. Whether anything came in.
-    pub fn follow(&self) -> bool {
-        let heard = self.arrivals(|event| self.heard(event));
-        self.pump_presence() || heard
     }
 
     /// One member's word about themselves on `workspace`'s live plane: what they said of
@@ -349,7 +322,7 @@ impl Presence {
 
     /// Take one thing the plane heard that the boards keep: who said they are here, what they said
     /// of themselves, who left.
-    pub fn heard(&self, event: Event) {
+    pub(super) fn heard(&self, event: Event) {
         self.plane.borrow_mut().apply(event);
     }
 
@@ -367,11 +340,6 @@ impl Presence {
             .member(*peer.as_bytes())
             .and_then(|known| known.user.clone());
         Some((workspace.id.clone(), user))
-    }
-
-    /// Say `command` on the plane.
-    pub fn say(&self, command: Cmd) -> bool {
-        self.outgoing.send(command)
     }
 
     /// The workspace on `topic`, while this session takes part in it.

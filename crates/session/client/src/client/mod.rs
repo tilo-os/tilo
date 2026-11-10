@@ -14,7 +14,7 @@ use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::DesktopTree;
 
 use crate::Enrolled;
-use crate::plane::{Cmd, Device, Event, Topic, Transport, topic_of};
+use crate::plane::{Cmd, Device, Event, Outbox, Topic, Transport, topic_of};
 use crate::presence::OwnPresence;
 
 pub use gate::Desk;
@@ -54,6 +54,10 @@ pub trait Host: 'static {
 /// keeps of the plane and of the person's other devices.
 pub struct Client {
     presence: Presence,
+    /// Where this session says what it says to the plane.
+    outgoing: std::sync::Arc<dyn Outbox>,
+    /// What the plane heard, as this session reads it.
+    arrived: std::sync::mpsc::Receiver<Event>,
     /// The person this device belongs to, by their root key, as its certificate names them.
     user: Option<[u8; 32]>,
     /// What became of the enrollments asked for since the last call.
@@ -107,7 +111,7 @@ impl std::ops::Deref for Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
-        let _ = self.say(Cmd::Stop);
+        let _ = self.outgoing.send(Cmd::Stop);
     }
 }
 
@@ -123,7 +127,9 @@ impl Client {
             saying,
         } = plane;
         Self {
-            presence: Presence::over(outgoing, arrived, saying, &device, own),
+            presence: Presence::over(saying, &device, own),
+            outgoing,
+            arrived,
             user: device.person,
             enrolled,
             desk: RefCell::new(None),
@@ -200,11 +206,23 @@ impl Client {
     /// [`Self::follow_desktop`] follows a desk's: take part in each of `live`, leave the ones gone,
     /// and remember `active` as the one in front. Whether that changed anything.
     pub fn follow_workspaces(&self, live: &[(Topic, String)], active: Option<Topic>) -> bool {
-        let changed = self.presence.follow_workspaces(live, active, |workspace| {
-            if let Some(host) = self.host.borrow().clone() {
-                host.joined(workspace);
-            }
-        });
+        let outgoing = &self.outgoing;
+        let changed = self.presence.hold(
+            live,
+            active,
+            |workspace, topic| {
+                let _ = outgoing.send(Cmd::Join(topic));
+                // A workspace joined is one this device takes part in through whatever its host
+                // opens there: the desktop's custody session, which carries the workspace's app
+                // records.
+                if let Some(host) = self.host.borrow().clone() {
+                    host.joined(workspace);
+                }
+            },
+            |topic| {
+                let _ = outgoing.send(Cmd::Leave(topic));
+            },
+        );
         if changed {
             self.touched();
         }
@@ -213,7 +231,11 @@ impl Client {
 
     /// Hear everything that reached the plane since the last call. Whether anything did.
     pub fn follow(&self) -> bool {
-        let heard = self.presence.arrivals(|event| self.hear(event));
+        let mut heard = false;
+        while let Ok(event) = self.arrived.try_recv() {
+            self.hear(event);
+            heard = true;
+        }
         if let Some(host) = self.host.borrow().clone() {
             host.pass(self);
         }
@@ -268,6 +290,11 @@ impl Client {
         }
         self.presence.heard(event);
         self.touched();
+    }
+
+    /// Say `command` to the plane.
+    pub fn say(&self, command: Cmd) -> bool {
+        self.outgoing.send(command)
     }
 
     /// Take what became of the enrollments and entries asked for since the last call.

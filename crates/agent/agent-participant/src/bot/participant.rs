@@ -59,9 +59,8 @@ pub struct BotParticipant {
     replicas: BTreeMap<DocumentRoute, ConfinedReplica>,
     /// Records of watched apps not held yet, each merged as it changes.
     pending: Unopened,
-    /// This bot's view count, so members order its views.
-    /// Who is here and what each of them says of themselves, as every host keeps it.
-    presence: tilo_live::presence::Board,
+    /// Who is here and what each of them says of themselves, said on this bot's session.
+    presence: tilo_session_client::Presence,
     /// The host admitted the workspace; everything it replayed has arrived.
     ready: bool,
 }
@@ -95,10 +94,13 @@ impl BotParticipant {
         );
         let events = peer.events();
         peer.join(workspace_id)?;
-        let presence = tilo_live::presence::Board::new(
-            config.workspace.clone(),
-            identity.cert.device_public_key,
-        );
+        let presence = crate::presence::enter(
+            &peer,
+            &identity.cert,
+            &identity.delegation.label,
+            &config.workspace,
+        )
+        .ok_or_else(|| "the bot's certificate names no device".to_string())?;
         Ok(Self {
             pending: Unopened::new(&config.workspace),
             identity,
@@ -305,17 +307,16 @@ impl BotParticipant {
             app: route.app_id.clone(),
             record: route.record.clone(),
         });
-        let view = tilo_session_host::presence::view(
+        let view = tilo_session_client::presence::view(
             0,
             tilo_clock::unix_now_ms(),
             &self.identity.delegation.label,
             self.identity.delegation.color,
-            activity.map(|activity| tilo_session_host::presence::activity(&activity)),
+            activity.map(|activity| tilo_session_client::presence::activity(&activity)),
             focus.as_ref(),
             None,
         );
-        let own = crate::presence::own(&self.identity.cert, &self.identity.delegation.label, view);
-        crate::presence::say(&mut self.presence, &self.peer, self.workspace_id, &own);
+        crate::presence::say(&self.presence, &view);
     }
 
     /// The bot's device key.
@@ -327,6 +328,7 @@ impl BotParticipant {
     /// Leave the workspace and end the session.
     pub fn close(mut self) {
         self.publish_presence(None, None);
+        crate::presence::leave(&self.presence);
         self.replicas.clear();
         self.peer.close();
     }

@@ -45,7 +45,6 @@ pub mod document;
 pub mod health;
 mod held_live;
 pub mod narration;
-pub mod presence;
 mod replica;
 pub mod session;
 /// Another device's actions, asked through this device's session.

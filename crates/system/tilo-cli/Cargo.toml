@@ -39,6 +39,8 @@ settings-store = { path = "../settings-store" }
 # `tilo login` and `tilo mcp`: this computer as one of the person's devices,
 # certified by the root their browser tab holds, in their workspace.
 tilo-session-host = { path = "../../session/host" }
+# A participant's own word on a workspace: the board and the view every host draws it by.
+tilo-session-client = { path = "../../session/client" }
 # Documents are applied in a confined worker: this program started again as
 # it, which `main` hands over to first thing.
 tilo-automerge-isolate.workspace = true

@@ -822,11 +822,12 @@ impl AgentParticipant {
     /// The name the member on `device` shows in its presence: the one it said of itself, or the
     /// one the shell it says draws it by.
     pub(super) fn member_name(&self, device: [u8; 32]) -> Option<String> {
-        let member = self.presence.member(device)?;
-        let shell = member.shell.as_deref().map(|shell| shell.label.clone());
-        Some(member.label.clone())
-            .filter(|label| !label.is_empty())
-            .or(shell)
+        let publisher = hex::encode(device);
+        self.presence
+            .members(&self.workspace)
+            .into_iter()
+            .find(|member| member.publisher == publisher)
+            .map(|member| member.label)
             .filter(|label| !label.is_empty())
     }
 }
