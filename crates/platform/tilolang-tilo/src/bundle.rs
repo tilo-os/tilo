@@ -142,7 +142,16 @@ impl Bundle {
     /// The bundle in the payload directory `dir`.
     pub fn read(dir: &Path) -> Result<Self, BundleError> {
         let wasm_path = dir.join(WASM_FILE);
-        let wasm = read(&wasm_path)?;
+        let wasm = match read(&wasm_path) {
+            // A payload that holds no module is a package of another kind — a Rust app's, which
+            // ships its code in `bin/` — not a broken one: it has no views of its own.
+            Err(BundleError::Read { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                return Err(BundleError::NotAModule(wasm_path));
+            }
+            other => other?,
+        };
         let meta = Meta::from_wasm(&wasm).ok_or(BundleError::NotAModule(wasm_path))?;
         let ids = match std::fs::read_to_string(dir.join(IDS_FILE)) {
             Ok(ids) => ids,
