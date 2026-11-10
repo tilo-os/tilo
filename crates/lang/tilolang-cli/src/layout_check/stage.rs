@@ -2334,6 +2334,86 @@ mod tests {
         }
     }
 
+    /// A step the sort put under another day's heading stands on the level its list starts at,
+    /// and says which task it is a step of: indented, it would stand under a row that is not
+    /// there, and the person reading the day could not tell what it belongs to.
+    ///
+    /// A narrow window is the one that lists the task's steps: a wide one shows the task open in
+    /// its row, and the steps it holds in its page.
+    #[test]
+    fn a_step_due_another_day_stands_at_its_lists_first_level() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tasks");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let (width, height) = (390_u32, 844_u32);
+        // A step due the day its task is due keeps its place under it; one due another day
+        // opens the group its own day heads.
+        let task = "Call the landlord about the boiler";
+        let same_day = "Find the last service date";
+        let other_day = "Book the engineer's visit";
+        let mut staged = Staged::over(
+            &app,
+            &packages,
+            "a task that is late",
+            (width, height),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        staged.harness.relayout();
+        let root = &staged.harness().inspection().root;
+        let row_of = |title: &str| {
+            let row = named(root, ROWS, title).unwrap_or_else(|| {
+                panic!("{title:?} is a row of the place's list at {width}×{height}")
+            });
+            let Some(ui::widget::LayoutInfo::Row(grid)) = &row.layout else {
+                panic!("a row of a list says the column it stands on");
+            };
+            (row, grid.depth)
+        };
+        let (_, top) = row_of(task);
+        let (_, nested) = row_of(same_day);
+        assert!(
+            nested > top,
+            "a step due the day its task is due stands under it at {width}×{height}: depth \
+             {nested} against {top}"
+        );
+        let (row, found) = row_of(other_day);
+        assert_eq!(
+            found, top,
+            "a step another day's heading opens stands at the first level of its list at \
+             {width}×{height}, not indented under a row of another day"
+        );
+        let said = spoken(row);
+        assert!(
+            said.contains("in ") && said.contains(task),
+            "the row says which task it is a step of: {said:?}"
+        );
+    }
+
+    /// What a reader hears of a row and the nodes it holds, as one line.
+    fn spoken(node: &ui::headless::InspectionNode) -> String {
+        fn heard(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
+            out.extend(node.value.clone());
+            out.extend(node.name.clone());
+            for child in &node.children {
+                heard(child, out);
+            }
+        }
+        fn walk(node: &ui::headless::InspectionNode, out: &mut Vec<String>) {
+            if let Some(access) = &node.semantics {
+                heard(access, out);
+            }
+            for child in &node.children {
+                walk(child, out);
+            }
+        }
+        let mut said = Vec::new();
+        walk(node, &mut said);
+        said.join(", ")
+    }
+
     /// A row opens as a page of its own from its menu, and Back returns to the list with the
     /// row still open where it stood: the page is a place to read the item whole, not a way out
     /// of the list.
