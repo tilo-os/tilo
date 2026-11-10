@@ -406,7 +406,7 @@ impl Inner {
     /// read again: opening a workspace of many chunks costs what those chunks hold, once.
     pub(super) fn attach_document(&mut self, chunk: ChunkNo, doc: &Doc) {
         self.stats.attaches = self.stats.attaches.saturating_add(1);
-        self.versions = None;
+        self.versions.remove(&chunk);
         self.nested.clear();
         let mirror = mirror_of(doc);
         let seen = mirror.committed_document().get_heads();

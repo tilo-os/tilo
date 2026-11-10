@@ -303,9 +303,12 @@ pub struct ReadStats {
     pub index: IndexReads,
     /// Items a filter was evaluated on one by one (a filter no column answers).
     pub evaluated: u64,
-    /// Times the versions of every resource were derived from the record's log: what a read
-    /// of a resource's whole history costs, and what a first render reads none of.
+    /// Times the versions of the resources of a chunk were derived from its log: what a read of
+    /// a resource's whole history costs, and what a first render reads none of.
     pub versions: u64,
+    /// The changes those derivations read: the log of the chunks holding a history that was
+    /// asked for, never the workspace's.
+    pub version_changes: u64,
 }
 
 mod listed;
@@ -335,7 +338,7 @@ mod unsaved;
 mod upgrade_fields;
 mod versions;
 mod written;
-use versions::{NO_VERSIONS, note_versions};
+use versions::{NO_CHUNK_VERSIONS, note_versions};
 
 /// Gives the store the workspace record when it opened without it: for a write, or a field no index
 /// holds. `None` when the record cannot be had.
@@ -378,8 +381,10 @@ struct Inner {
     doc_reads: std::cell::Cell<DocReads>,
     /// Items filters were evaluated on one by one.
     evaluated: std::cell::Cell<u64>,
-    /// Times the versions of every resource were derived from the log.
+    /// Times the versions of a chunk's resources were derived from its log.
     versions_built: std::cell::Cell<u64>,
+    /// The changes those derivations read.
+    version_changes: std::cell::Cell<u64>,
     /// How `now` reads and where the person is, as the host names them: the time the columns that
     /// read the clock are written at ([`crate::index::Clock`]).
     clock: ClockSource,
@@ -418,9 +423,11 @@ struct Inner {
     next_ticket: u64,
     journals: BTreeMap<RunId, Journal>,
     notes: BTreeMap<DocId, Vec<ChangeNote>>,
-    /// The versions of each resource the record's changes made (reflection), built from the
-    /// record the first time one is asked for and kept up as it moves.
-    versions: Option<versions::Versions>,
+    /// The versions each resource the changes of a chunk made (reflection), built from that
+    /// chunk the first time a history of it is asked for and kept up as it moves: a resource's
+    /// log is the log of the chunk it is stored in, so reading one page's history costs the
+    /// chunk it shows, never the workspace's every version.
+    versions: HashMap<ChunkNo, versions::Versions>,
     instance: String,
     /// The device that carries out the outside effects this store queues: they stay queued in
     /// the record, and this device alone settles them.
@@ -703,6 +710,7 @@ impl TiloStore {
                 doc_reads: std::cell::Cell::default(),
                 evaluated: std::cell::Cell::new(0),
                 versions_built: std::cell::Cell::new(0),
+                version_changes: std::cell::Cell::new(0),
                 clock: ClockSource::default(),
                 listed: RefCell::default(),
                 txns: HashMap::new(),
@@ -722,7 +730,7 @@ impl TiloStore {
                 next_ticket: 1,
                 journals: BTreeMap::new(),
                 notes: BTreeMap::new(),
-                versions: None,
+                versions: HashMap::new(),
                 device: instance.clone(),
                 instance,
                 counter: 0,
@@ -811,45 +819,47 @@ impl TiloStore {
             index,
             evaluated: inner.evaluated.get(),
             versions: inner.versions_built.get(),
+            version_changes: inner.version_changes.get(),
         }
     }
 
-    /// The versions of every resource the record's changes made, by resource: built from the
-    /// record the first time they are asked for, and kept up as it moves.
-    fn built_versions(&self) -> std::cell::Ref<'_, HashMap<String, Vec<Version>>> {
+    /// The versions the changes of `chunk` made, by resource: built from that chunk the first
+    /// time a history of one of its resources is asked for, and kept up as the chunk moves. A
+    /// resource's log is the log of the chunk holding it ([`crate::chunk`]: an id is stored in
+    /// one chunk), so what a page's history costs is the chunk it shows.
+    pub(super) fn versions_in(&self, chunk: ChunkNo) -> std::cell::Ref<'_, versions::Versions> {
         {
             let mut held = self.changing();
             let inner = &mut *held;
-            if inner.versions.is_none() {
+            if !inner.versions.contains_key(&chunk)
+                && let Some(doc) = inner.chunks.mirror(chunk)
+            {
                 inner
                     .versions_built
                     .set(inner.versions_built.get().saturating_add(1));
                 let mut built = versions::Versions::default();
-                for (_, doc) in inner.chunks.docs() {
-                    note_versions(
-                        &mut built,
-                        &doc.committed_document().get_changes(&[]),
-                        doc,
-                        &inner.index,
-                    );
-                }
+                let changes = doc.committed_document().get_changes(&[]);
+                inner.version_changes.set(
+                    inner
+                        .version_changes
+                        .get()
+                        .saturating_add(u64::try_from(changes.len()).unwrap_or(u64::MAX)),
+                );
+                note_versions(&mut built, &changes, doc, &inner.index);
                 // Oldest first, by [`Version::order`]: the order the changes reached this
                 // replica in says nothing of when they happened or of where they stand
                 // causally, and every replica reads one history.
                 for held in built.by_resource.values_mut() {
                     held.sort_by(|one, other| one.order().cmp(&other.order()));
                 }
-                inner.versions = Some(built);
+                inner.versions.insert(chunk, built);
             }
         }
         let (schemas, scope) = self.scoped();
         drop(schemas);
         std::cell::Ref::map(self.inner.borrow(), move |inner| {
             let _ = &scope;
-            inner
-                .versions
-                .as_ref()
-                .map_or(&*NO_VERSIONS, |held| &held.by_resource)
+            inner.versions.get(&chunk).unwrap_or(&NO_CHUNK_VERSIONS)
         })
     }
 

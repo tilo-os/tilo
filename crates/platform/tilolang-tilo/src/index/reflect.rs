@@ -235,6 +235,14 @@ pub fn versions_of(change: &automerge::Change) -> Vec<Version> {
     let Some((stamp, action, run)) = read(change) else {
         return Vec::new();
     };
+    versions_of_action(&stamp, &action, run.as_ref())
+}
+
+/// [`versions_of`] of a change [`read`] once: what a reader of a chunk's whole log does for each
+/// of its changes, which an action's change is read for once rather than once a question.
+#[must_use]
+pub fn versions_of_action(stamp: &Stamp, action: &DynAction, run: Option<&Run>) -> Vec<Version> {
+    let run = run.cloned();
     // The items it put into a collection (`DynEdit::Insert`), in the order of the edits: an
     // action that posts two messages is a version of the channel that names both, so where a
     // run of new items begins is known without reading the collection.
@@ -282,6 +290,20 @@ fn items_inserted_into(inserted: &[(String, String)], holder: &str) -> Vec<Strin
 #[must_use]
 pub fn placed_of(change: &automerge::Change) -> Vec<(String, String, String, Option<String>)> {
     read(change).map_or_else(Vec::new, |(_, action, _)| action.placed())
+}
+
+/// [`placed_of`] of a change [`read_change`] once: where the items its action placed are.
+#[must_use]
+pub fn placed_of_action(action: &DynAction) -> Vec<(String, String, String, Option<String>)> {
+    action.placed()
+}
+
+/// What a change of a package action says, read once: its version, its action, and the run it
+/// was made in. `None` for a change that is no action of a package (an undo, a merge), which
+/// [`step_stamp`] answers for.
+#[must_use]
+pub fn read_change(change: &automerge::Change) -> Option<(Stamp, DynAction, Option<Run>)> {
+    read(change)
 }
 
 /// The edits `change` records, when it is a tilolang action's change: what a write the store

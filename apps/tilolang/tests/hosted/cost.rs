@@ -1832,6 +1832,7 @@ struct Done {
     index_fields: u64,
     evaluated: u64,
     versions: u64,
+    version_changes: u64,
     sent: u64,
     nodes: u64,
     shaped: u64,
@@ -1877,6 +1878,7 @@ impl Done {
             index_fields: reads.index.fields,
             evaluated: reads.evaluated,
             versions: reads.versions,
+            version_changes: reads.version_changes,
             sent,
             nodes: session.window.harness().layout_nodes_built(),
             shaped,
@@ -1897,6 +1899,7 @@ impl Done {
             index_fields: self.index_fields.saturating_sub(earlier.index_fields),
             evaluated: self.evaluated.saturating_sub(earlier.evaluated),
             versions: self.versions.saturating_sub(earlier.versions),
+            version_changes: self.version_changes.saturating_sub(earlier.version_changes),
             sent: self.sent.saturating_sub(earlier.sent),
             nodes: self.nodes.saturating_sub(earlier.nodes),
             shaped: self.shaped.saturating_sub(earlier.shaped),
@@ -1951,6 +1954,7 @@ fn steps_costs(n: usize) -> (Vec<(&'static str, Done)>, u64) {
     let chunks = seeded_tasks(n);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let mut session = Session::tasks_over_in(&route, chunks, None);
+    let mut out = Vec::new();
     // What a writer's first change in a record renumbers is none of these steps'.
     for _ in 0..2 {
         let (_, x, y) = first_check(&mut session);
@@ -1958,7 +1962,6 @@ fn steps_costs(n: usize) -> (Vec<(&'static str, Done)>, u64) {
         session.settle();
     }
     assert!(!session.titles().is_empty(), "the window shows the place");
-    let mut out = Vec::new();
     let (_, x, y) = first_check(&mut session);
     out.push((
         "check a task",
@@ -2012,12 +2015,14 @@ fn steps_costs(n: usize) -> (Vec<(&'static str, Done)>, u64) {
 }
 
 /// A step of the window costs what it changed and what the window shows, never the size of the
-/// workspace: checking a task off, switching the sidebar's place, a keystroke in the entry, the
-/// Enter that adds the task and a notch of the scroll do the same work in ten thousand tasks as
-/// in a thousand. What would grow with the workspace is a loop over the collection, a filter no
-/// index answers, a publication of rows the window cannot show or a layout of rows off screen.
-/// An index reads a tree whose depth is the logarithm of what it holds, so ten times the
-/// workspace must not make a step do twice the work: what a step costs is what it changed.
+/// workspace: opening the window, checking a task off, switching the sidebar's place, a keystroke
+/// in the entry, the Enter that adds the task, a notch of the scroll and the page of a row do the
+/// same work in ten thousand tasks as in a thousand. What would grow with the workspace is a loop
+/// over the collection, a filter no index answers, a publication of rows the window cannot show, a
+/// layout of rows off screen, or a history read of the workspace's every change rather than of the
+/// chunk the row it shows is stored in. An index reads a tree whose depth is the logarithm of what
+/// it holds, so ten times the workspace must not make a step do twice the work: what a step costs
+/// is what it changed.
 #[test]
 fn a_step_costs_what_it_changes_not_the_workspace() {
     let _motion = ui::motion::testing::settled();
@@ -2026,6 +2031,25 @@ fn a_step_costs_what_it_changes_not_the_workspace() {
     assert_eq!(
         large_rows, small_rows,
         "the window shows {large_rows} rows of {SEEDED} tasks and {small_rows} of {SMALL}"
+    );
+    // A resource's log is the log of the chunk holding it: what a step's history reads — the
+    // marks of the rows it shows and the history behind them — is a chunk's changes, never the
+    // workspace's every change.
+    let mut past = Vec::new();
+    for (label, done) in &large {
+        if done.version_changes > tilolang_tilo::chunk::ITEMS {
+            past.push(format!(
+                "{label} read {} changes of the record for its versions at {SEEDED} tasks; a \
+                 chunk holds at most {}",
+                done.version_changes,
+                tilolang_tilo::chunk::ITEMS
+            ));
+        }
+    }
+    assert!(
+        past.is_empty(),
+        "a step's history reads the chunk it shows:\n{}",
+        past.join("\n")
     );
     let mut grew = Vec::new();
     let mut table = vec![format!(

@@ -113,7 +113,7 @@ impl TiloStore {
         inner.chunks.set_seen(chunk, heads);
         let Some(changed) = changed else {
             // The mirror held a change of its own, which only a copy of the record removes.
-            inner.versions = None;
+            inner.versions.remove(&chunk);
             inner.nested.clear();
             inner.stats.full_syncs = inner.stats.full_syncs.saturating_add(1);
             inner.chunks.insert(chunk, mirror_of(doc));
@@ -228,7 +228,8 @@ impl Inner {
         // Once the mirror holds them: a change that is no action of a package (an undo) is
         // read for what it wrote, and the versions are the log's, which names the fields each
         // change wrote.
-        if let (Some(versions), Some(mirror)) = (self.versions.as_mut(), self.chunks.mirror(chunk))
+        if let (Some(versions), Some(mirror)) =
+            (self.versions.get_mut(&chunk), self.chunks.mirror(chunk))
         {
             note_versions(versions, &changes, mirror, before);
         }

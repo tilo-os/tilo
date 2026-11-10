@@ -3,12 +3,13 @@
 //! resource it made, changed or removed; each other step on the record (an undo, a revert) a
 //! version of each resource it wrote.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
 use tilolang_runtime::store::{Left, Store as _, StoreError, Version, VersionKind};
 use tilolang_runtime::value::ResourceRef;
 
+use crate::chunk::ChunkNo;
 use crate::index as idx;
 use crate::index::derive::{LeftRow, Removed};
 use crate::index::reflect::Stamp;
@@ -35,14 +36,26 @@ pub(super) fn note_versions<'c>(
 ) -> Removed {
     let undone = idx::reflect::undone_changes(mirror);
     for change in changes {
-        let stamp = idx::reflect::change_stamp(change);
+        // What a change says is read once: its version, its action and its run answer what it
+        // made, where it placed it and when, and reading the action again per question costs a
+        // chunk's log a parse a change.
+        let read = idx::reflect::read_change(change);
+        let stamp = read
+            .as_ref()
+            .map(|(stamp, _, _)| stamp.clone())
+            .or_else(|| idx::reflect::step_stamp(change));
         // A change a step took back is no version of what the record holds.
         let counts = !undone.contains(&change.hash().to_string());
-        let placed: BTreeMap<String, Left> = idx::reflect::placed_of(change)
+        let placed: BTreeMap<String, Left> = read
+            .as_ref()
+            .map(|(_, action, _)| idx::reflect::placed_of_action(action))
+            .unwrap_or_default()
             .into_iter()
             .map(|(item, holder, field, ty)| (item, Left { holder, field, ty }))
             .collect();
-        let made = idx::reflect::versions_of(change);
+        let made = read.as_ref().map_or_else(Vec::new, |(stamp, action, run)| {
+            idx::reflect::versions_of_action(stamp, action, run.as_ref())
+        });
         let made = if made.is_empty() {
             idx::reflect::stepped(change, mirror, resources)
         } else {
@@ -142,8 +155,8 @@ fn note(
     }
 }
 
-/// The versions of every resource, the last removal of each, and where each item was last
-/// placed.
+/// The versions of every resource of a chunk, the last removal of each, and where each item was
+/// last placed.
 #[derive(Default)]
 pub(crate) struct Versions {
     pub(crate) by_resource: HashMap<String, Vec<Version>>,
@@ -151,11 +164,58 @@ pub(crate) struct Versions {
     placed: HashMap<String, Left>,
 }
 
-/// The versions of no resource: what a store holds before it has any.
-pub(super) static NO_VERSIONS: std::sync::LazyLock<HashMap<String, Vec<Version>>> =
-    std::sync::LazyLock::new(HashMap::new);
+impl Versions {
+    /// The versions the changes of the chunk made, by resource.
+    pub(super) fn by_resource(&self) -> &HashMap<String, Vec<Version>> {
+        &self.by_resource
+    }
+
+    /// The versions of the resource `id`, oldest first, when the chunk holds any.
+    pub(super) fn of(&self, id: &str) -> Option<&Vec<Version>> {
+        self.by_resource.get(id)
+    }
+}
+
+/// The versions of no resource: what a chunk the store does not hold answers.
+pub(super) static NO_CHUNK_VERSIONS: std::sync::LazyLock<Versions> =
+    std::sync::LazyLock::new(Versions::default);
 
 impl Inner {
+    /// The chunks whose changes hold the versions of `at`: of an item, the one it is read and
+    /// written in, which holds its whole log; of a document, the ones that hold its resources,
+    /// since a change in any of them can make a version of the document it belongs to.
+    pub(super) fn versions_chunks(&self, at: &ResourceRef) -> Vec<ChunkNo> {
+        if at.item.is_none() {
+            return self.chunks_of(&at.doc);
+        }
+        let routed = self
+            .at_chunk(at)
+            .unwrap_or_else(|_| self.chunks.chunk(&at.id_string()));
+        vec![routed]
+    }
+
+    /// The chunks whose changes hold the resources of the document `doc`: the one it is stored
+    /// in, the ones the manifest places any of its resources in, and the ones its collections'
+    /// runs are in. A resource's log is the log of the chunk holding it, so this is where its
+    /// versions are read from rather than from the workspace's every change.
+    pub(super) fn chunks_of(&self, doc: &DocId) -> Vec<ChunkNo> {
+        let prefix = format!("{doc}/");
+        let in_doc = |id: &str| id == doc || id.starts_with(&prefix);
+        let placement = self.chunks.placement();
+        let mut chunks = BTreeSet::from([self.chunks.chunk(doc)]);
+        for (id, chunk) in placement.placed() {
+            if in_doc(id) {
+                chunks.insert(*chunk);
+            }
+        }
+        for ((holder, _), runs) in placement.all_runs() {
+            if in_doc(holder) {
+                chunks.extend(runs.keys().copied());
+            }
+        }
+        chunks.into_iter().collect()
+    }
+
     /// The items that left the collection `field` of `at` (of items of the type `item`), in the
     /// order they left, each with the version that removed it ([`idx::REMOVED`]): what a list
     /// shows of them struck until the person has seen them go; `None` when no index of its

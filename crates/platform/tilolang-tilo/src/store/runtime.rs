@@ -521,21 +521,41 @@ impl Store for TiloStore {
     }
 
     fn versions(&self, at: &ResourceRef) -> Result<Vec<Version>, StoreError> {
-        Ok(self
-            .built_versions()
-            .get(&at.id_string())
-            .cloned()
-            .unwrap_or_default())
+        let id = at.id_string();
+        // The chunk a resource is read and written in holds its whole log: reading one page's
+        // history costs that chunk, not the workspace's every version.
+        let chunks = self.held().versions_chunks(at);
+        let mut held: Vec<Version> = Vec::new();
+        for chunk in chunks {
+            held.extend(self.versions_in(chunk).of(&id).cloned().unwrap_or_default());
+        }
+        if !held.is_empty() {
+            return Ok(held);
+        }
+        // A resource no chunk that routed it holds — one the record no longer has — is in
+        // whichever chunk's changes made its versions.
+        let chunks: Vec<ChunkNo> = self.held().chunks.numbers().collect();
+        for chunk in chunks {
+            if let Some(versions) = self.versions_in(chunk).of(&id) {
+                return Ok(versions.clone());
+            }
+        }
+        Ok(Vec::new())
     }
 
     fn versions_within(&self, doc: &DocId) -> Result<BTreeMap<String, Vec<Version>>, StoreError> {
         let prefix = format!("{doc}/");
-        Ok(self
-            .built_versions()
-            .iter()
-            .filter(|(resource, _)| *resource == doc || resource.starts_with(&prefix))
-            .map(|(resource, versions)| (resource.clone(), versions.clone()))
-            .collect())
+        let in_doc = |resource: &str| resource == doc || resource.starts_with(&prefix);
+        let chunks = self.held().chunks_of(doc);
+        let mut out = BTreeMap::new();
+        for chunk in chunks {
+            for (resource, versions) in self.versions_in(chunk).by_resource() {
+                if in_doc(resource) {
+                    out.insert(resource.clone(), versions.clone());
+                }
+            }
+        }
+        Ok(out)
     }
 
     fn newest(&self, at: &ResourceRef) -> Result<Option<Version>, StoreError> {
@@ -560,13 +580,20 @@ impl Store for TiloStore {
     }
 
     fn run_changes(&self, run: &str) -> Result<Vec<Version>, StoreError> {
-        let mut out: Vec<Version> = self
-            .built_versions()
-            .values()
-            .flatten()
-            .filter(|v| v.run.as_ref().is_some_and(|held| held.id == run))
-            .cloned()
-            .collect();
+        // A run's changes name resources of every chunk it worked, so every chunk's log is read
+        // for it: what a run did is the one question the workspace's versions answer.
+        let chunks: Vec<ChunkNo> = self.held().chunks.numbers().collect();
+        let mut out: Vec<Version> = Vec::new();
+        for chunk in chunks {
+            out.extend(
+                self.versions_in(chunk)
+                    .by_resource()
+                    .values()
+                    .flatten()
+                    .filter(|v| v.run.as_ref().is_some_and(|held| held.id == run))
+                    .cloned(),
+            );
+        }
         out.sort_by(|a, b| {
             a.order()
                 .cmp(&b.order())
