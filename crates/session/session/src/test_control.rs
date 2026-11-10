@@ -751,7 +751,13 @@ impl Drop for Socket {
     fn drop(&mut self) {
         // The accepting thread ends at the next connection, which this one is.
         self.stopped.store(true, Ordering::Release);
-        let _ = UnixStream::connect(&self.path);
+        if let Err(error) = tilo_files::native::socket::connect(&self.path) {
+            tracing::warn!(
+                %error,
+                path = %self.path.display(),
+                "control: the thread accepting connections was not woken to stop"
+            );
+        }
         // Nothing answers there once the session is gone.
         let _ = std::fs::remove_file(&self.path);
     }
