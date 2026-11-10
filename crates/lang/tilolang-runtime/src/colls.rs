@@ -715,6 +715,30 @@ impl Core {
         Ok(out)
     }
 
+    /// The last `n` items of `coll`, as references: what a view reads of a conversation from
+    /// its end, so looking at the last of a long one reads that many items, not all. It depends
+    /// on the item at the end, so an item arriving there runs the view again.
+    ///
+    /// # Errors
+    ///
+    /// A message when the store cannot list the collection.
+    pub(crate) fn coll_take_end(&self, coll: &Rc<CollRef>, n: usize) -> Result<Vec<Value>, String> {
+        let listing = self.coll_listing(coll)?;
+        let len = listing.len();
+        let start = len.saturating_sub(n);
+        // Where its end is, even when it is empty: the first item arriving there runs the view.
+        self.saw(coll, Read::Last(listing.last()), len);
+        let mut out = Vec::new();
+        for i in start..len {
+            let Some(id) = listing.get(i) else {
+                break;
+            };
+            self.saw(coll, Read::At(i, id.clone()), len);
+            out.push(self.item_ref(coll, &id));
+        }
+        Ok(out)
+    }
+
     /// Every item of `coll`, as references: the whole collection, which a view running now then
     /// depends on.
     ///

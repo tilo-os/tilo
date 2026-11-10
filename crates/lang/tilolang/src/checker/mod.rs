@@ -54,6 +54,10 @@ use std::collections::HashMap;
 
 type Ex = ir::Expr;
 
+/// How many people a rich input's `@` drawer offers from the conversation, unless a view asks
+/// for another number (`speakers(items, max)`, chat.md "Completion drawers").
+pub(crate) const DRAWER_SPEAKERS: i64 = 5;
+
 /// What kind of code is being checked; each has its own effect discipline.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Ctx {

@@ -45,7 +45,15 @@ view workspace(r: Workspace) {
         for p in members(r) {
             text("reads {p.name()}")
         }
-        rich_input(bind: draft)
+        rich_input(bind: draft, speakers: speakers(r.lines))
+    }
+}
+
+/// The same conversation's people, at most the two newest: a view says how many it offers.
+view two(r: Workspace) {
+    state draft: RichText = RichText("")
+    page {
+        rich_input(bind: draft, speakers: speakers(r.lines, 2))
     }
 }
 "#;
@@ -175,7 +183,7 @@ view workspace(r: Workspace) {
     }
 
     #[test]
-    fn the_drawer_offers_who_spoke_last_first() {
+    fn the_drawer_offers_the_conversations_people_newest_first() {
         let (rt, app, open, _) = setup();
         rt.set_members(membership(), None);
         let say = app.action("say");
@@ -205,32 +213,70 @@ view workspace(r: Workspace) {
             ),
             "newest first, each once: {speakers:?}"
         );
+        assert_eq!(
+            people(&v, "people"),
+            ["ada", "bo", "agent:planner"],
+            "and the members under them"
+        );
     }
 
     #[test]
-    fn who_spoke_last_is_read_from_a_bounded_window_of_recent_changes() {
-        use tilolang_runtime::store::Store as _;
-        let store = AmStore::new();
-        let app = App::compile(SOURCE, &[]);
-        let rt = Runtime::new(store.clone(), SimpleAuthority::new()).unwrap();
-        app.load(&rt);
-        let workspace = rt.create("Workspace").unwrap();
+    fn the_drawer_offers_as_many_people_as_the_view_asks_for() {
+        let (rt, app, open, _) = setup();
+        rt.set_members(membership(), None);
         let say = app.action("say");
-        for who in [planner(), ada(), bo()] {
+        for who in [ada(), bo(), planner()] {
             rt.invoke_action(
                 &who,
                 (
                     say.as_str(),
-                    vec![Value::resource(&workspace), Value::text("hello")],
+                    vec![Value::resource(&open), Value::text("hello")],
                 ),
             )
             .unwrap();
         }
+        let v = rt
+            .open_view(&ada(), &app.view("two"), vec![Value::resource(&open)])
+            .unwrap();
         assert_eq!(
-            store.recent_authors(&workspace, 5, 2).unwrap(),
-            ["bo", "ada"],
-            "only the last two changes are looked at, however long the history"
+            people(&v, "speakers"),
+            ["agent:planner", "bo"],
+            "the two newest, though three spoke"
         );
-        assert_eq!(store.recent_authors(&workspace, 1, 10).unwrap(), ["bo"]);
+    }
+
+    #[test]
+    fn who_spoke_is_read_from_a_bounded_window_of_the_conversations_items() {
+        let (rt, app, open, _) = setup();
+        rt.set_members(membership(), None);
+        let say = app.action("say");
+        let mut v = rt
+            .open_view(&ada(), &app.view("workspace"), vec![Value::resource(&open)])
+            .unwrap();
+        rt.invoke_action(
+            &bo(),
+            (
+                say.as_str(),
+                vec![Value::resource(&open), Value::text("the first word")],
+            ),
+        )
+        .unwrap();
+        for _ in 0..60 {
+            rt.invoke_action(
+                &ada(),
+                (
+                    say.as_str(),
+                    vec![Value::resource(&open), Value::text("and on")],
+                ),
+            )
+            .unwrap();
+        }
+        v.poll_patches().unwrap();
+        assert_eq!(
+            people(&v, "speakers"),
+            ["ada"],
+            "who spoke longer ago than the last items is a member like any other: the drawer's \
+             cost is the window, never the length of the conversation"
+        );
     }
 }

@@ -218,8 +218,9 @@ impl Checker<'_> {
                 );
             }
         }
-        // A rich input's `@` drawer offers the conversation's people however it is written.
-        if d.name == "RichInput" && !given.contains("speakers") && !given.contains("people") {
+        // A rich input's `@` drawer offers who can read what a mention names, however it is
+        // written; the conversation's own people it offers are the view's to give.
+        if d.name == "RichInput" && !given.contains("people") {
             self.drawer_props(n);
         }
         if let Some(block) = &c.block {

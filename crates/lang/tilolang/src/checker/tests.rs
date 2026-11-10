@@ -889,22 +889,41 @@ fn a_links_how_is_a_case_of_the_hosts_link_how_enum() {
 }
 
 #[test]
-fn every_rich_input_is_given_its_drawers_people_by_the_system() {
+fn every_rich_input_is_given_its_drawers_members_by_the_system() {
     let (m, _) = lower(
         "type Chat {\n    topic: Text\n}\nview chat(c: Chat) {\n    state draft: RichText = RichText(\"\")\n    stack {\n        rich_input(bind: draft)\n    }\n}\nview loose() {\n    state draft: RichText = RichText(\"\")\n    rich_input(bind: draft)\n}",
     );
     let chat = host_imports(func(&m, "chat"));
-    for want in [Imp::Speakers, Imp::Members] {
-        assert!(chat.contains(&want), "{want:?} in {chat:?}");
-    }
     assert!(
-        strings(func(&m, "chat")).iter().any(|s| s == "people")
-            && strings(func(&m, "chat")).iter().any(|s| s == "speakers")
+        chat.contains(&Imp::Members),
+        "who can read what it writes into: {chat:?}"
     );
+    assert!(
+        !chat.contains(&Imp::Speakers),
+        "a drawer reads no history of what a mention lands in to say who is in the conversation: \
+         {chat:?}"
+    );
+    assert!(strings(func(&m, "chat")).iter().any(|s| s == "people"));
     let loose = host_imports(func(&m, "loose"));
     assert!(
-        loose.contains(&Imp::WorkspaceMembers) && !loose.contains(&Imp::Speakers),
+        loose.contains(&Imp::WorkspaceMembers) && !loose.contains(&Imp::Members),
         "without a resource, the workspace's members: {loose:?}"
+    );
+}
+
+#[test]
+fn a_rich_input_offers_the_people_of_the_conversation_it_is_given() {
+    let (m, _) = lower(
+        "type Comment {\n    text: Text\n}\ntype Log {\n    comments: Collection<Comment>\n}\nview chat(l: Log) {\n    state draft: RichText = RichText(\"\")\n    rich_input(bind: draft, speakers: speakers(l.comments))\n}",
+    );
+    let chat = host_imports(func(&m, "chat"));
+    assert!(
+        chat.contains(&Imp::Speakers),
+        "who spoke in the conversation, read from its own items: {chat:?}"
+    );
+    assert!(
+        chat.contains(&Imp::Members),
+        "and the members, which the system still gives: {chat:?}"
     );
 }
 

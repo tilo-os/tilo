@@ -386,7 +386,7 @@ fn the_composers_drawer_offers_the_members_of_the_conversation() {
     app.harness().type_text("@");
     app.harness().relayout();
     let people = drawer_rows(&mut app);
-    // Who spoke last in the conversation first (its scenario's people), then its members.
+    // Who spoke in the conversation first (its scenario's people), then its members.
     let members = people.iter().position(|row| row == "Members").map_or_else(
         || panic!("the members have their header: {people:?}"),
         |at| &people[at + 1..],

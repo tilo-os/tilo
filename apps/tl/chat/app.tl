@@ -370,7 +370,7 @@ view channel(c: TextChannel) {
         channel_message(c, m, c.messages, replying, editing, revised)
         composer: {
             typing_here(c)
-            composer(c, draft, replying, "Message #{c.name}")
+            composer(c, c.messages, draft, replying, "Message #{c.name}")
         }
     }
 }
@@ -386,7 +386,7 @@ view direct(d: Direct) {
         direct_message(d, m, d.messages, replying, editing, revised)
         composer: {
             direct_typing_here(d)
-            composer(d, draft, replying, "Message {d.name}")
+            composer(d, d.messages, draft, replying, "Message {d.name}")
         }
     }
 }
@@ -476,7 +476,7 @@ view thread(t: Thread) {
         thread_message(m, t.messages, replying, editing, revised)
         composer: {
             thread_typing_here(t)
-            composer(t, draft, replying, "Message {t.name}")
+            composer(t, t.messages, draft, replying, "Message {t.name}")
         }
     }
 }
@@ -503,8 +503,10 @@ view thread_message(
 }
 
 /// The foot of a conversation: the message being answered, over the input and its send button.
+/// `said` is what the conversation holds, whose speakers its `@` drawer offers first.
 view composer(
     to: TextChannel | Thread | Direct,
+    said: List<Message>,
     draft: State<RichText>,
     replying: State<Option<Message>>,
     placeholder: Text,
@@ -512,7 +514,12 @@ view composer(
     if let r = replying {
         std.reply_banner(r, cancel: set(replying, .none))
     }
-    std.composer(draft, placeholder, send(to, draft, replying).then(set(replying, .none)))
+    std.composer(
+        draft,
+        placeholder,
+        send(to, draft, replying).then(set(replying, .none)),
+        speakers: speakers(said),
+    )
 }
 
 /// Who is typing here, from the system's presence: the lenses on `of` whose person is
@@ -590,7 +597,7 @@ view message(
     }
     if let e = editing {
         if e == m {
-            revision(m, editing, revised)
+            revision(m, shown, editing, revised)
         } else {
             said(m)
         }
@@ -626,8 +633,13 @@ view said(m: Message) {
 }
 
 /// A message being edited in place: its text in an editor, saved or left as it was.
-view revision(m: Message, editing: State<Option<Message>>, revised: State<RichText>) {
-    rich_input(bind: revised, placeholder: "Edit message") {
+view revision(
+    m: Message,
+    said: List<Message>,
+    editing: State<Option<Message>>,
+    revised: State<RichText>,
+) {
+    rich_input(bind: revised, placeholder: "Edit message", speakers: speakers(said)) {
         on submit: edit(m, revised).then(set(editing, .none))
     }
     row {

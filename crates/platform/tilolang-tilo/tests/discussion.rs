@@ -10,7 +10,7 @@ use tilolang_runtime::store::{LinkHow, Store as _};
 use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::{ActionRef, InvokeOutcome, Principal, UiNode, Value, ViewInstance};
 
-use crate::fixtures::Replica;
+use crate::fixtures::{Replica, field_id};
 
 const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
@@ -697,5 +697,96 @@ fn only_its_author_edits_or_deletes_a_comment() {
             .iter()
             .any(|rich| rich.written_text() == "Is this the one that pays all four quarters?"),
         "a removed comment draws nowhere: {said:?}"
+    );
+}
+
+/// The key of the node bound to `field` in a window.
+fn bound_key(node: &UiNode, field: &str) -> Option<String> {
+    if node
+        .binding
+        .as_ref()
+        .and_then(|binding| binding.field())
+        .is_some_and(|(_, bound)| bound == field)
+    {
+        return Some(node.key.clone());
+    }
+    node.children
+        .iter()
+        .find_map(|child| bound_key(child, field))
+}
+
+/// The people the window's `@` drawer offers first, as the view gave them.
+fn drawer(view: &ViewInstance, prop: &str) -> Vec<String> {
+    let input = of_kind(view.tree(), "ui.RichInput")
+        .into_iter()
+        .next()
+        .expect("the thread has its composer");
+    match input.props.get(prop) {
+        Some(Value::List(items)) => items
+            .iter()
+            .map(|item| match item {
+                Value::Principal(who) => who.0.clone(),
+                other => panic!("{prop} holds {other:?}"),
+            })
+            .collect(),
+        other => panic!("{prop} is {other:?}"),
+    }
+}
+
+#[test]
+fn the_thread_offers_its_own_people_and_follows_nothing_of_what_it_is_about() {
+    let (mut ada, task) = a_task_discussed_by_a_scenario();
+    let page = ada.host.open_resource(&task, None).unwrap();
+    let thread = ada
+        .host
+        .package(DISCUSSION_APP)
+        .unwrap()
+        .view_id("thread")
+        .unwrap();
+    let mut view = ada
+        .host
+        .runtime()
+        .open_view(
+            &Principal::new("ada"),
+            &thread,
+            vec![Value::resource(&task)],
+        )
+        .unwrap();
+    assert_eq!(
+        drawer(&view, "speakers"),
+        ["scenario:Ada", "scenario:Bo"],
+        "who spoke in the thread, newest first, each once; the members follow under them"
+    );
+
+    // Ada retitles the task in its own page, as a person typing in the field writes it, while
+    // the thread stands open. The thread reads what was said about it, never what it holds, so
+    // it is not built again.
+    let title = field_id(&ada.host.package(TASKS_APP).unwrap().meta, "Task", "title");
+    let input = bound_key(page.tree(), &title).expect("the task's title is bound");
+    ada.commit();
+    view.poll_patches().unwrap();
+    let drawn = view.stats();
+    page.edit(&input, &Value::text("Pay the whole quarter"))
+        .unwrap();
+    ada.commit();
+    assert_eq!(
+        ada.host.label_at(&task),
+        "Pay the whole quarter",
+        "the title is the task's now"
+    );
+    let patches = view.poll_patches().unwrap();
+    assert!(
+        patches.is_empty(),
+        "nothing the thread shows changed: {patches:#?}"
+    );
+    assert_eq!(
+        view.stats().renders,
+        drawn.renders,
+        "a field of what it is about does not run the thread again"
+    );
+    assert_eq!(
+        drawer(&view, "speakers"),
+        ["scenario:Ada", "scenario:Bo"],
+        "and the drawer still offers the thread's own people"
     );
 }

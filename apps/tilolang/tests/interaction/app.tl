@@ -58,7 +58,7 @@ view channel(c: Channel) {
     std.transcript(c, c.messages, row: message) {
         composer: {
             row {
-                rich_input(bind: draft, placeholder: "Message {c.name}", fill)
+                rich_input(bind: draft, placeholder: "Message {c.name}", speakers: speakers(c.messages), fill)
                 button(say(c, draft).then(set(draft, RichText(""))), icon_only: true)
             }
         }

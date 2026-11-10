@@ -242,7 +242,7 @@ imports! {
     WorkspaceMembers = "workspace_members" ([] -> [H]);
     Viewer = "viewer" ([] -> [H]);
     Members = "members" ([H] -> [H]);
-    Speakers = "speakers" ([H] -> [H]);
+    Speakers = "speakers" ([H, I64] -> [H]);
     MetaOf = "meta_of" ([H] -> [H]);
     Versions = "versions" ([H] -> [H]);
     Links = "links" ([H] -> [H]);

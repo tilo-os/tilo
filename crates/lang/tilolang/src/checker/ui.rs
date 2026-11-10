@@ -658,22 +658,20 @@ impl Checker<'_> {
         n
     }
 
-    /// The people of a rich input's `@` drawer, which no view declares: the system gives them
-    /// to every rich input as its `speakers` and `people`.
+    /// The people a rich input's `@` drawer offers after the conversation's own, which no view
+    /// declares: the system gives every rich input its `people`.
     pub(super) fn drawer_props(&mut self, n: LocalId) {
         let subject = self
             .st
             .subject
             .clone()
             .map(|(local, ty)| Ex::local(local, ty));
-        let (speakers, people) = Self::drawer_people(subject);
-        for (name, value) in [("speakers", speakers), ("people", people)] {
-            self.emit(Stmt::Eval(Ex::host(
-                Imp::UiPropH,
-                vec![Ex::local(n, Ty::View), Ex::str(name), value],
-                Ty::Unit,
-            )));
-        }
+        let people = Self::drawer_people(subject);
+        self.emit(Stmt::Eval(Ex::host(
+            Imp::UiPropH,
+            vec![Ex::local(n, Ty::View), Ex::str("people"), people],
+            Ty::Unit,
+        )));
     }
 
     /// The statements of a primitive's block, as children of `n`.
@@ -1237,7 +1235,7 @@ impl Checker<'_> {
             args.iter().partition(|a| is_node_arg(self, a));
         let param_args: Vec<ast::Arg> = param_args.into_iter().cloned().collect();
         // The literals a view's text parameters show are the caller's messages (i18n.md §2),
-        // as a component's are: what `std.composer(draft, "Comment on this {noun}", send)` puts
+        // as a component's are: what `std.composer(draft, "Message #{c.name}", send)` puts
         // over the field is the calling view's words, translated with it.
         let mut positional = 0usize;
         for a in &param_args {

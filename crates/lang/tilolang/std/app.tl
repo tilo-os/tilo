@@ -650,9 +650,18 @@ view reply_banner<T>(to: T, cancel: Action) {
 /// Enter or the button runs `send`, then clears the field. The field takes everything the button
 /// leaves and ends at its edge, so the two read as one control at any width. What a view says
 /// over it (the message being answered, who is typing, what is being edited) is its own to place.
-view composer(draft: State<RichText>, placeholder: Text, send: Action) {
+///
+/// `speakers` names who is in the conversation, newest first, which its `@` drawer offers first:
+/// a view that shows the conversation's items says so with `speakers(items)`, and a mention in
+/// it reads as the person it names wherever it lands.
+view composer(
+    draft: State<RichText>,
+    placeholder: Text,
+    send: Action,
+    speakers: List<Principal> = [],
+) {
     row(gap: .none) {
-        rich_input(bind: draft, placeholder: placeholder, fill) {
+        rich_input(bind: draft, placeholder: placeholder, speakers: speakers, fill) {
             on submit: send.then(set(draft, RichText("")))
         }
         ui.Button("Send", icon: .send, icon_only: true) {

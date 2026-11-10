@@ -45,8 +45,9 @@ pub struct RichInputProps {
     pub placeholder: Option<String>,
     /// Whether it can be typed into now.
     pub enabled: bool,
-    /// Who spoke last in what it writes into, newest first: whom its `@` drawer offers first,
-    /// under "In this conversation". The system gives it to every rich input.
+    /// The people of the conversation it writes into, newest first: whom its `@` drawer offers
+    /// first, under "In this conversation". The view gives them, from the items the conversation
+    /// holds; the drawer reads nothing of what the conversation is about to say who is in it.
     pub speakers: Vec<Person>,
     /// Who can read what it writes into: whom its `@` drawer offers, under "Members". The
     /// system gives it to every rich input; given no one, the drawer offers the workspace's roster.

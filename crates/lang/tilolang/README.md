@@ -309,8 +309,10 @@ instead). A principal says what it is: `p.name()`,
 `p.kind()` (`.person` or `.agent`, a `PrincipalKind`) and `p.role()` (`Option<Text>`, the
 workspace role, `owner` or `editor`, of a member who holds one); `avatar(p)` shows it. A view
 that reads them runs again when membership or grants change. Every `rich_input`'s `@` drawer
-offers who spoke last in the resource its view shows, then `members(r)` of it (the workspace's
-members in a view of no resource), without the view declaring anything. A component primitive's
+offers `members(r)` of the resource its view shows (the workspace's members in a view of no
+resource) without the view declaring anything; the conversation's own people it offers first
+are the view's to give, `speakers(items)` naming who spoke in it, newest first, read from the
+last of the items and nothing of what they are about. A component primitive's
 block is its component's, events included: `rich_input(bind: draft) { on submit: send(c, draft) }`
 sends on Enter (Shift+Enter breaks the line).
 

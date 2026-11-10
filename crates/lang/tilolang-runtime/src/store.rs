@@ -725,30 +725,6 @@ pub fn last_change_of(versions: Vec<Version>, field: &str) -> Option<Version> {
         .or(made)
 }
 
-/// Who made the changes `newest_first` of `at`, each once, at most `limit` of them
-/// ([`Store::recent_authors`]).
-pub fn recent_authors_in<'n>(
-    newest_first: impl Iterator<Item = &'n ChangeNote>,
-    at: &ResourceRef,
-    limit: usize,
-) -> Vec<String> {
-    let id = at.id_string();
-    let mut out: Vec<String> = Vec::new();
-    for note in newest_first {
-        if out.len() >= limit {
-            break;
-        }
-        let touches = note
-            .touched
-            .iter()
-            .any(|touched| *touched == id || crate::value::flat_id(touched) == id);
-        if touches && !out.contains(&note.invoker) {
-            out.push(note.invoker.clone());
-        }
-    }
-    out
-}
-
 /// One field of one resource: the resource as [`ResourceRef::id_string`] writes it (its
 /// document, then `/item` for an item), and the field id, or [`ANY_FIELD`] for every field
 /// of that resource. Views record what they read as these, and stores report changes as them.
@@ -1835,26 +1811,6 @@ pub trait Store {
         Err(StoreError::Invalid(format!(
             "this store keeps no log to read what the change {change} wrote"
         )))
-    }
-
-    /// Who made the latest versions of `at`, newest first and each once: at most `limit` of
-    /// them, from at most the last `window` changes of its document. What a rich input's `@`
-    /// drawer offers first; its cost is bounded by `window`, never by how long the history is.
-    ///
-    /// # Errors
-    ///
-    /// As [`Store::history`].
-    fn recent_authors(
-        &self,
-        at: &ResourceRef,
-        limit: usize,
-        window: usize,
-    ) -> Result<Vec<String>, StoreError> {
-        Ok(recent_authors_in(
-            self.history(&at.doc)?.iter().rev().take(window),
-            at,
-            limit,
-        ))
     }
 
     fn subscribe(&mut self, doc: &DocId, f: Box<dyn FnMut(&ChangeSummary)>) -> SubId;
