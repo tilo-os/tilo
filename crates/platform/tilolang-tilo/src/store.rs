@@ -1818,7 +1818,19 @@ impl Inner {
                         }
                     }
                 }
-                Err(_) => self.rebuild(&app),
+                Err(error) => {
+                    // The index is built anew from the record: what the failed derivation read
+                    // of the index it replaces is not what the new one holds, so every resource
+                    // of the package is derived again whole, and what a window read of it again.
+                    tracing::warn!(app, %error, "the index of a change was not derived");
+                    wholes.extend(
+                        self.index
+                            .iter()
+                            .filter(|(_, (held, _))| held == &app)
+                            .map(|(doc, _)| doc.clone()),
+                    );
+                    self.rebuild(&app);
+                }
             }
         }
         (moved, wholes, notified)
