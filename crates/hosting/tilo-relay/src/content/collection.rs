@@ -487,4 +487,157 @@ mod tests {
     fn a_record_that_does_not_load_names_nothing_and_says_so() {
         assert!(named_in(b"not a document", &mut BTreeSet::new()).is_err());
     }
+
+    /// The store a page keeps its content in: the profile's app files, which
+    /// outlive the page ([`tilo_content::ContentStore::local_for_app`] where
+    /// files have no native path). A second handle over the same profile is
+    /// the page after a reload.
+    fn page_store(profile: &str) -> tilo_content::ContentStore {
+        let content = tilo_files::VPath::new("content").unwrap();
+        let location = tilo_paths::AppPaths::memory(profile).data().join(&content);
+        tilo_content::ContentStore::new(tilo_content::FilesBackend::new(
+            location,
+            tilo_content::ContentLimits::default(),
+        ))
+    }
+
+    /// Whether `frames` is one word that the host keeps none of the content.
+    fn lacks(frames: &[Vec<u8>]) -> bool {
+        matches!(
+            frames,
+            [frame] if matches!(
+                postcard::from_bytes(frame),
+                Ok(neighbour_wire::NeighbourMsg::RecordContentLacks { .. })
+            )
+        )
+    }
+
+    /// What a draft's attachment goes through: the host keeps a copy, lets it
+    /// go once no record it reads names it (the draft is the person's own,
+    /// sealed for their devices), and has it back from the device that
+    /// uploaded it when the draft is sent days later. The device kept its own
+    /// upload all along, and answers the host's ask with it, so the message's
+    /// attachment reads.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the host serves for the whole scenario"
+    )]
+    async fn an_attachment_a_draft_named_comes_back_from_the_device_that_uploaded_it() {
+        const APP: &str = "so.tilo.chat";
+        let state = tempfile::tempdir().unwrap();
+        let relay = host(state.path()).await;
+        let workspaces = relay.workspaces().unwrap().clone();
+        let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+        let governor = workspaces.serving_certificate().clone();
+        let host_device = governor.device_public_key;
+        let stores = relay.content();
+        let store = stores.get(&workspace).unwrap();
+
+        // The device a person writes from keeps the attachment it uploaded,
+        // and the host has a copy of it too.
+        let attachment: Vec<u8> = (0..=u8::MAX).cycle().take(200 * 1024).collect();
+        let device_store = page_store("so.tilo.content");
+        let hash = device_store.put(&attachment).unwrap();
+        assert_eq!(
+            store.put(&attachment).unwrap(),
+            hash,
+            "the host has the bytes under the address the device names"
+        );
+
+        // The draft that names it is the person's own record, sealed for
+        // their devices: no record the host reads names the attachment, and
+        // it lets its copy go after the grace.
+        let long_after = SystemTime::now() + Duration::from_secs(60);
+        let collected = collect(&workspaces, &stores, &workspace, long_after)
+            .await
+            .expect("the workspace's records read whole");
+        assert_eq!(collected.hashes, std::slice::from_ref(&hash));
+        assert!(
+            !store.has(&hash),
+            "the host let go of the draft's attachment"
+        );
+        assert!(
+            device_store.read(&hash).as_deref() == Some(attachment.as_slice()),
+            "the device kept what it uploaded"
+        );
+        assert!(
+            page_store("so.tilo.content").read(&hash).is_some(),
+            "and keeps it across a reload of the page"
+        );
+
+        // Days later the draft is sent: the conversation's record names the
+        // attachment, and the message the host reads carries it.
+        workspaces
+            .author_room_record(&workspace, &governor, (APP, "c_general"), |doc| {
+                doc.put(automerge::ROOT, "body", "look at this")
+                    .map_err(|error| error.to_string())?;
+                doc.put(automerge::ROOT, "attachment", hash.as_str())
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let records = workspaces.whole_records(&workspace, None).await.unwrap();
+        assert!(records.is_whole(), "{:?}", records.unread);
+        let sent = records
+            .documents
+            .iter()
+            .find(|((app, record), _)| app == APP && record == "c_general")
+            .map(|(_, document)| document.clone())
+            .expect("the sent message is one of the workspace's records");
+        let recorded = AutoCommit::load(&sent)
+            .unwrap()
+            .get(automerge::ROOT, "attachment")
+            .unwrap()
+            .and_then(|(value, _)| value.into_string().ok())
+            .expect("the message names its attachment");
+        assert_eq!(recorded, hash);
+
+        // The host names it now and keeps none of it: it asks the workspace,
+        // and the device answers with what it kept.
+        let member = [7; 32];
+        let want = postcard::to_allocvec(&neighbour_wire::NeighbourMsg::RecordContentWant {
+            requester: neighbour_wire::peer_handle(&member),
+            app_id: APP.into(),
+            cluster_id: workspace.clone(),
+            hash: hash.clone(),
+        })
+        .unwrap();
+        assert!(
+            lacks(&workspaces.content_answer(&workspace, &want)),
+            "the host keeps none of the attachment any more"
+        );
+        let mut asked = neighbour_wire::content::ContentWants::default();
+        let request = asked
+            .ask(&host_device, (), (APP, &workspace), &hash, 0)
+            .expect("the host asks the workspace for it");
+        let pieces = neighbour_wire::content::answer(
+            &member,
+            &host_device,
+            &request,
+            |_, cluster, asked| {
+                (cluster == workspace)
+                    .then(|| device_store.read(asked))
+                    .flatten()
+            },
+        );
+        let arrived = pieces
+            .iter()
+            .find_map(|piece| asked.piece(&host_device, piece))
+            .expect("the device's answer is whole and hashes to what was asked");
+        assert_eq!(
+            arrived.bytes, attachment,
+            "the device handed back its own upload"
+        );
+
+        // Kept again, the message's attachment reads.
+        store.put(&arrived.bytes).unwrap();
+        assert_eq!(
+            store.read(&recorded).as_deref(),
+            Some(attachment.as_slice()),
+            "the message's attachment reads"
+        );
+        relay.shutdown().await;
+    }
 }
