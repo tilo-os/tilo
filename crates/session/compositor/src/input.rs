@@ -468,3 +468,16 @@ pub struct KeyModifiers {
     pub logo: bool,
     pub caps_lock: bool,
 }
+
+impl KeyModifiers {
+    /// These modifiers as the toolkit reports them to a surface it hosts.
+    #[must_use]
+    pub fn state(self) -> winit::keyboard::ModifiersState {
+        let mut state = winit::keyboard::ModifiersState::empty();
+        state.set(winit::keyboard::ModifiersState::SHIFT, self.shift);
+        state.set(winit::keyboard::ModifiersState::CONTROL, self.ctrl);
+        state.set(winit::keyboard::ModifiersState::ALT, self.alt);
+        state.set(winit::keyboard::ModifiersState::SUPER, self.logo);
+        state
+    }
+}

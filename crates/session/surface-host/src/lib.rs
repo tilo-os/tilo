@@ -434,8 +434,7 @@ impl SurfaceHost for AppHost {
     }
 
     fn key(&mut self, key: &HostKey) {
-        let m = key.modifiers;
-        let modifiers = ui::keys::modifiers(m.ctrl, m.alt, m.shift, m.logo);
+        let modifiers = key.modifiers.state();
         if modifiers != self.modifiers {
             self.modifiers = modifiers;
             self.input(WindowEvent::ModifiersChanged(Modifiers::from(modifiers)));

@@ -42,7 +42,7 @@ fn toolkit_key(key: &HostKey) -> (ui::winit::keyboard::Key, ui::winit::event::Mo
             under_chord,
         )
         .0,
-        ui::keys::modifiers(held.ctrl, held.alt, held.shift, held.logo).into(),
+        held.state().into(),
     )
 }
 

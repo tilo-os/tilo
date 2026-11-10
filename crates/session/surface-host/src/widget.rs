@@ -776,8 +776,7 @@ impl SurfaceHost for WidgetHost {
     }
 
     fn key(&mut self, key: &HostKey) {
-        let held = key.modifiers;
-        let modifiers = ui::keys::modifiers(held.ctrl, held.alt, held.shift, held.logo);
+        let modifiers = key.modifiers.state();
         if modifiers != self.modifiers {
             self.modifiers = modifiers;
             self.input(&WindowEvent::ModifiersChanged(Modifiers::from(modifiers)));

@@ -10,7 +10,7 @@
 //! A host delivers a press as keysyms and modifiers, which `from_keysym` and
 //! `chord` turn into the key a shortcut table matches.
 
-use winit::keyboard::{Key, ModifiersState, NamedKey};
+use winit::keyboard::{Key, NamedKey};
 #[cfg(target_os = "linux")]
 use winit::keyboard::{KeyLocation, SmolStr};
 
@@ -151,17 +151,6 @@ pub fn chord(
         return (logical, location);
     }
     (from_keysym(latin_keysym, None).0, location)
-}
-
-/// The modifiers a key press was made with, held as the toolkit reports them.
-#[must_use]
-pub fn modifiers(ctrl: bool, alt: bool, shift: bool, logo: bool) -> ModifiersState {
-    let mut state = ModifiersState::empty();
-    state.set(ModifiersState::SHIFT, shift);
-    state.set(ModifiersState::CONTROL, ctrl);
-    state.set(ModifiersState::ALT, alt);
-    state.set(ModifiersState::SUPER, logo);
-    state
 }
 
 #[cfg(test)]
