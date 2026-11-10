@@ -1256,6 +1256,18 @@ pub(crate) async fn settle_member_invites(
     Ok(())
 }
 
+/// Say a setting of the operator's that did not settle at this start: it is
+/// settled again at the next one.
+fn settled(workspace: &str, result: anyhow::Result<()>) {
+    if let Err(error) = result {
+        tracing::error!(
+            workspace,
+            error = format!("{error:#}"),
+            "a setting of the workspace did not settle; the host serves it as it was and tries again at the next start"
+        );
+    }
+}
+
 /// List the workspace in the public directory as the host configured it, or
 /// take it out when the host asks for no listing. Settled at every start: the
 /// listing is the host's word, and a person who joined yesterday stays a
@@ -1424,7 +1436,14 @@ pub(crate) async fn run(
     if adopted > 0 {
         tracing::info!(%workspace, adopted, "removals taken over from the room's removals file");
     }
-    settle_listing(&workspaces, &workspace, &host_cert, &persistent).await?;
+    // A setting of the operator's that the workspace's governance refuses
+    // stops the start only where going on without it would let in more than
+    // the operator configured: the door, the guests' outside effects and the
+    // removals above. The rest is said and settled again at the next start.
+    settled(
+        &workspace,
+        settle_listing(&workspaces, &workspace, &host_cert, &persistent).await,
+    );
     workspaces
         .list_invitation_only(&workspace, &host_cert, persistent.invitation_only)
         .await
@@ -1457,15 +1476,22 @@ pub(crate) async fn run(
     )
     .await?;
     ensure_guest_policy(&workspaces, &workspace, &host_cert).await?;
-    settle_member_invites(&workspaces, &workspace, &host_cert, persistent.members_only).await?;
-    settle_app_authorship(
-        &workspaces,
+    // Members inviting, or not, never lets in anyone the door does not.
+    settled(
         &workspace,
-        &host_cert,
-        &authored_apps(&persistent),
-        &state.join("authored-apps.json"),
-    )
-    .await?;
+        settle_member_invites(&workspaces, &workspace, &host_cert, persistent.members_only).await,
+    );
+    settled(
+        &workspace,
+        settle_app_authorship(
+            &workspaces,
+            &workspace,
+            &host_cert,
+            &authored_apps(&persistent),
+            &state.join("authored-apps.json"),
+        )
+        .await,
+    );
     // A record the operator named whose retained history lost the base its
     // deltas were written over: founded again from what the workspace still
     // reads, its old history archived beside the replay. Runs once per start
