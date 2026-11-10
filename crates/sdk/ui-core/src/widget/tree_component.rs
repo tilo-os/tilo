@@ -3,7 +3,8 @@
 //! resource it stands for.
 //!
 //! The nodes are [`TreeViewNodeProps`], one per row, each naming its parent by the resource it
-//! stands for, and the rows are drawn by the list's own tree
+//! stands for, each taking the change mark of what someone else changed of it
+//! ([`TreeViewNodeProps::change`]), and the rows are drawn by the list's own tree
 //! ([`VirtualList::with_tree`](crate::widget::VirtualList::with_tree)): a node that changed is
 //! one part beside the others, and the tree changes in place — an expanded branch folds where
 //! it stands, and the selection follows what the view says. Folding, keyboard navigation,
@@ -28,8 +29,8 @@ use crate::icons::Icon;
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::selection::KeySelection;
 use crate::widget::{
-    Button, ButtonProps, Decorator, Element, HoverToolbar, ListModel, ListRow, MenuItem,
-    MenuItemProps, Press, TreeMarks, TreeRow, VirtualList, Widget,
+    Button, ButtonProps, ChangeMarkProps, Decorator, Element, HoverToolbar, ListModel, ListRow,
+    MenuItem, MenuItemProps, Press, TreeMarks, TreeRow, VirtualList, Widget,
 };
 
 use crate::widget::virtual_list::by_hand;
@@ -142,6 +143,11 @@ pub struct TreeViewNodeProps {
     /// menu. A node that gives none shows no hover toolbar.
     #[component(slot)]
     pub toolbar: Vec<ButtonProps>,
+    /// What someone else changed of the row's resource that the person has not seen yet: the
+    /// row shows it, in their colour, on its trailing edge. The UI host places it
+    /// (task-legibility §3).
+    #[component(slot)]
+    pub change: Option<ChangeMarkProps>,
 }
 
 crate::component::part_slot!(TreeViewNodeProps);
@@ -313,6 +319,7 @@ struct Node {
     progress: Option<String>,
     menu: Vec<Command>,
     toolbar: Vec<ButtonProps>,
+    change: Option<Rc<ChangeMarkProps>>,
     drop: Event,
     into: Event,
     after: Event,
@@ -365,6 +372,7 @@ struct Part {
     progress: Option<String>,
     menu: Vec<MenuItemProps>,
     toolbar: Vec<ButtonProps>,
+    change: Option<ChangeMarkProps>,
     drop: Event,
     into: Event,
     after: Event,
@@ -457,6 +465,7 @@ fn part_of(node: TreeViewNodeProps) -> Part {
         progress: node.progress,
         menu: node.menu,
         toolbar: node.toolbar,
+        change: node.change,
         drop: node.drop,
         into: node.into,
         after: node.after,
@@ -501,6 +510,7 @@ impl Nodes {
                 progress: None,
                 menu: Vec::new(),
                 toolbar: Vec::new(),
+                change: None,
                 drop: Event::None,
                 into: Event::None,
                 after: Event::None,
@@ -557,6 +567,7 @@ impl Nodes {
                 progress: part.progress,
                 menu: part.menu.into_iter().map(Command::of).collect(),
                 toolbar: part.toolbar,
+                change: part.change.map(Rc::new),
                 drop: part.drop,
                 into: part.into,
                 after: part.after,
@@ -769,6 +780,7 @@ impl Remote {
             progress: part.progress,
             menu: part.menu.into_iter().map(Command::of).collect(),
             toolbar: part.toolbar,
+            change: part.change.map(Rc::new),
             drop: part.drop,
             into: part.into,
             after: part.after,
@@ -1192,6 +1204,11 @@ fn row_of(
         }
         if let Some(text) = &props.description {
             row = row.description(text.clone());
+        }
+        // What someone else changed of it, at the row's own height: on the trailing edge their
+        // face, and their colour under it, as a list row says it.
+        if let Some(mark) = node.change.as_ref().and_then(|mark| mark.again().row()) {
+            row = row.change(mark.identity, mark.name, mark.spoken, mark.said, mark.show);
         }
     }
     let row = Box::new(row) as Element;

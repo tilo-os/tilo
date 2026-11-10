@@ -1,9 +1,10 @@
 //! Marks in place (task-legibility.md §3): what someone else changed that the person looking
 //! has not seen, drawn by the host where the view shows it, with no code of the app's.
 //!
-//! The host knows what each part of a view is bound to: a `ui.ListItem` row presents its item,
-//! a bound control edits a field, a window shows its resource. As each node of a view is built,
-//! the host reads [`crate::seen::unseen`] there and marks it:
+//! The host knows what each part of a view is bound to: a `ui.ListItem` row, or a
+//! `ui.TreeViewNode` of a tree, presents its item, a bound control edits a field, a window shows
+//! its resource. As each node of a view is built, the host reads [`crate::seen::unseen`] there
+//! and marks it:
 //!
 //! - a row gets a `ui.ChangeMark` in its `change` slot: who, in which run; a row a list
 //!   folds away as done with stands with the rows above while the change is unseen, so the mark
@@ -31,6 +32,8 @@ use crate::view::UiNode;
 pub const CHANGE_MARK: &str = "ui.ChangeMark";
 /// The node kind of a row of a list.
 const LIST_ITEM: &str = "ui.ListItem";
+/// The node kind of a row of a tree.
+const TREE_NODE: &str = "ui.TreeViewNode";
 /// The node kind of a window's shell.
 const NAV_SHELL: &str = "ui.NavShell";
 /// The node kind of a text field.
@@ -88,50 +91,61 @@ impl Core {
                 }
                 Ok(())
             }
-            LIST_ITEM => {
-                let Some(Value::Ref(r)) = node.props.get("item").cloned() else {
-                    return Ok(());
-                };
-                let Some(unseen) = self.newest_unseen_noted(viewer, &r.target, acc)? else {
-                    return Ok(());
-                };
-                // The row does not hide in a list's folded tail while a change of it is
-                // unseen: it stands with the rows above, where its mark is read, and goes
-                // back under the tail once the person has seen it. A flag travels as the
-                // integer it was boxed as, or as the flag itself.
-                if matches!(
-                    node.props.get("tail"),
-                    Some(Value::Bool(true) | Value::Int(1))
-                ) {
-                    node.props.insert("tail".to_owned(), Value::Bool(false));
-                }
-                if places_mark(node, &r.target.id_string()) {
-                    return Ok(());
-                }
-                // A row in the unseen part of a list that stands a divider where it starts:
-                // the divider says the rows from there on are new, so a mark on one of them
-                // says it again, whether it was put there or changed since it was.
-                if walk.says_new {
-                    return Ok(());
-                }
-                let mut mark = UiNode::empty(CHANGE_MARK, &format!("{}~change", node.key));
-                mark.props
-                    .insert("of".to_owned(), Value::resource(&r.target));
-                self.fill_mark(
-                    &mut mark,
-                    &r.target,
-                    std::slice::from_ref(&unseen),
-                    viewer,
-                    acc,
-                );
-                node.children.push(slot("change", &node.key, mark));
-                Ok(())
-            }
+            LIST_ITEM | TREE_NODE => self.mark_row(node, viewer, walk, acc),
             NAV_ITEM => self.mark_nav_item(node, viewer, acc),
             NAV_SHELL => self.mark_window(node, viewer, window, acc),
             TEXT_INPUT => self.mark_field(node, viewer, acc),
             _ => Ok(()),
         }
+    }
+
+    /// A row of a list, or of a tree, showing the resource it presents: what someone else
+    /// changed of it that the person has not seen goes in its `change` slot, and a row of a
+    /// list's folded tail stands with the rows above it while its change is unseen.
+    fn mark_row(
+        &self,
+        node: &mut UiNode,
+        viewer: &Principal,
+        walk: Walk<'_>,
+        acc: &mut Acc,
+    ) -> Result<(), RuntimeError> {
+        let Some(Value::Ref(r)) = node.props.get("item").cloned() else {
+            return Ok(());
+        };
+        let Some(unseen) = self.newest_unseen_noted(viewer, &r.target, acc)? else {
+            return Ok(());
+        };
+        // The row does not hide in a list's folded tail while a change of it is unseen: it
+        // stands with the rows above, where its mark is read, and goes back under the tail once
+        // the person has seen it. A flag travels as the integer it was boxed as, or as the flag
+        // itself.
+        if matches!(
+            node.props.get("tail"),
+            Some(Value::Bool(true) | Value::Int(1))
+        ) {
+            node.props.insert("tail".to_owned(), Value::Bool(false));
+        }
+        if places_mark(node, &r.target.id_string()) {
+            return Ok(());
+        }
+        // A row in the unseen part of a list that stands a divider where it starts: the divider
+        // says the rows from there on are new, so a mark on one of them says it again, whether
+        // it was put there or changed since it was.
+        if walk.says_new {
+            return Ok(());
+        }
+        let mut mark = UiNode::empty(CHANGE_MARK, &format!("{}~change", node.key));
+        mark.props
+            .insert("of".to_owned(), Value::resource(&r.target));
+        self.fill_mark(
+            &mut mark,
+            &r.target,
+            std::slice::from_ref(&unseen),
+            viewer,
+            acc,
+        );
+        node.children.push(slot("change", &node.key, mark));
+        Ok(())
     }
 
     /// A list of the collection `coll`: a row after its items for each item someone else

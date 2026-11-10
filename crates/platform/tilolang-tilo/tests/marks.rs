@@ -58,6 +58,28 @@ fn row_marks(view: &mut ViewInstance) -> Vec<(String, Option<UiNode>)> {
     out
 }
 
+/// The resource each row of the view's tree presents, and the change mark the host placed on it,
+/// if any.
+fn tree_marks(view: &mut ViewInstance) -> Vec<(String, Option<UiNode>)> {
+    view.set_lazy_rows(false).unwrap();
+    view.poll_patches().unwrap();
+    all(view.tree(), "ui.TreeViewNode")
+        .into_iter()
+        .map(|node| {
+            let of = match node.props.get("item") {
+                Some(Value::Ref(r)) => r.target.id_string(),
+                other => panic!("a row presents its item: {other:?}"),
+            };
+            let mark = node
+                .children
+                .iter()
+                .find(|c| c.kind == "slot" && c.props.get("name") == Some(&Value::text("change")))
+                .and_then(|slot| slot.children.first().cloned());
+            (of, mark)
+        })
+        .collect()
+}
+
 fn principal(node: &UiNode, prop: &str) -> Option<String> {
     match node.props.get(prop) {
         Some(Value::Principal(who)) => Some(who.0.clone()),
@@ -106,7 +128,7 @@ fn the_host_marks_rows_and_the_window_and_a_mark_shows_its_run() {
     // The notebook: the rows the run made or changed carry its mark, with who and which run;
     // no app code asked for it.
     let mut notebook = ada.view(NOTES_APP);
-    let marks = row_marks(&mut notebook);
+    let marks = tree_marks(&mut notebook);
     for (at, kind) in [(&made, "created"), (&groceries, "changed")] {
         let mark = marked(&marks, &at.id_string())
             .unwrap_or_else(|| panic!("{at:?} is marked: {marks:?}"));
@@ -174,7 +196,7 @@ fn the_host_marks_rows_and_the_window_and_a_mark_shows_its_run() {
 
     // Mark all seen on the run: every mark goes, live.
     assert!(ada.host.runtime().mark_run_seen("ada", RUN));
-    let marks = row_marks(&mut notebook);
+    let marks = tree_marks(&mut notebook);
     assert!(marks.iter().all(|(_, mark)| mark.is_none()), "{marks:?}");
     assert!(
         all(notebook.tree(), "ui.ChangeMark").is_empty(),
