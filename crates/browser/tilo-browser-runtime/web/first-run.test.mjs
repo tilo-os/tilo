@@ -3,7 +3,7 @@ import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 import {codeWait, CONNECTED_MS, createFirstRun, FOLLOW_MS, MAKE_MS, manualCommands, MCP_URL, OFFER_MS, PASSKEY_WAIT_MS, RENEW_MS,
-  SEEN, setupFailure, setupPrompt, signInPrompt, stepLines, timeLeft} from './first-run.mjs';
+  SEEN, setupFailure, setupPrompt, signInPrompt, stepLines, minutesLeft} from './first-run.mjs';
 
 const here = name => new URL(name, import.meta.url);
 const CODE = 'K7Q-MX2P';
@@ -72,15 +72,19 @@ test('the setup prompt is one line: install, log in with the code, follow what t
   assert.equal(MCP_URL, 'https://mcp.tilo.sh');
 });
 
-test('time left reads minutes and seconds and stops at zero', () => {
-  assert.equal(timeLeft(600_000, 0), '10:00');
-  assert.equal(timeLeft(600_000, 18_500), '9:42');
-  assert.equal(timeLeft(600_000, 700_000), '0:00');
+test('time left reads in whole minutes, counted up, never none while the code works', () => {
+  assert.equal(minutesLeft(600_000, 0), '10 more minutes');
+  assert.equal(minutesLeft(600_000, 18_500), '10 more minutes');
+  assert.equal(minutesLeft(600_000, 61_000), '9 more minutes');
+  assert.equal(minutesLeft(600_000, 570_000), '1 more minute');
+  assert.equal(minutesLeft(600_000, 700_000), '1 more minute');
 });
 
 test('each step reads in plain words: done ones checked, the one under way last', () => {
-  const texts = polled => stepLines(polled).map(({text, done, act}) => `${done ? '✓' : act ? '!' : '…'} ${text}`);
-  assert.deepEqual(texts(null), ['… Your agent is installing Tilo…']);
+  const texts = polled => stepLines(polled).map(({text, done, act, wait}) => `${done ? '✓' : act ? '!' : wait ? '·' : '…'} ${text}`);
+  // Until the host sees the code used, nothing is under way, and nothing says it is.
+  assert.deepEqual(texts(null), ['· Waiting for your agent']);
+  assert.deepEqual(texts({resolved: false}), ['· Waiting for your agent']);
   const agent = 'Claude Code';
   assert.deepEqual(texts({resolved: true, steps: ['resolved']}), ['✓ Tilo is installed', '… Your agent is logging in as you…']);
   assert.deepEqual(texts({resolved: true, agent, steps: ['resolved', 'logged-in']}),
@@ -90,7 +94,8 @@ test('each step reads in plain words: done ones checked, the one under way last'
   assert.deepEqual(texts({resolved: true, agent, steps: ['resolved', 'logged-in', 'tools-added', 'restart', 'entered']}).slice(-2),
     ['✓ Claude Code restarted', '✓ Claude Code is in your workspace']);
   const signIn = polled => stepLines(polled, 'sign-in').map(({text}) => text);
-  assert.deepEqual(signIn({resolved: false}), ['Waiting for your agent…']);
+  assert.deepEqual(signIn({resolved: false}), ['Waiting for your agent']);
+  assert.deepEqual(stepLines(null, 'sign-in'), [{text: 'Waiting for your agent', wait: true}]);
   assert.deepEqual(signIn({resolved: true, claimed: {user: 'ab', invite: 'cd', by: 'Claude Code on build-box'}}),
     ['Claude Code on build-box vouched for you', 'Signing this tab in…']);
 });
@@ -115,8 +120,8 @@ test('the click copies exactly the prompt shown, inside the click, and only then
   assert.equal(names().includes('waiting'), false, 'no claim before the clipboard answered');
   await done;
   assert.deepEqual(last('waiting'), ['waiting', 'setup', {text: shown, copied: true}]);
-  assert.deepEqual(last('steps')[1], [{text: 'Your agent is installing Tilo…'}]);
-  assert.deepEqual(last('left'), ['left', '10:00']);
+  assert.deepEqual(last('steps')[1], [{text: 'Waiting for your agent', wait: true}], 'nothing claimed before the agent used the code');
+  assert.deepEqual(last('left'), ['left', '10 more minutes']);
   assert.equal(state.every, FOLLOW_MS, 'followed about once a second');
   assert.ok(codes.made[0].asked >= 1, 'the host is asked where the copied code is');
   await settle();
@@ -223,7 +228,10 @@ test('a copied code that expires says so, and the retry copies the fresh one at 
   await settle();
   state.clock = 18_500;
   await tick();
-  assert.deepEqual(last('left'), ['left', '9:42']);
+  assert.deepEqual(last('left'), ['left', '10 more minutes']);
+  state.clock = 61_000;
+  await tick();
+  assert.deepEqual(last('left'), ['left', '9 more minutes']);
   state.clock = 600_000;
   await tick();
   assert.equal(names().at(-1), 'expired');

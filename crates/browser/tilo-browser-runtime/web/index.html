@@ -312,7 +312,8 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     }
     #first-run[data-closing] { opacity: 0; pointer-events: none; }
     html[data-first-run]:not(:has(#first-run[data-closing])) #bar { visibility: hidden; }
-    .fr-page { display: grid; gap: 40px; width: min(880px, 100%); margin: auto; }
+    /* Anchored from the top, not centred: what changes under the prompt never moves what is above it. */
+    .fr-page { display: grid; gap: 40px; width: min(880px, 100%); margin: min(8vh, 72px) auto auto; }
     .fr-main, .fr-aside { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
     .fr-mark { display: block; margin-bottom: 28px; }
     .fr-mark .side { fill: var(--fr-side); } .fr-mark .core { fill: var(--fr-core); }
@@ -345,12 +346,21 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     .fr-field code { flex: 1; min-width: 0; overflow-wrap: anywhere; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     #first-run .fr-copy { flex: none; min-height: 32px; padding: 0 12px; border: 0; border-radius: 8px; background: none; font-size: 13px; font-weight: 500; }
     #first-run .fr-copy:hover { background: var(--fr-quiet-hover); }
-    /* The wait: the prompt, then what the agent did so far. */
-    .fr-wait { display: none; width: 100%; }
-    [data-first-run=waiting] .fr-start, [data-first-run=expired] .fr-start, [data-first-run=failed] .fr-start, [data-first-run=connected] .fr-start { display: none; }
-    [data-first-run=waiting] .fr-wait, [data-first-run=expired] .fr-wait, [data-first-run=failed] .fr-wait { display: flex; flex-direction: column; align-items: flex-start; }
-    [data-first-run]:not([data-first-run='']) .fr-aside { display: none; }
-    [data-first-run]:not([data-first-run='']) .fr-page { width: min(560px, 100%); }
+    /* After a copy the same screen follows the code: the heading and lead
+       change in place, the prompt stays where it was, and what the agent
+       did so far shows under it. The aside's column stays, so nothing
+       moves sideways. */
+    html:not([data-first-run=waiting]):not([data-first-run=expired]):not([data-first-run=failed]) #first-run .fr-for-wait { display: none; }
+    html:is([data-first-run=waiting], [data-first-run=expired], [data-first-run=failed]) #first-run .fr-for-start { display: none; }
+    [data-first-run=connected] .fr-start { display: none; }
+    [data-first-run]:not([data-first-run='']) .fr-aside { visibility: hidden; }
+    /* The headings, and the leads, take one place each, whichever shows. */
+    .fr-swap { display: grid; }
+    .fr-swap > * { grid-area: 1 / 1; }
+    #first-run .fr-swap > * { display: block !important; }
+    html:not([data-first-run=waiting]):not([data-first-run=expired]):not([data-first-run=failed]) #first-run .fr-swap > .fr-for-wait,
+    html:is([data-first-run=waiting], [data-first-run=expired], [data-first-run=failed]) #first-run .fr-swap > .fr-for-start,
+    #first-run[data-mode=setup] .fr-swap > .fr-for-sign-in, #first-run[data-mode=sign-in] .fr-swap > .fr-for-setup { visibility: hidden; }
     [data-mode=setup] .fr-for-sign-in, [data-mode=sign-in] .fr-for-setup { display: none; }
     .fr-well { display: flex; align-items: flex-start; box-sizing: border-box; width: 100%; margin: 0 0 24px; border: 1px solid var(--fr-line); border-radius: 12px; background: var(--fr-well); }
     .fr-well pre { flex: 1; min-width: 0; box-sizing: border-box; max-height: 168px; margin: 0; padding: 12px 4px 12px 16px; overflow: auto; font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--fr-ink); white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
@@ -363,15 +373,18 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     #first-run-offer:empty, .fr-offer-note:empty { display: none; }
     .fr-offer-note { flex: 1; margin: 0; padding: 12px 16px; font-size: 14px; color: var(--fr-faint); }
     .fr-offer-note[data-problem=true] { color: var(--fr-problem); }
-    .fr-offer .fr-copy { margin: 6px; }
+    /* The box's own Copy sits in its corner, in space kept for it either way, so the prompt wraps the same before and after the click. */
+    .fr-offer { position: relative; }
+    .fr-offer pre { padding-right: 76px; }
+    .fr-offer .fr-copy { position: absolute; top: 6px; right: 6px; }
     #first-run-sign-in-note { margin: 8px 0 0; font-size: 13px; color: var(--fr-muted); }
     #first-run-sign-in-note:empty { display: none; }
     #first-run-sign-in-note[data-problem=true] { color: var(--fr-problem); }
-    .fr-copied { display: none; margin: -12px 0 12px; font-size: 13px; color: var(--fr-on); }
+    .fr-copied { display: none; margin: 4px 0 0; font-size: 13px; color: var(--fr-on); }
     #first-run[data-copied=true] .fr-copied { display: block; }
     html[data-first-run=expired] #first-run .fr-copied, html[data-first-run=failed] #first-run .fr-copied { display: none; }
     .fr-well-bar { flex: none; padding: 6px; }
-    [data-manual=true] .fr-wait .fr-well, [data-manual=true] .fr-wait .fr-lead { display: none; }
+    [data-manual=true] .fr-offer, [data-manual=true] .fr-lead, [data-manual=true] .fr-caption, [data-manual=true] .fr-copied { display: none; }
     #first-run-steps { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; font-size: 15px; }
     #first-run-steps li { display: flex; align-items: center; gap: 12px; }
     #first-run-steps li::before { content: ''; flex: none; box-sizing: border-box; width: 16px; height: 16px; border-radius: 50%; }
@@ -380,17 +393,20 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     #first-run-steps .now::before, .fr-spinner { border: 2px solid var(--fr-line); border-top-color: var(--fr-ink); animation: tilo-spin 900ms linear infinite; }
     #first-run-steps .act { font-weight: 600; }
     #first-run-steps .act::before { border: 2px solid var(--fr-core); }
+    #first-run-steps .wait { color: var(--fr-muted); }
+    #first-run-steps .wait::before { border: 2px solid var(--fr-edge); }
     .fr-spinner { flex: none; box-sizing: border-box; width: 14px; height: 14px; border-radius: 50%; }
     #first-run-left { margin: 6px 0 0 28px; font-size: 13px; color: var(--fr-faint); font-variant-numeric: tabular-nums; }
     #first-run-left:empty { display: none; }
-    #first-run-problem { margin: 0 0 12px; font-size: 14px; color: var(--fr-problem); }
+    #first-run-problem { margin: 12px 0 0; font-size: 14px; color: var(--fr-problem); }
     #first-run-problem:empty { display: none; }
     #first-run #first-run-retry { display: none; margin-top: 20px; }
     [data-first-run=expired] #first-run #first-run-retry, [data-first-run=failed] #first-run #first-run-retry { display: inline-flex; }
     [data-first-run=expired] #first-run-steps, [data-first-run=failed] #first-run-steps, [data-first-run=expired] #first-run-left, [data-first-run=failed] .fr-well { display: none; }
-    .fr-expired { display: none; margin: 0; font-size: 14px; color: var(--fr-muted); }
+    .fr-expired { display: none; margin: 12px 0 0; font-size: 14px; color: var(--fr-muted); }
     [data-first-run=expired] .fr-expired { display: block; }
-    .fr-wait .fr-links { margin-top: 28px; }
+    .fr-links.fr-for-wait { margin-top: 28px; }
+    #first-run-steps { margin-top: 20px; }
     /* Done: the agent is in, or this tab is signed in. */
     .fr-done { display: none; flex-direction: column; align-items: flex-start; }
     [data-first-run=connected] .fr-done { display: flex; }
@@ -399,7 +415,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     .fr-said { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     @media (min-width: 760px) {
       [data-first-run] #first-run { padding: 48px; }
-      [data-first-run=''] .fr-page { grid-template-columns: minmax(0, 1fr) 260px; gap: 72px; align-items: start; }
+      [data-first-run] .fr-page { grid-template-columns: minmax(0, 1fr) 260px; gap: 72px; align-items: start; }
       .fr-aside { padding: 0 0 0 40px; border-top: 0; border-left: 1px solid var(--fr-line); margin-top: 72px; }
       #first-run h1 { font-size: 32px; }
       .fr-lead { font-size: 16px; }
@@ -415,32 +431,29 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     <div class="fr-main">
       <svg class="fr-mark" aria-hidden="true" viewBox="0 0 100 100" width="40" height="40"><path class="side" d="M10.98 31.85Q10.98 27.97 14.4 26.12L20.26 22.97Q24.84 20.51 24.84 25.71L24.84 74.29Q24.84 79.49 20.26 77.03L14.4 73.88Q10.98 72.03 10.98 68.15Z"/><path class="side" d="M89.02 31.85Q89.02 27.97 85.6 26.12L79.74 22.97Q75.16 20.51 75.16 25.71L75.16 74.29Q75.16 79.49 79.74 77.03L85.6 73.88Q89.02 72.03 89.02 68.15Z"/><rect class="core" x="29" y="16" width="42" height="68" rx="6"/></svg>
       <div class="fr-start">
-        <h1 id="first-run-heading" tabindex="-1">Let your agent set up Tilo</h1>
-        <p class="fr-lead">Paste this line into Claude Code, Codex or any agent. It installs Tilo and signs in as you, and this tab becomes your workspace, with your agent in it.</p>
-        <div class="fr-well fr-offer"><pre id="first-run-offer" aria-label="The prompt"></pre><p id="first-run-offer-note" class="fr-offer-note" data-problem="false">Getting your code…</p><button id="first-run-offer-retry" class="fr-copy" type="button" hidden>Try again</button></div>
-        <button id="first-run-agent" class="fr-primary" type="button"><svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>Copy prompt</button>
-        <p class="fr-caption">Its code works once, for 10 minutes, only for this tab.</p>
-        <div class="fr-links"><button id="first-run-manual-toggle" class="fr-quiet" type="button" aria-expanded="false" aria-controls="first-run-manual">Set up manually</button><button id="first-run-skip" class="fr-quiet" type="button">Skip for now</button></div>
-        <div id="first-run-manual" class="fr-manual">
+        <div class="fr-swap"><h1 id="first-run-heading" class="fr-for-start" tabindex="-1">Let your agent set up Tilo</h1>
+        <h1 id="first-run-heading-wait" class="fr-for-wait" tabindex="-1">Paste it into your agent</h1></div>
+        <div class="fr-swap"><p class="fr-lead fr-for-start">Paste this line into Claude Code, Codex or any agent. It installs Tilo and signs in as you, and this tab becomes your workspace, with your agent in it.</p>
+        <p class="fr-lead fr-for-wait fr-for-setup">Paste the prompt into Claude Code, Codex or any agent; this tab follows along.</p>
+        <p class="fr-lead fr-for-wait fr-for-sign-in">Paste the prompt into your agent on a computer where you use Tilo, and it signs this tab in as you.</p></div>
+        <div class="fr-well fr-offer"><pre id="first-run-offer" class="fr-for-start" aria-label="The prompt"></pre><pre id="first-run-prompt" class="fr-for-wait" aria-label="The prompt"></pre><p id="first-run-offer-note" class="fr-offer-note fr-for-start" data-problem="false">Getting your code…</p><button id="first-run-offer-retry" class="fr-copy fr-for-start" type="button" hidden>Try again</button><button id="first-run-again" class="fr-copy fr-for-wait" type="button">Copy</button></div>
+        <button id="first-run-agent" class="fr-primary fr-for-start" type="button"><svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>Copy prompt</button>
+        <p class="fr-caption">The code in it works once, for 10 minutes, in this tab only.</p>
+        <p class="fr-copied fr-for-wait">Copied to your clipboard.</p>
+        <p id="first-run-problem" class="fr-for-wait"></p>
+        <ol id="first-run-steps" class="fr-for-wait" aria-label="What your agent did"></ol>
+        <p id="first-run-left" class="fr-for-wait"></p>
+        <p class="fr-expired">This prompt expired before an agent used it.</p>
+        <button id="first-run-retry" class="fr-primary" type="button">Copy a new prompt</button>
+        <div class="fr-links fr-for-start"><button id="first-run-manual-toggle" class="fr-quiet" type="button" aria-expanded="false" aria-controls="first-run-manual">Set up manually</button><button id="first-run-skip" class="fr-quiet" type="button">Skip for now</button></div>
+        <div class="fr-links fr-for-wait"><button id="first-run-back" class="fr-quiet" type="button">Back</button><button id="first-run-skip-wait" class="fr-quiet fr-for-setup" type="button">Skip for now</button></div>
+        <div id="first-run-manual" class="fr-manual fr-for-start">
           <p class="fr-label">Tilo’s MCP server, for any agent</p>
           <div class="fr-field"><code id="first-run-mcp">https://mcp.tilo.sh</code><button id="first-run-copy-mcp" class="fr-copy" type="button">Copy</button></div>
           <p class="fr-label">Or in a terminal</p>
           <div class="fr-well"><pre id="first-run-commands" aria-label="The commands"></pre><div class="fr-well-bar"><button id="first-run-copy-commands" class="fr-copy" type="button">Copy</button></div></div>
           <p id="first-run-manual-left" class="fr-caption"></p>
         </div>
-      </div>
-      <div class="fr-wait">
-        <h1 id="first-run-heading-wait" tabindex="-1">Paste it into your agent</h1>
-        <p class="fr-lead fr-for-setup">Paste the prompt into Claude Code, Codex or any agent; this tab follows along.</p>
-        <p class="fr-lead fr-for-sign-in">Paste the prompt into your agent on a computer where you use Tilo, and it signs this tab in as you.</p>
-        <div class="fr-well"><pre id="first-run-prompt" aria-label="The prompt"></pre><div class="fr-well-bar"><button id="first-run-again" class="fr-copy" type="button">Copy</button></div></div>
-        <p class="fr-copied">Copied to your clipboard.</p>
-        <p id="first-run-problem"></p>
-        <ol id="first-run-steps" aria-label="What your agent did"></ol>
-        <p id="first-run-left"></p>
-        <p class="fr-expired">This prompt expired before an agent used it.</p>
-        <button id="first-run-retry" class="fr-primary" type="button">Copy a new prompt</button>
-        <div class="fr-links"><button id="first-run-back" class="fr-quiet" type="button">Back</button><button id="first-run-skip-wait" class="fr-quiet fr-for-setup" type="button">Skip for now</button></div>
       </div>
       <div class="fr-done"><span class="fr-check" aria-hidden="true"></span><h1 id="first-run-connected">Your agent is in your workspace</h1><p class="fr-lead">Opening your workspace…</p></div>
     </div>

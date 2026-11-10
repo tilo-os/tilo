@@ -85,8 +85,19 @@ for (const [width, height, mobile] of [[390, 844, true], [1280, 800, false]]) {
     if (shots) writeFileSync(`${shots}/first-screen-${name}-manual.png`, await tab.screenshot());
     await click('first-run-manual-toggle');
 
+    const BOX = `(() => { const r = document.querySelector('.fr-offer').getBoundingClientRect();
+      return {x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height),
+        caption: document.querySelector('.fr-caption').textContent}; })()`;
+    const before = await tab.evaluate(BOX);
     await click('first-run-agent');
     await tab.waitFor(`document.documentElement.dataset.firstRun === 'waiting'`, {timeout: 10000});
+    const after = await tab.evaluate(BOX);
+    check(before.x === after.x && before.width === after.width,
+      `${name}: the prompt box stays where it was, as wide (${JSON.stringify(before)} → ${JSON.stringify(after)})`);
+    check(before.height === after.height, `${name}: the prompt box keeps its height (${before.height} → ${after.height})`);
+    check(Math.abs(before.y - after.y) <= 1, `${name}: the prompt box does not jump (${before.y} → ${after.y})`);
+    check(before.caption === 'The code in it works once, for 10 minutes, in this tab only.' && after.caption === before.caption,
+      `${name}: the caption reads the same before and after the click`);
     const copied = await tab.evaluate(`Promise.race([navigator.clipboard.readText().catch(() => null), new Promise(r => setTimeout(() => r(null), 3000))])`);
     check(copied === null || copied === shown, `${name}: the click copied exactly the prompt shown${copied === null ? ' (clipboard not readable here)' : ''}`);
     check(await tab.evaluate(`document.getElementById('first-run-prompt').textContent`) === shown, `${name}: the prompt stays on the screen`);
@@ -97,8 +108,11 @@ for (const [width, height, mobile] of [[390, 844, true], [1280, 800, false]]) {
       left: document.getElementById('first-run-left').textContent, step: document.getElementById('first-run-steps').textContent})`);
     check(waiting.state === 'waiting', `${name}: the screen waits for the agent`);
     check(!waiting.sideways, `${name}: the prompt wraps rather than scrolling sideways`);
-    check(/Works once, for \d+:\d\d more/.test(waiting.left), `${name}: it says how long the prompt works (${waiting.left})`);
-    check(waiting.step.includes('installing Tilo'), `${name}: the first step shows at once`);
+    check(waiting.left === 'Works once, for 10 more minutes.', `${name}: it says how long the prompt works (${waiting.left})`);
+    check(waiting.step === 'Waiting for your agent', `${name}: nothing is claimed before the agent used the code (${waiting.step})`);
+    check(!(await tab.evaluate(`document.querySelector('#first-run-steps li')?.className === 'now'`)), `${name}: no spinner while nothing happens`);
+    await sleep(300);
+    if (shots) writeFileSync(`${shots}/first-screen-${name}-copied.png`, await tab.screenshot());
     await tab.evaluate(`globalThis.polled = {resolved: true, expired: false, agent: 'Claude Code', steps: ['resolved', 'logged-in']}`);
     await tab.waitFor(`document.getElementById('first-run-steps').textContent.includes('Claude Code logged in as you')`, {timeout: 5000});
     await sleep(300);

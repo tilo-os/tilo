@@ -82,17 +82,19 @@ export function manualCommands(code, {site} = {}) {
   return [installCommand(site), loginCommand(code, site), `claude mcp add --transport http tilo ${MCP_URL}`].join('\n');
 }
 
-/** "9:41", the time left until `expiresAt` (ms) at `now`, never below 0:00. */
-export function timeLeft(expiresAt, now) {
-  const seconds = Math.max(0, Math.ceil((expiresAt - now) / 1000));
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+/** "10 more minutes", the time left until `expiresAt` (ms) at `now` in whole
+ * minutes, counted up so a code with time left never reads as none. */
+export function minutesLeft(expiresAt, now) {
+  const minutes = Math.max(1, Math.ceil((expiresAt - now) / 60_000));
+  return minutes === 1 ? '1 more minute' : `${minutes} more minutes`;
 }
 
 /**
  * What the screen lists for where a code is (`polled`, the host's
  * `Polled`): each step done so far, then the one under way, as
- * `{text, done}`; `{text, act: true}` when the person has to do it. `mode`
- * is `setup` or `sign-in`.
+ * `{text, done}`; `{text, act: true}` when the person has to do it, and
+ * `{text, wait: true}` until the host sees the code used: nothing is under
+ * way then, so nothing claims to be. `mode` is `setup` or `sign-in`.
  */
 export function stepLines(polled, mode = 'setup') {
   const agent = polled?.agent || 'Your agent';
@@ -100,13 +102,13 @@ export function stepLines(polled, mode = 'setup') {
   const lines = [];
   const done = text => lines.push({text, done: true});
   if (mode === 'sign-in') {
-    if (!polled?.resolved) return [{text: 'Waiting for your agent…'}];
+    if (!polled?.resolved) return [{text: 'Waiting for your agent', wait: true}];
     if (!polled.claimed) return [{text: `${agent} is finding you…`}];
     done(`${polled.claimed.by || agent} vouched for you`);
     lines.push(steps.has('approved') ? {text: 'This tab is signed in', done: true} : {text: 'Signing this tab in…'});
     return lines;
   }
-  if (!polled?.resolved) return [{text: 'Your agent is installing Tilo…'}];
+  if (!polled?.resolved) return [{text: 'Waiting for your agent', wait: true}];
   done('Tilo is installed');
   if (!steps.has('logged-in')) return [...lines, {text: `${agent} is logging in as you…`}];
   done(`${agent} logged in as you`);
@@ -250,7 +252,7 @@ export function createFirstRun({view, clipboard, storage = null, now = () => Dat
     const tick = async () => {
       if (mine !== attempt || closed || finished) return;
       if (!resolved && now() >= made.expiresAt) { finished = true; stop(); view.expired(mode); return; }
-      if (!resolved) view.left(timeLeft(made.expiresAt, now()));
+      if (!resolved) view.left(minutesLeft(made.expiresAt, now()));
       if (asking) return;
       asking = true;
       let polled;
@@ -485,16 +487,16 @@ export function domView(document) {
       if (which === 'prompt' && ok) $('first-run').dataset.copied = 'true';
       button(which === 'prompt' ? 'first-run-again' : `first-run-copy-${which}`, ok);
     },
-    left(text) { $('first-run-left').textContent = text ? `Works once, for ${text} more, only in this tab.` : ''; },
+    left(text) { $('first-run-left').textContent = text ? `Works once, for ${text}.` : ''; },
     steps(lines) {
-      $('first-run-steps').replaceChildren(...lines.map(({text, done, act}) => {
+      $('first-run-steps').replaceChildren(...lines.map(({text, done, act, wait}) => {
         const item = document.createElement('li');
-        item.className = done ? 'done' : act ? 'act' : 'now';
+        item.className = done ? 'done' : act ? 'act' : wait ? 'wait' : 'now';
         item.textContent = text;
         return item;
       }));
       const now = lines.at(-1);
-      if (now && !now.done) say(now.text);
+      if (now && !now.done && !now.wait) say(now.text);
     },
     expired(mode) { state('expired', mode); say('The prompt expired. Copy a new one to try again.'); },
     problem(text) { $('first-run-problem').textContent = text; },
