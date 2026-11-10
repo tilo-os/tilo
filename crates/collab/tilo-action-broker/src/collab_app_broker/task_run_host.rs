@@ -392,10 +392,19 @@ impl TaskRunHost {
             attended: descriptor.contract.is_attended(),
             confirmed: false,
         };
-        self.0
-            .state
-            .admit_task_launch(&run, &binding, &requirement, &mut || Ok(()))
-            .map_err(refused)?;
+        // A step marked for turns is admitted by the turn itself, below, where a grant that
+        // asks first raises the turn's question on the person's sheet
+        // (`host_steps::admit_turn_step`): its ask is not a refusal here, and asking twice
+        // would raise the question twice.
+        if let Err(reason) =
+            self.0
+                .state
+                .admit_task_launch(&run, &binding, &requirement, &mut || Ok(()))
+            && !(steps.for_turns()
+                && crate::services::NativeTaskActionRequirement::awaits_confirmation(&reason))
+        {
+            return Err(refused(reason));
+        }
         let origin = self.origin().map_err(refused)?;
         // The run's group, so history lists the step under the run.
         let mut request = request.clone();
