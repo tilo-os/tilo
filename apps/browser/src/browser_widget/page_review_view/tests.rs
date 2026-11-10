@@ -563,6 +563,86 @@ fn a_secrets_text_is_never_in_the_reviews_accessibility_tree() {
     }
 }
 
+/// How often the review read the page's fields.
+fn field_reads(engine: &TestEngine) -> usize {
+    page_asks(engine)
+        .iter()
+        .filter(|(_, request)| matches!(request, PageRequest::Fields { .. }))
+        .count()
+}
+
+/// An engine that tells page events says when the page changed itself. The
+/// review of its page reads on no timer: a field the page's own script
+/// rewrote is not read until the engine tells of it, and then once.
+#[test]
+fn the_review_follows_what_the_engine_tells_and_reads_on_no_timer() {
+    use ui::webview::{PageChange, PageFieldChange};
+    let (engine, mut app) = window();
+    engine.set_page_events(true);
+    let ada = agent("agent:ada");
+    let filled = json!({"seq": 1, "actor": "agent:ada", "action": "fill", "ok": true,
+        "target": {"role": "textbox", "name": "Arrival"}, "text": "2027-02-03"});
+    page_holds(
+        &engine,
+        &[("Arrival", "date", "2027-02-03", by("agent:ada", 1))],
+        std::slice::from_ref(&filled),
+    );
+    invoke(
+        &mut app,
+        Some(&ada),
+        &BrowserEffect::FillPage {
+            element: "d1e2".into(),
+            text: "2027-02-03".into(),
+            frame: None,
+        },
+    );
+    invoke(&mut app, None, &BrowserEffect::ReviewPage);
+    eventually(&mut app, "the review shows what Ada set", |app| {
+        row_says(app, "Arrival", &["2027-02-03", "Set by ada"])
+    });
+    app.harness()
+        .wait_until(ui::time::Duration::from_millis(300), |_| false);
+    app.settle();
+    let before = field_reads(&engine);
+
+    // The page's own script rewrites the answer. Longer than a timer would
+    // take passes, and nothing is read: nothing said the page changed.
+    let mut changed = by("agent:ada", 1);
+    changed["changed"] = json!(true);
+    page_holds(
+        &engine,
+        &[("Arrival", "date", "2027-02-10", changed)],
+        std::slice::from_ref(&filled),
+    );
+    app.harness()
+        .wait_until(ui::time::Duration::from_millis(2500), |_| false);
+    app.settle();
+    assert_eq!(field_reads(&engine), before, "nothing is read on a timer");
+    assert!(row_says(&mut app, "Arrival", &["2027-02-03"]));
+
+    // The engine tells of the field. It says which, never what it holds:
+    // the review reads the page.
+    engine.emit_page_changed(PageChange {
+        document: 1,
+        fields: vec![PageFieldChange {
+            element: "d1e2".into(),
+            role: "textbox".into(),
+            name: "Arrival".into(),
+            typed: false,
+            form: Some("form1".into()),
+            question: Some("Arrival".into()),
+        }],
+        ..PageChange::default()
+    });
+    eventually(&mut app, "the changed field is marked", |app| {
+        row_says(app, "Arrival", &["2027-02-10", "Changed since it was set"])
+    });
+    app.harness()
+        .wait_until(ui::time::Duration::from_millis(300), |_| false);
+    app.settle();
+    assert_eq!(field_reads(&engine), before + 1, "read once, when told");
+}
+
 /// Choosing a row is the page's own action for it: the page shows again,
 /// and the engine is asked to bring that field into view.
 #[test]

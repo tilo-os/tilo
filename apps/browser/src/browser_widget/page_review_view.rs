@@ -13,10 +13,12 @@
 //! fields and the tab's record, the reads `read-page-forms`,
 //! `read-page-fields` and `read-page-record` make, and draws what they
 //! answered. It asks again when any page action answered, since the tab's
-//! record may have moved; when the page shows another document; and once a
-//! second otherwise, for what the page's own script changes. Fields read
-//! from a document the page has left are not drawn. What is kept here is the
-//! last answer: a cache of the page, never state.
+//! record may have moved; when the page shows another document; and when the
+//! engine says the page changed a field or a form of itself or a person
+//! typed into one ([`super::page_events`]). Only for an engine that does not
+//! say so is the page read again once a second. Fields read from a document
+//! the page has left are not drawn. What is kept here is the last answer: a
+//! cache of the page, never state.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -41,7 +43,9 @@ use crate::page_review::{Fields, Form, Holds, Question, Record, SetBy, Step};
 use crate::resource::{Browser, CATALOG};
 
 /// How often the page is read again while its review shows and nothing said
-/// it changed: the page's own script may change a field at any time.
+/// it changed, for an engine that does not say when the page changes itself
+/// ([`ui::webview::WebViewEngine::tells_page_events`]): the page's own
+/// script may change a field at any time.
 const REREAD_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 /// The engine's answers to one round of reads never stay pending longer.
 const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
@@ -249,11 +253,23 @@ impl BrowserWidget {
         })
     }
 
-    /// A page request that is not the review's answered: an action may have
-    /// operated the page, so the tab's record may have moved.
+    /// Something said the page or the tab's record changed: a page request
+    /// that is not the review's answered, the engine told of a change or of
+    /// what a person typed, or the page finished loading. The review reads
+    /// again.
     pub(super) fn page_review_moved(&mut self) {
         if self.page_review.open {
-            self.page_review.moved = true;
+            self.note_review_moved();
+        }
+    }
+
+    /// The review is due a read. With an engine that tells page events
+    /// nothing reads on a timer, so the wait for a page that is loading
+    /// counts from when the read fell due.
+    fn note_review_moved(&mut self) {
+        if !std::mem::replace(&mut self.page_review.moved, true) && self.engine.tells_page_events()
+        {
+            self.page_review.due = Some(ui::time::now());
         }
     }
 
@@ -302,8 +318,9 @@ impl BrowserWidget {
         self.structure_dirty |= changed && review.open;
     }
 
-    /// Read the page for its review when something says it changed, when it
-    /// shows another document, and once in a while otherwise.
+    /// Read the page for its review when something says it changed and when
+    /// it shows another document; once in a while otherwise only for an
+    /// engine that does not say when the page changes itself.
     pub(super) fn sync_page_review(&mut self) {
         if !self.page_review_shown() || self.page_review.staged {
             return;
@@ -324,7 +341,7 @@ impl BrowserWidget {
             && self.page_review.url != self.current_uri
         {
             self.page_review.shown = Shown::Unread;
-            self.page_review.moved = true;
+            self.note_review_moved();
             self.structure_dirty = true;
         }
         if self.page_review.round.is_some() {
@@ -336,7 +353,10 @@ impl BrowserWidget {
         if self.page_loading() && due.is_none_or(|at| now < at + super::PAGE_LOAD_WAIT) {
             return;
         }
-        if !self.page_review.moved && due.is_some_and(|at| now < at) {
+        // An engine that tells page events says when the page changed
+        // itself; any other is read again once in a while.
+        let polls = !self.engine.tells_page_events();
+        if !self.page_review.moved && (!polls || due.is_some_and(|at| now < at)) {
             return;
         }
         self.page_review.moved = false;
@@ -361,12 +381,17 @@ impl BrowserWidget {
         if !self.page_review_shown() || self.page_review.staged {
             return None;
         }
+        // Nothing is read on a timer for an engine that tells page events:
+        // the window is woken by what the engine tells.
+        let polls = !self.engine.tells_page_events();
         match &self.page_review.round {
             Some(round) => Some(round.deadline),
+            None if !polls && !self.page_review.moved => None,
             None if self.page_loading() => {
                 self.page_review.due.map(|at| at + super::PAGE_LOAD_WAIT)
             }
-            None => self.page_review.due,
+            None if polls => self.page_review.due,
+            None => None,
         }
     }
 

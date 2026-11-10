@@ -125,6 +125,10 @@ pub struct ReadForm {
     pub id: String,
     /// What it asks.
     pub shape: RememberedForm,
+    /// What the read said of the answers its choice questions offer: a hash
+    /// that is another one once they are other answers. Empty when the read
+    /// gave none.
+    pub offers: String,
     /// It asks something else since it was read.
     pub changed: bool,
 }
@@ -240,6 +244,12 @@ fn read_form(form: &serde_json::Value) -> Option<ReadForm> {
             submit: texts(form, "submit", site_memory::MAX_SUBMITS),
             ..RememberedForm::default()
         },
+        offers: form
+            .get("offers")
+            .and_then(serde_json::Value::as_str)
+            .filter(|offers| site_memory::is_signature(offers))
+            .unwrap_or_default()
+            .to_owned(),
         changed: false,
     })
 }
@@ -909,6 +919,29 @@ impl PageForms {
         }
     }
 
+    /// Whether what the engine says of the page's forms (`told`, the forms
+    /// of a `page_changed`) is not what the page at `place` publishes: a
+    /// form the read did not find, one that asks or offers something else
+    /// now, one that is gone. A page that was not read publishes nothing
+    /// that was read from it, so any form the engine names is news.
+    pub fn told_otherwise(&self, place: &Place, told: &[ui::webview::PageFormChange]) -> bool {
+        let Some(read) = self.reading(place) else {
+            return !told.is_empty();
+        };
+        told.iter().any(|told| {
+            let Some(known) = read.iter().find(|form| form.id == told.form) else {
+                return !told.gone;
+            };
+            told.gone
+                || known.changed
+                || told.signature.as_deref() != Some(known.shape.signature.as_str())
+                || told
+                    .offers
+                    .as_deref()
+                    .is_some_and(|offers| !known.offers.is_empty() && offers != known.offers)
+        })
+    }
+
     /// A form action found no form `signature` on the page at `place`: the
     /// form changed, or this page never held it. Its action is withdrawn
     /// until the page is read, which its window does next. Answers the
@@ -1191,6 +1224,57 @@ mod tests {
                 frame: None,
             }
         );
+    }
+
+    /// What the engine tells of the page's forms is news only when it is
+    /// not what the page publishes: a form no read found, one that asks or
+    /// offers something else, one that is gone.
+    #[test]
+    fn what_the_engine_tells_of_a_form_is_news_only_when_the_page_publishes_otherwise() {
+        let told = |form: &str, signature: Option<&str>, offers: Option<&str>, gone: bool| {
+            [ui::webview::PageFormChange {
+                form: form.into(),
+                signature: signature.map(str::to_owned),
+                offers: offers.map(str::to_owned),
+                gone,
+            }]
+        };
+        let mut forms = PageForms::default();
+        let at = place("https://visa.test/apply");
+        assert!(!forms.told_otherwise(&at, &[]));
+        assert!(
+            forms.told_otherwise(&at, &told("form1", Some("5f1c2a9b"), None, false)),
+            "a page nobody read publishes nothing that was read"
+        );
+        let mut data = visa();
+        data["forms"][0]["offers"] = "aaaa1111".into();
+        forms.heard_read(&at, &data);
+        for (news, change) in [
+            (
+                false,
+                told("form1", Some("5f1c2a9b"), Some("aaaa1111"), false),
+            ),
+            (false, told("form1", Some("5f1c2a9b"), None, false)),
+            (
+                true,
+                told("form1", Some("0badc0de"), Some("aaaa1111"), false),
+            ),
+            (
+                true,
+                told("form1", Some("5f1c2a9b"), Some("bbbb2222"), false),
+            ),
+            (true, told("form1", None, None, true)),
+            (true, told("form2", Some("0a11ce00"), None, false)),
+            (false, told("form2", None, None, true)),
+        ] {
+            assert_eq!(forms.told_otherwise(&at, &change), news, "{change:?}");
+        }
+        // Another page's forms are not this page's.
+        let elsewhere = place("https://visa.test/status");
+        assert!(forms.told_otherwise(
+            &elsewhere,
+            &told("form1", Some("5f1c2a9b"), Some("aaaa1111"), false)
+        ));
     }
 
     /// The actions follow the page: another page has none of them, and a

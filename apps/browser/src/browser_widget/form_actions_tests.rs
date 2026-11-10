@@ -1160,6 +1160,113 @@ fn a_first_visit_publishes_a_forms_action_with_no_agent_read() {
     );
 }
 
+/// A form the page's own script draws after the page loaded is an action of
+/// the page once the engine tells of it: the window reads the page again
+/// by itself, and no actor reads it. Told of the form as the page already
+/// publishes it, of fields alone, or of a frame's form, the window reads
+/// nothing; told that it offers other answers or is gone, it reads once.
+#[test]
+fn a_form_the_page_draws_later_is_an_action_once_the_engine_tells_of_it() {
+    use ui::webview::{FrameId, PageChange, PageFieldChange, PageFormChange};
+    let (engine, mut app) = open(APPLY);
+    engine.set_page_events(true);
+    assert!(form_actions(&mut app).is_empty());
+    let reads = own_reads(&engine);
+    let visa = |offers: &str| PageFormChange {
+        form: "form1".into(),
+        signature: Some(VISA.into()),
+        offers: Some(offers.into()),
+        gone: false,
+    };
+    let told = |forms: Vec<PageFormChange>| PageChange {
+        document: 1,
+        forms,
+        ..PageChange::default()
+    };
+
+    // The page draws its form. Nothing loads and no address changes.
+    let mut drawn = visa_form();
+    drawn["offers"] = "aaaa1111".into();
+    page_holds(&engine, std::slice::from_ref(&drawn));
+    engine.emit_page_changed(told(vec![visa("aaaa1111")]));
+    let actions = form_actions(&mut app);
+    assert_eq!(ids(&actions), ["form-5f1c2a9b", "send-form-5f1c2a9b"]);
+    assert!(
+        actions
+            .iter()
+            .all(|action| action.contract.availability.is_available())
+    );
+    assert_eq!(
+        own_reads(&engine),
+        reads + 1,
+        "one read of the window's own"
+    );
+    assert!(asked(&engine).is_empty(), "no actor read the page");
+    assert!(remembered(&app, VISA).is_some(), "and it is remembered");
+
+    // What tells the window nothing new reads nothing: the form as it is
+    // published, a field somebody typed into, a form of a frame.
+    engine.emit_page_changed(told(vec![visa("aaaa1111")]));
+    engine.emit_page_changed(PageChange {
+        document: 1,
+        fields: vec![PageFieldChange {
+            element: "d1e2".into(),
+            role: "textbox".into(),
+            name: "Full name".into(),
+            typed: true,
+            form: Some("form1".into()),
+            question: Some("Full name".into()),
+        }],
+        ..PageChange::default()
+    });
+    engine.emit_page_changed(PageChange {
+        document: 4,
+        frame: FrameId::parse("3"),
+        forms: vec![PageFormChange {
+            form: "form1".into(),
+            signature: Some("0badc0de".into()),
+            offers: None,
+            gone: false,
+        }],
+        ..PageChange::default()
+    });
+    settle(&mut app);
+    assert_eq!(own_reads(&engine), reads + 1);
+    assert_eq!(
+        ids(&form_actions(&mut app)),
+        ["form-5f1c2a9b", "send-form-5f1c2a9b"]
+    );
+
+    // The page's script gives a question other answers to choose from.
+    let mut other = drawn.clone();
+    other["offers"] = "bbbb2222".into();
+    other["fields"][3]["choices"] = serde_json::json!(["Kenya", "Uganda", "Other"]);
+    page_holds(&engine, &[other]);
+    engine.emit_page_changed(told(vec![visa("bbbb2222")]));
+    let nationality = form_actions(&mut app)[0]
+        .params()
+        .iter()
+        .find(|param| param.name == "nationality")
+        .map(|param| param.choices.clone())
+        .expect("the form asks for a nationality");
+    assert_eq!(nationality, ["Kenya", "Uganda", "Other"]);
+    assert_eq!(own_reads(&engine), reads + 2);
+
+    // The page takes the form away again.
+    page_holds(&engine, &[]);
+    engine.emit_page_changed(told(vec![PageFormChange {
+        form: "form1".into(),
+        gone: true,
+        ..PageFormChange::default()
+    }]));
+    assert!(form_actions(&mut app).is_empty());
+    assert_eq!(own_reads(&engine), reads + 3);
+    assert!(
+        asked(&engine).is_empty(),
+        "no actor read the page at any point"
+    );
+}
+
 /// A page without forms costs one read: the window reads it once when it
 /// has loaded and not again, however long the page stays in front.
 #[test]

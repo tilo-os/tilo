@@ -86,6 +86,7 @@ mod load_failure;
 mod page_actions;
 mod page_answer;
 mod page_clipboard;
+mod page_events;
 mod page_find;
 mod page_record;
 mod page_review_view;
@@ -3402,7 +3403,6 @@ impl BrowserWidget {
                 | WebViewEvent::DocumentSize { .. }
                 | WebViewEvent::SelectionText { .. }
                 | WebViewEvent::LinkHovered(_)
-                | WebViewEvent::PageChanged(_)
                 | WebViewEvent::FindSelection { .. } => {}
                 WebViewEvent::LoadFinished => {
                     if self.load_error.is_some() {
@@ -3443,7 +3443,7 @@ impl BrowserWidget {
                         self.follow_personal_bookmarks();
                     }
                     self.page_navigation_settled(None);
-                    self.read_forms_again();
+                    self.page_document_loaded();
                 }
                 WebViewEvent::LoadFailed { uri, error } => {
                     if self.retry_over_http(&uri, &error) {
@@ -3515,6 +3515,7 @@ impl BrowserWidget {
                     self.accept_page_result(request_id, result);
                 }
                 WebViewEvent::PageRecord { seq, entry } => self.hear_page_record(seq, &entry),
+                WebViewEvent::PageChanged(change) => self.hear_page_changed(&change),
                 event @ (WebViewEvent::PageDialog(_) | WebViewEvent::PageDialogClosed { .. }) => {
                     // The question is taken first, so the action it stopped
                     // answers with it rather than with a question already gone.
