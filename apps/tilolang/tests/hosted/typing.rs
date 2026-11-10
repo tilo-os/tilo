@@ -200,10 +200,10 @@ impl Peer {
     }
 }
 
-/// How many acts of the person the note's History counts: the page says so under the entry, so a
-/// burst of any number of letters counts as one of them.
+/// How many acts of the person the note's History counts: the page the window shows says so under
+/// the entry, so a burst of any number of letters counts as one of them.
 fn history_acts(session: &mut Session) -> usize {
-    let page = session.page();
+    let page = session.shown();
     page.iter()
         .find_map(|text| {
             text.strip_suffix(" changes")

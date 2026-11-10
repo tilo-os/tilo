@@ -822,7 +822,8 @@ impl Session {
         out
     }
 
-    /// The titles of the notebook's notes, as its list shows them.
+    /// The titles of the items the window lists, as it shows them: the rows of its lists, each
+    /// naming its item — a list's in the row itself, a tree's in its node's label.
     fn titles(&mut self) -> Vec<String> {
         let view = self.hosted().view().expect("the window is connected");
         let mut titles = Vec::new();
@@ -834,13 +835,7 @@ impl Session {
             let rows = rows.borrow();
             for key in rows.rendered() {
                 let row = rows.row(&key).expect("a rendered row");
-                let title = find(row, &|node| node.kind == "ui.ListRow")
-                    .and_then(|row| match row.props.get("title") {
-                        Some(tilo_ui_host::Value::Text(title)) => Some(title.clone()),
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| panic!("a row shows its note's title: {row:?}"));
-                titles.push(title);
+                titles.push(title_of(row));
             }
         }
         titles
@@ -894,6 +889,22 @@ impl Session {
         let rect = *found.last().expect("the window offers New note");
         (rect.center().x, rect.center().y)
     }
+}
+
+/// The title a window's row shows of its item: a tree's row names it in its node's label, a
+/// list's row in the row the item draws.
+fn title_of(row: &tilo_ui_host::UiNode) -> String {
+    if let Some(node) = find(row, &|node| node.kind == "ui.TreeViewNode")
+        && let Some(label) = node.props.get("label")
+    {
+        return tilo_ui_host::reconcile::display(label);
+    }
+    find(row, &|node| node.kind == "ui.ListRow")
+        .and_then(|row| match row.props.get("title") {
+            Some(tilo_ui_host::Value::Text(title)) => Some(title.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("a row shows its item's title: {row:?}"))
 }
 
 fn find<'a>(
