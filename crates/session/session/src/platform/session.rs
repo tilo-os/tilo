@@ -8,11 +8,14 @@ use std::time::Instant;
 
 use tilo_actions::remote::InvokeArgument;
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
-use tilo_compositor::{Compositor, DisplayConfig, Error, NestedConfig, OutputConfig, WindowPolicy};
+use tilo_compositor::{
+    Compositor, DisplayConfig, Error, LoopTurns, NestedConfig, OutputConfig, WindowPolicy,
+};
 
 use tilo_desktop::osd::{Hint, Osd, OsdKind};
 use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_desktop_surface::DesktopHandle;
+use tilo_liveness::watchdog::{Policy, Watchdog, end_process};
 use tilo_lock::MutexRecover as _;
 use tilo_service::Started;
 use tilo_session_core::door::Doors;
@@ -1783,6 +1786,31 @@ impl Session {
         &mut self.compositor
     }
 
+    /// Watch the session's main loop and end the process when it has stopped for good: record why
+    /// first, then exit, so the person comes back to the login screen rather than to a frozen
+    /// display. The loop reports its turns ([`LoopTurns`]); a turn it never ends is judged by what
+    /// the kernel says the thread is doing ([`tilo_liveness::watchdog`]).
+    ///
+    /// # Errors
+    /// The watchdog thread could not be started.
+    pub fn guard_main_loop(&mut self) -> std::io::Result<()> {
+        let watchdog = Watchdog::watch_this_thread(Policy::COMPOSITOR, |hang| {
+            match tilo_crash_records::record_freeze(
+                hang.tid,
+                hang.blocked_for,
+                &hang.report,
+                tilo_crash_records::RECORD_WITHIN,
+            ) {
+                Some(path) => eprintln!("tilo session: hang recorded in {}", path.display()),
+                None => eprintln!("tilo session: the record of the hang was not written"),
+            }
+            end_process(hang);
+        })?;
+        self.compositor
+            .watch_turns(Some(std::sync::Arc::new(Turns(watchdog))));
+        Ok(())
+    }
+
     /// The surface apps the session started, and those still running.
     #[must_use]
     pub const fn surfaces(&self) -> &crate::surfaces::Surfaces {
@@ -2421,6 +2449,51 @@ impl Drop for Session {
         // no session, whoever else still holds what started them.
         if let Some(launch) = &self.shared.launch {
             launch.end_running();
+        }
+    }
+}
+
+/// The loop's turns as the watchdog counts them.
+struct Turns(Watchdog);
+
+impl LoopTurns for Turns {
+    fn parking(&self) {
+        self.0.parking();
+    }
+
+    fn unparked(&self) {
+        self.0.unparked();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! What the session's own hosts tell the watchdog.
+
+    use std::time::Duration;
+
+    use tilo_liveness::watchdog::{Policy, Watchdog};
+
+    use super::{LoopTurns as _, Turns};
+
+    /// The compositor's hook marks the loop's turns as the watchdog counts them, so a loop that
+    /// waits for events is never judged.
+    #[test]
+    fn the_compositor_hook_marks_the_loops_turns() {
+        let watchdog = Watchdog::watch_this_thread(
+            Policy {
+                period: Duration::from_millis(50),
+                hung_after: Duration::from_secs(60 * 60),
+                report_within: Duration::from_secs(1),
+            },
+            |_| panic!("a loop that marks its turns is never judged hung"),
+        )
+        .expect("the watchdog thread starts");
+        let turns = Turns(watchdog);
+        for _ in 0..3 {
+            turns.parking();
+            std::thread::sleep(Duration::from_millis(20));
+            turns.unparked();
         }
     }
 }

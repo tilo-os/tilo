@@ -335,8 +335,7 @@ impl sheet::Invitations for DeskInvites<'_> {
 
     fn copy(&self, link: &str) {
         self.0.clipboard.ask(Ask::Copy {
-            mime: tilo_compositor::clipboard_history::TEXT_MIME.to_owned(),
-            bytes: link.as_bytes().to_vec(),
+            text: link.to_owned(),
             kept_for: ON_CLIPBOARD_FOR,
         });
         self.0.say(word("invite-copied"), false);

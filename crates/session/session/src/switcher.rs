@@ -1,5 +1,5 @@
 //! Alt+Tab's panel: what the desk's walk shows, kept in step with the chrome that draws it and the
-//! compositor that pictures its windows.
+//! windows it pictures.
 //! The walk itself is the desk's ([`crate::overlays`]): Alt+Tab's presses ask its verbs, and it
 //! says which window it reached. This reads that once a pass, as the panel shows it, so the chrome
 //! draws what the desk decided and nothing of its own.
@@ -20,8 +20,7 @@ impl Shared {
     /// switches windows without a panel flashing, and the window it reached is still where Alt's
     /// release goes.
     /// A locked session takes the walk down with everything else it shows over its windows.
-    pub(crate) fn follow_switcher(&self, compositor: &tilo_compositor::Compositor) {
-        let locked = compositor.locked();
+    pub(crate) fn follow_switcher(&self, locked: bool, windows: &[(u64, (i32, i32, i32, i32))]) {
         if locked {
             self.desk_overlays
                 .close(crate::overlays::Overlay::Switcher.name());
@@ -35,7 +34,7 @@ impl Shared {
                 crate::desk_resource::switcher_view(
                     &self.handle,
                     &self.desk_overlays,
-                    &window_sizes(compositor),
+                    &window_sizes(windows),
                 )
             })
             .flatten();
@@ -48,18 +47,17 @@ impl Shared {
     }
 }
 
-/// Each window's size in logical pixels, as the compositor lays it out: the shape a card of the
-/// panel takes, so the window's picture fills it.
+/// Each window's size in logical pixels, as the desk lays it out: the shape a card of the panel
+/// takes, so the window's picture fills it.
 fn window_sizes(
-    compositor: &tilo_compositor::Compositor,
+    windows: &[(u64, (i32, i32, i32, i32))],
 ) -> std::collections::HashMap<u64, (u32, u32)> {
-    compositor
-        .windows()
-        .into_iter()
-        .filter_map(|(window, (_, _, width, height))| {
+    windows
+        .iter()
+        .filter_map(|(id, (_, _, width, height))| {
             Some((
-                window.id,
-                (u32::try_from(width).ok()?, u32::try_from(height).ok()?),
+                *id,
+                (u32::try_from(*width).ok()?, u32::try_from(*height).ok()?),
             ))
         })
         .filter(|(_, (width, height))| *width > 0 && *height > 0)

@@ -953,7 +953,7 @@ fn drives(
 #[cfg(target_os = "linux")]
 fn watch_the_loop(backend: Backend, session: &mut tilo_session::Session) {
     if backend == Backend::Drm
-        && let Err(error) = tilo_session::notices::guard_main_loop(session.compositor())
+        && let Err(error) = session.guard_main_loop()
     {
         tracing::warn!(%error, "the main loop is not watched");
     }

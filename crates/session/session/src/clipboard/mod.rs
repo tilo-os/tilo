@@ -90,13 +90,9 @@ struct Reading {
 pub(crate) enum Ask {
     /// Put a copy back on the clipboard and paste it into the app in front.
     Paste(String),
-    /// Put `bytes` on the clipboard for the person to paste somewhere else,
-    /// without keeping them, for as long as `kept_for` says.
-    Copy {
-        mime: String,
-        bytes: Vec<u8>,
-        kept_for: Duration,
-    },
+    /// Put `text` on the clipboard for the person to paste somewhere else,
+    /// without keeping it, for as long as `kept_for` says.
+    Copy { text: String, kept_for: Duration },
 }
 
 impl Clipboard {
@@ -389,12 +385,13 @@ impl Clipboard {
                 Ask::Paste(key) => {
                     self.paste(compositor, &key);
                 }
-                Ask::Copy {
-                    mime,
-                    bytes,
-                    kept_for,
-                } => {
-                    self.copy_for_person(compositor, &mime, bytes, Some(kept_for));
+                Ask::Copy { text, kept_for } => {
+                    self.copy_for_person(
+                        compositor,
+                        tilo_compositor::clipboard_history::TEXT_MIME,
+                        text.into_bytes(),
+                        Some(kept_for),
+                    );
                 }
             }
         }

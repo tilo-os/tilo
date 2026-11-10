@@ -10,13 +10,12 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use settings_store::system_sounds::SystemSoundEvent;
 use tilo_desktop_surface::DesktopNotifications;
 use tilo_files::native::ChangeWatch;
-use tilo_liveness::watchdog::{Policy, Watchdog, end_process};
 use tilo_notifications_service::Notifications;
 use tilo_system_service::update;
 use ui::format::NaiveDate;
@@ -730,45 +729,6 @@ fn follow_codecs(notifications: &Notifications) {
     }
 }
 
-/// Watch the compositor's main loop and end the process when it has stopped
-/// for good: record why first, then exit, so the person comes back to the
-/// login screen rather than to a frozen display. The loop reports its turns
-/// through [`tilo_compositor::LoopTurns`]; a turn it never ends is judged by
-/// what the kernel says the thread is doing
-/// ([`tilo_liveness::watchdog`]).
-///
-/// # Errors
-/// The watchdog thread could not be started.
-pub fn guard_main_loop(compositor: &mut tilo_compositor::Compositor) -> std::io::Result<()> {
-    let watchdog = Watchdog::watch_this_thread(Policy::COMPOSITOR, |hang| {
-        match tilo_crash_records::record_freeze(
-            hang.tid,
-            hang.blocked_for,
-            &hang.report,
-            tilo_crash_records::RECORD_WITHIN,
-        ) {
-            Some(path) => eprintln!("tilo session: hang recorded in {}", path.display()),
-            None => eprintln!("tilo session: the record of the hang was not written"),
-        }
-        end_process(hang);
-    })?;
-    compositor.watch_turns(Some(Arc::new(Turns(watchdog))));
-    Ok(())
-}
-
-/// The loop's turns as the watchdog counts them.
-struct Turns(Watchdog);
-
-impl tilo_compositor::LoopTurns for Turns {
-    fn parking(&self) {
-        self.0.parking();
-    }
-
-    fn unparked(&self) {
-        self.0.unparked();
-    }
-}
-
 /// Whether this session is the one that tells the person what it knows of
 /// the machine: a session in a window of another desktop, or a headless one,
 /// leaves that machine's news to the session that owns it.
@@ -832,7 +792,6 @@ fn watch_storage(notifications: &Notifications) {
 mod tests {
     use super::*;
     use os_actions::codec_pack::CodecPackStatus;
-    use tilo_compositor::LoopTurns as _;
     use tilo_notifications_service::Taken;
     use tilo_service::Service;
 
@@ -1275,27 +1234,6 @@ mod tests {
             notice.actions,
             [(RESTART_ACTION.to_owned(), "Restart".to_owned())]
         );
-    }
-
-    /// The compositor's hook marks the loop's turns as the watchdog counts them, so a loop that
-    /// waits for events is never judged.
-    #[test]
-    fn the_compositor_hook_marks_the_loops_turns() {
-        let watchdog = Watchdog::watch_this_thread(
-            Policy {
-                period: Duration::from_millis(50),
-                hung_after: Duration::from_secs(60 * 60),
-                report_within: Duration::from_secs(1),
-            },
-            |_| panic!("a loop that marks its turns is never judged hung"),
-        )
-        .expect("the watchdog thread starts");
-        let turns = Turns(watchdog);
-        for _ in 0..3 {
-            turns.parking();
-            std::thread::sleep(Duration::from_millis(20));
-            turns.unparked();
-        }
     }
 
     /// Acting on the update notice reaches the tap the session installed,

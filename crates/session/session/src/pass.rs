@@ -173,7 +173,15 @@ impl Session {
         self.shared.open_notifications();
         self.settle()?;
         self.follow_bars();
-        self.shared.follow_switcher(&self.compositor);
+        let switcher = (
+            self.compositor.locked(),
+            self.compositor
+                .windows()
+                .into_iter()
+                .map(|(window, rect)| (window.id, rect))
+                .collect::<Vec<_>>(),
+        );
+        self.shared.follow_switcher(switcher.0, &switcher.1);
         self.follow_shell()?;
         self.follow_slot_views()?;
         // The toolkit's clock, which a capture pins the frame's instant on.
